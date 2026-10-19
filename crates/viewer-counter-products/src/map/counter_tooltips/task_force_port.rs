@@ -118,6 +118,12 @@ pub(super) fn build(context: &Context<'_>, input: &Hover) -> Tooltip {
         &mut out,
     );
     super::task_force_summary::append(context, &members, false, &mut out);
+    if context
+        .slot(input.metadata.country)
+        .is_ok_and(|slot| slot == context.vision.ours())
+    {
+        super::naval_management::append(context, &members, &mut out);
+    }
     if members.len() == 1 {
         match &input.metadata.enemy {
             Ok(true) => super::task_force_port_mission::append(

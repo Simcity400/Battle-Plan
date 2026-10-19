@@ -2713,6 +2713,7 @@ fn run_inner(
     let mut committed_bytes = bytes;
     let mut independent_timings = family_timings.as_ref().map(|_| BTreeMap::new());
     let mut independent_workers = lane_timings.as_ref().map(|_| BTreeMap::new());
+    finish_timing(&mut family_timings, setup_started, "setup.overhead", false);
     let walk = |walk: &mut independent::Walk<'_, '_>,
                 accepted: &mut dyn FnMut(&Accepted)|
      -> io::Result<()> {
@@ -2753,7 +2754,6 @@ fn run_inner(
             );
             frame_changes.invalidate();
         }
-        finish_timing(&mut family_timings, setup_started, "setup.overhead", false);
         let sparse_map = selected().len() != TableId::ALL.len();
         let mut stream_tables = selected().to_vec();
         // The last flushed branch and its state, which the flush saved: the next

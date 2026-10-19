@@ -257,7 +257,7 @@ fn evaluate<'a>(
     }
     // Drain queues 0..5, then group by the byte rank of each label's first
     // appearance and take the second row.
-    second_row(&inputs.labels.default_label(), variant_bins, suffix_bins)
+    second_row(&inputs.labels.default_label()?, variant_bins, suffix_bins)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -493,7 +493,7 @@ fn pair_candidates<'a>(
         |name| inputs.registered.contains(name),
     )?;
     let graphical_names: BTreeSet<_> = graphical.iter().map(|row| row.entity.clone()).collect();
-    let archetype_label: Label = Ok(inputs.labels.archetype(&equipment));
+    let archetype_label: Label = inputs.labels.archetype(&equipment);
     let first = group.requirements.first().map(|(key, _)| key.as_str());
     let available = inputs.conventional.primary_variants(country_ref)?;
     let best = inputs.conventional.best_candidates(country_ref)?;
@@ -522,7 +522,7 @@ fn pair_candidates<'a>(
     let own = inputs.labels.display(definition, equipment_key);
     // The variant's list: the default row, then its candidates, with repeats
     // numbered before the rows queue.
-    let mut labels: Vec<Label> = vec![Ok(inputs.labels.default_label())];
+    let mut labels: Vec<Label> = vec![inputs.labels.default_label()];
     labels.extend(candidates.iter().map(|candidate| {
         if graphical_names.contains(&candidate.entity) {
             return archetype_label.clone();

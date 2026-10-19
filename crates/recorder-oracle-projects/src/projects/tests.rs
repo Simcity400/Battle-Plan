@@ -46,6 +46,16 @@ fn scientist_frame() -> DecodedFrame {
             active: replay_data::rows::Recorded::Value(Some(0)),
         },
     ]));
+    *frame.tables[TableId::ScientistDaily.index()] =
+        TableView::Complete(TableRows::ScientistDaily(vec![
+            replay_data::rows::ScientistDailyRow {
+                character: 265,
+                country: 7,
+                injury_days: replay_data::rows::Recorded::Value(Some(0)),
+                template_visibility: replay_data::rows::Recorded::Value(Some(0)),
+                template_origin: replay_data::rows::Recorded::Value(None),
+            },
+        ]));
     *frame.tables[TableId::ScientistSkills.index()] =
         TableView::Complete(TableRows::ScientistSkills(vec![
             replay_data::rows::ScientistSkillRow {
@@ -81,6 +91,52 @@ fn run_scientists(frame: &DecodedFrame) -> Report {
     let mut report = Report::default();
     compare_scientists(frame, &scientist_pack(), &links, &tokens, &mut report).unwrap();
     report
+}
+
+#[test]
+fn gap_research_grants_scientist_oracle_compares_injury_without_inventing_negative_save_fields() {
+    let mut frame = scientist_frame();
+    let TableView::Complete(TableRows::ScientistDaily(rows)) =
+        &mut *frame.tables[TableId::ScientistDaily.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].injury_days = replay_data::rows::Recorded::Value(Some(8));
+    let report = run_scientists(&frame);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("injury days"))
+    );
+    let TableView::Complete(TableRows::ScientistDaily(rows)) =
+        &mut *frame.tables[TableId::ScientistDaily.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].injury_days = replay_data::rows::Recorded::Value(Some(-8));
+    assert!(run_scientists(&frame).differences.is_empty());
+    let TableView::Complete(TableRows::ScientistDaily(rows)) =
+        &mut *frame.tables[TableId::ScientistDaily.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].injury_days = replay_data::rows::Recorded::NotRecorded;
+    frame.hour += 1;
+    assert!(run_scientists(&frame).outcome().is_ok());
+}
+
+#[test]
+fn current_daily_observation_cannot_omit_a_rostered_scientist() {
+    let mut frame = scientist_frame();
+    *frame.tables[TableId::ScientistDaily.index()] =
+        TableView::Complete(TableRows::ScientistDaily(Vec::new()));
+    assert!(
+        run_scientists(&frame)
+            .differences
+            .iter()
+            .any(|difference| difference.contains("daily observation"))
+    );
 }
 
 #[test]
@@ -252,6 +308,16 @@ fn a_saved_scientist_with_a_country_must_be_recorded_and_an_extra_row_is_reporte
         trait_count: 0,
         skill_count: 1,
         active: replay_data::rows::Recorded::Value(Some(0)),
+    });
+    let TableView::Complete(TableRows::ScientistDaily(daily)) =
+        &mut *frame.tables[TableId::ScientistDaily.index()]
+    else {
+        unreachable!()
+    };
+    daily.push(replay_data::rows::ScientistDailyRow {
+        character: 266,
+        country: 7,
+        ..Default::default()
     });
     let TableView::Complete(TableRows::ScientistSkills(skills)) =
         &mut *frame.tables[TableId::ScientistSkills.index()]
@@ -1332,6 +1398,12 @@ fn missing_tokens_limit_fields_while_presence_census_and_native_values_still_com
             scientist: None,
             building: b"building".to_vec(),
             unread_rewards: -2,
+            assignments: vec![saved::ScientistAssignment {
+                scientist: 0,
+                target: 0,
+                current: 0,
+                timed: false,
+            }],
         },
     );
     status.program_order.push(program_id);
@@ -1359,6 +1431,10 @@ fn missing_tokens_limit_fields_while_presence_census_and_native_values_still_com
             scientist: 0,
             unread_rewards: -2,
             building: b"building".to_vec(),
+            facility: replay_data::rows::Recorded::Value(None),
+            assignments: replay_data::rows::Recorded::Value(Some(vec![
+                replay_data::rows::ProjectScientistAssignment::default(),
+            ])),
         }]));
     *frame.tables[TableId::ProjectBreakthroughs.index()] =
         TableView::Complete(TableRows::ProjectBreakthroughs(vec![
@@ -1455,6 +1531,10 @@ fn populated_dictionary_checks_project_names_and_breakthrough_points() {
             scientist: 0,
             unread_rewards: -2,
             building: b"building".to_vec(),
+            facility: replay_data::rows::Recorded::Value(None),
+            assignments: replay_data::rows::Recorded::Value(Some(vec![
+                replay_data::rows::ProjectScientistAssignment::default(),
+            ])),
         }]));
     *frame.tables[TableId::Projects.index()] =
         TableView::Complete(TableRows::Projects(vec![ProjectRow {
@@ -1473,6 +1553,18 @@ fn populated_dictionary_checks_project_names_and_breakthrough_points() {
                 prototype_progress: -2,
                 iterations: -3,
             },
+            runtime: replay_data::rows::Recorded::Value(replay_data::rows::ProjectRuntime {
+                pending_known: true,
+                pending_reward: None,
+                pending_ordinal: None,
+                variables: Some(
+                    replay_data::rows::ProjectVariableStore {
+                        seed: 1,
+                        entries: Vec::new(),
+                    }
+                    .into(),
+                ),
+            }),
         }]));
     *frame.tables[TableId::ProjectHistory.index()] =
         TableView::Complete(TableRows::ProjectHistory(vec![ProjectHistoryRow {
@@ -1709,6 +1801,12 @@ fn facility_flags_must_lie_on_saved_program_provinces() {
                 scientist: None,
                 building: Vec::new(),
                 unread_rewards: 0,
+                assignments: vec![saved::ScientistAssignment {
+                    scientist: 0,
+                    target: 0,
+                    current: 0,
+                    timed: false,
+                }],
             },
         );
     }

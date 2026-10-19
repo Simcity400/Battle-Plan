@@ -47,6 +47,7 @@ pub struct EventLedger<T> {
     spare: Mutex<Option<Vec<T>>>,
     retired: Mutex<Option<Vec<T>>>,
     pub poisoned: AtomicBool,
+    native_recovery: AtomicBool,
     pub stranded: AtomicBool,
     pub active: AtomicUsize,
     // Published census/overflow demand, never pooled Vec allocation headroom.
@@ -84,6 +85,7 @@ impl<T: Event> EventLedger<T> {
             spare: Mutex::new(None),
             retired: Mutex::new(None),
             poisoned: AtomicBool::new(false),
+            native_recovery: AtomicBool::new(false),
             stranded: AtomicBool::new(false),
             active: AtomicUsize::new(0),
             capacity: AtomicUsize::new(0),
@@ -134,6 +136,7 @@ impl<T: Event> EventLedger<T> {
         *self.retired.lock().unwrap() = None;
         *self.prepare_last_refusal.lock().unwrap() = None;
         self.poisoned.store(false, Ordering::SeqCst);
+        self.native_recovery.store(false, Ordering::SeqCst);
         self.stranded.store(false, Ordering::SeqCst);
         self.active.store(0, Ordering::SeqCst);
         self.capacity.store(0, Ordering::Release);
@@ -242,6 +245,7 @@ impl<T: Event> EventLedger<T> {
         // Called only at a proved serial boundary/detach after native work.
         if self.active.load(Ordering::SeqCst) != 0 {
             self.stranded.store(true, Ordering::SeqCst);
+            self.native_recovery.store(true, Ordering::SeqCst);
         }
     }
     fn discard(&self, store: &mut Store<T>) {
@@ -250,6 +254,14 @@ impl<T: Event> EventLedger<T> {
         store.entries.clear();
     }
     pub fn refuse(&self, reason: &'static str) {
+        // Storage loss and a callback rejected by prior poisoning add no
+        // unresolved native execution to a spool-only loss.
+        if !matches!(
+            reason,
+            "event ledger event storage exhausted" | "event ledger observation invalidated"
+        ) {
+            self.native_recovery.store(true, Ordering::SeqCst);
+        }
         self.invalidate();
         if let Ok(mut store) = self.store.try_lock() {
             store.refusal.get_or_insert(reason);
@@ -361,6 +373,7 @@ impl<T: Event> EventLedger<T> {
         }
         let generation = self.calls.load(Ordering::SeqCst);
         let Ok(mut store) = self.store.try_lock() else {
+            self.native_recovery.store(true, Ordering::SeqCst);
             self.lost_drain();
             return;
         };
@@ -385,15 +398,16 @@ impl<T: Event> EventLedger<T> {
             store.recovery = false;
             store.refusal = None;
             self.poisoned.store(false, Ordering::SeqCst);
+            self.native_recovery.store(false, Ordering::SeqCst);
         } else if self.poisoned.swap(false, Ordering::SeqCst) {
-            // Capacity loss ends at this clean boundary. Other refusals can
-            // leave native execution unresolved and retain a recovery interval.
+            // A spool-only loss ends at this clean boundary. Preserve a later
+            // partial interval only for unresolved native execution.
             self.discard(&mut store);
             store.claim = None;
             // Refusal may have lost try_lock while a writer held the store.
             // The atomic invalidation still makes this interval unavailable.
             store.refusal.get_or_insert("event ledger lost interval");
-            store.recovery = store.refusal != Some("event ledger event storage exhausted");
+            store.recovery = self.native_recovery.swap(false, Ordering::SeqCst);
         } else {
             store.refusal = None;
             store.partial = std::mem::take(&mut store.recovery);
@@ -404,6 +418,7 @@ impl<T: Event> EventLedger<T> {
             self.overlaps.fetch_add(1, Ordering::Relaxed);
             self.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
             self.refusals.fetch_add(1, Ordering::Relaxed);
+            self.native_recovery.store(true, Ordering::SeqCst);
             self.poisoned.store(true, Ordering::SeqCst);
             store
                 .refusal
@@ -413,6 +428,17 @@ impl<T: Event> EventLedger<T> {
         if store.partial {
             self.partial_intervals.fetch_add(1, Ordering::Relaxed);
         }
+    }
+    /// Worker boundary hint for state consumers: an incomplete event interval
+    /// requires a fresh census, independently of the replay encoder's cadence.
+    /// This never clears a refusal or certifies a later drain.
+    pub fn interval_incomplete(&self) -> bool {
+        self.poisoned.load(Ordering::SeqCst)
+            || self.active.load(Ordering::SeqCst) != 0
+            || self
+                .store
+                .try_lock()
+                .map_or(true, |store| store.partial || store.refusal.is_some())
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn drain(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
@@ -424,6 +450,14 @@ impl<T: Event> EventLedger<T> {
         self.drain_buffer(output, true)
     }
     fn drain_buffer(&self, output: &mut Vec<T>, growing: bool) -> Result<usize, &'static str> {
+        self.drain_buffer_with(output, growing, || {})
+    }
+    fn drain_buffer_with(
+        &self,
+        output: &mut Vec<T>,
+        growing: bool,
+        after_transfer: impl FnOnce(),
+    ) -> Result<usize, &'static str> {
         self.drains.fetch_add(1, Ordering::Relaxed);
         if self.active.load(Ordering::SeqCst) != 0 {
             self.mark_stranded();
@@ -479,16 +513,24 @@ impl<T: Event> EventLedger<T> {
             output.extend_from_slice(&store.entries);
             store.entries.clear();
         }
-        if self.poisoned.load(Ordering::SeqCst)
-            || self.active.load(Ordering::SeqCst) != 0
-            || self.calls.load(Ordering::SeqCst) != generation
-        {
-            self.overlaps.fetch_add(1, Ordering::Relaxed);
+        after_transfer();
+        let poisoned = self.poisoned.load(Ordering::SeqCst);
+        let native_overlap = self.active.load(Ordering::SeqCst) != 0
+            || self.calls.load(Ordering::SeqCst) != generation;
+        if poisoned || native_overlap {
+            if native_overlap {
+                self.overlaps.fetch_add(1, Ordering::Relaxed);
+                self.native_recovery.store(true, Ordering::SeqCst);
+            }
             let len = output.len();
             output.clear();
             drop(store);
             self.lost_output(len);
-            return Err("event ledger writer overlaps hourly drain");
+            return Err(if native_overlap {
+                "event ledger writer overlaps hourly drain"
+            } else {
+                "event ledger lost interval"
+            });
         }
         self.handed_over
             .fetch_add(output.len() as u64, Ordering::Relaxed);
@@ -512,6 +554,32 @@ mod tests {
         assert!(ledger.drain(&mut Vec::new()).is_err());
         ledger
     }
+    #[test]
+    fn incomplete_boundary_hint_preserves_first_loss_and_recovery_refusals() {
+        let ledger = EventLedger::<Row>::new();
+        ledger.prepare(8);
+        let mut rows = Vec::new();
+        ledger.boundary(clock(1));
+        assert!(ledger.interval_incomplete());
+        assert!(ledger.drain_growing(&mut rows).is_err());
+        ledger.boundary(clock(2));
+        assert!(!ledger.interval_incomplete());
+        assert_eq!(ledger.drain_growing(&mut rows), Ok(0));
+        ledger.refuse("synthetic lost interval");
+        ledger.boundary(clock(3));
+        assert!(ledger.interval_incomplete());
+        assert_eq!(
+            ledger.drain_growing(&mut rows),
+            Err("synthetic lost interval")
+        );
+        ledger.boundary(clock(4));
+        assert!(ledger.interval_incomplete());
+        assert!(ledger.drain_growing(&mut rows).is_err());
+        ledger.boundary(clock(5));
+        assert!(!ledger.interval_incomplete());
+        assert_eq!(ledger.drain_growing(&mut rows), Ok(0));
+    }
+
     #[test]
     fn callbacks_never_allocate_and_overflow_grows_only_off_thread() {
         let ledger = EventLedger::<Row>::new();
@@ -836,6 +904,7 @@ mod tests {
         let token = ledger.claim((1, 1)).unwrap();
         let reason = ledger.claim((1, 1)).unwrap_err();
         ledger.refuse(reason);
+        ledger.lost_output(0);
         assert!(ledger.complete(token, Ok(Some(Row(0)))).is_err());
         ledger.boundary(clock(3));
         assert_eq!(ledger.drain(&mut Vec::new()).unwrap_err(), reason);
@@ -875,11 +944,12 @@ mod tests {
             assert_eq!(ledger.refusals.load(Ordering::Relaxed), 1);
             assert_eq!(ledger.overlaps.load(Ordering::Relaxed), 0);
             drop(store);
+            let token = ledger.claim((2, 2)).unwrap();
+            let reason = ledger.complete(token, Ok(Some(Row(0)))).unwrap_err();
+            assert_eq!(reason, "event ledger observation invalidated");
+            ledger.refuse(reason);
             ledger.boundary(clock(3));
-            assert_eq!(
-                ledger.drain(&mut Vec::new()).unwrap_err(),
-                "event ledger lost interval"
-            );
+            assert_eq!(ledger.drain(&mut Vec::new()).unwrap_err(), reason);
             assert_eq!(
                 ledger.lost_events.load(Ordering::Relaxed),
                 if output_loss { 4 } else { 1 }
@@ -888,13 +958,15 @@ mod tests {
                 ledger.lost_events_unknown.load(Ordering::Relaxed),
                 u64::from(!output_loss)
             );
+            // The next intact callback interval must retain its events.
+            let token = ledger.claim((2, 2)).unwrap();
+            // boundary(3) has already ended the loss, so this write succeeds.
+            ledger.complete(token, Ok(Some(Row(0)))).unwrap();
             ledger.boundary(clock(4));
-            assert!(
-                ledger
-                    .drain(&mut Vec::new())
-                    .unwrap_err()
-                    .contains("partial")
-            );
+            assert!(!ledger.interval_incomplete());
+            let mut intact = Vec::with_capacity(8);
+            assert_eq!(ledger.drain(&mut intact).unwrap(), 1);
+            assert_eq!(intact[0].0, 1);
             ledger.boundary(clock(5));
             assert_eq!(ledger.drain(&mut Vec::new()).unwrap(), 0);
         }
@@ -910,6 +982,99 @@ mod tests {
         let store = ledger.store.lock().unwrap();
         assert_eq!(store.entries.len(), 1);
         assert_eq!(store.refusal, None);
+    }
+    #[test]
+    fn spool_loss_during_drain_preserves_the_next_intact_interval_without_a_census() {
+        for output_loss in [false, true] {
+            let ledger = prepared();
+            ledger.boundary(clock(100));
+            ledger.boundary(clock(101));
+            let token = ledger.claim((1, 1)).unwrap();
+            ledger.complete(token, Ok(Some(Row(0)))).unwrap();
+            let mut rows = Vec::with_capacity(8);
+            assert_eq!(
+                ledger.drain_buffer_with(&mut rows, true, || {
+                    // The initial poison check and event transfer have passed;
+                    // the drain still owns the store when the spool invalidates.
+                    assert!(!ledger.poisoned.load(Ordering::SeqCst));
+                    assert!(ledger.store.try_lock().is_err());
+                    if output_loss {
+                        ledger.lost_output(3);
+                    } else {
+                        ledger.lost_drain();
+                    }
+                }),
+                Err("event ledger lost interval")
+            );
+            assert!(rows.is_empty());
+            assert_eq!(ledger.handed_over.load(Ordering::Relaxed), 0);
+            assert_eq!(ledger.overlaps.load(Ordering::Relaxed), 0);
+            assert!(!ledger.native_recovery.load(Ordering::SeqCst));
+            ledger.boundary(clock(102));
+            assert!(ledger.interval_incomplete());
+            assert_eq!(ledger.drain(&mut rows), Err("event ledger lost interval"));
+            let token = ledger.claim((2, 2)).unwrap();
+            ledger.complete(token, Ok(Some(Row(0)))).unwrap();
+            ledger.boundary(clock(103));
+            // This is the market boundary's state-census invalidation hint.
+            assert!(!ledger.interval_incomplete());
+            assert_eq!(ledger.drain(&mut rows), Ok(1));
+            assert_eq!(rows[0].0, 1);
+            ledger.boundary(clock(104));
+            assert!(!ledger.interval_incomplete());
+            assert_eq!(ledger.drain(&mut rows), Ok(0));
+        }
+    }
+    #[test]
+    fn native_overlap_during_drain_still_requires_partial_recovery() {
+        for active in [false, true] {
+            let ledger = prepared();
+            ledger.boundary(clock(1));
+            ledger.boundary(clock(2));
+            let mut rows = Vec::with_capacity(8);
+            assert_eq!(
+                ledger.drain_buffer_with(&mut rows, true, || {
+                    ledger.lost_drain();
+                    ledger.enter();
+                    if !active {
+                        ledger.leave();
+                    }
+                }),
+                Err("event ledger writer overlaps hourly drain")
+            );
+            if active {
+                ledger.leave();
+            }
+            assert!(ledger.native_recovery.load(Ordering::SeqCst));
+            ledger.boundary(clock(3));
+            assert!(ledger.drain(&mut rows).is_err());
+            ledger.boundary(clock(4));
+            assert!(ledger.drain(&mut rows).unwrap_err().contains("partial"));
+            ledger.boundary(clock(5));
+            assert_eq!(ledger.drain(&mut rows), Ok(0));
+        }
+    }
+    #[test]
+    fn spool_loss_during_drain_does_not_clear_an_existing_native_recovery() {
+        let ledger = prepared();
+        ledger.boundary(clock(1));
+        ledger.boundary(clock(2));
+        let mut rows = Vec::with_capacity(8);
+        assert_eq!(
+            ledger.drain_buffer_with(&mut rows, true, || {
+                // A native refusal can publish its flag without the store lock.
+                ledger.refuse("synthetic native observation failure");
+                ledger.lost_drain();
+            }),
+            Err("event ledger lost interval")
+        );
+        assert!(ledger.native_recovery.load(Ordering::SeqCst));
+        ledger.boundary(clock(3));
+        assert!(ledger.drain(&mut rows).is_err());
+        ledger.boundary(clock(4));
+        assert!(ledger.drain(&mut rows).unwrap_err().contains("partial"));
+        ledger.boundary(clock(5));
+        assert_eq!(ledger.drain(&mut rows), Ok(0));
     }
     #[test]
     fn refusal_without_store_lock_cannot_publish_a_complete_empty_interval() {

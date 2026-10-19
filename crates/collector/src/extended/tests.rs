@@ -355,7 +355,7 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
     let presentation_bytes = captured.division_presentation.allocated_bytes();
     assert!(presentation_bytes > 0);
     let report = division_presentation::CaptureReport {
-        ticks: [89, 97, 5, 103],
+        ticks: [89, 97, 5, 103, 0, 0, 0, 7, 11, 13, 17, 19],
     };
     captured.install_unit_inputs(Some(Arc::clone(&inputs)));
     captured.presentation_report = Some(report);
@@ -443,7 +443,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
     let inputs = Arc::new(UnitInputs::empty_rows());
     let presentation_bytes = captured.division_presentation.allocated_bytes();
     let report = division_presentation::CaptureReport {
-        ticks: [113, 227, 5, 449],
+        ticks: [113, 227, 5, 449, 0, 0, 0, 3, 23, 29, 31, 37],
     };
     for failure in [
         None,
@@ -539,7 +539,11 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
         &construction::TABLES[2..],
         projects::TABLES.as_slice(),
     ]
-    .concat();
+    .concat()
+    .into_iter()
+    // StateResistance now belongs to the independent hourly States job.
+    .filter(|id| *id != TableId::StateResistance)
+    .collect::<Vec<_>>();
     let late = [
         leader_portraits::TABLES.as_slice(),
         leader_paths::TABLES.as_slice(),
@@ -2059,8 +2063,8 @@ fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership()
         .into_iter()
         .filter(|table| !table.last_change().present(current))
         .count();
-    // Four inputs, six hover-only, oracle-only and wargoal tables and the nine
-    // selected-transport split tables.
+    // Four inputs, five hover-only, oracle-only and wargoal tables and the nine
+    // selected-transport split tables, plus retired NavalMineLevels.
     assert_eq!(retired, 19);
     assert_eq!(N, replay_data::rows::TABLE_COUNT - 21 - retired);
     let actual: BTreeSet<_> = TABLES.into_iter().collect();
@@ -2106,8 +2110,35 @@ fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership()
                     TableId::TrainInventory
                 ]
             );
+        } else if anchor == TableId::Fleets {
+            assert_eq!(
+                members,
+                vec![
+                    TableId::Fleets,
+                    TableId::NavalRepairCountries,
+                    TableId::NavalRepairFleets
+                ]
+            );
+        } else if anchor == TableId::TaskForces {
+            assert_eq!(
+                members,
+                vec![
+                    TableId::TaskForces,
+                    TableId::NavalRepairTaskForces,
+                    TableId::NavalTaskForceComposition,
+                    TableId::NavalRepairChildren
+                ]
+            );
         } else if anchor == TableId::Ships {
-            assert_eq!(members, vec![TableId::Ships, TableId::ShipModels]);
+            assert_eq!(
+                members,
+                vec![
+                    TableId::Ships,
+                    TableId::ShipModels,
+                    TableId::NavalRefitShips,
+                    TableId::NavalRefitProgress
+                ]
+            );
         } else if anchor == TableId::States {
             assert_eq!(members, vec![TableId::States, TableId::StateFlags]);
         } else {
@@ -2125,6 +2156,71 @@ fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership()
             "shared division cost counted more than once for {table:?}"
         );
     }
+}
+#[test]
+fn faction_provider_inventory_matches_spooling_and_costs_exactly_once() {
+    for table in super::FACTION_PROVIDER_TABLES {
+        assert!(
+            !super::PACK_TABLES.contains(&table),
+            "independent ticks must not be overwritten for {table:?}"
+        );
+        assert_eq!(
+            TABLES.iter().filter(|&&id| id == table).count(),
+            1,
+            "{table:?}"
+        );
+        assert_eq!(
+            read_groups()
+                .filter(|(_, _, members)| members.contains(&table))
+                .count(),
+            1,
+            "{table:?}"
+        );
+    }
+}
+#[test]
+fn naval_management_outputs_have_one_inventory_and_the_existing_census_costs() {
+    let groups: Vec<_> = read_groups().collect();
+    for (anchor, outputs) in [
+        (
+            TableId::Fleets,
+            &[TableId::NavalRepairCountries, TableId::NavalRepairFleets][..],
+        ),
+        (
+            TableId::TaskForces,
+            &[
+                TableId::NavalRepairTaskForces,
+                TableId::NavalTaskForceComposition,
+                TableId::NavalRepairChildren,
+            ][..],
+        ),
+        (
+            TableId::Ships,
+            &[TableId::NavalRefitShips, TableId::NavalRefitProgress][..],
+        ),
+        (
+            TableId::NavalBases,
+            &collector_naval_management::bases::TABLES[..],
+        ),
+    ] {
+        for &table in outputs {
+            assert_eq!(
+                TABLES.iter().filter(|&&id| id == table).count(),
+                1,
+                "{table:?}"
+            );
+            let owners: Vec<_> = groups
+                .iter()
+                .filter(|(_, _, members)| members.contains(&table))
+                .collect();
+            assert_eq!(owners.len(), 1, "{table:?}");
+            assert_eq!(owners[0].1, anchor, "{table:?}");
+        }
+    }
+    assert!(
+        !PACK_NAMES.contains(&"naval_management"),
+        "census outputs must not create another capture pack"
+    );
 }
 #[test]
 fn division_sources_preserve_census_identity_and_reject_an_incomplete_parent() {
@@ -2187,6 +2283,8 @@ fn the_slow_job_stores_travel_with_it_and_always_return() {
         seen.scan(&mut available, 9, Some(0));
         available.finish_scan();
         let stores = SlowStores {
+            doctrine_bytes: 0,
+            doctrines: None,
             available: Some(available),
             advisors: None,
             local_subunits: None,
@@ -2350,9 +2448,9 @@ fn relations_pilot_handoff_reaches_the_intel_pack() {
 #[test]
 fn characters_pilot_handoff_reaches_the_characters_pack() {
     let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.characters_pilot().raw_active = [true; 5];
+    captured.characters_pilot().raw_active = [true; characters::N];
     assert!(captured.characters.raw_active.iter().any(|&active| active));
-    captured.characters_pilot().raw_active = [false; 5];
+    captured.characters_pilot().raw_active = [false; characters::N];
     assert!(!captured.characters.raw_active.iter().any(|&active| active));
 }
 
@@ -3026,7 +3124,9 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
         assert_eq!(outcomes(captured), first, "a second assembly changed them");
         first
     };
-    let refused = |reason: &'static str| vec![Outcome::Unavailable { reason }; 4];
+    let refused = |reason: &'static str| {
+        vec![Outcome::Unavailable { reason }; industrial_organisations::N + production_modifiers::N]
+    };
     for (hour, full) in [(8, false), (3, true)] {
         assert!(ProductionDailyPacks::due(hour, full));
         let healthy = hour_of(

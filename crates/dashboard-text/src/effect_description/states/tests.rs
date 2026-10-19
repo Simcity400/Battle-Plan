@@ -1274,14 +1274,13 @@ fn states_branches() {
             "Target \u{11}R+2.4%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/2 [This.GetName] (2 days [This.GetName])\n",
             None,
         ),
-        // effect parsing fills scoped variable operands;
-        // evaluate those operands. Unlike start_resistance's country
-        // selector, this reads the state's computed `controller` builtin.
+        // The state's controller builtin is an available recorded country
+        // operand, alongside the scoped amount, days and occupied country.
         (
             "add_resistance_target={amount=var:syn occupied=event_target:syn_country occupier=controller days=var:syn}",
             S(1),
-            "",
-            Some("controller is a built-in game variable of state 1"),
+            "Target \u{11}R+2.4%\u{11}!/\u{12}AAA Alpha/\u{12}BBB Beta/2 [This.GetName] (2 days [This.GetName])\n",
+            None,
         ),
         (
             "add_resistance_target={amount=-92233720368547.75808 occupied=AAA occupier=BBB}",

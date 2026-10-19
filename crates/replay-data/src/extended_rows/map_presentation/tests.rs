@@ -185,7 +185,7 @@ fn older_counter_prefix<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(
 }
 
 #[test]
-fn older_counter_snapshots_and_deltas_keep_prefixes_without_defaulting_new_operands() {
+fn counter_supply_prefix_and_current_pride_delta_preserve_independent_operands() {
     let row = TaskForceCounterInputRow {
         task_force: u64::MAX,
         repair_last_mission: i32::MIN,
@@ -215,16 +215,27 @@ fn older_counter_snapshots_and_deltas_keep_prefixes_without_defaulting_new_opera
         pride_name: Some(vec![0xff, 0]).into(),
         ..Default::default()
     };
-    let decoded = older_counter_prefix(TableId::CountryCounterInputs, 15, &row);
-    assert_eq!(decoded.pride_name, Recorded::NotRecorded);
-    assert!(
-        decoded
-            .pride_name
-            .require("CountryCounterInputs.pride_name")
-            .is_err()
+    let before = CountryCounterInputRow {
+        pride_name: None.into(),
+        air_combat_modifiers_known: true.into(),
+        air_defence_factor: Some(i64::MIN).into(),
+        ..row.clone()
+    };
+    let current = CountryCounterInputRow {
+        pride_name: row.pride_name,
+        ..before.clone()
+    };
+    let delta = current.delta(Some(&before)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 15);
+    assert_eq!(delta.apply(Some(before)).unwrap(), current);
+    let mut bytes = Vec::new();
+    current.encode_fields(&mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    assert_eq!(
+        CountryCounterInputRow::decode_fields(current.key(), &mut input).unwrap(),
+        current
     );
-    assert_eq!(decoded.pride_of_the_fleet, row.pride_of_the_fleet);
-    assert_eq!(decoded.first_division, row.first_division);
+    input.finish().unwrap();
 }
 
 #[test]

@@ -5,3 +5,11 @@ Ship model capture: each ship's ShipModels operands (fixed fields, pool entries,
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-ship-models` and `cargo clippy -p collector-ship-models --all-targets -- -D warnings` for its synthetic checks.
+
+The existing medal-modifier rebuild hook also forwards a dirty notification to the shared division-history domain; it installs no second patch and reads no extra native state.
+
+The ShipModels critical-damage nonempty predicate forwards the existing held organisation header under the same ship certificate, without another native read or hook.
+
+Non-mega carrier hosts carry their Air capacity subtype under an independent refit certificate, forwarded by the existing refit patch. First/changed hosts alone read its retained module predicate; ship experience and equipment-stat writers leave this certificate alone. The worker bulk-reserves reusable storage. Unavailable reads carry an unknown until their certificate or epoch changes; the synchronous fallback acquires none of this suffix. State and mega subtypes derive from existing data.
+
+ShipModels carries an independent raw selected-design naval dominance packet. Only the selected variant demands the 32-byte mutable suffix; original gathered classifier flags select one carrier-size word, and positive nonselected variants add no power reads. Larger uncached pools read the original completed selected source alone, including its otherwise unretained classifier word (40 bytes total). Its mutable words join the existing worker variant comparison; its definition weight and inherited ship category use the equipment-content reload and world lifetime certificate. Losing certification invalidates held packet values and records a named independent refusal. Already-unknown power preserves the core model cache; variant companions require a valid certificate. Synchronous acquisition adds no reads.

@@ -7,7 +7,8 @@
 //! comparison is an application comparison of views. Co-belligerents are
 //! assigned once by recorded war relations (assignment.rs).
 //! The map uses friendly*100000/(friendly+enemy), strictly >60000 good and
-//! <40000 bad. Zero colouring also reads counters not recorded here.
+//! <40000 bad. Zero colouring also reads the regional active-mission counters, which
+//! this product's score display does not use.
 //! Threshold labels are application wording. AirWings.mission_region is the
 //! assigned mission region, including inactive assignments. Theatre groups
 //! and members are the recorded theatre roster, joined through those wings.

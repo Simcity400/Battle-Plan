@@ -12,6 +12,16 @@ use std::collections::BTreeSet;
 
 fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
     match table {
+        TableId::FleetCounterInputs => TableRows::FleetCounterInputs(vec![Default::default()]),
+        TableId::RaidCountryInputs => TableRows::RaidCountryInputs(vec![Default::default()]),
+        TableId::AceRangeInputs => TableRows::AceRangeInputs(vec![Default::default()]),
+        TableId::NavalMissionCountries => {
+            TableRows::NavalMissionCountries(vec![Default::default()])
+        }
+        TableId::NavalMissionCommanders => {
+            TableRows::NavalMissionCommanders(vec![Default::default()])
+        }
+        TableId::VolunteerHosts => TableRows::VolunteerHosts(vec![Default::default()]),
         TableId::ResearchSlots => TableRows::ResearchSlots(vec![rows::ResearchSlotRow {
             country: 1,
             technology_handle: 7,
@@ -331,6 +341,8 @@ fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
         TableId::DivisionTemplateIcons => {
             TableRows::DivisionTemplateIcons(vec![Default::default()])
         }
+        TableId::ProjectPrograms => TableRows::ProjectPrograms(vec![Default::default()]),
+        TableId::Projects => TableRows::Projects(vec![Default::default()]),
         TableId::Scientists => TableRows::Scientists(vec![Default::default()]),
         TableId::CountryLeaderRoles => TableRows::CountryLeaderRoles(vec![Default::default()]),
         TableId::RailwayGunCounterInputs => {
@@ -343,6 +355,14 @@ fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
             ..Default::default()
         }]),
         TableId::Capitulation => TableRows::Capitulation(vec![Default::default()]),
+        TableId::CountryStabilityInputs => {
+            TableRows::CountryStabilityInputs(vec![rows::CountryStabilityInputRow {
+                country: 1,
+                keys: vec![u32::MAX; rows::CountryStabilityInputRow::KEY_NAMES.len()],
+                ..Default::default()
+            }])
+        }
+        TableId::StateResourceInputs => TableRows::StateResourceInputs(vec![Default::default()]),
         TableId::StateCores => TableRows::StateCores(vec![Default::default()]),
         TableId::RaidTooltipOperands => TableRows::RaidTooltipOperands(vec![Default::default()]),
         TableId::RaidAirScores => TableRows::RaidAirScores(vec![rows::RaidAirScoreRow {
@@ -361,6 +381,13 @@ fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
             ..Default::default()
         }]),
         _ => match source(1, hour).tables[table.index()].clone().into_inner() {
+            TableView::Complete(value)
+                if value.is_empty() && !table.last_change().appended.is_empty() =>
+            {
+                // New appended tables need a real synthetic row too; the
+                // general frame fixture intentionally leaves many empty.
+                rows::sample_extended_table(table, 1).unwrap_or(value)
+            }
             TableView::Complete(rows) => rows,
             // A table today's format retired was recorded by older writers.
             _ if crate::frame::current_absence(table).is_some() => TableRows::empty(table),
@@ -964,42 +991,55 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             )
         }
     );
+    let changed_tables = [TableId::UnitLeaders];
+    for table in changed_tables {
+        assert!(
+            tables.contains(&table),
+            "{table:?} missing from selected fixture"
+        );
+        let reason = format!(
+            "{table:?} layout or meaning changed at format {}; this recording is format {}",
+            rows::compatibility::EXPERIENCE_FORMAT,
+            RECORDER_INPUTS_FORMAT
+        );
+        assert_eq!(replay.format.table_refusal(table).unwrap(), reason);
+        assert_eq!(
+            *frame.tables[table.index()],
+            TableView::Unavailable {
+                reason: reason.clone()
+            },
+            "{table:?}"
+        );
+        let TableUpdate::Incompatible {
+            reason: selected_reason,
+            source_format,
+            recorded_bytes,
+        } = &selected[0].tables[table.index()]
+        else {
+            panic!("{table:?} selected read did not retain its named refusal")
+        };
+        assert_eq!(selected_reason, &reason, "{table:?}");
+        assert_eq!(*source_format, replay.format, "{table:?}");
+        assert!(*recorded_bytes > 0, "{table:?}");
+    }
     for table in tables {
+        if changed_tables.contains(&table) {
+            continue;
+        }
         let mut expected = legacy_rows(table, 1000, replay.format);
         // The fixture writes the historical prefix, not today's appended operands.
         match &mut expected {
-            TableRows::AdvisorRoles(rows) => {
-                for row in rows {
-                    row.tooltip_keys = rows::Recorded::NotRecorded;
-                }
-            }
-            TableRows::UnitLeaders(rows) => {
-                for row in rows {
-                    row.formation_reference = rows::Recorded::NotRecorded;
-                }
-            }
-            TableRows::LandCombatDetails(rows) => {
-                for row in rows {
-                    row.side_inputs = rows::Recorded::NotRecorded;
-                    // The older side layout's CAS operands decode and stay.
-                    for side in &mut row.sides {
-                        side.anti_air_attack = rows::RetiredKept::older_value(0);
-                        side.prevented_damage = rows::RetiredKept::older_value([0; 2]);
-                    }
-                }
-            }
-            TableRows::OperativeMemberships(rows) => {
-                for row in rows {
-                    row.target_country = rows::Recorded::NotRecorded;
-                    row.operation = rows::Recorded::NotRecorded;
-                    row.name = rows::Recorded::NotRecorded;
-                    row.cooldown_kind = rows::Recorded::NotRecorded;
-                    row.cooldown_start_hour = rows::Recorded::NotRecorded;
-                    row.cooldown_end_hour = rows::Recorded::NotRecorded;
-                }
-            }
             TableRows::DivisionStatus(rows) => {
                 for row in rows {
+                    row.experience = rows::Recorded::NotRecorded;
+                    row.pending_template = rows::Recorded::NotRecorded;
+                    row.officer_experience = rows::Recorded::NotRecorded;
+                    row.career_counter = rows::Recorded::NotRecorded;
+                    row.panel_source = rows::Recorded::NotRecorded;
+                    row.commander_width_factor = rows::Recorded::NotRecorded;
+                    row.combat_movement = rows::Recorded::NotRecorded;
+                    row.organisation_exact = rows::Recorded::NotRecorded;
+                    row.maximum_organisation_exact = rows::Recorded::NotRecorded;
                     row.country_ordinal = rows::Recorded::NotRecorded;
                     row.invalid_orders_reason = rows::Recorded::NotRecorded;
                     row.supply = rows::Recorded::NotRecorded;
@@ -1020,6 +1060,9 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             }
             TableRows::CountryCounterInputs(rows) => {
                 for row in rows {
+                    row.combat_width_factor = rows::Recorded::NotRecorded;
+                    row.recruitment_modifiers = rows::Recorded::NotRecorded;
+                    row.sent_expeditionaries = rows::Recorded::NotRecorded;
                     row.mio_policies = rows::Recorded::NotRecorded;
                     row.neighbors = rows::Recorded::NotRecorded;
                     row.co_belligerents = rows::Recorded::NotRecorded;
@@ -1032,6 +1075,47 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
                     row.directed_wars = rows::Recorded::NotRecorded;
                     row.attack_modifiers = rows::Recorded::NotRecorded;
                     row.movement_modifiers = rows::Recorded::NotRecorded;
+                    row.air_modifiers = rows::Recorded::NotRecorded;
+                    row.mines_effect_reduction = rows::Recorded::NotRecorded;
+                    row.naval_detection = rows::Recorded::NotRecorded;
+                    row.air_superiority_efficiency = rows::Recorded::NotRecorded;
+                    row.air_intercept_efficiency = rows::Recorded::NotRecorded;
+                    row.air_cas_efficiency = rows::Recorded::NotRecorded;
+                    row.air_nav_efficiency = rows::Recorded::NotRecorded;
+                    row.air_attack_factor = rows::Recorded::NotRecorded;
+                    row.air_defence_factor = rows::Recorded::NotRecorded;
+                    row.air_strategic_bomber_defence_factor = rows::Recorded::NotRecorded;
+                    row.air_combat_modifiers_known = rows::Recorded::NotRecorded;
+                }
+            }
+            TableRows::VariantDefinitions(rows) => {
+                for row in rows {
+                    row.design = rows::Recorded::NotRecorded;
+                }
+            }
+            TableRows::AdvisorRoles(rows) => {
+                for row in rows {
+                    row.tooltip_keys = rows::Recorded::NotRecorded;
+                }
+            }
+            TableRows::LandCombatDetails(rows) => {
+                for row in rows {
+                    row.side_inputs = rows::Recorded::NotRecorded;
+                    // The older side layout's CAS operands decode and stay.
+                    for side in &mut row.sides {
+                        side.anti_air_attack = rows::RetiredKept::older_value(0);
+                        side.prevented_damage = rows::RetiredKept::older_value([0; 2]);
+                    }
+                }
+            }
+            TableRows::OperativeMemberships(rows) => {
+                for row in rows {
+                    row.target_country = rows::Recorded::NotRecorded;
+                    row.operation = rows::Recorded::NotRecorded;
+                    row.name = rows::Recorded::NotRecorded;
+                    row.cooldown_kind = rows::Recorded::NotRecorded;
+                    row.cooldown_start_hour = rows::Recorded::NotRecorded;
+                    row.cooldown_end_hour = rows::Recorded::NotRecorded;
                 }
             }
             _ => {}
@@ -1062,14 +1146,41 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             "{table:?}"
         );
     }
-    // Only nested fields appended after format 98 are gaps: the event feed's
-    // causes, whose table format 98 does not hold.
+    // Script history changed its whole layout; admission names the table
+    // rather than claiming that its other nested fields still decode.
+    assert_eq!(replay.format.nested_field_gaps().count(), 0);
+    let event_refusal = format!(
+        "EventFeedHistory not recorded at format 98 (introduced at format {})",
+        crate::rows::compatibility::WIDGET_CAPTURE_FORMAT
+    );
+    let previous =
+        FormatVersion::read(crate::rows::compatibility::SCRIPT_EVENT_FORMAT - 1).unwrap();
     assert_eq!(
-        replay.format.nested_field_gaps().collect::<Vec<_>>(),
-        [format!(
-            "EventFeedEvent.cause not recorded (introduced at format {}; this recording is format 98); other fields decode",
-            crate::rows::compatibility::EVENT_CAUSE_FORMAT
-        )]
+        previous.table_refusal(TableId::EventFeedHistory),
+        Some(format!(
+            "EventFeedHistory layout or meaning changed at format {}; this recording is format {}",
+            crate::rows::compatibility::SCRIPT_EVENT_FORMAT,
+            previous.version()
+        ))
+    );
+    assert_eq!(
+        replay.format.table_refusal(TableId::EventFeedHistory),
+        Some(event_refusal.clone())
+    );
+    assert_eq!(
+        *frame.tables[TableId::EventFeedHistory.index()],
+        TableView::Unavailable {
+            reason: event_refusal.clone()
+        }
+    );
+    let history = replay
+        .read_block_selected(&replay.index[0], &[TableId::EventFeedHistory])
+        .unwrap();
+    assert_eq!(
+        history[0].tables[TableId::EventFeedHistory.index()],
+        TableUpdate::Unavailable {
+            reason: event_refusal
+        }
     );
     // Existing prefixes remain readable; additions are named field/table gaps.
     assert_eq!(
@@ -1082,6 +1193,17 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             })
             .sum::<usize>()
             + replay.format.nested_field_gaps().count()
+    );
+    // OwnedWargoals, introduced with these tables, retired since: its
+    // framing is consumed and every recording refuses it by name.
+    assert_eq!(
+        *frame.tables[TableId::OwnedWargoals.index()],
+        TableView::Unavailable {
+            reason: format!(
+                "OwnedWargoals retired at format {}; this recording is format {}",
+                RETIRED_INPUTS_FORMAT, RECORDER_INPUTS_FORMAT
+            )
+        }
     );
 }
 
@@ -1237,38 +1359,17 @@ fn compatibility_format91_framing_survives_snapshot_delta_truncation_and_unchang
 }
 
 #[test]
-fn compatibility_historical_delta_insertion_keeps_the_appended_field_absent() {
-    let format = FormatVersion::read(91).unwrap();
-    let table = TableId::DivisionStatus;
-    let row = rows::DivisionStatusRow {
-        division: 2,
-        move_flags: 7,
-        ..Default::default()
-    };
-    let mut delta = row.delta(None).unwrap().unwrap();
-    let mut input = Decoder::new(&delta.values);
-    for kind in &table.schema()[..format.fields(table)] {
-        kind.decode_change(&mut input).unwrap();
+fn compatibility_changed_leader_contract_refuses_historical_prefixes() {
+    for version in [91, 97, 99] {
+        let format = FormatVersion::read(version).unwrap();
+        let table = TableId::UnitLeaders;
+        assert_eq!(
+            format.table_refusal(table).unwrap(),
+            format!(
+                "{table:?} layout or meaning changed at format 104; this recording is format {version}"
+            )
+        );
     }
-    delta
-        .values
-        .truncate(delta.values.len() - input.remaining());
-    delta.format = format.version();
-    delta.mask = (1 << format.fields(table)) - 1;
-    delta.recorded_fields = format.fields(table);
-    let inserted = delta.apply::<rows::DivisionStatusRow>(None).unwrap();
-    assert_eq!(inserted.move_flags, 7);
-    assert_eq!(inserted.border_combat_stats, rows::Recorded::NotRecorded);
-    let mut bytes = vec![0x55];
-    assert_eq!(
-        rows::encode_delta(table, &delta, 0, &mut bytes)
-            .unwrap_err()
-            .to_string(),
-        "historical fields cannot be re-encoded"
-    );
-    assert_eq!(bytes, [0x55]);
-    delta.mask &= !(1 << 15);
-    assert!(delta.apply::<rows::DivisionStatusRow>(None).is_err());
 }
 
 fn check_format99_seam<S: rows::TableSchema>(
@@ -1358,12 +1459,15 @@ fn compatibility_format99_political_snapshots_and_deltas_keep_the_old_field_seam
         name: Some(vec![0xff, 0, b'A']).into(),
         ..Default::default()
     }, name => None.into());
-    seam!(AirMissionInputs, 6, rows::AirMissionInputRow {
-        wing: 1,
-        definition_map_flags: 7,
-        cas_ratio_raw: Some(0).into(),
-        ..Default::default()
-    }, definition_map_flags => u64::MAX);
+    let format = FormatVersion::read(99).unwrap();
+    let payload = legacy_frame(format, 1000, true);
+    let frame = Frame::decode_version(&mut Decoder::new(&payload), None, format).unwrap();
+    assert_eq!(
+        frame.tables[TableId::AirMissionInputs.index()],
+        TableUpdate::Unavailable {
+            reason: format.table_refusal(TableId::AirMissionInputs).unwrap(),
+        }
+    );
     seam!(AirNavalPatrolHistories, 2, rows::AirNavalPatrolHistoryRow {
         country: 4,
         region: 9,
@@ -1414,13 +1518,6 @@ fn compatibility_format99_political_snapshots_and_deltas_keep_the_old_field_seam
         owned_state_count: Some(0).into(),
         ..Default::default()
     }, owned_state_count => Some(i32::MIN).into());
-    seam!(CountryCounterInputs, 11, rows::CountryCounterInputRow {
-        forward_visibility: crate::rows::Recorded::Value(None),
-        country: 1,
-        controlled_state_count: 0,
-        neighbors: Some(vec![0, 7, 7]).into(),
-        ..Default::default()
-    }, neighbors => Some(Vec::new()).into());
     seam!(RailwayGunCounterInputs, 26, rows::RailwayGunCounterInputRow {
         gun: 1,
         railway_building_level: Some(0),
@@ -1475,7 +1572,7 @@ fn compatibility_current_movement_profile_delta_uses_only_its_actual_suffix() {
     let format = FormatVersion::CURRENT;
     let table = TableId::DivisionMovement;
     let fields = format.fields(table);
-    assert_eq!(fields, 24);
+    assert_eq!(fields, 25);
     let suffix = table
         .last_change()
         .appended
@@ -1490,6 +1587,7 @@ fn compatibility_current_movement_profile_delta_uses_only_its_actual_suffix() {
         numerator: i64::MIN,
         combat_count: 1,
         combat_references: Some(rows::UnitCombatReferences {
+            speed_witness: Default::default(),
             sample_hour: rows::PacketHour::Host,
             entries: vec![rows::UnitCombatReference {
                 combat: u64::MAX,
@@ -1653,6 +1751,17 @@ fn compatibility_oracle_witnesses_keep_integrated_recordings_readable() {
 
 #[test]
 fn compatibility_every_appended_field_is_explicitly_not_recorded() {
+    // Raw MIO suffixes keep their framing but do not claim an absent-value
+    // representation, unlike the Recorded fields exercised below.
+    for (table, prefix) in [
+        (TableId::VariantStats, 10),
+        (TableId::IndustrialOrganisationHistory, 1),
+    ] {
+        let history = table.last_change();
+        assert_eq!(history.kind, rows::compatibility::ChangeKind::Layout);
+        assert_eq!(history.appended[0].index, prefix);
+        assert!(FormatVersion::CURRENT.table_refusal(table).is_none());
+    }
     let format = FormatVersion::read(91).unwrap();
     let payload = legacy_frame(format, 1000, true);
     let frame = Frame::decode_version(&mut Decoder::new(&payload), None, format).unwrap();

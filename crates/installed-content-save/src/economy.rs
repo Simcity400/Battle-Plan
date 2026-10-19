@@ -1,6 +1,7 @@
 //! Literal economy and supply state carried by a text save.
 
 use std::{collections::BTreeMap, io};
+pub mod market;
 
 use super::{
     Decimal, block, boolean, bytes, decimal, field, integer, invalid, required_block,
@@ -15,10 +16,12 @@ pub struct Pack {
     pub supply: Option<BTreeMap<Vec<u8>, Supply>>,
     /// The whole equipment market may be absent; this is not an empty census.
     pub purchases: Option<BTreeMap<u64, Purchase>>,
+    pub market_terms: Option<Vec<market::Terms>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Country {
+    pub market: Option<market::CountryMarket>,
     pub fuel: Option<Fuel>,
     /// Missing status is distinct from a present status whose gains are zero.
     pub experience: Option<Experience>,
@@ -36,6 +39,7 @@ pub struct Country {
 /// One saved lend-lease exchange of its giver.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LendLease {
+    pub terms: Option<market::LeaseTerms>,
     /// The exchange's full typed reference (low u32 type, high u32 id).
     pub id: u64,
     pub receiver: Vec<u8>,
@@ -926,6 +930,7 @@ fn parse_lend_lease(resources: Option<&[Item]>) -> io::Result<Option<Vec<LendLea
         let fields = block(&entry.value)?;
         let pool = |key: &[u8]| super::production::parse_pool(required_block(fields, key)?);
         exchanges.push(LendLease {
+            terms: market::lease(fields)?,
             id: typed_handle(
                 field(fields, b"id")?.ok_or_else(|| invalid("lend-lease exchange lacks id"))?,
             )?,
@@ -989,6 +994,7 @@ pub(super) fn parse_with_countries(
             .insert(
                 tag.to_vec(),
                 Country {
+                    market: market::country(fields)?,
                     fuel,
                     experience: parse_experience(fields)?,
                     exports: parse_exports(resources)?,
@@ -1008,6 +1014,7 @@ pub(super) fn parse_with_countries(
         countries,
         supply: parse_supply_root(items)?,
         purchases: parse_purchases(items)?,
+        market_terms: market::terms(items)?,
     })
 }
 

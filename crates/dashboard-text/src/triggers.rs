@@ -33,7 +33,10 @@ pub mod inputs;
 pub use event_scopes::EventGraphGuard;
 pub(crate) use event_scopes::event_tooltip_target;
 mod load;
+mod map_scripts;
 mod operands;
+pub mod refusal;
+pub use refusal::Failure;
 pub mod saved_event_targets;
 pub mod scripted_localisation;
 #[cfg(test)]
@@ -73,13 +76,18 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::CountryBuildingResources,
     replay_data::rows::TableId::CountryCharacters,
     replay_data::rows::TableId::CountryCivilWars,
+    replay_data::rows::TableId::CountryCommandPower,
     replay_data::rows::TableId::CountryCounterInputs,
     replay_data::rows::TableId::CountryFactories,
     replay_data::rows::TableId::CountryLeaderRoles,
     replay_data::rows::TableId::CountryLinks,
     replay_data::rows::TableId::CountryResources,
+    replay_data::rows::TableId::CountryStabilityInputs,
     replay_data::rows::TableId::CountryRetiredCharacters,
     replay_data::rows::TableId::CountryWars,
+    replay_data::rows::TableId::CountryWargoals,
+    replay_data::rows::TableId::WargoalTargets,
+    replay_data::rows::TableId::Divisions,
     replay_data::rows::TableId::DivisionStatus,
     replay_data::rows::TableId::DivisionTemplateIcons,
     replay_data::rows::TableId::DivisionTemplates,
@@ -89,7 +97,9 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::Factions,
     replay_data::rows::TableId::Focus,
     replay_data::rows::TableId::GlobalSavedEventTargets,
+    replay_data::rows::TableId::AdvisorRoles,
     replay_data::rows::TableId::HiredAdvisors,
+    replay_data::rows::TableId::HumanControllers,
     replay_data::rows::TableId::IndustrialOrganisations,
     replay_data::rows::TableId::IntelligenceAgencies,
     replay_data::rows::TableId::InvasionPreparations,
@@ -103,6 +113,7 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::PartyLeaders,
     replay_data::rows::TableId::PoliticalParties,
     replay_data::rows::TableId::Politics,
+    replay_data::rows::TableId::Players,
     replay_data::rows::TableId::PowerBalanceMembers,
     replay_data::rows::TableId::PowerBalanceModifierBreakdowns,
     replay_data::rows::TableId::PowerBalances,
@@ -111,9 +122,11 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::ProvinceNames,
     replay_data::rows::TableId::Provinces,
     replay_data::rows::TableId::RaidTooltipOperands,
+    replay_data::rows::TableId::RaidCountryInputs,
     replay_data::rows::TableId::Raids,
     replay_data::rows::TableId::RelationOpinions,
     replay_data::rows::TableId::ResearchTechnologies,
+    replay_data::rows::TableId::ResearchModifiers,
     replay_data::rows::TableId::ReservedCountryNaming,
     replay_data::rows::TableId::ResourceDefinitions,
     replay_data::rows::TableId::ScriptFlags,
@@ -125,9 +138,12 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::StateDynamicModifiers,
     replay_data::rows::TableId::StateResourceInputs,
     replay_data::rows::TableId::StateResources,
+    replay_data::rows::TableId::StateResistance,
     replay_data::rows::TableId::States,
     replay_data::rows::TableId::Subjects,
     replay_data::rows::TableId::TechnologyDefinitions,
+    replay_data::rows::TableId::TechSharingGroups,
+    replay_data::rows::TableId::TechSharingMembers,
     replay_data::rows::TableId::UnitLeaderTraits,
     replay_data::rows::TableId::UnitLeaders,
     replay_data::rows::TableId::WarRelations,
@@ -161,12 +177,14 @@ pub fn fold_token(key: &str) -> String {
 pub enum Eval {
     True,
     False,
-    Unknown(BTreeSet<String>),
+    Unknown(BTreeSet<Failure>),
 }
 
 impl Eval {
-    pub fn unknown(reason: impl Into<String>) -> Self {
-        Self::Unknown(BTreeSet::from([reason.into()]))
+    pub fn unknown(reason: impl Into<Failure>) -> Self {
+        let reason = reason.into();
+        reason.consumed();
+        Self::Unknown(BTreeSet::from([reason]))
     }
 
     pub fn from_bool(value: bool) -> Self {
@@ -175,6 +193,11 @@ impl Eval {
 
     /// A proved false wins over an unknown.
     pub fn and(self, other: impl FnOnce() -> Self) -> Self {
+        if let Self::Unknown(reasons) = &self {
+            for failure in reasons {
+                failure.consumed();
+            }
+        }
         match self {
             Self::False => Self::False,
             Self::True => other(),
@@ -191,6 +214,11 @@ impl Eval {
 
     /// A proved true wins over an unknown.
     pub fn or(self, other: impl FnOnce() -> Self) -> Self {
+        if let Self::Unknown(reasons) = &self {
+            for failure in reasons {
+                failure.consumed();
+            }
+        }
         match self {
             Self::True => Self::True,
             Self::False => other(),
@@ -206,6 +234,11 @@ impl Eval {
     }
 
     pub fn negate(self) -> Self {
+        if let Self::Unknown(reasons) = &self {
+            for failure in reasons {
+                failure.consumed();
+            }
+        }
         match self {
             Self::True => Self::False,
             Self::False => Self::True,
@@ -215,10 +248,19 @@ impl Eval {
 
     /// The value, or every reason it is undecided, joined.
     pub fn decided(self) -> Result<bool, String> {
+        self.decided_input().map_err(|why| why.to_string())
+    }
+
+    pub(crate) fn decided_input(self) -> Result<bool, Failure> {
+        if let Self::Unknown(reasons) = &self {
+            for failure in reasons {
+                failure.consumed();
+            }
+        }
         match self {
             Self::True => Ok(true),
             Self::False => Ok(false),
-            Self::Unknown(reasons) => Err(reasons.into_iter().collect::<Vec<_>>().join("; ")),
+            Self::Unknown(reasons) => Err(Failure::merge(reasons)),
         }
     }
 }
@@ -377,7 +419,7 @@ impl Scopes {
     }
 
     /// ROOT, FROM or PREV, or why the caller cannot say which scope it is.
-    pub fn link(&self, keyword: installed_content_core::scope::Keyword) -> Result<Option<Scope>, String> {
+    pub fn link(&self, keyword: installed_content_core::scope::Keyword) -> Result<Option<Scope>, Failure> {
         use installed_content_core::scope::Keyword;
         let (scope, unknown) = match keyword {
             Keyword::Root => (Some(self.root), self.unknown.root),
@@ -386,9 +428,7 @@ impl Scopes {
         };
         if unknown {
             let name = keyword.name().to_ascii_uppercase();
-            return Err(format!(
-                "{name}: this event scope's {name} is not known here"
-            ));
+            return Err(format!("{name}: this event scope's {name} is not known here").into());
         }
         Ok(scope)
     }
@@ -442,7 +482,9 @@ impl World<'_> {
     /// Whether a trigger body holds a loaded child
     /// ([`Evaluator::has_children`]).
     pub fn has_children(&self, triggers: &[Item]) -> Result<bool, String> {
-        Evaluator::new(self, None).has_children(triggers)
+        Evaluator::new(self, None)
+            .has_children(triggers)
+            .map_err(|why| why.to_string())
     }
 
     /// A trigger body in `scopes`, with no combat.
@@ -453,13 +495,17 @@ impl World<'_> {
     /// A country operand as the country triggers read it
     /// ([`Evaluator::country_operand`]).
     pub fn country_of(&self, item: &Item, scopes: Scopes) -> Result<Option<u32>, String> {
-        Evaluator::new(self, None).country_operand(item, scopes)
+        Evaluator::new(self, None)
+            .country_operand(item, scopes)
+            .map_err(|why| why.to_string())
     }
 
     /// Resolve a country tag or tag alias in `scopes`,
     /// an alias through its candidates;
     /// `None` is no country.
     pub fn resolve_tag(&self, tag: &str, scopes: Scopes) -> Result<Option<u32>, String> {
-        Evaluator::new(self, None).resolve_tag(tag, scopes)
+        Evaluator::new(self, None)
+            .resolve_tag(tag, scopes)
+            .map_err(|why| why.to_string())
     }
 }

@@ -10,6 +10,8 @@ pub const VTABLE_RVA: usize = 0x0294_faf8;
 
 /// CFactionSystem faction pointer-array data.
 pub const FACTIONS: usize = 0x20;
+/// Independent system-wide extracted-resource pool.
+pub const EXTRACTED_RESOURCES: usize = 0x38;
 /// CFactionSystem signed live count.
 pub const FACTION_COUNT: usize = 0x2c;
 /// CFactionSystem signed capacity.
@@ -41,6 +43,24 @@ pub fn roster(memory: &impl Memory, base: usize, game_state: usize) -> Result<Ar
         .checked_add(FACTIONS)
         .and_then(|p| Array::read(memory, p, 8))
         .ok_or("faction roster unreadable or invalid")
+}
+
+/// Header-only demand for the independent account array. The sizing census
+/// uses this once off-thread; ordinary account capture follows writer marks.
+pub fn accounts(memory: &impl Memory, base: usize, state: usize) -> Result<Array, &'static str> {
+    let system = state
+        .checked_add(cgame_state::FACTION_SYSTEM)
+        .and_then(|at| read::<u64>(memory, at))
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value != 0)
+        .ok_or("faction account system unavailable")?;
+    if read::<u64>(memory, system) != base.checked_add(VTABLE_RVA).map(|value| value as u64) {
+        return Err("faction account system vtable mismatch");
+    }
+    system
+        .checked_add(crate::cfaction_member_status::ACCOUNTS)
+        .and_then(|at| Array::read(memory, at, crate::cfaction_member_status::STRIDE))
+        .ok_or("faction account array invalid")
 }
 
 fn pointer(memory: &impl Memory, array: Array, index: u32) -> Result<usize, &'static str> {
@@ -797,5 +817,41 @@ mod tests {
             put64(&mut bytes, diplomacy + cdiplomacy_status::FACTION, 0);
         }
         assert_eq!(members(&bytes, &mut []), Outcome::Rows { len: 0 });
+    }
+    #[test]
+    fn faction_companion_roster_remains_complete_across_an_independent_name_failure() {
+        let mut bytes = fixture();
+        put64(&mut bytes, FIRST + cfaction::NAME + msvc_string::LENGTH, 16);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut seen = Vec::new();
+        let (names, complete) = cfaction::walk_growing_with(
+            &memory,
+            0,
+            GS,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            |pointer, id| seen.push((pointer, id)),
+        );
+        assert!(matches!(names.outcome, Outcome::Unavailable { .. }));
+        assert!(complete);
+        assert_eq!(seen, [(FIRST, FIRST_ID), (SECOND, SECOND_ID)]);
+        put64(&mut bytes, SECOND, 0);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let (failed, complete) = cfaction::walk_growing_with(
+            &memory,
+            0,
+            GS,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            |_, _| {},
+        );
+        assert!(!complete);
+        assert_eq!(failed.outcome, names.outcome); // first independent failure survives
     }
 }

@@ -54,7 +54,7 @@ impl Selection {
         let roster = match lists.country_array() {
             Ok(roster) => roster,
             Err(reason) => {
-                out.refuse(reason);
+                out.refuse(reason.to_string());
                 return out;
             }
         };

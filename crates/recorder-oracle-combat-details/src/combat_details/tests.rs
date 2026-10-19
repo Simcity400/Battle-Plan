@@ -578,7 +578,7 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
         br#"HOI4txt
         date=1942.9.6.2 game_unique_id=test version=test game_unique_seed=1 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
         countries={} states={} provinces={}
-        equipment_market={contracts={}} supply_system_2={countries={}}
+        equipment_market={contracts={} requests={0}} supply_system_2={countries={}}
         character_manager={historical={character={id={id=8 type=73} token=x
             corps_commander={id={id=4 type=4713} skill=1 traits_to_remove={sick=20 wounded=-1}}
         }}}
@@ -661,7 +661,7 @@ fn timed_traits_compare_saved_tokens_and_signed_days_in_vector_order() {
 }
 
 #[test]
-fn null_naval_commander_is_a_limitation_only_at_an_observed_load_hour() {
+fn null_naval_commander_is_independent_of_the_saved_last_leader() {
     use replay_data::{rows::NavalCombatDetailsRow, rows::NavalCombatSideDetails};
     use replay_frame::{
         branches::BranchReason::HourDiscontinuity as Gap,
@@ -727,7 +727,7 @@ fn null_naval_commander_is_a_limitation_only_at_an_observed_load_hour() {
         report
             .limitations
             .keys()
-            .any(|key| key.starts_with("Naval commander is null at the load hour"))
+            .any(|key| key.starts_with("Naval current commander is null"))
     };
     let id = frame.branch;
     let branch = |reason, loaded_hour, first_hour| BranchStart {
@@ -739,18 +739,18 @@ fn null_naval_commander_is_a_limitation_only_at_an_observed_load_hour() {
         reason,
     };
 
-    // Only a null commander at an observed load's loaded and first sampled
-    // hour is a limitation; any other branch start, hour or value differs.
+    // A null current commander is independent of the retained last leader at
+    // every branch/hour. A wrong nonnull commander still differs.
     let h = frame.hour;
     for (reason, loaded, first, sample, commander, expected) in [
         (Load, Some(h), h, h, 0, "limited"),
         (Load, Some(h), h, h, leader, "equal"),
         (Load, Some(h), h, h, leader + 1, "differs"),
-        (Load, Some(h), h, h + 1, 0, "differs"),
-        (Load, None, h, h, 0, "differs"),
-        (Load, Some(h), h + 1, h, 0, "differs"),
-        (Start, Some(h), h, h, 0, "differs"),
-        (Gap, Some(h), h, h, 0, "differs"),
+        (Load, Some(h), h, h + 1, 0, "limited"),
+        (Load, None, h, h, 0, "limited"),
+        (Load, Some(h), h + 1, h, 0, "limited"),
+        (Start, Some(h), h, h, 0, "limited"),
+        (Gap, Some(h), h, h, 0, "limited"),
     ] {
         frame.hour = sample;
         set_commander(&mut frame, commander);
@@ -767,8 +767,8 @@ fn null_naval_commander_is_a_limitation_only_at_an_observed_load_hour() {
         );
     }
 
-    // Other fields of the same side stay exact at the load hour.
-    frame.hour = h;
+    // Other fields stay exact while the current commander is null after loading.
+    frame.hour = h + 1;
     set_commander(&mut frame, 0);
     save.naval_combats.get_mut(&combat).unwrap().details.day = Some(1);
     let report = compare(&frame, &save, branch(Load, Some(h), h));
@@ -835,6 +835,7 @@ fn text_suffix_limitation_preserves_nonempty_field_presence() {
 fn division_naming_follows_the_division_name_writer_and_member_template() {
     let (standard, fake) = (1_u64 << 32 | 52, 2_u64 << 32 | 52);
     let template = |group: Option<&[u8]>| save::DivisionTemplate {
+        origin_type: None,
         template: 0,
         country: b"SOV".to_vec(),
         name: Vec::new(),
@@ -846,6 +847,7 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         foreign_template_tag: None,
         composition: BTreeMap::new(),
         names_group: group.map(<[u8]>::to_vec),
+        ..Default::default()
     };
     let saved_templates = BTreeMap::from([
         (standard, template(Some(b"SOV_INF_01"))),
@@ -1206,6 +1208,7 @@ fn combat_members_take_their_witnessed_template_from_the_division_status() {
     save.division_templates.insert(
         standard,
         save::DivisionTemplate {
+            origin_type: None,
             template: 0,
             country: b"SOV".to_vec(),
             name: Vec::new(),
@@ -1217,6 +1220,7 @@ fn combat_members_take_their_witnessed_template_from_the_division_status() {
             foreign_template_tag: None,
             composition: BTreeMap::new(),
             names_group: Some(b"SOV_INF_01".to_vec()),
+            ..Default::default()
         },
     );
     save.divisions.insert(

@@ -84,6 +84,8 @@ fn movement() -> MovementContent {
             river_crossing_three: 0,
             organisation: None,
             rail: None,
+            noncore_supply: [None; 2],
+            combat_movement: None,
         },
         rail: Err("unrelated railway defines are unavailable".into()),
         task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),

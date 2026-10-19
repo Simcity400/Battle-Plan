@@ -18,6 +18,25 @@ pub struct Pack {
     /// enclosing countries roster can be absent independently of empty banks.
     pub divisions: Option<BTreeMap<u64, Division>>,
     pub countries: Option<BTreeMap<Vec<u8>, Country>>,
+    pub template_states: BTreeMap<Vec<u8>, TemplateState>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TemplateState {
+    /// None is a missing occupation wrapper; its default priority is one.
+    pub garrison_priority: Option<i32>,
+    /// None is an absent deployment wrapper; Some(None) is an unset selection.
+    pub selected_staff: Option<Option<u64>>,
+    /// Present only when the deployment order counter is positive.
+    pub next_hq_order: Option<i32>,
+    pub lock_all: bool,
+    /// None is a missing occupation wrapper. Defaults, groups and explicit state
+    /// overrides retain their separate scopes, including unset group selections.
+    #[allow(
+        clippy::type_complexity,
+        reason = "Country and state scope presence and an unset template are independent saved facts."
+    )]
+    pub garrisons: Option<BTreeMap<(Option<Vec<u8>>, Option<u32>), Option<u64>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +76,23 @@ pub struct Production {
     /// in array order, each keyed by its script key, only when there is one:
     /// absence is an empty array.
     pub organisations: Vec<Organisation>,
+    pub policies: Vec<Policy>,
+    /// Ordered consumable design discounts; the writer omits an empty roster.
+    pub design_templates: Vec<DesignTemplate>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DesignTemplate {
+    pub uses: i32,
+    pub factor: Decimal,
+    pub equipment: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Policy {
+    pub key: Vec<u8>,
+    pub cost: i32,
+    pub cooldown_days: i32,
 }
 
 /// One organisation block, in the fields the replay records.
@@ -72,6 +108,22 @@ pub struct Organisation {
     pub icon: Option<Vec<u8>>,
     /// `history` blocks in table slot order.
     pub history: Vec<OrganisationHistory>,
+    pub details: OrganisationDetails,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OrganisationDetails {
+    /// Exact unconditional numeric emissions, with integer fields kept integer.
+    pub fixed: BTreeMap<Vec<u8>, Decimal>,
+    pub integers: BTreeMap<Vec<u8>, i32>,
+    pub upgrades: Option<bool>,
+    pub unlocked: Vec<Vec<u8>>,
+    pub queued: Vec<Vec<u8>>,
+    pub allowed_policies: Vec<Vec<u8>>,
+    pub policy: Option<Vec<u8>>,
+    pub cooldown: Option<GameDate>,
+    pub variables: Option<super::intel::Variables>,
+    pub flags: Option<Vec<super::intel::Flag>>,
 }
 
 /// One `history={ equipment=<variant> data={ date units } }` block.
@@ -80,6 +132,7 @@ pub struct OrganisationHistory {
     pub variant: u64,
     /// `units`, which the value writer always emits.
     pub units: i32,
+    pub design_date: Option<GameDate>,
 }
 
 fn parse_organisation(key: &[u8], items: &[Item]) -> io::Result<Organisation> {
@@ -95,6 +148,9 @@ fn parse_organisation(key: &[u8], items: &[Item]) -> io::Result<Organisation> {
                     .ok_or_else(|| invalid("saved organisation history lacks its equipment"))?,
             )?,
             units: integer(&required_bytes(required_block(fields, b"data")?, b"units")?)?,
+            design_date: bytes(required_block(fields, b"data")?, b"date")?
+                .map(|date| GameDate::parse(&date))
+                .transpose()?,
         });
     }
     Ok(Organisation {
@@ -103,7 +159,77 @@ fn parse_organisation(key: &[u8], items: &[Item]) -> io::Result<Organisation> {
         name: bytes(items, b"name")?,
         icon: bytes(items, b"icon")?,
         history,
+        details: parse_organisation_details(items)?,
     })
+}
+
+fn parse_organisation_details(items: &[Item]) -> io::Result<OrganisationDetails> {
+    let mut details = OrganisationDetails::default();
+    for key in [
+        b"research_bonus".as_slice(),
+        b"funds",
+        b"research_assign_cost",
+        b"production_assign_cost",
+        b"add_mio_funds_gain_factor",
+    ] {
+        if let Some(value) = field(items, key)? {
+            details
+                .fixed
+                .insert(key.to_vec(), Decimal::parse(scalar(value)?)?);
+        }
+    }
+    for key in [
+        b"task_capacity".as_slice(),
+        b"size",
+        b"points",
+        b"design_team_change_cost",
+    ] {
+        if let Some(value) = field(items, key)? {
+            details
+                .integers
+                .insert(key.to_vec(), integer(scalar(value)?)?);
+        }
+    }
+    details.upgrades = field(items, b"upgrades")?.map(boolean).transpose()?;
+    for (key, output) in [
+        (b"unlocked".as_slice(), &mut details.unlocked),
+        (b"queued_trait", &mut details.queued),
+    ] {
+        for item in items.iter().filter(|item| item.key.as_deref() == Some(key)) {
+            output.push(required_bytes(block(&item.value)?, b"trait")?);
+        }
+    }
+    if let Some(value) = field(items, b"allowed_policies")? {
+        for item in block(value)? {
+            details.allowed_policies.push(scalar(&item.value)?.to_vec());
+        }
+    }
+    details.policy = bytes(items, b"policy")?;
+    details.cooldown = bytes(items, b"cooldown")?
+        .map(|date| GameDate::parse(&date))
+        .transpose()?;
+    details.variables = field(items, b"variables")?
+        .map(|value| {
+            let items = block(value)?;
+            let mut variables = super::intel::parse_variables(items)?;
+            // A literal scalar named random is a stored variable as well as a
+            // loader-reserved name. Keep every save emission for exact comparison.
+            for item in items.iter().filter(|item| {
+                item.key.as_deref() == Some(b"random") && item.value.items().is_none()
+            }) {
+                variables.entries.push(super::intel::Variable {
+                    name: b"random".to_vec(),
+                    value: Decimal::parse(scalar(&item.value)?)?,
+                });
+            }
+            variables.reserved_entries = 0;
+            Ok::<_, io::Error>(variables)
+        })
+        .transpose()?;
+    details.flags = field(items, b"flags")?
+        .map(|value| super::intel::parse_flags(block(value)?))
+        .transpose()?;
+    Ok(details)
 }
 
 fn parse_equipment_roster(value: &installed_content_core::parser::Value) -> io::Result<Vec<u64>> {
@@ -250,6 +376,28 @@ pub struct Variant {
     pub version: Option<u8>,
     /// `number_of_design_team_traits`, written as a signed integer only when nonzero.
     pub organisation_marker: Option<i32>,
+    pub organisation: Option<u64>,
+    pub organisation_bonuses: Vec<(Vec<u8>, Decimal)>,
+    pub design: DesignState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DesignState {
+    pub parent: Option<u64>,
+    pub max_version: Option<u8>,
+    pub is_frame: Option<bool>,
+    pub auto_upgraded: Option<bool>,
+    pub highlight: Option<bool>,
+    pub can_upgrade_type: Option<bool>,
+    pub can_upgrade_variant: Option<bool>,
+    pub can_upgrade_modules: Option<bool>,
+    pub manpower: Option<i32>,
+    pub role_icon_index: Option<i32>,
+    pub division_names_group: Option<Vec<u8>>,
+    pub named_bonuses: Option<Vec<u32>>,
+    pub ideas: Option<Vec<Vec<u8>>>,
+    pub design_team: Option<u64>,
+    pub design_team_bonus: Option<Vec<(Vec<u8>, Decimal)>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -404,6 +552,7 @@ pub(super) fn parse_with_countries(
             Ok(result)
         })
         .transpose()?;
+    let mut template_states = BTreeMap::new();
     let countries = countries
         .is_present()
         .then(|| {
@@ -420,6 +569,40 @@ pub(super) fn parse_with_countries(
                 let deployment = field(fields, b"deployment")?
                     .map(|value| parse_deployment(block(value)?))
                     .transpose()?;
+                let selection = field(fields, b"deployment")?
+                    .map(|value| {
+                        field(block(value)?, b"default_hq_template")?
+                            .map(typed_handle)
+                            .transpose()
+                    })
+                    .transpose()?;
+                template_states.insert(
+                    tag.clone(),
+                    TemplateState {
+                        garrison_priority: field(fields, b"occupation_status")?
+                            .map(|value| -> io::Result<i32> {
+                                Ok(bytes(block(value)?, b"priority")?
+                                    .map(|raw| integer::<i32>(&raw))
+                                    .transpose()?
+                                    .unwrap_or(1))
+                            })
+                            .transpose()?,
+                        selected_staff: selection,
+                        next_hq_order: field(fields, b"deployment")?
+                            .map(|value| bytes(block(value)?, b"hq_next_deploy_order"))
+                            .transpose()?
+                            .flatten()
+                            .map(|value| integer::<i32>(&value))
+                            .transpose()?,
+                        garrisons: field(fields, b"occupation_status")?
+                            .map(|value| parse_garrison_templates(block(value)?))
+                            .transpose()?,
+                        lock_all: field(fields, b"templates_locked")?
+                            .map(boolean)
+                            .transpose()?
+                            .unwrap_or(false),
+                    },
+                );
                 if result
                     .insert(
                         tag.clone(),
@@ -440,7 +623,64 @@ pub(super) fn parse_with_countries(
         variants,
         divisions,
         countries,
+        template_states,
     })
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "Preserve country/state scope presence and unset selections in the shared saved map representation."
+)]
+fn parse_garrison_templates(
+    items: &[Item],
+) -> io::Result<BTreeMap<(Option<Vec<u8>>, Option<u32>), Option<u64>>> {
+    let mut result = BTreeMap::new();
+    result.insert(
+        (None, None),
+        field(items, b"division_template_id")?
+            .map(typed_handle)
+            .transpose()?,
+    );
+    if let Some(value) = field(items, b"occupation")? {
+        for group in block(value)? {
+            let tag = group
+                .key
+                .as_ref()
+                .filter(|tag| !tag.is_empty())
+                .ok_or_else(|| invalid("garrison group has no country"))?;
+            let fields = block(&group.value)?;
+            if result
+                .insert(
+                    (Some(tag.clone()), None),
+                    field(fields, b"division_template_id")?
+                        .map(typed_handle)
+                        .transpose()?,
+                )
+                .is_some()
+            {
+                return Err(invalid("duplicate garrison country selection"));
+            }
+            if let Some(value) = field(fields, b"garrison_template_by_state")? {
+                for state in block(value)? {
+                    let id = state
+                        .key
+                        .as_deref()
+                        .ok_or_else(|| invalid("garrison state selection has no state"))?;
+                    let id = integer::<u32>(id)?;
+                    if result
+                        .insert(
+                            (Some(tag.clone()), Some(id)),
+                            Some(typed_handle(&state.value)?),
+                        )
+                        .is_some()
+                    {
+                        return Err(invalid("duplicate garrison state selection"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn parse_production(items: &[Item]) -> io::Result<Production> {
@@ -473,6 +713,25 @@ fn parse_production(items: &[Item]) -> io::Result<Production> {
         lines.push(parse_line(kind, block(&item.value)?)?);
     }
     Ok(Production {
+        design_templates: field(items, b"discount")?
+            .map(|value| {
+                block(value)?
+                    .iter()
+                    .map(|item| {
+                        let fields = block(&item.value)?;
+                        Ok(DesignTemplate {
+                            uses: integer(&required_bytes(fields, b"uses")?)?,
+                            factor: Decimal::parse(&required_bytes(fields, b"discount")?)?,
+                            equipment: required_block(fields, b"types")?
+                                .iter()
+                                .map(|item| scalar(&item.value).map(<[u8]>::to_vec))
+                                .collect::<io::Result<Vec<_>>>()?,
+                        })
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default(),
         lines,
         stockpile: field(items, b"equipments")?
             .map(|value| parse_pool(block(value)?))
@@ -513,6 +772,25 @@ fn parse_production(items: &[Item]) -> io::Result<Production> {
                             .as_deref()
                             .ok_or_else(|| invalid("saved organisation has no key"))?;
                         parse_organisation(key, block(&item.value)?)
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default(),
+        policies: field(items, b"policies")?
+            .map(|value| {
+                block(value)?
+                    .iter()
+                    .map(|item| {
+                        let fields = block(&item.value)?;
+                        Ok(Policy {
+                            key: item
+                                .key
+                                .clone()
+                                .ok_or_else(|| invalid("saved MIO policy lacks key"))?,
+                            cost: integer(&required_bytes(fields, b"cost")?)?,
+                            cooldown_days: integer(&required_bytes(fields, b"cooldown")?)?,
+                        })
                     })
                     .collect::<io::Result<Vec<_>>>()
             })
@@ -715,9 +993,87 @@ fn parse_variant(id: u64, definition: &[u8], items: &[Item]) -> io::Result<Varia
         version: field(items, b"version")?
             .map(|value| integer(scalar(value)?))
             .transpose()?,
+        design: DesignState {
+            parent: field(items, b"parent_id")?.map(typed_handle).transpose()?,
+            max_version: field(items, b"max_version")?
+                .map(|v| integer(scalar(v)?))
+                .transpose()?,
+            is_frame: field(items, b"is_frame")?.map(boolean).transpose()?,
+            auto_upgraded: field(items, b"auto_upgraded")?.map(boolean).transpose()?,
+            highlight: field(items, b"highlight")?.map(boolean).transpose()?,
+            can_upgrade_type: field(items, b"can_upgrade_type")?
+                .map(boolean)
+                .transpose()?,
+            can_upgrade_variant: field(items, b"can_upgrade_variant")?
+                .map(boolean)
+                .transpose()?,
+            can_upgrade_modules: field(items, b"can_upgrade_modules")?
+                .map(boolean)
+                .transpose()?,
+            manpower: field(items, b"manpower")?
+                .map(|v| integer(scalar(v)?))
+                .transpose()?,
+            role_icon_index: field(items, b"role_icon_index")?
+                .map(|v| integer(scalar(v)?))
+                .transpose()?,
+            division_names_group: bytes(items, b"division_names_group")?,
+            named_bonuses: field(items, b"named_equipment_bonuses")?
+                .map(|v| {
+                    block(v)?
+                        .iter()
+                        .map(|i| integer(scalar(&i.value)?))
+                        .collect::<io::Result<Vec<_>>>()
+                })
+                .transpose()?,
+            ideas: field(items, b"ideas")?
+                .map(|v| {
+                    block(v)?
+                        .iter()
+                        .map(|i| Ok(scalar(&i.value)?.to_vec()))
+                        .collect::<io::Result<Vec<_>>>()
+                })
+                .transpose()?,
+            design_team: field(items, b"design_team")?
+                .map(typed_handle)
+                .transpose()?,
+            design_team_bonus: field(items, b"design_team_bonus")?
+                .map(|v| {
+                    block(v)?
+                        .iter()
+                        .map(|i| {
+                            Ok((
+                                i.key.clone().ok_or_else(|| {
+                                    invalid("variant design team bonus lacks a name")
+                                })?,
+                                Decimal::parse(scalar(&i.value)?)?,
+                            ))
+                        })
+                        .collect::<io::Result<Vec<_>>>()
+                })
+                .transpose()?,
+        },
         organisation_marker: field(items, b"number_of_design_team_traits")?
             .map(|value| integer(scalar(value)?))
             .transpose()?,
+        organisation: field(items, b"design_team")?
+            .map(typed_handle)
+            .transpose()?,
+        organisation_bonuses: field(items, b"design_team_bonus")?
+            .map(|value| {
+                block(value)?
+                    .iter()
+                    .map(|item| {
+                        Ok((
+                            item.key
+                                .clone()
+                                .ok_or_else(|| invalid("design bonus lacks token"))?,
+                            Decimal::parse(scalar(&item.value)?)?,
+                        ))
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default(),
     })
 }
 

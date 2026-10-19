@@ -3,7 +3,6 @@
 
 use super::*;
 use viewer_foundation::map::gui_resources::viewport;
-use viewer_foundation::map::msvc_stable_sort::sort;
 
 /// Naval and land counters share member bar and hidden-state accumulation.
 /// Their kind then selects separate children. Port mission items use their own
@@ -284,7 +283,7 @@ pub(super) struct NavalUnit<'a> {
     pub(super) strength: i64,
 }
 
-/// Everything a naval counter item reads besides its own task forces, for one hour and camera.
+/// Everything a naval counter item reads besides its own task forces, for one hour.
 pub(super) struct NavalContext<'a> {
     pub(super) type_tints: &'a type_tint::Index,
     pub(super) vision: &'a Vision,
@@ -307,11 +306,9 @@ pub(super) struct NavalContext<'a> {
     /// The mission skip operands, shared with the ship models.
     pub(super) mission_skips: viewer_foundation::map::task_force_visual::MissionSkips,
     pub(super) forces_complete: bool,
-    /// Whether coarse grouping applies at this camera.
-    pub(super) coarse: bool,
 }
 
-/// The hour's and camera's inputs a [`NavalContext`] takes besides the frame.
+/// The hour's inputs a [`NavalContext`] takes besides the frame.
 #[derive(Clone, Copy)]
 pub(super) struct NavalSources<'a> {
     pub(super) type_tints: &'a type_tint::Index,
@@ -321,8 +318,6 @@ pub(super) struct NavalSources<'a> {
     pub(super) country_ids: &'a BTreeMap<u32, u32>,
     pub(super) aggression: &'a [i64],
     pub(super) ideology: &'a Ideology<'a>,
-    /// Whether coarse grouping applies at this camera.
-    pub(super) coarse: bool,
 }
 
 /// A country slot's `counter_ideology` frame at sea, as [`ideology_frame`] decides it.
@@ -442,7 +437,6 @@ impl<'a> NavalContext<'a> {
             forces,
             mission_skips: viewer_foundation::map::task_force_visual::MissionSkips::read(frame)?,
             forces_complete: force_rows.is_complete(),
-            coarse: sources.coarse,
         })
     }
 
@@ -881,119 +875,79 @@ pub(super) fn is_land(inputs: &CounterInputs<'_>, province: u32) -> bool {
         )
 }
 
-/// Stable political-map port ordering uses the coarse comparator over each
-/// province's naval roster before splitting it into allegiance runs. Mission
-/// kind is not a tie-break; original order survives equal keys.
-#[derive(Clone, Copy, Debug)]
-struct PortSortKey {
-    own: bool,
-    full: bool,
-    refused: bool,
-    reserve: bool,
-    fleet: u64,
+/// Port frames use coarse sorting in the political mode or beyond its mode's coarse
+/// distance. Only political mode and strategic-level grouping replace that comparator
+/// with allegiance boundaries; closer strategic views keep fleet/mission/selection splits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PortGrouping {
+    cleared: bool,
+    coarse: bool,
+    allegiance: bool,
 }
 
-/// The signed result for two port task forces; the
-/// coarse sorter the game takes its sign bit as "less". The fleet subtraction wraps as the
-/// game's does ([`crate::map::naval_combat_grid::fleet_difference`]).
-fn port_sort_compare(a: &PortSortKey, b: &PortSortKey) -> i32 {
-    let first = |a_first: bool| if a_first { -1 } else { 1 };
-    if a.own != b.own {
-        return first(a.own);
+fn port_grouping(defines: &CounterDefines, visibility: Visibility, height: f32) -> PortGrouping {
+    let political = visibility.political_mode;
+    PortGrouping {
+        cleared: political && defines.coarse(height, false),
+        coarse: political || defines.coarse(height, visibility.strategic_grouping),
+        allegiance: political || defines.groups.level(height) == Level::Strategic,
     }
-    if !a.own {
-        if a.full != b.full {
-            return first(a.full);
-        }
+}
+
+fn port_boundary(
+    grouping: PortGrouping,
+    first: naval_regional::SortKey,
+    next: naval_regional::SortKey,
+    first_side: Allegiance,
+    next_side: Allegiance,
+) -> bool {
+    if grouping.allegiance {
+        naval_regional::allegiance_break(first_side, next_side, first.selected, next.selected)
     } else {
-        if a.refused != b.refused {
-            return first(a.refused);
-        }
-        if a.reserve != b.reserve {
-            return first(b.reserve);
-        }
-        if !a.reserve && a.fleet != b.fleet {
-            return crate::map::naval_combat_grid::fleet_difference(a.fleet, b.fleet);
-        }
+        naval_regional::compare(first, next, grouping.coarse) < 0
     }
-    0
 }
 
+fn port_runs(
+    grouping: PortGrouping,
+    keys: &[naval_regional::SortKey],
+    side: impl Fn(usize) -> Allegiance,
+) -> Vec<std::ops::Range<usize>> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for next in 1..=keys.len() {
+        if next == keys.len()
+            || port_boundary(grouping, keys[start], keys[next], side(start), side(next))
+        {
+            runs.push(start..next);
+            start = next;
+        }
+    }
+    runs
+}
+
+#[cfg(test)]
+type PortSortKey = naval_regional::SortKey;
+
+#[cfg(test)]
+fn port_sort_compare(a: &PortSortKey, b: &PortSortKey) -> i32 {
+    naval_regional::compare(*a, *b, true)
+}
+
+#[cfg(test)]
 fn sort_port_units(
     units: &mut [NavalUnit<'_>],
     context: &NavalContext<'_>,
 ) -> Result<(), &'static str> {
-    let ours = context.vision.ours();
-    let own_count = units.iter().filter(|unit| unit.slot == ours).count();
-    let mut keys = Vec::with_capacity(units.len());
-    for unit in units.iter() {
-        let own = unit.slot == ours;
-        let refused = if own && own_count > 1 {
-            let inputs = context
-                .native
-                .task_force(unit.force.id)
-                .ok_or("own port sort lacks task-force engagement operands")?;
-            counter_inputs::engagement_refused(
-                inputs.running_away,
-                inputs.engagement_rule,
-                unit.force.mission,
-                context.aggression,
-            )
-            .ok_or("own port sort lacks engagement-rule content")?
-        } else {
-            false
-        };
-        keys.push(PortSortKey {
-            own,
-            full: unit.sight == Sight::Full,
-            refused,
-            reserve: unit.force.mission == counter_inputs::RESERVE_FLEET,
-            fleet: unit.force.fleet,
-        });
-    }
-    // Sort the roster with `std::stable_sort` and the coarse comparator.
-    let mut order: Vec<usize> = (0..units.len()).collect();
-    sort(&mut order, |&a, &b| {
-        port_sort_compare(&keys[a], &keys[b]) < 0
-    });
-    permute(units, &order);
-    Ok(())
-}
-
-/// Reorders `items` so that position `i` holds the item that was at `order[i]`, one cycle of
-/// the permutation at a time.
-fn permute<T>(items: &mut [T], order: &[usize]) {
-    let mut placed = vec![false; items.len()];
-    for start in 0..items.len() {
-        let mut at = start;
-        while !placed[at] {
-            placed[at] = true;
-            let from = order[at];
-            if from == start {
-                break;
-            }
-            items.swap(at, from);
-            at = from;
-        }
-    }
-}
-
-/// The game starts a new contiguous run only when its first member's allegiance ranks above
-/// the next sorted task force's.
-fn port_run_break(first: Allegiance, next: Allegiance) -> bool {
-    let rank = |side| match side {
-        Allegiance::Ours => 0,
-        Allegiance::Allied => 1,
-        Allegiance::Enemy => 2,
-        Allegiance::Other => 3,
-    };
-    rank(first) < rank(next)
+    naval_regional::sort_own(units, &BTreeSet::new(), context, true)
+        .map(|_| ())
+        .map_err(|_| "port sort inputs unavailable")
 }
 
 /// The naval base icons whose windows hold the port items, and the items: the game walks each
 /// land province's naval occupant array, independently of the ordinary
 /// sources, admits task forces with a fleet, ships and an empty ordinary route, sorts them and
-/// appends one item per allegiance run to the base's `box_ships`.
+/// appends each comparator-defined run to the base's `box_ships`.
 ///
 /// The base icons are planned below `NAVAL_BASE_DISTANCE_CUTOFF`, whatever their items. The items
 /// are cleared and nothing is filled when the camera is coarse in the default map
@@ -1056,7 +1010,17 @@ pub(super) fn port_counters(
     // boxes of the bases beyond the coarse grouping distance.
     let ports = match (context, tables.order) {
         (None, _) => Ok(None),
-        (Some(context), _) if context.coarse && inputs.camera.free().is_none() => Ok(None),
+        (Some(_), _)
+            if inputs.camera.free().is_none()
+                && port_grouping(
+                    &inputs.content.defines,
+                    inputs.visibility,
+                    inputs.camera.height,
+                )
+                .cleared =>
+        {
+            Ok(None)
+        }
         (Some(context), Some(order)) => {
             let mut items = port_items(inputs, frame, owner, tables, context, order, out)?;
             if inputs.camera.free().is_some() {
@@ -1064,10 +1028,8 @@ pub(super) fn port_counters(
                 let defines = &inputs.content.defines;
                 items.retain(|province, _| {
                     at.get(province).is_none_or(|anchor| {
-                        !defines.coarse(
-                            inputs.icon_height(*anchor),
-                            inputs.visibility.strategic_grouping,
-                        )
+                        !port_grouping(defines, inputs.visibility, inputs.icon_height(*anchor))
+                            .cleared
                     })
                 });
             }
@@ -1075,9 +1037,28 @@ pub(super) fn port_counters(
         }
         (Some(_), None) => Err(PORT_ORDER_UNRECORDED.into()),
     };
+    let homes = crate::map::naval_selection::home_bases(
+        frame,
+        tables.vision.ours(),
+        inputs.selected_fleets,
+    );
+    let mut glyphs = icons.to_vec();
+    match homes {
+        Ok(homes) => {
+            for glyph in &mut glyphs {
+                glyph.highlighted = homes.contains(&glyph.province);
+            }
+        }
+        Err(why) => {
+            *out.report
+                .icon_gui_notes
+                .entry(format!("selected fleet home bases: {why}"))
+                .or_default() += 1;
+        }
+    }
     out.naval.bases = Some(naval_windows::BasePass {
         bases: anchors,
-        glyphs: icons.to_vec(),
+        glyphs,
         ports,
         size,
         unanchored,
@@ -1226,6 +1207,8 @@ fn port_items(
         art: &art,
         gui: &resources,
     };
+    let air_census = (inputs.visibility.priorities == PriorityTable::StrategicAir)
+        .then(|| air_grid::Census::new(frame));
     let mut ports: naval_windows::PortItems = undecided
         .into_iter()
         .map(|(province, why)| (province, Err(why)))
@@ -1236,30 +1219,50 @@ fn port_items(
         }
         roster.sort_by_key(|(ordinal, _)| *ordinal);
         let mut units: Vec<NavalUnit<'_>> = roster.into_iter().map(|(_, unit)| unit).collect();
-        if let Err(reason) = sort_port_units(&mut units, context) {
-            out.report
-                .refuse_task_forces(reason, units.iter().map(|unit| unit.force.id));
-            ports.insert(province, Err(port_undecided(reason)));
-            continue;
-        }
-        // One item per allegiance run, in the order the code appends them.
+        let height = inputs
+            .content
+            .port(province)
+            .map_or(inputs.camera.height, |anchor| inputs.icon_height(anchor));
+        let grouping = port_grouping(&inputs.content.defines, inputs.visibility, height);
+        let keys =
+            match naval_regional::sort_own(&mut units, inputs.selected, context, grouping.coarse) {
+                Ok(keys) => keys,
+                Err(reason) => {
+                    out.report
+                        .refuse_task_forces(reason, units.iter().map(|unit| unit.force.id));
+                    ports.insert(province, Err(port_undecided(reason)));
+                    continue;
+                }
+            };
+        // Compare the first member with each next member, retaining native run order.
         let mut items = Vec::new();
-        let mut start = 0;
-        for next in 1..=units.len() {
-            let boundary = next == units.len()
-                || port_run_break(
-                    tables.countries.side(units[start].slot),
-                    tables.countries.side(units[next].slot),
-                );
-            if !boundary {
-                continue;
-            }
+        for run in port_runs(grouping, &keys, |at| tables.countries.side(units[at].slot)) {
+            let (start, next) = (run.start, run.end);
             let flotilla =
                 context.flotilla(&units[start..next].iter().collect::<Vec<_>>(), true, false);
             if flotilla.hidden {
                 out.report.no_intel_counters += 1;
             }
             out.report.unavailable_naval_flags += usize::from(flotilla.flag_owner.is_none());
+            if let Some(census) = &air_census {
+                let grid = match &flotilla.cells {
+                    Some(cells) if cells.carrier.iter().all(Option::is_none) => Ok(Vec::new()),
+                    Some(cells) if cells.carrier.iter().all(Option::is_some) => {
+                        census.as_ref().map_err(Clone::clone).and_then(|census| {
+                            census.carrier(
+                                inputs,
+                                context.ship_inputs.as_ref(),
+                                &flotilla.members,
+                                context.vision.ours(),
+                            )
+                        })
+                    }
+                    _ => Err("carrier wing grid visibility is undecided".into()),
+                };
+                out.naval
+                    .carrier_ports
+                    .insert((province, items.len()), grid);
+            }
             items.push(gui_windows::navy_calls(
                 &ctx,
                 navy,
@@ -1269,7 +1272,6 @@ fn port_items(
                 },
                 &mut out.report.navy_counter_gaps,
             ));
-            start = next;
         }
         ports.insert(province, Ok(items));
     }

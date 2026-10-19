@@ -1,5 +1,586 @@
 use super::*;
 
+type OccupationMapFixture = (
+    saved::Pack,
+    BTreeMap<u32, installed_content_save::State>,
+    [CountryRow; 3],
+    replay_data::rows::StateResistanceRow,
+    replay_data::rows::StateRow,
+);
+
+fn occupation_map_fixture() -> OccupationMapFixture {
+    use replay_data::rows::{OccupationMap, Recorded, StateResistanceRow, StateRow};
+    let saved = saved_pack(br#"countries={AAA={occupation_status={occupation={CCC={resistance_modifiers={"core_r" "core_r"} compliance_modifiers={"core_c"}}}}} BBB={} CCC={occupation_status={}}} states={7={owner=AAA resistance={occupied_country_tag=BBB resistance=1 resistance_target=2 resistance_modifiers={"state_r" "" "state_r"} compliance_modifiers={"state_c"}}}} provinces={}"#);
+    let (_, mut ordinary, _, _) = recorder_oracle_support::fixtures::fixture();
+    let mut state = ordinary.states.remove(&1).unwrap();
+    state.id = 7;
+    state.owner = Some(b"AAA".to_vec());
+    state.controller = None;
+    let countries = [(1, b"AAA"), (2, b"BBB"), (3, b"CCC")].map(|(id, tag)| CountryRow {
+        id,
+        tag: tag.to_vec(),
+        ..Default::default()
+    });
+    let row = StateResistanceRow {
+        state: 7,
+        country: 2,
+        level: 100_000,
+        active: 0,
+        map: Recorded::Value(Some(OccupationMap {
+            resistance: vec![
+                b"state_r\0trailing".to_vec(),
+                Vec::new(),
+                b"state_r".to_vec(),
+                b"core_r".to_vec(),
+                b"core_r".to_vec(),
+            ],
+            compliance: vec![b"state_c".to_vec(), b"core_c".to_vec()],
+            // The retained group key differs from the state's occupied-country link.
+            core_country: Some(3),
+            stored_target: None,
+        })),
+        ..Default::default()
+    };
+    let captured_state = StateRow {
+        id: 7,
+        owner: 1,
+        controller: 1,
+        ..Default::default()
+    };
+    (
+        saved,
+        BTreeMap::from([(7, state)]),
+        countries,
+        row,
+        captured_state,
+    )
+}
+
+#[test]
+fn occupation_map_compares_inactive_state_then_core_occurrences_and_retained_country_key() {
+    let (saved, states, countries, row, state) = occupation_map_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    let mut report = Report::default();
+    resistance_map(
+        &[row],
+        &saved,
+        &states,
+        &[state],
+        &links,
+        &links,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    for named in ["first NUL", "embedded lookup link", "other saved targets"] {
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains(named)),
+            "{named}"
+        );
+    }
+}
+
+#[test]
+fn occupation_map_saved_identity_order_duplicates_and_each_family_are_exact() {
+    use replay_data::rows::Recorded;
+    let (saved, states, countries, row, state) = occupation_map_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    for mutation in 0..4 {
+        let mut changed = row.clone();
+        let Recorded::Value(Some(map)) = &mut changed.map else {
+            unreachable!()
+        };
+        match mutation {
+            0 => map.resistance.swap(0, 3),
+            1 => {
+                map.resistance.remove(3);
+            }
+            2 => map.resistance[3] = b"other_identity".to_vec(),
+            _ => map.compliance.swap(0, 1),
+        }
+        let mut report = Report::default();
+        resistance_map(
+            &[changed],
+            &saved,
+            &states,
+            std::slice::from_ref(&state),
+            &links,
+            &links,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(
+            report.differences.len(),
+            1,
+            "{mutation}: {:?}",
+            report.differences
+        );
+    }
+}
+
+#[test]
+fn occupation_map_demands_acquisition_including_inactive_and_nonpositive_states() {
+    use replay_data::rows::Recorded;
+    let (saved, states, countries, mut row, state) = occupation_map_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    for missing in [Recorded::NotRecorded, Recorded::Value(None)] {
+        row.map = missing;
+        assert!(
+            resistance_map(
+                std::slice::from_ref(&row),
+                &saved,
+                &states,
+                std::slice::from_ref(&state),
+                &links,
+                &links,
+                &mut Report::default()
+            )
+            .is_err()
+        );
+    }
+    row.country = u32::MAX;
+    let mut report = Report::default();
+    resistance_map(
+        std::slice::from_ref(&row),
+        &saved,
+        &states,
+        std::slice::from_ref(&state),
+        &links,
+        &links,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty());
+    row.map = Recorded::NotRecorded;
+    assert!(
+        resistance_map(
+            &[row],
+            &saved,
+            &states,
+            &[state],
+            &links,
+            &links,
+            &mut Report::default()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn occupation_map_zero_level_target_compares_saved_exact_words_including_omitted_zero() {
+    use replay_data::rows::Recorded;
+    let (mut saved, states, countries, mut row, state) = occupation_map_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    row.level = 0;
+    for target in [0, -9_007_199_254_740_993] {
+        saved.state_resistance.get_mut(&7).unwrap().target.raw = target;
+        let Recorded::Value(Some(map)) = &mut row.map else {
+            unreachable!()
+        };
+        map.stored_target = Some(target);
+        let mut report = Report::default();
+        resistance_map(
+            std::slice::from_ref(&row),
+            &saved,
+            &states,
+            std::slice::from_ref(&state),
+            &links,
+            &links,
+            &mut report,
+        )
+        .unwrap();
+        assert!(report.differences.is_empty());
+        let Recorded::Value(Some(map)) = &mut row.map else {
+            unreachable!()
+        };
+        map.stored_target = Some(target + 1);
+        let mut report = Report::default();
+        resistance_map(
+            std::slice::from_ref(&row),
+            &saved,
+            &states,
+            std::slice::from_ref(&state),
+            &links,
+            &links,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("stored_target"));
+    }
+    let Recorded::Value(Some(map)) = &mut row.map else {
+        unreachable!()
+    };
+    map.stored_target = None;
+    let mut report = Report::default();
+    resistance_map(
+        &[row],
+        &saved,
+        &states,
+        &[state],
+        &links,
+        &links,
+        &mut report,
+    )
+    .unwrap();
+    assert!(!report.differences.is_empty());
+}
+
+#[test]
+fn occupation_map_omitted_owner_uses_named_controller_dependency_and_refuses_missing_states() {
+    let (saved, mut states, countries, row, mut state) = occupation_map_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    states.get_mut(&7).unwrap().owner = None;
+    let mut report = Report::default();
+    resistance_map(
+        std::slice::from_ref(&row),
+        &saved,
+        &states,
+        std::slice::from_ref(&state),
+        &links,
+        &links,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("captured state controller"))
+    );
+    assert!(
+        resistance_map(
+            std::slice::from_ref(&row),
+            &saved,
+            &states,
+            &[],
+            &links,
+            &links,
+            &mut Report::default()
+        )
+        .is_err()
+    );
+    state.controller = 3;
+    assert!(
+        resistance_map(
+            &[row],
+            &saved,
+            &states,
+            &[state],
+            &links,
+            &links,
+            &mut Report::default()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn occupation_map_missing_saved_evidence_never_certifies_an_empty_core_list() {
+    let (mut saved, mut states, countries, row, state) = occupation_map_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    saved.occupation_definitions.clear();
+    assert!(
+        resistance_map(
+            std::slice::from_ref(&row),
+            &saved,
+            &states,
+            std::slice::from_ref(&state),
+            &links,
+            &links,
+            &mut Report::default()
+        )
+        .is_err()
+    );
+    saved.occupation_settings.clear();
+    assert!(
+        resistance_map(
+            std::slice::from_ref(&row),
+            &saved,
+            &states,
+            std::slice::from_ref(&state),
+            &links,
+            &links,
+            &mut Report::default()
+        )
+        .is_err()
+    );
+    states.clear();
+    assert!(
+        resistance_map(
+            &[row],
+            &saved,
+            &states,
+            &[state],
+            &links,
+            &links,
+            &mut Report::default()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn occupation_map_empty_group_retains_its_saved_key_and_absence_stays_separate() {
+    use replay_data::rows::Recorded;
+    let (mut saved, states, countries, mut row, state) = occupation_map_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    *saved
+        .occupation_definitions
+        .get_mut(&(b"AAA".to_vec(), b"CCC".to_vec()))
+        .unwrap() = saved::ActiveOccupationDefinitions::default();
+    let Recorded::Value(Some(map)) = &mut row.map else {
+        unreachable!()
+    };
+    map.resistance.truncate(3);
+    map.compliance.truncate(1);
+    let mut report = Report::default();
+    resistance_map(
+        std::slice::from_ref(&row),
+        &saved,
+        &states,
+        std::slice::from_ref(&state),
+        &links,
+        &links,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty());
+    // The retained key, rather than the embedded occupied-country link, must join.
+    let Recorded::Value(Some(map)) = &mut row.map else {
+        unreachable!()
+    };
+    map.core_country = Some(2);
+    assert!(
+        resistance_map(
+            std::slice::from_ref(&row),
+            &saved,
+            &states,
+            std::slice::from_ref(&state),
+            &links,
+            &links,
+            &mut Report::default()
+        )
+        .is_err()
+    );
+    let Recorded::Value(Some(map)) = &mut row.map else {
+        unreachable!()
+    };
+    map.core_country = None;
+    saved.occupation_definitions.clear();
+    saved
+        .occupation_settings
+        .get_mut(b"AAA".as_slice())
+        .unwrap()
+        .occupied
+        .clear();
+    let mut report = Report::default();
+    resistance_map(
+        &[row],
+        &saved,
+        &states,
+        &[state],
+        &links,
+        &links,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("native group absence"))
+    );
+}
+
+#[test]
+fn occupation_map_reserved_group_key_requires_its_recorded_tag_and_preserves_zero_identity() {
+    use replay_data::rows::Recorded;
+    let (mut saved, states, countries, mut row, state) = occupation_map_fixture();
+    let mut tags: BTreeMap<_, _> = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    let definitions = saved
+        .occupation_definitions
+        .remove(&(b"AAA".to_vec(), b"CCC".to_vec()))
+        .unwrap();
+    saved
+        .occupation_definitions
+        .insert((b"AAA".to_vec(), b"reserved_fixture".to_vec()), definitions);
+    saved
+        .occupation_settings
+        .get_mut(b"AAA".as_slice())
+        .unwrap()
+        .occupied = vec![b"reserved_fixture".to_vec()];
+    let Recorded::Value(Some(map)) = &mut row.map else {
+        unreachable!()
+    };
+    map.core_country = Some(0);
+    assert!(
+        resistance_map(
+            std::slice::from_ref(&row),
+            &saved,
+            &states,
+            std::slice::from_ref(&state),
+            &tags,
+            &tags,
+            &mut Report::default()
+        )
+        .is_err()
+    );
+    tags.insert(0, b"reserved_fixture\0trailing");
+    let mut report = Report::default();
+    resistance_map(&[row], &saved, &states, &[state], &tags, &tags, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("first NUL"))
+    );
+}
+
+#[test]
+fn occupation_resistance_hover_compares_additions_and_exile_without_certifying_runtime_caches() {
+    use replay_data::rows::{
+        OccupationAddedTarget, OccupationHover, OccupationModifierSource, Recorded,
+        StateResistanceRow,
+    };
+    let text = b"countries={AAA={} BBB={diplomacy={hosting_our_government_in_exile=AAA legitimacy=75}}} states={7={resistance={added_resistance_targets={{amount=-1.23456 controller=AAA tooltip=fixture}}}}} provinces={}";
+    let saved = saved_pack(text);
+    let intel =
+        installed_content_save::intel::parse(&installed_content_core::parser::parse(text).unwrap().items).unwrap();
+    let a = CountryRow {
+        id: 10,
+        tag: b"AAA".to_vec(),
+        ..Default::default()
+    };
+    let b = CountryRow {
+        id: 11,
+        tag: b"BBB".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(10, &a), (11, &b)]);
+    let sources = [4, 4, 4, 4, 3, 3]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(section, count)| {
+            (0..count).map(move |source| OccupationModifierSource {
+                section: section as u8,
+                source,
+                key: 100 + source as u32,
+                total: Some(if matches!(section, 1 | 2) { 123 } else { 0 }),
+                nodes: if matches!(section, 1 | 2) {
+                    vec![replay_data::rows::ModifierBreakdownNode {
+                        children: 0,
+                        value: 123,
+                        name: b"rate source".to_vec(),
+                    }]
+                } else {
+                    Vec::new()
+                },
+                ..Default::default()
+            })
+        })
+        .collect();
+    let mut row = StateResistanceRow {
+        state: 7,
+        country: 11,
+        active: 1,
+        hover: Recorded::Value(Some(OccupationHover {
+            exile_host: 10,
+            legitimacy: 7_500_000,
+            added: vec![OccupationAddedTarget {
+                value: -123_456,
+                controller: 10,
+                occupied: -1,
+                localisation: b"fixture\0retained".to_vec(),
+            }],
+            ..Default::default()
+        })),
+        modifier_sources: Recorded::Value(sources),
+        ..Default::default()
+    };
+    let mut report = Report::default();
+    resistance_hover(&[row.clone()], &saved, &intel, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("runtime-only"))
+    );
+    for section in [1, 2] {
+        let mut refused = row.clone();
+        let Recorded::Value(sources) = &mut refused.modifier_sources else {
+            unreachable!()
+        };
+        let source = sources
+            .iter_mut()
+            .find(|source| source.section == section)
+            .unwrap();
+        source.nodes.clear();
+        source.failure = b"rate tree: exact branch unavailable".to_vec();
+        assert!(
+            resistance_hover(&[refused], &saved, &intel, &links, &mut Report::default()).is_err()
+        );
+    }
+    let mut missing_total = row.clone();
+    let Recorded::Value(sources) = &mut missing_total.modifier_sources else {
+        unreachable!()
+    };
+    // Even without an error string, an absent root is not a zero or a certified tree.
+    sources
+        .iter_mut()
+        .find(|source| source.section == 2)
+        .unwrap()
+        .total = None;
+    assert!(
+        resistance_hover(
+            &[missing_total],
+            &saved,
+            &intel,
+            &links,
+            &mut Report::default()
+        )
+        .is_err()
+    );
+    let Recorded::Value(Some(hover)) = &mut row.hover else {
+        unreachable!()
+    };
+    hover.added[0].value += 1;
+    hover.legitimacy -= 1;
+    resistance_hover(&[row], &saved, &intel, &links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+}
+
 fn history_fixture(input: &[u8]) -> installed_content_states::states::StateDefinition {
     let context = installed_content_states::states::Context {
         resource: &|_| installed_content_states::states::Resource::Found,
@@ -146,6 +727,7 @@ fn state_strategic_locations_compare_with_the_saved_state_and_province_lists() {
         demilitarized: None,
         is_border_conflict: None,
         manpower_available: None,
+        manpower_locked: None,
         population: None,
         category: None,
         name: None,
@@ -235,10 +817,12 @@ fn occupation_law_names_compare_native_first_nul_prefixes() {
         ..Default::default()
     });
     let links = BTreeMap::from([(1, &countries[0]), (2, &countries[1])]);
+    let tags = BTreeMap::from([(1, b"AAA".as_slice()), (2, b"BBB".as_slice())]);
     let row = OccupationSettingsRow {
         country: 1,
         default_law_present: 1,
         law: b"Law\0tail".to_vec(),
+        occupied: Recorded::Value(Some(vec![2])),
         group_laws: Recorded::Value(Some(vec![OccupationGroupLaw {
             occupied: 2,
             scope_country: Some(2),
@@ -253,8 +837,23 @@ fn occupation_law_names_compare_native_first_nul_prefixes() {
         name: b"Law\0tail".to_vec(),
     };
     let mut report = Report::default();
-    occupation_settings(std::slice::from_ref(&row), &saved, &links, &mut report).unwrap();
-    occupation_laws(std::slice::from_ref(&state), &saved, &links, &mut report).unwrap();
+    occupation_settings(
+        std::slice::from_ref(&row),
+        &saved,
+        &links,
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    occupation_laws(
+        std::slice::from_ref(&state),
+        &saved,
+        &links,
+        Some(std::slice::from_ref(&row)),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(
         report
@@ -274,8 +873,23 @@ fn occupation_law_names_compare_native_first_nul_prefixes() {
     let mut state = state;
     state.name[0] = b'X';
     let mut report = Report::default();
-    occupation_settings(&[changed], &saved, &links, &mut report).unwrap();
-    occupation_laws(&[state], &saved, &links, &mut report).unwrap();
+    occupation_settings(
+        std::slice::from_ref(&changed),
+        &saved,
+        &links,
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    occupation_laws(
+        &[state],
+        &saved,
+        &links,
+        Some(&[changed]),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
     assert_eq!(report.differences.len(), 3);
     let saved_empty = saved_pack(b"countries={AAA={occupation_status={default_law=\"\" occupation={BBB={occupation_law=\"\"}}}} BBB={}} states={} provinces={}");
     for name in [b"\0tail".as_slice(), b"".as_slice()] {
@@ -286,7 +900,7 @@ fn occupation_law_names_compare_native_first_nul_prefixes() {
         };
         groups[0].law = Some(name.to_vec());
         let mut report = Report::default();
-        occupation_settings(&[empty], &saved_empty, &links, &mut report).unwrap();
+        occupation_settings(&[empty], &saved_empty, &links, &tags, &mut report).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
     }
 }
@@ -779,34 +1393,37 @@ fn occupation_template_id_retains_full_handle_and_null_omission() {
         ..Default::default()
     };
     let links = BTreeMap::from([(12, &germany), (22, &france)]);
+    let tags = BTreeMap::from([(12, b"GER".as_slice()), (22, b"FRA".as_slice())]);
     let mut rows = [
         replay_data::rows::OccupationSettingsRow {
             country: 12,
             garrison_template: Some((u64::from(u32::MAX) << 32) | 52),
             default_law_present: 1,
             law: Vec::new(),
+            occupied: replay_data::rows::Recorded::Value(Some(Vec::new())),
             group_laws: replay_data::rows::Recorded::Value(Some(Vec::new())),
             ..Default::default()
         },
         replay_data::rows::OccupationSettingsRow {
             country: 22,
+            occupied: replay_data::rows::Recorded::Value(Some(Vec::new())),
             group_laws: replay_data::rows::Recorded::Value(Some(Vec::new())),
             ..Default::default()
         },
     ];
     let mut report = Report::default();
-    occupation_settings(&rows, &saved, &links, &mut report).unwrap();
+    occupation_settings(&rows, &saved, &links, &tags, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
 
     rows[0].garrison_template = Some((u64::from(u32::MAX - 1) << 32) | 52);
-    occupation_settings(&rows, &saved, &links, &mut report).unwrap();
+    occupation_settings(&rows, &saved, &links, &tags, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("garrison_template"));
 
     rows[0].garrison_template = Some((u64::from(u32::MAX) << 32) | 52);
     rows[1].garrison_template = Some((1_u64 << 32) | 52);
     let mut report = Report::default();
-    occupation_settings(&rows, &saved, &links, &mut report).unwrap();
+    occupation_settings(&rows, &saved, &links, &tags, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("FRA.garrison_template"));
 }
@@ -825,6 +1442,11 @@ fn occupied_country_roster_oracle_checks_order_and_appended_availability() {
         .enumerate()
         .map(|(ordinal, country)| (ordinal as u32 + 1, country))
         .collect();
+    let tags = BTreeMap::from([
+        (1, b"AAA".as_slice()),
+        (2, b"BBB".as_slice()),
+        (3, b"CCC".as_slice()),
+    ]);
     let mut row = replay_data::rows::OccupationSettingsRow {
         country: 1,
         occupied: replay_data::rows::Recorded::Value(Some(vec![3, 2])),
@@ -840,14 +1462,14 @@ fn occupied_country_roster_oracle_checks_order_and_appended_availability() {
         ..Default::default()
     };
     let mut report = Report::default();
-    occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
+    occupation_settings(&[row.clone()], &saved, &links, &tags, &mut report).unwrap();
     assert!(report.differences.is_empty());
     row.occupied = replay_data::rows::Recorded::Value(Some(vec![2, 3]));
-    occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
+    occupation_settings(&[row.clone()], &saved, &links, &tags, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     row.occupied = replay_data::rows::Recorded::NotRecorded;
     let mut report = Report::default();
-    occupation_settings(&[row], &saved, &links, &mut report).unwrap();
+    occupation_settings(&[row], &saved, &links, &tags, &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert_eq!(report.compared_tables["OccupationSettings"], 1);
     assert!(
@@ -873,6 +1495,24 @@ fn laws_with_zero_state_remain_distinct_in_different_occupied_scopes() {
         ..Default::default()
     };
     let links = BTreeMap::from([(12, &germany), (22, &france), (32, &britain)]);
+    let tags = BTreeMap::from([
+        (12, b"GER".as_slice()),
+        (22, b"FRA".as_slice()),
+        (32, b"ENG".as_slice()),
+    ]);
+    let settings = [replay_data::rows::OccupationSettingsRow {
+        country: 12,
+        group_laws: replay_data::rows::Recorded::Value(Some(
+            [22, 32]
+                .map(|occupied| replay_data::rows::OccupationGroupLaw {
+                    occupied,
+                    scope_country: Some(occupied),
+                    law: None,
+                })
+                .to_vec(),
+        )),
+        ..Default::default()
+    }];
     let mut rows = [
         replay_data::rows::StateOccupationLawRow {
             controller: 12,
@@ -888,10 +1528,10 @@ fn laws_with_zero_state_remain_distinct_in_different_occupied_scopes() {
         },
     ];
     let mut report = Report::default();
-    occupation_laws(&rows, &saved, &links, &mut report).unwrap();
+    occupation_laws(&rows, &saved, &links, Some(&settings), &tags, &mut report).unwrap();
     assert!(report.differences.is_empty());
     rows[0].name = b"b".to_vec();
-    occupation_laws(&rows, &saved, &links, &mut report).unwrap();
+    occupation_laws(&rows, &saved, &links, Some(&settings), &tags, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
 }
 
@@ -1653,10 +2293,15 @@ fn occupation_group_laws_compare_null_membership_aliases_and_missing_or_extra_gr
         ..Default::default()
     };
     let links = BTreeMap::from([(1, &a), (2, &b), (3, &c), (9002, &b)]);
+    let tags = BTreeMap::from([
+        (1, b"A".as_slice()),
+        (2, b"B".as_slice()),
+        (3, b"C".as_slice()),
+    ]);
     let groups = vec![
         OccupationGroupLaw {
             occupied: 9002,
-            scope_country: Some(9002),
+            scope_country: Some(2),
             law: Some(b"mod_law".to_vec()),
         },
         OccupationGroupLaw {
@@ -1667,11 +2312,12 @@ fn occupation_group_laws_compare_null_membership_aliases_and_missing_or_extra_gr
     ];
     let mut row = OccupationSettingsRow {
         country: 1,
+        occupied: Recorded::Value(Some(vec![2, 3])),
         group_laws: Recorded::Value(Some(groups)),
         ..Default::default()
     };
     let mut report = Report::default();
-    occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
+    occupation_settings(&[row.clone()], &saved, &links, &tags, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     for groups in [
         vec![
@@ -1711,10 +2357,565 @@ fn occupation_group_laws_compare_null_membership_aliases_and_missing_or_extra_gr
     ] {
         row.group_laws = Recorded::Value(Some(groups));
         let mut report = Report::default();
-        occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
+        occupation_settings(&[row.clone()], &saved, &links, &tags, &mut report).unwrap();
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("group_laws"));
     }
+}
+
+type OccupationSavedKeyFixture = (
+    saved::Pack,
+    [CountryRow; 3],
+    replay_data::rows::OccupationSettingsRow,
+    replay_data::rows::StateOccupationLawRow,
+    replay_data::rows::StateGarrisonRow,
+    replay_data::rows::StateAssignedManpowerRow,
+);
+
+fn occupation_saved_key_fixture() -> OccupationSavedKeyFixture {
+    use replay_data::rows::{OccupationGroupLaw, OccupationSettingsRow, Recorded};
+    let saved = saved_pack(b"countries={AAA={occupation_status={default_law=default occupation={CCC={occupation_law=group occupation_law_list={7=override} state_garrison_data={7={army_manpower_need=4 strength_ratio=1 garrison_required=2 suppression=yes manpower_pool={value={tag=AAA value=5}}}}}}}} BBB={} CCC={}} states={} provinces={}");
+    let countries = [(1, b"AAA"), (2, b"BBB"), (3, b"CCC")].map(|(id, tag)| CountryRow {
+        id,
+        tag: tag.to_vec(),
+        ..Default::default()
+    });
+    let settings = OccupationSettingsRow {
+        country: 1,
+        default_law_present: 1,
+        law: b"default".to_vec(),
+        occupied: Recorded::Value(Some(vec![3])),
+        group_laws: Recorded::Value(Some(vec![OccupationGroupLaw {
+            occupied: 2,
+            scope_country: Some(3),
+            law: Some(b"group".to_vec()),
+        }])),
+        ..Default::default()
+    };
+    let law = replay_data::rows::StateOccupationLawRow {
+        controller: 1,
+        occupied: 2,
+        state: 7,
+        name: b"override".to_vec(),
+    };
+    let garrison = replay_data::rows::StateGarrisonRow {
+        controller: 1,
+        occupied: 2,
+        state: 7,
+        required_manpower: 4,
+        strength_ratio: 100_000,
+        garrison_required: 200_000,
+        serialized_flag: 1,
+        ..Default::default()
+    };
+    let manpower = replay_data::rows::StateAssignedManpowerRow {
+        controller: 1,
+        occupied: 2,
+        state: 7,
+        ordinal: 0,
+        source_country: 1,
+        amount: 5,
+    };
+    (saved, countries, settings, law, garrison, manpower)
+}
+
+#[test]
+fn occupation_saved_keys_use_retained_country_and_keep_each_saved_value_exact() {
+    use replay_data::rows::Recorded;
+    let (saved, countries, mut settings, mut law, mut garrison, mut manpower) =
+        occupation_saved_key_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country))
+        .collect();
+    let tags = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    let mut report = Report {
+        read_hours: Some(BTreeMap::from([
+            (TableId::OccupationSettings, 3),
+            (TableId::StateOccupationLaws, 3),
+            (TableId::StateGarrisons, 3),
+            (TableId::StateAssignedManpower, 3),
+        ])),
+        ..Default::default()
+    };
+    occupation_settings(
+        std::slice::from_ref(&settings),
+        &saved,
+        &links,
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    occupation_laws(
+        std::slice::from_ref(&law),
+        &saved,
+        &links,
+        Some(std::slice::from_ref(&settings)),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    garrisons(
+        std::slice::from_ref(&garrison),
+        &saved,
+        &links,
+        Some(std::slice::from_ref(&settings)),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    assigned_manpower(
+        std::slice::from_ref(&manpower),
+        &saved,
+        &links,
+        Some(std::slice::from_ref(&settings)),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        !report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("retained occupied-country pointer is not serialized"))
+    );
+
+    let Recorded::Value(Some(groups)) = &mut settings.group_laws else {
+        unreachable!()
+    };
+    groups[0].law = Some(b"wrong_group".to_vec());
+    law.name = b"wrong_override".to_vec();
+    garrison.required_manpower += 1;
+    manpower.amount += 1;
+    let mut report = Report::default();
+    occupation_settings(
+        std::slice::from_ref(&settings),
+        &saved,
+        &links,
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    occupation_laws(
+        &[law],
+        &saved,
+        &links,
+        Some(std::slice::from_ref(&settings)),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    garrisons(
+        &[garrison],
+        &saved,
+        &links,
+        Some(std::slice::from_ref(&settings)),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    assigned_manpower(
+        &[manpower],
+        &saved,
+        &links,
+        Some(&[settings]),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    assert_eq!(report.differences.len(), 4, "{:?}", report.differences);
+}
+
+#[test]
+fn occupation_failed_roster_still_compares_group_and_default_laws() {
+    use replay_data::rows::Recorded;
+    let (saved, countries, mut settings, _, _, _) = occupation_saved_key_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country))
+        .collect();
+    let tags = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    settings.occupied = Recorded::Value(None);
+    settings.law = b"wrong_default".to_vec();
+    let Recorded::Value(Some(groups)) = &mut settings.group_laws else {
+        unreachable!()
+    };
+    groups[0].law = Some(b"wrong_group".to_vec());
+    let mut report = Report::default();
+    assert!(
+        !report.attempt("construction OccupationSettings", |report| {
+            occupation_settings(&[settings], &saved, &links, &tags, report)
+        })
+    );
+    assert!(
+        report.failed_comparisons["construction OccupationSettings"]
+            .contains("roster capture failed")
+    );
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    assert!(report.outcome().is_err());
+}
+
+#[test]
+fn occupation_saved_keys_preserve_reserved_zero_and_require_its_exact_tag() {
+    use replay_data::rows::Recorded;
+    let (mut saved, countries, mut settings, law, garrison, manpower) =
+        occupation_saved_key_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country))
+        .collect();
+    let mut tags: BTreeMap<_, _> = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    let reserved = b"reserved_fixture".to_vec();
+    let status = saved
+        .occupation_settings
+        .get_mut(b"AAA".as_slice())
+        .unwrap();
+    status.occupied = vec![reserved.clone()];
+    let group_law = status.group_laws.remove(b"CCC".as_slice()).unwrap();
+    status.group_laws.insert(reserved.clone(), group_law);
+    let mut saved_law = saved
+        .state_occupation_laws
+        .remove(&(b"AAA".to_vec(), b"CCC".to_vec(), 7))
+        .unwrap();
+    saved_law.occupied.clone_from(&reserved);
+    saved
+        .state_occupation_laws
+        .insert((b"AAA".to_vec(), reserved.clone(), 7), saved_law);
+    saved
+        .state_garrisons
+        .get_mut(&(b"AAA".to_vec(), 7))
+        .unwrap()
+        .occupied = reserved;
+    settings.occupied = Recorded::Value(Some(vec![0]));
+    let Recorded::Value(Some(groups)) = &mut settings.group_laws else {
+        unreachable!()
+    };
+    groups[0].scope_country = Some(0);
+    let mut report = Report::default();
+    assert!(
+        !report.attempt("construction OccupationSettings", |report| {
+            occupation_settings(
+                std::slice::from_ref(&settings),
+                &saved,
+                &links,
+                &tags,
+                report,
+            )
+        })
+    );
+    assert!(report.outcome().is_err());
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    tags.insert(0, b"reserved_fixture\0tail");
+    let mut report = Report::default();
+    occupation_settings(
+        std::slice::from_ref(&settings),
+        &saved,
+        &links,
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    occupation_laws(
+        &[law],
+        &saved,
+        &links,
+        Some(std::slice::from_ref(&settings)),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    garrisons(
+        &[garrison],
+        &saved,
+        &links,
+        Some(std::slice::from_ref(&settings)),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    assigned_manpower(
+        &[manpower],
+        &saved,
+        &links,
+        Some(&[settings]),
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("first NUL"))
+    );
+}
+
+#[test]
+fn occupation_saved_keys_refuse_missing_or_differently_supplied_group_witnesses() {
+    use replay_data::rows::Recorded;
+    let (saved, countries, settings, law, mut garrison, mut manpower) =
+        occupation_saved_key_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country))
+        .collect();
+    let tags = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    garrison.required_manpower += 1;
+    manpower.amount += 1;
+    for case in 0..9 {
+        let mut settings = settings.clone();
+        let mut report = Report::default();
+        match case {
+            0 => {
+                let Recorded::Value(Some(groups)) = &mut settings.group_laws else {
+                    unreachable!()
+                };
+                groups[0].scope_country = None;
+            }
+            1 => settings.group_laws = Recorded::NotRecorded,
+            2 => settings.group_laws = Recorded::Value(None),
+            3 => settings.group_laws = Recorded::Value(Some(Vec::new())),
+            4 => settings.country = 99,
+            5 => {}
+            6 | 7 => {
+                report.read_hours = Some(BTreeMap::from([
+                    (TableId::OccupationSettings, 2),
+                    (TableId::StateOccupationLaws, 3),
+                    (TableId::StateGarrisons, 3),
+                    (TableId::StateAssignedManpower, 3),
+                ]));
+                if case == 7 {
+                    report
+                        .read_hours
+                        .as_mut()
+                        .unwrap()
+                        .remove(&TableId::OccupationSettings);
+                }
+            }
+            8 => {
+                let Recorded::Value(Some(groups)) = &mut settings.group_laws else {
+                    unreachable!()
+                };
+                groups.push(groups[0].clone());
+            }
+            _ => unreachable!(),
+        }
+        let inventory = (case != 5).then_some(std::slice::from_ref(&settings));
+        assert!(
+            occupation_laws(
+                std::slice::from_ref(&law),
+                &saved,
+                &links,
+                inventory,
+                &tags,
+                &mut report
+            )
+            .is_err(),
+            "case {case}"
+        );
+        assert!(
+            garrisons(
+                std::slice::from_ref(&garrison),
+                &saved,
+                &links,
+                inventory,
+                &tags,
+                &mut report
+            )
+            .is_err(),
+            "case {case}"
+        );
+        assert!(
+            assigned_manpower(
+                std::slice::from_ref(&manpower),
+                &saved,
+                &links,
+                inventory,
+                &tags,
+                &mut report
+            )
+            .is_err(),
+            "case {case}"
+        );
+        assert_eq!(
+            report.differences.len(),
+            2,
+            "case {case}: {:?}",
+            report.differences
+        );
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("saved-key witness is unavailable"))
+        );
+    }
+}
+
+#[test]
+fn occupation_missing_scope_still_compares_other_group_laws_default_and_state_overrides() {
+    use replay_data::rows::{OccupationGroupLaw, Recorded};
+    let (mut saved, countries, mut settings, missing_law, _, _) = occupation_saved_key_fixture();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country))
+        .collect();
+    let tags = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    saved
+        .occupation_settings
+        .get_mut(b"AAA".as_slice())
+        .unwrap()
+        .group_laws
+        .insert(b"BBB".to_vec(), Some(b"other".to_vec()));
+    saved.state_occupation_laws.insert(
+        (b"AAA".to_vec(), b"BBB".to_vec(), 8),
+        saved::StateOccupationLaw {
+            controller: b"AAA".to_vec(),
+            occupied: b"BBB".to_vec(),
+            state: 8,
+            law: b"other_override".to_vec(),
+        },
+    );
+    settings.law = b"wrong_default".to_vec();
+    let Recorded::Value(Some(groups)) = &mut settings.group_laws else {
+        unreachable!()
+    };
+    groups[0].scope_country = None;
+    groups.push(OccupationGroupLaw {
+        occupied: 3,
+        scope_country: Some(2),
+        law: Some(b"wrong_other".to_vec()),
+    });
+    let other_law = replay_data::rows::StateOccupationLawRow {
+        controller: 1,
+        occupied: 3,
+        state: 8,
+        name: b"wrong_override".to_vec(),
+    };
+    let mut report = Report::default();
+    assert!(
+        !report.attempt("construction OccupationSettings", |report| {
+            occupation_settings(
+                std::slice::from_ref(&settings),
+                &saved,
+                &links,
+                &tags,
+                report,
+            )
+        })
+    );
+    assert!(!report.attempt(
+        "construction StateOccupationLaws",
+        |report| occupation_laws(
+            &[missing_law, other_law],
+            &saved,
+            &links,
+            Some(&[settings]),
+            &tags,
+            report
+        )
+    ));
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    assert_eq!(report.failed_comparisons.len(), 2);
+}
+
+#[test]
+fn occupation_resistance_uses_raw_saved_tag_spelling_and_keeps_independent_scalars() {
+    let saved = saved_pack(b"countries={} states={7={resistance={occupied_country_tag=raw_alias resistance=1}}} provinces={}");
+    let row = replay_data::rows::StateResistanceRow {
+        state: 7,
+        country: 9002,
+        level: 100_000,
+        ..Default::default()
+    };
+    let tags = BTreeMap::from([(9002, b"raw_alias\0tail".as_slice())]);
+    let mut report = Report::default();
+    resistance(std::slice::from_ref(&row), &saved, &tags, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let canonical_tags = BTreeMap::from([(9002, b"BBB".as_slice())]);
+    let mut report = Report::default();
+    resistance(
+        std::slice::from_ref(&row),
+        &saved,
+        &canonical_tags,
+        &mut report,
+    )
+    .unwrap();
+    assert_eq!(report.differences.len(), 1);
+    let mut changed = row;
+    changed.level += 1;
+    let mut report = Report::default();
+    assert!(
+        !report.attempt("construction StateResistance", |report| resistance(
+            &[changed],
+            &saved,
+            &BTreeMap::new(),
+            report
+        ))
+    );
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.outcome().is_err());
+}
+
+#[test]
+fn occupation_map_separates_raw_occupied_spelling_from_resolved_controller_holder() {
+    let (mut saved, mut states, countries, mut row, mut state) = occupation_map_fixture();
+    states.get_mut(&7).unwrap().owner = None;
+    state.controller = 9001;
+    row.country = 9002;
+    saved.state_resistance.get_mut(&7).unwrap().country = Some(b"raw_alias".to_vec());
+    let controllers = BTreeMap::from([(9001, b"AAA".as_slice())]);
+    let mut tags: BTreeMap<_, _> = countries
+        .iter()
+        .map(|country| (country.id, country.tag.as_slice()))
+        .collect();
+    tags.insert(9001, b"different_controller_spelling");
+    tags.insert(9002, b"raw_alias\0tail");
+    let mut report = Report::default();
+    resistance_map(
+        std::slice::from_ref(&row),
+        &saved,
+        &states,
+        std::slice::from_ref(&state),
+        &controllers,
+        &tags,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    tags.remove(&9002);
+    let error = resistance_map(
+        &[row],
+        &saved,
+        &states,
+        &[state],
+        &controllers,
+        &tags,
+        &mut Report::default(),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("country tag 9002 was not acquired")
+    );
 }
 
 /// The resources map tables against the saved origins: each origin's stored efficiency and
@@ -1795,11 +2996,13 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         countries: BTreeMap::from([(
             b"GER".to_vec(),
             economy::Country {
+                market: None,
                 fuel: None,
                 experience: None,
                 pools: None,
                 logistics: None,
                 lend_lease: Some(vec![economy::LendLease {
+                    terms: None,
                     id: 0x34_u64 << 32,
                     receiver: b"AFG".to_vec(),
                     efficiency: decimal(b"0.5"),

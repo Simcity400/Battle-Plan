@@ -596,7 +596,7 @@ fn paused_same_hour_boundaries_own_new_sequences_and_preserve_identical_operatio
     );
     assert!(batch.reset);
     assert_eq!(batch.popups.len(), 2);
-    assert_eq!(batch.coverage, [true; 7]);
+    assert_eq!(batch.coverage, [true; MapEventFamily::COUNT]);
     assert!(
         present(
             &mut consumer,
@@ -687,11 +687,11 @@ fn unknown_health_keeps_positive_events_and_never_becomes_empty_proof() {
     let context = Context::new(&frame, &vision, &content, &loc);
     let mut consumer = Consumer::default();
     let mut row = interval(39, 40, 1, 2, vec![critical(1, 39)]);
-    row.health = [MapEventFamilyHealth::default(); 7];
+    row.health = [MapEventFamilyHealth::default(); MapEventFamily::COUNT];
     let batch = present(&mut consumer, &context, &[row], true, Continuity::Continue);
     assert!(batch.reset);
     assert_eq!(batch.popups.len(), 1);
-    assert_eq!(batch.coverage, [false; 7]);
+    assert_eq!(batch.coverage, [false; MapEventFamily::COUNT]);
     assert_eq!(batch.refusals.len(), 7);
 }
 
@@ -769,7 +769,7 @@ fn missing_interval_breaks_continuity_and_cannot_reemit_a_prior_singleton() {
     );
     let missing = present(&mut consumer, &context, &[], false, Continuity::Continue);
     assert!(missing.reset);
-    assert_eq!(missing.coverage, [false; 7]);
+    assert_eq!(missing.coverage, [false; MapEventFamily::COUNT]);
     assert!(
         present(&mut consumer, &context, &[row], true, Continuity::Continue)
             .popups
@@ -927,7 +927,7 @@ fn malformed_or_carried_interval_is_unknown_not_positive_or_negative_coverage() 
         );
         assert!(batch.reset);
         assert!(batch.popups.is_empty());
-        assert_eq!(batch.coverage, [false; 7]);
+        assert_eq!(batch.coverage, [false; MapEventFamily::COUNT]);
     }
 }
 

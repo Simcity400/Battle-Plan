@@ -9,6 +9,69 @@ static SEEN: AtomicUsize = AtomicUsize::new(0);
 static FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
+fn faction_store_taps_accept_indexed_values_and_immediates_but_refuse_stack_operands() {
+    let span = |value: &[u8]| {
+        let mut bytes = [0x90; 16];
+        bytes[..value.len()].copy_from_slice(value);
+        instruction_span(&bytes)
+    };
+    // Synthetic indexed ADD and MOV of an eight-byte value, and immediate
+    // byte/dword writes. No operand depends on the inserted CALL's stack.
+    assert_eq!(span(&[0x4a, 0x01, 0x4c, 0x0a, 0xf0]), Ok(5));
+    assert_eq!(span(&[0x4d, 0x89, 0x4c, 0x00, 0xf0]), Ok(5));
+    assert_eq!(span(&[0xc7, 0x43, 0x08, 3, 0, 0, 0]), Ok(7));
+    assert_eq!(span(&[0x88, 0x88, 0x38, 0x0a, 0, 0]), Ok(6));
+    assert!(span(&[0x88, 0x4c, 0x24, 8, 0x90]).is_err());
+    assert_eq!(span(&[0xc6, 0x83, 0x38, 0x0a, 0, 0, 1]), Ok(7));
+    // R12 is a stable base; RSP is affected by the CALL. A SIB's absent
+    // index is valid, and a base-less address remains outside this API.
+    assert_eq!(span(&[0x49, 0x89, 0x44, 0x24, 0x10]), Ok(5));
+    assert!(span(&[0x48, 0x89, 0x44, 0x24, 0x10]).is_err());
+    assert!(span(&[0xc7, 0x44, 0x24, 8, 3, 0, 0, 0]).is_err());
+    assert!(span(&[0x48, 0x89, 0x24, 0x03, 0x90]).is_err());
+    assert!(span(&[0x48, 0x89, 0x04, 0x25, 0, 0, 0, 0]).is_err());
+    assert!(span(&[0xc7, 0x0b, 3, 0, 0, 0]).is_err());
+    assert!(span(&[0xe8, 0, 0, 0, 0]).is_err());
+    // Clamp/store, store/loop and store/immediate spans retain their native
+    // flags and avoid a wider patch over a following branch or RIP load.
+    assert_eq!(
+        span(&[0x4d, 0x0f, 0x48, 0xc7, 0x4c, 0x89, 0x40, 0x48]),
+        Ok(8)
+    );
+    assert_eq!(span(&[0x48, 0xff, 0xc7, 0x49, 0x89, 0x48, 0x48]), Ok(7));
+    assert_eq!(span(&[0x48, 0x89, 0x4d, 0x38, 0x49, 0x3b, 0xf7]), Ok(7));
+    assert_eq!(span(&[0x48, 0x89, 0x4d, 0x40, 0x48, 0x83, 0xc6, 8]), Ok(8));
+    assert_eq!(span(&[0x89, 0x71, 0x50, 0xff, 0xc7]), Ok(5));
+    assert_eq!(span(&[0x48, 0x29, 0x88, 0x80, 0, 0, 0]), Ok(7));
+    assert_eq!(
+        span(&[0x48, 0x89, 0x4d, 0x40, 0x49, 0xb9, 1, 0, 0, 0, 0, 0, 0, 0]),
+        Ok(14)
+    );
+    for bytes in [
+        &[0x48, 0x0f, 0x48, 0xe0][..],
+        &[0x48, 0xff, 0xc4],
+        &[0x48, 0x83, 0xc4, 8],
+        &[0x48, 0xbc, 0, 0, 0, 0, 0, 0, 0, 0],
+    ] {
+        assert!(span(bytes).is_err());
+    }
+}
+
+#[test]
+fn combat_log_counter_tap_compensates_for_its_return_slot_without_touching_the_counter_operand() {
+    let mut code = [0x90; 16];
+    code[..10].copy_from_slice(&[0xff, 0x47, 0x04, 0x8b, 0xbc, 0x24, 0x20, 0, 0, 0]);
+    assert_eq!(instruction_span(&code), Ok(10));
+    let bridge = bridge_code(1, 0, &code[..10]);
+    assert_eq!(
+        &bridge.code[bridge.continuation..bridge.completion],
+        &[0xff, 0x47, 0x04, 0x8b, 0xbc, 0x24, 0x28, 0, 0, 0]
+    );
+    code[6..10].copy_from_slice(&i32::MAX.to_le_bytes());
+    assert!(instruction_span(&code).is_err());
+}
+
+#[test]
 fn world_invalidation_mov_spans_preserve_the_native_stack_and_operands() {
     assert_eq!(
         instruction_span(&engine_mutations::world_lifetime_sites::RESET.sentinel),
@@ -18,6 +81,68 @@ fn world_invalidation_mov_spans_preserve_the_native_stack_and_operands() {
         instruction_span(&engine_mutations::world_lifetime_sites::CONSTRUCT.sentinel),
         Ok(7)
     );
+}
+
+#[test]
+fn event_option_lea_and_move_taps_preserve_frame_independent_operands() {
+    for site in engine_events::script_event_sites::TAPS {
+        let expected = if matches!(
+            site.name,
+            "MissionAppended" | "ScriptedMissionAppended" | "EraseFiredEvent"
+        ) {
+            6
+        } else {
+            7
+        };
+        assert_eq!(
+            instruction_span(&site.sentinel),
+            Ok(expected),
+            "{}",
+            site.name
+        );
+    }
+    for site in engine_events::script_event_sites::LIFECYCLE_TAPS {
+        assert_eq!(
+            instruction_span(&site.sentinel),
+            Ok(match site.name {
+                "MissionCompleted" | "DecisionCooldownFinished" => 8,
+                "TargetedDecisionReenabled" => 9,
+                "TakenDecisionRemoved" => 8,
+                "RefreshCooldownFinished" | "TargetedMissionCancelled" => 8,
+                "TargetedDecisionRemoved"
+                | "TargetedMissionRemoved"
+                | "TargetedMissionTimedOut"
+                | "TargetedDurationChanged" => 6,
+                _ => 7,
+            }),
+            "{}",
+            site.name
+        );
+    }
+    for (site, span) in engine_events::script_event_sites::DURATION_TAPS
+        .into_iter()
+        .zip([5, 6])
+    {
+        assert_eq!(instruction_span(&site.sentinel), Ok(span), "{}", site.name);
+    }
+    for site in engine_events::script_event_sites::DELAYED_TAPS {
+        assert_eq!(instruction_span(&site.sentinel), Ok(7), "{}", site.name);
+    }
+    for prefix in [
+        [0x48, 0x8b, 0xe0],
+        [0x48, 0x8b, 0xc4],
+        [0x4c, 0x8b, 0xe4],
+        [0x49, 0x8b, 0xe4],
+    ] {
+        let mut bytes = [0x90; 16];
+        bytes[..3].copy_from_slice(&prefix);
+        assert!(instruction_span(&bytes).is_err());
+    }
+    for prefix in [[0x48, 0x8d, 0x44], [0x48, 0x8d, 0x05], [0x48, 0x8d, 0xa3]] {
+        let mut bytes = [0x90; 16];
+        bytes[..3].copy_from_slice(&prefix);
+        assert!(instruction_span(&bytes).is_err());
+    }
 }
 
 fn unwind(context: &mut CONTEXT) -> bool {
@@ -111,6 +236,42 @@ unsafe extern "system" fn invoke(entry: usize, a: usize, b: usize, sink: *mut u6
     );
 }
 unsafe extern "system-unwind" fn idle(_: &Registers, _: usize) {}
+
+#[test]
+fn naval_management_adjacent_taps_publish_execute_and_restore_their_owned_spans() {
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    // Two adjacent six-byte stores followed by a known return value.
+    let bytes = [
+        0x89_u8, 0x91, 0x10, 0, 0, 0, 0x89, 0x91, 0x14, 0, 0, 0, 0xb8, 7, 0, 0, 0, 0xc3, 0x90,
+        0x90, 0x90, 0x90,
+    ];
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let sentinel = |offset| unsafe {
+        std::slice::from_raw_parts(code.0.cast::<u8>().add(offset), 16)
+            .try_into()
+            .unwrap()
+    };
+    let mut first = unsafe { Tap::new_owned_span(code.0 as usize, idle, 0, sentinel(0)) }.unwrap();
+    let mut second =
+        unsafe { Tap::new_owned_span(code.0 as usize + 6, idle, 0, sentinel(6)) }.unwrap();
+    let mut hooks = [first.publication_hook(), second.publication_hook()];
+    assert_eq!(Hook::set_enabled_batch(&mut hooks, true), Ok(true));
+    let invoke: unsafe extern "system" fn(*mut u32, u32) -> u32 =
+        unsafe { std::mem::transmute(code.0) };
+    let mut values = [0_u32; 8];
+    assert_eq!(unsafe { invoke(values.as_mut_ptr(), 37) }, 7);
+    assert_eq!((values[4], values[5]), (37, 37));
+    assert_eq!(Hook::set_enabled_batch(&mut hooks, false), Ok(true));
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(code.0.cast::<u8>(), bytes.len()) },
+        bytes
+    );
+}
 
 struct NativeTable(*const IMAGE_RUNTIME_FUNCTION_ENTRY);
 impl Drop for NativeTable {
@@ -567,15 +728,47 @@ fn copied_load_and_add_preserve_the_native_result_and_branch_flags() {
 }
 
 #[test]
+fn copied_clamp_and_store_preserve_native_flags_results_and_continuation() {
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    // Synthetic leaf: zero, test input, clamp negative input, store, return.
+    let bytes = [
+        0x31, 0xc0, 0x48, 0x85, 0xc9, 0x48, 0x0f, 0x48, 0xc8, 0x48, 0x89, 0x0a, 0x48, 0x89, 0xc8,
+        0xc3, 0x90, 0x90, 0x90, 0x90, 0x90,
+    ];
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let site = code.0 as usize + 5;
+    let sentinel = bytes[5..21].try_into().unwrap();
+    let function: unsafe extern "system" fn(i64, *mut i64) -> i64 =
+        unsafe { std::mem::transmute(code.0) };
+    let mut tap = unsafe { Tap::new(site, idle, 0, sentinel) }.unwrap();
+    for enabled in [false, true, false] {
+        assert!(tap.set_enabled(enabled).unwrap());
+        for value in [i64::MIN, -1, 0, 7, i64::MAX] {
+            let mut stored = -99;
+            assert_eq!(unsafe { function(value, &mut stored) }, value.max(0));
+            assert_eq!(stored, value.max(0));
+        }
+    }
+}
+
+#[test]
 fn unsupported_rsp_rip_and_branch_operands_refuse_before_installation() {
     for prefix in [
-        [0x48, 0x8b, 0x44],
-        [0x48, 0x8b, 0x05],
-        [0x48, 0x8b, 0xa3],
-        [0xe9, 0, 0],
+        [0x48, 0x8b, 0x44, 0x24, 8].as_slice(),
+        &[0x48, 0x8b, 0x05, 0, 0, 0, 0],
+        &[0x48, 0x8b, 0xa3, 0, 0, 0, 0],
+        &[0xe9, 0, 0, 0, 0],
     ] {
         let mut bytes = [0x90; 16];
-        bytes[..3].copy_from_slice(&prefix);
+        bytes[..prefix.len()].copy_from_slice(prefix);
+        if prefix == [0x48, 0x8b, 0x44] {
+            bytes[3] = 0x24;
+        }
         assert!(instruction_span(&bytes).is_err());
     }
 }
@@ -643,4 +836,593 @@ fn generic_tap_retains_the_instruction_tail_until_its_flight_returns() {
         unsafe { std::slice::from_raw_parts(site as *const u8, 16) },
         sentinel
     );
+}
+
+#[test]
+fn doctrine_effective_gain_sib_store_preserves_operands_and_flags() {
+    use std::sync::atomic::AtomicI64;
+    static OPERAND: AtomicI64 = AtomicI64::new(0);
+    unsafe extern "system-unwind" fn capture(registers: &Registers, _: usize) {
+        OPERAND.store(registers.rax as i64, Ordering::Relaxed);
+    }
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (_, sentinel) in engine_mutations::doctrine_mutations::EFFECTIVE_GAIN_STORES {
+        assert_eq!(instruction_span(&sentinel), Ok(5));
+    }
+    let code = TestCode::new();
+    let mut bytes = vec![
+        0x56, 0x41, 0x56, 0x48, 0x89, 0xce, 0x4d, 0x31, 0xf6, 0x48, 0x89, 0xd0, 0x48, 0x83, 0xf8, 0,
+    ];
+    let site = code.0 as usize + bytes.len();
+    bytes.extend([
+        0x4a, 0x89, 0x44, 0x36, 0x48, 0x0f, 0x9c, 0xc0, 0x0f, 0xb6, 0xc0, 0x41, 0x5e, 0x5e, 0xc3,
+        0x90,
+    ]);
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let sentinel = bytes[16..32].try_into().unwrap();
+    let mut tap = unsafe { Tap::new(site, capture, 0, sentinel) }.unwrap();
+    assert!(lookup(tap.code as usize));
+    assert!(tap.set_enabled(true).unwrap());
+    let function: unsafe extern "system" fn(*mut i64, i64) -> usize =
+        unsafe { std::mem::transmute(code.0) };
+    for value in [-13, 0, i64::MAX] {
+        let mut destination = [0_i64; 10];
+        assert_eq!(
+            unsafe { function(destination.as_mut_ptr(), value) },
+            usize::from(value < 0)
+        );
+        assert_eq!(destination[9], value);
+        assert_eq!(OPERAND.load(Ordering::Relaxed), value);
+    }
+    assert!(tap.set_enabled(false).unwrap());
+}
+
+#[test]
+fn adjacent_taps_restore_owned_spans_in_serial_and_shared_publication() {
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    unsafe extern "system-unwind" fn observe(_: &Registers, _: usize) {}
+    let code = TestCode::new();
+    // Independently authored leaf: zero the index, then store the supplied
+    // value in two destination elements, with two untouched padding bytes.
+    let mut bytes = [0x90u8; 40];
+    bytes[..2].copy_from_slice(&[0x31, 0xc0]);
+    bytes[2..7].copy_from_slice(&[0x48, 0x89, 0x54, 0x01, 0x08]);
+    bytes[9..14].copy_from_slice(&[0x48, 0x89, 0x54, 0x01, 0x10]);
+    bytes[14] = 0xc3;
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let function: unsafe extern "system" fn(*mut u64, u64) = unsafe { std::mem::transmute(code.0) };
+    for shared in [false, true] {
+        let mut taps: Vec<_> = [2, 9]
+            .into_iter()
+            .map(|offset| {
+                unsafe {
+                    Tap::new(
+                        code.0 as usize + offset,
+                        observe,
+                        offset,
+                        bytes[offset..offset + 16].try_into().unwrap(),
+                    )
+                }
+                .unwrap()
+            })
+            .collect();
+        for enabled in [true, false] {
+            let mut round = shared.then(|| super::super::shared::Round::collect().unwrap());
+            if let Some(round) = &mut round {
+                for tap in &mut taps {
+                    assert_eq!(
+                        Hook::set_family_enabled_shared(
+                            std::slice::from_mut(tap.publication_hook()),
+                            enabled
+                        ),
+                        Ok(false)
+                    );
+                }
+                assert_eq!(round.publish().families, taps.len());
+            }
+            for tap in &mut taps {
+                assert_eq!(
+                    Hook::set_family_enabled_shared(
+                        std::slice::from_mut(tap.publication_hook()),
+                        enabled
+                    ),
+                    Ok(true)
+                );
+            }
+            drop(round);
+            let mut output = [0u64; 3];
+            unsafe {
+                function(output.as_mut_ptr(), 73);
+            }
+            assert_eq!(output, [0, 73, 73]);
+            if !enabled {
+                assert!(taps.iter().all(|tap| !tap.hook.is_enabled()));
+                assert_eq!(
+                    unsafe { std::slice::from_raw_parts(code.0.cast::<u8>(), bytes.len()) },
+                    bytes
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn naval_management_data_spans_reject_stack_aliases_and_control_extensions() {
+    for prefix in [
+        &[0x89, 0x51, 0x20, 0x49, 0x83, 0xc0, 0x10][..],
+        &[0x8b, 0xd7, 0x48, 0x8d, 0x4d, 0x28],
+        &[0x48, 0xc7, 0x41, 0x38, 0, 0, 0, 0],
+        &[0x49, 0x8b, 0x57, 0x28, 0x48, 0x63, 0xc6],
+        &[0x48, 0x03, 0xd0, 0x48, 0x29, 0x51, 0x38],
+        &[0x40, 0x88, 0xb1, 0xf7, 4, 0, 0],
+    ] {
+        let mut bytes = [0x90; 16];
+        bytes[..prefix.len()].copy_from_slice(prefix);
+        assert_eq!(instruction_span(&bytes), Ok(prefix.len()));
+    }
+    for prefix in [
+        &[0x48, 0x8b, 0xe0][..],
+        &[0x48, 0x8b, 0xc4],
+        &[0x48, 0x83, 0xc4, 8],
+        &[0x48, 0xff, 0x51, 8],
+        &[0x48, 0xff, 0x31],
+        &[0x48, 0x8d, 0x0d, 0, 0, 0, 0],
+        &[0x48, 0x63, 0x44, 0x24, 0x20],
+    ] {
+        let mut bytes = [0x90; 16];
+        bytes[..prefix.len()].copy_from_slice(prefix);
+        assert!(instruction_span(&bytes).is_err(), "{prefix:x?}");
+    }
+}
+#[test]
+fn naval_management_store_and_immediate_span_executes_with_original_operands() {
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    let mut bytes = [0x90; 32];
+    bytes[..11].copy_from_slice(&[
+        0x89, 0x51, 0x20, 0x49, 0x83, 0xc0, 0x10, 0x8b, 0x41, 0x20, 0xc3,
+    ]);
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let mut tap =
+        unsafe { Tap::new(code.0 as usize, idle, 0, bytes[..16].try_into().unwrap()) }.unwrap();
+    assert!(tap.set_enabled(true).unwrap());
+    let call: unsafe extern "system" fn(*mut [u32; 16], u32, usize) -> u32 =
+        unsafe { std::mem::transmute(code.0) };
+    for value in [0, u32::MAX, 37] {
+        let mut object = [0; 16];
+        assert_eq!(unsafe { call(&mut object, value, 9) }, value);
+        assert_eq!(object[8], value);
+    }
+    assert!(tap.set_enabled(false).unwrap());
+}
+
+#[test]
+fn script_writer_copied_lea_register_moves_zero_and_decrement_execute_with_native_flags() {
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for mode in 0..5 {
+        let code = TestCode::new();
+        // Preserve the synthetic caller's nonvolatile registers. RCX is an
+        // object pointer; RDX is the result sink.
+        let mut bytes: Vec<u8> = vec![
+            0x53, 0x56, 0x57, 0x41, 0x56, 0x48, 0x89, 0xcb, 0x48, 0x89, 0xd7,
+        ];
+        if mode == 2 {
+            bytes.extend([0x48, 0x89, 0xce]);
+        } // RSI owns the fired set.
+        bytes.push(0xf9);
+        let site = code.0 as usize + bytes.len();
+        match mode {
+            0 => bytes.extend([0x48, 0x8d, 0x8b, 0x18, 0x01, 0, 0]),
+            1 => bytes.extend([0x48, 0x8b, 0xf3, 0x45, 0x33, 0xf6]),
+            2 => bytes.extend([0xff, 0x8e, 0x38, 0x05, 0, 0]),
+            3 => bytes.extend([0xc7, 0x43, 0x28, 0, 0, 0, 0]),
+            _ => bytes.extend([0x48, 0x8b, 0xcb, 0xba, 1, 0, 0, 0]),
+        }
+        // Snapshot flags before any arithmetic. Return the relocated operand.
+        bytes.extend([0x9c, 0x58, 0x48, 0x89, 0x07]);
+        match mode {
+            0 => bytes.extend([0x48, 0x89, 0xc8]),
+            1 => bytes.extend([0x4c, 0x89, 0xf0]),
+            2 => bytes.extend([0x8b, 0x86, 0x38, 0x05, 0, 0]),
+            3 => bytes.extend([0x8b, 0x43, 0x28]),
+            _ => bytes.extend([0x48, 0x89, 0xd0]),
+        }
+        bytes.extend([0x41, 0x5e, 0x5f, 0x5e, 0x5b, 0xc3]);
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+        }
+        let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+            .try_into()
+            .unwrap();
+        let mut tap = unsafe { Tap::new(site, idle, 0, sentinel) }.unwrap();
+        assert!(tap.set_enabled(true).unwrap());
+        let function: unsafe extern "system" fn(*mut u32, *mut usize) -> usize =
+            unsafe { std::mem::transmute(code.0) };
+        let mut object = [0_u32; 0x540 / 4];
+        object[0x538 / 4] = 0;
+        object[0x28 / 4] = 7;
+        let mut flags = 0;
+        let result = unsafe { function(object.as_mut_ptr(), &mut flags) };
+        assert_eq!(flags & 1, usize::from(mode != 1));
+        match mode {
+            0 => assert_eq!(result, object.as_ptr() as usize + 0x118),
+            1 => {
+                assert_eq!(result, 0);
+                assert_ne!(flags & 0x40, 0);
+            }
+            3 => {
+                assert_eq!(result, 0);
+                assert_eq!(object[0x28 / 4], 0);
+            }
+            4 => assert_eq!(result, 1),
+            _ => {
+                assert_eq!(result, u32::MAX as usize);
+                assert_eq!(object[0x538 / 4], u32::MAX);
+                assert_ne!(flags & 0x80, 0);
+            }
+        }
+        assert!(tap.set_enabled(false).unwrap());
+    }
+}
+
+#[test]
+fn script_lifecycle_store_and_jump_preserve_execution_flags_and_native_unwind_continuation() {
+    struct Probe {
+        target: usize,
+        seen: usize,
+    }
+    unsafe extern "system-unwind" fn observed(registers: &Registers, tag: usize) {
+        let probe = unsafe { &mut *(tag as *mut Probe) };
+        assert_eq!(
+            unsafe { ptr::read((registers.rsp() - 8) as *const usize) },
+            probe.target
+        );
+        assert_eq!(registers.flags & 1, 1);
+        let mut context = AlignedContext(unsafe { std::mem::zeroed() });
+        unsafe {
+            RtlCaptureContext(&mut context.0);
+        }
+        for _ in 0..4 {
+            if context.0.Rip == probe.target as u64 {
+                break;
+            }
+            assert!(unwind(&mut context.0));
+        }
+        assert_eq!(context.0.Rip, probe.target as u64);
+        assert_eq!(context.0.Rsp, registers.rsp() as u64);
+        probe.seen += 1;
+    }
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    let mut bytes: Vec<u8> = vec![
+        0x53, 0x56, 0x41, 0x54, 0x48, 0x89, 0xcb, 0x48, 0x89, 0xd6, 0x45, 0x33, 0xe4, 0xf9,
+    ];
+    let site = code.0 as usize + bytes.len();
+    // Independently authored member store followed by a jump over a failing
+    // return value. The observer must resume at the jump's native target.
+    bytes.extend([0x44, 0x89, 0x63, 0x28, 0xe9, 5, 0, 0, 0, 0xb8, 13, 0, 0, 0]);
+    let target = code.0 as usize + bytes.len();
+    bytes.extend([0x8b, 0x43, 0x28, 0x89, 0x06, 0x41, 0x5c, 0x5e, 0x5b, 0xc3]);
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+        .try_into()
+        .unwrap();
+    let mut probe = Probe { target, seen: 0 };
+    let mut tap =
+        unsafe { Tap::new(site, observed, &mut probe as *mut Probe as usize, sentinel) }.unwrap();
+    assert!(tap.set_enabled(true).unwrap());
+    let function: unsafe extern "system" fn(*mut u32, *mut u32) -> u32 =
+        unsafe { std::mem::transmute(code.0) };
+    let mut object = [0_u32; 16];
+    object[10] = 7;
+    let mut output = 99;
+    assert_eq!(unsafe { function(object.as_mut_ptr(), &mut output) }, 0);
+    assert_eq!((object[10], output, probe.seen), (0, 0, 1));
+    assert!(tap.set_enabled(false).unwrap());
+    object[10] = 11;
+    assert_eq!(unsafe { function(object.as_mut_ptr(), &mut output) }, 0);
+    assert_eq!((object[10], probe.seen), (0, 1));
+}
+
+#[test]
+fn post_effect_reactivation_bypasses_the_terminal_store_observer() {
+    unsafe extern "system-unwind" fn observed(_: &Registers, tag: usize) {
+        let count = unsafe { &*(tag as *const AtomicUsize) };
+        count.fetch_add(1, Ordering::Relaxed);
+    }
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    // Synthetic effect result in EDX; only a nonzero lifecycle reaches the
+    // terminal store. This exercises the native branch, not a Rust predictor.
+    let mut bytes: Vec<u8> = vec![
+        0x53, 0x48, 0x89, 0xcb, 0x89, 0x53, 0x1c, 0x83, 0x7b, 0x1c, 0, 0x74, 7,
+    ];
+    let site = code.0 as usize + bytes.len();
+    bytes.extend([0xc7, 0x43, 0x1c, 4, 0, 0, 0]);
+    bytes.extend([0x8b, 0x43, 0x1c, 0x5b, 0xc3]);
+    bytes.extend([0x90; 16]);
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+        .try_into()
+        .unwrap();
+    let count = AtomicUsize::new(0);
+    let mut tap = unsafe {
+        Tap::new(
+            site,
+            observed,
+            &count as *const AtomicUsize as usize,
+            sentinel,
+        )
+    }
+    .unwrap();
+    assert!(tap.set_enabled(true).unwrap());
+    let invoke: unsafe extern "system" fn(*mut u32, u32) -> u32 =
+        unsafe { std::mem::transmute(code.0) };
+    let mut instance = [0_u32; 16];
+    assert_eq!(unsafe { invoke(instance.as_mut_ptr(), 0) }, 0);
+    assert_eq!(count.load(Ordering::Relaxed), 0);
+    assert_eq!(unsafe { invoke(instance.as_mut_ptr(), 1) }, 4);
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    assert!(tap.set_enabled(false).unwrap());
+}
+
+#[test]
+fn targeted_duration_store_jump_executes_once_and_preserves_native_continuation() {
+    unsafe extern "system-unwind" fn observed(registers: &Registers, tag: usize) {
+        assert_eq!(registers.rax as u32, 17);
+        unsafe {
+            (&*(tag as *const AtomicUsize)).fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    let mut bytes: Vec<u8> = vec![0x53, 0x48, 0x89, 0xcb, 0xb8, 17, 0, 0, 0];
+    let site = code.0 as usize + bytes.len();
+    bytes.extend([0x89, 0x43, 0x30, 0xe9, 5, 0, 0, 0, 0xb8, 99, 0, 0, 0]);
+    bytes.extend([0x8b, 0x43, 0x30, 0x5b, 0xc3]);
+    bytes.extend([0x90; 16]);
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+        .try_into()
+        .unwrap();
+    let count = AtomicUsize::new(0);
+    let mut tap = unsafe {
+        Tap::new(
+            site,
+            observed,
+            &count as *const AtomicUsize as usize,
+            sentinel,
+        )
+    }
+    .unwrap();
+    assert!(tap.set_enabled(true).unwrap());
+    let invoke: unsafe extern "system" fn(*mut u32) -> u32 = unsafe { std::mem::transmute(code.0) };
+    let mut instance = [0_u32; 16];
+    assert_eq!(unsafe { invoke(instance.as_mut_ptr()) }, 17);
+    assert_eq!(instance[0x30 / 4], 17);
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    assert!(tap.set_enabled(false).unwrap());
+}
+
+#[test]
+fn taken_membership_writer_is_observed_with_empty_and_nonempty_remove_effects() {
+    unsafe extern "system-unwind" fn observed(registers: &Registers, tag: usize) {
+        assert_eq!(
+            unsafe { ptr::read((registers.rsi + 0x4c) as *const u32) },
+            0
+        );
+        assert_ne!(registers.rdi, 0);
+        unsafe {
+            (&*(tag as *const AtomicUsize)).fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    let mut bytes: Vec<u8> = vec![
+        0x53, 0x56, 0x57, 0x48, 0x89, 0xce, 0x48, 0x89, 0xd7, 0xff, 0x4e, 0x4c,
+    ];
+    let site = code.0 as usize + bytes.len();
+    bytes.extend([0x48, 0x8b, 0x56, 8, 0x48, 0x83, 0xc2, 8]);
+    // The effect-list gate follows the membership writer, not its observer.
+    bytes.extend([
+        0x45, 0x85, 0xc0, 0x74, 2, 0x90, 0x90, 0x8b, 0x46, 0x4c, 0x5f, 0x5e, 0x5b, 0xc3,
+    ]);
+    bytes.extend([0x90; 16]);
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+        .try_into()
+        .unwrap();
+    let count = AtomicUsize::new(0);
+    let mut tap = unsafe {
+        Tap::new(
+            site,
+            observed,
+            &count as *const AtomicUsize as usize,
+            sentinel,
+        )
+    }
+    .unwrap();
+    assert!(tap.set_enabled(true).unwrap());
+    let invoke: unsafe extern "system" fn(*mut u64, usize, u32) -> u32 =
+        unsafe { std::mem::transmute(code.0) };
+    let mut status = [0_u64; 16];
+    for effects in [0, 1] {
+        unsafe {
+            ptr::write((status.as_mut_ptr() as usize + 0x4c) as *mut u32, 1);
+        }
+        assert_eq!(unsafe { invoke(status.as_mut_ptr(), 99, effects) }, 0);
+    }
+    assert_eq!(count.load(Ordering::Relaxed), 2);
+    assert!(tap.set_enabled(false).unwrap());
+}
+
+#[test]
+fn duration_add_operands_survive_the_tap_and_reach_the_selected_scalar_writer() {
+    struct Probe {
+        cooldown: bool,
+        seen: usize,
+    }
+    unsafe extern "system-unwind" fn observed(registers: &Registers, tag: usize) {
+        let probe = unsafe { &mut *(tag as *mut Probe) };
+        let (object, delta, offset) = if probe.cooldown {
+            (
+                registers.rax,
+                unsafe { ptr::read((registers.rbx + 0x78) as *const i32) },
+                0x10,
+            )
+        } else {
+            (registers.rdi, registers.rax as i32, 0x18)
+        };
+        assert_eq!(unsafe { ptr::read((object + offset) as *const i32) }, 10);
+        assert_eq!(delta, 5);
+        assert_ne!(registers.flags & 1, 0);
+        probe.seen += 1;
+    }
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for cooldown in [false, true] {
+        let code = TestCode::new();
+        // Independently authored leaf fixture: selected object and addend,
+        // then the production operand forms, then an unconditional scalar add.
+        let mut bytes: Vec<u8> = if cooldown {
+            vec![0x53, 0x48, 0x8b, 0xda, 0x48, 0x8b, 0xc1, 0xf9]
+        } else {
+            vec![0x57, 0x48, 0x8b, 0xf9, 0x8b, 0xc2, 0xf9]
+        };
+        let site = code.0 as usize + bytes.len();
+        if cooldown {
+            bytes.extend([
+                0x8b, 0x53, 0x78, 0x48, 0x8b, 0xc8, 0x01, 0x51, 0x10, 0x8b, 0x41, 0x10, 0x5b, 0xc3,
+            ]);
+        } else {
+            bytes.extend([
+                0x8b, 0xd0, 0x48, 0x8b, 0xcf, 0x01, 0x51, 0x18, 0x8b, 0x41, 0x18, 0x5f, 0xc3,
+            ]);
+        }
+        bytes.extend([0x90; 16]);
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+        }
+        let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+            .try_into()
+            .unwrap();
+        let mut probe = Probe { cooldown, seen: 0 };
+        let mut tap =
+            unsafe { Tap::new(site, observed, &mut probe as *mut Probe as usize, sentinel) }
+                .unwrap();
+        assert!(tap.set_enabled(true).unwrap());
+        let mut object = [0_i32; 32];
+        let offset = if cooldown { 0x10 / 4 } else { 0x18 / 4 };
+        object[offset] = 10;
+        let mut effect = [0_i32; 32];
+        effect[0x78 / 4] = 5;
+        let invoke: unsafe extern "system" fn(*mut i32, usize) -> i32 =
+            unsafe { std::mem::transmute(code.0) };
+        let operand = if cooldown {
+            effect.as_ptr() as usize
+        } else {
+            5
+        };
+        assert_eq!(unsafe { invoke(object.as_mut_ptr(), operand) }, 15);
+        assert_eq!((object[offset], probe.seen), (15, 1));
+        assert!(tap.set_enabled(false).unwrap());
+    }
+}
+
+#[test]
+fn decision_sparse_writer_spans_are_complete_and_stack_independent() {
+    for (site, span) in engine_events::script_event_sites::decisions::TAPS
+        .into_iter()
+        .zip([6, 5, 7, 7, 7, 7, 8, 8, 8, 8, 8, 7, 7, 7, 6, 5, 6, 7, 7, 6])
+    {
+        assert_eq!(instruction_span(&site.sentinel), Ok(span), "{}", site.name);
+    }
+}
+
+#[test]
+fn selection_default_moves_preserve_operands_flags_and_final_native_duration() {
+    unsafe extern "system-unwind" fn observed(registers: &Registers, tag: usize) {
+        assert_ne!(registers.flags & 1, 0);
+        assert!(matches!(registers.rax as i32, 0 | 17));
+        unsafe {
+            (&*(tag as *const AtomicUsize)).fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for targeted in [false, true] {
+        let code = TestCode::new();
+        let mut bytes: Vec<u8> = if targeted {
+            vec![0x41, 0x57, 0x41, 0xbf, 1, 0, 0, 0, 0x8b, 0xc1, 0xf9]
+        } else {
+            vec![0x53, 0xbb, 1, 0, 0, 0, 0x8b, 0xc1, 0xf9]
+        };
+        let site = code.0 as usize + bytes.len();
+        if targeted {
+            bytes.extend([
+                0x85, 0xc0, 0x41, 0x0f, 0x44, 0xc7, 0x89, 0x02, 0x41, 0x5f, 0xc3,
+            ]);
+        } else {
+            bytes.extend([0x85, 0xc0, 0x0f, 0x44, 0xc3, 0x89, 0x02, 0x5b, 0xc3]);
+        }
+        bytes.extend([0x90; 16]);
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+        }
+        let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+            .try_into()
+            .unwrap();
+        let count = AtomicUsize::new(0);
+        let mut tap = unsafe {
+            Tap::new(
+                site,
+                observed,
+                &count as *const AtomicUsize as usize,
+                sentinel,
+            )
+        }
+        .unwrap();
+        assert!(tap.set_enabled(true).unwrap());
+        let invoke: unsafe extern "system" fn(i32, *mut i32) -> i32 =
+            unsafe { std::mem::transmute(code.0) };
+        for (operand, expected) in [(0, 1), (17, 17)] {
+            let mut stored = 0;
+            assert_eq!(unsafe { invoke(operand, &mut stored) }, expected);
+            assert_eq!(stored, expected);
+        }
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert!(tap.set_enabled(false).unwrap());
+    }
 }

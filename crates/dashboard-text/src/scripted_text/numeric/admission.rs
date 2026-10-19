@@ -81,7 +81,9 @@ pub(super) fn admit<'a>(
         }
     }
     let evaluator = scopes.evaluator(text, crate::triggers::Temps::Stale)?;
-    let parsed = evaluator.operand(operand.as_bytes())?;
+    let parsed = evaluator
+        .operand(operand.as_bytes())
+        .map_err(|why| why.to_string())?;
     // These grammar exits precede live-scope character selection. Nested defaults, indices,
     // targets and prefixes parse with a default scope, not the live one.
     if parsed.literal.is_some()
@@ -122,6 +124,7 @@ pub(super) fn admit<'a>(
     }
     evaluator
         .admit_localisation_parse_character(candidate, entries::entry_scopes(scopes, start, false))
+        .map_err(|why| why.to_string())
 }
 
 #[cfg(test)]

@@ -40,6 +40,7 @@ pub struct Content {
     pub sub_units: Result<Arc<SubUnits>, String>,
     pub movement_terrain: Result<Arc<installed_content_core::terrain::TerrainDefinitions>, String>,
     pub building_facts: Arc<BuildingFacts>,
+    pub air_base_first_provinces: Arc<viewer_foundation::map::building_facts::FirstProvinces>,
     pub movement: Option<Arc<MovementContent>>,
     pub eta_cache: Arc<EtaCache>,
 }

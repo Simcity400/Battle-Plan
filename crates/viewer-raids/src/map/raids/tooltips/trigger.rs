@@ -258,7 +258,10 @@ impl Context<'_, '_> {
 
     fn project_name(&self, name: &str, country: u32) -> Result<String> {
         // Look up identity without a started/completed gate.
-        let token = self.world.token_of(name.as_bytes())?;
+        let token = self
+            .world
+            .token_of(name.as_bytes())
+            .map_err(|why| why.to_string())?;
         let rows = self
             .world
             .frame()

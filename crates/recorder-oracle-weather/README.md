@@ -7,3 +7,7 @@ Each saved weather province matched to a recorded row compares its modifier accu
 A save-backed value left uncompared is a failed comparison, so the comparison is incomplete: a refused temperature derivation fails every saved temperature as one. Named limitations remain only for what the save does not hold (census-only and runtime-only fields) and for notes on how content values were read. Table completeness, exact joins, differences and named limitations use [shared oracle support](../recorder-oracle-support/README.md). Content-dependent facts resolve through the recorded content stack. Synthetic fixtures are dev-only through the support crate's `test-support` feature.
 
 Shared rules live in [AGENTS.md](../../AGENTS.md); the [recorder guide](../recorder/README.md) defines fresh-save/load and matched-native-observation checks.
+
+WeatherProvinces.daylight is runtime-only: the text save does not retain the manager's held seasonal direction or feather operands. Completed-update direction derives from date/content; suspended and initialization state requires the matched native observation specified in the lane's live checks. This adds no exemption to the save-backed weather comparisons.
+
+WeatherRegions raw naval detection and Air attack/defence map terms, with their known-read gate, are runtime-only: text saves omit the live regional accumulator. The oracle names this limitation independently of saved weather comparisons. Integration must compare these words against matched native regional observations, including a missing key and a read refusal.

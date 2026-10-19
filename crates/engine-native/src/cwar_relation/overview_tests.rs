@@ -3,6 +3,31 @@ mod baseline;
 use super::*;
 use crate::ccountry::synthetic::World;
 
+#[test]
+fn participation_sources_include_authenticated_countries_without_owned_wars() {
+    let world = fixture(3);
+    let mut cache = DiscoveryCache::new(4, 0);
+    let (mut owned, mut goals, mut scores) = (Vec::new(), Vec::new(), Vec::new());
+    let outcomes = walk_cached_growing(
+        &world.memory(),
+        0,
+        world.game_state(),
+        &mut owned,
+        &mut goals,
+        &mut scores,
+        &mut cache,
+    );
+    assert!(matches!(outcomes[0], Outcome::Rows { .. }));
+    let sources: Vec<_> = cache.country_sources().collect();
+    assert_eq!(
+        sources.iter().map(|c| c.slot).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(sources.iter().all(|c| c.country != 0 && c.diplomacy != 0));
+    cache.invalidate();
+    assert_eq!(cache.country_sources().count(), 0);
+}
+
 fn fixture(count: u32) -> World {
     let mut world = World::new(0, count, 0x1600);
     let mut roots = Vec::new();

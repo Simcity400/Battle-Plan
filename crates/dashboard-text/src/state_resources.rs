@@ -13,9 +13,9 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 
-type Index<T> = OnceLock<Result<T, String>>;
+type Index<T> = OnceLock<crate::triggers::refusal::Resolved<Result<T, crate::triggers::Failure>>>;
 /// Building type token to its `local_resources` grants by resource token.
-type Grants = BTreeMap<u32, Result<Vec<(u32, i64)>, String>>;
+type Grants = BTreeMap<u32, Result<Vec<(u32, i64)>, crate::triggers::Failure>>;
 
 /// One in fixed5.
 pub const ONE: i64 = 100_000;
@@ -158,6 +158,11 @@ pub trait Links {
     fn slot(&self, raw: u32) -> Option<u32>;
     /// The lexer token of a name, as the game finds a token for a key.
     fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String>;
+    /// Typed input errors for trigger consumers; content-only implementations
+    /// retain their ordinary unsupported diagnostics.
+    fn token_input(&self, name: &[u8]) -> Result<Option<u32>, crate::triggers::Failure> {
+        self.token_of(name).map_err(Into::into)
+    }
 }
 
 /// One hour's recorded state resource operands, each index built on first
@@ -181,12 +186,25 @@ pub struct StateResources<'a> {
     grants: Index<Grants>,
 }
 
-fn table<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], String> {
-    frame.complete::<T>().map_err(|error| error.to_string())
+fn table<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], crate::triggers::Failure> {
+    frame
+        .complete::<T>()
+        .map_err(|error| crate::triggers::Failure::input(T::ID, "", None, error.to_string()))
 }
 
-fn get<T>(cell: &Index<T>, build: impl FnOnce() -> Result<T, String>) -> Result<&T, String> {
-    cell.get_or_init(build).as_ref().map_err(Clone::clone)
+fn get<T>(
+    cell: &Index<T>,
+    build: impl FnOnce() -> Result<T, crate::triggers::Failure>,
+) -> Result<&T, crate::triggers::Failure> {
+    cell.get_or_init(|| {
+        crate::triggers::refusal::Resolved::new(|| crate::triggers::refusal::deferred(build))
+    })
+    .value()
+    .as_ref()
+    .map_err(|failure| {
+        failure.reached();
+        failure.clone()
+    })
 }
 
 impl<'a> StateResources<'a> {
@@ -210,7 +228,7 @@ impl<'a> StateResources<'a> {
     }
 
     /// The recorded resource database: each resource token's `active` byte.
-    pub fn resource_database(&self) -> Result<&BTreeMap<u32, u8>, String> {
+    pub fn resource_database(&self) -> Result<&BTreeMap<u32, u8>, crate::triggers::Failure> {
         get(&self.resources, || {
             Ok(table::<tables::ResourceDefinitions>(self.frame)?
                 .iter()
@@ -221,28 +239,27 @@ impl<'a> StateResources<'a> {
 
     /// `local_resources` grants by building token; the game drops a name
     /// that is not an active resource.
-    fn grants(&self, links: &impl Links) -> Result<&Grants, String> {
+    fn grants(&self, links: &impl Links) -> Result<&Grants, crate::triggers::Failure> {
         get(&self.grants, || {
             let resources = self.resource_database()?;
             let mut out = Grants::new();
             for (name, building) in &self.buildings.types {
-                let Some(token) = links.token_of(name.as_bytes())? else {
+                let Some(token) = links.token_input(name.as_bytes())? else {
                     continue;
                 };
                 let grants = if let Some(reason) = &building.raid_refused {
-                    Err(format!(
-                        "building {name}'s resource grants are refused: {reason}"
-                    ))
+                    Err(format!("building {name}'s resource grants are refused: {reason}").into())
                 } else if !building.local_resources.is_empty()
                     && self.buildings.ambiguous_slots.contains(name)
                 {
-                    Err(format!(
-                        "building {name} is declared more than once with resource grants"
-                    ))
+                    Err(
+                        format!("building {name} is declared more than once with resource grants")
+                            .into(),
+                    )
                 } else {
                     let mut grants = Vec::new();
                     for (resource, amount) in &building.local_resources {
-                        if let Some(token) = links.token_of(resource.as_bytes())?
+                        if let Some(token) = links.token_input(resource.as_bytes())?
                             && resources.get(&token).is_some_and(|&active| active != 0)
                         {
                             grants.push((token, *amount));
@@ -264,7 +281,7 @@ impl<'a> StateResources<'a> {
         resource: u32,
         controller: Option<u32>,
         links: &impl Links,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, crate::triggers::Failure> {
         Ok(state_resource_amount(
             &self.operands(state, resource, controller, links)?,
         ))
@@ -278,16 +295,21 @@ impl<'a> StateResources<'a> {
         resource: u32,
         controller: Option<u32>,
         links: &impl Links,
-    ) -> Result<ResourceOperands, String> {
+    ) -> Result<ResourceOperands, crate::triggers::Failure> {
         let inputs = get(&self.resource_inputs, || {
             Ok(table::<tables::StateResourceInputs>(self.frame)?
                 .iter()
                 .map(|row| (row.state, row))
                 .collect())
         })?;
-        let input = inputs
-            .get(&state)
-            .ok_or_else(|| format!("state {state} has no recorded resource inputs"))?;
+        let input = inputs.get(&state).ok_or_else(|| {
+            crate::triggers::Failure::input(
+                replay_data::rows::TableId::StateResourceInputs,
+                "",
+                Some(crate::triggers::Store::State(state)),
+                format!("state {state} has no recorded resource inputs"),
+            )
+        })?;
         // The operands are the game's at the frame's hour (the raid state
         // family reads every state and country a hooked writer touched),
         // except the supply-route flag, the value at the state's last read,
@@ -332,7 +354,7 @@ impl<'a> StateResources<'a> {
         resource: u32,
         controller: Option<u32>,
         links: &impl Links,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, crate::triggers::Failure> {
         let buildings = get(&self.state_buildings, || {
             let mut out: BTreeMap<u32, Vec<(u32, i16)>> = BTreeMap::new();
             for row in table::<tables::StateBuildings>(self.frame)? {
@@ -365,7 +387,10 @@ impl<'a> StateResources<'a> {
                 .get(&building)
                 .ok_or_else(|| format!("state {state} has a building type the content lacks"))?
                 .as_ref()
-                .map_err(Clone::clone)?;
+                .map_err(|failure| {
+                    failure.reached();
+                    failure.clone()
+                })?;
             let Some(&(_, amount)) = list.iter().find(|(token, _)| *token == resource) else {
                 continue;
             };

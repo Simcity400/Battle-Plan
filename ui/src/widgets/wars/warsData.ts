@@ -74,16 +74,20 @@ export function isWarsReply(value: unknown): value is WarsReply {
 export function validateWarsReply(value: unknown): WarsReply {
   if (!isWarsReply(value)) throw new Error('The wars reply is malformed.');
   const current = (value as { current?: unknown }).current;
-  // The groups a prefix reply lists at a read hour past it, each from that
-  // hour's frame alone, keep a reply's war contract.
+  // Requested-hour groups and contributions are independent of preparation;
+  // each snapshot keeps a reply's war contract.
   if (current !== undefined && !list(current, entry => object(entry) && hour(entry.hour) && typeof entry.available === 'boolean'
+    && list(entry.contributions, group => object(group) && list(group.viewpointSide, text) && list(group.opposingSide, text)
+      && (group.reason === null || text(group.reason)) && list(group.participants, row => object(row) && text(row.tag) && side(row.side)
+        && ['equipmentDamage', 'occupation', 'airDamage', 'strategicBombing', 'shipDamage', 'convoyDamage', 'casualties',
+          'unknownCasualties', 'lendLeaseSent', 'lendLeaseReceived', 'score', 'participation'].every(key => raw(row[key]))))
     && list(entry.warnings, text) && isWarsReply({ branchId: value.branchId, available: entry.available, viewpoints: [], countryNames: [],
       unobserved: [], capitulationsUnobserved: [], warnings: entry.warnings, wars: entry.wars }))) throw new Error('The wars reply is malformed.');
   return value;
 }
 
-/** The groups a reply answered from the prepared prefix lists at `at`, past
- * its last hour, from that hour's frame alone; null when it lists none. */
+/** Requested native groups and contributions at `at`, from that hour's frame
+ * alone, independently of preparation; null when the reply lists no read. */
 export function currentWarsAt(reply: WarsReply | undefined, at: number): WarsAtHour | null {
   const current = (reply as { current?: readonly WarsAtHour[] } | undefined)?.current;
   return current?.find(entry => entry.hour === at) ?? null;

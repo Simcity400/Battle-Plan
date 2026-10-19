@@ -107,6 +107,7 @@ const REG_MIRROR_BATCH: usize = 64;
 pub(crate) struct AirBasesJob {
     pub log: RawLog<AIR_BASES_N>,
     pub(crate) carrier: carrier::Job,
+    pub(crate) state_fuel: super::state_fuel_inputs::Packet,
     pub game_state: usize,
     /// Complete registration-row and wing-handle demand from the original
     /// subtree acquisition. Shared census faults can coexist with these counts;
@@ -267,6 +268,7 @@ impl AirBasesJob {
     pub fn clear(&mut self) {
         self.log.clear();
         self.carrier.clear();
+        self.state_fuel.clear();
         self.game_state = 0;
         self.registration_demand = None;
         self.aces_active = false;
@@ -345,7 +347,8 @@ impl AirBasesJob {
             auxiliary_vectors: vector_bytes(&self.census)
                 + vector_bytes(&self.seen_links)
                 + vector_bytes(&self.seen_link_index)
-                + self.carrier.bytes(),
+                + self.carrier.bytes()
+                + self.state_fuel.bytes(),
             ..Default::default()
         });
     }
@@ -573,6 +576,7 @@ impl AirBasesMemo {
             let started = qpc();
             fog.restore_registrations_memo(&self.registrations);
             self.carrier.restore(&mut air.carrier, &mut fog.carrier);
+            fog.carrier.install_states(&job.state_fuel);
             decode_ticks[1] += elapsed(started);
             report.restore_ticks = decode_ticks
                 .iter()
@@ -1349,9 +1353,16 @@ struct SlotPass<'a> {
     report: &'a mut crate::air_base_changes::SlotReport,
 }
 
+#[derive(Default)]
+struct DenseSnapshot {
+    header: Option<Array>,
+    block: Option<usize>,
+}
+
 /// Mirror of [`cair_base::dense_plan`]: the same takes, and the same verdict
 /// from their bytes, so the replay reaches the decision this pass took. The
 /// link read is the deduplicated [`resolve_link`] take of the same entry.
+// Pass the existing borrowed plan, snapshot and scratch storage without repacking it.
 #[allow(clippy::too_many_arguments)]
 fn copy_dense_plan(
     log: &mut RawLog<AIR_BASES_N>,
@@ -1364,6 +1375,7 @@ fn copy_dense_plan(
     seen: &mut Vec<(u32, u32)>,
     seen_index: &mut [usize],
     plan: &mut [Planned; cair_base::DENSE_BOUND],
+    snapshot: &mut DenseSnapshot,
 ) -> Result<usize, cair_base::DenseRefusal> {
     use cair_base::DenseRefusal as Refusal;
     let header = bspan(
@@ -1377,6 +1389,7 @@ fn copy_dense_plan(
     let mut raw = [0u8; 16];
     raw.copy_from_slice(&log.bytes[header..header + 16]);
     let dense = Array::from_header(raw, 8).ok_or(Refusal::Header)?;
+    snapshot.header = Some(dense);
     if dense.count > containers.count {
         return Err(Refusal::LongerThanSlots);
     }
@@ -1396,6 +1409,7 @@ fn copy_dense_plan(
         )
         .ok_or(Refusal::Header)?
     };
+    snapshot.block = Some(block);
     let expected = image
         .checked_add(ccountry_air_container::VTABLE_RVA)
         .ok_or(Refusal::Container)? as u64;
@@ -1458,6 +1472,46 @@ fn copy_dense_plan(
     }
     plan[..len].sort_unstable_by_key(|entry| entry.slot);
     Ok(len)
+}
+
+/// Only the dense pointer header/vector are additional operands. Container
+/// countries and indexed witnesses are already taken by the original walk.
+/// Mask zero makes a failed optional snapshot field-local.
+fn snapshot_state_countries(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl Memory,
+    pointer: usize,
+    snapshot: &mut DenseSnapshot,
+) {
+    if !log.worker_growth_enabled() {
+        return;
+    }
+    if snapshot.header.is_none() {
+        let Some(start) = bspan(
+            log,
+            memory,
+            pointer.checked_add(cair_base::REGISTERED_CONTAINERS),
+            16,
+            0,
+        ) else {
+            return;
+        };
+        let mut raw = [0; 16];
+        raw.copy_from_slice(&log.bytes[start..start + 16]);
+        snapshot.header = Array::from_header(raw, 8);
+    }
+    let Some(dense) = snapshot.header else {
+        return;
+    };
+    if snapshot.block.is_none() {
+        snapshot.block = if dense.count == 0 {
+            Some(0)
+        } else {
+            (dense.count as usize)
+                .checked_mul(8)
+                .and_then(|len| bspan(log, memory, Some(dense.data), len, 0))
+        };
+    }
 }
 
 /// Whether a base's whole slot vector, read outside the log, holds exactly
@@ -1549,6 +1603,7 @@ fn registrations(
             base,
             handle,
             pointer,
+            &mut DenseSnapshot::default(),
             links,
             countries,
             seen,
@@ -1590,12 +1645,14 @@ fn registrations(
         }
     }
     let (spans, bytes, before) = (log.spans.len(), log.bytes.len(), *demand);
+    let mut dense_snapshot = DenseSnapshot::default();
     if !copy_air_base_registrations(
         log,
         memory,
         base,
         handle,
         pointer,
+        &mut dense_snapshot,
         links,
         countries,
         seen,
@@ -1614,6 +1671,11 @@ fn registrations(
             == Some(handle)
     });
     let certificate = certificate.filter(|_| pools_name_base);
+    // Only a base that can hold its segment may demand a missing summary
+    // snapshot. A broken certificate/backlink never becomes periodic polling.
+    if certificate.is_some() {
+        snapshot_state_countries(log, memory, pointer, &mut dense_snapshot);
+    }
     // A difference the slot check found this read records the base from the
     // whole scan.
     let planned = slots.run.dense && !slots.full.contains(&handle);
@@ -1661,6 +1723,7 @@ fn copy_air_base_registrations(
     base: usize,
     base_handle: u64,
     pointer: usize,
+    dense_snapshot: &mut DenseSnapshot,
     links: &Array,
     countries: u32,
     seen: &mut Vec<(u32, u32)>,
@@ -1719,6 +1782,7 @@ fn copy_air_base_registrations(
             seen,
             seen_index,
             &mut plan,
+            dense_snapshot,
         ) {
             Ok(len) => Some(len),
             Err(refusal) => {
@@ -2573,6 +2637,9 @@ pub(crate) fn copy_air_bases_refresh_growing(
         replay_data::cadence::should_walk(TableId::AirAces, ctx.hour, ctx.force_full),
         &mut ticks,
     );
+    let state_inputs_started = qpc();
+    super::state_fuel_inputs::capture(job, memory, ctx.base);
+    ticks[1] += elapsed(state_inputs_started);
     #[cfg(not(test))]
     {
         crate::air_base_changes::record(&job.slot_report);
@@ -2591,7 +2658,9 @@ pub(crate) fn copy_air_bases_refresh_growing(
             let extra = job.carrier.log.borrow().raw_bytes;
             [
                 job.log.raw_bytes[0].saturating_add(extra[0]),
-                job.log.raw_bytes[1].saturating_add(extra[1]),
+                job.log.raw_bytes[1]
+                    .saturating_add(extra[1])
+                    .saturating_add(job.state_fuel.native_bytes),
                 job.log.raw_bytes[2],
             ]
         },
@@ -2620,7 +2689,9 @@ pub(crate) fn copy_air_bases_refresh(
             let extra = job.carrier.log.borrow().raw_bytes;
             [
                 job.log.raw_bytes[0].saturating_add(extra[0]),
-                job.log.raw_bytes[1].saturating_add(extra[1]),
+                job.log.raw_bytes[1]
+                    .saturating_add(extra[1])
+                    .saturating_add(job.state_fuel.native_bytes),
                 job.log.raw_bytes[2],
             ]
         },

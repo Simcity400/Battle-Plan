@@ -30,11 +30,34 @@ pub struct Project {
     prototype_time: Vec<crate::parser::Item>,
     complexity: Vec<crate::parser::Item>,
     pub output: Output,
+    pub reward_order: Vec<RewardOccurrence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RewardOccurrence {
+    Inline(PrototypeReward),
+    Reference(Token),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrototypeReward {
+    pub token: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub options: Vec<PrototypeOption>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrototypeOption {
+    pub token: String,
+    pub name: Option<String>,
+    pub output: Output,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
     pub projects: BTreeMap<String, Project>,
+    pub rewards: BTreeMap<Token, PrototypeReward>,
     pub specializations: BTreeSet<String>,
     /// First registered token spelling, before any repeated definition is
     /// skipped. The public raw-name set remains for its existing consumers;
@@ -73,13 +96,25 @@ fn read(
     names: Option<&crate::key_names::KeyNames>,
     earlier: Option<&BTreeSet<Token>>,
 ) -> io::Result<Vec<crate::parser::Item>> {
+    read_mode(bytes, specialization, false, names, earlier)
+}
+
+fn read_mode(
+    bytes: &[u8],
+    specialization: bool,
+    rewards: bool,
+    names: Option<&crate::key_names::KeyNames>,
+    earlier: Option<&BTreeSet<Token>>,
+) -> io::Result<Vec<crate::parser::Item>> {
     let mut registered = earlier.cloned().unwrap_or_default();
     // Projects: mode 0, reuse repeated templates. Specializations: mode 0,
     // first token only, repeated bodies skipped. Each field retains its reader.
     let read = native::read(
         bytes,
         Mode::KeepMark,
-        if specialization {
+        if rewards {
+            native::Top::File(Node::Uniform)
+        } else if specialization {
             native::Top::Persistent(Node::Specializations)
         } else {
             native::Top::File(Node::Projects)
@@ -206,6 +241,37 @@ fn string(value: &Value) -> io::Result<String> {
 }
 
 impl Catalog {
+    pub fn reward_at(
+        &self,
+        project: &str,
+        ordinal: u32,
+        token: &str,
+    ) -> Result<&PrototypeReward, String> {
+        if let Some(reason) = &self.unsettled {
+            return Err(reason.clone());
+        }
+        let project = self
+            .projects
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(project))
+            .map(|(_, value)| value)
+            .ok_or("Special project definition is unavailable")?;
+        let occurrence = project
+            .reward_order
+            .get(ordinal as usize)
+            .ok_or("Pending reward occurrence is absent from recorded content")?;
+        let reward = match occurrence {
+            RewardOccurrence::Inline(value) => value,
+            RewardOccurrence::Reference(identity) => self
+                .rewards
+                .get(identity)
+                .ok_or("Pending global reward is absent from recorded content")?,
+        };
+        if Token::c_str(reward.token.as_bytes()) != Token::c_str(token.as_bytes()) {
+            return Err("Pending reward occurrence disagrees with its recorded token".into());
+        }
+        Ok(reward)
+    }
     pub fn specializations_in_order(&self) -> Result<&[String], String> {
         if let Some(why) = &self.unsettled {
             return Err(why.clone());
@@ -224,8 +290,37 @@ impl Catalog {
 
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut result = Self::default();
+        let mut project_tokens = BTreeMap::<Token, String>::new();
         // Project bodies load after buildings.
         let names = layers.key_names()?;
+        for path in script_files::paths(
+            layers,
+            "common/special_projects/prototype_rewards/",
+            Some(".txt"),
+        ) {
+            match read_mode(&layers.read(&path)?, false, true, Some(&names), None) {
+                Ok(items) => {
+                    for item in items {
+                        let token = item.key_str().map_err(|error| invalid(error.to_string()))?;
+                        let identity = Token::c_str(token.as_bytes());
+                        let reward =
+                            result
+                                .rewards
+                                .entry(identity)
+                                .or_insert_with(|| PrototypeReward {
+                                    token: token.into(),
+                                    ..Default::default()
+                                });
+                        read_reward(reward, item.value.items().unwrap_or_default())?;
+                    }
+                }
+                Err(error) => {
+                    let reason = format!("Prototype rewards: refused 1 file {path}: {error}");
+                    result.unsettled = Some(reason.clone());
+                    result.warnings.push(reason);
+                }
+            }
+        }
         for (folder, specialization) in [
             ("common/special_projects/specialization/", true),
             ("common/special_projects/projects/", false),
@@ -269,7 +364,10 @@ impl Catalog {
                         result.specializations.insert(token);
                         continue;
                     }
-                    let project = result.projects.entry(token.clone()).or_default();
+                    let registered = project_tokens
+                        .entry(Token::c_str(token.as_bytes()))
+                        .or_insert_with(|| token.clone());
+                    let project = result.projects.entry(registered.clone()).or_default();
                     // Reuse the earlier template: scalars overwrite,
                     // omitted fields retain their previous value.
                     for field in item.value.items().unwrap_or_default() {
@@ -279,6 +377,39 @@ impl Catalog {
                             project.complexity.push(field.clone());
                         } else if field.keyword_is("project_output") {
                             project.output.read(field.value.items().unwrap_or_default());
+                        } else if field.keyword_is("unique_prototype_rewards")
+                            || field.keyword_is("generic_prototype_rewards")
+                        {
+                            for reward in field.value.items().unwrap_or_default() {
+                                let token = reward
+                                    .key
+                                    .as_deref()
+                                    .or_else(|| reward.value.read_string())
+                                    .ok_or_else(|| {
+                                        invalid("Prototype reward reference has no token")
+                                    })?;
+                                if let Some(fields) = reward.value.items() {
+                                    let mut occurrence = PrototypeReward {
+                                        token: String::from_utf8(
+                                            crate::parser::c_string(token).to_vec(),
+                                        )
+                                        .map_err(|error| invalid(error.to_string()))?,
+                                        ..Default::default()
+                                    };
+                                    read_reward(&mut occurrence, fields)?;
+                                    project
+                                        .reward_order
+                                        .push(RewardOccurrence::Inline(occurrence));
+                                } else {
+                                    let identity = Token::c_str(token);
+                                    // Missing references do not create native candidate objects.
+                                    if result.rewards.contains_key(&identity) {
+                                        project
+                                            .reward_order
+                                            .push(RewardOccurrence::Reference(identity));
+                                    }
+                                }
+                            }
                         }
                         let destination = if field.keyword_is("specialization") {
                             Some(&mut project.specialization)
@@ -324,9 +455,119 @@ impl Catalog {
     }
 }
 
+fn read_reward(reward: &mut PrototypeReward, fields: &[crate::parser::Item]) -> io::Result<()> {
+    for field in fields {
+        if field.keyword_is("narrative") {
+            for entry in field.value.items().unwrap_or_default() {
+                if entry.keyword_is("name") {
+                    reward.name = Some(string(&entry.value)?);
+                }
+                if entry.keyword_is("desc") {
+                    reward.description = Some(string(&entry.value)?);
+                }
+            }
+        } else if field.keyword_is("option") {
+            let mut option = PrototypeOption::default();
+            for entry in field.value.items().unwrap_or_default() {
+                if entry.keyword_is("token") {
+                    option.token = string(&entry.value)?;
+                }
+                if entry.keyword_is("iteration_output") {
+                    option.output.read(entry.value.items().unwrap_or_default());
+                }
+                if entry.keyword_is("narrative") {
+                    for value in entry.value.items().unwrap_or_default() {
+                        if value.keyword_is("name") {
+                            option.name = Some(string(&value.value)?);
+                        }
+                    }
+                }
+            }
+            reward.options.push(option);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gap_research_grants_prototype_rewards_resolve_inline_and_generic_mod_options_in_authored_order()
+     {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+        let root = std::env::temp_dir().join(format!("project-rewards-{}", std::process::id()));
+        let projects = root.join("common/special_projects/projects");
+        let rewards = root.join("common/special_projects/prototype_rewards");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::create_dir_all(&rewards).unwrap();
+        std::fs::write(rewards.join("mod.txt"), "mod_reward={narrative={name=mod_name desc=mod_description} option={token=first narrative={name=first_name} iteration_output={country_effects={add_stability=0.1}}} option={token=first iteration_output={scientist_effects={add_scientist_level=1}}}}").unwrap();
+        std::fs::write(projects.join("mod.txt"), "mod_project={generic_prototype_rewards={mod_reward} unique_prototype_rewards={mod_inline={option={token=inline iteration_output={facility_state_effects={add_manpower=5}}}}}}").unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let catalog = Catalog::read(&layers).unwrap();
+        let generic = catalog.reward_at("mod_project", 0, "MOD_REWARD").unwrap();
+        assert_eq!(generic.name.as_deref(), Some("mod_name"));
+        assert_eq!(
+            generic
+                .options
+                .iter()
+                .map(|option| option.token.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "first"]
+        );
+        assert_eq!(generic.options[0].output.country_effects.len(), 1);
+        assert_eq!(generic.options[1].output.scientist_effects.len(), 1);
+        assert_eq!(
+            catalog
+                .reward_at("mod_project", 1, "mod_inline")
+                .unwrap()
+                .options[0]
+                .output
+                .facility_state_effects
+                .len(),
+            1
+        );
+        assert!(catalog.reward_at("mod_project", 0, "missing").is_err());
+        std::fs::write(rewards.join("z.txt"), "MOD_REWARD={option={token=last}}").unwrap();
+        std::fs::write(projects.join("z.txt"), "MOD_PROJECT={narrative={name=later_name} unique_prototype_rewards={mod_inline={option={token=other}}}}").unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let catalog = Catalog::read(&layers).unwrap();
+        assert_eq!(catalog.projects.len(), 1);
+        assert_eq!(catalog.projects["mod_project"].reward_order.len(), 3);
+        assert_eq!(catalog.rewards.len(), 1);
+        assert_eq!(
+            catalog.projects["mod_project"].name.as_deref(),
+            Some("later_name")
+        );
+        assert_eq!(
+            catalog
+                .reward_at("mod_project", 0, "mod_reward")
+                .unwrap()
+                .options
+                .len(),
+            3
+        );
+        assert_eq!(
+            catalog
+                .reward_at("mod_project", 1, "mod_inline")
+                .unwrap()
+                .options[0]
+                .token,
+            "inline"
+        );
+        assert_eq!(
+            catalog
+                .reward_at("mod_project", 2, "MOD_INLINE")
+                .unwrap()
+                .options[0]
+                .token,
+            "other"
+        );
+        assert!(catalog.reward_at("mod_project", 1, "mod_reward").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn scalar_consumption_variables_and_narrative_dispatch() {
         let items = read(br#"@kind = mod_science p = { SPECIALIZATION = @kind icon = GFX_mod narrative = { name = mod_name desc = x unknown = {name=no} } }"#, false, None, None).unwrap();

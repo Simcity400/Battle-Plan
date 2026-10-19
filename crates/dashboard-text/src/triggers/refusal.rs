@@ -1,0 +1,520 @@
+//! Refusal provenance belongs to the failing accessor, never its callers.
+use super::Store;
+use replay_data::rows::TableId;
+use std::{cell::RefCell, collections::BTreeSet, fmt};
+
+/// The unavailable operand. Global tables have no country/state scope.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Identity {
+    Input {
+        table: TableId,
+        field: String,
+        scope: Option<Store>,
+    },
+    Unsupported(String),
+}
+
+/// An error's message can gain context without changing its source identities.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Failure {
+    message: String,
+    identities: BTreeSet<Identity>,
+}
+
+thread_local! {
+    static CAPTURES: RefCell<Vec<BTreeSet<Identity>>> = const { RefCell::new(Vec::new()) };
+    static DEFERRED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RESOLUTIONS: RefCell<Vec<BTreeSet<Identity>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Resolution failures are observable even if a filter discards its None.
+/// Lazy indexes retain these observations separately from speculative errors.
+fn record_resolutions(identities: &BTreeSet<Identity>) {
+    record(identities);
+    RESOLUTIONS.with(|captures| {
+        for capture in captures.borrow_mut().iter_mut() {
+            capture.extend(identities.iter().cloned());
+        }
+    });
+}
+
+pub(crate) fn resolutions<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Identity>) {
+    RESOLUTIONS.with(|captures| captures.borrow_mut().push(BTreeSet::new()));
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            RESOLUTIONS.with(|captures| {
+                captures.borrow_mut().pop();
+            });
+        }
+    }
+    let pop = Pop;
+    let value = run();
+    let failures =
+        RESOLUTIONS.with(|captures| std::mem::take(captures.borrow_mut().last_mut().unwrap()));
+    drop(pop);
+    (value, failures)
+}
+
+/// A cached value must not lose failed joins that were filtered while building it.
+#[derive(Clone, Debug)]
+pub(crate) struct Resolved<T> {
+    value: T,
+    failures: BTreeSet<Identity>,
+}
+impl<T> Resolved<T> {
+    pub(crate) fn new(run: impl FnOnce() -> T) -> Self {
+        let (value, failures) = resolutions(run);
+        Self { value, failures }
+    }
+
+    pub(crate) fn value(&self) -> &T {
+        record_resolutions(&self.failures);
+        &self.value
+    }
+}
+
+/// Referenced positive keys cannot become an authenticated absence merely
+/// because the caller filters None. Literal nulls and membership searches use
+/// their own semantics; only an actual referenced-key lookup uses this primitive.
+pub(crate) fn reference<T>(
+    value: Option<T>,
+    positive: bool,
+    missing: impl FnOnce() -> Failure,
+) -> Option<T> {
+    if value.is_none() && positive {
+        missing().resolution_failed();
+    }
+    value
+}
+
+pub(crate) fn missing_reference(table: TableId, scope: Option<Store>) -> Failure {
+    Failure::input(
+        table,
+        "",
+        scope,
+        format!("{table:?}: referenced object is not recorded"),
+    )
+}
+
+/// A known member proves presence; absence is authenticated only by a complete
+/// source. Call this on every read, including reads through a warmed name index.
+pub(crate) fn membership(found: bool, complete: bool, missing: impl FnOnce() -> Failure) -> bool {
+    if !found && !complete {
+        missing().resolution_failed();
+    }
+    found
+}
+
+fn record(identities: &BTreeSet<Identity>) {
+    if DEFERRED.with(|depth| depth.get()) != 0 {
+        return;
+    }
+    CAPTURES.with(|captures| {
+        for capture in captures.borrow_mut().iter_mut() {
+            capture.extend(identities.iter().cloned());
+        }
+    });
+}
+
+impl Failure {
+    /// Called only by the accessor whose own read found missing input.
+    pub(crate) fn input(
+        table: TableId,
+        field: impl Into<String>,
+        scope: Option<Store>,
+        message: impl Into<String>,
+    ) -> Self {
+        let identities = BTreeSet::from([Identity::Input {
+            table,
+            field: field.into(),
+            scope,
+        }]);
+        record_resolutions(&identities);
+        Self {
+            message: message.into(),
+            identities,
+        }
+    }
+
+    pub fn context(self, context: impl FnOnce(&str) -> String) -> Self {
+        Self {
+            message: context(&self.message),
+            ..self
+        }
+    }
+
+    /// Join Boolean/alias errors without reconstructing identities from text.
+    pub fn merge(failures: impl IntoIterator<Item = Self>) -> Self {
+        let mut identities = BTreeSet::new();
+        let mut messages = Vec::new();
+        for failure in failures {
+            identities.extend(failure.identities);
+            messages.push(failure.message);
+        }
+        Self {
+            message: messages.join("; "),
+            identities,
+        }
+    }
+
+    /// A cached error retains its original sources; reading it replays them.
+    pub(crate) fn reached(&self) {
+        record(&self.identities);
+    }
+
+    /// The resolver, rather than its caller, owns the failed raw-reference read.
+    pub(crate) fn resolution_failed(&self) {
+        record_resolutions(&self.identities);
+    }
+
+    /// Evaluating an unknown result consumes its source even when Boolean
+    /// logic subsequently masks it. Tests still demand replay by the accessor,
+    /// so this final safety net cannot hide a missed cached-error read.
+    pub(crate) fn consumed(&self) {
+        #[cfg(test)]
+        assert_reached(self);
+        self.reached();
+    }
+
+    fn canonical(identity: Identity) -> Self {
+        let message = match &identity {
+            Identity::Input {
+                table,
+                field,
+                scope,
+            } => {
+                let field = if field.is_empty() {
+                    String::new()
+                } else {
+                    format!(".{field}")
+                };
+                let scope = scope
+                    .map(|scope| format!(" ({scope:?})"))
+                    .unwrap_or_default();
+                format!("{table:?}{field}{scope}: input unavailable or refused")
+            }
+            Identity::Unsupported(why) => why.clone(),
+        };
+        Self {
+            message,
+            identities: BTreeSet::from([identity]),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        let identities = BTreeSet::from([Identity::Unsupported(message.clone())]);
+        record(&identities);
+        Self {
+            message,
+            identities,
+        }
+    }
+}
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+impl std::ops::Deref for Failure {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.message
+    }
+}
+impl std::borrow::Borrow<str> for Failure {
+    fn borrow(&self) -> &str {
+        &self.message
+    }
+}
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for Failure {}
+impl PartialEq<str> for Failure {
+    fn eq(&self, other: &str) -> bool {
+        self.message == other
+    }
+}
+impl PartialEq<&str> for Failure {
+    fn eq(&self, other: &&str) -> bool {
+        self.message == *other
+    }
+}
+impl PartialEq<String> for Failure {
+    fn eq(&self, other: &String) -> bool {
+        self.message == *other
+    }
+}
+
+/// Source recording is independent of how errors are wrapped or masked by
+/// Boolean logic. The guard also restores the outer callback on unwinding.
+pub(crate) fn capture<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Failure>) {
+    CAPTURES.with(|captures| captures.borrow_mut().push(BTreeSet::new()));
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            CAPTURES.with(|captures| {
+                captures.borrow_mut().pop();
+            });
+        }
+    }
+    let pop = Pop;
+    let value = run();
+    let failures =
+        CAPTURES.with(|captures| std::mem::take(captures.borrow_mut().last_mut().unwrap()));
+    drop(pop);
+    (
+        value,
+        failures.into_iter().map(Failure::canonical).collect(),
+    )
+}
+
+/// Test guard at semantic consumption points, before Boolean masking can hide
+/// an error. Merely constructing, wrapping or retaining a lazy failure is not
+/// consumption. Repeated identities already reached by this callback are safe.
+#[cfg(test)]
+pub(crate) fn assert_reached(failure: &Failure) {
+    if DEFERRED.with(|depth| depth.get()) != 0 {
+        return;
+    }
+    CAPTURES.with(|captures| {
+        if let Some(capture) = captures.borrow().last() {
+            assert!(
+                failure.identities.is_subset(capture),
+                "deferred failure consumed without reached(): {:?}",
+                failure.identities
+            );
+        }
+    });
+}
+
+/// All raw replay table reads in the evaluator use this accessor, so a failed
+/// table acquisition cannot be reattributed to whichever callback asked for it.
+pub(crate) trait FrameInputs {
+    fn trigger_table<T: replay_data::rows::TableSchema>(&self) -> Result<&[T::Row], Failure>;
+}
+impl FrameInputs for replay_frame::frame::DecodedFrame {
+    fn trigger_table<T: replay_data::rows::TableSchema>(&self) -> Result<&[T::Row], Failure> {
+        self.complete::<T>().map_err(|why| {
+            let failure = Failure::input(T::ID, "", None, why.to_string());
+            failure.resolution_failed();
+            failure
+        })
+    }
+}
+
+/// Read an optional captured operand at its source, before adding any caller context.
+pub(crate) fn optional<'a, T>(
+    value: &'a replay_data::rows::Recorded<Option<T>>,
+    table: TableId,
+    field: &str,
+    scope: Option<Store>,
+) -> Result<&'a T, Failure> {
+    let name = format!("{table:?}.{field}");
+    value
+        .require(&name)
+        .map_err(|why| Failure::input(table, field, scope, why))?
+        .as_ref()
+        .ok_or_else(|| Failure::input(table, field, scope, format!("{name} capture unavailable")))
+}
+
+/// Build a lazy cached value without claiming errors in unused entries. The
+/// accessor replays the retained typed failure if the caller reaches it.
+pub(crate) fn deferred<T>(run: impl FnOnce() -> T) -> T {
+    DEFERRED.with(|depth| depth.set(depth.get() + 1));
+    struct Resume;
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            DEFERRED.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+    let _resume = Resume;
+    run()
+}
+
+/// The evaluator's typed refused-token context. Display-only callers retain
+/// the public String helper; no input identities cross that presentation boundary.
+pub(crate) fn refused(reason: impl Into<Failure>) -> Failure {
+    reason
+        .into()
+        .context(|reason| format!("{}{}", super::REFUSED, reason))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_filtered_joins_replay_on_cold_warm_and_nested_reads() {
+        let cache = Resolved::new(|| {
+            deferred(|| {
+                Failure::input(
+                    TableId::CountryLinks,
+                    "canonical_slot",
+                    None,
+                    "missing owner",
+                )
+                .resolution_failed();
+                42
+            })
+        });
+        let outer = Resolved::new(|| deferred(|| *cache.value()));
+        for _ in 0..2 {
+            let (value, failures) = capture(|| *outer.value());
+            assert_eq!(value, 42);
+            assert_eq!(failures.len(), 1);
+            assert!(failures.first().unwrap().contains("CountryLinks"));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "deferred failure consumed without reached()")]
+    fn consumption_guard_detects_a_deferred_error_before_or_masks_it() {
+        let failure =
+            deferred(|| Failure::input(TableId::CountryLinks, "canonical_slot", None, "unlinked"));
+        capture(|| super::super::Eval::unknown(failure).or(|| super::super::Eval::True));
+    }
+
+    #[test]
+    fn runtime_dispatch_preserves_its_source_error_without_a_string_round_trip() {
+        let (_, failures) = capture(|| {
+            let dispatched = installed_content_core::trigger_keys::dispatch_with_error::<(), (), Failure>(
+                installed_content_core::trigger_keys::Key {
+                    keyword: None,
+                    text: b"synthetic",
+                    quoted: false,
+                    opens: true,
+                },
+                |_, _| {
+                    installed_content_core::trigger_keys::ScopeStep::Unknown(Failure::input(
+                        TableId::Countries,
+                        "",
+                        None,
+                        "incomplete countries",
+                    ))
+                },
+                |_| Ok(None),
+                |_| None,
+            )
+            .unwrap();
+            assert!(
+                dispatched
+                    .unless_scope
+                    .unwrap()
+                    .identities
+                    .iter()
+                    .all(|id| matches!(
+                        id,
+                        Identity::Input {
+                            table: TableId::Countries,
+                            ..
+                        }
+                    ))
+            );
+        });
+        assert_eq!(failures.len(), 1);
+        // The content reader's String-facing dispatch remains inferable.
+        let _: installed_content_core::trigger_keys::Dispatched<(), ()> =
+            installed_content_core::trigger_keys::dispatch(
+                installed_content_core::trigger_keys::Key {
+                    keyword: None,
+                    text: b"synthetic",
+                    quoted: false,
+                    opens: true,
+                },
+                |_, _| installed_content_core::trigger_keys::ScopeStep::NotScope,
+                |_| Ok(None),
+                |_| None,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn contexts_and_merged_errors_keep_source_identity_without_observing_messages() {
+        let (_, failures) = capture(|| {
+            let failure =
+                Failure::input(TableId::LexicalTokens, "", None, "dictionary unavailable");
+            let nested = failure
+                .clone()
+                .context(|why| format!("tag alias ALI: {why}"));
+            let merged = Failure::merge([nested, failure]);
+            let wrapped = merged.context(|why| format!("trigger tag = ALI: {why}"));
+            assert_eq!(
+                wrapped.identities,
+                BTreeSet::from([Identity::Input {
+                    table: TableId::LexicalTokens,
+                    field: String::new(),
+                    scope: None,
+                }])
+            );
+        });
+        assert_eq!(failures.len(), 1);
+        assert!(failures.iter().all(|failure| {
+            failure
+                .identities
+                .iter()
+                .all(|id| matches!(id, Identity::Input { .. }))
+        }));
+    }
+
+    #[test]
+    fn lazy_cached_errors_publish_the_original_identity_only_when_reached() {
+        let failure = deferred(|| Failure::input(TableId::LexicalTokens, "", None, "unavailable"));
+        let (_, untouched) = capture(|| {
+            let _ = &failure;
+        });
+        assert!(untouched.is_empty());
+        for _ in 0..2 {
+            let (_, reached) = capture(|| {
+                failure.reached();
+                failure.reached();
+            });
+            assert_eq!(reached.len(), 1);
+            assert_eq!(reached.first().unwrap().identities, failure.identities);
+        }
+    }
+
+    #[test]
+    fn optional_capture_forms_and_contexts_share_the_same_source_identity() {
+        use replay_data::rows::Recorded;
+        let (_, failures) = capture(|| {
+            for value in [Recorded::<Option<i32>>::NotRecorded, Recorded::Value(None)] {
+                let failure = optional(
+                    &value,
+                    TableId::TrainInventory,
+                    "required_trains",
+                    Some(Store::Country(1)),
+                )
+                .unwrap_err();
+                failure.context(|why| format!("supply temporary: {why}"));
+            }
+        });
+        assert_eq!(failures.len(), 1);
+        assert!(failures.first().unwrap().identities.iter().all(|identity| matches!(identity, Identity::Input { table: TableId::TrainInventory, field, scope: Some(Store::Country(1)) } if field == "required_trains")));
+    }
+
+    #[test]
+    fn an_independent_unsupported_stays_separate_from_a_missing_input() {
+        let (_, failures) = capture(|| {
+            Failure::input(TableId::LexicalTokens, "", None, "unavailable");
+            let failure = Failure::from("unimplemented callback");
+            failure.context(|why| format!("trigger context: {why}"));
+        });
+        assert_eq!(failures.len(), 2);
+        assert_eq!(
+            failures
+                .iter()
+                .filter(|failure| failure
+                    .identities
+                    .iter()
+                    .any(|id| matches!(id, Identity::Unsupported(_))))
+                .count(),
+            1
+        );
+    }
+}

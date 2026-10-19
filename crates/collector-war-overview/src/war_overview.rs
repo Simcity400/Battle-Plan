@@ -6,16 +6,25 @@ use engine_native::{
     Memory, cwar_goal, cwar_relation, cwar_relation::overview as native, read, walk::Outcome,
 };
 use replay_data::{rows, rows::TableId, rows::tables};
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
 
-pub const N: usize = 4;
+pub const N: usize = 10;
 pub const TABLES: [TableId; N] = [
     TableId::WarOwnedRelations,
     TableId::WarRelationGoals,
     TableId::WarOverviewCountries,
     TableId::WarNameRules,
+    TableId::CountryWargoals,
+    TableId::WargoalTargets,
+    TableId::WargoalJustifications,
+    TableId::WarParticipation,
+    TableId::WarCapturedProvinces,
+    TableId::WarLendLeaseHistories,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[("war overview", 0, &[0, 1, 2])];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
+    ("war overview", 0, &[0, 1, 2, 4, 5, 6]),
+    ("war participation", 7, &[7, 8, 9]),
+];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
@@ -35,6 +44,7 @@ impl Capacities {
     }
 }
 pub struct Captured {
+    inventory: crate::wargoals::Captured,
     owned: CaptureRows<native::OwnedRow>,
     goals: CaptureRows<cwar_goal::relation::Row>,
     countries: CaptureRows<native::CountryRow>,
@@ -42,6 +52,8 @@ pub struct Captured {
     prefix: Option<[u8; cwar_relation::NAME_PREFIX_LEN]>,
     prefix_outcome: Outcome,
     prefix_view: u32,
+    participation: Option<[std::sync::Arc<rows::TableRows>; 3]>,
+    participation_outcomes: [Outcome; 3],
     literal: Option<(usize, [u8; cwar_relation::NAME_PREFIX_LEN])>,
 }
 impl Captured {
@@ -50,6 +62,7 @@ impl Captured {
     }
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
+            inventory: crate::wargoals::Captured::default(),
             owned: CaptureRows::new(c.owned),
             goals: CaptureRows::new(c.goals),
             countries: CaptureRows::new(c.countries),
@@ -58,9 +71,17 @@ impl Captured {
             prefix_outcome: Outcome::Rows { len: 0 },
             prefix_view: 0,
             literal: None,
+            participation: None,
+            participation_outcomes: [Outcome::Unavailable {
+                reason: "war participation not captured",
+            }; 3],
         }
     }
     pub fn reset(&mut self) {
+        self.participation = None;
+        self.participation_outcomes = [Outcome::Unavailable {
+            reason: "war participation not captured",
+        }; 3];
         self.owned.reset();
         self.goals.reset();
         self.countries.reset();
@@ -68,7 +89,8 @@ impl Captured {
         self.prefix_outcome = Outcome::Rows { len: 0 };
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.owned.allocated_bytes()
+        self.inventory.allocated_bytes()
+            + self.owned.allocated_bytes()
             + self.goals.allocated_bytes()
             + self.countries.allocated_bytes()
             + self.discovery.allocated_bytes()
@@ -80,7 +102,11 @@ impl Captured {
         self.discovery.grow(c.countries, c.relations);
     }
     pub fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        crate::participation::invalidate();
+        self.participation = None;
+        self.participation_outcomes = [Outcome::Unavailable { reason }; 3];
         self.discovery.invalidate();
+        self.inventory.fail(reason);
         self.owned
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.goals
@@ -105,20 +131,28 @@ impl Captured {
         if force_full {
             self.discovery.invalidate();
         }
-        let outcomes = native::walk_cached_growing(
-            memory,
-            base,
-            state,
-            &mut self.owned.rows,
-            &mut self.goals.rows,
-            &mut self.countries.rows,
-            &mut self.discovery,
-        );
+        let outcomes = self
+            .inventory
+            .visit_owners(memory, base, force_full, |owners| {
+                native::walk_cached_growing_with_owners(
+                    memory,
+                    base,
+                    state,
+                    &mut self.owned.rows,
+                    &mut self.goals.rows,
+                    &mut self.countries.rows,
+                    &mut self.discovery,
+                    owners,
+                )
+            });
         [
             self.owned.outcome,
             self.goals.outcome,
             self.countries.outcome,
         ] = outcomes;
+        if let Outcome::Unavailable { reason } = outcomes[0] {
+            self.inventory.fail(reason);
+        }
         ticks[0] = qpc().saturating_sub(start).max(0) as u64;
         let _reads = crate::read_accounting::table(TABLES[3]);
         let start = qpc();
@@ -147,17 +181,53 @@ impl Captured {
         })()
         .unwrap_or_else(|reason| Outcome::Unavailable { reason });
         ticks[3] = qpc().saturating_sub(start).max(0) as u64;
+        let _reads = crate::read_accounting::table(TABLES[7]);
+        let start = qpc();
+        let captured = match self.owned.outcome {
+            Outcome::Rows { len } => crate::participation::capture(
+                memory,
+                base,
+                state,
+                &self.owned.rows[..len],
+                self.discovery.country_sources(),
+                force_full,
+            ),
+            _ => {
+                crate::participation::invalidate();
+                Err("war participation owned census incomplete")
+            }
+        };
+        match captured {
+            Ok(rows) => {
+                self.participation_outcomes = rows
+                    .each_ref()
+                    .map(|rows| Outcome::Rows { len: rows.len() });
+                self.participation = Some(rows);
+            }
+            Err(reason) => {
+                self.participation_outcomes = [Outcome::Unavailable { reason }; 3];
+            }
+        }
+        ticks[7] = qpc().saturating_sub(start).max(0) as u64;
         ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
+        let inventory = self.inventory.outcomes();
         [
             self.owned.outcome,
             self.goals.outcome,
             self.countries.outcome,
             self.prefix_outcome,
+            inventory[0],
+            inventory[1],
+            inventory[2],
+            self.participation_outcomes[0],
+            self.participation_outcomes[1],
+            self.participation_outcomes[2],
         ]
     }
-    pub fn tables(&self) -> [TableView; N] {
+    fn original_tables(&self) -> [TableView; 7] {
+        let [inventory, targets, justifications] = self.inventory.tables();
         [
             table::<tables::WarOwnedRelations, _>(self.owned.outcome, &self.owned.rows, |r| {
                 rows::WarOwnedRelationRow {
@@ -208,7 +278,37 @@ impl Captured {
                     viewpoint: self.prefix_view,
                 },
             ),
+            inventory,
+            targets,
+            justifications,
         ]
+    }
+    pub fn table_inputs(&self) -> [TableInput; N] {
+        let [a, b, c, d, inventory, targets, justifications] =
+            self.original_tables().map(TableInput::Sampled);
+        let extra: [TableInput; 3] = std::array::from_fn(|index| {
+            match (&self.participation, self.participation_outcomes[index]) {
+                (Some(rows), Outcome::Rows { .. }) => {
+                    TableInput::SharedComplete(std::sync::Arc::clone(&rows[index]))
+                }
+                (_, Outcome::Unavailable { reason }) => {
+                    TableInput::Sampled(crate::table_conversion::unavailable(reason))
+                }
+                _ => TableInput::Sampled(crate::table_conversion::unavailable(
+                    "war participation incomplete",
+                )),
+            }
+        });
+        let [e, f, g] = extra;
+        [a, b, c, d, inventory, targets, justifications, e, f, g]
+    }
+    #[cfg(test)]
+    fn tables(&self) -> [TableView; N] {
+        self.table_inputs().map(|input| match input {
+            TableInput::Sampled(view) => view,
+            TableInput::SharedComplete(rows) => TableView::Complete((*rows).clone()),
+            _ => unreachable!(),
+        })
     }
 }
 
@@ -217,6 +317,7 @@ mod tests {
     use super::*;
     #[test]
     fn worker_failure_cannot_become_empty_or_restore_the_static_prefix() {
+        let _lock = crate::participation::TEST_LOCK.lock().unwrap();
         let mut c = Captured::vacant();
         c.fail_capture(4, true, "stopped worker");
         assert!(

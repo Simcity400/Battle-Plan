@@ -262,7 +262,10 @@ fn available(
         EventObject::Country(country),
     )])));
     let evaluator = Evaluator::new(context.world()?, None).with_event_scopes(graph);
-    match evaluator.evaluate(&definition.available, evaluator.event_scopes(0)?) {
+    match evaluator.evaluate(
+        &definition.available,
+        evaluator.event_scopes(0).map_err(|why| why.to_string())?,
+    ) {
         Eval::True => Ok(true),
         Eval::False => Ok(false),
         Eval::Unknown(reasons) => Err(reasons.into_iter().collect::<Vec<_>>().join("; ")),
@@ -271,3 +274,73 @@ fn available(
 
 #[cfg(test)]
 mod tests;
+
+/// Shared unit-stat, modifier and effect descriptions for a doctrine bonus.
+/// Independent fragments survive named refusals.
+pub fn doctrine_benefits(
+    benefits: &installed_content_core::doctrines::Benefits,
+    context: &Context<'_, '_>,
+    scopes: &mut EventScopes,
+) -> Description {
+    let mut renderer = Renderer {
+        context,
+        graph: Rc::new(RefCell::new(scopes.clone())),
+        evaluator: OnceCell::new(),
+        out: Description::default(),
+        scripted_stack: Vec::new(),
+    };
+    let selected = crate::triggers::event_scopes::project(scopes, 0);
+    let mut output = String::new();
+    match selected {
+        Ok(selected) => {
+            if let Some(prose) = &benefits.prose {
+                match renderer.bound_localisation(prose, selected, false) {
+                    Ok(text) => {
+                        output.push_str(&text);
+                        output.push('\n');
+                    }
+                    Err(why) => renderer.refuse("doctrine description", why),
+                }
+            }
+            match renderer.units_bonus_description(&benefits.units, selected) {
+                Ok(text) => output.push_str(&text),
+                Err(why) => renderer.refuse("doctrine unit bonuses", why),
+            }
+            for tactic in &benefits.tactics {
+                match renderer.localised(tactic, &[], selected, false) {
+                    Ok(text) => {
+                        output.push_str(&text);
+                        output.push('\n');
+                    }
+                    Err(why) => renderer.refuse("doctrine tactic", why),
+                }
+            }
+        }
+        Err(why) => renderer.refuse("doctrine bonus scope", why.to_string()),
+    }
+    if benefits.modifiers != installed_content_core::modifiers::Modifiers::default() {
+        match renderer.modifier_description_with(
+            &benefits.modifiers,
+            "",
+            ModifierListOptions {
+                category_mask: u32::MAX,
+                ..Default::default()
+            },
+        ) {
+            Ok(text) => {
+                output.push_str(&text);
+                output.push('\n');
+            }
+            Err(why) => renderer.refuse("doctrine modifiers", why),
+        }
+    }
+    if !benefits.effects.is_empty() {
+        let description = describe(&benefits.effects, context, scopes);
+        output.push_str(&description.text);
+        for (why, count) in description.refusals {
+            *renderer.out.refusals.entry(why).or_default() += count;
+        }
+    }
+    renderer.out.text = output;
+    renderer.out
+}

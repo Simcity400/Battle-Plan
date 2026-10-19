@@ -433,7 +433,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "political_status_changes")
             && MUTATIONS.iter().all(|(site, _, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             SET_POPULARITY.store(base + SET_POPULARITY_RVA, Ordering::Release);

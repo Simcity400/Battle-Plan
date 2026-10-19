@@ -8,9 +8,12 @@ use viewer_foundation::map::counter_hovers::gui_authored;
 use viewer_foundation::tooltip_text::NoIcons;
 use viewer_foundation::tooltip_text::country_localised;
 mod ability;
+mod air_base_transfer;
+pub(super) mod air_fuel;
 pub(crate) mod attrition;
 mod carrier_summary;
 mod children;
+mod naval_management;
 mod railway_gun;
 mod supply;
 pub mod task_force;
@@ -18,6 +21,7 @@ mod task_force_children;
 pub mod task_force_port;
 pub(crate) mod task_force_port_mission;
 mod task_force_summary;
+mod template_facts;
 
 use std::{collections::BTreeMap, sync::Arc};
 use viewer_foundation::map::counter_hovers::{land::Timing, refuse};
@@ -192,9 +196,26 @@ fn append(
     }
 }
 
+fn append_facts(
+    out: &mut Tooltip,
+    label: &str,
+    value: Result<dashboard_text::template_facts::Rendered, String>,
+) {
+    match value {
+        Ok(rendered) => {
+            for (field, reason) in rendered.refused {
+                refuse(out, &format!("{label}/{field}"), reason);
+            }
+            out.body.push_str(&rendered.text);
+        }
+        Err(reason) => refuse(out, label, reason),
+    }
+}
+
 struct Context<'a> {
     nato: bool,
     content: Option<&'a counter_content::Content>,
+    reads: Option<viewer_foundation::map::movement_reads::ReadOperands<'a>>,
     dig_in_factor: Result<i64, String>,
     loc: &'a Localisation,
     recorded_language: &'a str,
@@ -209,6 +230,123 @@ struct Context<'a> {
 }
 
 impl<'a> Context<'a> {
+    fn template_sections(&self, out: &mut Tooltip, members: &[u64]) {
+        let mut templates = std::collections::BTreeSet::new();
+        let mut countries = std::collections::BTreeSet::new();
+        let mut groups = std::collections::BTreeSet::new();
+        for &id in members {
+            let result = (|| {
+                let division = self.division(id)?;
+                let owner = self.slot(division.roster_owner)?;
+                let shared = !self.vision.fog()
+                    || self
+                        .vision
+                        .shares_vision_proven(owner)
+                        .map_err(|error| error.describe())?;
+                Ok::<_, String>((division, owner, shared))
+            })();
+            let (division, owner, shared) = match result {
+                Ok(value) => value,
+                Err(reason) => {
+                    refuse(out, "Template context", reason);
+                    continue;
+                }
+            };
+            if shared {
+                if templates.insert(division.template) {
+                    append_facts(
+                        out,
+                        "Template settings and layout",
+                        template_facts::template_with(
+                            self.frame,
+                            division.template,
+                            self.loc,
+                            &|text| viewer_foundation::tooltip_text::validate(self.icons, text),
+                        ),
+                    );
+                }
+                if countries.insert(owner) {
+                    append_facts(
+                        out,
+                        "Garrison and staff templates",
+                        template_facts::country_with(
+                            self.frame,
+                            owner,
+                            self.loc,
+                            |raw| self.slot(raw),
+                            &|text| viewer_foundation::tooltip_text::validate(self.icons, text),
+                        ),
+                    );
+                }
+                if division.orders_group != 0 && groups.insert(division.orders_group) {
+                    append_facts(
+                        out,
+                        "HQ deployment",
+                        template_facts::hq_with(
+                            self.frame,
+                            division.orders_group,
+                            self.loc,
+                            &|text| viewer_foundation::tooltip_text::validate(self.icons, text),
+                        ),
+                    );
+                }
+            } else if countries.insert(owner) {
+                let ledger = (|| {
+                    use viewer_foundation::map::visibility::template_reveal;
+                    let defines = self
+                        .units
+                        .as_ref()
+                        .map_err(Clone::clone)?
+                        .template_reveal_defines()?;
+                    let links: BTreeMap<_, _> = self
+                        .links
+                        .as_ref()
+                        .map_err(Clone::clone)?
+                        .iter()
+                        .map(|row| (row.id, row.canonical_slot))
+                        .collect();
+                    let viewer = links
+                        .iter()
+                        .find(|(_, slot)| **slot == self.vision.ours())
+                        .map(|(&raw, _)| raw)
+                        .ok_or("viewing country link missing")?;
+                    let entries = template_reveal::entries(
+                        self.frame,
+                        &links,
+                        viewer,
+                        division.roster_owner,
+                        self.vision.fog(),
+                        defines,
+                        self.loc,
+                    )?;
+                    let mut rendered =
+                        dashboard_text::template_facts::Rendered::text("\nEnemy templates\n");
+                    for entry in entries {
+                        let name =
+                            template_reveal::display_name(self.frame, entry.template, self.loc)
+                                .and_then(|name| displayable(self.icons, name))
+                                .unwrap_or_else(|reason| {
+                                    rendered.refused.push((
+                                        format!("Template {} name", entry.template),
+                                        reason,
+                                    ));
+                                    format!("Template {} (name unavailable)", entry.template)
+                                });
+                        let count = if entry.count_known {
+                            format!("{}–{}", entry.count[0], entry.count[1])
+                        } else {
+                            "Unknown".to_owned()
+                        };
+                        rendered
+                            .text
+                            .push_str(&format!("{name}: {count} divisions\n"));
+                    }
+                    Ok(rendered)
+                })();
+                append_facts(out, "Enemy templates", ledger);
+            }
+        }
+    }
     fn slot(&self, raw: u32) -> Result<u32, String> {
         let rows = self.links.as_ref().map_err(Clone::clone)?;
         rows.binary_search_by_key(&raw, |row| row.id)
@@ -726,6 +864,7 @@ impl<'a> Batch<'a> {
         let context = Context {
             nato,
             content: Some(content),
+            reads: Some(reads),
             dig_in_factor: content.dig_in_factor.clone(),
             loc: &content.localisation,
             recorded_language: &content.recorded_language,
@@ -744,6 +883,47 @@ impl<'a> Batch<'a> {
             context,
             arrival: super::division_eta::CounterQueries::new(content, reads, frame),
         }
+    }
+
+    pub fn build_air_base(&self, province: u32, kind: i32, selected: &[u64]) -> Tooltip {
+        let mut out = Tooltip::default();
+        let base = (|| {
+            let rows = self
+                .context
+                .frame
+                .complete::<tables::AirBases>()
+                .map_err(|e| e.to_string())?;
+            let provinces = self
+                .context
+                .frame
+                .complete::<tables::Provinces>()
+                .map_err(|e| e.to_string())?;
+            let state = provinces
+                .iter()
+                .find(|row| row.id == province)
+                .ok_or("air-base province unavailable")?
+                .state;
+            let mut matched = rows
+                .iter()
+                .filter(|row| row.state == Some(state) && row.kind == kind);
+            let base = matched
+                .next()
+                .ok_or("state's air-base identity unavailable")?;
+            if matched.next().is_some() {
+                return Err("state's air-base identity is not unique".to_owned());
+            }
+            Ok(base.id)
+        })();
+        match base {
+            Ok(id) => {
+                carrier_summary::summary(&self.context, id, &mut out);
+                if kind == 0 {
+                    air_base_transfer::append(&self.context, id, selected, &mut out);
+                }
+            }
+            Err(why) => refuse(&mut out, "air-base summary", why),
+        }
+        out
     }
 
     pub fn build(&self, input: &CounterHover) -> Tooltip {
@@ -1084,6 +1264,7 @@ fn build_divisions(
         Err(reason) => refuse(&mut out, "intel header/stat eligibility", reason),
     }
     context.hq(&mut out, &[first]);
+    context.template_sections(&mut out, &members);
     children::append(context, input, &mut out);
     // Header fragments terminate their lines; the painter supplies the newline before its divider.
     if !out.body.is_empty() && out.title.ends_with('\n') {
@@ -1095,13 +1276,383 @@ fn build_divisions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_data::{
-        rows::ClockRow, rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
-        rows::DivisionTemplateIconRow, rows::DivisionTemplateRow, rows::LandCombatDivisionRow,
-        rows::LexicalTokenRow, rows::NameOperands, rows::PoliticsRow, rows::ProvinceRow,
-        rows::Recorded, rows::TableRows, rows::TemplateSubunit,
+    use replay_data::rows::{
+        ClockRow, CountryAppearanceRow, CountryLinkRow, CountryRow, CountryTemplateStateRow,
+        DivisionTemplateIconRow, DivisionTemplateRow, LandCombatDivisionRow, LexicalTokenRow,
+        NameOperands, PacketHour, PoliticsRow, ProvinceRow, Recorded, TableRows,
+        TemplateDisplayName, TemplateLayout, TemplateNameValue, TemplateSettings, TemplateSubunit,
     };
     use viewer_foundation::map::test_support::{test_frame, test_put as put};
+
+    fn template_hover(context: &Context<'_>) -> Tooltip {
+        fixture_context(
+            context,
+            &CounterHover {
+                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                authored: None,
+                rect: [0.0; 4],
+                members: vec![1].into(),
+                timing: vec![Timing {
+                    next: None,
+                    kind: None,
+                }]
+                .into(),
+                coarse: false,
+                hidden: false,
+                railway_gun: false,
+                remaining: None,
+                ours: context.vision.ours() == 1,
+            },
+            false,
+        )
+    }
+
+    #[test]
+    fn division_hover_calls_the_recorded_template_garrison_and_hq_sections() {
+        let frame = template_facts::fixture();
+        let loc = loc();
+        let names = installed_content_division_names::division_names::Database::default();
+        let units = Err("not needed for shared template facts".to_owned());
+        let vision = Vision::sharing(1, []);
+        let context = context(&frame, &loc, &vision, &names, &units);
+        let tooltip = template_hover(&context);
+        for fact in [
+            "MOD_NAMES",
+            "Garrison reinforcement priority: -7",
+            "HQ target template: 52",
+        ] {
+            assert!(tooltip.body.contains(fact), "{}", tooltip.body);
+        }
+    }
+
+    #[test]
+    fn division_hover_keeps_valid_facts_with_field_specific_refusals() {
+        let mut frame = template_facts::fixture();
+        let mut icons = frame
+            .complete::<tables::DivisionTemplateIcons>()
+            .unwrap()
+            .to_vec();
+        icons[0].layout = Recorded::Value(None);
+        put(&mut frame, TableRows::DivisionTemplateIcons(icons));
+        let mut countries = frame
+            .complete::<tables::CountryTemplateState>()
+            .unwrap()
+            .to_vec();
+        countries[0].garrisons = Recorded::NotRecorded;
+        countries[0].garrison_priority = Recorded::Value(None);
+        put(&mut frame, TableRows::CountryTemplateState(countries));
+        let loc = loc();
+        let names = installed_content_division_names::division_names::Database::default();
+        let units = Err("not needed for shared template facts".to_owned());
+        let vision = Vision::sharing(1, []);
+        let context = context(&frame, &loc, &vision, &names, &units);
+        let tooltip = template_hover(&context);
+        for fact in [
+            "MOD_NAMES",
+            "Priority: -3",
+            "Forbidden equipment: ModInfantry",
+            "Cached manpower: 0",
+            "Military-staff template: 52",
+            "Next HQ deployment order: 0",
+            "Template layout: Unavailable",
+            "Garrison templates: Unavailable",
+        ] {
+            assert!(tooltip.body.contains(fact), "{}", tooltip.body);
+        }
+        let refusals = tooltip
+            .refused
+            .keys()
+            .filter(|key| {
+                key.contains("Template settings and layout/")
+                    || key.contains("Garrison and staff templates/")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(refusals.len(), 3, "{refusals:?}");
+        for field in [
+            "Template settings and layout/Template layout:",
+            "Garrison and staff templates/Garrison templates:",
+            "Garrison and staff templates/Garrison reinforcement priority:",
+        ] {
+            assert!(
+                refusals.iter().any(|key| key.contains(field)),
+                "{refusals:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_localised_template_name_only_refuses_names_in_each_section() {
+        for name in ["\u{12}GER Mod name", "Mod name\u{14}"] {
+            let mut frame = template_facts::fixture();
+            let mut templates = frame
+                .complete::<tables::DivisionTemplates>()
+                .unwrap()
+                .to_vec();
+            templates[0].name.clear();
+            templates[0].name_key = b"MOD_NAME".to_vec().into();
+            put(&mut frame, TableRows::DivisionTemplates(templates));
+            let mut icons = frame
+                .complete::<tables::DivisionTemplateIcons>()
+                .unwrap()
+                .to_vec();
+            let mut settings = icons[0]
+                .settings
+                .require("settings")
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .clone();
+            settings.parent = 52;
+            icons[0].settings = Recorded::Value(Some(settings.into()));
+            put(&mut frame, TableRows::DivisionTemplateIcons(icons));
+            let loc = [("AAA_MOD_NAME".into(), name.into())].into_iter().collect();
+            let names = installed_content_division_names::division_names::Database::default();
+            let units = Err("not needed for shared facts".to_owned());
+            let vision = Vision::sharing(1, []);
+            let context = context(&frame, &loc, &vision, &names, &units);
+            let tooltip = template_hover(&context);
+            for fact in [
+                "Name: Unavailable",
+                "Priority: -3",
+                "MOD_NAMES",
+                "(0, 0): Empty",
+                "Parent template: 52 (name unavailable)",
+                "Military-staff template: 52 (name unavailable)",
+                "All templates locked: false",
+                "Garrison reinforcement priority: -7",
+                "state 0: 52 (name unavailable)",
+                "HQ target template: 52 (name unavailable)",
+                "Manpower: 5 / 9",
+                "Assembled variant 70: 1.25",
+                "Required ModInfantry: 2",
+            ] {
+                assert!(
+                    tooltip.body.contains(fact),
+                    "missing {fact}: {}",
+                    tooltip.body
+                );
+            }
+            assert!(!tooltip.body.contains(name));
+            for section in [
+                "Template settings and layout",
+                "Garrison and staff templates",
+                "HQ deployment",
+            ] {
+                assert!(
+                    !tooltip
+                        .refused
+                        .keys()
+                        .any(|key| key.starts_with(&format!("counter {section}:"))),
+                    "{:?}",
+                    tooltip.refused
+                );
+            }
+            for field in [
+                "Template settings and layout/Name:",
+                "Template settings and layout/Parent template name:",
+                "Garrison and staff templates/Military-staff template name:",
+                "HQ deployment/HQ target template name:",
+            ] {
+                assert!(
+                    tooltip.refused.keys().any(|key| key.contains(field)),
+                    "{:?}",
+                    tooltip.refused
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn division_hover_refuses_unreadable_front_and_model_fields_independently() {
+        let mut frame = template_facts::fixture();
+        let mut icons = frame
+            .complete::<tables::DivisionTemplateIcons>()
+            .unwrap()
+            .to_vec();
+        icons[0].model_unreadable = 1;
+        icons[0].model_category = Some(23);
+        put(&mut frame, TableRows::DivisionTemplateIcons(icons));
+        let mut groups = frame
+            .complete::<tables::OrdersGroupCounterInputs>()
+            .unwrap()
+            .to_vec();
+        groups[0].hq_nearest_front = Recorded::Value(None);
+        put(&mut frame, TableRows::OrdersGroupCounterInputs(groups));
+        let loc = loc();
+        let names = installed_content_division_names::division_names::Database::default();
+        let units = Err("not needed for shared facts".to_owned());
+        let vision = Vision::sharing(1, []);
+        let context = context(&frame, &loc, &vision, &names, &units);
+        let tooltip = template_hover(&context);
+        for fact in [
+            "Priority: -3",
+            "Model category: Some(23)",
+            "Composition country: 11",
+            "Foreign country: -1",
+            "Model choice: Unavailable",
+            "Excluded variants: Unavailable",
+            "Nearest front province: Unavailable",
+            "Manpower: 5 / 9",
+            "Assembled variant 70: 1.25",
+        ] {
+            assert!(
+                tooltip.body.contains(fact),
+                "missing {fact}: {}",
+                tooltip.body
+            );
+        }
+        for field in [
+            "Template settings and layout/Model choice:",
+            "Template settings and layout/Excluded variants:",
+            "HQ deployment/Nearest front province:",
+        ] {
+            assert!(
+                tooltip.refused.keys().any(|key| key.contains(field)),
+                "{:?}",
+                tooltip.refused
+            );
+        }
+    }
+
+    #[test]
+    fn enemy_division_hover_uses_the_reveal_query_without_showing_private_settings() {
+        use replay_data::rows::{
+            ArmyIconInputRow, CountryIntelRow, PacketHour, TemplateDisplayName, TemplateNameValue,
+            TemplateSettings,
+        };
+        let mut frame = template_facts::fixture();
+        put(
+            &mut frame,
+            TableRows::CountryLinks(vec![
+                CountryLinkRow {
+                    id: 11,
+                    canonical_slot: 1,
+                },
+                CountryLinkRow {
+                    id: 21,
+                    canonical_slot: 2,
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::Countries(vec![
+                CountryRow {
+                    id: 11,
+                    canonical_slot: 1,
+                    ..Default::default()
+                },
+                CountryRow {
+                    id: 21,
+                    canonical_slot: 2,
+                    ..Default::default()
+                },
+            ]),
+        );
+        put(&mut frame, TableRows::FactionMembers(Vec::new()));
+        put(&mut frame, TableRows::WarRelations(Vec::new()));
+        put(&mut frame, TableRows::Subjects(Vec::new()));
+        put(
+            &mut frame,
+            TableRows::Clock(vec![ClockRow {
+                seed: 123,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::CountryIntel(vec![CountryIntelRow {
+                owner_country: 11,
+                target_index: 2,
+                army: 60_000,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::Divisions(vec![DivisionRow {
+                id: 1,
+                roster_owner: 21,
+                template: 52,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::ArmyIconInputs(vec![ArmyIconInputRow {
+                division: 1,
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::DivisionTemplates(vec![DivisionTemplateRow {
+                template: 52,
+                owner: 21,
+                name: b"Enemy example".to_vec(),
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::DivisionTemplateIcons(vec![DivisionTemplateIconRow {
+                template: 52,
+                country: 21,
+                foreign_country: -1,
+                display_name: Recorded::Value(Some(TemplateDisplayName {
+                    sample_hour: PacketHour::Host,
+                    value: TemplateNameValue::SameAsDivisionTemplates,
+                })),
+                settings: Recorded::Value(Some(TemplateSettings::default().into())),
+                ..Default::default()
+            }]),
+        );
+        let defines = installed_content_core::defines::Defines::new().unwrap();
+        defines.load("synthetic.lua", b"NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={1,1,1,1},ARMY_MIN_INTEL_TO_SHOW_BASIC_TEMPLATE_INFO=0.3,ARMY_MIN_INTEL_RATIO_NEEDED_FOR_DISPLAYING_FAKE_ENEMY_INTEL_IN_LEDGER=0.7,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MIN=0.4,ARMY_TEMPLATE_UNIT_COUNT_INTEL_MAX=0.8,ARMY_TEMPLATE_UNIT_COUNT_INTEL_RANGE_AT_LOWEST_INTEL=0.5}} ").unwrap();
+        let units = units::Content::load(
+            &defines,
+            Ok(&installed_content_core::unit_leader::SubUnits::default()),
+        );
+        let loc = loc();
+        let names = installed_content_division_names::division_names::Database::default();
+        let vision = Vision::sharing(1, []);
+        let initial_context = context(&frame, &loc, &vision, &names, &units);
+        let tooltip = template_hover(&initial_context);
+        assert!(tooltip.body.contains("Enemy example:"), "{}", tooltip.body);
+        assert!(!tooltip.body.contains("Historical naming group"));
+        assert!(!tooltip.body.contains("Garrison reinforcement priority"));
+        let mut unsupported = frame.clone();
+        let mut templates = unsupported
+            .complete::<tables::DivisionTemplates>()
+            .unwrap()
+            .to_vec();
+        templates[0].name = b"\x12GER Enemy".to_vec();
+        put(&mut unsupported, TableRows::DivisionTemplates(templates));
+        let context = context(&unsupported, &loc, &vision, &names, &units);
+        let tooltip = template_hover(&context);
+        assert!(
+            tooltip.body.contains("Template 52 (name unavailable):"),
+            "{}",
+            tooltip.body
+        );
+        assert!(tooltip.body.contains("divisions"));
+        assert!(!tooltip.body.contains("\u{12}GER"));
+        assert!(
+            tooltip
+                .refused
+                .keys()
+                .any(|key| key.contains("Enemy templates/Template 52 name:")),
+            "{:?}",
+            tooltip.refused
+        );
+        assert!(
+            !tooltip
+                .refused
+                .keys()
+                .any(|key| key.starts_with("counter Enemy templates:"))
+        );
+    }
 
     fn loc() -> Localisation {
         [
@@ -1258,6 +1809,18 @@ mod tests {
                     .map(|id| DivisionTemplateIconRow {
                         template: id << 32 | 7,
                         country: 11,
+                        display_name: Recorded::Value(Some(TemplateDisplayName {
+                            sample_hour: PacketHour::Host,
+                            value: TemplateNameValue::SameAsDivisionTemplates,
+                        })),
+                        settings: Recorded::Value(Some(
+                            TemplateSettings {
+                                forbidden_equipment: Some(Vec::new()),
+                                ..Default::default()
+                            }
+                            .into(),
+                        )),
+                        layout: Recorded::Value(Some(TemplateLayout::default().into())),
                         subunits: vec![TemplateSubunit {
                             token: 1,
                             local: 0,
@@ -1273,6 +1836,15 @@ mod tests {
             TableRows::LexicalTokens(vec![LexicalTokenRow {
                 token: 1,
                 literal: b"Foot".to_vec(),
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::CountryTemplateState(vec![CountryTemplateStateRow {
+                country: 11,
+                garrison_priority: Recorded::Value(Some(1)),
+                garrisons: Recorded::Value(Some(Vec::new().into())),
+                ..Default::default()
             }]),
         );
         put(&mut frame, TableRows::Clock(vec![ClockRow::default()]));
@@ -1299,6 +1871,7 @@ mod tests {
         Context {
             nato: false,
             content: None,
+            reads: None,
             dig_in_factor: Err("unused".into()),
             loc,
             recorded_language: &loc.language,
@@ -1546,10 +2119,9 @@ mod tests {
             named.title,
             "unit \u{11}HGuard\u{11}! (\u{11}YAlpha\u{11}!)"
         );
-        assert_eq!(
-            named.body,
+        assert!(named.body.starts_with(
             "arrival 1d 5h\nnext 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
-        );
+        ));
         assert_eq!(named.refused.len(), 1);
         assert_eq!(named.refused.values().copied().sum::<usize>(), 1);
         assert_eq!(
@@ -1575,6 +2147,7 @@ mod tests {
         assert_diagnostics(
             || {
                 viewer_foundation::diagnostics_panel::tooltip_warning_lines(&unnamed.refused)
+                    .filter(|line| line.contains("counter division name:"))
                     .collect()
             },
             &[format!("Tooltip: 1 × {reason}")],
@@ -1592,10 +2165,9 @@ mod tests {
         let vision = Vision::sharing(1, []);
         let detailed = tooltip(&frame, &[1, 2], false, false, &vision);
         assert_eq!(detailed.title, "1 Second Alpha\n1 First Alpha");
-        assert_eq!(
-            detailed.body,
+        assert!(detailed.body.starts_with(
             "arrival 1d 5h\nnext 2h\n\navg org 50%\nstr 50%\n4\u{13}unit_Foot_icon_small|1 "
-        );
+        ));
         assert!(
             !detailed
                 .refused
@@ -2013,7 +2585,7 @@ mod tests {
                 .map(|(_, &count)| count),
             Some(1)
         );
-        assert_eq!(detailed.refused.len(), 1);
+        assert_eq!(detailed.refused.len(), 2);
         assert!(
             detailed
                 .refused
@@ -2087,9 +2659,10 @@ mod tests {
                 assert_eq!(hidden.body, visible.body);
             } else {
                 assert!(visible.body.starts_with("other arrival 1d 5h\n"));
-                assert_eq!(
-                    hidden.body,
-                    "next 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
+                assert!(
+                    hidden.body.starts_with(
+                        "next 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
+                    )
                 );
                 assert!(
                     !hidden
@@ -2393,7 +2966,18 @@ mod tests {
                     .into(),
             ),
         );
+        let mut neutral_templates = frame
+            .complete::<tables::DivisionTemplateIcons>()
+            .unwrap()
+            .to_vec();
+        for template in &mut neutral_templates {
+            template.speed_keys = Recorded::Value(Some(Vec::new()));
+        }
         neutral_world(&mut frame, 11);
+        put(
+            &mut frame,
+            TableRows::DivisionTemplateIcons(neutral_templates),
+        );
         // 2900000 over 100000 per hour is 29 hours; 400000 of progress is
         // 4 hours behind. A slower stat block still moves at the 1 km/h floor.
         for (base_speed, ours, expected) in [
@@ -2451,7 +3035,12 @@ mod tests {
             });
             match expected {
                 Ok(line) => {
-                    assert!(out.body.starts_with(line), "{:?}", out.body);
+                    assert!(
+                        out.body.starts_with(line),
+                        "{:?}; refusals {:?}",
+                        out.body,
+                        out.refused
+                    );
                     assert!(
                         !out.refused
                             .keys()

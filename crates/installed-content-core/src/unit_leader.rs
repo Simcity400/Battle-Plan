@@ -32,9 +32,11 @@ use crate::{
     script_files,
 };
 
+mod division_experience;
 mod skills;
 mod sub_units;
 
+pub use division_experience::{DivisionExperience, DivisionExperienceProgress};
 pub use skills::{Component, Skills};
 pub use sub_units::{SubUnit, SubUnits, sub_units};
 
@@ -693,6 +695,8 @@ pub struct TraitEffects {
     pub skills: [i32; 6],
     /// `leader_default_proximity_offset`.
     pub proximity_offset: i32,
+    /// Signed whole-point threshold from `cost`; omitted input keeps the native default.
+    pub required_experience: Option<i32>,
     /// `trait_xp_factor = { trait = value }`, authored order, each named
     /// by the trait's registered spelling: lookup uses the key's token
     /// and reports any other key.
@@ -711,6 +715,16 @@ pub struct TraitEffects {
     /// Entries the native reader reports and ignores or reads as its default,
     /// which the description therefore omits or shows at that default.
     pub ignored: Vec<String>,
+}
+
+const DEFAULT_TRAIT_EXPERIENCE_COST: i32 = 1000;
+
+impl TraitEffects {
+    /// The constructor's whole-point default, independently of authored content.
+    pub fn required_experience(&self) -> i32 {
+        self.required_experience
+            .unwrap_or(DEFAULT_TRAIT_EXPERIENCE_COST)
+    }
 }
 
 /// Every `leader_traits` definition of the content stack in load order.
@@ -1028,13 +1042,14 @@ impl TraitEffects {
                 continue;
             }
             let skill = skill_slot(name);
-            if skill.is_some() || name == b"leader_default_proximity_offset" {
+            if skill.is_some() || matches!(name, b"leader_default_proximity_offset" | b"cost") {
                 // A failed signed integer scan is reported and leaves the field
                 // as it was; EOF stores nothing and reports nothing.
                 let value = scalar(field);
                 match crt::scan_i32(value) {
                     Scanned::Stored(read) => match skill {
                         Some(index) => self.skills[index] = read,
+                        None if name == b"cost" => self.required_experience = Some(read),
                         None => self.proximity_offset = read,
                     },
                     Scanned::End => {}

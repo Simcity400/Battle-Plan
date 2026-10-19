@@ -49,3 +49,7 @@ Variant naming observes each accepted hour through the shared changed-operand
 catalogue. It carries unchanged country keys and variant operands, reads changes
 at the variant's supplying slot, and forgets names at gaps or incomplete reads.
 The transient operand cache rebuilds after restoration.
+
+Prepared replies limit coverage, unread intervals, events and design-name
+versions to the requested head. Later preparation cannot introduce a later gap
+or rename into that earlier view.

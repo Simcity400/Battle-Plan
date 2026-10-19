@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-production.workspace = true
 engine-air-history.workspace = true
 installed-content-core.workspace = true
 replay-data.workspace = true

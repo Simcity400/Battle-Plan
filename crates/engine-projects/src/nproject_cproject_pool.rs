@@ -22,6 +22,26 @@ pub fn active_definition(
     status: usize,
     token: u32,
 ) -> Result<Option<(u32, u32)>, &'static str> {
+    let Some(pointer) = active_pointer(memory, base, status, token)? else {
+        return Ok(None);
+    };
+    let pair = pointer
+        .checked_add(nproject_cproject::DEFINITION_HANDLE)
+        .and_then(|at| read::<[u8; 8]>(memory, at))
+        .ok_or("active project definition unreadable")?;
+    Ok(Some((
+        u32::from_le_bytes(pair[..4].try_into().unwrap()),
+        u32::from_le_bytes(pair[4..].try_into().unwrap()),
+    )))
+}
+
+/// Resolve the selected active project through its existing native index.
+pub fn active_pointer(
+    memory: &impl Memory,
+    base: usize,
+    status: usize,
+    token: u32,
+) -> Result<Option<usize>, &'static str> {
     let projects = from_status(memory, base, status)?;
     let pool = status
         .checked_add(nproject_cprogram_status::PROJECT_POOL)
@@ -72,14 +92,7 @@ pub fn active_definition(
             {
                 return Err("active project vtable mismatch");
             }
-            let pair = pointer
-                .checked_add(nproject_cproject::DEFINITION_HANDLE)
-                .and_then(|at| read::<[u8; 8]>(memory, at))
-                .ok_or("active project definition unreadable")?;
-            return Ok(Some((
-                u32::from_le_bytes(pair[..4].try_into().unwrap()),
-                u32::from_le_bytes(pair[4..].try_into().unwrap()),
-            )));
+            return Ok(Some(pointer));
         }
         slot += 1;
         distance = distance

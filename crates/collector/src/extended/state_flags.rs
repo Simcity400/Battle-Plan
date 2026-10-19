@@ -519,6 +519,8 @@ mod tests {
                 visitor,
                 inputs: crate::acquisition_states::Inputs::with_capacity(core_capacity).unwrap(),
                 store: None,
+                countries: None,
+                occupation_store: None,
             };
             let report = request.run(&memory);
             assert_eq!(request.visitor.required, 2);

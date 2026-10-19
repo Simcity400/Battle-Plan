@@ -265,6 +265,36 @@ pub fn capture_movement_inputs_with_combat_references(
     packet: &mut MovementPacket,
     sample_hour: Option<i32>,
 ) -> MovementWalk {
+    capture_movement_inputs_with_extra(
+        memory,
+        base,
+        game_state,
+        seeds,
+        source_outcome,
+        row_capacity,
+        path_capacity,
+        geometry,
+        packet,
+        sample_hour,
+        |_, _| {},
+    )
+}
+
+/// Existing movement census with a worker-owned, demand-filtered companion observation.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_movement_inputs_with_extra(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    seeds: &[DivisionSeed],
+    source_outcome: Outcome,
+    row_capacity: usize,
+    path_capacity: usize,
+    geometry: &mut crate::cprovince::GeometryPacket,
+    packet: &mut MovementPacket,
+    sample_hour: Option<i32>,
+    mut observe: impl FnMut(&DivisionSeed, &mut MovementRow),
+) -> MovementWalk {
     packet.clear();
     packet.sample_hour = sample_hour;
     let mut paths_len = 0;
@@ -526,6 +556,7 @@ pub fn capture_movement_inputs_with_combat_references(
                 movement_priority: None,
                 base_speed: None,
                 fuel: None,
+                transport_speed: None,
             });
             paths_len += needed;
             len += 1;
@@ -566,12 +597,14 @@ pub fn capture_movement_inputs_with_combat_references(
         let row = &mut packet.units[index];
         row.withdrawal = seed.withdrawal;
         row.movement_priority = seed.movement_priority;
+        // Already acquired on the status line; stationary fuel feeds the division panel too.
+        row.fuel = seed.fuel;
         // Only a division with an ordinary route moves (path_total is the
         // route's signed count, as the movement gate tests it).
         if (row.path_total as i32) > 0 {
             row.base_speed = speeds.read(memory, base, seed).ok();
-            row.fuel = seed.fuel;
         }
+        observe(seed, row);
         index += 1;
     }
     packet.result = MovementWalk {
@@ -965,6 +998,7 @@ fn walk_movement_internal(
                 movement_priority: None,
                 base_speed: None,
                 fuel: None,
+                transport_speed: None,
             };
             paths_len += path_len + alternate_len;
             len += 1;
@@ -995,6 +1029,10 @@ fn walk_movement_internal(
             .pointer
             .checked_add(cunit::MOVEMENT_PRIORITY)
             .and_then(|at| read(memory, at));
+        row.fuel = source
+            .pointer
+            .checked_add(FUEL_CANDIDATE)
+            .and_then(|at| read(memory, at));
         if (row.path_total as i32) > 0 {
             let seed = DivisionSeed {
                 stat_block: source
@@ -1005,10 +1043,6 @@ fn walk_movement_internal(
                 ..Default::default()
             };
             row.base_speed = movement_base_speed(memory, base, &seed).ok();
-            row.fuel = source
-                .pointer
-                .checked_add(FUEL_CANDIDATE)
-                .and_then(|at| read(memory, at));
         }
         index += 1;
     }

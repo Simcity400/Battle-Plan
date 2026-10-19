@@ -57,7 +57,10 @@ pub fn ability_description(
     // then movement/attack/defence lines with zero indentation.
     for adjuster in &definition.adjusters {
         let fragment = (|| {
-            let selected = *selected.as_ref().map_err(Clone::clone)?;
+            let selected = *selected
+                .as_ref()
+                .map_err(Clone::clone)
+                .map_err(|why| why.to_string())?;
             let lines = renderer.char_adjuster_lines(adjuster, selected)?;
             if lines.is_empty() {
                 return Ok(String::new());
@@ -86,6 +89,7 @@ pub fn ability_description(
             let title = selected
                 .as_ref()
                 .map_err(Clone::clone)
+                .map_err(|why| why.to_string())
                 .and_then(|selected| renderer.localised(header, &[], *selected, false));
             match title {
                 Ok(title) => {

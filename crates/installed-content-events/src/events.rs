@@ -18,6 +18,10 @@ pub struct Event {
     pub id: Vec<u8>,
     pub source: String,
     pub titles: Vec<Item>,
+    pub descriptions: Vec<Item>,
+    pub picture: Vec<u8>,
+    pub option_triggers: Vec<Vec<Item>>,
+    pub original_recipient_only: Vec<bool>,
     pub immediate: Vec<Item>,
     pub options: Vec<Vec<Item>>,
     /// Option-name strings in the same order as `options`.
@@ -44,21 +48,31 @@ impl Event {
         )
     }
 
-    /// A sole candidate bypasses its trigger. Without an evaluator, multiple
-    /// candidates remain a named refusal.
-    pub fn sole_title_key(&self) -> Result<Option<&[u8]>, String> {
-        match self.titles.as_slice() {
-            [] => Ok(None),
-            [item] => {
-                let key = Self::title_key(item);
-                Ok((!key.is_empty()).then_some(key))
-            }
-            _ => Err(format!(
-                "{} event {} has multiple title candidates; title selection needs an unrecorded high-resolution seed",
-                self.source,
-                String::from_utf8_lossy(&self.id)
-            )),
+    fn common_key<'a>(
+        &self,
+        candidates: &'a [Item],
+        field: &str,
+    ) -> Result<Option<&'a [u8]>, String> {
+        let Some(first) = candidates.first() else {
+            return Ok(None);
+        };
+        let key = Self::title_key(first);
+        if candidates.iter().all(|item| Self::title_key(item) == key) {
+            return Ok((!key.is_empty()).then_some(key));
         }
+        Err(format!(
+            "{} event {} has different {field} candidates; exact selection needs historical triggers and an unrecorded high-resolution seed",
+            self.source,
+            String::from_utf8_lossy(&self.id)
+        ))
+    }
+    pub fn sole_description_key(&self) -> Result<Option<&[u8]>, String> {
+        self.common_key(&self.descriptions, "description")
+    }
+    /// A sole candidate bypasses its trigger. Identical candidate keys give
+    /// the same text regardless of trigger results or selection randomness.
+    pub fn sole_title_key(&self) -> Result<Option<&[u8]>, String> {
+        self.common_key(&self.titles, "title")
     }
 
     /// A sole candidate bypasses its trigger. Otherwise evaluate all candidates
@@ -320,6 +334,7 @@ impl EventRead {
         let mut event = Event {
             id: string_field(&fields, "id").to_vec(),
             source: format!("{source}:{}", self.lines.get(ordinal).copied().unwrap_or(1)),
+            picture: string_field(&fields, "picture").to_vec(),
             ..Default::default()
         };
         let blockers: Vec<_> = read.item_misreads.get(item_index).into_iter().flatten()
@@ -354,6 +369,10 @@ impl EventRead {
                 event.titles.push(field);
                 continue;
             }
+            if field.keyword_is("desc") {
+                event.descriptions.push(field);
+                continue;
+            }
             if field.keyword_is("immediate") {
                 if let crate::parser::Value::Block(body) = field.value {
                     event.immediate.extend(body);
@@ -366,6 +385,17 @@ impl EventRead {
                     _ => Vec::new(),
                 };
                 event.option_names.push(option_name(&option).to_vec());
+                event.option_triggers.push(
+                    option
+                        .iter()
+                        .filter(|item| item.keyword_is("trigger"))
+                        .flat_map(|item| item.value.items().unwrap_or_default())
+                        .cloned()
+                        .collect(),
+                );
+                event
+                    .original_recipient_only
+                    .push(string_field(&option, "original_recipient_only") == b"yes");
                 event.options.push(
                     option
                         .into_iter()

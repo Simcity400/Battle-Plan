@@ -22,7 +22,9 @@ pub use installed_content_core::doctrines;
 pub use installed_content_core::dynamic_modifiers;
 pub use installed_content_core::effect_keys;
 pub use installed_content_core::equipment;
+pub use installed_content_core::faction_goals;
 pub use installed_content_core::faction_templates;
+pub use installed_content_core::faction_upgrades;
 pub use installed_content_core::fixed5;
 pub use installed_content_core::flags;
 pub use installed_content_core::gui;
@@ -40,6 +42,7 @@ pub use installed_content_core::modifiers;
 pub use installed_content_core::movement;
 pub use installed_content_core::names;
 pub use installed_content_core::occupation_laws;
+pub use installed_content_core::occupation_modifiers;
 pub use installed_content_core::opinion_modifiers;
 pub use installed_content_core::parser;
 pub use installed_content_core::particles;
@@ -71,6 +74,7 @@ pub use installed_content_core::train_gfx;
 pub use installed_content_core::trigger_keys;
 pub use installed_content_core::triggers;
 pub use installed_content_core::unit_leader;
+pub use installed_content_core::unit_medals;
 pub use installed_content_core::variable_builtins;
 pub use installed_content_core::{
     Diagnostic, DiagnosticKind, DiagnosticMessage, GatherOptions, GatheredContent, HashStats,

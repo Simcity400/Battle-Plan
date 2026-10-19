@@ -2,6 +2,7 @@
 //! or a conditional's limit and attached alternatives.
 //! Evaluate conjunctions, disjunctions and conditional chains
 //! with the shared recorded-hour evaluator.
+use crate::triggers::Failure;
 
 use installed_content_core::parser::Item;
 
@@ -21,7 +22,7 @@ pub(super) enum Unit<'i, 't> {
     One(&'i Item, Child<'t>),
     /// A conditional and its alternatives, in chain order.
     Chain(Vec<Branch<'i, 't>>),
-    Unknown(String),
+    Unknown(Failure),
 }
 
 /// The key a conditional holds when an alternative is appended:
@@ -43,7 +44,7 @@ pub(super) struct Branch<'i, 't> {
     pub(super) limit: Vec<Unit<'i, 't>>,
     pub(super) body: Vec<Unit<'i, 't>>,
     /// Why the conditional cannot be read as the game reads it.
-    pub(super) refused: Option<String>,
+    pub(super) refused: Option<Failure>,
 }
 
 impl<'a> Evaluator<'_, 'a> {
@@ -62,8 +63,9 @@ impl<'a> Evaluator<'_, 'a> {
                         chain.extend(self.conditional(item, key));
                     }
                     Some(Unit::Unknown(why)) => {
-                        let why =
-                            format!("whether {} follows an if is unknown: {why}", key_text(item));
+                        let why = why.clone().context(|why| {
+                            format!("whether {} follows an if is unknown: {why}", key_text(item))
+                        });
                         out.push(Unit::Unknown(why));
                     }
                     _ => {}
@@ -106,11 +108,11 @@ impl<'a> Evaluator<'_, 'a> {
             refused: None,
         };
         let Some(items) = item.value.items() else {
-            branch.refused = Some(format!(
+            branch.refused = Some(Failure::from(format!(
                 "trigger {} = {}: the conditional is not a block",
                 key_text(item),
                 shown(&item.value)
-            ));
+            )));
             return vec![branch];
         };
         let mut own = Vec::new();
@@ -125,9 +127,9 @@ impl<'a> Evaluator<'_, 'a> {
                         }
                     }
                     Presence::Some => {}
-                    Presence::Unknown(why) => branch.limit.push(Unit::Unknown(format!(
+                    Presence::Unknown(why) => branch.limit.push(Unit::Unknown(why.context(|why| format!(
                         "whether a later limit is loaded (only an empty limit accepts one) is unknown: {why}"
-                    ))),
+                    )))),
                 }
                 continue;
             }
@@ -136,10 +138,10 @@ impl<'a> Evaluator<'_, 'a> {
                 match branch.body.last_mut() {
                     Some(Unit::Chain(nested)) => nested.extend(alternatives),
                     Some(Unit::Unknown(why)) => {
-                        let why = format!(
+                        let why = why.clone().context(|why| format!(
                             "whether {} attaches to a nested if or to its enclosing conditional is unknown: {why}",
                             key_text(child)
-                        );
+                        ));
                         branch.body.push(Unit::Unknown(why.clone()));
                         own.push(Branch {
                             key: Key::Inner,
@@ -162,12 +164,27 @@ impl<'a> Evaluator<'_, 'a> {
     /// Whether a body holds a loaded child, for callers that test a
     /// conjunction's child count, including adjacency rules
     /// and the raid state selector.
-    pub fn has_children(&self, items: &[Item]) -> Result<bool, String> {
+    pub fn has_children(&self, items: &[Item]) -> Result<bool, Failure> {
         match presence(&self.units(items)) {
             Presence::None => Ok(false),
             Presence::Some => Ok(true),
             Presence::Unknown(why) => Err(why),
         }
+    }
+
+    /// Keep one variable-random context across a compound script operation.
+    /// Nested trigger checks and scoped operands share its temporary values.
+    pub(super) fn with_variable_context<T>(&self, scopes: Scopes, run: impl FnOnce() -> T) -> T {
+        let depth = self.checking.get();
+        if depth == 0 && self.description_depth.get() == 0 {
+            self.local_temps.borrow_mut().clear();
+            self.clear_temp_writer();
+            self.initialize_variable_random(scopes);
+        }
+        self.checking.set(depth + 1);
+        let result = run();
+        self.checking.set(depth);
+        result
     }
 
     /// A trigger body, evaluated as a conjunction.
@@ -178,23 +195,14 @@ impl<'a> Evaluator<'_, 'a> {
     /// [`Self::evaluate`] with temp variables set before the body runs, as a caller that
     /// initialises its outputs does (fixed5 values).
     pub fn evaluate_seeded(&self, items: &[Item], scopes: Scopes, seeds: &[(&[u8], i64)]) -> Eval {
-        let depth = self.checking.get();
-        if depth == 0 && self.description_depth.get() == 0 {
-            // Begin a fresh variable-random context for the outer check.
-            self.local_temps.borrow_mut().clear();
-            self.clear_temp_writer();
-            self.initialize_variable_random(scopes);
-        }
-        for (name, value) in seeds {
-            self.local_temps
-                .borrow_mut()
-                .insert(name.to_vec(), Ok(super::variables::Value::Raw(*value)));
-        }
-        self.checking.set(depth + 1);
-        let result = self.all(&self.units(items), scopes);
-        // Closing the variable context leaves known residual values.
-        self.checking.set(depth);
-        result
+        self.with_variable_context(scopes, || {
+            for (name, value) in seeds {
+                self.local_temps
+                    .borrow_mut()
+                    .insert(name.to_vec(), Ok(super::variables::Value::Raw(*value)));
+            }
+            self.all(&self.units(items), scopes)
+        })
     }
 
     pub(super) fn all(&self, units: &[Unit<'_, 'a>], scopes: Scopes) -> Eval {
@@ -285,7 +293,7 @@ fn alternative(item: &Item) -> Option<Key> {
 enum Presence {
     None,
     Some,
-    Unknown(String),
+    Unknown(Failure),
 }
 
 fn presence(units: &[Unit<'_, '_>]) -> Presence {

@@ -52,6 +52,11 @@ pub(crate) struct Request {
     pub countries: Arc<Cache>,
     pub factions: GatherRequest<Names>,
     pub members: GatherRequest<Vec<cfaction_system::MemberRow>>,
+    pub goal_store: Option<Box<crate::faction_goals::Store>>,
+    pub goals: crate::faction_goals::Captured,
+    pub companion_store: Option<Box<crate::faction_companions::Store>>,
+    pub companions: crate::faction_companions::Captured,
+    pub force_full: bool,
 }
 
 impl Request {
@@ -74,6 +79,8 @@ pub(crate) struct Report {
     pub factions: GatherReport,
     pub members: GatherReport,
     pub ticks: [u64; 2],
+    pub goal_ticks: u64,
+    pub companion_ticks: u64,
 }
 
 impl Report {
@@ -86,6 +93,8 @@ impl Report {
                 result: Outcome::Unavailable { reason },
             },
             ticks: [0; 2],
+            goal_ticks: 0,
+            companion_ticks: 0,
         }
     }
 }
@@ -103,25 +112,99 @@ fn run_with(request: &mut Request, memory: &impl Memory, growing: bool) -> Repor
     let _factions_reads = crate::read_accounting::table(replay_data::rows::TableId::Factions);
     let cached = request.countries.view(memory);
     let names = &mut request.factions;
+    let (members, members_ticks) = {
+        let _members_reads =
+            crate::read_accounting::table(replay_data::rows::TableId::FactionMembers);
+        let members = &mut request.members;
+        let (base, game_state) = (members.base, members.game_state);
+        let started = qpc();
+        let members = members.run(|rows| {
+            if growing {
+                cfaction_system::walk_members_growing(&cached, base, game_state, rows)
+            } else {
+                cfaction_system::walk_members(&cached, base, game_state, rows)
+            }
+        });
+        let members_ticks = qpc().saturating_sub(started).max(0) as u64;
+        (members, members_ticks)
+    };
+    let started = qpc();
     let (base, game_state) = (names.base, names.game_state);
-    let started = qpc();
-    let factions = names.run(|payload| payload.walk(&cached, base, game_state, growing));
-    let faction_ticks = qpc().saturating_sub(started).max(0) as u64;
-    let _members_reads = crate::read_accounting::table(replay_data::rows::TableId::FactionMembers);
-    let members = &mut request.members;
-    let (base, game_state) = (members.base, members.game_state);
-    let started = qpc();
-    let members = members.run(|rows| {
-        if growing {
-            cfaction_system::walk_members_growing(&cached, base, game_state, rows)
-        } else {
-            cfaction_system::walk_members(&cached, base, game_state, rows)
+    let mut goal_ticks = 0;
+    let mut companion_ticks = 0;
+    let factions = if growing && (request.goal_store.is_some() || request.companion_store.is_some())
+    {
+        // SAFETY: this worker exclusively owns both companion stores inside
+        // the existing native world's quiescent acquisition lease.
+        unsafe {
+            crate::faction_goal_changes::install_growth();
+            crate::faction_companion_changes::install_growth();
+            crate::country_input_changes::accumulator_install_growth();
         }
-    });
+        let changes = crate::faction_goal_changes::Observer;
+        let companions = crate::faction_companion_changes::Observer;
+        if let Some(store) = request.goal_store.as_mut() {
+            store.begin(&changes, request.force_full);
+        }
+        if let Some(store) = request.companion_store.as_mut() {
+            store.begin(&companions, request.force_full);
+        }
+        let mut complete = false;
+        let report = names.run(|payload| {
+            let (names, identity_complete) = cfaction::walk_growing_with(
+                &cached,
+                base,
+                game_state,
+                &mut payload.rows,
+                &mut payload.bytes,
+                |pointer, id| {
+                    if let Some(store) = request.goal_store.as_mut() {
+                        store.visit(&cached, base, pointer, id, &changes);
+                    }
+                    if let Some(store) = request.companion_store.as_mut() {
+                        store.visit(&cached, base, pointer, id, &companions);
+                    }
+                },
+            );
+            payload.bytes_len = names.bytes_len;
+            payload.required_bytes = names.required_bytes;
+            complete = identity_complete;
+            names.outcome
+        });
+        if let Some(store) = request.goal_store.as_mut() {
+            let finish = qpc();
+            store.finish(complete, &changes, &mut request.goals);
+            goal_ticks = store.read_ticks + qpc().saturating_sub(finish).max(0) as u64;
+        }
+        if let Some(store) = request.companion_store.as_mut() {
+            let read_ticks = store.ticks();
+            let rest_started = qpc();
+            store.acquire_accounts(
+                &cached,
+                base,
+                game_state,
+                &companions,
+                if matches!(members.result, Outcome::Rows { .. }) {
+                    &request.members.payload
+                } else {
+                    &[]
+                },
+            );
+            store.finish(complete, &companions, &mut request.companions);
+            companion_ticks = read_ticks + qpc().saturating_sub(rest_started).max(0) as u64;
+        }
+        report
+    } else {
+        names.run(|payload| payload.walk(&cached, base, game_state, growing))
+    };
+    let faction_ticks = (qpc().saturating_sub(started).max(0) as u64)
+        .saturating_sub(goal_ticks.saturating_add(companion_ticks));
     Report {
         factions,
         members,
-        ticks: [faction_ticks, qpc().saturating_sub(started).max(0) as u64],
+        ticks: [faction_ticks, members_ticks],
+        goal_ticks,
+        companion_ticks,
     }
 }
 
@@ -283,6 +366,11 @@ mod tests {
                 payload: Names::take(rows, names),
             },
             members: GatherRequest::take(0, GS, members),
+            goal_store: None,
+            goals: Default::default(),
+            companion_store: None,
+            companions: Default::default(),
+            force_full: false,
         }
     }
 
@@ -300,8 +388,9 @@ mod tests {
                 let mut expected_names = vec![0; name_capacity];
                 let mut expected_members =
                     vec![cfaction_system::MemberRow::default(); member_capacity];
-                let names = cfaction::walk(&cached, 0, GS, &mut expected_rows, &mut expected_names);
+                // Membership supplies the demanded companion operands before the owner visit.
                 let members = cfaction_system::walk_members(&cached, 0, GS, &mut expected_members);
+                let names = cfaction::walk(&cached, 0, GS, &mut expected_rows, &mut expected_names);
                 let actual = Traced::new(&bytes);
                 let mut rows = vec![cfaction::Row::default(); capacity];
                 let mut bytes_out = vec![0; name_capacity];

@@ -1,4 +1,4 @@
-//! Stored regional air-superiority pairs used by raid target intel and success.
+//! Stored regional air-superiority weights and active-mission counters used by raids and the Air map mode.
 //! Copy these region-slot pairs rather than reconstructing them from wings.
 //!
 //! The game rewrites a region's pairs only in its phase hour. Its phase roster
@@ -7,7 +7,8 @@
 //! `CURRENT_HOUR - 43,800,000` over twice
 //! `NAir::HOURS_DELAY_AFTER_EACH_COMBAT`. At those slots alone the
 //! strategic-air phase pass clears every active country's entry and the
-//! regional update accumulates it; setup zeroes new entries. The hook samples
+//! regional update accumulates it and rebuilds the aircraft spotting scale;
+//! setup zeroes new entries. The hook samples
 //! at hourly-update entry, whose previous call advanced to the hour it reads
 //! before updating air. After one complete read, each hour therefore re-reads
 //! only its phase slots and carries every other pair.
@@ -33,8 +34,13 @@ const STRIDE: usize = 0xa0;
 /// The entry's movement impact, which the land movement speed scales by the enemy's
 /// share of the pair; the phase pass rewrites it with the pair.
 const IMPACT: usize = 0x18;
-/// The bytes each entry read copies: the pair and the impact.
-const ENTRY: usize = IMPACT + 8;
+/// Active-mission counters cleared and rebuilt in the same regional phase as the weights.
+const FRIENDLY_MISSIONS: usize = 0x28;
+const ENEMY_MISSIONS: usize = 0x2a;
+/// The weights, movement impact and active-mission counters in one guarded read.
+const ENTRY: usize = ENEMY_MISSIONS + 2;
+/// Raw fixed5 normalization applied to regional aircraft spotting.
+const AIR_SPOTTING_SCALE: usize = 0x80;
 /// Loaded signed i32 combat delay, doubled for the phase period.
 pub const COMBAT_DELAY_RVA: usize = 0x0331_d048;
 /// Epoch subtracted from the game hour before signed remainder.
@@ -50,6 +56,9 @@ pub struct Row {
     pub enemy: i64,
     /// The entry's movement impact ([`IMPACT`]).
     pub impact: i64,
+    pub friendly_missions: u16,
+    pub enemy_missions: u16,
+    pub air_spotting_scale: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -146,7 +155,8 @@ pub struct Walk {
     pub full: bool,
 }
 
-/// Zero pairs are omitted, except at the roster's last region for every
+/// Entries with zero weights, active-mission counters and an observed zero
+/// aircraft spotting scale are omitted, except at the roster's last region for every
 /// country: a complete table so proves the country's strategic-air object,
 /// and any other absent pair of that country is zero.
 pub fn walk(
@@ -448,13 +458,26 @@ impl Target<'_> {
         &self,
         slot: usize,
         pair: &[u8],
+        air_spotting_scale: Option<i64>,
         output: &mut Buffer<'_, Row>,
         len: &mut usize,
     ) -> Result<(), &'static str> {
         let friendly = i64::from_le_bytes(pair[..8].try_into().unwrap());
         let enemy = i64::from_le_bytes(pair[8..16].try_into().unwrap());
-        let impact = i64::from_le_bytes(pair[IMPACT..ENTRY].try_into().unwrap());
-        if friendly == 0 && enemy == 0 && slot != self.last {
+        let impact = i64::from_le_bytes(pair[IMPACT..IMPACT + 8].try_into().unwrap());
+        let friendly_missions = u16::from_le_bytes(
+            pair[FRIENDLY_MISSIONS..FRIENDLY_MISSIONS + 2]
+                .try_into()
+                .unwrap(),
+        );
+        let enemy_missions = u16::from_le_bytes(pair[ENEMY_MISSIONS..ENTRY].try_into().unwrap());
+        if friendly == 0
+            && enemy == 0
+            && friendly_missions == 0
+            && enemy_missions == 0
+            && air_spotting_scale == Some(0)
+            && slot != self.last
+        {
             return Ok(());
         }
         push(
@@ -467,6 +490,9 @@ impl Target<'_> {
                 friendly,
                 enemy,
                 impact,
+                friendly_missions,
+                enemy_missions,
+                air_spotting_scale,
             },
         )
     }
@@ -485,6 +511,25 @@ const PAIR: [RecordField; 1] = [field(0, 0, ENTRY)];
 const PAIR_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&PAIR, ENTRY).expect("valid record layout");
 const BATCH: usize = 128;
+const SCALE_FIELD: [RecordField; 1] = [field(AIR_SPOTTING_SCALE, 0, 8)];
+const SCALE_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&SCALE_FIELD, 8).expect("valid regional spotting scale layout");
+
+fn read_scales(memory: &impl Memory, addresses: &[usize]) -> [Option<i64>; BATCH] {
+    let mut bytes = [0_u8; BATCH * 8];
+    let mut complete = [false; BATCH];
+    crate::memory::gather_records(
+        memory,
+        addresses,
+        &SCALE_LAYOUT,
+        &mut bytes[..addresses.len() * 8],
+        &mut complete[..addresses.len()],
+    );
+    std::array::from_fn(|index| {
+        complete[index]
+            .then(|| i64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap()))
+    })
+}
 
 fn read_all(
     memory: &impl Memory,
@@ -511,9 +556,16 @@ fn read_all(
         if copied != count {
             return Err("raid air score pair unreadable");
         }
+        let mut addresses = [0_usize; BATCH];
+        for (index, address) in addresses[..count].iter_mut().enumerate() {
+            *address = scores
+                .element((first + index) as u32, STRIDE)
+                .ok_or("raid air scale address overflow")?;
+        }
+        let scales = read_scales(memory, &addresses[..count]);
         for (index, pair) in bytes[..count * ENTRY].chunks_exact(ENTRY).enumerate() {
             if target.regions[first + index].present {
-                target.push(first + index, pair, output, len)?;
+                target.push(first + index, pair, scales[index], output, len)?;
             }
         }
     }
@@ -552,14 +604,16 @@ fn carry(
         if copied != batch.len() {
             return Err("raid air score pair unreadable");
         }
-        for (slot, pair) in batch
+        let scales = read_scales(memory, &addresses[..batch.len()]);
+        for (index, (slot, pair)) in batch
             .iter()
             .zip(bytes[..batch.len() * ENTRY].chunks_exact(ENTRY))
+            .enumerate()
         {
             while let Some(row) = held.next_if(|row| row.slot < *slot) {
                 push(output, len, *row)?;
             }
-            target.push(*slot as usize, pair, output, len)?;
+            target.push(*slot as usize, pair, scales[index], output, len)?;
         }
     }
     for row in held {
@@ -685,6 +739,27 @@ mod tests {
             self.bytes[at..at + 8].copy_from_slice(&impact.to_le_bytes());
         }
 
+        fn spotting_scale(&mut self, country: usize, slot: usize, value: i64) {
+            let data = u64::from_le_bytes(
+                self.bytes[self.air(country) + SCORES..][..8]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            let at = data - MEMORY + slot * STRIDE + AIR_SPOTTING_SCALE;
+            self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn mission_counts(&mut self, country: usize, slot: usize, counts: [u16; 2]) {
+            let data = u64::from_le_bytes(
+                self.bytes[self.air(country) + SCORES..][..8]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            let at = data - MEMORY + slot * STRIDE + FRIENDLY_MISSIONS;
+            self.bytes[at..at + 2].copy_from_slice(&counts[0].to_le_bytes());
+            self.bytes[at + 2..at + 4].copy_from_slice(&counts[1].to_le_bytes());
+        }
+
         fn walk(&self, hour: i32, held: &mut Held, output: &mut [Row]) -> Walk {
             let memory = SliceMemory {
                 base: MEMORY,
@@ -705,6 +780,150 @@ mod tests {
             .iter()
             .map(|row| (row.country, row.region, row.friendly, row.enemy))
             .collect()
+    }
+
+    #[test]
+    fn zero_weight_mission_counters_are_kept_and_carried_until_their_region_phase() {
+        let mut world = World::new(1, 17);
+        let mut held = held(17, 1, 17);
+        held.certify(Some(1));
+        let mut output = vec![Row::default(); 17];
+        world.mission_counts(1, 5, [65535, 3]);
+        let first = world.walk(HOUR, &mut held, &mut output);
+        assert!(first.full);
+        let row = output[..first.outcome.len()]
+            .iter()
+            .find(|row| row.slot == 5)
+            .unwrap();
+        assert_eq!(
+            (
+                row.friendly,
+                row.enemy,
+                row.friendly_missions,
+                row.enemy_missions
+            ),
+            (0, 0, 65535, 3)
+        );
+        world.mission_counts(1, 5, [7, 8]);
+        let repeated = world.walk(HOUR + 1, &mut held, &mut output);
+        assert!(!repeated.full);
+        assert_eq!(
+            output[..repeated.outcome.len()]
+                .iter()
+                .find(|r| r.slot == 5)
+                .unwrap()
+                .friendly_missions,
+            65535
+        );
+        let next = world.walk(HOUR + 2, &mut held, &mut output);
+        assert!(!next.full);
+        let row = output[..next.outcome.len()]
+            .iter()
+            .find(|row| row.slot == 5)
+            .unwrap();
+        assert_eq!((row.friendly_missions, row.enemy_missions), (7, 8));
+        world.mission_counts(1, 5, [0, 0]);
+        let cleared = world.walk(HOUR + 10, &mut held, &mut output);
+        assert!(!output[..cleared.outcome.len()].iter().any(|r| r.slot == 5));
+    }
+
+    #[test]
+    fn scale_only_regions_are_sparse_and_carry_until_the_same_native_phase() {
+        let mut world = World::new(1, 17);
+        let mut held = held(17, 1, 17);
+        held.certify(Some(1));
+        let mut output = vec![Row::default(); 17];
+        world.spotting_scale(1, 5, -7);
+        let first = world.walk(HOUR, &mut held, &mut output);
+        assert_eq!(
+            output[..first.outcome.len()]
+                .iter()
+                .find(|r| r.slot == 5)
+                .unwrap()
+                .air_spotting_scale,
+            Some(-7)
+        );
+        world.spotting_scale(1, 5, 100_000);
+        let next = world.walk(HOUR + 1, &mut held, &mut output);
+        assert!(!next.full);
+        assert_eq!(
+            output[..next.outcome.len()]
+                .iter()
+                .find(|r| r.slot == 5)
+                .unwrap()
+                .air_spotting_scale,
+            Some(-7)
+        );
+        let changed = world.walk(HOUR + 2, &mut held, &mut output);
+        assert_eq!(
+            output[..changed.outcome.len()]
+                .iter()
+                .find(|r| r.slot == 5)
+                .unwrap()
+                .air_spotting_scale,
+            Some(100_000)
+        );
+        world.spotting_scale(1, 5, 0);
+        let cleared = world.walk(HOUR + 10, &mut held, &mut output);
+        assert!(!output[..cleared.outcome.len()].iter().any(|r| r.slot == 5));
+    }
+
+    #[test]
+    fn a_failed_optional_scale_preserves_scores_and_is_not_retried_off_phase() {
+        struct Fault<'a> {
+            memory: SliceMemory<'a>,
+            at: usize,
+            attempts: std::cell::Cell<usize>,
+        }
+        impl Memory for Fault<'_> {
+            fn copy(&self, at: usize, to: &mut [u8]) -> bool {
+                if at == self.at {
+                    self.attempts.set(self.attempts.get() + 1);
+                    return false;
+                }
+                self.memory.copy(at, to)
+            }
+        }
+        let mut world = World::new(1, 17);
+        world.pair(1, 5, 42, 7);
+        let data = u64::from_le_bytes(
+            world.bytes[world.air(1) + SCORES..][..8]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let memory = Fault {
+            memory: SliceMemory {
+                base: MEMORY,
+                bytes: &world.bytes,
+            },
+            at: data + 5 * STRIDE + AIR_SPOTTING_SCALE,
+            attempts: Default::default(),
+        };
+        let mut held = held(17, 1, 17);
+        held.certify(Some(1));
+        let mut output = vec![Row::default(); 17];
+        let first = walk(&memory, BASE, GAME, HOUR, &mut held, &mut output);
+        assert!(matches!(first.outcome, Outcome::Rows { .. }));
+        let row = output[..first.outcome.len()]
+            .iter()
+            .find(|r| r.slot == 5)
+            .unwrap();
+        assert_eq!(
+            (row.friendly, row.enemy, row.air_spotting_scale),
+            (42, 7, None)
+        );
+        assert_eq!(memory.attempts.get(), 1);
+        let next = walk(&memory, BASE, GAME, HOUR + 1, &mut held, &mut output);
+        assert!(!next.full);
+        assert_eq!(
+            output[..next.outcome.len()]
+                .iter()
+                .find(|r| r.slot == 5)
+                .unwrap()
+                .air_spotting_scale,
+            None
+        );
+        assert_eq!(memory.attempts.get(), 1);
     }
 
     #[test]
@@ -1031,7 +1250,9 @@ mod tests {
                     slot: 4,
                     friendly: 1,
                     enemy: 9,
-                    impact: 0
+                    impact: 0,
+                    air_spotting_scale: Some(0),
+                    ..Default::default()
                 },
                 Row {
                     country: 1,
@@ -1039,7 +1260,9 @@ mod tests {
                     slot: 12,
                     friendly: 8,
                     enemy: 1,
-                    impact: 0
+                    impact: 0,
+                    air_spotting_scale: Some(0),
+                    ..Default::default()
                 },
                 Row {
                     country: 1,
@@ -1047,7 +1270,9 @@ mod tests {
                     slot: 16,
                     friendly: 0,
                     enemy: 0,
-                    impact: 0
+                    impact: 0,
+                    air_spotting_scale: Some(0),
+                    ..Default::default()
                 },
             ]
         );

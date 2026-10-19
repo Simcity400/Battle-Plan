@@ -2942,6 +2942,87 @@ impl std::hash::Hasher for ProvincePairHasher {
     }
 }
 
+/// What the land movement speed reads of one province: its state (null for
+/// none), raw controller, controller area and strategic region (null for none)
+/// pointers, and its definition's terrain flags. Each field belongs to a distinct
+/// speed branch and retains independent availability after common authentication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MovementProvince {
+    // Each field belongs to a different reached branch: location state, river
+    // destination, noncore access, transport source, or terrain classification.
+    // Identity is the only shared refusal; a failed sibling field is independent.
+    pub state: Result<usize, &'static str>,
+    pub controller: Result<u32, &'static str>,
+    pub controller_area: Result<usize, &'static str>,
+    pub strategic_region: Result<usize, &'static str>,
+    pub terrain_flags: Result<u8, &'static str>,
+}
+impl Default for MovementProvince {
+    fn default() -> Self {
+        Self {
+            state: Ok(0),
+            controller: Ok(0),
+            controller_area: Ok(0),
+            strategic_region: Ok(0),
+            terrain_flags: Ok(crate::province_definition::LAND_FLAG),
+        }
+    }
+}
+impl MovementProvince {
+    pub fn land(self) -> Result<bool, &'static str> {
+        self.terrain_flags
+            .map(|flags| flags & crate::province_definition::LAND_FLAG != 0)
+    }
+}
+
+/// Authenticate the province once, then retain independently available inputs.
+/// Each field has a distinct native consumer; no field failure erases siblings.
+pub fn movement_province(
+    memory: &impl Memory,
+    base: usize,
+    provinces: Array,
+    id: u32,
+) -> Result<MovementProvince, &'static str> {
+    let entry = provinces
+        .element(id, 8)
+        .ok_or("movement province outside the province array")?;
+    let pointer = crate::read::<u64>(memory, entry)
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .ok_or("movement province entry unreadable")?;
+    let field = |offset: usize| -> Result<u64, &'static str> {
+        pointer
+            .checked_add(offset)
+            .and_then(|address| crate::read::<u64>(memory, address))
+            .ok_or("movement province field unreadable")
+    };
+    if pointer == 0
+        || Some(field(0)?) != base.checked_add(VTABLE_RVA).map(|p| p as u64)
+        || pointer
+            .checked_add(ID)
+            .and_then(|address| crate::read::<u32>(memory, address))
+            != Some(id)
+    {
+        return Err("movement province identity mismatch");
+    }
+    let terrain_flags = field(DEFINITION).and_then(|definition| {
+        (definition as usize)
+            .checked_add(crate::province_definition::TERRAIN_FLAGS)
+            .filter(|_| definition != 0)
+            .and_then(|address| crate::read::<u8>(memory, address))
+            .ok_or("movement province definition flags unreadable")
+    });
+    Ok(MovementProvince {
+        state: field(STATE).map(|value| value as usize),
+        controller: pointer
+            .checked_add(CONTROLLER)
+            .and_then(|address| crate::read::<u32>(memory, address))
+            .ok_or("movement province controller unreadable"),
+        controller_area: field(CONTROLLER_AREA).map(|value| value as usize),
+        strategic_region: field(STRATEGIC_REGION).map(|value| value as usize),
+        terrain_flags,
+    })
+}
+
 fn geometry_field<T: crate::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,

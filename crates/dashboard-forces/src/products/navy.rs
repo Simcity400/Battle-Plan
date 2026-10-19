@@ -637,7 +637,7 @@ impl Product for NavySize {
 #[cfg(test)]
 mod tests;
 
-fn content_units(
+pub(super) fn content_units(
     catalogue: &Arc<Catalogue>,
     warnings: &mut Vec<String>,
 ) -> Option<Arc<installed_content_core::unit_leader::SubUnits>> {

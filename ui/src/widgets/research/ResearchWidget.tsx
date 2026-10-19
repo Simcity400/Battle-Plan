@@ -33,6 +33,7 @@ import type { ResearchCoverage, ResearchEntry, ResearchSlotHistory } from '../..
 import { DEFAULT_SORT, OPTIONS, VIEWS } from './definition';
 import ResearchExplanation from './ResearchExplanation';
 import { researchNumber } from './researchBreakdown';
+import { ResearchWithDoctrines } from './DoctrinePanel';
 import { researchJourney } from './researchJourney';
 import { isUnjoinedResearch, researchAt, researchEntryAt, researchFolderList, researchFolderLooks, researchHeldRuns, researchLatestProgress, researchStateAt } from './researchData';
 import type { ResearchFolderLook } from './researchData';
@@ -134,7 +135,10 @@ function FolderTrigger({ folders, chosen }: { folders: readonly ResearchFolderLo
   <span>{picked.length === 0 ? 'All folders' : picked.length === 1 ? picked[0].name : `${picked.length} folders`}</span></span>;
 }
 
-export default function ResearchWidget({ widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps) {
+export default function ResearchWidget(props: WidgetProps) {
+  return <ResearchWithDoctrines {...props} body={ResearchBody} />;
+}
+function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps) {
   const menu = useContextMenu('Research actions');
   const owner = useId();
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');

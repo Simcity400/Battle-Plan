@@ -242,11 +242,20 @@ impl<'a> Tags<'a> {
 
     /// The tag of the country a raw link names.
     pub fn tag_of(&self, raw: u32) -> Option<String> {
-        self.tags
-            .get(&link_slot(self.links, raw)?)?
-            .as_ref()
-            .ok()
-            .cloned()
+        let slot = link_slot(self.links, raw)?;
+        crate::triggers::refusal::reference(
+            self.tags
+                .get(&slot)
+                .and_then(|tag| tag.as_ref().ok())
+                .cloned(),
+            raw != 0,
+            || {
+                crate::triggers::refusal::missing_reference(
+                    replay_data::rows::TableId::Countries,
+                    Some(crate::triggers::Store::Country(slot)),
+                )
+            },
+        )
     }
 
     /// Its original tag when it is a dynamic country, else its tag.
@@ -254,11 +263,20 @@ impl<'a> Tags<'a> {
         let Some(slot) = link_slot(self.links, raw) else {
             return Ok(None);
         };
-        (if original {
-            self.original.get(&slot).or_else(|| self.tags.get(&slot))
-        } else {
-            self.tags.get(&slot)
-        })
+        crate::triggers::refusal::reference(
+            if original {
+                self.original.get(&slot).or_else(|| self.tags.get(&slot))
+            } else {
+                self.tags.get(&slot)
+            },
+            raw != 0,
+            || {
+                crate::triggers::refusal::missing_reference(
+                    replay_data::rows::TableId::Countries,
+                    Some(crate::triggers::Store::Country(slot)),
+                )
+            },
+        )
         .cloned()
         .transpose()
     }
@@ -281,11 +299,20 @@ pub fn raw_variant(
             String::new()
         }
     };
-    let token = lexical
-        .binary_search_by_key(&definition.equipment_token, |row| row.token)
-        .ok()
-        .map(|index| checked("token", &lexical[index].literal, "equipment type token"))
-        .unwrap_or_default();
+    let token = crate::triggers::refusal::reference(
+        lexical
+            .binary_search_by_key(&definition.equipment_token, |row| row.token)
+            .ok(),
+        definition.equipment_token != 0,
+        || {
+            crate::triggers::refusal::missing_reference(
+                replay_data::rows::TableId::LexicalTokens,
+                None,
+            )
+        },
+    )
+    .map(|index| checked("token", &lexical[index].literal, "equipment type token"))
+    .unwrap_or_default();
     let display_name = checked(
         "display name",
         &definition.display_name,

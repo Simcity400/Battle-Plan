@@ -5,6 +5,78 @@ use replay_data::{
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 
+#[test]
+fn script_occurrences_preserve_repeats_signed_choices_scopes_and_separate_retained_membership() {
+    use replay_data::event_feed_rows::{
+        EventFeedEventIdentity, EventFeedScope, EventFeedScript, EventFeedScriptChange,
+    };
+    let mut events = vec![
+        event(1, EventFeedSource::ScriptEvent, 105),
+        event(2, EventFeedSource::NewsEvent, 105),
+        event(3, EventFeedSource::EventOption, 105),
+        event(4, EventFeedSource::DecisionCompleted, 105),
+        event(5, EventFeedSource::ScriptState, 105),
+    ];
+    for event in &mut events {
+        event.script = Some(EventFeedScript {
+            token_len: 11,
+            scope_len: 1,
+            native_event: Some(EventFeedEventIdentity { kind: 1, id: 9 }),
+            instance: Some(7),
+            ..Default::default()
+        });
+    }
+    events[2].script.as_mut().unwrap().option = Some(-2);
+    events[3].script.as_mut().unwrap().lifecycle = Some(3);
+    events[3].script.as_mut().unwrap().days = Some(-8);
+    events[3].script.as_mut().unwrap().numeric_target = Some(-19);
+    events[4].script.as_mut().unwrap().change = Some(EventFeedScriptChange::FiredMember);
+    events[4].script.as_mut().unwrap().instance = None;
+    events[4].script.as_mut().unwrap().scope_len = 0;
+    let mut row = pack(events);
+    row.script_tokens = b"synthetic.1".to_vec();
+    row.script_scopes = vec![EventFeedScope {
+        random: [3, 4],
+        ..Default::default()
+    }];
+    let mut builder = Builder::new(100, 120);
+    append(&mut builder, &row, &BTreeMap::from([(105, frame(105, 2))])).unwrap();
+    assert_eq!(builder.feed.rows.len(), 5);
+    assert_eq!(builder.feed.rows[1].kind, EventFeedKind::NewsEventFired);
+    assert!(
+        builder.feed.rows[2]
+            .cause
+            .as_ref()
+            .unwrap()
+            .notes
+            .iter()
+            .any(|note| note.contains("-2"))
+    );
+    assert!(
+        builder.feed.rows[3]
+            .cause
+            .as_ref()
+            .unwrap()
+            .notes
+            .iter()
+            .any(|note| note.contains("-8 days"))
+    );
+    assert!(
+        builder.feed.rows[0]
+            .cause
+            .as_ref()
+            .unwrap()
+            .notes
+            .iter()
+            .any(|note| note.contains("ROOT 0, FROM 0, PREV 0"))
+    );
+    assert_eq!(builder.feed.rows[0].hour, 105);
+    let notes = &builder.feed.rows[3].cause.as_ref().unwrap().notes;
+    assert!(notes.iter().any(|note| note == "Numeric target: -19."));
+    assert!(!notes.iter().any(|note| note.starts_with("State target:")));
+    assert_eq!(builder.feed.rows[0].read_hour, 120);
+}
+
 fn identity(index: u32) -> EventFeedCountry {
     EventFeedCountry {
         reference: 100_000 + index,
@@ -62,6 +134,7 @@ fn frame(hour: i32, count: u32) -> DecodedFrame {
 }
 fn event(sequence: u64, source: EventFeedSource, hour: i32) -> EventFeedEvent {
     EventFeedEvent {
+        script: None,
         sequence,
         generation: 9,
         hour,
@@ -74,6 +147,9 @@ fn event(sequence: u64, source: EventFeedSource, hour: i32) -> EventFeedEvent {
 fn pack(events: Vec<EventFeedEvent>) -> EventFeedHistoryRow {
     let settled = events.len() as u64;
     EventFeedHistoryRow {
+        script_refusals: 0,
+        script_tokens: Vec::new(),
+        script_scopes: Vec::new(),
         generation: 9,
         read_hour: 120,
         coverage: EventFeedCoverage::Complete,
@@ -419,6 +495,7 @@ fn five_thousand_holder_events_share_occurrence_witnesses_and_existing_reply_win
     let observed = pack(
         (0..5000)
             .map(|index| EventFeedEvent {
+                script: None,
                 actor: identity(index),
                 target: identity((index + 1) % 5000),
                 ..event(u64::from(index) + 1, EventFeedSource::Declaration, 105)
@@ -645,4 +722,331 @@ fn a_partial_interval_after_a_recorded_event_loss_names_the_detached_recorder() 
     let both = reason(&partial, vec![(119, 120)]);
     assert!(both.contains("recorder was detached"), "{both}");
     assert!(both.contains("acquired events unsettled"), "{both}");
+}
+
+#[test]
+fn complete_transport_still_names_and_counts_every_refused_script_family_per_interval() {
+    let mut builder = Builder::new(100, 130);
+    let mut pack = pack(Vec::new());
+    pack.script_refusals = replay_data::event_feed_rows::DECISION_FAMILY_REFUSALS;
+    let mut projection = Projection::default();
+    for hour in [120, 121] {
+        pack.read_hour = hour;
+        projection
+            .append_named(&mut builder, &pack, |_, _| None, &AtomicBool::new(false))
+            .unwrap();
+    }
+    let refused: Vec<_> = builder
+        .feed
+        .unavailable
+        .iter()
+        .filter(|row| row.kind == "nativeScriptFamilyCoverage")
+        .collect();
+    assert_eq!(refused.len(), 5);
+    assert!(refused.iter().all(|row| row.count == Some(2)));
+    assert!(
+        refused
+            .iter()
+            .any(|row| row.label.contains("removal and re-enable timers"))
+    );
+    assert!(
+        !builder
+            .feed
+            .unavailable
+            .iter()
+            .any(|row| row.kind == "nativeEventCoverage")
+    );
+}
+
+#[test]
+fn certified_roster_rebuilds_are_visible_without_inventing_baseline_selections() {
+    use replay_data::event_feed_rows::{
+        EventFeedScript, EventFeedScriptChange,
+        decisions::{DecisionChange, Operation},
+    };
+    let events = [Operation::Baseline, Operation::Ready, Operation::Rebuild]
+        .into_iter()
+        .enumerate()
+        .map(|(index, operation)| {
+            let mut event = event(index as u64 + 1, EventFeedSource::ScriptState, 105);
+            event.script = Some(EventFeedScript {
+                change: Some(EventFeedScriptChange::Decision(DecisionChange::new(
+                    operation,
+                    if operation == Operation::Rebuild {
+                        3
+                    } else {
+                        0
+                    },
+                ))),
+                days: (operation == Operation::Rebuild).then_some(7),
+                lifecycle: (operation == Operation::Rebuild).then_some(0),
+                ..Default::default()
+            });
+            event
+        })
+        .collect();
+    let row = pack(events);
+    let mut builder = Builder::new(100, 120);
+    append(&mut builder, &row, &BTreeMap::from([(105, frame(105, 2))])).unwrap();
+    assert_eq!(
+        builder
+            .feed
+            .rows
+            .iter()
+            .filter(|row| row.kind == EventFeedKind::DecisionRosterRebuilt)
+            .count(),
+        1
+    );
+    assert!(builder.feed.rows.iter().all(|row| matches!(
+        row.kind,
+        EventFeedKind::DecisionRosterRebuilt | EventFeedKind::ScriptStateObserved
+    )));
+    assert_eq!(builder.script_inputs.len(), 1);
+}
+
+fn decision_boundary(
+    sequence: u64,
+    operation: replay_data::event_feed_rows::decisions::Operation,
+    phase: u8,
+) -> EventFeedEvent {
+    let mut value = event(sequence, EventFeedSource::ScriptState, 120);
+    value.script = Some(replay_data::event_feed_rows::EventFeedScript {
+        change: Some(
+            replay_data::event_feed_rows::EventFeedScriptChange::Decision(
+                replay_data::event_feed_rows::decisions::DecisionChange::new(operation, phase),
+            ),
+        ),
+        ..Default::default()
+    });
+    value
+}
+#[test]
+fn only_final_roster_phase_emits_an_occurrence_and_resume_carries_owner_certificate() {
+    use replay_data::event_feed_rows::decisions::Operation;
+    let mut baseline = pack(vec![
+        decision_boundary(1, Operation::Baseline, 0),
+        decision_boundary(2, Operation::Ready, 0),
+    ]);
+    baseline.read_hour = 120;
+    let mut live = Projection::default();
+    live.append_named(
+        &mut Builder::new(100, 130),
+        &baseline,
+        |_, _| Some("SYN".into()),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut resumed: Projection =
+        serde_json::from_slice(&serde_json::to_vec(&live).unwrap()).unwrap();
+    let mut intermediate = pack(
+        (0..3)
+            .map(|phase| decision_boundary(3 + phase as u64, Operation::Rebuild, phase))
+            .collect(),
+    );
+    intermediate.read_hour = 121;
+    let mut builder = Builder::new(100, 130);
+    resumed
+        .append_named(
+            &mut builder,
+            &intermediate,
+            |_, _| Some("SYN".into()),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert!(builder.feed.rows.is_empty());
+    assert!(builder.script_inputs.is_empty());
+    let mut final_row = pack(vec![decision_boundary(6, Operation::Rebuild, 3)]);
+    final_row.read_hour = 122;
+    resumed
+        .append_named(
+            &mut builder,
+            &final_row,
+            |_, _| Some("SYN".into()),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(builder.feed.rows.len(), 1);
+    let inputs = builder.script_inputs.values().next().unwrap();
+    assert_eq!(
+        serde_json::to_value(inputs).unwrap()["roster"]["complete"],
+        true
+    );
+}
+#[test]
+fn retained_pending_due_after_end_fired_members_and_delayed_scopes_survive_resume() {
+    use replay_data::event_feed_rows::{
+        EventFeedEventIdentity, EventFeedScope, EventFeedScript, EventFeedScriptChange as C,
+    };
+    let changes = [
+        C::PendingBaseline,
+        C::PendingStored { due_hour: 999 },
+        C::PendingReady,
+        C::FiredBaseline,
+        C::FiredMember,
+        C::FiredReady,
+        C::DelayedBaseline,
+        C::DelayedStored { remaining: 500 },
+        C::DelayedReady,
+    ];
+    let mut baseline = pack(
+        changes
+            .into_iter()
+            .enumerate()
+            .map(|(index, change)| {
+                let mut value = event(index as u64 + 1, EventFeedSource::ScriptState, 120);
+                let stored = matches!(change, C::PendingStored { .. } | C::DelayedStored { .. });
+                value.script = Some(EventFeedScript {
+                    change: Some(change),
+                    native_event: matches!(
+                        change,
+                        C::PendingStored { .. } | C::DelayedStored { .. } | C::FiredMember
+                    )
+                    .then_some(EventFeedEventIdentity { kind: 7, id: 9 }),
+                    token_len: if stored || change == C::FiredMember {
+                        3
+                    } else {
+                        0
+                    },
+                    instance: stored.then_some(17),
+                    scope_len: u32::from(stored),
+                    ..Default::default()
+                });
+                value
+            })
+            .collect(),
+    );
+    baseline.script_tokens = b"mod".to_vec();
+    baseline.script_scopes = vec![EventFeedScope {
+        country: 100_000,
+        random: [12, 13],
+        ..Default::default()
+    }];
+    let mut projection = Projection::default();
+    let mut builder = Builder::new(100, 130);
+    projection
+        .append_named(
+            &mut builder,
+            &baseline,
+            |_, _| Some("SYN".into()),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(builder.feed.rows.len(), 1);
+    assert_eq!(
+        builder.feed.rows[0].kind,
+        EventFeedKind::ScriptStateObserved
+    );
+    assert!(!builder.feed.rows[0].exact);
+    let notes = builder.feed.rows[0]
+        .cause
+        .as_ref()
+        .unwrap()
+        .notes
+        .join("\n");
+    assert!(notes.contains("due hour 999"));
+    assert!(notes.contains("Fired-set member: mod"));
+    assert!(notes.contains("remaining 500 hours"));
+    assert!(notes.contains("ROOT 0, FROM 0, PREV 0"));
+    assert!(notes.contains("no recorded fire or selection time"));
+    let mut resumed: Projection =
+        serde_json::from_slice(&serde_json::to_vec(&projection).unwrap()).unwrap();
+    let mut tail = pack(vec![event(10, EventFeedSource::ScriptState, 121)]);
+    tail.read_hour = 121;
+    tail.events[0].script = Some(EventFeedScript {
+        change: Some(C::DelayedAdvance {
+            count: 1,
+            finished: true,
+        }),
+        ..Default::default()
+    });
+    let mut expected = Builder::new(100, 130);
+    let mut actual = Builder::new(100, 130);
+    projection
+        .append_named(
+            &mut expected,
+            &tail,
+            |_, _| Some("SYN".into()),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    resumed
+        .append_named(
+            &mut actual,
+            &tail,
+            |_, _| Some("SYN".into()),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&actual.feed.rows).unwrap(),
+        serde_json::to_value(&expected.feed.rows).unwrap()
+    );
+    let notes = actual.feed.rows[0].cause.as_ref().unwrap().notes.join("\n");
+    assert!(notes.contains("remaining 499 hours"));
+    assert!(notes.contains("due hour 999"));
+}
+
+#[test]
+fn preparation_resume_preserves_an_open_native_timer_pass() {
+    use replay_data::event_feed_rows::decisions::{Operation, TIMED};
+    let mut stored = decision_boundary(2, Operation::Store, TIMED);
+    let script = stored.script.as_mut().unwrap();
+    script.instance = Some(17);
+    script.token_len = 3;
+    script.days = Some(10);
+    script.lifecycle = Some(0);
+    let mut begin = decision_boundary(4, Operation::PassBegin, TIMED);
+    if let Some(replay_data::event_feed_rows::EventFeedScriptChange::Decision(ref mut change)) =
+        begin.script.as_mut().unwrap().change
+    {
+        change.ordinal = 1;
+    }
+    let mut baseline = pack(vec![
+        decision_boundary(1, Operation::Baseline, 0),
+        stored,
+        decision_boundary(3, Operation::Ready, 0),
+        begin,
+    ]);
+    baseline.script_tokens = b"mod".to_vec();
+    let mut projection = Projection::default();
+    projection
+        .append_named(
+            &mut Builder::new(100, 130),
+            &baseline,
+            |_, _| Some("SYN".into()),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let mut resumed: Projection =
+        serde_json::from_slice(&serde_json::to_vec(&projection).unwrap()).unwrap();
+    let mut tail = pack(vec![
+        decision_boundary(5, Operation::PassEnd, TIMED),
+        decision_boundary(6, Operation::Rebuild, 3),
+    ]);
+    tail.read_hour = 121;
+    let mut expected = Builder::new(100, 130);
+    let mut actual = Builder::new(100, 130);
+    projection
+        .append_named(
+            &mut expected,
+            &tail,
+            |_, _| Some("SYN".into()),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    resumed
+        .append_named(
+            &mut actual,
+            &tail,
+            |_, _| Some("SYN".into()),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&actual.feed.rows).unwrap(),
+        serde_json::to_value(&expected.feed.rows).unwrap()
+    );
+    let inputs = serde_json::to_value(actual.script_inputs.values().next().unwrap()).unwrap();
+    assert_eq!(inputs["roster"]["complete"], true);
+    assert_eq!(inputs["roster"]["members"][0]["days"], 9);
 }

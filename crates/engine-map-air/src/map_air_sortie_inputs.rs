@@ -5,6 +5,11 @@
 //! Stored mission efficiency and count can be stale because their writer runs
 //! only when period, capacity and combat gates pass (see `AirMissionInputRow`).
 
+use engine_native::cair_wing;
+
+#[path = "map_air_sortie_inputs/patrol.rs"]
+pub mod patrol;
+
 use crate::{
     Memory, air_mission, cair_base, ccountry, ccountry_air_container, cgame_state,
     cpdx_array::Array,
@@ -23,12 +28,19 @@ const REGION_COVERAGE: usize = 0x50;
 const REASSIGNMENT_PENALTY: usize = 0xc0;
 /// Signed fixed5 CAS diversion ratio, independent of the count cache.
 const CAS_RATIO: usize = 0xd0;
+/// Retained base-to-region trace count tested by the regional interception alert.
+const INTERCEPTION_TRACE_COUNT: usize = 0x64;
 /// Sixteen-byte province ID and distance entries.
 const REACHED_ENTRY: usize = 0x10;
 /// Console efficiency overrides: a PdxArray of 16-byte canonical-slot i32,
 /// padding and fixed5 i64 entries, unique by slot. A matching effective-country
 /// slot supplies the result before any other term or clamp.
 const EFFICIENCY_OVERRIDES_RVA: usize = 0x0331_7208;
+/// Console command's sole detection-vector writer and verified entry fingerprint.
+pub const DETECTION_OVERRIDE_WRITER_RVA: usize = 0x0026_86b0;
+pub const DETECTION_OVERRIDE_WRITER_PREFIX_HASH: u64 = 0x18aa_1a4c_14d9_dba7;
+/// The console's country-keyed fixed5 detection vector.
+const DETECTION_OVERRIDES_RVA: usize = 0x0331_7220;
 const OVERRIDE_ENTRY: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +55,81 @@ pub struct Mission {
     pub region_pointer: usize,
     /// Mission operand weighting the CAS diversion draw.
     pub cas_ratio_raw: Option<i64>,
+    /// Exact trace-count predicate, independent of current aircraft and sortie efficiency.
+    pub interception_alert_gate: Option<bool>,
+    /// Current simulation execution, independent of the enabled mission mask.
+    pub current_type: Option<u32>,
+    /// Reached only for a nonzero current type; stale while execution is zero.
+    pub effective_aircraft: Option<i32>,
+    pub normalization: Option<Normalization>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Normalization {
+    pub night_stat: Option<i64>,
+    pub modifiers: [Option<modifier_accumulator::RequestedOperand>; 2],
+    /// Independent cached aircraft detection leaves for regional Navy spotting.
+    pub detection: [Option<i64>; 2],
+    pub patrol: patrol::Inputs,
+}
+
+const SURFACE_DETECTION_STAT: usize = 0x13;
+const SUBMARINE_DETECTION_STAT: usize = 0x14;
+
+fn detection_stats(memory: &impl Memory, record: usize) -> [Option<i64>; 2] {
+    let Some(first) = record.checked_add(SURFACE_DETECTION_STAT * 8) else {
+        return [None; 2];
+    };
+    let mut bytes = [0; 16];
+    if memory.copy(first, &mut bytes) {
+        return [
+            Some(i64::from_le_bytes(bytes[..8].try_into().unwrap())),
+            Some(i64::from_le_bytes(bytes[8..].try_into().unwrap())),
+        ];
+    }
+    // A fault in either word cannot hide the independent readable neighbour.
+    [SURFACE_DETECTION_STAT, SUBMARINE_DETECTION_STAT]
+        .map(|stat| record.checked_add(stat * 8).and_then(|at| read(memory, at)))
+}
+
+fn normalization(
+    memory: &impl Memory,
+    base: usize,
+    mission: usize,
+    mask: u32,
+    count: i32,
+    spotting: bool,
+) -> Normalization {
+    let Some(wing) = mission.checked_sub(cair_wing::MISSION) else {
+        return Normalization::default();
+    };
+    let record = cair_wing::mission_stat_index(memory, wing, mask)
+        .ok()
+        .and_then(|index| cair_wing::mission_stat_record(memory, wing, index).ok());
+    let night_stat = record
+        .and_then(|record| record.checked_add(cair_wing::NIGHT_OPERATIONS_STAT * 8))
+        .and_then(|at| read(memory, at));
+    let detection = if spotting {
+        record
+            .map(|record| detection_stats(memory, record))
+            .unwrap_or([None; 2])
+    } else {
+        [None; 2]
+    };
+    let modifiers = [0x105_u32, 0x106].map(|key| {
+        wing.checked_add(cair_wing::MODIFIERS)
+            .and_then(|at| modifier_accumulator::requested_operand_at(memory, base, at, key).ok())
+    });
+    Normalization {
+        night_stat,
+        modifiers,
+        detection,
+        patrol: if spotting {
+            patrol::read(memory, wing, mission, record, mask, count)
+        } else {
+            Default::default()
+        },
+    }
 }
 
 fn field<T: crate::memory::Raw>(
@@ -69,7 +156,7 @@ fn vtable(base: usize, rva: usize) -> Result<u64, &'static str> {
 
 /// Missions read per `copy_records` batch.
 pub const MISSION_BATCH: usize = 64;
-const MISSION_ROW: usize = 64;
+const MISSION_ROW: usize = 72;
 /// The six operand fields every mission must read.
 const OPERAND_FIELDS: [RecordField; 6] = [
     RecordField {
@@ -103,14 +190,23 @@ const OPERAND_FIELDS: [RecordField; 6] = [
         len: 4,
     },
 ];
-/// The operand fields, then the CAS ratio (`CAS_RATIO`), which a mission
-/// without it keeps as unknown rather than refusing the batch.
-const MISSION_FIELDS: [RecordField; 7] = {
+/// Required operands, then the independently optional CAS ratio and interception threshold.
+const MISSION_FIELDS: [RecordField; 9] = {
     let mut fields = [RecordField {
         source_offset: CAS_RATIO,
         destination_offset: 56,
         len: 8,
-    }; 7];
+    }; 9];
+    fields[7] = RecordField {
+        source_offset: INTERCEPTION_TRACE_COUNT,
+        destination_offset: 52,
+        len: 4,
+    };
+    fields[8] = RecordField {
+        source_offset: air_mission::CURRENT_TYPE,
+        destination_offset: 64,
+        len: 4,
+    };
     let mut index = 0;
     while index < OPERAND_FIELDS.len() {
         fields[index] = OPERAND_FIELDS[index];
@@ -118,10 +214,7 @@ const MISSION_FIELDS: [RecordField; 7] = {
     }
     fields
 };
-/// Every field, the CAS ratio included: one copy for the batch.
-const GATHERED_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&MISSION_FIELDS, MISSION_ROW).expect("valid mission layout");
-/// The operand fields only, each CAS ratio then read alone.
+/// Required operands only; optional operands are then read independently.
 const MISSION_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&OPERAND_FIELDS, MISSION_ROW).expect("valid mission layout");
 
@@ -142,13 +235,71 @@ pub fn read_missions(
     missions: &[usize],
     output: &mut [Mission],
 ) -> Result<bool, &'static str> {
+    read_missions_with_spotting(
+        memory,
+        base,
+        missions,
+        None,
+        &mut Default::default(),
+        output,
+    )
+}
+
+/// Reuse the wing worker's authenticated current-execution leaves, including
+/// their independent failures. Neither a mask nor its count is read again.
+pub fn read_missions_with_execution(
+    memory: &impl Memory,
+    base: usize,
+    missions: &[usize],
+    execution: &[cair_wing::fuel_inputs::Inputs],
+    output: &mut [Mission],
+) -> Result<bool, &'static str> {
+    read_missions_with_spotting(
+        memory,
+        base,
+        missions,
+        Some(execution),
+        &mut Default::default(),
+        output,
+    )
+}
+
+/// The worker shares this stack cache across every original mission batch.
+pub fn read_missions_with_spotting(
+    memory: &impl Memory,
+    base: usize,
+    missions: &[usize],
+    execution: Option<&[cair_wing::fuel_inputs::Inputs]>,
+    spotting: &mut patrol::SpottingFactors,
+    output: &mut [Mission],
+) -> Result<bool, &'static str> {
+    if execution.is_some_and(|execution| execution.len() != missions.len()) {
+        return Err("air mission execution batch size invalid");
+    }
+    read_missions_inner(memory, base, missions, execution, spotting, output)
+}
+
+fn read_missions_inner(
+    memory: &impl Memory,
+    base: usize,
+    missions: &[usize],
+    execution: Option<&[cair_wing::fuel_inputs::Inputs]>,
+    spotting: &mut patrol::SpottingFactors,
+    output: &mut [Mission],
+) -> Result<bool, &'static str> {
     if missions.len() > MISSION_BATCH || output.len() != missions.len() {
         return Err("air mission batch size invalid");
     }
     let mut rows = [0_u8; MISSION_BATCH * MISSION_ROW];
     let rows = &mut rows[..missions.len() * MISSION_ROW];
-    let gathered = memory.copy_records(RecordSources::Pointers(missions), &GATHERED_LAYOUT, rows)
-        == missions.len() * MISSION_FIELDS.len();
+    let fields = if execution.is_some() {
+        &MISSION_FIELDS[..MISSION_FIELDS.len() - 1]
+    } else {
+        &MISSION_FIELDS[..]
+    };
+    let layout = RecordLayout::new(fields, MISSION_ROW).expect("valid mission execution layout");
+    let gathered = memory.copy_records(RecordSources::Pointers(missions), &layout, rows)
+        == missions.len() * fields.len();
     if !gathered {
         // Counted as it starts, whatever the reads after it return.
         crate::batch_fallback::record(crate::batch_fallback::Batch::MissionInputs);
@@ -159,15 +310,35 @@ pub fn read_missions(
         }
     }
     let identity = vtable(base, air_mission::VTABLE_RVA)?;
-    for ((mission, row), &pointer) in output
+    for (index, ((mission, row), &pointer)) in output
         .iter_mut()
         .zip(rows.chunks_exact(MISSION_ROW))
         .zip(missions)
+        .enumerate()
     {
         if u64::from_le_bytes(word(row, 0)) != identity {
             return Err("air mission identity mismatch");
         }
         *mission = Mission {
+            current_type: if let Some(execution) = execution {
+                execution[index].current_type.map(|value| value as u32)
+            } else if gathered {
+                Some(u32::from_le_bytes(word(row, 64)))
+            } else {
+                pointer
+                    .checked_add(air_mission::CURRENT_TYPE)
+                    .and_then(|at| read(memory, at))
+            },
+            effective_aircraft: execution.and_then(|rows| rows[index].effective_aircraft),
+            normalization: None,
+            interception_alert_gate: if gathered {
+                Some(i32::from_le_bytes(word(row, 52)) > 1)
+            } else {
+                pointer
+                    .checked_add(INTERCEPTION_TRACE_COUNT)
+                    .and_then(|at| read::<i32>(memory, at))
+                    .map(|count| count > 1)
+            },
             cas_ratio_raw: if gathered {
                 Some(i64::from_le_bytes(word(row, 56)))
             } else {
@@ -184,7 +355,68 @@ pub fn read_missions(
                 .map_err(|_| "air mission region pointer overflow")?,
         };
     }
+    if execution.is_none() {
+        read_effective_aircraft(memory, missions, output);
+    }
+    for (&pointer, mission) in missions.iter().zip(output.iter_mut()) {
+        if let (Some(mask), Some(count)) = (mission.current_type, mission.effective_aircraft)
+            && mask != 0
+            && count != 0
+        {
+            mission.normalization = Some(normalization(
+                memory,
+                base,
+                pointer,
+                mask,
+                count,
+                spotting.admits(memory, base, mask).unwrap_or(false),
+            ));
+        }
+    }
     Ok(gathered)
+}
+
+/// Only the batch's executing missions demand this retained count. All
+/// storage is bounded by the existing gather size, never the wing census.
+fn read_effective_aircraft(memory: &impl Memory, missions: &[usize], output: &mut [Mission]) {
+    const FIELDS: [RecordField; 1] = [RecordField {
+        source_offset: air_mission::EFFECTIVE_AIRCRAFTS,
+        destination_offset: 0,
+        len: 4,
+    }];
+    const LAYOUT: RecordLayout<'static> =
+        RecordLayout::new(&FIELDS, 4).expect("valid executing aircraft layout");
+    let mut pointers = [0; MISSION_BATCH];
+    let mut indices = [0; MISSION_BATCH];
+    let mut count = 0;
+    for (index, (&pointer, row)) in missions.iter().zip(output.iter()).enumerate() {
+        if row.current_type.is_some_and(|mask| mask != 0) {
+            pointers[count] = pointer;
+            indices[count] = index;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return;
+    }
+    let mut words = [0_u8; MISSION_BATCH * 4];
+    let copied = memory.copy_records(
+        RecordSources::Pointers(&pointers[..count]),
+        &LAYOUT,
+        &mut words[..count * 4],
+    );
+    for at in 0..count {
+        output[indices[at]].effective_aircraft = if at < copied {
+            Some(i32::from_le_bytes(word(&words, at * 4)))
+        } else if at == copied {
+            // The failed gather leaf stays unknown; do not retry it.
+            None
+        } else {
+            pointers[at]
+                .checked_add(air_mission::EFFECTIVE_AIRCRAFTS)
+                .and_then(|address| read(memory, address))
+        };
+    }
 }
 
 /// Pools whose definitions [`definition_air_flags_gathered`] reads at once.
@@ -396,12 +628,29 @@ pub fn weather_regions(
     base: usize,
     game_state: usize,
 ) -> Result<Array, &'static str> {
+    weather_regions_from_manager(memory, weather_manager(memory, base, game_state)?)
+}
+
+/// Authenticated acquisition context, loaned to consumers in the same worker.
+pub fn weather_manager(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<usize, &'static str> {
     let manager = pointer(memory, game_state, cgame_state::WEATHER_MANAGER)?;
     if manager == 0
         || field::<u64>(memory, manager, 0)? != vtable(base, cweather_manager::VTABLE_RVA)?
     {
         return Err("weather manager identity mismatch");
     }
+    Ok(manager)
+}
+
+/// `manager` is the original successful [`weather_manager`] observation.
+pub fn weather_regions_from_manager(
+    memory: &impl Memory,
+    manager: usize,
+) -> Result<Array, &'static str> {
     manager
         .checked_add(cweather_manager::REGIONS)
         .and_then(|at| Array::read(memory, at, sweather_per_region::STRIDE))
@@ -526,6 +775,44 @@ pub fn efficiency_overrides_fallible(
                 i64::from_le_bytes(entry[8..].try_into().unwrap()),
             )?;
         }
+    }
+    Ok(())
+}
+
+/// First/change-only caller-owned acquisition; never call this as a periodic poll.
+/// The native header supplies allocation demand before any entry is followed.
+pub fn detection_overrides(
+    memory: &impl Memory,
+    base: usize,
+    output: &mut Vec<(u32, i64)>,
+) -> Result<(), &'static str> {
+    output.clear();
+    let array = base
+        .checked_add(DETECTION_OVERRIDES_RVA)
+        .and_then(|at| Array::read(memory, at, OVERRIDE_ENTRY))
+        .ok_or("Air detection override vector header unreadable")?;
+    engine_native::allocation::reserve_exact(output, array.count as usize)
+        .map_err(|_| "Air detection override allocation failed")?;
+    let mut bytes = [0_u8; 64 * OVERRIDE_ENTRY];
+    for first in (0..array.count).step_by(64) {
+        let count = (array.count - first).min(64);
+        let source = array
+            .element(first, OVERRIDE_ENTRY)
+            .ok_or("Air detection override vector extent invalid")?;
+        let bytes = &mut bytes[..count as usize * OVERRIDE_ENTRY];
+        if !memory.copy(source, bytes) {
+            return Err("Air detection override vector entry unreadable");
+        }
+        for row in bytes.chunks_exact(OVERRIDE_ENTRY) {
+            output.push((
+                u32::from_le_bytes(row[..4].try_into().unwrap()),
+                i64::from_le_bytes(row[8..16].try_into().unwrap()),
+            ));
+        }
+    }
+    output.sort_unstable_by_key(|row| row.0);
+    if output.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err("Air detection override vector repeats a country");
     }
     Ok(())
 }
@@ -690,6 +977,371 @@ mod tests {
     }
 
     #[test]
+    fn normalization_reads_only_executing_nonzero_counts_and_keeps_independent_faults() {
+        struct Traced<'a> {
+            bytes: &'a [u8],
+            fault: Option<usize>,
+            reads: std::cell::RefCell<Vec<(usize, usize)>>,
+        }
+        impl Memory for Traced<'_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                self.reads.borrow_mut().push((at, out.len()));
+                const FACTORS: usize = 0x8000_0000;
+                if at == patrol::SPOTTING_FACTORS_RVA {
+                    let mut header = [0; 16];
+                    header[..8].copy_from_slice(&(FACTORS as u64).to_le_bytes());
+                    header[8..12].copy_from_slice(&32_u32.to_le_bytes());
+                    header[12..].copy_from_slice(&32_u32.to_le_bytes());
+                    out.copy_from_slice(&header);
+                    return true;
+                }
+                if (FACTORS..FACTORS + 32 * 8).contains(&at) {
+                    out.copy_from_slice(&100_000_i64.to_le_bytes());
+                    return true;
+                }
+                if self
+                    .fault
+                    .is_some_and(|fault| at <= fault && fault < at + out.len())
+                {
+                    return false;
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(at, out)
+            }
+        }
+        let wing = MISSION - cair_wing::MISSION;
+        let selector = wing + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES + 3;
+        let statistic = wing + cair_wing::DEFAULT_STATS + cair_wing::NIGHT_OPERATIONS_STAT * 8;
+        let surface = wing + cair_wing::DEFAULT_STATS + SURFACE_DETECTION_STAT * 8;
+        let submarine = wing + cair_wing::DEFAULT_STATS + SUBMARINE_DETECTION_STAT * 8;
+        let accumulator = wing + cair_wing::MODIFIERS;
+        let mut bytes = mission_fixture();
+        put(&mut bytes, selector, &[255]);
+        put(&mut bytes, statistic, &(-123_456_i64).to_le_bytes());
+        put(&mut bytes, surface, &i64::MIN.to_le_bytes());
+        put(&mut bytes, submarine, &i64::MAX.to_le_bytes());
+        let mut output = [Mission::default()];
+        for (mask, count, fault) in [
+            (0_u32, 99_i32, None),
+            (8, 0, None),
+            (8, 17, None),
+            (8, 17, Some(statistic)),
+            (8, 17, Some(accumulator)),
+            (8, 17, Some(surface)),
+            (8, 17, Some(submarine)),
+        ] {
+            put(
+                &mut bytes,
+                MISSION + air_mission::CURRENT_TYPE,
+                &mask.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                MISSION + air_mission::EFFECTIVE_AIRCRAFTS,
+                &count.to_le_bytes(),
+            );
+            let memory = Traced {
+                bytes: &bytes,
+                fault,
+                reads: Default::default(),
+            };
+            read_missions(&memory, 0, &[MISSION], &mut output).unwrap();
+            if mask == 0 || count == 0 {
+                assert!(output[0].normalization.is_none());
+                assert!(memory.reads.borrow().iter().all(|&(at, _)| at != selector
+                    && at != statistic
+                    && at != accumulator
+                    && at != surface
+                    && at != submarine));
+            } else {
+                let packet = output[0].normalization.unwrap();
+                assert_eq!(
+                    packet.night_stat,
+                    (fault != Some(statistic)).then_some(-123_456)
+                );
+                assert_eq!(
+                    packet.detection,
+                    [
+                        (fault != Some(surface)).then_some(i64::MIN),
+                        (fault != Some(submarine)).then_some(i64::MAX),
+                    ]
+                );
+                assert_eq!(
+                    memory
+                        .reads
+                        .borrow()
+                        .iter()
+                        .filter(|&&(at, _)| at == selector)
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    packet
+                        .modifiers
+                        .map(|entry| entry.map(|entry| entry.present)),
+                    if fault == Some(accumulator) {
+                        [None; 2]
+                    } else {
+                        [Some(false); 2]
+                    }
+                );
+            }
+            assert_eq!(output[0].coverage_raw, -7);
+        }
+    }
+
+    #[test]
+    fn zero_or_unreadable_spotting_factor_skips_new_leaves_but_keeps_air_normalization() {
+        struct Gate<'a> {
+            bytes: &'a [u8],
+            factor: Option<i64>,
+            new_reads: std::cell::Cell<usize>,
+        }
+        impl Memory for Gate<'_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                const FACTORS: usize = 0x8000_0000;
+                if at == patrol::SPOTTING_FACTORS_RVA {
+                    let mut header = [0; 16];
+                    header[..8].copy_from_slice(&(FACTORS as u64).to_le_bytes());
+                    header[8..12].copy_from_slice(&8_u32.to_le_bytes());
+                    header[12..].copy_from_slice(&8_u32.to_le_bytes());
+                    out.copy_from_slice(&header);
+                    return true;
+                }
+                if at == FACTORS + 3 * 8 {
+                    let Some(value) = self.factor else {
+                        return false;
+                    };
+                    out.copy_from_slice(&value.to_le_bytes());
+                    return true;
+                }
+                let wing = MISSION - cair_wing::MISSION;
+                let record = wing + cair_wing::DEFAULT_STATS;
+                if [
+                    MISSION + 0xa8,
+                    record + 0x13 * 8,
+                    record + 0x14 * 8,
+                    record + 0x2f * 8,
+                    record + 0x30 * 8,
+                    wing + 0x580,
+                ]
+                .contains(&at)
+                {
+                    self.new_reads.set(self.new_reads.get() + 1);
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(at, out)
+            }
+        }
+        let mut bytes = mission_fixture();
+        let wing = MISSION - cair_wing::MISSION;
+        put(
+            &mut bytes,
+            MISSION + air_mission::CURRENT_TYPE,
+            &8_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            MISSION + air_mission::EFFECTIVE_AIRCRAFTS,
+            &17_i32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            wing + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES + 3,
+            &[255],
+        );
+        put(
+            &mut bytes,
+            wing + cair_wing::DEFAULT_STATS + cair_wing::NIGHT_OPERATIONS_STAT * 8,
+            &123_i64.to_le_bytes(),
+        );
+        for factor in [Some(0), None, Some(100_000)] {
+            let memory = Gate {
+                bytes: &bytes,
+                factor,
+                new_reads: Default::default(),
+            };
+            let mut output = [Mission::default()];
+            read_missions(&memory, 0, &[MISSION], &mut output).unwrap();
+            let normalization = output[0].normalization.unwrap();
+            assert_eq!(normalization.night_stat, Some(123));
+            assert_eq!(
+                normalization
+                    .modifiers
+                    .map(|value| value.map(|value| value.present)),
+                [Some(false); 2]
+            );
+            if factor == Some(100_000) {
+                assert!(memory.new_reads.get() > 0);
+                assert_eq!(normalization.detection, [Some(0); 2]);
+                assert_eq!(normalization.patrol.disruption, Some(0));
+            } else {
+                assert_eq!(memory.new_reads.get(), 0);
+                assert_eq!(normalization.detection, [None; 2]);
+                assert_eq!(normalization.patrol, Default::default());
+            }
+        }
+    }
+
+    #[test]
+    fn patrol_detection_does_not_read_stats_for_invalid_current_masks() {
+        struct Guard<'a> {
+            bytes: &'a [u8],
+            attempts: std::cell::Cell<usize>,
+        }
+        impl Memory for Guard<'_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                let wing = MISSION - cair_wing::MISSION;
+                let start = wing + cair_wing::DEFAULT_STATS + SURFACE_DETECTION_STAT * 8;
+                if at < start + 16 && start < at.saturating_add(out.len()) {
+                    self.attempts.set(self.attempts.get() + 1);
+                    return false;
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(at, out)
+            }
+        }
+        let mut bytes = mission_fixture();
+        for mask in [3_u32, 0x8000_0000] {
+            put(
+                &mut bytes,
+                MISSION + air_mission::CURRENT_TYPE,
+                &mask.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                MISSION + air_mission::EFFECTIVE_AIRCRAFTS,
+                &7_i32.to_le_bytes(),
+            );
+            let memory = Guard {
+                bytes: &bytes,
+                attempts: Default::default(),
+            };
+            let mut output = [Mission::default()];
+            read_missions(&memory, 0, &[MISSION], &mut output).unwrap();
+            assert_eq!(output[0].normalization.unwrap().detection, [None; 2]);
+            assert_eq!(memory.attempts.get(), 0);
+        }
+    }
+
+    #[test]
+    fn executing_count_is_demanded_only_by_current_mask_and_faults_are_independent() {
+        use std::cell::Cell;
+        struct Traced<'a> {
+            bytes: &'a [u8],
+            deny: Option<usize>,
+            count_reads: Cell<usize>,
+        }
+        impl Memory for Traced<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let end = address.saturating_add(output.len());
+                if address <= MISSION + air_mission::EFFECTIVE_AIRCRAFTS
+                    && MISSION + air_mission::EFFECTIVE_AIRCRAFTS < end
+                {
+                    self.count_reads.set(self.count_reads.get() + 1);
+                }
+                if self.deny.is_some_and(|at| address <= at && at < end) {
+                    return false;
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(address, output)
+            }
+        }
+        let mut bytes = mission_fixture();
+        put(
+            &mut bytes,
+            MISSION + air_mission::EFFECTIVE_AIRCRAFTS,
+            &(-17_i32).to_le_bytes(),
+        );
+        let mut rows = [Mission::default()];
+        for (mask, deny, expected_mask, expected_count, reads) in [
+            (0_u32, None, Some(0), None, 0),
+            (8, None, Some(8), Some(-17), 1),
+            (
+                8,
+                Some(MISSION + air_mission::EFFECTIVE_AIRCRAFTS),
+                Some(8),
+                None,
+                1,
+            ),
+            (8, Some(MISSION + air_mission::CURRENT_TYPE), None, None, 0),
+        ] {
+            put(
+                &mut bytes,
+                MISSION + air_mission::CURRENT_TYPE,
+                &mask.to_le_bytes(),
+            );
+            let memory = Traced {
+                bytes: &bytes,
+                deny,
+                count_reads: Cell::new(0),
+            };
+            read_missions(&memory, 0, &[MISSION], &mut rows).unwrap();
+            assert_eq!(
+                (rows[0].current_type, rows[0].effective_aircraft),
+                (expected_mask, expected_count)
+            );
+            assert_eq!(memory.count_reads.get(), reads);
+            assert_eq!(rows[0].coverage_raw, -7);
+        }
+    }
+
+    #[test]
+    fn same_pass_execution_reuse_never_rereads_masks_counts_or_heals_failed_leaves() {
+        struct NoExecution<'a> {
+            bytes: &'a [u8],
+            attempts: std::cell::Cell<usize>,
+        }
+        impl Memory for NoExecution<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let end = address.saturating_add(output.len());
+                if [air_mission::CURRENT_TYPE, air_mission::EFFECTIVE_AIRCRAFTS]
+                    .into_iter()
+                    .any(|offset| address <= MISSION + offset && MISSION + offset < end)
+                {
+                    self.attempts.set(self.attempts.get() + 1);
+                    return false;
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(address, output)
+            }
+        }
+        let bytes = mission_fixture();
+        let memory = NoExecution {
+            bytes: &bytes,
+            attempts: Default::default(),
+        };
+        let mut output = [Mission::default()];
+        for (mask, aircraft) in [(Some(0), None), (Some(8), Some(0)), (None, None)] {
+            let execution = [cair_wing::fuel_inputs::Inputs {
+                current_type: mask,
+                effective_aircraft: aircraft,
+                ..Default::default()
+            }];
+            read_missions_with_execution(&memory, 0, &[MISSION], &execution, &mut output).unwrap();
+            assert_eq!(output[0].current_type, mask.map(|value| value as u32));
+            assert_eq!(output[0].effective_aircraft, aircraft);
+            assert_eq!(output[0].coverage_raw, -7);
+        }
+        assert_eq!(memory.attempts.get(), 0);
+    }
+
+    #[test]
     fn mission_operands_and_reached_ids_keep_native_values_and_order() {
         let bytes = mission_fixture();
         let memory = SliceMemory {
@@ -717,6 +1369,56 @@ mod tests {
             read_missions(&memory, 0, &[MISSION, POOL], &mut [Mission::default(); 2]),
             Err("air mission identity mismatch")
         );
+    }
+
+    #[test]
+    fn interception_trace_gate_uses_the_retained_signed_count_and_refuses_only_its_field() {
+        struct Fault<'a>(&'a [u8]);
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address <= MISSION + INTERCEPTION_TRACE_COUNT
+                    && MISSION + INTERCEPTION_TRACE_COUNT < address.saturating_add(output.len())
+                {
+                    return false;
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.0,
+                }
+                .copy(address, output)
+            }
+        }
+        let mut bytes = mission_fixture();
+        let mut rows = [Mission::default()];
+        for (count, expected) in [
+            (i32::MIN, false),
+            (0, false),
+            (1, false),
+            (2, true),
+            (i32::MAX, true),
+        ] {
+            put(
+                &mut bytes,
+                MISSION + INTERCEPTION_TRACE_COUNT,
+                &count.to_le_bytes(),
+            );
+            read_missions(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                &[MISSION],
+                &mut rows,
+            )
+            .unwrap();
+            assert_eq!(rows[0].interception_alert_gate, Some(expected));
+        }
+        read_missions(&Fault(&bytes), 0, &[MISSION], &mut rows).unwrap();
+        assert_eq!(rows[0].interception_alert_gate, None);
+        assert_eq!(rows[0].coverage_raw, -7);
+        assert!(rows[0].cas_ratio_raw.is_some());
+        assert_eq!(MISSION_ROW, 72);
     }
 
     #[test]
@@ -801,6 +1503,72 @@ mod tests {
             assert_eq!(output[count - 1], count as u32 - 1);
             assert_eq!(volunteer_hosts(&memory, 0x1000, &mut []), Ok(count));
         }
+    }
+
+    #[test]
+    fn detection_override_vector_grows_from_its_header_and_preserves_zero_and_signed_words() {
+        let mut bytes = vec![0_u8; 32 + 5_000 * OVERRIDE_ENTRY];
+        put(
+            &mut bytes,
+            0,
+            &((DETECTION_OVERRIDES_RVA + 32) as u64).to_le_bytes(),
+        );
+        put(&mut bytes, 8, &5_000_u32.to_le_bytes());
+        put(&mut bytes, 12, &5_000_u32.to_le_bytes());
+        for at in 0..5_000_usize {
+            put(
+                &mut bytes,
+                32 + at * OVERRIDE_ENTRY,
+                &(4_999 - at as u32).to_le_bytes(),
+            );
+            let value = if at == 0 { i64::MIN } else { -(at as i64) };
+            put(
+                &mut bytes,
+                32 + at * OVERRIDE_ENTRY + 8,
+                &value.to_le_bytes(),
+            );
+        }
+        let mut rows = Vec::new();
+        detection_overrides(
+            &SliceMemory {
+                base: DETECTION_OVERRIDES_RVA,
+                bytes: &bytes,
+            },
+            0,
+            &mut rows,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 5_000);
+        assert_eq!(rows[0], (0, -4_999));
+        assert_eq!(rows[4_999], (4_999, i64::MIN));
+        let capacity = rows.capacity();
+        put(&mut bytes, 12, &1_u32.to_le_bytes());
+        put(&mut bytes, 32, &7_u32.to_le_bytes());
+        put(&mut bytes, 40, &0_i64.to_le_bytes());
+        detection_overrides(
+            &SliceMemory {
+                base: DETECTION_OVERRIDES_RVA,
+                bytes: &bytes,
+            },
+            0,
+            &mut rows,
+        )
+        .unwrap();
+        assert_eq!(rows, [(7, 0)]);
+        assert_eq!(rows.capacity(), capacity);
+        put(&mut bytes, 12, &2_u32.to_le_bytes());
+        put(&mut bytes, 48, &7_u32.to_le_bytes());
+        assert!(
+            detection_overrides(
+                &SliceMemory {
+                    base: DETECTION_OVERRIDES_RVA,
+                    bytes: &bytes
+                },
+                0,
+                &mut rows
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1083,6 +1851,15 @@ mod tests {
                 return Err("air mission identity mismatch");
             }
             *mission = Mission {
+                current_type: pointer
+                    .checked_add(air_mission::CURRENT_TYPE)
+                    .and_then(|at| read(memory, at)),
+                effective_aircraft: None,
+                normalization: None,
+                interception_alert_gate: pointer
+                    .checked_add(INTERCEPTION_TRACE_COUNT)
+                    .and_then(|at| read::<i32>(memory, at))
+                    .map(|count| count > 1),
                 cas_ratio_raw: pointer
                     .checked_add(CAS_RATIO)
                     .and_then(|at| read(memory, at)),
@@ -1094,6 +1871,23 @@ mod tests {
                 region_pointer: usize::try_from(u64::from_le_bytes(word(row, 8)))
                     .map_err(|_| "air mission region pointer overflow")?,
             };
+        }
+        read_effective_aircraft(memory, missions, output);
+        let mut spotting = patrol::SpottingFactors::default();
+        for (&pointer, mission) in missions.iter().zip(output.iter_mut()) {
+            if let (Some(mask), Some(count)) = (mission.current_type, mission.effective_aircraft)
+                && mask != 0
+                && count != 0
+            {
+                mission.normalization = Some(normalization(
+                    memory,
+                    base,
+                    pointer,
+                    mask,
+                    count,
+                    spotting.admits(memory, base, mask).unwrap_or(false),
+                ));
+            }
         }
         Ok(())
     }

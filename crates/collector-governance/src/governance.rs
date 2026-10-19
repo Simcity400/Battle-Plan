@@ -396,11 +396,16 @@ impl ResearchPart {
                         // bounds the ids a writer can mark.
                         ids = Some(bound.max(countries.arrays()[1].count as usize));
                     }
+                    let mut take_available = false;
                     crate::slicing::select_changed(
                         &mut self.selection,
                         fingerprints,
                         &mut self.changed,
-                        |visit| changes.take(Table::Research, visit),
+                        |visit| {
+                            let epoch = changes.take(Table::Research, visit);
+                            take_available = epoch.is_some();
+                            epoch
+                        },
                         research_digest_context(&research_context, &modifier_context),
                         changes.every(Table::Research),
                     );
@@ -468,8 +473,8 @@ impl ResearchPart {
                             }
                             drift::Carried::Miss => {}
                         }
-                        let (inputs, bonuses) =
-                            engine_research::research_inputs::walk_country_buffer(
+                        let (inputs, bonuses, status_pointer) =
+                            engine_research::research_inputs::walk_country_buffer_with_status(
                                 memory,
                                 context.base,
                                 country.pointer,
@@ -483,18 +488,33 @@ impl ResearchPart {
                         let mut modifiers = Outcome::Rows { len: 0 };
                         if enabled[2] {
                             modifiers = match inputs {
-                                Outcome::Rows { len } => {
-                                    engine_research::research_modifiers::walk_country_buffer(
+                                Outcome::Rows { len } if take_available || context.force_full => {
+                                    engine_research::research_modifiers::grants::walk_country_with_applied_certified(
                                         memory,
                                         context.base,
                                         &countries,
                                         country,
                                         modifier_context,
                                         &self.inputs.rows[input_start..input_start + len],
-                                        engine_native::walk::Buffer::Growing(
-                                            &mut self.modifiers.rows,
-                                        )
-                                        .suffix(outcomes[2].len()),
+                                        status_pointer,
+                                        &self.bonuses.rows
+                                            [outcomes[1].len()..outcomes[1].len() + bonuses.len()],
+                                        engine_native::walk::Buffer::Growing(&mut self.modifiers.rows)
+                                            .suffix(outcomes[2].len()),
+                                        take_available,
+                                    )
+                                }
+                                Outcome::Rows { len } => {
+                                    engine_research::research_modifiers::walk_country_buffer_certified(
+                                        memory,
+                                        context.base,
+                                        &countries,
+                                        country,
+                                        modifier_context,
+                                        &self.inputs.rows[input_start..input_start + len],
+                                        engine_native::walk::Buffer::Growing(&mut self.modifiers.rows)
+                                            .suffix(outcomes[2].len()),
+                                        take_available,
                                     )
                                 }
                                 _ => Outcome::Unavailable {
@@ -531,18 +551,28 @@ impl ResearchPart {
                         } else {
                             fingerprints.drift.forget(country.id);
                         }
-                        if let Some(group) =
-                            self.changed.read_groups(fingerprints, country.id, &groups)
-                        {
-                            changes.mismatch(
-                                Table::Research,
+                        let certified = self.changed.certified;
+                        if let Some((field, detail)) = self.changed.read_groups_with(
+                            fingerprints,
+                            country.id,
+                            &groups,
+                            |held| {
+                                research_mismatch(
+                                    held,
+                                    &groups,
+                                    take_available,
+                                    certified,
+                                    context.force_full,
+                                    self.selection.force_full,
+                                )
+                            },
+                        ) {
+                            changes.research_mismatch(
                                 changes_family::Mismatch {
                                     country: country.id,
-                                    field: group
-                                        .map_or("research rows (no held field groups)", |group| {
-                                            RESEARCH_FIELDS[group]
-                                        }),
+                                    field,
                                 },
+                                detail,
                             );
                         }
                     }
@@ -1163,6 +1193,7 @@ impl Captured {
             memory,
             base,
             game_state,
+            hour,
             self.buffers(),
             &walk,
             slices,
@@ -1440,39 +1471,36 @@ fn research_digest(
     modifiers: &[engine_research::research_modifiers::Row],
 ) -> [u64; crate::slicing::GROUPS] {
     use crate::slicing::Digest;
-    let mut groups: [Digest; RESEARCH_FIELDS.len()] = std::array::from_fn(|_| Digest::new());
-    groups[0]
-        .u64(inputs.len() as u64)
-        .u64(bonuses.len() as u64)
-        .u64(modifiers.len() as u64);
+    let mut groups: [Digest; crate::slicing::GROUPS] = std::array::from_fn(|_| Digest::new());
+    let mut counts = [0_u64; MODIFIER_KINDS];
     for row in inputs {
         let slot = &row.slot;
-        groups[1]
+        groups[3]
             .i64(i64::from(row.template_year))
             .i64(i64::from(row.template_index))
             .i64(i64::from(row.template_max_level))
             .text(row.token.as_bytes());
-        groups[2]
+        groups[4]
             .u64(u64::from(slot.country))
             .u64(u64::from(slot.index))
             .u64(u64::from(slot.technology_handle))
             .i64(i64::from(slot.database_index))
             .u64(u64::from(slot.technology_present));
-        groups[3].i64(slot.research_speed_raw);
-        groups[4].i64(slot.applied_days_raw);
-        groups[5]
+        groups[5].i64(slot.research_speed_raw);
+        groups[6].i64(slot.applied_days_raw);
+        groups[7]
             .u64(u64::from(row.classifier))
             .i64(i64::from(row.level));
-        groups[6]
+        groups[8]
             .i64(row.cost_raw)
             .i64(row.cost_scale_raw)
             .u64(u64::from(row.cost_debug));
-        groups[7].i64(row.ahead_reduction_raw);
-        groups[8].i64(row.speed_bonus_raw);
-        groups[9].u64(u64::from(row.bonus_count));
+        groups[9].i64(row.ahead_reduction_raw);
+        groups[10].i64(row.speed_bonus_raw);
+        groups[11].u64(u64::from(row.bonus_count));
     }
     for row in bonuses {
-        groups[10]
+        groups[12]
             .u64(u64::from(row.country))
             .u64(u64::from(row.index))
             .u64(u64::from(row.ordinal))
@@ -1480,40 +1508,46 @@ fn research_digest(
             .u64(u64::from(row.resolved))
             .i64(i64::from(row.value.id))
             .text(row.value.name.as_bytes());
-        groups[11]
+        groups[13]
             .i64(row.value.ahead_reduction_raw)
             .i64(row.value.speed_bonus_raw);
         match row.cost_reduction_raw {
-            Some(value) => groups[11].u64(1).i64(value),
-            None => groups[11].u64(0),
+            Some(value) => groups[13].u64(1).i64(value),
+            None => groups[13].u64(0),
         };
     }
     for row in modifiers {
-        groups[12]
+        let kind = row.kind as usize;
+        counts[kind] += 1;
+        groups[MODIFIER_GROUPS + kind * 3 + 1]
             .u64(u64::from(row.country))
             .u64(u64::from(row.index))
             .u64(u64::from(row.ordinal))
             .u64(u64::from(row.technology_handle))
-            .u64(row.kind as u64)
+            .u64(kind as u64)
             .u64(u64::from(row.source_id))
             .text(row.name.as_bytes());
-        // Each kind's values apart, so a difference names the kind.
-        groups[13 + row.kind as usize]
+        groups[MODIFIER_GROUPS + kind * 3 + 2]
             .i64(row.raw)
             .i64(row.auxiliary)
             .u64(u64::from(row.count));
     }
-    let mut digests = [0; crate::slicing::GROUPS];
-    for (digest, group) in digests.iter_mut().zip(&groups) {
-        *digest = group.finish();
+    let mut digests = groups.map(|group| group.finish());
+    digests[..3].copy_from_slice(&[
+        inputs.len() as u64,
+        bonuses.len() as u64,
+        modifiers.len() as u64,
+    ]);
+    for (kind, count) in counts.into_iter().enumerate() {
+        digests[MODIFIER_GROUPS + kind * 3] = count;
     }
     digests
 }
 
-/// The research family's field groups, in [`research_digest`] order: a
-/// differing comparison names the first group that differs.
-const RESEARCH_FIELDS: [&str; 13 + MODIFIER_KINDS] = [
-    "row counts (ResearchInputs, ResearchAppliedBonuses, ResearchModifiers)",
+const RESEARCH_FIELDS: [&str; MODIFIER_GROUPS] = [
+    "ResearchInputs row count",
+    "ResearchAppliedBonuses row count",
+    "ResearchModifiers row count",
     "ResearchInputs template (year, index, max level, token)",
     "ResearchInputs slot identity (slot, technology, database index, presence)",
     "ResearchInputs slot research_speed_raw",
@@ -1525,38 +1559,64 @@ const RESEARCH_FIELDS: [&str; 13 + MODIFIER_KINDS] = [
     "ResearchInputs bonus_count",
     "ResearchAppliedBonuses identity (slot, ordinal, technology, bonus id and name)",
     "ResearchAppliedBonuses values (ahead reduction, speed bonus, cost reduction)",
-    "ResearchModifiers identity (slot, ordinal, technology, kind, source, name)",
-    "ResearchModifiers Technology values (raw, auxiliary, count)",
-    "ResearchModifiers CountrySpeed values (raw, auxiliary, count)",
-    "ResearchModifiers CategorySpeed values (raw, auxiliary, count)",
-    "ResearchModifiers DesignTeam values (raw, auxiliary, count)",
-    "ResearchModifiers Experience values (raw, auxiliary, count)",
-    "ResearchModifiers Sharing values (raw, auxiliary, count)",
-    "ResearchModifiers License values (raw, auxiliary, count)",
-    "ResearchModifiers Scientist values (raw, auxiliary, count)",
-    "ResearchModifiers Year values (raw, auxiliary, count)",
-    "ResearchModifiers AheadFactor values (raw, auxiliary, count)",
-    "ResearchModifiers MinimumSpeed values (raw, auxiliary, count)",
-    "ResearchModifiers CountrySource values (raw, auxiliary, count)",
-    "ResearchModifiers IdeaSource values (raw, auxiliary, count)",
-    "ResearchModifiers ScriptSource values (raw, auxiliary, count)",
-    "ResearchModifiers ScientistSource values (raw, auxiliary, count)",
-    "ResearchModifiers SharingMultiplier values (raw, auxiliary, count)",
-    "ResearchModifiers SharingMaximum values (raw, auxiliary, count)",
-    "ResearchModifiers ModifierMetadata values (raw, auxiliary, count)",
-    "ResearchModifiers ScientistCategory values (raw, auxiliary, count)",
-    "ResearchModifiers SharingMember values (raw, auxiliary, count)",
-    "ResearchModifiers SharingPredecessor values (raw, auxiliary, count)",
-    "ResearchModifiers SharingFilter values (raw, auxiliary, count)",
-    "ResearchModifiers SharingCategory values (raw, auxiliary, count)",
-    "ResearchModifiers SharingDoctrine values (raw, auxiliary, count)",
-    "ResearchModifiers SharingMissingMember values (raw, auxiliary, count)",
 ];
+const MODIFIER_GROUPS: usize = 14;
+const MODIFIER_KINDS: usize = crate::country_input_changes::RESEARCH_MODIFIER_KINDS;
+const _: () = assert!(MODIFIER_GROUPS + MODIFIER_KINDS * 3 == crate::slicing::GROUPS);
+const _: () =
+    assert!((engine_research::research_modifiers::Kind::GrantUses as usize) < MODIFIER_KINDS);
 
-/// The modifier row kinds, each with its own values group.
-const MODIFIER_KINDS: usize =
-    engine_research::research_modifiers::Kind::SharingMissingMember as usize + 1;
-const _: () = assert!(RESEARCH_FIELDS.len() <= crate::slicing::GROUPS);
+fn research_mismatch(
+    previous: Option<&[u64; crate::slicing::GROUPS]>,
+    current: &[u64; crate::slicing::GROUPS],
+    take_available: bool,
+    certified: bool,
+    force_full: bool,
+    selection_force_full: bool,
+) -> (&'static str, crate::country_input_changes::ResearchMismatch) {
+    let first = previous.and_then(|held| held.iter().zip(current).position(|(a, b)| a != b));
+    let field = first.map_or("research rows (no held field groups)", |group| {
+        if group < MODIFIER_GROUPS {
+            RESEARCH_FIELDS[group]
+        } else {
+            match (group - MODIFIER_GROUPS) % 3 {
+                0 => "ResearchModifiers per-kind row count",
+                1 => "ResearchModifiers per-kind identity",
+                _ => "ResearchModifiers per-kind values",
+            }
+        }
+    });
+    let counts = |groups: &[u64; crate::slicing::GROUPS]| {
+        std::array::from_fn(|kind| groups[MODIFIER_GROUPS + kind * 3])
+    };
+    let mut identity = 0;
+    let mut values = 0;
+    if let Some(held) = previous {
+        for kind in 0..MODIFIER_KINDS {
+            identity |= u32::from(
+                held[MODIFIER_GROUPS + kind * 3 + 1] != current[MODIFIER_GROUPS + kind * 3 + 1],
+            ) << kind;
+            values |= u32::from(
+                held[MODIFIER_GROUPS + kind * 3 + 2] != current[MODIFIER_GROUPS + kind * 3 + 2],
+            ) << kind;
+        }
+    }
+    (
+        field,
+        crate::country_input_changes::ResearchMismatch {
+            previous_counts: previous.map(|held| held[..3].try_into().unwrap()),
+            current_counts: current[..3].try_into().unwrap(),
+            previous_modifier_counts: previous.map(counts),
+            current_modifier_counts: counts(current),
+            modifier_identity_differences: identity,
+            modifier_value_differences: values,
+            take_available,
+            certified,
+            force_full,
+            selection_force_full,
+        },
+    )
+}
 
 fn append(total: &mut Outcome, next: Outcome) {
     match (*total, next) {
@@ -1680,10 +1740,15 @@ macro_rules! politics_tables {
     };
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep the independently borrowed table buffers, selection slices and politics walk in one ordered acquisition."
+)]
 fn acquire(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    capture_hour: i32,
     b: Buffers<'_>,
     enabled: &[bool; N],
     slices: Slices<'_>,
@@ -1698,6 +1763,15 @@ fn acquire(
     // Taken before the walk's first read or registration.
     let mut hour = politics.map(|walk| politics_hour::Hour::start(walk, base, game_state, enabled));
     let mut o = Observation::new();
+    let delayed_census = if enabled[8] {
+        collector_observers::event_feed_observer::begin_delayed_census(
+            base,
+            game_state,
+            capture_hour,
+        )
+    } else {
+        None
+    };
     for (outcome, &active) in o.outcomes.iter_mut().zip(enabled) {
         if !active {
             *outcome = Outcome::Unavailable {
@@ -1834,6 +1908,10 @@ fn acquire(
         }
         _ => false,
     };
+    let election_cache_observed = hour.as_ref().map_or(
+        cfg!(any(test, feature = "test-support")),
+        politics_hour::Hour::election_cache_certified,
+    );
     let (mut leader_reuse, mut politics_reuse) = match hour.as_mut() {
         Some(hour) if !quiet => hour.reuses(),
         _ => (None, None),
@@ -2134,7 +2212,7 @@ fn acquire(
                                 }
                                 let first = o.outcomes[5].len();
                                 let result = reader
-                                    .row()
+                                    .row_with_election_cache(election_cache_observed)
                                     .map(|row| {
                                         one(
                                             &mut b.politics[first..],
@@ -2234,6 +2312,11 @@ fn acquire(
                         o.ticks[5] += elapsed(started);
                     }
                     if enabled[8] {
+                        if let Some(context) = delayed_census {
+                            collector_observers::event_feed_observer::baseline_delayed_country(
+                                memory, context, country,
+                            );
+                        }
                         let _reads = read_accounting::table(TABLES[8]);
                         let started = qpc();
                         let first = o.outcomes[9].len();
@@ -2738,6 +2821,8 @@ impl Captured {
                     ruling_party: r.row.ruling_party,
                     original_capital: r.row.original_capital,
                     has_elections: rows::Recorded::Value(r.row.has_elections),
+                    election_interval: rows::Recorded::Value(r.row.election_interval),
+                    next_election_cache: rows::Recorded::Value(r.row.next_election_cache),
                     ..Default::default()
                 },
             )),
@@ -3021,6 +3106,27 @@ impl Captured {
                         }
                         engine_research::research_modifiers::Kind::SharingMissingMember => {
                             rows::ResearchModifierRow::SHARING_MISSING_MEMBER
+                        }
+                        engine_research::research_modifiers::Kind::GrantCounter => {
+                            rows::ResearchModifierRow::GRANT_COUNTER
+                        }
+                        engine_research::research_modifiers::Kind::SpeedGrant => {
+                            rows::ResearchModifierRow::SPEED_GRANT
+                        }
+                        engine_research::research_modifiers::Kind::CostGrant => {
+                            rows::ResearchModifierRow::COST_GRANT
+                        }
+                        engine_research::research_modifiers::Kind::GrantUses => {
+                            rows::ResearchModifierRow::GRANT_USES
+                        }
+                        engine_research::research_modifiers::Kind::GrantTechnology => {
+                            rows::ResearchModifierRow::GRANT_TECHNOLOGY
+                        }
+                        engine_research::research_modifiers::Kind::GrantCategory => {
+                            rows::ResearchModifierRow::GRANT_CATEGORY
+                        }
+                        engine_research::research_modifiers::Kind::SharingRoster => {
+                            rows::ResearchModifierRow::SHARING_ROSTER
                         }
                     },
                     raw: r.raw,

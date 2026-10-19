@@ -29,6 +29,9 @@ pub struct Row {
     pub skill_count: i32,
     /// None is a failed appended-byte read; membership and skills remain available.
     pub active: Option<u8>,
+    pub injury_days: Option<i32>,
+    pub template_visibility: Option<u8>,
+    pub template_origin: Option<(usize, usize, u32)>,
 }
 
 /// One specialization record of one scientist, in native vector order.
@@ -48,16 +51,19 @@ pub struct SkillRow {
 pub struct Buffers<'a> {
     pub scientists: &'a mut [Row],
     pub skills: &'a mut [SkillRow],
+    pub names: &'a mut [u8],
 }
 
 pub struct GrowingBuffers<'a> {
     pub scientists: &'a mut Vec<Row>,
     pub skills: &'a mut Vec<SkillRow>,
+    pub names: &'a mut Vec<u8>,
 }
 
 pub struct BuffersBuffer<'a> {
     pub scientists: crate::walk::Buffer<'a, Row>,
     pub skills: crate::walk::Buffer<'a, SkillRow>,
+    pub names: crate::walk::Buffer<'a, u8>,
 }
 
 impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
@@ -65,6 +71,7 @@ impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
         Self {
             scientists: crate::walk::Buffer::Fixed(value.scientists),
             skills: crate::walk::Buffer::Fixed(value.skills),
+            names: crate::walk::Buffer::Fixed(value.names),
         }
     }
 }
@@ -74,6 +81,7 @@ impl<'a> From<GrowingBuffers<'a>> for BuffersBuffer<'a> {
         Self {
             scientists: crate::walk::Buffer::Growing(value.scientists),
             skills: crate::walk::Buffer::Growing(value.skills),
+            names: crate::walk::Buffer::Growing(value.names),
         }
     }
 }
@@ -137,6 +145,7 @@ pub fn walk(
     let mut buffers = BuffersBuffer {
         scientists: crate::walk::Buffer::Fixed(&mut *output.scientists),
         skills: crate::walk::Buffer::Fixed(&mut *output.skills),
+        names: crate::walk::Buffer::Fixed(&mut *output.names),
     };
     walk_buffer(memory, base, game_state, &mut buffers)
 }
@@ -150,6 +159,7 @@ pub fn walk_growing(
     let mut buffers = BuffersBuffer {
         scientists: crate::walk::Buffer::Growing(&mut *output.scientists),
         skills: crate::walk::Buffer::Growing(&mut *output.skills),
+        names: crate::walk::Buffer::Growing(&mut *output.names),
     };
     walk_buffer(memory, base, game_state, &mut buffers)
 }
@@ -160,7 +170,34 @@ pub fn walk_buffer(
     game_state: usize,
     output: &mut BuffersBuffer<'_>,
 ) -> Walk {
+    walk_buffer_with_injury(memory, base, game_state, output, true)
+}
+
+/// Existing roster acquisition, with injury operands demanded only at a daily supplying read.
+pub fn walk_growing_with_injury(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut GrowingBuffers<'_>,
+    injury: bool,
+) -> Walk {
+    let mut buffers = BuffersBuffer {
+        scientists: crate::walk::Buffer::Growing(&mut *output.scientists),
+        skills: crate::walk::Buffer::Growing(&mut *output.skills),
+        names: crate::walk::Buffer::Growing(&mut *output.names),
+    };
+    walk_buffer_with_injury(memory, base, game_state, &mut buffers, injury)
+}
+
+fn walk_buffer_with_injury(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut BuffersBuffer<'_>,
+    injury: bool,
+) -> Walk {
     let mut counts = [Count::default(); 2];
+    let mut names_used = 0;
     let failure = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let reader = Reader { memory, base };
@@ -207,6 +244,17 @@ pub fn walk_buffer(
                 if trait_count < 0 {
                     return Err("scientist trait count is negative");
                 }
+                let visibility = injury
+                    .then(|| {
+                        cscientist::visibility(
+                            memory,
+                            base,
+                            scientist,
+                            &mut output.names,
+                            &mut names_used,
+                        )
+                    })
+                    .and_then(Result::ok);
                 counts[0].push(
                     &mut output.scientists,
                     Row {
@@ -216,6 +264,11 @@ pub fn walk_buffer(
                         trait_count,
                         skill_count,
                         active: reader.field(scientist, cscientist::ACTIVE).ok(),
+                        template_visibility: visibility.map(|(state, _)| state),
+                        template_origin: visibility.and_then(|(_, origin)| origin),
+                        injury_days: injury
+                            .then(|| reader.field(scientist, cscientist::INJURY_DAYS).ok())
+                            .flatten(),
                     },
                 )?;
                 for index in 0..skills.count {
@@ -419,9 +472,62 @@ mod tests {
             &mut Buffers {
                 scientists: &mut scientists,
                 skills: &mut skills,
+                names: &mut [],
             },
         );
         (result, scientists, skills)
+    }
+
+    #[test]
+    fn gap_research_grants_scientist_injury_is_demanded_only_by_the_daily_supply_read() {
+        struct NoInjury<'a>(SliceMemory<'a>, std::cell::Cell<usize>);
+        impl Memory for NoInjury<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if [
+                    SC1 + cscientist::INJURY_DAYS,
+                    SC2 + cscientist::INJURY_DAYS,
+                    SC1 + cscientist::VISIBILITY_TEMPLATE,
+                    SC2 + cscientist::VISIBILITY_TEMPLATE,
+                ]
+                .contains(&address)
+                {
+                    self.1.set(self.1.get() + 1);
+                }
+                self.0.copy(address, destination)
+            }
+        }
+        let bytes = fixture();
+        let mut scientists = Vec::new();
+        let mut skills = Vec::new();
+        let mut names = Vec::new();
+        let mut output = GrowingBuffers {
+            scientists: &mut scientists,
+            skills: &mut skills,
+            names: &mut names,
+        };
+        let memory = NoInjury(
+            SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            std::cell::Cell::new(0),
+        );
+        let walk = walk_growing_with_injury(&memory, 0, GS, &mut output, false);
+        assert!(matches!(walk.scientists, Outcome::Rows { len: 2 }));
+        assert!(
+            output.scientists[..2]
+                .iter()
+                .all(|row| row.injury_days.is_none())
+        );
+        assert_eq!(memory.1.get(), 0);
+        let walk = walk_growing_with_injury(&memory, 0, GS, &mut output, true);
+        assert!(matches!(walk.scientists, Outcome::Rows { len: 2 }));
+        assert!(
+            output.scientists[..2]
+                .iter()
+                .all(|row| row.injury_days == Some(0))
+        );
+        assert_eq!(memory.1.get(), 4);
     }
 
     #[test]
@@ -441,6 +547,9 @@ mod tests {
                     trait_count: 2,
                     skill_count: 4,
                     active: Some(253),
+                    injury_days: Some(0),
+                    template_visibility: Some(0),
+                    template_origin: None,
                 },
                 Row {
                     country: 1,
@@ -449,6 +558,9 @@ mod tests {
                     trait_count: 0,
                     skill_count: 0,
                     active: Some(0),
+                    injury_days: Some(0),
+                    template_visibility: Some(0),
+                    template_origin: None,
                 },
             ]
         );
@@ -497,6 +609,7 @@ mod tests {
             &mut Buffers {
                 scientists: &mut scientists,
                 skills: &mut skills,
+                names: &mut [],
             },
         );
         assert_eq!(result.scientists, Outcome::Rows { len: 2 });
@@ -622,6 +735,7 @@ mod tests {
             &mut Buffers {
                 scientists: &mut scientists,
                 skills: &mut skills,
+                names: &mut [],
             },
         );
         assert!(matches!(result.scientists, Outcome::Unavailable { .. }));

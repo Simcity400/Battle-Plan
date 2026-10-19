@@ -35,6 +35,10 @@ fn skipped_zero_wing_owner_witness_keeps_override_fallback_and_failure_independe
     saved.air_wings.insert(
         id,
         installed_content_save::AirWing {
+            government_in_exile_tag: None,
+            manpower: None,
+
+            reinforcement_setting: Some(0),
             id,
             owner: b"FRA".to_vec(),
             name: Some(Vec::new()),
@@ -44,7 +48,10 @@ fn skipped_zero_wing_owner_witness_keeps_override_fallback_and_failure_independe
             mission_mask: 0,
             mission_region: None,
             mission_active: None,
+            stop_training_at_max_xp: false,
             region_change_penalty: None,
+            transfer_progress: None,
+            transferring_to: None,
             pool_ordinal: 0,
         },
     );

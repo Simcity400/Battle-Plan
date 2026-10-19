@@ -161,6 +161,7 @@ impl Capacities {
 struct FeatureInputs {
     dlc_mask: u32,
     human_ai: u8,
+    state_array_len: Option<u32>,
     weather_suspend: Option<[u8; 2]>,
     instant_decisions: Option<u8>,
     runtime_scalars: replay_data::rows::PoliticalRuntimeScalars,
@@ -457,6 +458,7 @@ impl Captured {
                                 runtime_scalars,
                                 movement_defines: movement_defines(memory, base),
                                 human_ai: native::human_ai(memory, base)?,
+                                state_array_len: None,
                                 instant_decisions: native::instant_decisions(memory, base)
                                     .inspect_err(|_| {
                                         INSTANT_DECISIONS_REFUSALS.fetch_add(1, Relaxed);
@@ -508,10 +510,16 @@ impl Captured {
                     };
                 }
                 2 => {
-                    self.states.outcome = if growing {
-                        native::states_growing(memory, base, game_state, &mut self.states.rows)
-                    } else {
-                        native::states(memory, base, game_state, &mut self.states.rows)
+                    let mut extent = None;
+                    self.states.outcome = native::states_buffer_extent(
+                        memory,
+                        base,
+                        game_state,
+                        engine_native::walk::Buffer::for_worker(&mut self.states.rows, growing),
+                        &mut extent,
+                    );
+                    if let Some(features) = self.dlc_mask.rows.first_mut() {
+                        features.state_array_len = extent;
                     }
                 }
                 5 => self.capture_naval_access(
@@ -602,6 +610,7 @@ impl Captured {
                 |r| SimulationFeatureRow {
                     dlc_mask: r.dlc_mask,
                     human_ai: r.human_ai,
+                    state_array_len: replay_data::rows::Recorded::Value(r.state_array_len),
                     weather_suspend: replay_data::rows::Recorded::Value(r.weather_suspend),
                     instant_decisions: replay_data::rows::Recorded::Value(r.instant_decisions),
                     runtime_scalars: replay_data::rows::Recorded::Value(r.runtime_scalars),

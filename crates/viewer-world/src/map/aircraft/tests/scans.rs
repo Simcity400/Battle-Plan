@@ -1,9 +1,8 @@
 use super::*;
-use replay_data::{
-    rows::CountryRow, rows::DivisionRow, rows::NavalBaseRow, rows::NavalCombatDetailsRow,
-    rows::NavalCombatRow, rows::NavalCombatShipRow, rows::NavalMineLevelRow, rows::ProvinceRow,
-    rows::ProvinceUnitOrderRow, rows::StateRow, rows::TableId, rows::TableRows, rows::TableSchema,
-    rows::TaskForceRow, rows::WarRelationRow,
+use replay_data::rows::{
+    CountryRow, DivisionRow, NavalBaseRow, NavalCombatDetailsRow, NavalCombatRow,
+    NavalCombatShipRow, NavalRegionalMineRow, ProvinceRow, ProvinceUnitOrderRow, StateRow, TableId,
+    TableRows, TableSchema, TaskForceRow, WarRelationRow,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 use std::time::Instant;
@@ -88,12 +87,13 @@ fn port_and_mines() -> DecodedFrame {
         }],
     );
     set::<tables::WarRelations>(&mut frame, vec![war(1, 3)]);
-    set::<tables::NavalMineLevels>(
+    set::<tables::NavalRegionalMines>(
         &mut frame,
-        vec![NavalMineLevelRow {
+        vec![NavalRegionalMineRow {
             country: 1,
-            region: 7,
-            raw_mines: 0,
+            kind: 0,
+            region: 8,
+            amount: 0,
         }],
     );
     frame

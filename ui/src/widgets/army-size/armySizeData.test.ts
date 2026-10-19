@@ -22,6 +22,8 @@ test('Army size validates capabilities alongside the shared history shape', () =
   assert.throws(() => validateArmySizeReply({ ...REPLY, measures: ['unknown'] }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, available: 1 }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, warnings: [1] }));
+  assert.equal(validateArmySizeReply({ ...REPLY, templateSections: ['Unused template', 'Staff and garrison', 'HQ deployment'] }).templateSections?.length, 3);
+  assert.throws(() => validateArmySizeReply({ ...REPLY, templateSections: [17] }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, window: -1 }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, interval: null }));
   assert.throws(() => validateArmySizeReply({ ...REPLY, types: [{ key: 'group', name: null }] }));

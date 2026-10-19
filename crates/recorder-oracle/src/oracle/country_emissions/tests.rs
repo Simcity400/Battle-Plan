@@ -38,7 +38,7 @@ fn document(countries: &str) -> SaveDocument {
          theater_group_index=6 military_deployment_line_index=7 \
          military_deployment_conveyor_index=8 equipment_variant_index=9 \
          country_leader_index=10 navy_id=11 land_combat_id=12 \
-         multiplayer_random_count=-13 countries={{{countries}}} states={{}} provinces={{}}"
+         multiplayer_random_count=-13 faction_system={{countries={{0}} extracted={{}}}} countries={{{countries}}} states={{}} provinces={{}}"
         )
         .as_bytes(),
     )
@@ -306,4 +306,57 @@ fn repeated_reserved_original_blocks_refuse_any_changed_saved_field() {
         );
     }
     assert!(parse_country_emissions(&document("ABC={} RES={} ABC={}"), &captured).is_err());
+}
+
+#[test]
+fn template_configuration_census_refuses_reserved_aliases_and_keeps_canonical_gaps() {
+    for aliases in [0, 1, 2] {
+        let mut array = vec![0, 1];
+        array.extend(std::iter::repeat_n(0, aliases));
+        let captured = frame(Recorded::Value(Some(array)));
+        let saved = parse_country_emissions(
+            &document(&format!("ABC={{}} {}", "RES={} ".repeat(aliases))),
+            &captured,
+        )
+        .unwrap();
+        let context = super::super::country_context(&captured).unwrap();
+        let mut report = super::super::report::Report::default();
+        report.record_country_emissions(&saved);
+        report.refuse_uncaptured_reserved_operands();
+        super::super::military::compare_country_template_state(
+            &captured,
+            &saved,
+            &context,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(
+            report.differences,
+            ["country ABC.template configuration: replay \"absent in recording\", save \"saved\""],
+        );
+        assert_eq!(report.failed_comparisons.len(), usize::from(aliases != 0));
+        if aliases != 0 {
+            assert!(
+                report
+                    .failed_comparisons
+                    .contains_key("reserved country RES uncaptured save operands")
+            );
+            // A comparison without authenticated projection keeps the strict census.
+            let mut strict = super::super::report::Report::default();
+            super::super::military::compare_country_template_state(
+                &captured,
+                &saved,
+                &context,
+                &mut strict,
+            )
+            .unwrap();
+            assert_eq!(strict.differences.len(), 2);
+            assert!(
+                strict
+                    .differences
+                    .iter()
+                    .any(|why| why.starts_with("country RES.template configuration:"))
+            );
+        }
+    }
 }

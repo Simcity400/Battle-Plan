@@ -79,9 +79,28 @@ impl ResearchModifierRow {
     pub const SHARING_DOCTRINE: u8 = 23;
     /// Same identity/maximum as SHARING_MEMBER, but no technology instance.
     pub const SHARING_MISSING_MEMBER: u8 = 24;
+    /// Inventory scope (index u32::MAX-1): raw is the signed shared next ID.
+    /// Its presence certifies the complete, possibly empty, grant inventory.
+    pub const GRANT_COUNTER: u8 = 25;
+    /// source_id=ID bits, count=native roster ordinal, name=stored name,
+    /// raw=speed bonus, auxiliary=ahead reduction (both fixed5).
+    pub const SPEED_GRANT: u8 = 26;
+    /// Same identity/order, raw=fixed5 cost reduction, auxiliary=0.
+    pub const COST_GRANT: u8 = 27;
+    /// source_id=ID bits, count=cost-grant flag, raw=signed uses,
+    /// auxiliary=signed active claims (zero for cost grants, which lack it).
+    pub const GRANT_USES: u8 = 28;
+    /// Same ID/kind, raw=technology token, auxiliary=exact template index.
+    /// Ordered occurrences, including repeats, follow their parent grant.
+    pub const GRANT_TECHNOLOGY: u8 = 29;
+    /// Same ID/kind, raw=category token, auxiliary=0. No category census.
+    pub const GRANT_CATEGORY: u8 = 30;
+    /// Country-wide sharing roster: raw=-1/count=length witnesses acquisition;
+    /// following rows hold each native group ID in raw, preserving duplicates.
+    pub const SHARING_ROSTER: u8 = 31;
 }
 typed_codec!(ResearchModifierRow, 96, |row| (row.country as u128) << 64 | (row.index as u128) << 32 | row.ordinal as u128, |key| Self { country: (key >> 64) as u32, index: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
- { 0 => (technology_handle): U32, 1 => (kind): U8, 2 => (raw): I64, 3 => (auxiliary): I64, 4 => (count): U32, 5 => (source_id): U32, 6 => (name): Bytes }, |row| if row.kind > Self::SHARING_MISSING_MEMBER { Err(invalid("invalid research modifier kind")) } else { Ok(()) });
+ { 0 => (technology_handle): U32, 1 => (kind): U8, 2 => (raw): I64, 3 => (auxiliary): I64, 4 => (count): U32, 5 => (source_id): U32, 6 => (name): Bytes }, |row| if row.kind > Self::SHARING_ROSTER { Err(invalid("invalid research modifier kind")) } else { Ok(()) });
 
 /// Slot-local research capture, refreshed one country slice per hour.
 ///
@@ -350,7 +369,7 @@ pub struct TechnologyDefinitionRow {
 typed_codec!(TechnologyDefinitionRow, 32, |row| row.database_index as u32 as u128, |key| Self { database_index: key as u32 as i32, technology_handle: Default::default(), year: Default::default(), max_level: Default::default(), research_cost_raw: Default::default(), id: Default::default() },
  { 0 => (technology_handle): U32, 1 => (year): I32, 2 => (max_level): I32, 3 => (research_cost_raw): I64, 4 => (id): Bytes }, |_row| Ok(()));
 
-/// Politics: key country (32 bits), 7 payload mask bits.
+/// Politics: key country (32 bits), 9 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PoliticsRow {
     pub country: u32,
@@ -366,9 +385,13 @@ pub struct PoliticsRow {
     /// What the `has_elections` trigger tests: the elections byte is nonzero and the election
     /// frequency is positive ([`crate::rows::compatibility::HAS_ELECTIONS_FORMAT`]).
     pub has_elections: Recorded<bool>,
+    /// Stored interval in months, including zero and negative values.
+    pub election_interval: Recorded<i32>,
+    /// Exceptional initializer dates need the independent cache; ordinary dates derive.
+    pub next_election_cache: Recorded<Option<i32>>,
 }
 typed_codec!(PoliticsRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
- { 0 => (last_election): I32, 1 => (election_frequency): I32, 2 => (elections_allowed): U8, 3 => (capital): I32, 4 => (ruling_party): OptionalU32, 5 => (original_capital): I32, 6 => (has_elections): Bool }, |_row| Ok(()));
+ { 0 => (last_election): I32, 1 => (election_frequency): I32, 2 => (elections_allowed): U8, 3 => (capital): I32, 4 => (ruling_party): OptionalU32, 5 => (original_capital): I32, 6 => (has_elections): Bool, 7 => (election_interval): I32, 8 => (next_election_cache): OptionalI32 }, |_row| Ok(()));
 
 /// PoliticalParties: key country:id (64 bits), 7 payload mask bits.
 ///
@@ -720,7 +743,72 @@ pub struct CountryOccupationReserveManpowerRow {
 typed_codec!(CountryOccupationReserveManpowerRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128, |key| Self { country: (key >> 32) as u32, ordinal: key as u32, source_country: Default::default(), amount: Default::default() },
  { 0 => (source_country): U32, 1 => (amount): I32 }, |_row| Ok(()));
 
-/// StateResistance: key state (32 bits), 6 payload mask bits.
+/// One native scripted target addition, in the state's stored order. Nonpositive country
+/// selectors apply to every country; localisation is the authored key, including empty.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OccupationAddedTarget {
+    pub value: i64,
+    pub controller: i32,
+    pub occupied: i32,
+    pub localisation: Vec<u8>,
+}
+value_struct!(OccupationAddedTarget { value: i64, controller: i32, occupied: i32, localisation: Vec<u8> });
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OccupationEffect {
+    pub key: u32,
+    pub value: i64,
+}
+value_struct!(OccupationEffect {
+    key: u32,
+    value: i64
+});
+
+pub use engine_occupation::cresistance::hover::EffectExtra as OccupationEffectExtra;
+value_struct!(OccupationEffectExtra {
+    child_sources: u32,
+    custom_tooltips: u32
+});
+
+/// Runtime-only hover operands. Effects are the stored local accumulators, retaining
+/// their native key order and zeros; their eligibility has already been applied.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OccupationHover {
+    pub exile_host: i32,
+    pub legitimacy: i64,
+    pub flow_from: u32,
+    pub flow: i64,
+    pub gain_ratio: i64,
+    pub added: Vec<OccupationAddedTarget>,
+    pub resistance_effects: Vec<OccupationEffect>,
+    pub compliance_effects: Vec<OccupationEffect>,
+    pub resistance_extra: OccupationEffectExtra,
+    pub compliance_extra: OccupationEffectExtra,
+}
+value_struct!(OccupationHover { exile_host: i32, legitimacy: i64, flow_from: u32, flow: i64, gain_ratio: i64, added: Vec<OccupationAddedTarget>, resistance_effects: Vec<OccupationEffect>, compliance_effects: Vec<OccupationEffect>, resistance_extra:OccupationEffectExtra, compliance_extra:OccupationEffectExtra });
+opaque_value!(Recorded<Option<OccupationHover>>);
+
+/// Each section's four sources, in controller, state, relation and occupied-country order.
+/// A null relation is a recorded zero. Source labels are stored text in the recording language.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OccupationModifierSource {
+    pub section: u8,
+    pub source: u8,
+    pub key: u32,
+    /// None is an unavailable requested-key total, with the reason in failure; never zero.
+    pub total: Option<i64>,
+    pub nodes: Vec<ModifierBreakdownNode>,
+    pub failure: Vec<u8>,
+}
+value_struct!(OccupationModifierSource { section: u8, source: u8, key: u32, total: Option<i64>, nodes: Vec<ModifierBreakdownNode>, failure: Vec<u8> });
+opaque_value!(Recorded<Vec<OccupationModifierSource>>);
+
+pub use engine_occupation::cresistance::map_icons::Markers as OccupationMap;
+value_struct!(OccupationMap { stored_target: Option<i64>, core_country: Option<u32>, resistance: Vec<Vec<u8>>, compliance: Vec<Vec<u8>> });
+opaque_value!(Recorded<Option<OccupationMap>>);
+
+/// Hourly occupied-state levels, speeds and hover operands. Unchanged columns carry through
+/// ordinary frame deltas; acquisition runs on the state worker, independently of construction.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StateResistanceRow {
     pub state: u32,
@@ -730,9 +818,13 @@ pub struct StateResistanceRow {
     pub compliance: i64,
     pub compliance_speed: i64,
     pub active: u8,
+    pub hover: Recorded<Option<OccupationHover>>,
+    pub modifier_sources: Recorded<Vec<OccupationModifierSource>>,
+    /// Cached suppression target and ordered active definition identities for map markers.
+    pub map: Recorded<Option<OccupationMap>>,
 }
-typed_codec!(StateResistanceRow, 32, |row| row.state as u128, |key| Self { state: key as u32, country: Default::default(), level: Default::default(), speed: Default::default(), compliance: Default::default(), compliance_speed: Default::default(), active: Default::default() },
- { 0 => (country): U32, 1 => (level): I64, 2 => (speed): I64, 3 => (compliance): I64, 4 => (compliance_speed): I64, 5 => (active): U8 }, |_row| Ok(()));
+typed_codec!(StateResistanceRow, 32, |row| row.state as u128, |key| Self { state: key as u32, ..Default::default() },
+ { 0 => (country): U32, 1 => (level): I64, 2 => (speed): I64, 3 => (compliance): I64, 4 => (compliance_speed): I64, 5 => (active): U8, 6 => (hover): Opaque, 7 => (modifier_sources): Opaque, 8 => (map): Opaque }, |_row| Ok(()));
 
 /// CountryCollaboration: key source:target (64 bits), 1 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -1124,6 +1216,13 @@ typed_codec!(ModifierDefinitionRow, 32, |row| row.index as u128, |key| Self { in
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CountryStabilityInputRow {
     pub country: u32,
+    pub recruitment_ratio: Recorded<Option<i64>>,
+    pub exile_host: Recorded<Option<i32>>,
+    pub exile_legitimacy: Recorded<Option<i64>>,
+    pub exile_leaders: Recorded<Option<i32>>,
+    pub exile_manpower: Recorded<Option<i32>>,
+    pub exile_manpower_cap: Recorded<Option<i32>>,
+
     pub stability_raw: i64,
     pub war_support_raw: i64,
     /// An owned war relation whose counterpart's diplomacy war-status operand
@@ -1210,7 +1309,7 @@ impl CountryStabilityInputRow {
     }
 }
 typed_codec!(CountryStabilityInputRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
- { 0 => (stability_raw): I64, 1 => (war_support_raw): I64, 2 => (at_war): U8, 3 => (offensive_war): U8, 4 => (defensive_war): U8, 5 => (ruling_party_popularity_raw): I64, 6 => (propaganda_stability_q15): I64, 7 => (coastal_protection_stability_raw): I64, 8 => (bombing_war_support_q15): I64, 9 => (heroes_war_support_q15): I64, 10 => (convoys_war_support_q15): I64, 11 => (propaganda_war_support_q15): I64, 12 => (interception_sum_raw): I64, 13 => (world_tension_raw): I64, 14 => (base_stability_war_factor): I64, 15 => (base_stability_party_popularity_factor): I64, 16 => (min_stability): I64, 17 => (max_stability): I64, 18 => (war_support_offensive_war): I64, 19 => (war_support_defensive_war): I64, 20 => (war_support_tension_impact): I64, 21 => (min_war_support): I64, 22 => (max_war_support): I64, 23 => (interception_war_support_scale_q15): I64, 24 => (interception_bombing_war_support_impact): I64, 25 => (base_max_command_power): I64, 26 => (stability_factor): OptionalI64, 27 => (party_popularity_stability_factor): OptionalI64, 28 => (war_stability_factor): OptionalI64, 29 => (offensive_war_stability_factor): OptionalI64, 30 => (defensive_war_stability_factor): OptionalI64, 31 => (war_support_factor): OptionalI64, 32 => (stability_weekly): OptionalI64, 33 => (war_support_weekly): OptionalI64, 34 => (keys): U32List, 35 => (children): U32, 36 => (language): Bytes },
+ { 0 => (stability_raw): I64, 1 => (war_support_raw): I64, 2 => (at_war): U8, 3 => (offensive_war): U8, 4 => (defensive_war): U8, 5 => (ruling_party_popularity_raw): I64, 6 => (propaganda_stability_q15): I64, 7 => (coastal_protection_stability_raw): I64, 8 => (bombing_war_support_q15): I64, 9 => (heroes_war_support_q15): I64, 10 => (convoys_war_support_q15): I64, 11 => (propaganda_war_support_q15): I64, 12 => (interception_sum_raw): I64, 13 => (world_tension_raw): I64, 14 => (base_stability_war_factor): I64, 15 => (base_stability_party_popularity_factor): I64, 16 => (min_stability): I64, 17 => (max_stability): I64, 18 => (war_support_offensive_war): I64, 19 => (war_support_defensive_war): I64, 20 => (war_support_tension_impact): I64, 21 => (min_war_support): I64, 22 => (max_war_support): I64, 23 => (interception_war_support_scale_q15): I64, 24 => (interception_bombing_war_support_impact): I64, 25 => (base_max_command_power): I64, 26 => (stability_factor): OptionalI64, 27 => (party_popularity_stability_factor): OptionalI64, 28 => (war_stability_factor): OptionalI64, 29 => (offensive_war_stability_factor): OptionalI64, 30 => (defensive_war_stability_factor): OptionalI64, 31 => (war_support_factor): OptionalI64, 32 => (stability_weekly): OptionalI64, 33 => (war_support_weekly): OptionalI64, 34 => (keys): U32List, 35 => (children): U32, 36 => (language): Bytes, 37 => (recruitment_ratio): OptionalI64, 38 => (exile_host): OptionalI32, 39 => (exile_legitimacy): OptionalI64, 40 => (exile_leaders): OptionalI32, 41 => (exile_manpower): OptionalI32, 42 => (exile_manpower_cap): OptionalI32 },
  |row| if row.keys.len() != CountryStabilityInputRow::KEY_NAMES.len() || row.at_war > 1 || row.offensive_war > 1 || row.defensive_war > 1 || row.keys.iter().zip(row.totals()).any(|(key, total)| (*key == u32::MAX) != total.is_none()) { Err(invalid("invalid country stability inputs")) } else { Ok(()) });
 
 /// CountryStabilityLines: key country:line:key (96 bits), 6 payload mask bits.

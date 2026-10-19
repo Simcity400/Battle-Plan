@@ -126,6 +126,9 @@ impl ScriptedContent {
 }
 
 impl PreparedContent for ScriptedContent {
+    fn ideas(&self) -> Result<&installed_content_core::ideas::IdeaContent, &str> {
+        self.prepared_environment()?.ideas()
+    }
     fn authored_states(&self) -> AuthoredStates<'_> {
         static PROVINCES: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
         static IMPASSABLE: BTreeSet<u32> = BTreeSet::new();

@@ -249,7 +249,7 @@ impl Hooks {
                 destroy_character as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
                     return Err("advisor hook sentinel differs");
                 }
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -263,7 +263,7 @@ impl Hooks {
             let roles = engine_mutations::character_role_mutations::MUTATIONS;
             if cfg!(feature = "character_changes")
                 && roles.iter().all(|site| {
-                    engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                    crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
                 })
             {
                 let callbacks: [usize; ROLE_SITES] = [

@@ -447,6 +447,11 @@ struct Uploaded {
     /// The battle plan on the GPU; hours with the same plan tables share one
     /// (`viewer_counter_products::map::orders::TABLES`).
     orders: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
+    air_order_sources: Option<(
+        Arc<viewer_foundation::map::ribbon_content::OrderField>,
+        Arc<viewer_world::map::air_orders::Prepared>,
+        Vec<u64>,
+    )>,
 }
 
 /// Asks the desktop host to show or hide diagnostics with Ctrl, since F3 alone selects the air
@@ -544,6 +549,7 @@ type MatchGame = ((u64, usize), (Raster, Option<String>));
 /// counter options.
 #[derive(PartialEq)]
 struct OverlayKey {
+    occupation: Option<viewer_world::map::occupation_icons::Mode>,
     branch: replay_data::BranchId,
     hour: i32,
     camera: Camera,
@@ -552,6 +558,9 @@ struct OverlayKey {
     perspective: Choice,
     counter_settings: viewer_counters::map::counters::CounterSettings,
     selected: Arc<BTreeSet<Unit>>,
+    air_selected: Arc<Vec<u64>>,
+    air_bases: Arc<Vec<u64>>,
+    fleets_selected: Arc<Vec<u64>>,
     hovered: Option<Unit>,
     /// The map mode's visibility, which a still camera must lay out again for.
     visibility: viewer_foundation::map::mode_visibility::Visibility,
@@ -561,16 +570,52 @@ struct OverlayKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MapHit {
+    AirMission(usize),
+    NavalMission(usize),
+    NavalRegionHover(usize),
     Raid,
     /// An intel entry of the Operatives map mode: its tooltip replaces the province's.
     Intel,
+    /// An occupation percentage or one definition badge, with its own control geometry.
+    Occupation(usize),
     Combat(usize),
     NavalObserver(usize),
     PortTooltip(usize),
     Unit(usize),
-    Base,
+    Base(usize),
     Pin(usize),
     Blocked,
+}
+
+/// Prepared controls retain their own text and footprint, including controls
+/// with no click action. An absent text still leaves their hit blocking the map.
+fn prepared_naval_tooltip(
+    report: &CounterReport,
+    target: Option<MapHit>,
+) -> Option<(Arc<Tooltip>, [f32; 4])> {
+    let (text, rect) = match target? {
+        MapHit::NavalMission(index) => {
+            let hit = report.naval_mission_hits.get(index)?;
+            (hit.text.as_ref()?, hit.rect)
+        }
+        MapHit::NavalRegionHover(index) => {
+            let hit = report.naval_region_hovers.get(index)?;
+            (hit.text.as_ref()?, hit.rect)
+        }
+        _ => return None,
+    };
+    Some((Arc::clone(text), rect))
+}
+
+/// Only the actual topmost base may activate a radar range.
+fn radar_province(
+    target: Option<MapHit>,
+    report: &viewer_counters::map::counters::CounterReport,
+) -> Option<u32> {
+    let MapHit::Base(index) = target? else {
+        return None;
+    };
+    report.radar_hits.get(&index).copied()
 }
 
 fn land_hover_matches_unit(
@@ -594,6 +639,7 @@ fn top_map_hit(
     point: [f32; 2],
     report: &viewer_counters::map::counters::CounterReport,
     raids: &[viewer_raids::map::raids::tooltips::Hit],
+    occupation: &[viewer_world::map::occupation_icons::Hit],
     looks: Option<&free_icons::Looks>,
     intel: Option<&viewer_raids::map::intel_icons::IntelHit>,
 ) -> Option<MapHit> {
@@ -619,10 +665,62 @@ fn top_map_hit(
         }
     }
     for (index, hit) in report.base_hits.iter().enumerate() {
-        if let Some((point, rank)) = seen(IconFamily::Bases, hit.layer)
+        let family = report
+            .air_grid_hits
+            .get(&index)
+            .map_or(IconFamily::Bases, |hit| hit.family);
+        if let Some((point, rank)) = seen(family, hit.layer)
             && hit.contains(point)
         {
-            offer(rank, hit.layer, 1, index, MapHit::Base);
+            offer(
+                rank,
+                hit.layer,
+                if report.air_grid_hits.contains_key(&index) {
+                    8
+                } else {
+                    1
+                },
+                index,
+                MapHit::Base(index),
+            );
+        }
+    }
+    for (index, hit) in report.air_mission_hits.iter().enumerate() {
+        if let Some((point, rank)) = seen(IconFamily::Missions, hit.layer)
+            && hit.contains(point)
+        {
+            offer(rank, hit.layer, 2, index, MapHit::AirMission(index));
+        }
+    }
+    for (index, hit) in occupation.iter().enumerate() {
+        if let Some((point, rank)) = seen(IconFamily::Occupation, hit.layer)
+            && hit.contains(point)
+        {
+            offer(rank, hit.layer, 3, index, MapHit::Occupation(index));
+        }
+    }
+    for (index, hit) in report.naval_mission_hits.iter().enumerate() {
+        if let Some((point, rank)) = seen(IconFamily::Missions, hit.layer)
+            && hit.contains(point)
+        {
+            offer(rank, hit.layer, 2, index, MapHit::NavalMission(index));
+        }
+    }
+    for (index, hit) in report.naval_region_hovers.iter().enumerate() {
+        if let Some((point, rank)) = seen(IconFamily::Missions, hit.layer)
+            && hit.contains(point)
+        {
+            offer(
+                rank,
+                hit.layer,
+                2,
+                index,
+                if hit.supported {
+                    MapHit::NavalRegionHover(index)
+                } else {
+                    MapHit::Blocked
+                },
+            );
         }
     }
     for hit in raids {
@@ -632,7 +730,7 @@ fn top_map_hit(
             offer(
                 rank,
                 hit.layer,
-                2,
+                4,
                 0,
                 if hit.supported {
                     MapHit::Raid
@@ -648,19 +746,19 @@ fn top_map_hit(
         offer(
             if looks.is_some() { u32::MAX } else { 0 },
             hit.layer,
-            2,
+            4,
             1,
             MapHit::Intel,
         );
     }
     for (index, hit) in report.unit_hits.iter().enumerate() {
-        if let Some((point, rank)) = seen(unit_family(hit), hit.layer)
+        if let Some((point, rank)) = seen(unit_family(report, index, hit), hit.layer)
             && hit.contains(point)
         {
             offer(
                 rank,
                 hit.layer,
-                if hit.port { 1 } else { 4 },
+                if hit.port { 1 } else { 5 },
                 index,
                 MapHit::Unit(index),
             );
@@ -673,13 +771,13 @@ fn top_map_hit(
             .unit_hits
             .get(hover.unit_hit)
             .filter(|hit| hover.matches(hit))
-            && let Some((point, rank)) = seen(unit_family(hit), hit.layer)
+            && let Some((point, rank)) = seen(unit_family(report, hover.unit_hit, hit), hit.layer)
             && hover.contains(point)
         {
             offer(
                 rank,
                 hit.layer,
-                4,
+                5,
                 hover.unit_hit,
                 if hover.supported {
                     MapHit::Unit(hover.unit_hit)
@@ -694,7 +792,7 @@ fn top_map_hit(
             .unit_hits
             .get(hover.unit_hit)
             .filter(|hit| hover.matches(hit))
-            && let Some((point, rank)) = seen(unit_family(hit), hit.layer)
+            && let Some((point, rank)) = seen(unit_family(report, hover.unit_hit, hit), hit.layer)
             && hover.contains(point)
         {
             let target = if !hover.supported || !hover.has_tooltip() {
@@ -719,7 +817,7 @@ fn top_map_hit(
         offer(
             rank,
             hit.layer,
-            6,
+            7,
             hit.order,
             if hit.supported {
                 MapHit::NavalObserver(index)
@@ -738,9 +836,9 @@ fn top_map_hit(
             continue;
         }
         let pass = if matches!(hit.selection, Selection::Land(_)) {
-            5
-        } else {
             6
+        } else {
+            7
         };
         offer(
             rank,
@@ -760,9 +858,13 @@ fn top_map_hit(
 /// The icons a unit hit shape belongs to: a port's ships number with its base, other plates with
 /// their column.
 fn unit_family(
+    report: &CounterReport,
+    index: usize,
     hit: &viewer_foundation::map::counter_hovers::unit_hits::Hit,
 ) -> free_icons::IconFamily {
-    if hit.port {
+    if report.regional_naval_unit_hits.contains(&index) {
+        free_icons::IconFamily::Missions
+    } else if hit.port {
         free_icons::IconFamily::Bases
     } else {
         free_icons::IconFamily::Columns
@@ -962,6 +1064,7 @@ pub struct Viewer {
     /// `None` until the first frame seeds it settled at that frame's own camera
     /// height; see [`Viewer::map`].
     fade: Option<LayerFade>,
+    hovered_name_region: Option<u32>,
     last_frame: Instant,
     label_report: LabelReport,
     /// The raid offer cycle, advanced off the frame path.
@@ -974,6 +1077,7 @@ pub struct Viewer {
     /// The terrain map mode's province hover, which replaces the political one.
     terrain_tooltips: combat::terrain_mode::Cache,
     counter_tooltips: viewer_counter_products::map::counter_tooltips::Cache,
+    division_panel_tooltips: viewer_combat::DivisionPanelCache,
     tooltip_refused: BTreeMap<String, usize>,
     // counters
     counter_report: CounterReport,
@@ -996,6 +1100,8 @@ pub struct Viewer {
     /// starts it afresh.
     counter_view: CounterView,
     unit_selection: viewer_counters::map::unit_selection::Selection,
+    air_selection: viewer_counters::map::air_selection::Selection,
+    fleet_selection: viewer_counters::map::naval_selection::Selection,
     /// The hour's camera-independent icon tables, parsed once per (branch,
     /// hour, perspective) and reused by every frame's icon rebuild while the
     /// camera moves. A still camera never rebuilds at all (`overlay_at`), so
@@ -1361,6 +1467,7 @@ impl Viewer {
             placements: None,
             placements_at: None,
             fade: None,
+            hovered_name_region: None,
             last_frame: Instant::now(),
             label_report: LabelReport::default(),
             raid_lane: Default::default(),
@@ -1371,6 +1478,7 @@ impl Viewer {
             province_tooltips: Default::default(),
             terrain_tooltips: Default::default(),
             counter_tooltips: Default::default(),
+            division_panel_tooltips: Default::default(),
             tooltip_refused: Default::default(),
             // counters
             counter_report: CounterReport::default(),
@@ -1381,6 +1489,8 @@ impl Viewer {
             overlay_tables: None,
             counter_view,
             unit_selection: Default::default(),
+            air_selection: Default::default(),
+            fleet_selection: Default::default(),
             perspective,
             map_mode,
             picker: Default::default(),
@@ -1420,6 +1530,8 @@ impl Viewer {
     pub(crate) fn install_map(&mut self, document: Document, scene: Scene, revision: String) {
         self.counter_view = CounterView::new(self.options.counter_settings(document.game_counters));
         self.unit_selection = Default::default();
+        self.air_selection = Default::default();
+        self.fleet_selection = Default::default();
         self.document = Some(document);
         self.scene = Some(scene);
         self.revision = Some(revision);
@@ -1584,6 +1696,7 @@ impl Viewer {
         self.province_tooltips = Default::default();
         self.terrain_tooltips = Default::default();
         self.counter_tooltips = Default::default();
+        self.division_panel_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -1763,6 +1876,15 @@ impl Viewer {
             warnings.extend(overlay.raid_report().warnings());
             warnings.extend(overlay.intel_report().warnings());
             warnings.extend(overlay.mode_icon_warnings());
+            warnings.extend(overlay.air_orders.warnings());
+            warnings.extend(
+                overlay
+                    .naval_selection
+                    .refused
+                    .iter()
+                    .map(|(why, count)| format!("Navy selection: {count} withheld: {why}")),
+            );
+            warnings.extend(overlay.stripe_warnings());
         }
         warnings.extend(self.counter_report.warnings());
         for (reason, count) in &self.convoy_refused {
@@ -2061,6 +2183,7 @@ impl Viewer {
         self.province_tooltips = Default::default();
         self.terrain_tooltips = Default::default();
         self.counter_tooltips = Default::default();
+        self.division_panel_tooltips = Default::default();
         self.tooltip_refused.clear();
         self.source = None;
         self.source_decoder = None;
@@ -2115,6 +2238,8 @@ impl Viewer {
         self.prepared_overlay = None;
         self.counter_report = CounterReport::default();
         self.unit_selection = Default::default();
+        self.air_selection = Default::default();
+        self.fleet_selection = Default::default();
         self.overlay_fraction = None;
         self.overlay_at = None;
         self.overlay_tables = None;
@@ -2398,6 +2523,9 @@ impl Viewer {
             self.prepared_overlay
                 .as_ref()
                 .map_or(&[], |map| map.raid_hits()),
+            self.prepared_overlay
+                .as_ref()
+                .map_or(&[], |map| map.occupation_hits()),
             self.looks.as_ref(),
             self.prepared_overlay
                 .as_ref()
@@ -2410,7 +2538,25 @@ impl Viewer {
         use free_icons::IconFamily;
         let report = &self.counter_report;
         match target {
+            MapHit::AirMission(index) => report
+                .air_mission_hits
+                .get(index)
+                .map(|hit| (IconFamily::Missions, hit.layer)),
+            MapHit::NavalMission(index) => report
+                .naval_mission_hits
+                .get(index)
+                .map(|hit| (IconFamily::Missions, hit.layer)),
+            MapHit::NavalRegionHover(index) => report
+                .naval_region_hovers
+                .get(index)
+                .map(|hit| (IconFamily::Missions, hit.layer)),
             MapHit::Raid | MapHit::Intel => None,
+            MapHit::Occupation(index) => self
+                .prepared_overlay
+                .as_ref()?
+                .occupation_hits()
+                .get(index)
+                .map(|hit| (IconFamily::Occupation, hit.layer)),
             MapHit::Combat(index) => report
                 .combat_hits
                 .get(index)
@@ -2419,20 +2565,32 @@ impl Viewer {
                 .naval_marker_hovers
                 .get(index)
                 .map(|hit| (IconFamily::Combats, hit.layer)),
-            MapHit::PortTooltip(index) => report
-                .task_force_port_hovers
-                .get(index)
-                .and_then(|hover| report.unit_hits.get(hover.unit_hit))
-                .map(|hit| (unit_family(hit), hit.layer)),
+            MapHit::PortTooltip(index) => {
+                report.task_force_port_hovers.get(index).and_then(|hover| {
+                    report
+                        .unit_hits
+                        .get(hover.unit_hit)
+                        .map(|hit| (unit_family(report, hover.unit_hit, hit), hit.layer))
+                })
+            }
             MapHit::Unit(index) => report
                 .unit_hits
                 .get(index)
-                .map(|hit| (unit_family(hit), hit.layer)),
+                .map(|hit| (unit_family(report, index, hit), hit.layer)),
             MapHit::Pin(index) => report
                 .faction_pin_hovers
                 .get(index)
                 .map(|hit| (IconFamily::Pins, hit.layer)),
-            MapHit::Base | MapHit::Blocked => None,
+            MapHit::Base(index) => report.base_hits.get(index).map(|hit| {
+                (
+                    report
+                        .air_grid_hits
+                        .get(&index)
+                        .map_or(IconFamily::Bases, |grid| grid.family),
+                    hit.layer,
+                )
+            }),
+            MapHit::Blocked => None,
         }
     }
 
@@ -2599,6 +2757,153 @@ impl Viewer {
         let layer = target.and_then(|target| self.hit_layer(target));
         // The pointer in the hit icon's own layout, as its hover shapes are laid out.
         let local = self.local_point(layer, point);
+        if let Some(MapHit::Occupation(index)) = target {
+            let hit = self
+                .prepared_overlay
+                .as_ref()?
+                .occupation_hits()
+                .get(index)?;
+            let rect = self.shown_rect(layer, hit.bounds()?);
+            let crate::playback::Current::Frame(frame) = document.playback.current() else {
+                return None;
+            };
+            use viewer_world::map::occupation_icons::Hover;
+            let text = match &hit.hover {
+                Hover::Modifier { state, token } => {
+                    let result = (|| {
+                        let content = document.icons.occupation.as_ref().map_err(Clone::clone)?;
+                        content
+                            .definitions
+                            .find(token)?
+                            .ok_or_else(|| format!("active definition {token} is absent"))
+                    })();
+                    // The same catalogue chose and drew the badge; keep its exact definition.
+                    let text = match result {
+                        Ok(definition) => {
+                            viewer_counter_products::map::occupation_modifier_tooltips::build(
+                                &document.counter_content,
+                                frame,
+                                *state,
+                                definition,
+                            )
+                        }
+                        Err(why) => {
+                            let mut text = Tooltip::default();
+                            text.refused
+                                .insert(format!("occupation badge {token}: {why}"), 1);
+                            text
+                        }
+                    };
+                    Arc::new(text)
+                }
+                Hover::Resistance { state } => {
+                    let province = document
+                        .icons
+                        .raids
+                        .trigger_content
+                        .state_provinces
+                        .get(state)
+                        .and_then(|members| members.first())
+                        .copied();
+                    let Some(province) = province else {
+                        let mut text = Tooltip::default();
+                        text.refused.insert(format!("occupation marker state {state}: no member province supplies the resistance hover"), 1);
+                        return Some((Arc::new(text), rect, None));
+                    };
+                    self.province_tooltips.request(
+                        &document.counter_content,
+                        document.icons.raids.movement_reads(),
+                        frame,
+                        province,
+                        self.overlay_tables.as_ref()?.3.vision(),
+                        self.counter_view.settings.nato,
+                        self.unit_selection.ordered_units(),
+                        &document.playback.replay_handle(),
+                        &viewer_counter_products::map::province_tooltips::ModeHover::OccupationMarker,
+                        {
+                            let ctx = ctx.clone();
+                            move || ctx.request_repaint()
+                        },
+                    )
+                }
+            };
+            return Some((text, rect, None));
+        }
+        if let Some((text, rect)) = prepared_naval_tooltip(&self.counter_report, target) {
+            return Some((text, self.shown_rect(layer, rect), None));
+        }
+        if let Some(MapHit::Base(index)) = target
+            && let Some(hit) = self.counter_report.air_grid_hits.get(&index)
+        {
+            return Some((
+                Arc::clone(&hit.text),
+                self.shown_rect(layer, self.counter_report.base_hits[index].rect),
+                None,
+            ));
+        }
+        if let Some(MapHit::Base(index)) = target
+            && let Some(&(province, kind)) = self.counter_report.air_base_hits.get(&index)
+            && let crate::playback::Current::Frame(frame) = document.playback.current()
+        {
+            let vision = self.overlay_tables.as_ref()?.3.vision();
+            let text = viewer_counter_products::map::counter_tooltips::Batch::new(
+                &document.counter_content,
+                document.icons.raids.movement_reads(),
+                frame,
+                vision,
+                self.counter_view.settings.nato,
+            )
+            .build_air_base(province, kind, self.air_selection.wings());
+            return Some((
+                Arc::new(text),
+                self.shown_rect(layer, self.counter_report.base_hits[index].rect),
+                None,
+            ));
+        }
+        if let Some(MapHit::AirMission(index)) = target {
+            let hit = self.counter_report.air_mission_hits.get(index)?;
+            return Some((
+                Arc::clone(&hit.text),
+                self.shown_rect(layer, hit.rect),
+                None,
+            ));
+        }
+        if let Some(MapHit::NavalRegionHover(index)) = target {
+            use viewer_counters::map::counters::NavalRegionalControl;
+            let hit = self.counter_report.naval_region_hovers.get(index)?;
+            let crate::playback::Current::Frame(frame) = document.playback.current() else {
+                return None;
+            };
+            let vision = self.overlay_tables.as_ref()?.3.vision();
+            let text = match hit.control {
+                NavalRegionalControl::Mines => {
+                    viewer_counter_products::map::province_tooltips::naval_mines::build(
+                        &document.counter_content,
+                        frame,
+                        vision,
+                        hit.region,
+                        false,
+                    )
+                }
+                NavalRegionalControl::Accidents => {
+                    viewer_counter_products::map::province_tooltips::naval_accidents::build(
+                        &document.counter_content,
+                        frame,
+                        vision,
+                        hit.region,
+                    )
+                }
+                _ => {
+                    let mut text = Tooltip::default();
+                    text.refuse(
+                        "regional Navy control hover",
+                        "drawn control has no prepared hover text".into(),
+                    );
+                    text
+                }
+            };
+            return Some((Arc::new(text), self.shown_rect(layer, hit.rect), None));
+        }
         if matches!(target, Some(MapHit::Raid))
             && let Some(hit) = self.raid_hit(point).cloned()
         {
@@ -2709,6 +3014,18 @@ impl Viewer {
                 vision,
                 self.counter_view.settings.nato,
             );
+            let text = if hit.ours
+                && !hit.hidden
+                && !hit.railway_gun
+                && hit.members.len() == 1
+                && hit.control
+                    == viewer_foundation::map::counter_hovers::land::CounterControl::Normal
+            {
+                self.division_panel_tooltips
+                    .request(&document.combat, frame, text, hit.members[0])
+            } else {
+                text
+            };
             return Some((text, self.shown_rect(layer, hit.rect), None));
         }
         if let Some(hit) = self
@@ -2796,6 +3113,26 @@ impl Viewer {
                 .request(&document.combat, frame, province, vision);
             return Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)));
         }
+        let mut mode_hover = picker::mode_hover(
+            &self.map_mode,
+            document.map_modes.defines.opinion_thresholds(),
+            || {
+                document
+                    .map_modes
+                    .infrastructure
+                    .hover_level(frame, province)
+            },
+        );
+        if let viewer_counter_products::map::province_tooltips::ModeHover::StrategicAir(selected) =
+            &mut mode_hover
+        {
+            *selected = Arc::clone(self.air_selection.wings());
+        }
+        if let viewer_counter_products::map::province_tooltips::ModeHover::StrategicNavy(sources) =
+            &mut mode_hover
+        {
+            *sources = self.overlay_tables.as_ref()?.3.naval_dominance_sources();
+        }
         let text = self.province_tooltips.request(
             &document.counter_content,
             document.icons.raids.movement_reads(),
@@ -2805,16 +3142,7 @@ impl Viewer {
             self.counter_view.settings.nato,
             self.unit_selection.ordered_units(),
             &document.playback.replay_handle(),
-            &picker::mode_hover(
-                &self.map_mode,
-                document.map_modes.defines.opinion_thresholds(),
-                || {
-                    document
-                        .map_modes
-                        .infrastructure
-                        .hover_level(frame, province)
-                },
-            ),
+            &mode_hover,
             {
                 let ctx = ctx.clone();
                 move || ctx.request_repaint()
@@ -2996,6 +3324,8 @@ impl Viewer {
             } else {
                 self.combat.close();
                 self.unit_selection.clear();
+                self.air_selection.clear();
+                self.fleet_selection.clear();
             }
         }
         let engaged = self
@@ -3514,6 +3844,25 @@ impl Viewer {
             now.frame,
         );
         self.counter_view.selected = Arc::clone(self.unit_selection.units());
+        self.air_selection.observe(
+            document.playback.branch(),
+            &self.perspective.country,
+            now.vision(&self.perspective)
+                .map_err(|error| error.to_string())?
+                .ours(),
+            now.frame,
+        );
+        self.counter_view.air_selected = Arc::clone(self.air_selection.wings());
+        self.counter_view.air_bases = Arc::clone(self.air_selection.bases());
+        self.fleet_selection.observe(
+            document.playback.branch(),
+            &self.perspective.country,
+            now.vision(&self.perspective)
+                .map_err(|error| error.to_string())?
+                .ours(),
+            now.frame,
+        );
+        self.counter_view.fleets_selected = Arc::clone(self.fleet_selection.fleets());
         // A free mode's pointer reaches the map's interface while it is shown and the pointer is
         // not held for looking around.
         let point = point.filter(|_| !free_mode || (interface && !self.input.captured()));
@@ -3528,6 +3877,37 @@ impl Viewer {
             viewport: pixels,
             ui_scale,
         });
+        let hovered_name_province = point
+            .filter(|_| !document.content.game_strategic_names)
+            .and_then(|point| {
+                pick(
+                    &camera,
+                    point.map(|v| v * ui_scale),
+                    pixels,
+                    &document.map,
+                    document.assets.heightmap_texels(),
+                )
+                .ok()
+                .flatten()
+            });
+        let hovered_name_region = hovered_name_province
+            .map(|province| document.content.counters.region(province).unwrap_or(0));
+        let strategic_names = matches!(
+            self.map_mode,
+            viewer_world::map::map_mode::MapMode::Stock(
+                viewer_world::map::map_mode::Stock::StrategicAir
+                    | viewer_world::map::map_mode::Stock::StrategicNavy
+            )
+        );
+        let show_all_names = document.content.game_strategic_names || !strategic_names;
+        let strategic_hover = (!show_all_names).then_some(hovered_name_province).flatten();
+        let name_fade = fade.strategic_hover(
+            show_all_names,
+            hovered_name_region,
+            self.hovered_name_region,
+        );
+        self.fade = Some(name_fade);
+        self.hovered_name_region = hovered_name_region;
         // The map mode's layers choose whose names the map writes.
         let names_key = (
             document.playback.branch(),
@@ -3546,14 +3926,9 @@ impl Viewer {
         laps.lap("names");
         // counters: one batch carries the bases, the labels, the counters and
         // the combat icons in the map mode's `<table>_PRIORITY_*` order.
-        self.counter_view.visibility = viewer_world::map::map_mode::visibility::of(&self.map_mode);
-        self.counter_view.operatives = matches!(
-            self.map_mode,
-            viewer_world::map::map_mode::MapMode::Stock(
-                viewer_world::map::map_mode::Stock::Operatives
-            )
-        );
+        self.counter_view.set_mode(&self.map_mode);
         let overlay_key = OverlayKey {
+            occupation: self.counter_view.occupation,
             operatives: self.counter_view.operatives,
             branch: document.playback.branch(),
             hour: document.playback.hour(),
@@ -3563,6 +3938,9 @@ impl Viewer {
             perspective: self.perspective.clone(),
             counter_settings: self.counter_view.settings,
             selected: Arc::clone(self.unit_selection.units()),
+            air_selected: Arc::clone(self.air_selection.wings()),
+            air_bases: Arc::clone(self.air_selection.bases()),
+            fleets_selected: Arc::clone(self.fleet_selection.fleets()),
             hovered: self.counter_view.hovered,
             visibility: self.counter_view.visibility,
         };
@@ -3767,6 +4145,52 @@ impl Viewer {
             if raids_only && check_overlay() {
                 self.check_overlay(&now, overlay_camera, pixels, ui_scale, animation_time)?;
             }
+            // An explicit fleet choice remains separate from a task-force plate
+            // click. Its roster also reaches empty fleets with no map plate.
+            if self.map_mode
+                == viewer_world::map::map_mode::MapMode::Stock(
+                    viewer_world::map::map_mode::Stock::StrategicNavy,
+                )
+            {
+                response.context_menu(|ui| {
+                    let choices = now.vision(&self.perspective).and_then(|vision| {
+                        viewer_counters::map::naval_selection::fleet_choices(
+                            now.frame,
+                            vision.ours(),
+                        )
+                    });
+                    match choices {
+                        Err(why) => {
+                            ui.label(why.to_string());
+                        }
+                        Ok(choices) => {
+                            for (fleet, name) in choices {
+                                if ui
+                                    .selectable_label(
+                                        self.fleet_selection.fleets().contains(&fleet),
+                                        name,
+                                    )
+                                    .clicked()
+                                {
+                                    let shift = ui.input(|input| input.modifiers.shift);
+                                    self.fleet_selection.click(fleet, shift);
+                                    if !shift {
+                                        self.unit_selection.clear();
+                                        self.air_selection.clear();
+                                    }
+                                    self.counter_view.selected =
+                                        Arc::clone(self.unit_selection.units());
+                                    self.counter_view.fleets_selected =
+                                        Arc::clone(self.fleet_selection.fleets());
+                                    self.overlay_at = None;
+                                    ui.close();
+                                    ui.ctx().request_repaint();
+                                }
+                            }
+                        }
+                    }
+                });
+            }
             // Resolve clicks against this hour and camera's newly rebuilt hit regions; the click
             // that chose a free mode's start selects nothing.
             if response.clicked()
@@ -3776,6 +4200,113 @@ impl Viewer {
                 && let Some(point) = point
             {
                 match self.map_hit(point) {
+                    Some(MapHit::NavalMission(index))
+                        if self.counter_report.naval_mission_hits[index].mission != 0 =>
+                    {
+                        let hit = &self.counter_report.naval_mission_hits[index];
+                        let viewer = now
+                            .vision(&self.perspective)
+                            .map_err(|error| error.to_string())?
+                            .ours();
+                        let members = viewer_counters::map::naval_selection::mission_members(
+                            now.frame,
+                            viewer,
+                            hit.region,
+                            hit.mission,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let selection = viewer_foundation::map::counter_hovers::unit_hits::Hit {
+                            ours: true,
+                            port: false,
+                            rect: hit.rect,
+                            layer: hit.layer,
+                            kind:
+                                viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+                            members: members.into(),
+                        };
+                        self.unit_selection.click(Some(&selection), false);
+                        self.air_selection.clear();
+                        self.fleet_selection.clear();
+                        self.counter_view.selected = Arc::clone(self.unit_selection.units());
+                        self.overlay_at = None;
+                        ui.ctx().request_repaint();
+                    }
+                    Some(MapHit::Base(index))
+                        if self.counter_report.air_grid_hits.contains_key(&index) =>
+                    {
+                        if let Some(members) =
+                            self.counter_report.air_grid_hits[&index].members.clone()
+                        {
+                            let shift = ui.input(|input| input.modifiers.shift);
+                            if self
+                                .air_selection
+                                .grid_click(now.frame, &members, shift)
+                                .map_err(|error| error.to_string())?
+                            {
+                                self.unit_selection.clear();
+                                self.counter_view.selected =
+                                    Arc::clone(self.unit_selection.units());
+                                self.overlay_at = None;
+                                ui.ctx().request_repaint();
+                            }
+                        }
+                    }
+                    Some(MapHit::Base(index))
+                        if self.counter_report.air_base_hits.contains_key(&index) =>
+                    {
+                        let (province, kind) = self.counter_report.air_base_hits[&index];
+                        let viewer = now
+                            .vision(&self.perspective)
+                            .map_err(|error| error.to_string())?
+                            .ours();
+                        let shift = ui.input(|input| input.modifiers.shift);
+                        let target = viewer_counters::map::air_selection::base_target(
+                            now.frame, viewer, province, kind,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        if let Some(target) = target {
+                            self.choose_map_mode(viewer_world::map::map_mode::MapMode::Stock(
+                                viewer_world::map::map_mode::Stock::StrategicAir,
+                            ));
+                            self.air_selection
+                                .base_click(now.frame, target, shift)
+                                .map_err(|error| error.to_string())?;
+                            self.unit_selection.clear();
+                            self.counter_view.selected = Arc::clone(self.unit_selection.units());
+                            self.overlay_at = None;
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                    Some(MapHit::AirMission(index))
+                        if self.counter_report.air_mission_hits[index]
+                            .mission
+                            .is_some() =>
+                    {
+                        let hit = &self.counter_report.air_mission_hits[index];
+                        let viewer = now
+                            .vision(&self.perspective)
+                            .map_err(|error| error.to_string())?
+                            .ours();
+                        let members = viewer_counters::map::air_selection::mission_members(
+                            now.frame,
+                            viewer,
+                            hit.region,
+                            hit.mission.unwrap(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let shift = ui.input(|input| input.modifiers.shift);
+                        if self
+                            .air_selection
+                            .mission_click(now.frame, &members, shift)
+                            .map_err(|error| error.to_string())?
+                        {
+                            self.unit_selection.clear();
+                            self.counter_view.selected = Arc::clone(self.unit_selection.units());
+                            self.overlay_at = None;
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                    Some(MapHit::AirMission(_)) => {}
                     Some(MapHit::Combat(index)) => self
                         .combat
                         .open(self.counter_report.combat_hits[index].selection),
@@ -3787,7 +4318,18 @@ impl Viewer {
                             _ => None,
                         };
                         let shift = ui.input(|input| input.modifiers.shift);
-                        if self.unit_selection.click(hit, shift) {
+                        let units_changed = self.unit_selection.click(hit, shift);
+                        let fleets_changed = if !shift {
+                            self.fleet_selection.clear()
+                        } else {
+                            false
+                        };
+                        let air_changed = if !shift || hit.is_some_and(|hit| hit.ours) {
+                            self.air_selection.clear()
+                        } else {
+                            false
+                        };
+                        if units_changed || air_changed || fleets_changed {
                             self.counter_view.selected = Arc::clone(self.unit_selection.units());
                             self.overlay_at = None;
                             ui.ctx().request_repaint();
@@ -3963,7 +4505,89 @@ impl Viewer {
         // capture: at a fixed clock `Scene::render` takes the luminance
         // adaptation instantaneously, because the clock did not advance, which
         // is what a dump's own pair of frames does.
+        let hovered_radar = point
+            .filter(|_| !over_combat)
+            .and_then(|point| radar_province(self.map_hit(point), &self.counter_report))
+            .and_then(|province| {
+                let row = now
+                    .frame
+                    .complete::<replay_data::rows::tables::Provinces>()
+                    .ok()?
+                    .iter()
+                    .find(|row| row.id == province)?;
+                Some((
+                    row.state,
+                    self.counter_report
+                        .perspective
+                        .province_controller(province)?,
+                ))
+            });
+        let hovered_air_base = point.filter(|_| !over_combat).and_then(|point| {
+            let MapHit::Base(index) = self.map_hit(point)? else {
+                return None;
+            };
+            let (province, kind) = self.counter_report.air_base_hits.get(&index)?;
+            let provinces = now
+                .frame
+                .complete::<replay_data::rows::tables::Provinces>()
+                .ok()?;
+            provinces
+                .binary_search_by_key(province, |row| row.id)
+                .ok()
+                .map(|at| (provinces[at].state, *kind))
+        });
+        let hovered_air_carriers = point.filter(|_| !over_combat).and_then(|point| {
+            let MapHit::Unit(index) = self.map_hit(point)? else {
+                return None;
+            };
+            let hit = &self.counter_report.unit_hits[index];
+            (!hit.port
+                && hit.kind == viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce)
+                .then(|| Arc::clone(&hit.members))
+        });
         let scene = self.scene.as_mut().unwrap();
+        if let Some(prepared) = &self.prepared_overlay {
+            let carrier_ranges = hovered_air_carriers
+                .as_deref()
+                .map(|forces| prepared.air_ranges.carrier_ranges(forces));
+            let ranges = carrier_ranges
+                .as_ref()
+                .unwrap_or_else(|| prepared.air_ranges.shown(hovered_air_base));
+            scene.set_air_ranges(&ranges.ranges);
+            scene.set_air_transfers(&prepared.air_orders.transfers.progress);
+            scene.set_radar(&prepared.radar, self.picker.radar, hovered_radar);
+            scene.set_air_assignment(&state.queue, prepared.province_stripes());
+            scene
+                .set_strategic_styles(
+                    &state.device,
+                    &state.queue,
+                    &prepared.naval_selection.styles,
+                )
+                .map_err(|e| e.to_string())?;
+            if let Some(base) = &self.uploaded.orders {
+                let air = &prepared.air_orders;
+                if self.uploaded.air_order_sources.as_ref().is_none_or(
+                    |(had_base, had_air, highlights)| {
+                        !Arc::ptr_eq(base, had_base)
+                            || !Arc::ptr_eq(air, had_air)
+                            || *highlights != ranges.highlighted_bases
+                    },
+                ) {
+                    let mut field = (**base).clone();
+                    field.draws.retain(|draw| !draw.air_mode);
+                    let air_field = air.highlighted(&ranges.highlighted_bases);
+                    let field = viewer_foundation::map::ribbon_mesh::append(&field, &air_field);
+                    scene
+                        .set_orders(&state.device, &state.queue, &document.orders, &field)
+                        .map_err(|error| error.to_string())?;
+                    self.uploaded.air_order_sources = Some((
+                        Arc::clone(base),
+                        Arc::clone(air),
+                        ranges.highlighted_bases.clone(),
+                    ));
+                }
+            }
+        }
         scene.set_graphics(self.graphics);
         // The walking mode's figure stands in the scene while it walks, and the flying mode's
         // aircraft where this frame's flight placed it.
@@ -4010,7 +4634,8 @@ impl Viewer {
                     // Hidden, the interface still steps; only its drawing stops.
                     overlay: Overlay {
                         names: self.placements.as_deref(),
-                        layer_alpha: fade.0,
+                        layer_alpha: name_fade.0,
+                        strategic_hover,
                         sprites: interface.then_some(label_batch),
                         ui_scale,
                         interface,
@@ -4759,6 +5384,310 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn occupation_controls_keep_independent_hits_and_follow_free_icon_visibility() {
+        use viewer_foundation::map::{
+            free_icons::{IconFamily, Looks, Present},
+            native_gui::HitGeometry,
+            sprites::layer,
+        };
+        use viewer_world::map::occupation_icons::{Hit, Hover};
+        let parent = layer(5, 0, 0);
+        let hits = [
+            Hit {
+                geometry: HitGeometry::test_rectangle([0, 0], [20, 10], [100, 100]),
+                layer: parent,
+                hover: Hover::Resistance { state: 7 },
+            },
+            Hit {
+                geometry: HitGeometry::test_rectangle([10, 12], [10, 10], [100, 100]),
+                layer: parent,
+                hover: Hover::Modifier {
+                    state: 7,
+                    token: "synthetic_badge".into(),
+                },
+            },
+        ];
+        let mut report = CounterReport::default();
+        assert_eq!(
+            top_map_hit([5., 5.], &report, &[], &hits, None, None),
+            Some(MapHit::Occupation(0))
+        );
+        assert_eq!(
+            top_map_hit([15., 17.], &report, &[], &hits, None, None),
+            Some(MapHit::Occupation(1))
+        );
+        // The gap between the text and badge belongs to the map.
+        assert_eq!(
+            top_map_hit([5., 17.], &report, &[], &hits, None, None),
+            None
+        );
+        let mut looks = Looks::default();
+        let present = |alpha| Present {
+            pivot: [10., 10.],
+            scale: 2.,
+            alpha,
+            rank: 4,
+        };
+        looks.show(IconFamily::Occupation, parent, present(1.));
+        assert_eq!(
+            top_map_hit([20., 24.], &report, &[], &hits, Some(&looks), None),
+            Some(MapHit::Occupation(1))
+        );
+        let absent = Looks::default();
+        assert_eq!(
+            top_map_hit([20., 24.], &report, &[], &hits, Some(&absent), None),
+            None
+        );
+        let mut faint = Looks::default();
+        faint.show(IconFamily::Occupation, parent, present(0.2));
+        assert_eq!(
+            top_map_hit([20., 24.], &report, &[], &hits, Some(&faint), None),
+            None
+        );
+        let base_layer = layer(20, 0, 0);
+        report
+            .base_hits
+            .push(viewer_foundation::map::counter_hovers::unit_hits::Blocker {
+                rect: [0., 0., 40., 40.],
+                layer: base_layer,
+            });
+        looks.show(
+            IconFamily::Bases,
+            base_layer,
+            Present {
+                pivot: [10., 10.],
+                scale: 1.,
+                alpha: 1.,
+                rank: 3,
+            },
+        );
+        // Nearer presented occupation geometry wins over a higher-priority distant base.
+        assert_eq!(
+            top_map_hit([20., 24.], &report, &[], &hits, Some(&looks), None),
+            Some(MapHit::Occupation(1))
+        );
+        looks.show(
+            IconFamily::Occupation,
+            parent,
+            Present {
+                rank: 2,
+                ..present(1.)
+            },
+        );
+        assert_eq!(
+            top_map_hit([20., 24.], &report, &[], &hits, Some(&looks), None),
+            Some(MapHit::Base(0))
+        );
+    }
+
+    #[test]
+    fn naval_regional_controls_own_hover_footprints_and_preserve_unsupported_blocking() {
+        use viewer_counters::map::counters::{
+            CounterReport, NavalRegionalControl, NavalRegionalHover,
+        };
+        let mut report = CounterReport::default();
+        report.naval_region_hovers.push(NavalRegionalHover {
+            region: 7,
+            control: NavalRegionalControl::Mines,
+            rect: [0., 0., 10., 10.],
+            layer: 8,
+            hit: None,
+            supported: true,
+            text: None,
+        });
+        assert_eq!(
+            top_map_hit([5., 5.], &report, &[], &[], None, None),
+            Some(MapHit::NavalRegionHover(0))
+        );
+        assert_eq!(top_map_hit([15., 5.], &report, &[], &[], None, None), None);
+        report.naval_region_hovers[0].supported = false;
+        assert_eq!(
+            top_map_hit([5., 5.], &report, &[], &[], None, None),
+            Some(MapHit::Blocked)
+        );
+    }
+
+    #[test]
+    fn naval_mission_buttons_intercept_at_their_drawn_layer() {
+        use viewer_counters::map::counters::{CounterReport, NavalMissionHit};
+        use viewer_foundation::map::counter_hovers::unit_hits::Blocker;
+        let mut report = CounterReport::default();
+        report.naval_mission_hits.push(NavalMissionHit {
+            region: 7,
+            mission: 2,
+            rect: [0., 0., 10., 10.],
+            layer: 8,
+            text: None,
+        });
+        assert_eq!(
+            top_map_hit([5., 5.], &report, &[], &[], None, None),
+            Some(MapHit::NavalMission(0))
+        );
+        assert_eq!(top_map_hit([11., 5.], &report, &[], &[], None, None), None);
+        report.base_hits.push(Blocker {
+            rect: [0., 0., 10., 10.],
+            layer: 9,
+        });
+        assert_eq!(
+            top_map_hit([5., 5.], &report, &[], &[], None, None),
+            Some(MapHit::Base(0))
+        );
+    }
+
+    #[test]
+    fn prepared_naval_mission_hover_keeps_exact_text_and_missions_footprint() {
+        use viewer_counters::map::counters::NavalMissionHit;
+        use viewer_foundation::map::free_icons::{IconFamily, Looks, Present};
+        let mut report = CounterReport::default();
+        let text = Arc::new(Tooltip {
+            title: "Fleet\n§YStatus§!".into(),
+            body: "\u{15}active\nprepared mission detail".into(),
+            refused: BTreeMap::from([("missing source".into(), 2)]),
+        });
+        let rect = [10., 10., 20., 20.];
+        // A status child has a hover and blocks the province without selecting a mission.
+        report.naval_mission_hits.push(NavalMissionHit {
+            region: 7,
+            mission: 0,
+            rect,
+            layer: 8,
+            text: Some(Arc::clone(&text)),
+        });
+        let mut looks = Looks::default();
+        looks.show(
+            IconFamily::Missions,
+            8,
+            Present {
+                pivot: [0., 0.],
+                scale: 2.,
+                alpha: 1.,
+                rank: 0,
+            },
+        );
+        let target = top_map_hit([50., 50.], &report, &[], &[], Some(&looks), None);
+        assert_eq!(target, Some(MapHit::NavalMission(0)));
+        let (shown, footprint) = prepared_naval_tooltip(&report, target).unwrap();
+        assert!(Arc::ptr_eq(&shown, &text));
+        assert_eq!(footprint, rect);
+        assert_eq!(
+            top_map_hit([65., 50.], &report, &[], &[], Some(&looks), None),
+            None
+        );
+        report.naval_mission_hits[0].text = None;
+        assert!(prepared_naval_tooltip(&report, target).is_none());
+        assert_eq!(
+            top_map_hit([50., 50.], &report, &[], &[], Some(&looks), None),
+            target
+        );
+    }
+
+    #[test]
+    fn prepared_naval_convoy_hover_uses_its_own_text_and_footprint() {
+        use viewer_counters::map::counters::{NavalRegionalControl, NavalRegionalHover};
+        let text = Arc::new(Tooltip {
+            title: "Convoys".into(),
+            body: "recorded client operands".into(),
+            refused: BTreeMap::new(),
+        });
+        let rect = [4., 6., 10., 12.];
+        let mut report = CounterReport::default();
+        report.naval_region_hovers.push(NavalRegionalHover {
+            region: 7,
+            control: NavalRegionalControl::Convoy(19),
+            rect,
+            layer: 8,
+            hit: None,
+            supported: true,
+            text: Some(Arc::clone(&text)),
+        });
+        let target = top_map_hit([5., 7.], &report, &[], &[], None, None);
+        assert_eq!(target, Some(MapHit::NavalRegionHover(0)));
+        let (shown, footprint) = prepared_naval_tooltip(&report, target).unwrap();
+        assert!(Arc::ptr_eq(&shown, &text));
+        assert_eq!(footprint, rect);
+        report.naval_region_hovers[0].supported = false;
+        let target = top_map_hit([5., 7.], &report, &[], &[], None, None);
+        assert_eq!(target, Some(MapHit::Blocked));
+        assert!(prepared_naval_tooltip(&report, target).is_none());
+    }
+
+    #[test]
+    fn regional_naval_grid_units_use_the_missions_transform() {
+        use viewer_foundation::map::{
+            counter_hovers::unit_hits::{Hit, Kind},
+            free_icons::{IconFamily, Looks, Present},
+        };
+        let mut report = CounterReport::default();
+        report.unit_hits.push(Hit {
+            ours: true,
+            port: true,
+            rect: [10., 10., 20., 20.],
+            layer: 8,
+            kind: Kind::TaskForce,
+            members: Arc::from([19]),
+        });
+        report.regional_naval_unit_hits.insert(0);
+        let mut looks = Looks::default();
+        looks.show(
+            IconFamily::Missions,
+            8,
+            Present {
+                pivot: [0., 0.],
+                scale: 2.,
+                alpha: 1.,
+                rank: 0,
+            },
+        );
+        assert_eq!(
+            top_map_hit([50., 50.], &report, &[], &[], Some(&looks), None),
+            Some(MapHit::Unit(0))
+        );
+        // An ordinary port item still belongs to the base anchor.
+        report.regional_naval_unit_hits.clear();
+        assert_eq!(
+            top_map_hit([50., 50.], &report, &[], &[], Some(&looks), None),
+            None
+        );
+    }
+
+    #[test]
+    fn radar_toggle_hover_uses_the_top_base_and_never_a_covered_station() {
+        use viewer_foundation::map::counter_hovers::unit_hits::Blocker;
+        let mut report = viewer_counters::map::counters::CounterReport::default();
+        report.base_hits.push(Blocker {
+            rect: [0., 0., 20., 20.],
+            layer: 1,
+        });
+        report.radar_hits.insert(0, 7);
+        assert_eq!(
+            radar_province(
+                top_map_hit([5., 5.], &report, &[], &[], None, None),
+                &report
+            ),
+            Some(7)
+        );
+        report.base_hits.push(Blocker {
+            rect: [0., 0., 20., 20.],
+            layer: 2,
+        });
+        assert_eq!(
+            radar_province(
+                top_map_hit([5., 5.], &report, &[], &[], None, None),
+                &report
+            ),
+            None
+        );
+        report.radar_hits.insert(1, 8);
+        assert_eq!(
+            radar_province(
+                top_map_hit([5., 5.], &report, &[], &[], None, None),
+                &report
+            ),
+            Some(8)
+        );
+    }
+
+    #[test]
     fn task_force_children_outside_the_plate_keep_its_priority_and_block_unknown_hit_forms() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -4794,7 +5723,7 @@ pub(crate) mod tests {
         });
         let point = [8., 24.];
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Unit(0))
         );
         report.base_hits.push(Blocker {
@@ -4802,18 +5731,18 @@ pub(crate) mod tests {
             layer: layer(11, 0, 0),
         });
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
-            Some(MapHit::Base)
+            top_map_hit(point, &report, &[], &[], None, None),
+            Some(MapHit::Base(0))
         );
         report.base_hits.clear();
         report.task_force_hovers[0].supported = false;
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Blocked)
         );
         // A stale/mismatched ordinal cannot dispatch to another class's plate.
         report.unit_hits[0].kind = Kind::Division;
-        assert_eq!(top_map_hit(point, &report, &[], None, None), None);
+        assert_eq!(top_map_hit(point, &report, &[], &[], None, None), None);
 
         // An opaque unbound port child stops the native walk; its authored
         // tooltip can still be shown without selecting the plate underneath.
@@ -4839,7 +5768,7 @@ pub(crate) mod tests {
             },
         });
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Blocked)
         );
         let gui = installed_content_core::gui::native::read(
@@ -4853,7 +5782,7 @@ pub(crate) mod tests {
                 false,
             );
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::PortTooltip(0))
         );
     }
@@ -4889,17 +5818,17 @@ pub(crate) mod tests {
                 layer: layer(-3, 0, 0),
             });
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Unit(0))
         );
         report.base_hits[0].layer = layer(4, 0, 0);
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
-            Some(MapHit::Base)
+            top_map_hit(point, &report, &[], &[], None, None),
+            Some(MapHit::Base(0))
         );
         report.faction_pin_hovers[0].layer = layer(5, 0, 0);
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Pin(0))
         );
         report.faction_pin_hovers.clear();
@@ -4915,12 +5844,12 @@ pub(crate) mod tests {
             supported: true,
         };
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&raid), None, None),
-            Some(MapHit::Base)
+            top_map_hit(point, &report, std::slice::from_ref(&raid), &[], None, None),
+            Some(MapHit::Base(0))
         );
         report.base_hits.clear();
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&raid), None, None),
+            top_map_hit(point, &report, std::slice::from_ref(&raid), &[], None, None),
             Some(MapHit::Raid)
         );
         let mut same_layer_raid = raid.clone();
@@ -4930,6 +5859,7 @@ pub(crate) mod tests {
                 point,
                 &report,
                 std::slice::from_ref(&same_layer_raid),
+                &[],
                 None,
                 None
             ),
@@ -4941,6 +5871,7 @@ pub(crate) mod tests {
                 point,
                 &report,
                 std::slice::from_ref(&same_layer_raid),
+                &[],
                 None,
                 None
             ),
@@ -4955,12 +5886,12 @@ pub(crate) mod tests {
             supported: true,
         });
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&raid), None, None),
+            top_map_hit(point, &report, std::slice::from_ref(&raid), &[], None, None),
             Some(MapHit::Combat(0))
         );
         report.combat_hits[0].layer = layer(-4, 0, 0);
         assert_eq!(
-            top_map_hit(point, &report, std::slice::from_ref(&raid), None, None),
+            top_map_hit(point, &report, std::slice::from_ref(&raid), &[], None, None),
             Some(MapHit::Raid)
         );
         report.combat_hits[0] = CombatHit {
@@ -4974,12 +5905,12 @@ pub(crate) mod tests {
         observer.order = 2;
         report.naval_marker_hovers.push(observer);
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::NavalObserver(0))
         );
         report.combat_hits[0].order = 2;
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Combat(0))
         );
         report.combat_hits[0].supported = false;
@@ -4992,13 +5923,13 @@ pub(crate) mod tests {
                 layer: layer(4, 0, 0),
             });
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Blocked)
         );
         report.combat_hits[0].supported = true;
         report.naval_marker_hovers[0].supported = true;
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Combat(0))
         );
         report.faction_pin_hovers.clear();
@@ -5011,6 +5942,7 @@ pub(crate) mod tests {
                 point,
                 &report,
                 std::slice::from_ref(&refused_raid),
+                &[],
                 None,
                 None
             ),
@@ -5021,6 +5953,7 @@ pub(crate) mod tests {
                 [20.0, 5.0],
                 &report,
                 std::slice::from_ref(&raid),
+                &[],
                 None,
                 None
             ),
@@ -5041,16 +5974,16 @@ pub(crate) mod tests {
             tooltip: Arc::new(Tooltip::default()),
         };
         assert_eq!(
-            top_map_hit(point, &report, &[], None, Some(&intel)),
+            top_map_hit(point, &report, &[], &[], None, Some(&intel)),
             Some(MapHit::Intel)
         );
         intel.shapes[0].form = viewer_foundation::map::native_gui::Hit::Alpha;
         assert_eq!(
-            top_map_hit(point, &report, &[], None, Some(&intel)),
+            top_map_hit(point, &report, &[], &[], None, Some(&intel)),
             Some(MapHit::Intel)
         );
         assert_eq!(
-            top_map_hit([30.0, 30.0], &report, &[], None, Some(&intel)),
+            top_map_hit([30.0, 30.0], &report, &[], &[], None, Some(&intel)),
             None
         );
     }
@@ -5079,7 +6012,7 @@ pub(crate) mod tests {
         let point = [15.0, 5.0];
         // As laid out, the counter's higher priority wins.
         assert_eq!(
-            top_map_hit(point, &report, &[], None, None),
+            top_map_hit(point, &report, &[], &[], None, None),
             Some(MapHit::Unit(0))
         );
         // A free eye with the base nearer: the base wins whatever its priority.
@@ -5093,25 +6026,80 @@ pub(crate) mod tests {
         looks.show(IconFamily::Columns, layer(10, 0, 0), at(0, 1.0, 1.0));
         looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 1.0, 1.0));
         assert_eq!(
-            top_map_hit(point, &report, &[], Some(&looks), None),
-            Some(MapHit::Base)
+            top_map_hit(point, &report, &[], &[], Some(&looks), None),
+            Some(MapHit::Base(0))
         );
         // Shrunk to half about its anchor, the base no longer reaches the pointer; the counter does.
         let mut looks = Looks::default();
         looks.show(IconFamily::Columns, layer(10, 0, 0), at(0, 1.0, 1.0));
         looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 0.5, 1.0));
         assert_eq!(
-            top_map_hit([18.0, 3.0], &report, &[], Some(&looks), None),
+            top_map_hit([18.0, 3.0], &report, &[], &[], Some(&looks), None),
             Some(MapHit::Unit(0))
         );
         // A faint base and an undrawn counter take no hits.
         let mut looks = Looks::default();
         looks.show(IconFamily::Bases, layer(3, 0, 0), at(1, 1.0, 0.2));
-        assert_eq!(top_map_hit(point, &report, &[], Some(&looks), None), None);
+        assert_eq!(
+            top_map_hit(point, &report, &[], &[], Some(&looks), None),
+            None
+        );
         // The counter's layer key shown for another family leaves the counter itself unshown.
         let mut looks = Looks::default();
         looks.show(IconFamily::Combats, layer(10, 0, 0), at(0, 1.0, 1.0));
-        assert_eq!(top_map_hit(point, &report, &[], Some(&looks), None), None);
+        assert_eq!(
+            top_map_hit(point, &report, &[], &[], Some(&looks), None),
+            None
+        );
+    }
+
+    #[test]
+    fn carrier_wing_controls_take_the_columns_transform_and_win_over_their_parent() {
+        use viewer_foundation::map::{
+            counter_hovers::unit_hits::{Blocker, Hit, Kind},
+            free_icons::{IconFamily, Looks, Present},
+        };
+        let mut report = viewer_counters::map::counters::CounterReport::default();
+        report.base_hits.push(Blocker {
+            rect: [10., 10., 20., 20.],
+            layer: 7,
+        });
+        report.air_grid_hits.insert(
+            0,
+            viewer_counters::map::counters::AirGridHover {
+                family: IconFamily::Columns,
+                members: Some(Arc::new(vec![19])),
+                text: Arc::default(),
+            },
+        );
+        report.unit_hits.push(Hit {
+            ours: true,
+            port: false,
+            rect: [0., 0., 40., 40.],
+            kind: Kind::TaskForce,
+            members: Arc::from([8]),
+            layer: 7,
+        });
+        let mut looks = Looks::default();
+        looks.show(
+            IconFamily::Columns,
+            7,
+            Present {
+                pivot: [0., 0.],
+                scale: 2.,
+                alpha: 1.,
+                rank: 0,
+            },
+        );
+        assert_eq!(
+            top_map_hit([50., 50.], &report, &[], &[], Some(&looks), None),
+            Some(MapHit::Base(0))
+        );
+        report.air_grid_hits.get_mut(&0).unwrap().family = IconFamily::Bases;
+        assert_eq!(
+            top_map_hit([50., 50.], &report, &[], &[], Some(&looks), None),
+            Some(MapHit::Unit(0))
+        );
     }
 
     #[test]

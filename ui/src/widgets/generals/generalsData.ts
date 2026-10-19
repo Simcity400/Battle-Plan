@@ -70,11 +70,22 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
     keys.add(String(l.reference));
     const runs: LeaderRun[] = [];
     for (const r of l.runs) {
-      if (!Array.isArray(r) || r.length !== 7 || !integer(r[0]) || !integer(r[1]) || r[0] > r[1]
+      if (!Array.isArray(r) || r.length !== 8 || !integer(r[0]) || !integer(r[1]) || r[0] > r[1]
         || !u32(r[2]) || r[2] >= input.people.length || !u32(r[3]) || r[3] >= input.roles.length || !(r[4] === null || integer(r[4]))
         || !Array.isArray(r[5]) || r[5].length !== 4 || !r[5].every(integer)
         || !(r[6] === null || Array.isArray(r[6]) && r[6].every(t => u32(t) && t < traitCount))) return bad();
-      runs.push({ firstHour: r[0], lastHour: r[1], value: { person: r[2], role: r[3], skill: r[4], components: r[5] as [number, number, number, number], traits: r[6] } });
+      runs.push({ firstHour: r[0], lastHour: r[1], value: { person: r[2], role: r[3], skill: r[4], components: r[5] as [number, number, number, number], traits: r[6], progress: r[7] } });
+    }
+    for (const run of runs) {
+      const progress = run.value.progress;
+      const fixed = (value: unknown) => typeof value === 'string' && /^-?(0|[1-9][0-9]*)$/.test(value) && BigInt(value) >= -(1n << 63n) && BigInt(value) < 1n << 63n;
+      if (progress !== null && (!object(progress) || !fixed(progress.experienceRaw)
+        || !(progress.nextRequiredRaw === null || fixed(progress.nextRequiredRaw))
+        || !(progress.training === null || Array.isArray(progress.training) && progress.training.every(t => object(t)
+          && (t.token === null || text(t.token)) && (t.name === null || text(t.name)) && fixed(t.experienceRaw)
+          && (t.requiredRaw === null || fixed(t.requiredRaw))))
+        || !(progress.factors === null || Array.isArray(progress.factors) && progress.factors.every(t => object(t)
+          && (t.token === null || text(t.token)) && (t.name === null || text(t.name)) && fixed(t.factorRaw))))) return bad();
     }
     const traitGains: TraitGain[] = [];
     for (const g of l.traitGains) {

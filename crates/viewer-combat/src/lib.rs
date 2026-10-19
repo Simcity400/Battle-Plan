@@ -59,6 +59,7 @@ mod template_icons;
 pub mod terrain_mode;
 mod tooltips;
 pub use content::Content;
+pub use division_tooltips::{DivisionPanelCache, division_panel};
 
 pub use assets::Assets;
 pub use assets::CombatContent;

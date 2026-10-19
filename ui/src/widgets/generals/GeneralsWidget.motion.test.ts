@@ -27,7 +27,7 @@ test('leaderboard settles mounted artwork demand for every sort and preserves ro
       portraitHour: 100, portraitReference: String(index + 5) })),
     roles: [{ owner: 'synthetic', category: 1, rank: null, kind: 1, maximumSkill: 10, attributeNames: [null, null, null, null] }],
     traits: [], leaders: Array.from({ length: count }, (_, index) => ({ reference: String(index + 5),
-      runs: [{ firstHour: 100, lastHour: 102, value: { person: index, role: 0, skill: 3 + index * 2, components: [1, 2, 3, 4], traits: [] } }],
+      runs: [{ firstHour: 100, lastHour: 102, value: { person: index, role: 0, skill: 3 + index * 2, components: [1, 2, 3, 4], progress: null, traits: [] } }],
       traitGains: [], commands: [], partialFrom: null,
       foughtHours: [100, ...Array(index + 3).fill(0)], wonHours: [100, ...Array(1 - Math.min(index, 1)).fill(0)],
       lostHours: [100, ...Array(Math.min(index, 1)).fill(0)] })),

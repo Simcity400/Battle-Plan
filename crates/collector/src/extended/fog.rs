@@ -342,7 +342,7 @@ impl Captured {
         let volunteer_reads = read_accounting::table(TableId::VolunteerHosts);
         let begin = qpc();
         self.volunteers.outcome = bounded(
-            ccountry::walk_volunteer_hosts_buffer(
+            ccountry::walk_volunteer_hosts_with_air_buffer(
                 memory,
                 base,
                 game_state,
@@ -351,6 +351,7 @@ impl Captured {
                 } else {
                     engine_native::walk::Buffer::Fixed(&mut self.volunteers.rows)
                 },
+                true,
             ),
             self.volunteers.rows.len(),
         );
@@ -513,6 +514,7 @@ impl Captured {
                     position: r.position,
                     host: r.host,
                     deployed_divisions: r.deployed_divisions,
+                    air_capacity_modifier: (r.air_capacity_modifier).into(),
                 },
             ),
             self.area_table(outcomes[2], projection.as_deref_mut()),
@@ -577,12 +579,14 @@ impl Captured {
                 r.country == old.country
                     && r.ordinal == old.ordinal
                     && r.state == old.state
+                    && r.symbol.map(|value| value.radius) == old.radius
                     && provinces(r) == old.provinces
             },
             |r| rows::RadarCoverageRow {
                 country: r.country,
                 ordinal: r.ordinal,
                 state: r.state,
+                radius: r.symbol.map(|value| value.radius),
                 provinces: owned_vec(copy_vec(provinces(r))),
             },
         )
@@ -647,6 +651,9 @@ impl Captured {
                     && r.capacity_raw == old.capacity_raw
                     && wings(r) == old.wings
                     && self.carrier.equal(r, &old.carrier)
+                    && old.fuel_demand_raw == rows::Recorded::Value(self.carrier.state_fuel(r)[0])
+                    && old.fuel_allocated_raw
+                        == rows::Recorded::Value(self.carrier.state_fuel(r)[1])
                     && old.transport_planes == rows::Recorded::Value(rows::Retired)
             },
             |r| rows::AirBaseRegistrationRow {
@@ -655,6 +662,8 @@ impl Captured {
                 capacity_raw: r.capacity_raw,
                 wings: owned_vec(copy_vec(wings(r))),
                 carrier: self.carrier.packet(r),
+                fuel_demand_raw: rows::Recorded::Value(self.carrier.state_fuel(r)[0]),
+                fuel_allocated_raw: rows::Recorded::Value(self.carrier.state_fuel(r)[1]),
                 transport_planes: rows::Recorded::Value(rows::Retired),
             },
         )
@@ -716,6 +725,7 @@ impl Captured {
     ) {
         let demand = job.carrier.demand;
         bases.prepare(demand);
+        bases.prepare_states(job);
         self.carrier.prepare(demand);
         self.carrier_scratch.prepare(demand);
     }
@@ -826,6 +836,8 @@ impl Captured {
                 reuse,
             )
         };
+        carrier_bases.decode_states(job, base, base_rows, &mut self.resolved);
+        self.carrier.install_states(&job.state_fuel);
         self.required_links = first.required_links;
         arena_first(
             &mut self.registrations,

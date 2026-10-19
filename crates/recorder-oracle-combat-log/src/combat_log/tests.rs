@@ -874,3 +874,79 @@ fn lend_lease_compares_every_saved_amount_and_receiver() {
     lend_lease(&frame, &save, &links, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 }
+
+#[test]
+fn retained_oracle_checks_empty_month_membership_enemy_order_and_all_manpower_counters() {
+    use installed_content_save::combat_log as saved_log;
+    use replay_data::rows::{
+        CombatLogEnemyEquipmentRow, CombatLogGroupRow, CombatLogManpowerRow, CombatLogMonthRow,
+    };
+    let mut saved = save(&[]);
+    saved.combat_log.countries.truncate(1);
+    let group = &mut saved.combat_log.countries[0].groups[0];
+    group.enemy.push(saved_log::Month {
+        reason: 0,
+        date: DATE,
+        pool: production::Pool {
+            equipment: vec![],
+            allow_zero_entries: Some(false),
+        },
+    });
+    group.manpower.push(saved_log::ManpowerMonth {
+        reason: 0,
+        date: DATE,
+        losses: [-3, 0, 17],
+    });
+    let mut recorded = frame(vec![], &[]);
+    *recorded.tables[TableId::CombatLogGroups.index()] =
+        TableView::Complete(TableRows::CombatLogGroups(vec![CombatLogGroupRow {
+            country: GER,
+            group: 12793u64 << 32 | GROUP_TYPE as u64,
+            ordinal: 0,
+        }]));
+    *recorded.tables[TableId::CombatLogMonths.index()] =
+        TableView::Complete(TableRows::CombatLogMonths(vec![CombatLogMonthRow {
+            country: GER,
+            group: 12793,
+            kind: 5,
+            ordinal: 0,
+            reason: 0,
+            date: DATE,
+            allow_zero: false,
+        }]));
+    *recorded.tables[TableId::CombatLogManpower.index()] =
+        TableView::Complete(TableRows::CombatLogManpower(vec![CombatLogManpowerRow {
+            country: GER,
+            group: 12793,
+            ordinal: 0,
+            reason: 0,
+            date: DATE,
+            losses_0: -3,
+            losses_1: 0,
+            losses_2: 17,
+        }]));
+    let countries = links();
+    let links = BTreeMap::from([(GER, &countries[0]), (SOV, &countries[1])]);
+    let mut report = Report::default();
+    crate::retained::compare(&recorded, &saved, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["CombatLogMonths"], 1);
+    *recorded.tables[TableId::CombatLogMonths.index()] =
+        TableView::Complete(TableRows::CombatLogMonths(vec![]));
+    let mut report = Report::default();
+    crate::retained::compare(&recorded, &saved, &links, &mut report).unwrap();
+    assert!(!report.differences.is_empty());
+    // A payload cannot stand in for missing membership, even if its amount is zero.
+    *recorded.tables[TableId::CombatLogEnemyEquipment.index()] =
+        TableView::Complete(TableRows::CombatLogEnemyEquipment(vec![
+            CombatLogEnemyEquipmentRow {
+                country: GER,
+                group: 12793,
+                month: 0,
+                ordinal: 0,
+                variant: 70,
+                amount_raw: 0,
+            },
+        ]));
+    assert!(crate::retained::compare(&recorded, &saved, &links, &mut Report::default()).is_err());
+}

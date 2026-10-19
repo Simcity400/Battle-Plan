@@ -1370,8 +1370,10 @@ fn combat_read_date_deltas_keep_all_prepared_bytes_and_future_dates() -> io::Res
 #[test]
 fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Result<()> {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
-    let mut input = dashboard_core::test_fixtures::named_frame(117, Some(b"mod design"));
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let first = dashboard_core::test_fixtures::slot_hour(TableId::VariantDefinitions);
+    let last = first + replay_data::cadence::STAGGER_PERIOD;
+    let mut input = dashboard_core::test_fixtures::named_frame(first, Some(b"mod design"));
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *input.tables[TableId::Countries.index()]
     {
@@ -1379,26 +1381,26 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
     }
     let replay = dashboard_core::test_fixtures::replay(vec![input.clone()]);
     let flag = AtomicBool::new(false);
-    let mut prepared = Prepared::new(&replay, 1, 117);
+    let mut prepared = Prepared::new(&replay, 1, first);
     let mut oracle = VariantCatalogue::default();
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
     let mut tracker = FrameChangeTracker::new();
-    for hour in 117..=141 {
+    for hour in first..=last {
         input.hour = hour;
         input.metrics.table_ns.fill(0);
-        if hour == 117 || hour == 141 {
+        if hour == first || hour == last {
             input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
         }
         if let TableView::Complete(TableRows::Countries(rows)) =
             &mut *input.tables[TableId::Countries.index()]
         {
-            if hour == 118 {
+            if hour == first + 1 {
                 rows[0].tag = b"BBB".to_vec();
             }
             rows[0].political_power_raw = Some(i64::from(hour));
         }
-        let wire = Arc::new(encoder.encode(input.clone(), hour == 117)?);
+        let wire = Arc::new(encoder.encode(input.clone(), hour == first)?);
         let frame = decoder.advance(&wire)?;
         let changes = tracker.observe_updates(frame, wire.clone(), replay.format);
         prepared.observe_changes(frame, &replay, &flag, &changes)?;
@@ -1410,7 +1412,7 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
         );
         assert_eq!(
             prepared.variants.current(20).unwrap().name_tag.as_deref(),
-            Some(if hour < 141 { "AAA" } else { "BBB" })
+            Some(if hour < last { "AAA" } else { "BBB" })
         );
     }
     Ok(())

@@ -23,6 +23,7 @@ import { useLeaderPortraits } from '../generals/portraits';
 import { useLeaders } from '../generals/useLeaders';
 import { OPTIONS } from './definition';
 import '../generals/generals.css';
+import { experienceText, experienceFactorText } from '../generals/experience';
 
 /** One view for the leaderboard drill and the standalone career widget. */
 export default function CareerView({ reference, hour, onPick, widget, runtime, active, onDiagnostics }: WidgetProps & {
@@ -86,7 +87,18 @@ export default function CareerView({ reference, hour, onPick, widget, runtime, a
           : <><span><strong>{row.won}</strong>won</span><span><strong>{row.lost}</strong>lost</span><span><strong>{row.winRate == null ? '—' : `${Math.round(row.winRate)}%`}</strong>win rate</span></>}
         <span><strong>{row.preparing ? 'Still being prepared' : row.unresolved}</strong>unresolved</span>
         <span>{recordedSince(row.career, data.firstHour)}</span>
+        <span><strong>{row.value.progress ? experienceText(row.value.progress.experienceRaw, row.value.progress.nextRequiredRaw) : 'Unavailable'}</strong>commander XP</span>
       </div></div> : <p className="career-note">{preparing ? 'Leader details are still being prepared at this time.' : 'Leader details unavailable at this time.'}</p>}
+    {row?.value.progress && <div className="career-training">
+      <strong>Trait training</strong>
+      {row.value.progress.training === null ? <p>Unavailable</p> : row.value.progress.training.length === 0 ? <p>No traits in training</p>
+        : <ul>{row.value.progress.training.map((trait, index) => <li key={index}>{trait.name ?? trait.token ?? 'Unknown trait'}: {experienceText(trait.experienceRaw, trait.requiredRaw)}</li>)}</ul>}
+    </div>}
+    {row?.value.progress && <div className="career-training">
+      <strong>Trait training modifiers</strong>
+      {row.value.progress.factors === null ? <p>Unavailable</p> : row.value.progress.factors.length === 0 ? <p>No individual training modifiers</p>
+        : <ul>{row.value.progress.factors.map((trait, index) => <li key={index}>{trait.name ?? trait.token ?? 'Unknown trait'}: {experienceFactorText(trait.factorRaw)}</li>)}</ul>}
+    </div>}
     <Timeline label="General career" extent={playbackDomain(grow ? 'draw-in' : 'cursor',
       [first, Math.max(first + 1, track.branch.lastHour + 1)], last + 1, 0, 1)} playhead={last + 1} labelHour={last}
       preserveZoomOnExtentChange={grow}

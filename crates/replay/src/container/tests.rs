@@ -139,8 +139,14 @@ fn branch(id: u64, hour: i32) -> BranchStart {
 }
 
 pub(super) fn source(branch: u64, hour: i32) -> DecodedFrame {
-    let mut tables =
-        std::array::from_fn(|index| TableView::Complete(TableRows::empty(TableId::ALL[index])));
+    let mut tables = std::array::from_fn(|index| {
+        let table = TableId::ALL[index];
+        TableView::Complete(if table.key_bits() == 0 {
+            TableRows::one_default(table)
+        } else {
+            TableRows::empty(table)
+        })
+    });
     tables[TableId::Clock.index()] = TableView::Complete(TableRows::Clock(vec![ClockRow {
         hour,
         ..ClockRow::default()
@@ -189,6 +195,8 @@ pub(super) fn source(branch: u64, hour: i32) -> DecodedFrame {
                 ..Default::default()
             },
         ]));
+    tables[TableId::DesignObserverContext.index()] =
+        TableView::Complete(TableRows::DesignObserverContext(vec![Default::default()]));
     tables[TableId::MapEvents.index()] =
         TableView::Complete(TableRows::MapEvents(vec![Default::default()]));
     crate::frame::retire_absent(DecodedFrame {
@@ -197,6 +205,35 @@ pub(super) fn source(branch: u64, hour: i32) -> DecodedFrame {
         metrics: Metrics::default(),
         tables: tables.map(Into::into),
     })
+}
+
+#[test]
+fn source_completes_catalogued_singletons_without_admitting_empty_design_context() {
+    let expected = source(1, 42);
+    for table in TableId::ALL
+        .into_iter()
+        .filter(|table| table.key_bits() == 0)
+    {
+        let TableView::Complete(rows) = &*expected.tables[table.index()] else {
+            panic!("fixture singleton {table:?} is not complete");
+        };
+        assert_eq!(rows.len(), 1, "fixture singleton {table:?}");
+        assert_eq!(
+            rows.first().unwrap().key(),
+            0,
+            "fixture singleton {table:?}"
+        );
+    }
+    FrameEncoder::new().encode(expected.clone(), false).unwrap();
+    let mut invalid = expected;
+    *invalid.tables[TableId::DesignObserverContext.index()] =
+        TableView::Complete(TableRows::DesignObserverContext(vec![]));
+    let error = FrameEncoder::new().encode(invalid, false).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("complete singleton table must contain exactly one row")
+    );
 }
 
 #[test]

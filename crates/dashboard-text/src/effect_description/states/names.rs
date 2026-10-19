@@ -33,7 +33,9 @@ impl Renderer<'_, '_, '_> {
         let state = match field(children(item), "state") {
             Some(state) => {
                 let operand = scalar_operand(state)?;
-                self.evaluator()?.scoped_state_id(operand, scopes)? as u32
+                self.evaluator()?
+                    .scoped_state_id(operand, scopes)
+                    .map_err(|why| why.to_string())? as u32
             }
             None => 0,
         };

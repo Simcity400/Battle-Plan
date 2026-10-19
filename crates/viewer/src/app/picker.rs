@@ -48,6 +48,8 @@ pub enum ViewEvent {
 /// The picker's state in one view.
 #[derive(Default)]
 pub struct PickerState {
+    /// Rotating radar ranges, separately from station icons.
+    pub radar: bool,
     pub picker: picker::Picker,
     pub open: Open,
     /// Tokens of the configurable slots; empty holds the defaults.
@@ -154,13 +156,13 @@ pub fn mode_hover(
             }
             Stock::Ideology => ModeHover::Ideology,
             Stock::Resistance | Stock::Compliance => ModeHover::Occupation,
-            Stock::Factions
-            | Stock::Players
-            | Stock::StrategicAir
-            | Stock::StrategicNavy
-            | Stock::Raids => ModeHover::Nothing,
+            Stock::Factions | Stock::Players | Stock::Raids => ModeHover::Nothing,
             // The app asks the terrain mode's own hover (viewer-combat's terrain_mode) instead.
             Stock::Terrain => ModeHover::Nothing,
+            Stock::StrategicAir => ModeHover::StrategicAir(Default::default()),
+            Stock::StrategicNavy => ModeHover::StrategicNavy(std::sync::Arc::new(Err(
+                "naval dominance sources not prepared".into(),
+            ))),
             Stock::Resources => ModeHover::Resources,
             Stock::Operatives => ModeHover::Operatives,
             Stock::Infrastructure => ModeHover::Infrastructure(infrastructure_level()),
@@ -345,6 +347,7 @@ impl Viewer {
             return;
         }
         if self.map_mode != mode {
+            self.air_selection.clear_bases();
             self.map_mode = mode;
             self.report_options();
         }
@@ -401,8 +404,7 @@ impl Viewer {
             ),
             allied_plans: host.then_some(self.graphics.show_allied_plans),
             fog: Some(self.perspective.fog),
-            // The radar overlay is not drawn by the viewer.
-            radar: None,
+            radar: Some(self.picker.radar),
         }
     }
 
@@ -519,6 +521,7 @@ impl Viewer {
             return;
         }
         match name {
+            "button_radar" => self.picker.radar = !self.picker.radar,
             "button_fog" if !hosted => self.perspective.fog = !self.perspective.fog,
             "player_counters_toggle" => {
                 self.player_counters = !self.player_counters;
@@ -613,6 +616,18 @@ mod tests {
             MapMode::default()
         );
         assert_eq!(host_choice(&options(true, None)).0, MapMode::default());
+    }
+
+    #[test]
+    fn radar_toggle_controls_range_symbols_independently_of_station_icons() {
+        let mut view = viewer();
+        assert_eq!(view.picker_toggles().radar, Some(false));
+        let graphics = view.graphics;
+        view.picker_toggle("button_radar");
+        assert_eq!(view.picker_toggles().radar, Some(true));
+        assert_eq!(view.graphics, graphics);
+        view.picker_toggle("button_radar");
+        assert_eq!(view.picker_toggles().radar, Some(false));
     }
 
     #[test]
@@ -832,13 +847,17 @@ mod tests {
         assert_eq!(hover(Stock::Compliance), ModeHover::Occupation);
         assert_eq!(hover(Stock::Operatives), ModeHover::Operatives);
         assert_eq!(hover(Stock::Resources), ModeHover::Resources);
-        for stock in [
-            Stock::Factions,
-            Stock::Players,
-            Stock::StrategicAir,
-            Stock::StrategicNavy,
-            Stock::Raids,
-        ] {
+        assert_eq!(
+            hover(Stock::StrategicAir),
+            ModeHover::StrategicAir(Default::default())
+        );
+        assert_eq!(
+            hover(Stock::StrategicNavy),
+            ModeHover::StrategicNavy(std::sync::Arc::new(Err(
+                "naval dominance sources not prepared".into()
+            )))
+        );
+        for stock in [Stock::Factions, Stock::Players, Stock::Raids] {
             assert_eq!(hover(stock), ModeHover::Nothing, "{stock:?}");
         }
         assert_eq!(

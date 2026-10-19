@@ -18,6 +18,7 @@ pub fn fixture() -> (
 ) {
     let save = save::parse(br#"HOI4txt
 player="GER" date="1936.1.1.1" game_unique_id="campaign" game_unique_seed=7 debug_current_ref_id=65580 unit=4008 order_index=7484 front_index=8230 theatre_index=112 theater_group_index=910 military_deployment_line_index=7783 military_deployment_conveyor_index=736 equipment_variant_index=6284 country_leader_index=1 navy_id=8184 land_combat_id=15224 multiplayer_random_count=-1334833904 version="build"
+faction_system={countries={0} extracted={}}
 states={1={owner="GER" demilitarized=no is_border_conflict=no state_category=town}} provinces={2={controller="GER"}}
 countries={GER={politics={political_power=10.00001} command_power=2 stability=0.7 war_support=0.3 convoys={equipment={}}}}
 "#).unwrap();

@@ -10,7 +10,7 @@ use std::{
     mem::{ManuallyDrop, size_of},
     ops::Range,
     ptr,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use windows_sys::Win32::{
     Foundation::{
@@ -32,6 +32,8 @@ use windows_sys::Win32::{
     },
 };
 
+pub mod installation;
+
 /// An initial enable refused before writing any byte and with no owned member.
 pub const BYTE_VERIFICATION_FAILURE: &str = "hook bytes differ from verified snapshot";
 
@@ -51,8 +53,11 @@ pub struct Hook {
     patch_len: usize,
     enabled: bool,
     needs_flush: bool,
+    diagnostic_failure: bool,
     page_protection: u32,
     tap: Option<TapSafety>,
+    name: &'static str,
+    publication_busy: AtomicBool,
 }
 
 impl Hook {
@@ -75,12 +80,14 @@ impl Hook {
         original: [u8; 16],
         safety: TapSafety,
     ) -> Result<Self, String> {
-        if safety.stub.is_empty() || !safety.stub.contains(&callback) {
-            return Err("hook safety stub must contain its callback".into());
-        }
-        let mut hook = unsafe { Self::new(site, callback, original) }?;
-        hook.tap = Some(safety);
-        Ok(hook)
+        installation::construct(site, || {
+            if safety.stub.is_empty() || !safety.stub.contains(&callback) {
+                return Err("hook safety stub must contain its callback".into());
+            }
+            let mut hook = unsafe { Self::new(site, callback, original) }?;
+            hook.tap = Some(safety);
+            Ok(hook)
+        })
     }
 
     unsafe fn new_span(
@@ -89,99 +96,119 @@ impl Hook {
         original: [u8; 16],
         sentinel_len: usize,
     ) -> Result<Self, String> {
-        if !(5..=original.len()).contains(&sentinel_len) {
-            return Err("hook sentinel must cover the patch within its storage".into());
-        }
-        if site.checked_add(sentinel_len).is_none() {
-            return Err("hook sentinel address overflow".into());
-        }
-        // A relay in rel32 range lets retour relocate exactly the same five-byte
-        // prologue that we patch. The known candidates have no hot-patch prefix.
-        let aligned = site & !0xffff;
-        let mut relay = ptr::null_mut();
-        for distance in (0x10000..0x7000_0000_usize).step_by(0x10000) {
-            for address in [aligned.checked_sub(distance), aligned.checked_add(distance)]
-                .into_iter()
-                .flatten()
-            {
-                relay = unsafe {
-                    VirtualAlloc(
-                        address as *const c_void,
-                        4096,
-                        MEM_RESERVE | MEM_COMMIT,
-                        PAGE_READWRITE,
-                    )
-                };
+        installation::construct(site, || {
+            if !(5..=original.len()).contains(&sentinel_len) {
+                return Err("hook sentinel must cover the patch within its storage".into());
+            }
+            if site.checked_add(sentinel_len).is_none() {
+                return Err("hook sentinel address overflow".into());
+            }
+            // A relay in rel32 range lets retour relocate exactly the same five-byte
+            // prologue that we patch. The known candidates have no hot-patch prefix.
+            let aligned = site & !0xffff;
+            let mut relay = ptr::null_mut();
+            for distance in (0x10000..0x7000_0000_usize).step_by(0x10000) {
+                for address in [aligned.checked_sub(distance), aligned.checked_add(distance)]
+                    .into_iter()
+                    .flatten()
+                {
+                    relay = unsafe {
+                        VirtualAlloc(
+                            address as *const c_void,
+                            4096,
+                            MEM_RESERVE | MEM_COMMIT,
+                            PAGE_READWRITE,
+                        )
+                    };
+                    if !relay.is_null() {
+                        break;
+                    }
+                }
                 if !relay.is_null() {
                     break;
                 }
             }
-            if !relay.is_null() {
-                break;
+            if relay.is_null() {
+                return Err("cannot allocate a nearby detour relay".into());
             }
-        }
-        if relay.is_null() {
-            return Err("cannot allocate a nearby detour relay".into());
-        }
-        let result = (|| {
-            let mut code = [0_u8; 14];
-            code[..6].copy_from_slice(&[0xff, 0x25, 0, 0, 0, 0]);
-            code[6..].copy_from_slice(&(callback as u64).to_le_bytes());
-            unsafe {
-                ptr::copy_nonoverlapping(code.as_ptr(), relay.cast(), code.len());
+            let result = (|| {
+                let mut code = [0_u8; 14];
+                code[..6].copy_from_slice(&[0xff, 0x25, 0, 0, 0, 0]);
+                code[6..].copy_from_slice(&(callback as u64).to_le_bytes());
+                unsafe {
+                    ptr::copy_nonoverlapping(code.as_ptr(), relay.cast(), code.len());
+                }
+                let mut previous = 0;
+                if unsafe { VirtualProtect(relay, 4096, PAGE_EXECUTE_READ, &mut previous) } == 0
+                    || unsafe { FlushInstructionCache(GetCurrentProcess(), relay, code.len()) } == 0
+                {
+                    return Err(io::Error::last_os_error().to_string());
+                }
+                let relocation = unsafe { RawDetour::new(site as *const (), relay.cast()) }
+                    .map_err(|e| e.to_string())?;
+                // Retour emits its trampoline after the relay; publish that code too.
+                if unsafe { FlushInstructionCache(GetCurrentProcess(), ptr::null(), 0) } == 0 {
+                    return Err(io::Error::last_os_error().to_string());
+                }
+                let mut region: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+                if unsafe {
+                    VirtualQuery(
+                        site as *const c_void,
+                        &mut region,
+                        size_of::<MEMORY_BASIC_INFORMATION>(),
+                    )
+                } == 0
+                {
+                    return Err(io::Error::last_os_error().to_string());
+                }
+                let relative = i32::try_from(relay as i64 - (site + 5) as i64)
+                    .map_err(|_| "relay outside rel32 range")?;
+                let mut patch = [0; 16];
+                patch[0] = 0xe9;
+                patch[1..5].copy_from_slice(&relative.to_le_bytes());
+                Ok(Self {
+                    relocation: ManuallyDrop::new(relocation),
+                    relay,
+                    site,
+                    original,
+                    sentinel_len,
+                    patch,
+                    patch_len: 5,
+                    enabled: false,
+                    needs_flush: false,
+                    diagnostic_failure: false,
+                    page_protection: region.Protect,
+                    tap: None,
+                    name: "native hook",
+                    publication_busy: AtomicBool::new(false),
+                })
+            })();
+            if result.is_err() {
+                unsafe {
+                    VirtualFree(relay, 0, MEM_RELEASE);
+                }
             }
-            let mut previous = 0;
-            if unsafe { VirtualProtect(relay, 4096, PAGE_EXECUTE_READ, &mut previous) } == 0
-                || unsafe { FlushInstructionCache(GetCurrentProcess(), relay, code.len()) } == 0
-            {
-                return Err(io::Error::last_os_error().to_string());
-            }
-            let relocation = unsafe { RawDetour::new(site as *const (), relay.cast()) }
-                .map_err(|e| e.to_string())?;
-            // Retour emits its trampoline after the relay; publish that code too.
-            if unsafe { FlushInstructionCache(GetCurrentProcess(), ptr::null(), 0) } == 0 {
-                return Err(io::Error::last_os_error().to_string());
-            }
-            let mut region: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
-            if unsafe {
-                VirtualQuery(
-                    site as *const c_void,
-                    &mut region,
-                    size_of::<MEMORY_BASIC_INFORMATION>(),
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error().to_string());
-            }
-            let relative = i32::try_from(relay as i64 - (site + 5) as i64)
-                .map_err(|_| "relay outside rel32 range")?;
-            let mut patch = [0; 16];
-            patch[0] = 0xe9;
-            patch[1..5].copy_from_slice(&relative.to_le_bytes());
-            Ok(Self {
-                relocation: ManuallyDrop::new(relocation),
-                relay,
-                site,
-                original,
-                sentinel_len,
-                patch,
-                patch_len: 5,
-                enabled: false,
-                needs_flush: false,
-                page_protection: region.Protect,
-                tap: None,
-            })
-        })();
-        if result.is_err() {
-            unsafe {
-                VirtualFree(relay, 0, MEM_RELEASE);
-            }
-        }
-        result
+            result
+        })
+    }
+
+    /// Whether the last tracked publication reached this site or tap while busy.
+    pub fn publication_busy(&self) -> bool {
+        self.publication_busy.load(Ordering::Relaxed)
     }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled || self.needs_flush
+    }
+
+    /// A static family/site label retained for publication diagnostics.
+    pub fn named(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
+    }
+    /// Name the exact site whose authenticated bytes no longer match.
+    pub fn snapshot_failure(&self) -> Option<&'static str> {
+        (!self.bytes_match(self.enabled)).then_some(self.name)
     }
 
     pub fn trampoline(&self) -> usize {
@@ -214,12 +241,14 @@ impl Hook {
         original: [u8; 16],
         sentinel_len: usize,
     ) -> Result<Self, String> {
-        if original[0] != 0xe8 {
-            return Err("call hook requires a five-byte rel32 CALL".into());
-        }
-        let mut hook = unsafe { Self::new_span(site, callback, original, sentinel_len) }?;
-        hook.patch[0] = 0xe8;
-        Ok(hook)
+        installation::construct(site, || {
+            if original[0] != 0xe8 {
+                return Err("call hook requires a five-byte rel32 CALL".into());
+            }
+            let mut hook = unsafe { Self::new_span(site, callback, original, sentinel_len) }?;
+            hook.patch[0] = 0xe8;
+            Ok(hook)
+        })
     }
 
     /// Keep a counted native CALL's entry, original and exit alive through restore.
@@ -232,12 +261,14 @@ impl Hook {
         original: [u8; 16],
         safety: TapSafety,
     ) -> Result<Self, String> {
-        if safety.stub.is_empty() || !safety.stub.contains(&callback) {
-            return Err("call tap stub must contain its callback".into());
-        }
-        let mut hook = unsafe { Self::new_call(site, callback, original) }?;
-        hook.tap = Some(safety);
-        Ok(hook)
+        installation::construct(site, || {
+            if safety.stub.is_empty() || !safety.stub.contains(&callback) {
+                return Err("call tap stub must contain its callback".into());
+            }
+            let mut hook = unsafe { Self::new_call(site, callback, original) }?;
+            hook.tap = Some(safety);
+            Ok(hook)
+        })
     }
 
     /// Replace the leader-action indirect CALLs, FF 90 disp32, with CALL relay; NOP. The counted
@@ -256,18 +287,20 @@ impl Hook {
         original: [u8; 16],
         safety: TapSafety,
     ) -> Result<Self, String> {
-        if original[..2] != [0xff, 0x90] {
-            return Err("indirect call tap requires a six-byte CALL [RAX+disp32]".into());
-        }
-        if safety.stub.is_empty() || !safety.stub.contains(&callback) {
-            return Err("indirect call tap stub must contain its callback".into());
-        }
-        let mut hook = unsafe { Self::new(site, callback, original) }?;
-        hook.patch[0] = 0xe8;
-        hook.patch[5] = 0x90;
-        hook.patch_len = 6;
-        hook.tap = Some(safety);
-        Ok(hook)
+        installation::construct(site, || {
+            if original[..2] != [0xff, 0x90] {
+                return Err("indirect call tap requires a six-byte CALL [RAX+disp32]".into());
+            }
+            if safety.stub.is_empty() || !safety.stub.contains(&callback) {
+                return Err("indirect call tap stub must contain its callback".into());
+            }
+            let mut hook = unsafe { Self::new(site, callback, original) }?;
+            hook.patch[0] = 0xe8;
+            hook.patch[5] = 0x90;
+            hook.patch_len = 6;
+            hook.tap = Some(safety);
+            Ok(hook)
+        })
     }
 
     pub fn executable_ranges(&self) -> [Range<usize>; 2] {
@@ -295,27 +328,48 @@ impl Hook {
         Ok(false)
     }
 
-    fn family_ready(
-        hooks: &[&mut Self],
+    fn family_ready<const TRACK_BUSY: bool>(
+        hooks: &mut [&mut Self],
         enabled: bool,
         selected: impl Fn(usize) -> bool,
         ranges: &[Range<usize>],
         threads: &mut Threads,
         snapshot_refusal: &mut bool,
     ) -> Result<bool, u32> {
-        if threads.contains_ip(ranges)? {
+        if TRACK_BUSY {
+            if let Some(index) = threads.colliding_range(ranges)? {
+                hooks
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| selected(*index))
+                    .nth(index)
+                    .expect("range belongs to selected hook")
+                    .1
+                    .publication_busy
+                    .store(true, Ordering::Relaxed);
+                return Ok(false);
+            }
+        } else if threads.contains_ip(ranges)? {
             return Ok(false);
         }
+        let unowned = enabled && hooks.iter().all(|hook| !hook.is_enabled());
         for (_, hook) in hooks
-            .iter()
+            .iter_mut()
             .enumerate()
             .filter(|(index, _)| selected(*index))
         {
-            if hook.tap_busy_with(enabled, |ranges| threads.contains_ip(ranges))? {
+            if hook
+                .tap_busy_with(enabled, |ranges| threads.contains_ip(ranges))
+                .inspect_err(|_| hook.diagnostic_failure = true)?
+            {
+                if TRACK_BUSY {
+                    hook.publication_busy.store(true, Ordering::Relaxed);
+                }
                 return Ok(false);
             }
             if !hook.bytes_match(hook.enabled) {
-                *snapshot_refusal = enabled && hooks.iter().all(|hook| !hook.is_enabled());
+                hook.diagnostic_failure = true;
+                *snapshot_refusal = unowned;
                 return Err(0);
             }
         }
@@ -335,6 +389,13 @@ impl Hook {
             == &expected[..self.sentinel_len]
     }
 
+    /// Recheck this hook's currently owned bytes for an installation diagnostic.
+    /// Call only after publication has resumed threads; this does not grant a
+    /// publication certificate or change ownership.
+    pub fn matches_published_snapshot(&self) -> bool {
+        self.bytes_match(self.enabled)
+    }
+
     /// Prepare protection/ranges before holding threads, validate every site
     /// before any write, and publish the whole family under one suspension.
     pub fn set_family_enabled(hooks: &mut [Self], enabled: bool) -> Result<bool, String> {
@@ -345,28 +406,78 @@ impl Hook {
     }
 
     pub fn set_enabled_batch(hooks: &mut [&mut Self], enabled: bool) -> Result<bool, String> {
-        Self::set_family_enabled_with_flush(hooks, enabled, || {
-            #[cfg(any(test, feature = "test-support"))]
-            if FAIL_FLUSHES.with(|remaining| {
-                let value = remaining.get();
-                remaining.set(value.saturating_sub(1));
-                value != 0
-            }) {
-                return Err(31);
-            }
-            if unsafe { FlushInstructionCache(GetCurrentProcess(), ptr::null(), 0) } == 0 {
-                Err(unsafe { GetLastError() })
+        let result = Self::set_family_enabled_with_flush(hooks, enabled, shared::real_flush);
+        Self::observe_installation_outcome(hooks.iter().map(|hook| &**hook), &result);
+        result
+    }
+
+    /// Retain the first busy site for callers that report publication deadlines.
+    pub fn set_enabled_batch_tracking_busy(
+        hooks: &mut [&mut Self],
+        enabled: bool,
+    ) -> Result<bool, String> {
+        let result = Self::set_family_enabled_with_flush_tracking::<true>(
+            hooks,
+            enabled,
+            shared::real_flush,
+        );
+        Self::observe_installation_outcome(hooks.iter().map(|hook| &**hook), &result);
+        result
+    }
+
+    fn observe_installation_outcome<'a>(
+        hooks: impl Iterator<Item = &'a Self>,
+        result: &Result<bool, String>,
+    ) {
+        if let Some(failure) = Self::installation_failure(hooks, result) {
+            installation::refused(failure.kind, failure.site, &failure.cause);
+        }
+    }
+
+    fn installation_failure<'a>(
+        mut hooks: impl Iterator<Item = &'a Self>,
+        result: &Result<bool, String>,
+    ) -> Option<installation::Failure> {
+        let Err(cause) = result else { return None };
+        let first = hooks.next();
+        let mut site = first.map(|hook| hook.site);
+        let mut rollback_failed = first.is_some_and(|hook| hook.needs_flush);
+        for hook in hooks {
+            site = None;
+            rollback_failed |= hook.needs_flush;
+        }
+        Some(installation::Failure {
+            kind: if rollback_failed {
+                installation::Kind::Rollback
             } else {
-                Ok(())
-            }
+                installation::Kind::Publication
+            },
+            site,
+            cause: cause.clone().into(),
         })
     }
 
     fn set_family_enabled_with_flush(
         hooks: &mut [&mut Self],
         enabled: bool,
+        flush: impl FnMut() -> Result<(), u32>,
+    ) -> Result<bool, String> {
+        Self::set_family_enabled_with_flush_tracking::<false>(hooks, enabled, flush)
+    }
+
+    fn set_family_enabled_with_flush_tracking<const TRACK_BUSY: bool>(
+        hooks: &mut [&mut Self],
+        enabled: bool,
         mut flush: impl FnMut() -> Result<(), u32>,
     ) -> Result<bool, String> {
+        for hook in hooks.iter_mut() {
+            hook.diagnostic_failure = false;
+        }
+        if TRACK_BUSY {
+            for hook in hooks.iter() {
+                hook.publication_busy.store(false, Ordering::Relaxed);
+            }
+        }
         if hooks.is_empty() || !enabled && hooks.iter().all(|hook| !hook.is_enabled()) {
             return Ok(true);
         }
@@ -394,7 +505,7 @@ impl Hook {
         let mut publication_failed = false;
         let mut snapshot_refusal = false;
         for (_, hook) in hooks
-            .iter()
+            .iter_mut()
             .enumerate()
             .filter(|(index, _)| selected(*index))
         {
@@ -409,6 +520,7 @@ impl Hook {
             } != 0;
             let error = if ok { 0 } else { unsafe { GetLastError() } };
             if !ok {
+                hook.diagnostic_failure = true;
                 prepare_error = Some(io::Error::from_raw_os_error(error as i32).to_string());
                 break;
             }
@@ -418,7 +530,7 @@ impl Hook {
         let outcome = if prepare_error.is_none() {
             (|| {
                 threads.suspend()?;
-                if !Self::family_ready(
+                if !Self::family_ready::<TRACK_BUSY>(
                     hooks,
                     enabled,
                     selected,
@@ -488,13 +600,11 @@ impl Hook {
                     }
                     return Err(code);
                 }
-                if hooks
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| selected(*index))
-                    .any(|(_, hook)| !hook.bytes_match(enabled))
-                {
-                    return Err(0);
+                for (index, hook) in hooks.iter_mut().enumerate() {
+                    if selected(index) && !hook.bytes_match(enabled) {
+                        hook.diagnostic_failure = true;
+                        return Err(0);
+                    }
                 }
                 for hook in hooks.iter_mut() {
                     hook.needs_flush = false;
@@ -506,13 +616,13 @@ impl Hook {
         };
         let mut protection_ok = true;
         for (_, hook) in hooks
-            .iter()
+            .iter_mut()
             .enumerate()
             .filter(|(index, _)| selected(*index))
             .take(protected)
         {
             let mut ignored = 0;
-            protection_ok &= unsafe {
+            let restored = unsafe {
                 VirtualProtect(
                     hook.site as *const c_void,
                     hook.sentinel_len,
@@ -520,6 +630,8 @@ impl Hook {
                     &mut ignored,
                 )
             } != 0;
+            hook.diagnostic_failure |= !restored;
+            protection_ok &= restored;
         }
         let census_refusal = threads.census_refusal();
         let resume = threads.resume();
@@ -1126,8 +1238,30 @@ impl Threads {
     fn contains_ip_with(
         &mut self,
         ranges: &[Range<usize>],
-        mut exited: impl FnMut(HANDLE) -> bool,
+        exited: impl FnMut(HANDLE) -> bool,
     ) -> Result<bool, u32> {
+        self.find_collision(
+            |ip| ranges.iter().any(|range| range.contains(&ip)).then_some(()),
+            exited,
+        )
+        .map(|collision| collision.is_some())
+    }
+
+    /// Return the first live collision from the ordinary suspended-thread scan.
+    fn colliding_range(&mut self, ranges: &[Range<usize>]) -> Result<Option<usize>, u32> {
+        self.find_collision(
+            |ip| ranges.iter().position(|range| range.contains(&ip)),
+            thread_exited,
+        )
+    }
+
+    fn find_collision<T>(
+        &mut self,
+        mut locate: impl FnMut(usize) -> Option<T>,
+        mut exited: impl FnMut(HANDLE) -> bool,
+    ) -> Result<Option<T>, u32> {
+        #[cfg(test)]
+        IP_SCANS.with(|count| count.set(count.get() + 1));
         if !self.snapshot_valid && self.threads.iter().any(|thread| thread.suspended) {
             return Err(ERROR_RETRY);
         }
@@ -1135,19 +1269,19 @@ impl Threads {
             let Some(ip) = thread.ip else {
                 continue;
             };
-            // Only a collision needs an exit probe; healthy ranges add no syscall.
-            if !ranges.iter().any(|range| range.contains(&ip)) {
+            let Some(collision) = locate(ip) else {
                 continue;
-            }
+            };
+            // Only a collision needs an exit probe; healthy ranges add no syscall.
             if exited(thread.handle) {
                 thread.ip = None;
                 thread.exited = true;
                 self.diagnostics.resolved();
                 continue;
             }
-            return Ok(true);
+            return Ok(Some(collision));
         }
-        Ok(false)
+        Ok(None)
     }
 
     /// Return only after every suspension acquired by this owner is resolved.
@@ -1236,7 +1370,6 @@ pub mod shared;
 #[path = "hook/tap.rs"]
 mod tap;
 /// The bytes a [`Tap`] at a sentinel replaces, for the site-overlap test.
-#[cfg(any(test, feature = "test-support"))]
 pub use tap::instruction_span as tap_span;
 pub use tap::{Registers, Tap};
 
@@ -1696,3 +1829,6 @@ mod thread_resume_policy_tests {
         release(threads);
     }
 }
+
+#[cfg(test)]
+std::thread_local! { static IP_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }

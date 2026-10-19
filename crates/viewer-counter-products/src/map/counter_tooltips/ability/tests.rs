@@ -33,6 +33,7 @@ fn with_context<R>(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>) -> R) ->
     run(&Context {
         nato: false,
         content: None,
+        reads: None,
         dig_in_factor: Err("unused".into()),
         loc: &loc,
         recorded_language: &loc.language,

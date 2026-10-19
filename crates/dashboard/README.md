@@ -74,6 +74,12 @@ Equipment produced also serves whole-history UI requests and the offline
 acceptance tool. Its shared production scan and cache remain live for the
 scoreboard's equipment totals and supplying dates.
 
+Equipment design detail's offline check reuses the complete equipment database
+preparation. Names use recorded text and token spellings. The check reports the
+recorded design, country, organisation and unit context needed for selected stats,
+costs, validity and reveal; offline content alone supplies no saved design or
+numeric result.
+
 `CONTENT_DEPENDENT` is true when any reply field reads localisation, artwork or
 content definitions. The generated `CONTENT_PRODUCTS` list controls frontend
 content-cache invalidation. Service, transport and host route by key; widgets
@@ -501,7 +507,8 @@ scans from the durable roster, including requests from an earlier Source.
 `unprepared_blocks` counts the walk's tail alone for its measurement journal;
 zero can still leave family or side work. The
 `independent` timing row counts time outside the walk rather than counting its
-overlapping wall time twice. Work beside the families
+overlapping wall time twice. Family and side-job rows, including their publications,
+are worker time. Work beside the families
 (`independent::Beside`: the newest battle windows) runs on threads of its own
 from the start of the phase, however the families prepare, and publishes each
 batch as soon as it has one through the same group commits: it forks the open
@@ -2862,7 +2869,8 @@ removed members once, while historical catalogues remain available to queries.
 The stockpile is prepared on its own. Its blocks are read by the countries'
 keys, slots and tags, the links and every field of its numeric and
 variant-catalogue tables; each stock, logistics and variant read hour is
-visited, and the next one by the clock is the extract's deadline. A quiet span
+visited, and the next one by the clock is the extract's deadline. Hourly
+variant changes also trigger naming between the daily variant reads. A quiet span
 advances the series and the catalogue's last hour in constant time
 (`Prepared::advance_quiet`); holders catch up through it in one step when next
 visited, with the same saved frontiers as advancing each hour. A kept hour
@@ -3181,6 +3189,8 @@ not later live replies. Preserve producer diagnostic kinds: `Content` requires
 supported content behaviour, while `Offline` identifies a recording dependency. Keep
 counts/examples separate from diagnostic identity and avoid duplicating
 reader-owned notes in product checks.
+
+Country-people preparation checks its three recruitment defines through the runtime cache. Invalid or missing defines produce named refusals; manpower, exile resources and elections still require their recorded operands.
 
 ## Service and limits
 
@@ -3582,9 +3592,10 @@ read for the land window's diagnostics, and the outcome (proven; left to forward
 preparation at the branch's first block, unproven or unavailable; naming refused;
 or unreadable). A naming refusal after a proven land page leaves that page
 available with incomplete warnings. Measured runs count it in the family's timing
-rows: `newest.land` and `newest.naval` (the family's time), `.earlier`,
+rows: `newest.land` and `newest.naval` (the family's time outside its timed parts), `.earlier`,
 `.look-back` and `.naming` (time, with blocks as calls), and one row per outcome
-(a call per branch). While preparation runs, every accepted status carries a
+(a call per branch). The land diagnostics row excludes its separate naming time.
+While preparation runs, every accepted status carries a
 row per family trying windows, `land-battles-newest` and `naval-battles-newest`:
 preparing until it has tried every branch, its count the branches whose pages
 and diagnostics completed of those tried, its text each branch's report on one line. The readiness probe
@@ -3769,6 +3780,23 @@ is retained, sized by its live block count and observed allocation capacities;
 the whole scan still folds every hour in order from its own start. Different
 countries, native holders and selected tables have distinct entries.
 
+The interactive `doctrines` product seeks one selected country/hour and only its
+required tables. It returns ordered grand/subdoctrine choices, completion
+history, mastery and bank, effective and unit-source daily gains, commander
+contributions and stored grants/handles. Authored costs and reward benefits use
+the recorded doctrine catalogue and shared description formatters; missing
+runtime cost operands remain explicit diagnostics.
+
+Doctrine reward labels use the subdoctrine/reward composite localisation key;
+optional generated description keys share the authored benefit formatter. The
+doctrine product reconstructs the shared scoped-text and trigger inputs used by
+other description callers, including recorded flags and variables.
+preparation coverage.
+
+The country-people product supplies reached-hour manpower, mobilisation, state pool, exile and election details to the existing manpower and ruling-party views.
+
+
+Offline product checks load faction goal/template and upgrade/group content through the same readers as faction details, and check country-people mobilisation defines. Selected identities and supplying simulation operands remain explicit offline findings. Sampled banked-experience replies retain their supplying read-hour marker. Subject replies mark both explicit recorded gaps and discontinuities between recorded blocks as unobserved after the prepared prefix.
 ## Fold CPU measurements
 
 When `replay_frame::cpu` is enabled, independent family workers split their CPU into
@@ -3792,3 +3820,36 @@ measurements; they are not added
 to exclusive phase CPU. Shared helpers also run in extracts and queries, so
 fold breakdowns select the `family thread` role. Accounting is disabled
 unless a measurement harness enables it; scopes use its ordinary enabled check.
+
+Doctrine reward labels use the subdoctrine/reward composite localisation key;
+optional generated description keys share the authored benefit formatter. The
+doctrine product reconstructs the shared scoped-text and trigger inputs used by
+other description callers, including recorded flags and variables.
+
+The installed-metadata doctrine reward/content regression runs with the ordinary
+suite and initializes executable metadata from `BATTLE_PLAN_GAME_DIR`. Run it on its
+own with:
+
+```powershell
+cargo nextest run -p dashboard doctrine_reward_content_names_generated_prose_and_recorded_conditions
+```
+
+Rejected family batches leave their pending metadata or accepted prefix untouched; only adopted publications advance family progress. Country-group tail queries preserve both explicit recording gaps and discontinuities between recorded blocks after prefix clipping.
+
+The interactive `naval-management` product serves the Navy Size drill at a selected country/date, using one frame and its recorded content. It does not prepare or scan a campaign history.
+The existing Agency comparison widget requests `intel-details` for one selected country and hour. It shares the source frame cache and recorded content catalogue, and introduces no preparation scan or new widget. Source operands, observed ranges, network occurrences and propaganda history remain separate, with named counted explanation refusals.
+The existing event feed includes accepted script events, news, chosen options and decision/mission lifecycle edges. Static event metadata resolves through the recorded content stack; conditional presentation and uncaptured scope operands are named and counted. Retained registry baselines appear only as labelled state observations, without past fire times.
+
+Authored event-option and decision effects use the shared scoped-text/effect formatter with occurrence scopes and exact country-identity witnesses. The feed names and counts unsupported bodies/inputs. Effect execution rows remain distinct from actual terminal transitions and native duration writes; sampled state is never substituted for execution-time state.
+
+Certified native rebuild rows show the decision roster in the existing Event feed. Membership, native lifecycle/durations, target identities, ignored flags and description counts come from the retained event reducer. Category/decision predicates share the trigger interpreter; unsupported content and mutable inputs without an exact rebuild certificate are refused by decision, predicate and operand. Prepared rows retain these same inputs. Baselines remain state, never selections or past fires.
+
+Script-family masks describe real interval losses; none of the supported decision families is unconditionally refused. Effect invocation, actual result transitions and description-only randomness retain their separate meanings.
+
+Event-feed preparation persists the complete retained script reducer, including owner maps, ordered members and open pass cursors. Retained-state detail rows show pending instances/due hours/scopes/originators, fired membership, delayed timers and decision containers/counters; baseline entries are read-time observations, never past fires. Final roster cost checks compare the certified fixed5 political balance with the shared interpreter cost.
+The existing Agency comparison widget requests `intel-details` for one selected country and hour. It shares the source frame cache and recorded content catalogue, and introduces no preparation scan or new widget. Source operands, observed ranges, network occurrences and propaganda history remain separate, with named counted explanation refusals. Its content preparation check loads the same define stack and sub-unit database as the product, and reports source/range operands and supplying dates as recording-only inputs.
+
+The focus-art runtime metadata and image parity test runs with the ordinary
+suite and initializes executable metadata from `BATTLE_PLAN_GAME_DIR`. Its fixture
+preserves unused singleton inputs as unavailable using the table registry, so new
+singleton tables cannot become invalid empty observations.

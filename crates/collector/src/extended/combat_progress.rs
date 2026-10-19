@@ -10,12 +10,12 @@ use replay_data::{
 use replay_frame::frame::TableView;
 use std::mem::size_of;
 
-pub const N: usize = 1;
-pub const TABLES: [TableId; N] = [TableId::LandCombatProgress];
+pub const N: usize = 2;
+pub const TABLES: [TableId; N] = [TableId::LandCombatProgress, TableId::CombatLogObservers];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "land combat casualty operands (census charged to LandCombats)",
+    "land combat casualty and observer operands (census charged to LandCombats)",
     0,
-    &[0],
+    &[0, 1],
 )];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -65,6 +65,8 @@ pub struct Captured {
     identities: Vec<[u8; 16]>,
     len: usize,
     failure: Option<&'static str>,
+    observers: Vec<replay_data::rows::CombatLogObserverRow>,
+    observer_failure: Option<&'static str>,
 }
 
 impl Captured {
@@ -81,6 +83,8 @@ impl Captured {
             )),
             len: 0,
             failure: None,
+            observers: Vec::new(),
+            observer_failure: None,
         }
     }
     pub fn reset(&mut self) {
@@ -88,6 +92,8 @@ impl Captured {
         self.equipment.reset();
         self.len = 0;
         self.failure = None;
+        self.observers.clear();
+        self.observer_failure = None;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -96,6 +102,7 @@ impl Captured {
                 * size_of::<[engine_land_inputs::cstats_observer::LossSpan; 2]>()
             + self.pointers.capacity() * size_of::<usize>()
             + self.identities.capacity() * 16
+            + self.observers.capacity() * size_of::<replay_data::rows::CombatLogObserverRow>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
@@ -109,6 +116,8 @@ impl Captured {
         self.equipment.reset();
         self.len = 0;
         self.failure = None;
+        self.observers.clear();
+        self.observer_failure = None;
     }
     pub fn visit(&mut self, memory: &impl Memory, base: usize, source: cland_combat::Source) {
         let _reads = crate::read_accounting::table(TABLES[0]);
@@ -183,8 +192,48 @@ impl Captured {
         self.equipment.len += count;
         self.rows.rows[self.len] = source.id;
         self.len += 1;
+        if self.observer_failure.is_none() {
+            for (side, pointer) in source.sides.into_iter().enumerate() {
+                let mut ordinal = 0u64;
+                let mut storage = Ok(());
+                let read = engine_land_inputs::combat_log_events::observer(
+                    memory,
+                    base,
+                    pointer,
+                    &mut |fact| {
+                        if storage.is_err() {
+                            return;
+                        }
+                        storage = engine_allocation::reserve_push_batch(&mut self.observers, 1)
+                            .map_err(|_| "combat log observer arena allocation failed");
+                        if storage.is_ok() {
+                            let [a, b, c, d, e] = fact.values;
+                            self.observers
+                                .push(replay_data::rows::CombatLogObserverRow {
+                                    combat: source.id,
+                                    attacker: side == 0,
+                                    ordinal,
+                                    kind: fact.kind as u8,
+                                    item: fact.item,
+                                    a,
+                                    b,
+                                    c,
+                                    d,
+                                    e,
+                                });
+                            ordinal += 1;
+                        }
+                    },
+                );
+                if let Err(reason) = read.and(storage) {
+                    self.observer_failure = Some(reason);
+                    break;
+                }
+            }
+        }
     }
     pub fn finish(&mut self, parent: Outcome) {
+        crate::land_events::observe_observer_rows(self.observers.len());
         let missing = match parent {
             Outcome::Truncated { unread_rows, .. } => unread_rows,
             _ => 0,
@@ -204,7 +253,20 @@ impl Captured {
         };
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.rows.outcome]
+        [
+            self.rows.outcome,
+            match (self.observer_failure, self.rows.outcome) {
+                (Some(reason), _) | (_, Outcome::Unavailable { reason }) => {
+                    Outcome::Unavailable { reason }
+                }
+                (_, Outcome::Truncated { .. }) => Outcome::Unavailable {
+                    reason: "combat log observer census incomplete",
+                },
+                _ => Outcome::Rows {
+                    len: self.observers.len(),
+                },
+            },
+        ]
     }
     pub(crate) fn lost_reads(&self) -> u64 {
         match self.rows.outcome {
@@ -218,22 +280,29 @@ impl Captured {
         matches!(self.rows.outcome, Outcome::Rows { .. })
     }
     pub fn tables(&self) -> [TableView; N] {
-        [table_iter::<tables::LandCombatProgress, _>(
-            self.outcomes()[0],
-            self.rows
-                .rows
-                .iter()
-                .zip(&self.losses)
-                .take(self.rows.outcome.len()),
-            |(combat, losses)| LandCombatProgressRow {
-                combat: *combat,
-                attacker_manpower_loss: losses[0].manpower.into(),
-                defender_manpower_loss: losses[1].manpower.into(),
-                attacker_equipment_losses: self.equipment_rows(losses[0]).into(),
-                defender_equipment_losses: self.equipment_rows(losses[1]).into(),
-                ..Default::default()
-            },
-        )]
+        [
+            table_iter::<tables::LandCombatProgress, _>(
+                self.outcomes()[0],
+                self.rows
+                    .rows
+                    .iter()
+                    .zip(&self.losses)
+                    .take(self.rows.outcome.len()),
+                |(combat, losses)| LandCombatProgressRow {
+                    combat: *combat,
+                    attacker_manpower_loss: losses[0].manpower.into(),
+                    defender_manpower_loss: losses[1].manpower.into(),
+                    attacker_equipment_losses: self.equipment_rows(losses[0]).into(),
+                    defender_equipment_losses: self.equipment_rows(losses[1]).into(),
+                    ..Default::default()
+                },
+            ),
+            table_iter::<tables::CombatLogObservers, _>(
+                self.outcomes()[1],
+                self.observers.iter(),
+                Clone::clone,
+            ),
+        ]
     }
     fn equipment_rows(
         &self,

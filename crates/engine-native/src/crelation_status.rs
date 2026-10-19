@@ -41,6 +41,10 @@ pub const SERIALIZABLE_RELATION_COUNT: usize = 0xf4;
 pub const OTHER_RELATION_COUNTS: [usize; 3] = [0xf4, 0x10c, 0x124];
 /// CRelationStatus embedded CModifier.
 pub const MODIFIER: usize = 0x130;
+/// The embedded modifier's value accumulator, holding the relation's entries
+/// such as `river_crossing_factor_against`.
+/// Effective-value accumulator within the relation modifier.
+pub const MODIFIER_ACCUMULATOR: usize = MODIFIER + 0x10;
 /// Owning diplomacy pointer, assigned only during construction and equal to
 /// the owner country's diplomacy. Opinion-write observers use it to file a
 /// mark under that owner.

@@ -59,7 +59,7 @@ fn cold_and_prefix_research_states_match_prepared_values_at_the_supplying_read()
     for frame in &frames[21..] {
         prepared.observe(frame).unwrap();
     }
-    let mut writer = store.append(&key, key.clone()).unwrap();
+    let mut writer = store.extend(&key).unwrap();
     prepared.flush(&mut writer, 1, &flag).unwrap();
     coverage::publish_coverage(&mut writer, 1, 100, 149, true).unwrap();
     writer.commit().unwrap();
@@ -92,6 +92,73 @@ fn cold_and_prefix_research_states_match_prepared_values_at_the_supplying_read()
     store.clear().unwrap();
     drop(source);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn prepared_research_dates_empty_and_removed_slots_without_inventing_unavailable_reads() {
+    let mut fixture = Fixture::new();
+    let mut prepared = Prepared::default();
+    let mut reference = Scan::default();
+    let flag = AtomicBool::new(false);
+    let mut unavailable = sliced_research_frame(102, 101, &[None]);
+    *unavailable.tables[TableId::ResearchInputs.index()] = TableView::Unavailable {
+        reason: "synthetic missed research inputs".into(),
+    };
+    let steps = [
+        (
+            sliced_research_frame(100, 100, &[Some(1), None]),
+            100,
+            [true, true],
+        ),
+        (sliced_research_frame(101, 101, &[None]), 101, [true, false]),
+        (unavailable, 101, [false, false]),
+        (
+            sliced_research_frame(103, 103, &[None, None]),
+            103,
+            [true, true],
+        ),
+    ];
+    for (step, (frame, supplying_hour, available)) in steps.into_iter().enumerate() {
+        reference.observe_selected(&frame, None).unwrap();
+        prepared.observe(&frame).unwrap();
+        let mut writer = if step == 3 {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        prepared.flush(&mut writer, 1, &flag).unwrap();
+        writer.commit().unwrap();
+        compare(&fixture, &reference, "GER");
+        let reply = values_query(
+            "series-state",
+            serde_json::json!({ "branchId": "1", "reads": [{ "tag": "GER", "hour": frame.hour }] }),
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+        .unwrap();
+        let slots = reply["states"][0]["slots"].as_array().unwrap();
+        assert_eq!(slots.len(), 2);
+        for (index, slot) in slots.iter().enumerate() {
+            assert_eq!(slot["index"], index);
+            assert_eq!(slot["available"], available[index]);
+            assert_eq!(slot["readHour"], supplying_hour);
+            if !available[index] {
+                assert!(slot["state"].is_null());
+            } else if step != 0 || index == 1 {
+                assert!(slot["state"]["token"].is_null());
+            }
+            if step == 0 && index == 0 {
+                assert!(slot["progress"].is_object());
+            } else {
+                assert!(
+                    slot["progress"].is_null(),
+                    "an empty read has no old progress"
+                );
+            }
+        }
+        prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+    }
 }
 
 #[test]

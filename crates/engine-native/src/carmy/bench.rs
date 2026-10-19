@@ -139,7 +139,7 @@ fn bench_division_move_flags() {
                             leader,
                             ordinary: 0,
                             alternate: 0,
-                            movement: [[None; 5]; 2],
+                            movement: [[None; 6]; 2],
                         })
                     },
                 );

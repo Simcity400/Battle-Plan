@@ -1,6 +1,10 @@
 //! Native world modules with no host or sibling feature dependency.
 pub mod map {
     pub mod adjacency_icons;
+    pub mod air_assignment;
+    pub mod air_orders;
+    pub mod air_ranges;
+    pub mod air_transfers;
     pub mod aircraft;
     pub mod aircraft_events;
     pub mod animated_map_text;
@@ -31,12 +35,16 @@ pub mod map {
     pub mod name_shader;
     pub mod names;
     pub mod naval_dominance;
+    pub mod naval_selection;
+    pub mod occupation_icons;
+    pub mod occupation_stripes;
     pub mod order_pass;
     pub mod particle_shader;
     pub mod pointlights;
     pub mod political;
     pub mod political_gpu;
     pub mod post;
+    pub mod radar_symbols;
     pub mod rail_shader;
     pub mod railways;
     pub mod resource_icons;

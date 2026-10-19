@@ -1664,6 +1664,8 @@ mod tests {
             id,
             installed_content_save::Faction {
                 id,
+                goals: Default::default(),
+                companions: Default::default(),
                 name: None,
                 members: Vec::new(),
                 icon: None,

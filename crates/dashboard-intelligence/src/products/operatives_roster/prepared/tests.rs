@@ -914,16 +914,32 @@ fn a_future_alias_adds_its_holder_to_the_cached_day_before_selection_completes()
 #[test]
 fn prepared_day_values_keep_the_branch_wide_selection_preparing() {
     let (source, root, frames) = historical_roster(true);
-    for (identity_last, countries) in [(48, 1), (96, 2), (119, 2)] {
+    for (identity_last, tags) in [
+        (48, &["A", "B"][..]),
+        (96, &["A", "B", "C"][..]),
+        (119, &["A", "B", "C"][..]),
+    ] {
         publish_prefixes(&source, &frames, identity_last, 71);
         let reply = historical_day(&source);
         assert_eq!(
             reply["selectionCoverage"]["lastHour"],
             frames[identity_last].hour
         );
+        assert_eq!(reply["selectionCoverage"]["complete"], identity_last == 119);
         assert_eq!(reply["pending"], serde_json::json!([]));
-        assert_eq!(reply["countries"].as_array().unwrap().len(), countries);
-        assert_eq!(reply["countries"][0]["operatives"][0]["id"], "1");
+        let countries = reply["countries"].as_array().unwrap();
+        assert_eq!(
+            countries
+                .iter()
+                .map(|country| country["tag"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            tags
+        );
+        assert!(countries[0]["operatives"].as_array().unwrap().is_empty());
+        assert_eq!(countries[1]["operatives"][0]["id"], "1");
+        if identity_last >= 96 {
+            assert_eq!(countries[2]["operatives"][0]["id"], "2");
+        }
         if identity_last < 119 {
             assert_eq!(reply["preparing"], serde_json::json!(["countries"]));
         } else {

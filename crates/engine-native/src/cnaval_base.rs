@@ -152,8 +152,38 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    rows: crate::walk::Buffer<'_, Row>,
+    countries: crate::walk::Buffer<'_, u32>,
+) -> Walk {
+    walk_buffer_observed(memory, base, game_state, rows, countries, |_, _| {})
+}
+
+/// Shares each already-authenticated base with an independent worker observer.
+pub fn walk_growing_observed(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: &mut Vec<Row>,
+    countries: &mut Vec<u32>,
+    observe: impl FnMut(usize, &Row),
+) -> Walk {
+    walk_buffer_observed(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(rows),
+        crate::walk::Buffer::Growing(countries),
+        observe,
+    )
+}
+
+fn walk_buffer_observed(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
     mut rows: crate::walk::Buffer<'_, Row>,
     mut countries: crate::walk::Buffer<'_, u32>,
+    mut observe: impl FnMut(usize, &Row),
 ) -> Walk {
     let mut used = 0_usize;
     let mut required = 0_usize;
@@ -227,6 +257,7 @@ pub fn walk_buffer(
                     return Err("naval base vtable mismatch");
                 }
                 let (mut row, list) = read_row(memory, pointer, province)?;
+                observe(pointer, &row);
                 required = required
                     .checked_add(list.count as usize)
                     .ok_or("naval base country demand overflows")?;

@@ -14,7 +14,7 @@ use std::{collections::BTreeMap, io};
 mod names;
 mod sources;
 pub use names::Name;
-pub use sources::{DefinitionSources, RewardSource, TacticSources};
+pub use sources::{Benefits, DefinitionSources, RewardSource, TacticSources};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Folder {

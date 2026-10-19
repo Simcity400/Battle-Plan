@@ -1,0 +1,1102 @@
+//! Capture-source refusal expectations. Keep this fixture independent from the
+//! application map: changes to a runtime family must satisfy both contracts.
+use super::*;
+pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
+    use TableId::*;
+    match family {
+        Family::EquipmentDestruction => &[
+            EquipmentDestruction,
+            DivisionEquipmentDeletions,
+            VariantDefinitions,
+            VariantModules,
+            VariantStats,
+            VariantUpgrades,
+            AvailableEquipmentVariants,
+        ],
+        Family::Land => &[LandCombatResults, DestroyedDivisions, LandEventCoverage],
+        Family::Portrait => &[CharacterPortraits, LeaderPortraits, LeaderPortraitPaths],
+        Family::Opinion => &[
+            RelationOpinions,
+            RelationTuples,
+            WarOwnedRelations,
+            WarRelationGoals,
+            WarOverviewCountries,
+            WarNameRules,
+        ],
+        Family::Construction => &[ConstructionLineOutput],
+        Family::LineOutput => &[ProductionLineOutput, RocketProductionOutput],
+        Family::CombatLogPrune => &[
+            CombatLogEquipment,
+            CombatLogState,
+            CombatLogGroups,
+            CombatLogMonths,
+            CombatLogManpower,
+            CombatLogReferences,
+            CombatLogBattles,
+            CombatLogBattleSides,
+            CombatLogBattleCountries,
+            CombatLogBattleEquipment,
+            CombatLogBattleModifiers,
+            CombatLogTemplates,
+            CombatLogEnemyEquipment,
+        ],
+        Family::Advisor => &[
+            Characters,
+            CountryLeaderRoles,
+            AdvisorRoles,
+            UnitLeaderTraits,
+            CharacterRoleTraits,
+            CharacterOperatives,
+            AvailableAdvisors,
+            PartyLeaders,
+        ],
+        Family::Relation => &[AirCountryRelations, WarRelations, RelationLinks],
+        Family::History => &[AirNavalPatrolHistories],
+        Family::Flags => &[ScriptFlags],
+        Family::Buildings => &[StateBuildings, ProvinceBuildings],
+        Family::AdvisorPools => &[AvailableAdvisors, HiredAdvisors, AdvisorTokens],
+        Family::PartyLeaders => &[PartyLeaders],
+        Family::Variables => &[ScriptVariables, FactionVariables, Projects, ProjectPrograms],
+        Family::Parties => &[PoliticalParties, ActiveIdeas],
+        Family::Wings => &[WingEquipment],
+        Family::Roster => &[
+            CountryCharacters,
+            CountryRetiredCharacters,
+            Scientists,
+            ScientistSkills,
+            Characters,
+            CountryLeaderRoles,
+            AdvisorRoles,
+            UnitLeaderTraits,
+            CharacterRoleTraits,
+            CharacterOperatives,
+            ScientistDaily,
+        ],
+        Family::PoliticalStatus => &[Politics],
+        Family::Missions => &[
+            AirRegionalMissions,
+            AirTransferInputs,
+            AirGroundCrews,
+            RadarCoverage,
+            NavalRegionalMines,
+            NavalAccidentReports,
+            FleetCounterInputs,
+        ],
+        Family::Rails => &[RailCooldowns, RailEdges],
+        Family::Territory => &[States, Provinces],
+        Family::ArmyStats => &[
+            DivisionLandInputs,
+            DivisionStatus,
+            DivisionPanelSources,
+            DivisionPanelStats,
+            DivisionHistory,
+        ],
+        Family::CountryInputs => &[
+            CountryStabilityInputs,
+            CountryStabilityLines,
+            ResearchInputs,
+            ResearchAppliedBonuses,
+            ResearchModifiers,
+            ResearchTechnologies,
+            TechnologyDefinitions,
+            Focus,
+            CompletedFocuses,
+            Projects,
+            ProjectHistory,
+            CountryAppearance,
+            CountryCounterInputs,
+            CountryVisibility,
+            CountryWargoals,
+            WargoalTargets,
+            WargoalJustifications,
+            StateResistance,
+            CountryUnitSpeedEntries,
+            FactionResearch,
+        ],
+        Family::Raid => &[Raids, RaidSpeedInputs, RaidAirScores],
+        Family::NavalTrees => &[
+            NavalModifierTreeSamples,
+            NavalModifierTrees,
+            NavalMissionCountries,
+            NavalMissionCommanders,
+            DivisionRetreatBans,
+            UnitLeaderTraits,
+            ShipModels,
+            StateResistance,
+        ],
+        Family::UnitLeaders => &[UnitLeaders, UnitLeaderTraitExperience],
+        Family::Census => &[
+            Characters,
+            CountryCharacters,
+            Scientists,
+            ScientistSkills,
+            UnitLeaders,
+            CharacterRoleTraits,
+        ],
+        Family::WorldInputs => &[
+            ProvinceNames,
+            NavalRegionAccess,
+            WorldTension,
+            ThreatSources,
+            ThreatCountryAggregates,
+            DynamicModifiers,
+            IndustrialOrganisations,
+            IndustrialOrganisationDetails,
+            IndustrialOrganisationPolicies,
+            IndustrialOrganisationHistory,
+            DoctrineFolders,
+            DoctrineTracks,
+            DoctrineLeaderMastery,
+            DoctrineCostReductions,
+            DoctrineMasteryGrants,
+            DoctrineEquipmentBonuses,
+            DoctrineCountries,
+        ],
+        Family::AirRecords => &[AirRegionCombat],
+        Family::LocalSubunits => &[CountryLocalSubunits],
+        Family::Templates => &[
+            DivisionTemplates,
+            DivisionTemplateIcons,
+            CountryTemplateState,
+            OrdersGroupCounterInputs,
+        ],
+        Family::ShipModels => &[ShipModels],
+        Family::ProvinceUnits => &[ProvinceUnitOrder],
+        Family::AirBaseCarry => &[AirBaseRegistrations],
+        Family::Experience => &[CountryExperienceGains],
+        Family::Fuel => &[CountryFuel],
+        Family::OperationOutcomes => &[OperationCompletions],
+        Family::Politics => &[
+            CountryPowerDaily,
+            CountryPowerChanges,
+            CountryPowerDailyCosts,
+            GovernmentChanges,
+            PoliticsCaptureCoverage,
+        ],
+        Family::Logistics => &[LogisticsEquipment],
+        Family::Peace => &[PeaceSettlements],
+        Family::NavalResultSources => &[NavalResultSources],
+        Family::AirLosses => &[AirLossEvents, AirDailyRoster],
+        Family::BuildingBombing => &[BuildingBombingDamage],
+        Family::NuclearStrikes => &[NuclearStrikes],
+        Family::MapEvents => &[MapEvents],
+        Family::EventFeed => &[EventFeedHistory],
+        Family::Propaganda => &[PropagandaEfforts],
+        Family::IntelSources => &[IntelContributions, IntelSources],
+        Family::NetworkAuxiliary => &[IntelNetworkAuxiliaries],
+        Family::NavalManagement => &[
+            NavalRepairCountries,
+            NavalRepairFleets,
+            NavalRepairTaskForces,
+            NavalTaskForceComposition,
+            NavalRepairBases,
+            NavalRepairQueue,
+            NavalRefitShips,
+            NavalRefitProgress,
+            NavalRepairChildren,
+        ],
+        Family::WarParticipation => &[
+            WarParticipation,
+            WarCapturedProvinces,
+            WarLendLeaseHistories,
+        ],
+        Family::Designs => &[
+            VariantDefinitions,
+            VariantModules,
+            VariantStats,
+            VariantUpgrades,
+            VariantChanges,
+            VariantBonusSnapshots,
+            DesignCountryModifiers,
+            DesignCountryTemplates,
+            DesignObserverContext,
+            DesignOrganisationLiveness,
+        ],
+        Family::FactionGoals => &[FactionGoalStatus, FactionGoalEntries],
+        Family::FactionCompanions => &[
+            FactionRules,
+            FactionPrograms,
+            FactionManpower,
+            FactionUnlocks,
+            FactionAccounts,
+            FactionProjection,
+            FactionResources,
+            FactionAdvisorModifiers,
+            FactionMinimumUpgrades,
+            FactionDoctrine,
+        ],
+        Family::Market => &[
+            CountryMarket,
+            MarketContractTerms,
+            LendLeaseAgreements,
+            MarketEvents,
+        ],
+        Family::Hourly | Family::WorldLifetime => &[],
+    }
+}
+
+#[test]
+fn refusal_tables_match_capture_contracts() {
+    for family in Family::ALL {
+        assert_eq!(
+            family.tables(),
+            expected_tables(family),
+            "{} refusal mapping",
+            family.name()
+        );
+    }
+}
+
+// These are the source catalogues the constructors walk, independently of the
+// diagnostic/overlap inventory. Exhaustiveness forces each new runtime family
+// to declare its native ownership here as well as its refusal tables.
+fn constructor_sites(family: Family) -> Vec<usize> {
+    use engine_air_history::{air_history_mutations, air_loss_sites, air_record_mutations};
+    use engine_characters::ccharacter_portraits;
+    use engine_events::{
+        building_damage_sites, diplomacy_mutations, equipment_destruction, event_feed_sites,
+        experience_gain_sites, map_event_sites, nuclear_strike_sites, operation_outcome_sites,
+    };
+    use engine_fuel::fuel_awards;
+    use engine_land_inputs::{clogistics_status, land_events, land_wipe, ncombat_log_cmanager};
+    use engine_mutations::{
+        advisor_mutations, advisor_pool_mutations, air_base_mutations,
+        air_wing_equipment_mutations, army_stat_mutations, building_mutations, census_mutations,
+        character_role_mutations, character_roster_mutations, country_input_mutations,
+        local_subunit_mutations, naval_tree_mutations, opinion_mutations, party_leader_mutations,
+        political_party_mutations, political_status_mutations, province_unit_mutations,
+        raid_mutations, railway_mutations, regional_mission_mutations, script_flag_mutations,
+        script_variable_mutations, ship_model_mutations, template_mutations, territory_mutations,
+        unit_leader_mutations, world_input_mutations, world_lifetime_sites,
+    };
+    use engine_native::cgame_state;
+    use engine_naval_history::naval_result_sources;
+    use engine_peace::peace_finalizer_site;
+    use engine_production::line_output_sites;
+    macro_rules! sites {
+        ($items:expr, $site:pat => $rva:expr) => {
+            $items.into_iter().map(|$site| $rva).collect::<Vec<_>>()
+        };
+    }
+    let mut sites = match family {
+        Family::Hourly => vec![cgame_state::HOURLY_UPDATE_RVA],
+        Family::EquipmentDestruction => sites!(equipment_destruction::SITES, s => s.rva),
+        Family::Land => [
+            land_events::FINALIZE_RVA,
+            land_events::DESTROY_RVA,
+            land_events::BORDER_FINALIZE_RVA,
+            land_events::BORDER_TERMINATE_RVA,
+            land_events::DISPATCH_RVA,
+            land_events::DESTRUCTION_RVA,
+            land_wipe::LIFECYCLE_RVA,
+        ]
+        .into_iter()
+        .chain(land_events::DISPATCH_LEADER_CALLS)
+        .collect(),
+        Family::Portrait => sites!(ccharacter_portraits::MUTATIONS, s => s.rva),
+        Family::Opinion => opinion_mutations::MUTATIONS
+            .iter()
+            .chain(&opinion_mutations::RELATIONS)
+            .map(|s| s.rva)
+            .collect(),
+        Family::Construction => sites!(crate::construction_ic::SITES, s => s.rva),
+        Family::LineOutput => vec![
+            line_output_sites::CREDIT.rva,
+            line_output_sites::DELIVERY.rva,
+            line_output_sites::ROCKET_ADVANCE.rva,
+        ],
+        Family::CombatLogPrune => vec![ncombat_log_cmanager::PRUNE_RVA],
+        Family::Advisor => advisor_mutations::MUTATIONS
+            .iter()
+            .chain(&character_role_mutations::MUTATIONS)
+            .map(|s| s.rva)
+            .collect(),
+        Family::Relation => sites!(diplomacy_mutations::MUTATIONS, s => s.rva),
+        Family::History => sites!(air_history_mutations::MUTATIONS, s => s.rva),
+        Family::Flags => sites!(script_flag_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::Buildings => sites!(building_mutations::MUTATIONS, (s, _) => s.rva),
+        // The final pool mutation is forwarded by CountryInputs.
+        Family::AdvisorPools => {
+            sites!(&advisor_pool_mutations::MUTATIONS[..advisor_pool_mutations::MUTATIONS.len()-1], (s, _) => s.rva)
+        }
+        Family::PartyLeaders => sites!(party_leader_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::Variables => sites!(script_variable_mutations::MUTATIONS, (s, _, _) => s.rva),
+        Family::Parties => sites!(political_party_mutations::MUTATIONS, s => s.rva),
+        Family::Wings => sites!(air_wing_equipment_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::Roster => sites!(character_roster_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::PoliticalStatus => {
+            sites!(political_status_mutations::MUTATIONS, (s, _, _) => s.rva)
+        }
+        Family::Missions => sites!(regional_mission_mutations::MUTATIONS, s => s.rva),
+        Family::Rails => sites!(railway_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::Territory => sites!(territory_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::ArmyStats => sites!(army_stat_mutations::MUTATIONS, s => s.rva),
+        Family::CountryInputs => sites!(country_input_mutations::MUTATIONS, (s, _, _) => s.rva),
+        Family::Raid => raid_mutations::MUTATIONS
+            .iter()
+            .map(|(s, _)| s.rva)
+            .chain([raid_mutations::DAILY_CAPACITIES.rva])
+            .collect(),
+        // Country reset mutations arrive through CountryInputs and Politics.
+        Family::NavalTrees => {
+            sites!(&naval_tree_mutations::MUTATIONS[naval_tree_mutations::COUNTRY_SITES..], s => s.rva)
+        }
+        Family::UnitLeaders => sites!(unit_leader_mutations::MUTATIONS, s => s.rva),
+        Family::Census => sites!(census_mutations::MUTATIONS, s => s.rva),
+        Family::WorldInputs => sites!(world_input_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::AirRecords => sites!(air_record_mutations::MUTATIONS, s => s.rva),
+        Family::LocalSubunits => sites!(local_subunit_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::Templates => sites!(template_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::ShipModels => sites!(ship_model_mutations::MUTATIONS, s => s.rva),
+        Family::ProvinceUnits => sites!(province_unit_mutations::MUTATIONS, s => s.rva),
+        Family::AirBaseCarry => sites!(air_base_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::Experience => sites!(experience_gain_sites::SITES, s => s.rva),
+        Family::Fuel => [
+            fuel_awards::BEGIN,
+            fuel_awards::END,
+            fuel_awards::NAVAL,
+            fuel_awards::AIR,
+            fuel_awards::RESET,
+        ]
+        .into_iter()
+        .chain(fuel_awards::LAND)
+        .map(|(rva, _)| rva)
+        .collect(),
+        Family::OperationOutcomes => vec![operation_outcome_sites::COMPLETION_RVA],
+        Family::Politics => crate::politics_changes::entry_sites()
+            .iter()
+            .map(|s| s.rva)
+            .chain(crate::politics_changes::TAPS.iter().map(|s| s.rva))
+            .collect(),
+        Family::Logistics => clogistics_status::BALANCE_CALLS
+            .into_iter()
+            .chain(clogistics_status::HISTORY_CALLS)
+            .map(|(rva, _, _)| rva)
+            .collect(),
+        Family::Peace => vec![peace_finalizer_site::RVA],
+        Family::NavalResultSources => sites!(naval_result_sources::SITES, s => s.rva),
+        Family::AirLosses => sites!(air_loss_sites::SITES, s => s.rva),
+        Family::BuildingBombing => vec![building_damage_sites::APPLY_DAMAGE_RVA],
+        Family::NuclearStrikes => sites!(nuclear_strike_sites::SITES, s => s.rva),
+        Family::MapEvents => vec![
+            map_event_sites::FAKE_REVEAL_VISIBILITY_CALL_RVA,
+            map_event_sites::GENERAL_CAPTURE_CALL_RVA,
+            map_event_sites::PARADROP_LANDING_CALL_RVA,
+            map_event_sites::RAILWAY_OVERRUN_RVA,
+            map_event_sites::RESISTANCE_ACTIVITY_RVA,
+            map_event_sites::BUILDING_NOTIFICATION_RVA,
+            map_event_sites::CRITICAL_BOMBARDMENT_TAP_RVA,
+        ],
+        Family::EventFeed => [event_feed_sites::WAR.rva, event_feed_sites::ANNEX.rva]
+            .into_iter()
+            .chain(event_feed_sites::provenance::ENTRIES.iter().map(|s| s.rva))
+            .collect(),
+
+        Family::Propaganda => vec![
+            engine_intelligence::propaganda_history::DAILY_UPDATE_RVA,
+            engine_intelligence::propaganda_history::RESET_RVA,
+        ],
+        Family::IntelSources => engine_intelligence::intel_source_sites::SITES
+            .iter()
+            .map(|s| s.rva)
+            .collect(),
+        Family::NetworkAuxiliary => engine_intelligence::network_auxiliary::SITES
+            .iter()
+            .map(|s| s.rva)
+            .collect(),
+        Family::NavalManagement => collector_naval_management::changes::patch_sites()
+            .map(|(_, rva, _)| rva)
+            .collect(),
+        Family::WarParticipation => engine_mutations::war_participation_sites::SITES
+            .iter()
+            .map(|s| s.rva)
+            .collect(),
+        Family::Designs => engine_native::cequipment_variant::mutations::MUTATIONS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                !engine_native::cequipment_variant::mutations::FORWARDED_SITES.contains(i)
+            })
+            .map(|(_, s)| s.rva)
+            .chain(
+                engine_native::cequipment_variant::source_mutations::MUTATIONS
+                    .iter()
+                    .map(|s| s.rva),
+            )
+            .chain(
+                engine_native::cequipment_variant::source_mutations::ORGANISATIONS
+                    .iter()
+                    .map(|s| s.rva),
+            )
+            .chain(
+                engine_native::cproduction_status::design_templates::MUTATIONS
+                    .iter()
+                    .map(|s| s.rva),
+            )
+            .collect(),
+        Family::FactionGoals => engine_mutations::faction_goal_mutations::MUTATIONS
+            .iter()
+            .map(|(s, _, _)| s.rva)
+            .collect(),
+        Family::FactionCompanions => engine_mutations::faction_companion_mutations::MUTATIONS
+            .iter()
+            .map(|(s, _, _)| s.rva)
+            .collect(),
+        Family::Market => crate::market_changes::OBSERVED_SITES
+            .iter()
+            .map(|&i| engine_production::market_mutations::SITES[i].rva)
+            .collect(),
+        Family::WorldLifetime => vec![
+            world_lifetime_sites::RESET.rva,
+            world_lifetime_sites::CONSTRUCT.rva,
+            world_lifetime_sites::DELETE.rva,
+            world_lifetime_sites::STATE_RELOAD.rva,
+        ],
+    };
+    match family {
+        Family::Missions => {
+            sites.extend(
+                engine_native::naval_mine_inputs::WRITERS
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != 5)
+                    .map(|(_, (_, rva, _))| *rva),
+            );
+            sites.extend(
+                engine_naval_history::cnaval_accident_report::WRITERS
+                    .iter()
+                    .map(|(rva, _)| *rva),
+            );
+            sites.extend(
+                collector_observers::fleet_region_changes::SITES
+                    .iter()
+                    .map(|s| s.rva),
+            );
+            sites.extend([
+                engine_map_air::map_air_sortie_inputs::DETECTION_OVERRIDE_WRITER_RVA,
+                engine_map_air::radar_group::UPDATE_RVA,
+                engine_map_air::map_air_country_region_modifier::GROUND_CREWS_ENABLE_RVA,
+                engine_map_air::map_air_country_region_modifier::GROUND_CREWS_DISABLE_RVA,
+                engine_map_air::map_air_country_region_modifier::GROUND_CREWS_CONSTRUCTOR_RVA,
+            ]);
+        }
+        Family::CombatLogPrune => sites.extend([
+            engine_land_inputs::combat_log_sites::GROUP_CREATE_CALL_RVA,
+            engine_land_inputs::combat_log_sites::OWN_EQUIPMENT_RVA,
+            engine_land_inputs::combat_log_sites::OWN_VARIANT_RVA,
+            engine_land_inputs::combat_log_sites::ENEMY_RVA,
+            engine_land_inputs::combat_log_sites::RECOVERED_RVA,
+            engine_land_inputs::combat_log_sites::MANPOWER_RVA,
+            engine_land_inputs::combat_log_sites::RESULT_RVA,
+            engine_land_inputs::combat_log_sites::GROUP_PRUNE_RVA,
+            engine_land_inputs::combat_log_sites::GROUP_DESTROY_RVA,
+            engine_land_inputs::combat_log_sites::BATTLE_ALLOCATE_RVA,
+            engine_land_inputs::combat_log_sites::BATTLE_RELEASE_RVA,
+            engine_land_inputs::combat_log_sites::BATTLE_RESET_RVA,
+            engine_land_inputs::combat_log_sites::BATTLE_LOAD_RVA,
+            engine_land_inputs::combat_log_sites::TEMPLATE_COUNTER_RVA,
+        ]),
+        Family::ArmyStats => sites.extend(
+            engine_mutations::division_panel_mutations::MUTATIONS
+                .iter()
+                .map(|s| s.rva),
+        ),
+        Family::AirBaseCarry => sites.push(engine_mutations::air_base_mutations::FUEL_DEMAND.rva),
+        Family::Wings => {
+            sites.extend(
+                engine_mutations::air_wing_equipment_mutations::MAP_MUTATIONS
+                    .iter()
+                    .filter(|s| {
+                        s.rva
+                            != engine_mutations::country_input_mutations::MUTATIONS[0]
+                                .0
+                                .rva
+                    })
+                    .map(|s| s.rva),
+            );
+            sites.extend(
+                engine_native::cair_wing::replacement::MUTATIONS
+                    .iter()
+                    .map(|s| s.rva),
+            );
+        }
+        Family::CountryInputs => sites.extend(
+            engine_native::cwar_goal::mutations::SITES
+                .iter()
+                .map(|s| s.rva),
+        ),
+        Family::NavalTrees => sites.extend(
+            engine_occupation::cresistance::changes::SITES
+                .iter()
+                .map(|s| s.rva),
+        ),
+        Family::WorldInputs => {
+            sites.extend(
+                engine_mutations::doctrine_mutations::SITES
+                    .iter()
+                    .map(|s| s.rva),
+            );
+            sites.extend(
+                engine_mutations::doctrine_mutations::EFFECTIVE_GAIN_STORES
+                    .iter()
+                    .map(|(rva, _)| *rva),
+            );
+        }
+        Family::Politics => {
+            sites.push(engine_events::script_event_sites::decisions::TARGETED_SELECTION_RESULT.rva)
+        }
+        Family::EventFeed => {
+            sites.extend(
+                engine_events::script_event_sites::TAPS
+                    .iter()
+                    .map(|s| s.rva),
+            );
+            sites.extend(
+                engine_events::script_event_sites::REGISTRY_ENTRIES
+                    .iter()
+                    .map(|s| s.rva),
+            );
+            sites.push(engine_events::script_event_sites::ACTIVATE_TARGETED.rva);
+            sites.extend(
+                engine_decisions::cdecision::EVENT_FEED_ENTRIES
+                    .iter()
+                    .map(|(_, rva, _)| *rva),
+            );
+            sites.extend(
+                engine_events::script_event_sites::LIFECYCLE_TAPS
+                    .iter()
+                    .chain(engine_events::script_event_sites::DURATION_TAPS.iter())
+                    .chain(engine_events::script_event_sites::decisions::TAPS.iter())
+                    .filter(|s| {
+                        s.rva
+                            != engine_events::script_event_sites::decisions::TARGETED_SELECTION_RESULT.rva
+                    })
+                    .map(|s| s.rva),
+            );
+            sites.extend(
+                engine_events::script_event_sites::DELAYED_ENTRIES
+                    .iter()
+                    .take(2)
+                    .chain(engine_events::script_event_sites::LIFECYCLE_ENTRIES.iter())
+                    .chain(engine_events::script_event_sites::decisions::ENTRIES.iter())
+                    .map(|s| s.rva),
+            );
+            sites.extend(
+                engine_events::script_event_sites::decisions::CALLS
+                    .iter()
+                    .map(|s| s.rva),
+            );
+        }
+        Family::Variables => {
+            sites.push(engine_events::script_event_sites::DELAYED_PASS.rva);
+            sites.extend(
+                engine_events::script_event_sites::DELAYED_TAPS
+                    .iter()
+                    .map(|s| s.rva),
+            );
+        }
+        Family::MapEvents => sites.push(engine_events::map_event_sites::SCRIPTED_REFRESH_CALL_RVA),
+        _ => {}
+    }
+    sites
+}
+
+#[test]
+fn every_constructor_site_has_its_actual_family_registration() {
+    let patches = crate::hook_inventory::patches();
+    let mut failures = Vec::new();
+    for family in Family::ALL {
+        let mut expected = constructor_sites(family);
+        let mut actual: Vec<_> = patches
+            .iter()
+            .filter(|p| family.owns_patch_family(p.family))
+            .map(|p| p.rva)
+            .collect();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        if actual != expected {
+            failures.push(format!(
+                "{} actual {actual:?}; expected {expected:?}",
+                family.name()
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "native ownership differs from constructors: {failures:#?}"
+    );
+}
+
+#[test]
+fn registered_types_are_exactly_the_runtime_constructor_inventory() {
+    use std::collections::BTreeSet;
+    let actual = super::constructor_gate::registered_types(include_str!("runtime.rs")).unwrap();
+    let declared: BTreeSet<_> = Family::ALL
+        .into_iter()
+        .map(|family| {
+            family
+                .runtime_type()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        })
+        .collect();
+    assert_eq!(
+        actual, declared,
+        "runtime families and restoration/refusal registration differ"
+    );
+    let patches = crate::hook_inventory::patches();
+    for family in Family::ALL {
+        assert!(
+            patches
+                .iter()
+                .any(|site| family.owns_patch_family(site.family)),
+            "{} has no native sites",
+            family.name()
+        );
+    }
+    assert!(
+        patches.iter().all(|patch| Family::ALL
+            .into_iter()
+            .any(|family| family.owns_patch_family(patch.family))),
+        "site belongs to an unregistered runtime family"
+    );
+}
+
+#[test]
+fn omitted_or_wrong_family_native_site_is_a_registration_failure() {
+    use crate::hook::installation::{self, Kind};
+    let (_, report) = installation::capture(|| installation::site(1));
+    assert_eq!(
+        audit_report(Family::Portrait, 0, report)
+            .unwrap()
+            .unwrap()
+            .kind,
+        Kind::Registration
+    );
+    // A real site's existence under another family does not authorize its construction here.
+    let at = engine_events::equipment_destruction::SITES[0].rva;
+    let (_, report) = installation::capture(|| installation::site(at));
+    assert_eq!(
+        audit_report(Family::Portrait, 0, report)
+            .unwrap()
+            .unwrap()
+            .kind,
+        Kind::Registration
+    );
+}
+
+fn isolated(test: &str) -> bool {
+    const CHILD: &str = "BATTLE_PLAN_CONTAINMENT_REVIEW_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        return true;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+fn reset_session() {
+    for flag in &FAILED {
+        flag.store(false, Ordering::Release);
+    }
+    ANY.store(false, Ordering::Release);
+    FAILURES.lock().unwrap().clear();
+    *PENDING.lock().unwrap() = std::array::from_fn(|_| None);
+    *TERMINAL.lock().unwrap() = None;
+}
+struct Unreadable;
+impl engine_native::Memory for Unreadable {
+    fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+        false
+    }
+}
+
+#[test]
+fn real_silent_constructors_refuse_and_propagate_their_family() {
+    if !isolated(
+        "hook_failures::contract_tests::real_silent_constructors_refuse_and_propagate_their_family",
+    ) {
+        return;
+    }
+    reset_session();
+    let directory =
+        std::env::temp_dir().join(format!("hoi4-real-hook-refusal-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    configure(&directory, 1, 1000);
+    let equipment = FamilyHooks::<crate::equipment_destruction::Hooks>::construct(0, || {
+        Ok(unsafe { crate::equipment_destruction::Hooks::new(&Unreadable, 0) })
+    })
+    .unwrap();
+    assert!(
+        equipment.inner.is_some(),
+        "exercise the API that internally returned an empty object"
+    );
+    assert!(failed(Family::EquipmentDestruction));
+    assert!(failed(Family::Wings));
+    assert!(failed(Family::NuclearStrikes));
+    let status = serde_json::to_value(status()).unwrap();
+    let root = status
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["family"] == "equipment_destruction")
+        .unwrap();
+    assert_eq!(root["stage"], "sentinel");
+    assert_eq!(
+        root["site"],
+        engine_events::equipment_destruction::SITES[0].name
+    );
+    assert!(root["cause"].as_str().unwrap().contains("sentinel"));
+    reset_session();
+    let building = FamilyHooks::<crate::building_changes::Hooks>::construct(0, || unsafe {
+        crate::building_changes::Hooks::new(&Unreadable, 0)
+    })
+    .unwrap();
+    assert!(building.inner.is_some());
+    assert!(failed(Family::Buildings));
+    reset_session();
+    let opinion = FamilyHooks::<crate::opinion_changes::Hooks>::construct(0, || unsafe {
+        crate::opinion_changes::Hooks::new(&Unreadable, 0)
+    })
+    .unwrap();
+    assert!(opinion.inner.is_some());
+    assert!(failed(Family::Opinion));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn initial_internal_rollback_failure_enters_teardown_and_stays_terminal() {
+    if !isolated(
+        "hook_failures::contract_tests::initial_internal_rollback_failure_enters_teardown_and_stays_terminal",
+    ) {
+        return;
+    }
+    reset_session();
+    let mut hooks = FamilyHooks::new(Family::Construction, Ok(())).unwrap();
+    assert!(!failed(Family::Construction));
+    let directory =
+        std::env::temp_dir().join(format!("hoi4-initial-rollback-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    configure(&directory, 1, 1000);
+    let progress = crate::progress::Progress::open(&directory);
+    let stage = crate::progress::Stage::new(&progress, Family::Construction.name());
+    let mut later_installed = false;
+    let error = crate::runtime::install_attach_batch(
+        &stage,
+        &mut [
+            (Family::Construction.name(), &mut || {
+                hooks.toggle(true, |_, _| {
+                    collector_output::output_hooks::rollback_after_publication_error(
+                        "initial enable failed",
+                        || Err("initial rollback failed".into()),
+                    )
+                    .map(|()| true)
+                })
+            }),
+            (Family::Hourly.name(), &mut || {
+                later_installed = true;
+                Ok(true)
+            }),
+        ],
+    )
+    .unwrap_err();
+    assert!(
+        !later_installed,
+        "attach continued after its first failed rollback"
+    );
+    assert!(
+        !failed(Family::Construction),
+        "the initial failure preceded central family refusal"
+    );
+    let first = install_failed(Family::Construction, error).unwrap_err();
+    assert!(first.contains("initial rollback failed"));
+    assert!(failed(Family::Construction));
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(directory.join("status.json")).unwrap()).unwrap();
+    assert!(
+        persisted["failed_hook_families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["family"] == "construction_ic" && f["stage"] == "rollback")
+    );
+    hooks.toggle(false, |_, _| Ok(true)).unwrap();
+    assert_eq!(
+        fatal_installation_error(),
+        Some(first),
+        "later disable erased the first rollback failure"
+    );
+    assert!(install_failed(Family::Portrait, "later error").is_err());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn later_shared_rollback_is_latched_before_an_earlier_reporting_error() {
+    if !isolated(
+        "hook_failures::contract_tests::later_shared_rollback_is_latched_before_an_earlier_reporting_error",
+    ) {
+        return;
+    }
+    use crate::hook::{Hook, TestCode, shared};
+    reset_session();
+    let _guard = crate::hook::FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    unsafe extern "system" fn original() -> usize {
+        7
+    }
+    unsafe extern "system" fn replacement() -> usize {
+        19
+    }
+    let make = |offset| {
+        let (site, sentinel) = code.stub(offset, original as *const () as usize);
+        vec![unsafe { Hook::new(site, replacement as *const () as usize, sentinel) }.unwrap()]
+    };
+    let mut air = FamilyHooks::new(Family::AirLosses, Ok(make(0))).unwrap();
+    let mut bombing = FamilyHooks::new(Family::BuildingBombing, Ok(make(64))).unwrap();
+    fn fail_bombing_flush() {
+        crate::hook::fail_flushes(1);
+    }
+    let directory =
+        std::env::temp_dir().join(format!("hoi4-later-shared-rollback-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    configure(&directory, 1, 1000);
+    let progress = crate::progress::Progress::open(&directory);
+    let stage = crate::progress::Stage::new(&progress, Family::AirLosses.name());
+    // Two publication reopens, then the successful air rollback reopen,
+    // followed by the failed bombing rollback reopen.
+    shared::fail_reopens(3, 1);
+    let mut air_reports = 0;
+    let first = crate::runtime::install_attach_batch(
+        &stage,
+        &mut [
+            (Family::AirLosses.name(), &mut || {
+                if shared::attach_reporting() {
+                    air_reports += 1;
+                }
+                air.toggle(true, |hooks, enabled| {
+                    Hook::set_family_enabled_attach(hooks, enabled)
+                        .map_err(crate::runtime::installation_message)
+                })
+            }),
+            (Family::BuildingBombing.name(), &mut || {
+                bombing.toggle(true, |hooks, enabled| {
+                    Hook::set_family_enabled_shared_prepared(hooks, enabled, fail_bombing_flush)
+                        .map_err(crate::runtime::installation_message)
+                })
+            }),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(
+        air_reports, 0,
+        "fatal groups must be latched before the first reporting error can stop traversal"
+    );
+    assert_eq!(stage.get(), Family::BuildingBombing.name());
+    assert!(
+        !air.inner.as_ref().unwrap()[0].is_enabled(),
+        "first group's rollback succeeded"
+    );
+    assert!(
+        bombing.inner.as_ref().unwrap()[0].is_enabled(),
+        "later group's rollback failed"
+    );
+    assert!(first.contains("building_bombing"));
+    assert!(first.contains("rollback page preparation failed"));
+    assert!(failed(Family::BuildingBombing));
+    assert!(
+        !failed(Family::AirLosses),
+        "earlier nonfatal outcome was not the fatal family"
+    );
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(directory.join("status.json")).unwrap()).unwrap();
+    assert!(
+        persisted["failed_hook_families"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["family"] == "building_bombing" && f["stage"] == "rollback")
+    );
+    for hooks in [&mut air, &mut bombing] {
+        hooks
+            .toggle(false, |hooks, enabled| {
+                Hook::set_family_enabled(hooks, enabled)
+                    .map_err(crate::runtime::installation_message)
+            })
+            .unwrap();
+        assert!(!hooks.inner.as_ref().unwrap()[0].is_enabled());
+    }
+    assert_eq!(fatal_installation_error(), Some(first));
+    let retry = crate::runtime::install_attach_batch(
+        &stage,
+        &mut [(Family::AirLosses.name(), &mut || Ok(true))],
+    );
+    assert_eq!(
+        retry,
+        Err(first),
+        "a successful retry erased the later group's first rollback failure"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn peace_finalizer_refusal_keeps_independently_polled_bids() {
+    if !isolated(
+        "hook_failures::contract_tests::peace_finalizer_refusal_keeps_independently_polled_bids",
+    ) {
+        return;
+    }
+    reset_session();
+    assert_eq!(Family::Peace.tables(), &collector_peace::tables::TABLES);
+    assert_eq!(collector_peace::peace_bids::TABLES, [TableId::PeaceBids]);
+    let mut source = replay_frame::frame::FrameInput {
+        branch: 1,
+        hour: 10,
+        metrics: Default::default(),
+        tables: std::array::from_fn(|index| {
+            TableView::Complete(replay_data::rows::TableRows::empty(TableId::ALL[index])).into()
+        }),
+    };
+    let bids = TableView::Complete(replay_data::rows::TableRows::PeaceBids(vec![
+        replay_data::rows::PeaceSettlementRow {
+            sequence: 7,
+            conference: Some(9),
+            hour: Some(10),
+            winners: vec![23],
+            ..Default::default()
+        },
+    ]));
+    source.tables[TableId::PeaceBids.index()] = bids.clone().into();
+    refuse(Family::Peace, "publication", "finalizer refused").unwrap();
+    apply(&mut source).unwrap();
+    let replay_frame::frame::TableInput::Sampled(actual_bids) =
+        &source.tables[TableId::PeaceBids.index()]
+    else {
+        panic!("bid payload was replaced");
+    };
+    assert_eq!(actual_bids, &bids);
+    assert!(
+        matches!(&source.tables[TableId::PeaceSettlements.index()], replay_frame::frame::TableInput::Sampled(TableView::Unavailable { reason }) if reason.contains("peace_settlements"))
+    );
+}
+
+// Mixed capture packs have resident/polled siblings that survive hook loss.
+// Explicitly partition their actual TABLES metadata; adding a table to an
+// existing producer must update its containment contract, even if no family
+// was added. These exclusions are table-specific, never whole-pack defaults.
+#[test]
+fn every_hook_capture_producer_table_has_an_explicit_classification() {
+    use TableId::*;
+    use std::collections::BTreeSet;
+    let dependent: BTreeSet<_> = Family::ALL
+        .into_iter()
+        .flat_map(|f| expected_tables(f).iter().map(|t| t.index()))
+        .collect();
+    let mut covered = BTreeSet::new();
+    let mut unclassified = Vec::new();
+    macro_rules! producer {
+        ($module:ident; [$($independent:ident),*]) => {{
+            let actual: BTreeSet<_> = crate::extended::$module::TABLES.iter().map(|t| t.index()).collect();
+            let independent: BTreeSet<usize> = [$($independent.index()),*].into_iter().collect();
+            assert!(independent.is_subset(&actual), "{} removed an independently captured table", stringify!($module));
+            assert!(independent.is_disjoint(&dependent), "{} independently captured table was refused", stringify!($module));
+            let classified: BTreeSet<_> = actual.intersection(&dependent).copied().chain(independent).collect();
+            if classified != actual { unclassified.push(format!("{} missing {:?}", stringify!($module), actual.difference(&classified).map(|i|TableId::ALL[*i]).collect::<Vec<_>>())); }
+            covered.extend(actual.intersection(&dependent).copied());
+        }};
+    }
+    producer!(air; [AirBases,WingCumulative,AirAces,AirStatistics,AirReferenceWitnesses,AirMissionInputs,AirSortieBaseCountries,AirSortieModifiers,AirSortieSpecialBases,AirSortieModifierMetadata,AirNavalPatrolCombats]);
+    producer!(air_histories; []);
+    producer!(air_records; []);
+    producer!(air_relations; []);
+    producer!(air_losses; []);
+    producer!(building_bombing; []);
+    producer!(character_inputs; []);
+    producer!(character_portraits; []);
+    producer!(characters; []);
+    producer!(combat_log; [LendLeaseEquipment]);
+    producer!(combat_progress; [LandCombatProgress,CombatLogObservers]);
+    producer!(construction; [StateBaseResources,BuildingConstruction,RailwayConstruction,OccupationSettings,StateOccupationLaws,StateGarrisons,StateAssignedManpower,CountryOccupationReserveManpower,CountryCollaboration]);
+    producer!(country_appearance; [ReservedCountryNaming]);
+    producer!(country_counters; [CountryCivilWars]);
+    producer!(construction_ic; []);
+    producer!(country_stability; []);
+    producer!(division_presentation; [DivisionMovement,MovementStateTerms,CoreSupplyAccess,RiverRelations,DivisionTransportSpeeds]);
+    producer!(division_templates; []);
+    producer!(economy; [CountryExperience,ProvinceSupply,HubMotorization,DisruptedSupply,ForeignHomebases,ResourceDefinitions,CountryResources,ResourceExchanges,PurchaseContracts,CountryFuelConsumers,FuelDemandParts]);
+    producer!(equipment_destruction; []);
+    producer!(experience_gains; []);
+    producer!(event_feed; []);
+    producer!(fog; [VolunteerHosts,TheatreAreas,StationedUnits,UnitIntel,SentVolunteers]);
+    producer!(governance; [ResearchSlots,DecisionCounts,Decisions,PreferredTactics,TechSharingGroups,TechSharingMembers,PowerBalances,PowerBalanceMembers,PowerBalanceRanges,PowerBalanceOverrides,PowerBalanceModifierBreakdowns,TimedIdeas,DecisionRandomItems]);
+    producer!(hired_advisors; []);
+    producer!(intel; [IntelNetworkSummaries,Capitulation,Subjects,Autonomy,IntelligenceAgencies,OperativeMemberships,Cryptology,IntelNetworks,Operations,OperationAssignments,OperationTokens,IncomingDiplomaticActions,CountryIntel,CapturedOperativeReferences,AgencyUpgradeLevels,OperativeMissions,StrategicOperatives,AgencyOperationBuffers]);
+    producer!(land_events; []);
+    producer!(leader_paths; []);
+    producer!(leader_portraits; []);
+    producer!(model_inputs; []);
+    producer!(naval_details; [NavalCombatDetails,NavalCombatShips,NavalCombatAirBaseWingHandles]);
+    producer!(group_counters; []);
+    producer!(naval_counters; [TaskForceCounterInputs,TaskForceMapMotion,TaskForceMissions]);
+    producer!(line_output; []);
+    producer!(map_names; []);
+    producer!(logistics; []);
+    producer!(naval_history; [NavalSupremacy,SunkConvoys,LandTheatres,LandTheatreGroups,LandTheatreMembers,AirTheatres,AirTheatreGroups,AirTheatreMembers,NavalResults,NavalResultMembers,NavalResultCountries,SunkShips,OrdersGroups,OrdersGroupMembers,ArmyGroupMembers]);
+    producer!(naval_mission_inputs; [NavalMissionTaskForces,NavalMissionLedgers,NavalPatrolMissionInputs,NavalDominanceTaskForceRanges]);
+    producer!(naval_result_sources; []);
+    producer!(nuclear_strikes; []);
+    producer!(map_events; []);
+    producer!(operation_outcomes; []);
+    producer!(peace_bids; [PeaceBids]);
+    producer!(peace_settlements; []);
+    producer!(politics; []);
+    producer!(production; [ProductionLines,Stockpiles,DivisionEquipment,ArmyUpgradeGroups,ArmyUpgradeRequests,ArmyUpgradeDeliveries,ArmyUpgradeProduced,ProductionLicenses,DeploymentConveyors,DeploymentLines,DeploymentManpower,DeploymentEquipment,ProductionLicenseRecords]);
+    producer!(projects; [ProjectBreakthroughs,Nukes,RaidCountries,PeaceConferences,RaidTargets,RaidCooldowns,RaidPathDistances,RaidPlayerAllowedTypes,RaidEquipment,RaidFacilities,RaidIntelInputs,RaidTooltipOperands]);
+    producer!(province_unit_order; []);
+    producer!(session; []);
+    producer!(ship_models; []);
+    producer!(industrial_organisations; []);
+    {
+        let actual = collector_slow_tables::doctrines::TABLES;
+        assert!(actual.iter().all(|t| dependent.contains(&t.index())));
+        covered.extend(actual.map(|t| t.index()));
+    }
+    producer!(market; []);
+    for table in collector_naval_management::forces::TABLES
+        .into_iter()
+        .chain(collector_naval_management::bases::TABLES)
+    {
+        assert!(dependent.contains(&table.index()));
+        covered.insert(table.index());
+    }
+
+    producer!(visibility; [SimulationFeatures,StateVisibility,CountryWars,LocalPlayer]);
+    producer!(war_overview; []);
+    for table in crate::faction_companions::TABLES
+        .into_iter()
+        .chain(crate::faction_goals::TABLES)
+    {
+        assert!(dependent.contains(&table.index()));
+        covered.insert(table.index());
+    }
+    // Core acquisition jobs publish these directly rather than via a TABLES pack.
+    covered.extend([States.index(), Provinces.index(), WarRelations.index()]);
+    assert!(
+        unclassified.is_empty(),
+        "unclassified capture tables: {unclassified:#?}"
+    );
+    assert_eq!(
+        covered, dependent,
+        "refusal table has no capture-source contract"
+    );
+}

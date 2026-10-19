@@ -250,6 +250,61 @@ fn backdated_or_overlapping_runs_keep_the_ordered_map_and_exact_bytes() {
 }
 
 #[test]
+fn nonconstant_partial_buckets_keep_exact_totals_through_restore_and_append() {
+    for (runs, total) in [
+        (
+            [Run::new(8, 12, 19, true), Run::new(0, 2, 7, true)],
+            116_u128,
+        ),
+        (
+            [
+                Run::new(0, 0, 1, true),
+                Run::new(10, 10, i128::MAX / 2, true),
+            ],
+            (i128::MAX / 2) as u128 + 1,
+        ),
+    ] {
+        // The first merge has reversed endpoints; the second has a valid
+        // total even though filling its gaps with the final value would
+        // overflow. Neither merged bucket is a constant span.
+        let publish = |whole| {
+            WHOLE_BUCKETS.set(whole);
+            let mut values = Accumulator::default();
+            let mut pages = PagesInMemory::default();
+            let last = runs.iter().map(|run| run.last_hour).max().unwrap();
+            values.through(0);
+            for run in runs {
+                values.push(0, run);
+            }
+            values.through(last);
+            flush(&mut values, &mut pages, false, 0);
+            for partial in values.state(0).unwrap().partial {
+                assert_eq!(partial.unwrap().bucket(0).absolute_total, total);
+            }
+            let continuation = saved(&values, false);
+            let mut restored: Accumulator = serde_json::from_slice(&continuation).unwrap();
+            assert_eq!(saved(&restored, false), continuation);
+            let mut restored_pages = PagesInMemory(pages.0.clone());
+            for (values, pages) in [
+                (&mut values, &mut pages),
+                (&mut restored, &mut restored_pages),
+            ] {
+                values.push(0, Run::new(last + 1, last + 1, 3, false));
+                flush(values, pages, false, 0);
+                for partial in values.state(0).unwrap().partial {
+                    assert_eq!(partial.unwrap().bucket(0).absolute_total, total + 3);
+                }
+            }
+            assert_eq!(pages.0, restored_pages.0);
+            assert_eq!(saved(&values, false), saved(&restored, false));
+            WHOLE_BUCKETS.set(false);
+            pages.0
+        };
+        assert_eq!(publish(false), publish(true));
+    }
+}
+
+#[test]
 fn cached_continuation_has_the_same_stream_compression_bytes() {
     let mut values = Accumulator::default();
     for key in 0..COUNTRIES {

@@ -10,6 +10,7 @@ use engine_native::{
 };
 
 pub mod cdynamic_modifier_container;
+pub mod cfaction_upgrade_status;
 pub mod cmodifier;
 pub mod country_roster;
 pub mod country_stability;
@@ -22,3 +23,5 @@ pub mod political_runtime_scalars;
 
 #[cfg(test)]
 use engine_native::{country_memory, read_counts};
+
+use engine_native::ccountry_manpower;

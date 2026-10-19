@@ -142,7 +142,7 @@ fn acquire_resource_group(
     };
     reads.select(TABLES[7]);
     let started = qpc();
-    owned.outcomes[1] = Some(ccountry_resources::walk_buffer(
+    owned.outcomes[1] = Some(ccountry_resources::walk_buffer_with_country(
         memory,
         ctx.base,
         ctx.game_state,
@@ -152,7 +152,23 @@ fn acquire_resource_group(
         } else {
             engine_native::walk::Buffer::Fixed(&mut owned.resources[..ctx.resource_rows[1]])
         },
+        |country, resources| {
+            collector_observers::market_changes::held::discover_country(
+                memory,
+                ctx.base,
+                ctx.game_state,
+                country,
+                resources,
+            )
+        },
     ));
+    collector_observers::market_changes::held::finish_seed(matches!(
+        owned.outcomes[1],
+        Some(Outcome::Rows { .. })
+    ));
+    // A market census epoch must include its contract baseline even off the
+    // daily fuel/purchase slot. Carried epochs return without native reads.
+    collector_observers::market_changes::held::recover_contracts(memory, ctx.base, ctx.game_state);
     ticks[7] = elapsed(started);
     reads.select(TABLES[8]);
     let started = qpc();
@@ -1191,7 +1207,10 @@ fn copy_economy_market_contracts(
     let _ = base;
     let manager = match market {
         Some(m) => m,
-        None => return,
+        None => {
+            collector_observers::market_changes::held::finish_contract_seed(false);
+            return;
+        }
     };
     let owned = log.spans.iter().rev().find_map(|span| {
         if span.addr == manager + market_contract_manager::OWNED_CONTRACTS
@@ -1207,13 +1226,19 @@ fn copy_economy_market_contracts(
     });
     let owned = match owned {
         Some(a) => a,
-        None => return,
+        None => {
+            collector_observers::market_changes::held::finish_contract_seed(false);
+            return;
+        }
     };
+    let mut complete = true;
+    let mut event_demand = Some(0_usize);
     for index in 0..owned.count {
         let addr = (index as usize)
             .checked_mul(8)
             .and_then(|o| owned.data.checked_add(o));
         let Some(ptr_start) = espan(log, memory, addr, 8, M_E_PURCH) else {
+            complete = false;
             continue;
         };
         let pointer = match usize::try_from(e_pool_u64(log, ptr_start))
@@ -1221,13 +1246,50 @@ fn copy_economy_market_contracts(
             .filter(|&p| p != 0)
         {
             Some(p) => p,
-            None => continue,
+            None => {
+                complete = false;
+                continue;
+            }
         };
-        let _ = esbulk(log, memory, Some(pointer), 0x260, M_E_PURCH);
+        if let Some(start) = esbulk(log, memory, Some(pointer), 0x260, M_E_PURCH) {
+            // These headers are already present in the existing contract bulk.
+            // No additional native read or independent census for event sizing.
+            let count = |pool| {
+                e_pool_u32(
+                    log,
+                    start + pool + engine_native::cequipment_variant_pool::COUNT,
+                ) as usize
+            };
+            event_demand = event_demand.and_then(|total| {
+                collector_observers::market_changes::contract_storage(
+                    count(
+                        engine_production::market_ledger::DRAFT
+                            + engine_production::market_ledger::DRAFT_EQUIPMENT,
+                    ),
+                    count(engine_production::market_ledger::CONTRACT_ROUTE_POOL),
+                )
+                .and_then(|demand| total.checked_add(demand))
+            });
+            let id = e_pool_u64(log, start + cpurchase_contract::ID_TYPE);
+            let seller = e_pool_u32(log, start + cpurchase_contract::SELLER);
+            collector_observers::market_changes::held::seed_contract(
+                memory, base, pointer, id, seller,
+            );
+        } else {
+            complete = false;
+        }
         if log.overflowed {
+            collector_observers::market_changes::held::finish_contract_seed(false);
             return;
         }
     }
+    match event_demand {
+        Some(demand) => collector_observers::market_changes::prepare_contract_events(demand),
+        None => collector_observers::market_changes::held::refuse(
+            "market contract event demand overflow",
+        ),
+    }
+    collector_observers::market_changes::held::finish_contract_seed(complete);
     for table in [
         market_contract_manager::CONTRACT_TABLE_A,
         market_contract_manager::CONTRACT_TABLE_B,

@@ -146,8 +146,11 @@ export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<
 export type ResearchFolder = { key: string, name: string | null, };
 export type ResearchTechnologyFolder = { token: string, folder: string | null, };
 export type ResearchStateSlot = { index: number, available: boolean, state: ResearchSlotState | null, progress: ResearchProgress | null, readHour: number | null, };
-export type ResearchState = { tag: string, hour: number, slots: Array<ResearchStateSlot>, data: ResearchReply, preparing: Array<string>, };
+export type ResearchState = { tag: string, hour: number, slots: Array<ResearchStateSlot>, data: ResearchReply, preparing: Array<string>, grants: GrantInventory, };
 export type ResearchStateReply = { branchId: string, states: Array<ResearchState>, };
+export type GrantRestriction = { token: string, name: string | null, databaseIndex: number | null, };
+export type ResearchGrant = { id: number, ordinal: number, kind: string, token: string, name: string | null, uses: number, activeClaims: number | null, speedBonusRaw: string | null, aheadReductionRaw: string | null, costReductionRaw: string | null, technologies: Array<GrantRestriction>, categories: Array<GrantRestriction>, };
+export type GrantInventory = { nextId: number | null, grants: Array<ResearchGrant>, unavailable: string | null, };
 export type MapAudio = {
 /**
  * `master_volume`.
@@ -474,9 +477,16 @@ pixels: Array<number>, };
 export type CountryFlagUnavailable = { tag: string, reason: string, };
 export type CountryFlagParams = { branchId: string, hour: number, tags: Array<string>, size: CountryFlagSize, };
 export type CountryFlagReply = { branchId: string, hour: number, size: CountryFlagSize, flags: Array<CountryFlagImage>, unavailable: Array<CountryFlagUnavailable>, warnings: Array<string>, };
+export type DoctrineParams = { branchId: string, tag: string, hour: number, };
+export type DoctrineFact = { name: string, value: string, };
+export type DoctrineReward = { name: string, mastery: string, unlocked: boolean | null, description: string, };
+export type DoctrineTrack = { ordinal: number, name: string, subDoctrine: string | null, rewards: number, mastery: string, masteryBank: string, dailyMastery: string, unitDailyMastery: string, rewardRequirements: Array<string>, benefits: string, authoredCost: string, rewardBenefits: Array<DoctrineReward>, commanders: Array<DoctrineFact>, };
+export type DoctrineFolder = { ordinal: number, name: string, grandDoctrine: string | null, benefits: string, authoredCost: string, milestones: Array<DoctrineReward>, completed: Array<string>, tracks: Array<DoctrineTrack>, };
+export type DoctrineInventory = { kind: string, ordinal: number, fields: Array<DoctrineFact>, };
+export type DoctrineReply = { branchId: string, hour: number, tag: string, folders: Array<DoctrineFolder>, inventory: Array<DoctrineInventory>, warnings: Array<string>, };
 export type ArmyMeasure = "manpower" | "divisions" | "strength" | "battalions";
 export type ArmyAttribution = "owner" | "host";
-export type ArmySizeParams = { branchId: string, tags: Array<string>, top: number | null, measure: ArmyMeasure, countFor: ArmyAttribution, byType: boolean,
+export type ArmySizeParams = { templateAt?: [string, number], branchId: string, tags: Array<string>, top: number | null, measure: ArmyMeasure, countFor: ArmyAttribution, byType: boolean,
 /**
  * None is the capability/window manifest; histories use a replay-block index.
  */
@@ -489,7 +499,7 @@ export type ArmyMixRun = { firstHour: number, lastHour: number, values: Array<nu
  */
 rawValues?: Array<string | null>, };
 export type ArmySeries = { tag: string, identities?: Array<CountryIdentityRun>, runs: Array<ArmyRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, mix?: Array<ArmyMixRun>, };
-export type ArmySizeReply = { branchId: string, windows: Array<HourSpan>, window: number | null, interval: HourSpan | null, available: boolean, measures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, warnings: Array<string>, };
+export type ArmySizeReply = { templateSections?: Array<string>, branchId: string, windows: Array<HourSpan>, window: number | null, interval: HourSpan | null, available: boolean, measures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, warnings: Array<string>, };
 export type SupplyHealthParams = { branchId: string, tags: Array<string>, };
 export type SupplyHealthRun = { firstHour: number, lastHour: number, startsSegment: boolean,
 /**
@@ -538,8 +548,15 @@ export type LeaderRole = { owner: string | null, category: number, rank: string 
  * Native skill labels localised through the recorded content stack.
  */
 attributeNames: [string | null, string | null, string | null, string | null], };
-export type LeaderValues = { person: number, role: number, skill: number | null, components: [number, number, number, number], traits: Array<number> | null, };
-export type UnitLeaderRun = [number, number, number, number, number | null, [number, number, number, number], number[] | null];
+export type LeaderTraining = { token: string | null, name: string | null, experienceRaw: string, requiredRaw: string | null, };
+export type LeaderTrainingFactor = { token: string | null, name: string | null, factorRaw: string, };
+export type LeaderProgress = { experienceRaw: string, nextRequiredRaw: string | null,
+/**
+ * None is missing acquisition; an empty list is complete native absence.
+ */
+training: Array<LeaderTraining> | null, factors: Array<LeaderTrainingFactor> | null, };
+export type LeaderValues = { person: number, role: number, skill: number | null, components: [number, number, number, number], progress: LeaderProgress | null, traits: Array<number> | null, };
+export type UnitLeaderRun = [number, number, number, number, number | null, [number, number, number, number], number[] | null, LeaderProgress | null];
 export type LeaderChangeDate = "heldBefore" | "gained" | "firstObserved";
 export type LeaderTraitGain = [number, number, number];
 export type LeaderFormationKind = "army" | "armyGroup" | "fleet";
@@ -675,6 +692,16 @@ export type LandTerrainName = { provinceId: number,
  */
 name: string | null, missing: string | null, };
 export type LandBattleTerrainReply = { provinces: Array<LandTerrainName>, warnings: Array<string>, };
+export type CombatLogParams = { branchId: string, hour: number, countries: LandBattleCountryFilter, };
+export type CombatLogReply = { hour: number, groups: Array<LogGroup>, manpower: Array<LogManpower>, equipment: Array<LogEquipment>, templates: Array<LogTemplate>, battles: Array<LogBattle>, active: Array<LogActiveSide>, availability: CombatLogAvailability, warnings: Array<string>, };
+export type LogGroup = { tag: string, group: string, ordinal: number, };
+export type LogManpower = { tag: string, group: string, ordinal: number, reason: number, date: number, losses: [number, number, number], };
+export type LogEquipment = { tag: string, group: string, month: number, ordinal: number | null, reason: number, date: number, kind: number, allowZero: boolean, name: string | null, variant: string | null, amountRaw: string | null, missingSource: string | null, };
+export type LogTemplate = { tag: string, group: string, ordinal: number, date: number, template: string, name: string | null, wins: number, total: number, };
+export type LogBattle = { tag: string, group: string, ordinal: number, id: number, attacker: boolean, date: number, province: number, flags: [number, number, number, number], manpower: [number, number], references: number, details: Array<LogDetailTable>, };
+export type LogDetailTable = { title: string, columns: Array<string>, rows: Array<Array<string>>, };
+export type LogActiveSide = { combat: string, attacker: boolean, terminal: boolean, progressRaw: string, damageRaw: string, activityGroups: number, leaders: number, lossSource: string | null, details: Array<LogDetailTable>, };
+export type CombatLogAvailability = { groups: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, templates: string | null, battles: string | null, active: string | null, terminal: string | null, };
 export type PlaceNamesParams = { branchId: string,
 /**
  * Land's presentation ladder; other callers retain the native resolver.
@@ -704,6 +731,28 @@ name: string | null,
  */
 color: [number, number, number] | null, };
 export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
+export type FactionDetailParams = { branchId: string, hour: number, faction: string, };
+export type FactionGoalDefinition = { progress: Array<FactionRewardDetail>, sections: Array<FactionRewardDetail>, conditions: Array<FactionConditionDetail>, rewards: Array<FactionRewardDetail>, flags: Array<FactionConditionDetail>, token: string | null, name: string | null, description: string | null, category: string | null, reason: string | null, };
+export type FactionConditionDetail = { kind: string, result: boolean | null, reasons: Array<string>, };
+export type FactionRewardDetail = { kind: string, text: string, reasons: Array<string>, };
+export type FactionGoalDetail = { ordinal: number, definition: FactionGoalDefinition, status: number,
+/**
+ * Exact retained fixed-point cache as decimal text.
+ */
+progressRaw: string, activeSections: Array<number>, progressPercent: number | null, date: number, };
+export type FactionRuleDetail = { ordinal: number, token: string | null, name: string | null, reason: string | null, };
+export type FactionProgramDetail = { ordinal: number, reference: string, owner: string | null, activeProject: boolean | null, project: string | null, reason: string | null, };
+export type FactionManpowerDetail = { ordinal: number, tag: string | null, value: number, };
+export type FactionAccountDetail = { ordinal: number, country: number, tag: string | null, currentMember: boolean, influence: Array<string>, projection: Array<string>, influenceShareRaw: string, projectionShareRaw: string, projectionRank: number, initiativeRaw: string, contributionRaw: string, contributionGain: Array<string>, previousWarScoreRaw: string, upgrades: Array<FactionUpgradeDetail>, completed: Array<FactionGoalDefinition>, };
+export type FactionUpgradeDetail = { group: number, token: string | null, name: string | null, reason: string | null, };
+export type FactionVariableDetail = { ordinal: number,
+/**
+ * Literal bytes remain available when the key is not UTF-8.
+ */
+nameBytes: Array<number>, name: string, valueRaw: string, };
+export type FactionResourceDetail = { ordinal: number, token: string | null, name: string | null, raw: string, reason: string | null, };
+export type FactionRefusalDetail = { fact: string, count: number, reason: string, };
+export type FactionDetailReply = { presentations: Array<FactionRewardDetail>, projectionRaw: string | null, influenceTotalRaw: string | null, projectionEffectsRaw: string | null, resources: Array<FactionResourceDetail> | null, systemResources: Array<FactionResourceDetail> | null, refusals: Array<FactionRefusalDetail>, minimumUpgrades: Array<FactionUpgradeDetail> | null, doctrineFolders: Array<FactionRuleDetail> | null, researchBaseRaw: string | null, researchCountries: Array<string> | null, researchBonuses: Array<string> | null, accounts: Array<FactionAccountDetail> | null, variableSeed: number | null, variables: Array<FactionVariableDetail> | null, branchId: string, hour: number, faction: string, goalReason: string | null, researchUnlocked: boolean | null, manpowerUnlocked: boolean | null, rules: Array<FactionRuleDetail> | null, programmes: Array<FactionProgramDetail> | null, programmesReadHour: number | null, manpower: Array<FactionManpowerDetail> | null, manpowerTotal: number | null, manifest: FactionGoalDefinition | null, goals: Array<FactionGoalDetail>, completed: Array<FactionGoalDefinition>, cancelled: Array<FactionGoalDefinition>, extraSlots: Array<number>, termDates: Array<number>, warnings: Array<string>, };
 export type CountryGroupParams = { branchId: string, };
 export type MembershipRun = { tag: string, firstHour: number, lastHour: number, };
 export type FactionNameRun = { firstHour: number, lastHour: number, name: string | null, reason: string | null, };
@@ -816,12 +865,26 @@ viewpoints: Array<MembershipRun>,
  * All resolved historical names of participants and viewpoints, for label measurement only.
  */
 countryNames: Array<string>, wars: Array<WarTimeline>, unobserved: Array<HourSpan>, capitulationsUnobserved: Array<HourSpan>, warnings: Array<string>, };
-export type WarsAtHour = { hour: number,
+export type WarsAtHour = { hour: number, contributions: Array<WarContributionGroup>,
 /**
  * At least one overview operand table was recorded at the hour; false
  * at an unrecorded hour.
  */
 available: boolean, wars: Array<WarTimeline>, warnings: Array<string>, };
+export type WarContributionGroup = { viewpointSide: Array<string>, opposingSide: Array<string>, participants: Array<WarContributionCountry>, reason: string | null, };
+export type WarContributionCountry = { tag: string, side: WarSide,
+/**
+ * All quantities are exact signed fixed5 words.
+ */
+equipmentDamage: string, occupation: string, airDamage: string, strategicBombing: string, shipDamage: string, convoyDamage: string, casualties: string, unknownCasualties: string, lendLeaseSent: string, lendLeaseReceived: string, score: string, participation: string, };
+export type WargoalsParams = { branchId: string, hour: number, tag: string, };
+export type WargoalEntry = { handle: string, name: string, actor: string, recipient: string, available: boolean, expires: number | null, states: Array<number>, liberate: Array<string>, puppets: Array<string>, terms: WargoalTerms | null, };
+export type WargoalTerms = { allowed: string | null, available: string | null, annex: boolean, baseGenerationCost: number, perStateGenerationCost: number, expiryDays: number, threat: string, peace: Array<WargoalTerm>, };
+export type WargoalTerm = { name: string, limit: number, costFactor: string, threatFactor: string, conditioned: boolean, };
+export type WargoalJustification = { ordinal: number, name: string, actor: string, recipient: string, states: Array<number>, total: string, points: string, daily: string, payUpfront: boolean, start: number | null, completion: number, threat: string, paused: boolean | null, terms: WargoalTerms | null, };
+export type WargoalsReply = { branchId: string, hour: number, tag: string, eligibility: Array<WargoalEligibility>, goals: Array<WargoalEntry>, justifications: Array<WargoalJustification>, warnings: Array<string>, stateNames: Array<WargoalStateName>, };
+export type WargoalEligibility = { actor: string, recipient: string, justify: boolean | null, declare: boolean | null, justifyReason: string, declareReason: string, };
+export type WargoalStateName = { id: number, name: string, known: boolean, };
 export type CountryStabilityParams = { branchId: string, tags: Array<string>,
 /**
  * The hour whose breakdown to include; none for runs only.
@@ -969,6 +1032,11 @@ export type MeasureParams = { branchId: string, measure: Measure, tags: Array<st
 export type BalanceDrop = { hour: number, beforeRaw: string, afterRaw: string, };
 export type MeasureSeries = { tag: string, runs: Array<FixedRun>, drops: Array<BalanceDrop>, };
 export type MeasureReply = { branchId: string, measure: Measure, decimals: number, series: Array<MeasureSeries>, warnings: Array<string>, };
+export type PeopleParams = { branchId: string, tag: string, hour: number, };
+export type PeopleFact = { label: string, value: string | null, unit: string, };
+export type PeopleState = { state: number, available: number, locked: number | null, total: number | null, effective: string | null, recruitable: number | null, };
+export type PeopleExile = { tag: string, host: string | null, legitimacy: string | null, manpower: number | null, cap: number | null, leaders: number | null, deployedAir: number | null, readHour: number | null, };
+export type PeopleReply = { branchId: string, tag: string, hour: number, readHour: number | null, manpower: Array<PeopleFact>, politics: Array<PeopleFact>, states: Array<PeopleState>, exiles: Array<PeopleExile>, warnings: Array<string>, };
 export type FuelAwardPart = {
 /**
  * Exact receipt-time grouping operands, independent of viewer language.
@@ -1415,6 +1483,9 @@ export type NavyRun = { firstHour: number, lastHour: number, startsSegment: bool
 referenceTotal: number | null, };
 export type NavySeries = { tag: string, identities: Array<CountryIdentityRun>, runs: Array<NavyRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, };
 export type NavyReply = { branchId: string, parts: Array<NavyPart>, series: Array<NavySeries>, warnings: Array<string>, };
+export type NavalManagementParams = { branchId: string, hour: number, tag: string, };
+export type NavalManagementSection = { key: string, title: string, lines: Array<string>, };
+export type NavalManagementReply = { branchId: string, hour: number, sections: Array<NavalManagementSection>, warnings: Array<string>, };
 export type BranchParams = { branchId: string, };
 export type GameScoreMissingKind = "recording" | "content";
 export type GameScoreMissing = { kind: GameScoreMissingKind, reason: string, };
@@ -2394,6 +2465,7 @@ icon: string | null,
  * Why the icon cannot be determined from this read.
  */
 iconUnknown: string | null, };
+export type OrganisationState = { readHour: number | null, size: number, fundsRaw: string, unspentPoints: number, baseTaskCapacity: number, activeTasks: number, taskSlots: number, unlocked: Array<string>, planned: Array<string>, queueIndex: number, policyToken: string | null, policyName: string | null, cooldownHour: number | null, autoUpdateDesigns: boolean, };
 export type EquipmentIcon = { key: string,
 /**
  * A PNG data URL; null when the texture could not be read.
@@ -2452,7 +2524,20 @@ approximate: Array<HourSpan>,
  * The hours one `production-line-detail` window covers.
  */
 detailHours: number, warnings: Array<string>, };
-export type LineRun = { firstHour: number, lastHour: number,
+export type DesignDetailParams = { branchId: string, hour: number, variant: string | null, fromVariant: string | null, ship: string | null, wing: string | null, observer: number | null, targetCountry: number | null, fog: boolean | null, };
+export type DesignDetailReply = { warnings: Array<string>, branchId: string, hour: number, designs: Array<DesignChoice>, sections: Array<DesignSection>, };
+export type DesignChoice = { id: string, name: string, creator: number, obsolete: boolean, };
+export type DesignSection = { title: string, fields: Array<DesignField>, };
+export type DesignField = { label: string, value: string | null, refusal: string | null, };
+export type LineRun = {
+/**
+ * Frozen design authorship, independently observed from the line assignment.
+ */
+designAuthor: string | null,
+/**
+ * Supplying VariantStats read, independent of the production-line census.
+ */
+designReadHour: number | null, designTraitCount: number | null, designBonusCount: number | null, firstHour: number, lastHour: number,
 /**
  * The run follows a gap, a missing read or another country identity.
  */
@@ -2494,7 +2579,7 @@ priority: number,
  * Units still ordered; −1 for no limit.
  */
 amount: number, };
-export type LineDetail = {
+export type LineDetail = { organisations: Array<OrganisationStateRead>,
 /**
  * The line's key in `production-lines`.
  */
@@ -2503,6 +2588,7 @@ key: string, runs: Array<LineRun>,
  * Its output at each read (the same reads as `runs`), where recorded.
  */
 output: Array<OutputRun>, };
+export type OrganisationStateRead = { id: string, firstHour: number, state: OrganisationState | null, };
 export type ProductionDetailParams = { branchId: string, tag: string, window: number, };
 export type ProductionLineDetailReply = { warnings: Array<string>, branchId: string, tag: string, decimals: number, window: number,
 /**
@@ -2872,6 +2958,15 @@ partial: Array<PartialSpan>,
  * By seller, buyer and resource.
  */
 flows: Array<TradeFlow>, warnings: Array<string>, };
+export type MarketLendLeaseParams = { branchId: string, hour: number, tags: Array<string>, };
+export type MarketLendLeaseReply = { branchId: string, hour: number, offers: Array<MarketOffer> | null, contracts: Array<MarketTerms> | null, agreements: Array<LeaseTerms> | null, deliveries: Array<MarketDelivery> | null, warnings: Array<string>, };
+export type MarketItem = { variant: string, name: string | null, amountRaw: string, };
+export type MarketLevel = { variant: string, name: string | null, level: number, };
+export type MarketGrant = { cicRaw: string, archetype: string | null, targets: Array<string>, trigger: string | null, };
+export type MarketOffer = { country: number, tag: string | null, inventory: Array<MarketItem>, prices: Array<MarketLevel>, subsidies: Array<MarketGrant>, subsidyTotalRaw: string, automation: [boolean, boolean, boolean], };
+export type MarketTerms = { id: string, seller: string | null, buyer: string | null, request: boolean, speed: number, equipment: Array<MarketItem>, prices: Array<MarketItem>, levels: Array<MarketLevel>, subsidies: Array<MarketGrant>, };
+export type LeaseTerms = { id: string, giver: string | null, receiver: string | null, revision: string, activeSince: number, lastDelivery: number, monthly: Array<MarketItem>, percentage: Array<MarketItem>, once: Array<MarketItem>, delivered: Array<MarketItem>, sunk: Array<MarketItem>, fuelDailyRaw: string, fuelPercentageRaw: string, fuelSentRaw: string, fuelSunkRaw: string, lastFuelDeliveredRaw: string, };
+export type MarketDelivery = { id: string, occurrence: string, agreement: string, hour: number, giver: string | null, receiver: string | null, kind: number, item: MarketItem, lostRaw: string, totalRaw: string, lostTotalRaw: string, };
 export type SpecialProjectsParams = { branchId: string, tag: string,
 /**
  * Original manual picks; a projected alias is never another selection root.
@@ -2907,7 +3002,7 @@ progress: number, state: ProjectState, completion: ProjectDate | null, cancellat
  */
 iterations: number | null, };
 export type ProjectEpisode = { id: string, start: ProjectDate, runs: Array<SpecialProjectRun>, };
-export type SpecialProjectsReply = { branchId: string, tag: string, identities: Array<CountryIdentityRun>, available: Array<HourSpan>, readHours: Array<number>, projects: Array<ProjectEpisode>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
+export type SpecialProjectsReply = { details?: SpecialProjectDetails, branchId: string, tag: string, identities: Array<CountryIdentityRun>, available: Array<HourSpan>, readHours: Array<number>, projects: Array<ProjectEpisode>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
 /**
  * Native NUMBER text, localized once per distinct recorded count.
  */
@@ -2921,6 +3016,21 @@ unavailable: string | null, warnings: Array<string>,
  * remain pending; their starts are only bounded by this observation.
  */
 current?: SpecialProjectsReply, };
+export type ProjectLabel = { token: string, name: string | null, };
+export type ScientistSkill = { specialization: ProjectLabel, level: number, experienceRaw: string, };
+export type ScientistDetails = { character: number, person: ProjectPerson, active: number | null, injuryDays: number | null, injuryHour: number | null, visible: boolean | null, visibilityHour: number | null, stateRefusals: { [key in string]?: number }, skills: Array<ScientistSkill> | null, traits: Array<ProjectLabel> | null, };
+export type ScientistAssignment = { ordinal: number, reference: string, person: ProjectPerson, target: number, current: number, timed: number, };
+export type ProgramDetails = { id: number, province: number, readHour: number, assignments: Array<ScientistAssignment> | null, facility: FacilityDetails | null, };
+export type FacilityDetails = { speedRaw: string | null, sources: Array<FacilitySource>, unavailable: string | null, };
+export type FacilitySource = { kind: string, unit: string, label: ProjectLabel | null, modifier: ProjectLabel | null, assignment: number, scientistReference: string, valueRaw: string, };
+export type ProjectChoice = { ordinal: number, date: number, reward: ProjectLabel, option: ProjectLabel, province: number, progress: number, characterReference: string, country: number | null, scientist: number | null, state: number | null, };
+export type SpecializationProgress = { specialization: ProjectLabel, points: number, readHour: number, };
+export type ProjectEffects = { text: string, refusals: { [key in string]?: number }, };
+export type ProjectRewardOption = { label: ProjectLabel, effects: ProjectEffects, };
+export type PendingProjectReward = { label: ProjectLabel, description: string | null, options: Array<ProjectRewardOption>, unavailable: string | null, };
+export type ProjectVariableValue = { name: string, valueRaw: string, };
+export type ProjectRuntimeDetails = { owner: number, id: number, label: ProjectLabel, readHour: number, pendingKnown: boolean, pending: PendingProjectReward | null, seed: number | null, variables: Array<ProjectVariableValue> | null, output: ProjectEffects | null, choices: Array<ProjectChoice> | null, };
+export type SpecialProjectDetails = { hour: number, scientists: Array<ScientistDetails>, programs: Array<ProgramDetails>, breakthroughs: Array<SpecializationProgress>, projects: Array<ProjectRuntimeDetails>, unavailable: Array<string>, };
 export type SubjectParams = { branchId: string, };
 export type SubjectLevel = {
 /**
@@ -2975,7 +3085,7 @@ export type EventFeedParams = { branchId: string,
  */
 firstHour: number | null, lastHour: number | null, };
 export type EventFeedCategory = "warsPeace" | "diplomacy" | "politics" | "milestones";
-export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike";
+export type EventFeedKind = "warStarted" | "warDeclared" | "warJoined" | "civilWarWarTransferred" | "annexed" | "warEnded" | "released" | "stateTransferred" | "peaceConferenceStarted" | "peace" | "capitulated" | "ceasedToExist" | "factionJoined" | "factionLeft" | "becameSubject" | "guaranteeGranted" | "rulingPartyChanged" | "lawChanged" | "advisorHired" | "focusCompleted" | "projectFinished" | "nukesIncreased" | "nuclearStrike" | "scriptEventFired" | "newsEventFired" | "eventOptionSelected" | "decisionSelected" | "decisionRemoved" | "decisionCancelled" | "decisionTimedOut" | "decisionActivated" | "decisionCompleted" | "decisionReenabled" | "decisionRemovalEffect" | "decisionCancellationEffect" | "decisionCompletionEffect" | "decisionTimeoutEffect" | "decisionDurationChanged" | "decisionRosterRebuilt" | "scriptStateObserved";
 export type EventFeedRow = { id: string, hour: number,
 /**
  * The read supplying this fact; Live must not expose it before this hour.
@@ -3889,6 +3999,15 @@ hour: number, id: string, owner: number,
 sequence: string | null, };
 export type OperationDescriptionParams = { branchId: string, description: OperationDescriptionRef, offset: string, };
 export type OperationDescriptionReply = { description: OperationDescriptionRef, recordedLanguage: string, offset: string, totalBytes: string, nextOffset: string | null, bytes: Array<number>, unavailable: string | null, warnings: Array<string>, };
+export type IntelDetailsParams = { viewer: number | null, branchId: string, hour: number, country: number | null, };
+export type IntelDetailsReply = { viewer: number | null, hour: number, country: number | null, countries: Array<IntelCountry>, entries: Array<IntelDetail>, warnings: Array<string>, };
+export type IntelCountry = { id: number, tag: string, };
+export type IntelDetail = { key: string, group: string, label: string, viewer: number, target: number | null,
+/**
+ * All operands of this entry are evaluated at this supplying hour.
+ */
+supplyingHour: number | null, values: Array<IntelValue>, explanations: Array<IntelValue>, unavailable: string | null, };
+export type IntelValue = { name: string, value: string, };
 export type OperativePlacementParams = { branchId: string, };
 export type PlacementAvailability = "recorded" | "featureAbsent" | "tablesNotRecorded";
 export type PlacementPeriod = { firstHour: number, lastHour: number, availability: PlacementAvailability, };
@@ -4082,6 +4201,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "place-names", "country-styles", "country-groups", "wars", "country-stability", "stability-parts", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "unit-leader-portraits", "land-battle-terrain", "place-names", "country-styles", "air-ace-portraits", "stockpile-artwork"] as const;
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;

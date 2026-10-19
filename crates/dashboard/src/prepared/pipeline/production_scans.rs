@@ -76,6 +76,8 @@ type WantedScan = (u64, String);
 /// meanwhile, one at a time (a scan a request holds is not read again). A scan
 /// that cannot be read is not kept, nor tried again this session: its products
 /// scan at request time.
+// Keep the borrowed registration callback and its publication error contract explicit.
+#[allow(clippy::type_complexity)]
 fn keep_each(
     source: &Source,
     context: &LoadContext,

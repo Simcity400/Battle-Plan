@@ -376,12 +376,16 @@ impl Renderer<'_, '_, '_> {
             .map(EventObject::Country)
             .or_else(|| (state != 0).then_some(EventObject::State(state)));
         let (at, from) = self.seeded_decision_graph(owner, target, seed);
-        let selected = self.evaluator()?.event_scopes(at)?;
+        let selected = self
+            .evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())?;
         if highlight
             && (definition.has_state_targets
                 || self
                     .evaluator()?
-                    .has_children(&definition.highlight_conditions)?)
+                    .has_children(&definition.highlight_conditions)
+                    .map_err(|why| why.to_string())?)
             && let Some(highlighted) = self.highlight_state(definition, selected)?
         {
             let mut graph = self.graph.borrow_mut();
@@ -391,7 +395,9 @@ impl Renderer<'_, '_, '_> {
                 .push(EventScope::of(EventObject::State(highlighted)));
             graph.scopes[from].from = Link::Scope(index);
         }
-        self.evaluator()?.event_scopes(at)
+        self.evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())
     }
 
     // resolves its authored decision pointer, then the
@@ -464,10 +470,10 @@ impl Renderer<'_, '_, '_> {
                 // operands survive, even when the caller carries a country.
                 EventObject::UnitLeader(leader) | EventObject::CountryUnitLeader { leader, .. } => {
                     let world = self.context.world()?;
-                    let original = world.unit_leader(leader)?
+                    let original = world.unit_leader(leader).map_err(|why| why.to_string())?
                         .ok_or("state_event scope leader is not recorded")?;
                     match crate::character_scope::Tables::read(world.frame())
-                        .unit_leader(original.character_id)? {
+                        .unit_leader(original.character_id).map_err(|why| why.to_string())? {
                         Some(crate::character_scope::UnitLeader::Direct(row)) => {
                             let country = if row.owner == 0 { 0 } else {
                                 world.slot(row.owner).ok_or("state_event current leader country lacks CountryLinks")?
@@ -537,7 +543,10 @@ impl Renderer<'_, '_, '_> {
             graph.scopes.push(title);
             at
         };
-        let selected = self.evaluator()?.event_scopes(at)?;
+        let selected = self
+            .evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())?;
         let title = match event.deterministic_title_key(|triggers| {
             self.evaluator()?.evaluate(triggers, selected).decided()
         })? {
@@ -572,13 +581,20 @@ impl Renderer<'_, '_, '_> {
             .contains_key(&operand.to_ascii_lowercase())
         {
             database.template(operand)?.token.clone()
-        } else if let Some(Scope::IndustrialOrganisation(reference)) =
-            self.evaluator()?.scoped_scope(operand, scopes)?
+        } else if let Some(Scope::IndustrialOrganisation(reference)) = self
+            .evaluator()?
+            .scoped_scope(operand, scopes)
+            .map_err(|why| why.to_string())?
         {
-            let row = self.context.world()?.industrial_organisation(reference)?;
+            let row = self
+                .context
+                .world()?
+                .industrial_organisation(reference)
+                .map_err(|why| why.to_string())?;
             self.context
                 .world()?
-                .token(row.token)?
+                .token(row.token)
+                .map_err(|why| why.to_string())?
                 .ok_or("LexicalTokens lacks MIO template token")?
                 .to_vec()
         } else {
@@ -587,7 +603,7 @@ impl Renderer<'_, '_, '_> {
         let country = self.current_country(scopes)?;
         let world = self.context.world()?;
         let mut instance = None;
-        if let Some(id) = world.token_of(&token)? {
+        if let Some(id) = world.token_of(&token).map_err(|why| why.to_string())? {
             instance = world
                 .frame()
                 .complete::<tables::IndustrialOrganisations>()
@@ -653,8 +669,10 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<String, String> {
         let operand = item.value.scalar().unwrap_or_default();
-        let name = if let Some(Scope::IndustrialOrganisation(reference)) =
-            self.evaluator()?.scoped_scope(operand, scopes)?
+        let name = if let Some(Scope::IndustrialOrganisation(reference)) = self
+            .evaluator()?
+            .scoped_scope(operand, scopes)
+            .map_err(|why| why.to_string())?
         {
             self.organisation_name(reference)?
         } else {
@@ -702,7 +720,12 @@ impl Renderer<'_, '_, '_> {
         let world = self.context.world()?;
         let country = if let Scope::IndustrialOrganisation(reference) = scopes.this {
             world
-                .slot(world.industrial_organisation(reference)?.owner)
+                .slot(
+                    world
+                        .industrial_organisation(reference)
+                        .map_err(|why| why.to_string())?
+                        .owner,
+                )
                 .ok_or("CountryLinks lacks policy MIO owner")?
         } else {
             self.current_country(scopes)?
@@ -720,11 +743,12 @@ impl Renderer<'_, '_, '_> {
                 .require("CountryCounterInputs.mio_policies")?
                 .as_ref()
                 .ok_or("CountryCounterInputs.mio_policies capture refused")?;
-            if let Some(token) = world.token_of(operand)?
+            if let Some(token) = world.token_of(operand).map_err(|why| why.to_string())?
                 && policies.contains(&token)
             {
                 let spelling = world
-                    .token(token)?
+                    .token(token)
+                    .map_err(|why| why.to_string())?
                     .ok_or("LexicalTokens lacks MIO policy spelling")?;
                 Some(
                     self.context
@@ -846,7 +870,10 @@ impl Renderer<'_, '_, '_> {
                 }
                 at
             };
-            let selected = self.evaluator()?.event_scopes(at)?;
+            let selected = self
+                .evaluator()?
+                .event_scopes(at)
+                .map_err(|why| why.to_string())?;
             // invokes the option's description at indent 0 in
             // the existing description session, then trims the result.
             return Ok(trim_description(&self.group(body, selected, 0)).to_owned());

@@ -3,6 +3,34 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn organisation_gates_inherit_parent_local_bodies_and_filters_copy() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let db = catalog(br#"
+      base={visible={always=yes} available={always=no} equipment_type={armor}}
+      child={include=base}
+      grandchild={include=child}
+      deleted={include=base delete_included_values={visible available equipment_type}}
+      local={include=base visible={always=no} equipment_type={air} delete_included_values={visible equipment_type}}
+    "#);
+    let child = db.tree("child").unwrap().unwrap();
+    assert_eq!(child.visible[0].value.scalar_str(), Some("yes"));
+    assert_eq!(child.available[0].value.scalar_str(), Some("no"));
+    assert_eq!(child.equipment_types, [b"armor".to_vec()]);
+    let grandchild = db.tree("grandchild").unwrap().unwrap();
+    assert!(grandchild.visible.is_empty() && grandchild.available.is_empty());
+    assert_eq!(grandchild.equipment_types, [b"armor".to_vec()]);
+    let deleted = db.tree("deleted").unwrap().unwrap();
+    assert!(
+        deleted.visible.is_empty()
+            && deleted.available.is_empty()
+            && deleted.equipment_types.is_empty()
+    );
+    let local = db.tree("local").unwrap().unwrap();
+    assert_eq!(local.visible[0].value.scalar_str(), Some("no"));
+    assert_eq!(local.equipment_types, [b"air".to_vec()]);
+}
+
 fn catalog(input: &[u8]) -> Catalog {
     let (rows, warnings) = parse(input, &KeyNames::default()).unwrap();
     let mut result = Catalog {
@@ -203,13 +231,13 @@ fn mio_trait_bonuses_follow_duplicate_category_and_include_rules() {
             value: 10_000
         }]
     );
-    assert_eq!(child.organisation_modifiers.values[0].value, 40_000);
-    assert!(
+    assert_eq!(
         child
-            .modifier_inheritance_refusal
-            .as_deref()
+            .resolved_organisation_modifiers(|_| Ok(true))
             .unwrap()
-            .contains("modifier tooltip-table copying")
+            .values[0]
+            .value,
+        40_000
     );
     let copied = db.trait_definition("copied", "one").unwrap().unwrap();
     assert_eq!(
@@ -224,12 +252,13 @@ fn mio_trait_bonuses_follow_duplicate_category_and_include_rules() {
             ("production_capacity_factor", 30_000)
         ]
     );
-    assert!(
+    assert_eq!(
         copied
-            .modifier_inheritance_refusal
-            .as_deref()
+            .resolved_organisation_modifiers(|_| Ok(true))
             .unwrap()
-            .contains("modifier tooltip-table copying")
+            .values[0]
+            .value,
+        40_000
     );
     assert!(
         db.trait_definition("invalid", "one")
@@ -252,11 +281,19 @@ fn mio_trait_bonuses_follow_duplicate_category_and_include_rules() {
             .hidden
             .contains("political_power_gain")
     );
-    assert!(
-        zero.modifier_inheritance_refusal
-            .as_deref()
+    assert_eq!(
+        zero.resolved_organisation_modifiers(|_| Ok(true))
             .unwrap()
-            .contains("modifier effective-emptiness eligibility gate")
+            .values[0]
+            .value,
+        0
+    );
+    assert_eq!(
+        zero.resolved_organisation_modifiers(|_| Ok(false))
+            .unwrap()
+            .values[0]
+            .value,
+        40_000
     );
 }
 
@@ -327,4 +364,105 @@ fn mio_trait_content_layers_replace_templates_and_keep_unread_suffix_named() {
         )
     );
     std::fs::remove_dir_all(cleanup).unwrap();
+}
+
+#[test]
+fn mio_tree_retains_native_positions_groups_and_initial_trait_inheritance() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let db = catalog(
+        br#"
+        base={initial_trait={name=INITIAL position={x=3 y=4}}
+            trait={token=anchor icon=GFX_SYNTHETIC position={x=-2 y=7}}
+            trait={token=leaf position={x=5 y=2} relative_position_id=anchor
+                parent={traits={a b a} num_parents_needed=2}
+                any_parent={c d} all_parents={e f}
+                mutually_exclusive={other other} limit_to_equipment_type={synthetic_group}
+                special_trait_background=yes}}
+        child={include=base override_trait={token=leaf position={x=-1 y=-1}}}
+    "#,
+    );
+    let tree = db.tree("child").unwrap().unwrap();
+    assert_eq!(tree.initial.unwrap().local_position(), [3, 4]);
+    let leaf = db.trait_definition("child", "leaf").unwrap().unwrap();
+    assert_eq!(leaf.local_position(), [5, 2]);
+    assert_eq!(db.position("child", "leaf").unwrap(), Some([3, 9]));
+    assert_eq!(
+        leaf.parents,
+        vec![
+            ParentGroup {
+                traits: vec!["a".into(), "b".into(), "a".into()],
+                required: 2
+            },
+            ParentGroup {
+                traits: vec!["c".into(), "d".into()],
+                required: 1
+            },
+            ParentGroup {
+                traits: vec!["e".into(), "f".into()],
+                required: 2
+            },
+        ]
+    );
+    assert_eq!(leaf.mutually_exclusive, ["other", "other"]);
+    assert_eq!(leaf.equipment_types, vec![b"synthetic_group".to_vec()]);
+    assert!(leaf.special_background);
+}
+#[test]
+fn mio_tree_missing_anchors_return_zero_and_cycles_are_named() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let db = catalog(
+        br#"m={trait={token=missing relative_position_id=absent position={x=9 y=8}}
+        trait={token=outer relative_position_id=missing position={x=3 y=2}}
+        trait={token=a relative_position_id=b} trait={token=b relative_position_id=a}}"#,
+    );
+    assert_eq!(db.position("m", "missing").unwrap(), Some([0, 0]));
+    assert_eq!(db.position("m", "outer").unwrap(), Some([3, 2]));
+    assert!(
+        db.position("m", "a")
+            .unwrap_err()
+            .contains("relative-position cycle (count: 1)")
+    );
+}
+
+#[test]
+fn modifier_inheritance_is_lazy_and_preserves_each_copy_boundary() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let db = catalog(br#"
+      base={trait={token=t organization_modifier={political_power_gain=0.4}}}
+      child={include=base override_trait={token=t organization_modifier={political_power_gain=0}}}
+      copied={include=child}
+      deleted={include=base override_trait={token=t delete_included_values={organization_modifier}}}
+      tooltip={include=base override_trait={token=t organization_modifier={custom_modifier_tooltip=TIP}}}
+      nested={include=base override_trait={token=t organization_modifier={added_modifier={political_power_gain=0}}}}
+    "#);
+    let copied = db.trait_definition("copied", "t").unwrap().unwrap();
+    assert_eq!(
+        copied
+            .resolved_organisation_modifiers(|_| Ok(true))
+            .unwrap()
+            .values[0]
+            .value,
+        0
+    );
+    assert_eq!(
+        copied
+            .resolved_organisation_modifiers(|_| Ok(false))
+            .unwrap()
+            .values[0]
+            .value,
+        40_000
+    );
+    assert!(
+        copied
+            .resolved_organisation_modifiers(|name| Err(format!("missing {name}")))
+            .unwrap_err()
+            .contains("political_power_gain")
+    );
+    for name in ["deleted", "tooltip", "nested"] {
+        let row = db.trait_definition(name, "t").unwrap().unwrap();
+        let resolved = row
+            .resolved_organisation_modifiers(|_| panic!("unreached eligibility"))
+            .unwrap();
+        assert!(resolved.values.is_empty());
+    }
 }

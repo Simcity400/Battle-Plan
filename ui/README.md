@@ -1,5 +1,7 @@
 # Frontend
 
+The existing Faction details panel includes exact fixed-point accounting and projection operands, member/faction upgrades, sharing operands, variables and faction/system extracted pools. Mod-sized occurrence lists use the shared virtual list. Held progress/active sections are distinct from current authored checks and reward descriptions. Unavailable facts retain named reasons and counts.
+
 The React/TypeScript interface hosted by the desktop app. It owns navigation, appearance, saved layouts, the shared playback clock and the widget grid. The [viewer](../crates/viewer/README.md) draws native maps into widget bodies.
 
 ## Layout
@@ -135,3 +137,7 @@ Default cold prepared replies use the same prefix metadata as published replies.
 An empty accepted extent is not a recording gap or an empty census. A widget
 without accepted observations renders Still being prepared and continues its
 ordinary prepared request until coverage advances.
+
+The manpower country breakdown shows reached-hour recruitment, deployed branch manpower and windowed state available/locked/total pools with effective recruitment. The ruling-party view shows the election interval and next date. Both expose government-in-exile host, legitimacy, pools/caps and recruited-leader resources, dated by their supplying read. Missing operands join widget diagnostics. Large manpower integers remain decimal strings until BigInt formatting.
+Navy Size country drills load repairs, refits and reinforcement on demand for their exact date; closing the panel releases its request. Source and content revisions own the reply.
+The Event feed distinguishes retained script-state observations from event/news/choice occurrences. State details expose registry membership and timer operands without assigning fire times to baseline members.

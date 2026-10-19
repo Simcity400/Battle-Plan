@@ -127,6 +127,59 @@ fn a_rejected_submission_parks_in_the_pool_and_its_join_returns_it() {
     assert_eq!(counters.inline_completed, 0);
 }
 
+#[test]
+fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_refusals() {
+    let shared = Shared::new(0, 0, 1);
+    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    pool.shutdown().unwrap();
+    let mut batch = acquisition::Batch::new(&pool);
+    let mut captured = extended::Captured::with_capacities(&extended::Capacities::default());
+    let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+    for hour in [3, 17] {
+        captured.air_wing_pilot().prepare_hour(hour, true);
+        let request = captured.take_air_missions_request(&countries, 0, 0, None);
+        let owner = &*request.pack as *const _;
+        let pending = park(&mut batch, acquisition::Job::AirMissions(request));
+        // SAFETY: the stopped pool owns only the retained rejected request.
+        let completed = crate::test_support::with_allocations_denied(|| unsafe {
+            finish_acquisition(&shared, &mut batch, pending)
+        });
+        assert!(matches!(
+            completed.report,
+            Ok(acquisition::Report::AirMissions(_))
+        ));
+        assert_eq!(completed.table_reads, crate::read_accounting::ZERO);
+        let acquisition::Job::AirMissions(request) = completed.request else {
+            panic!("Air mission payload lost")
+        };
+        assert_eq!(&*request.pack as *const _, owner);
+        captured.restore_air_missions_request(request, false);
+        // A cold attach and a subsequent gap recovery both admit an explicit
+        // table refusal, never an incomplete row masquerading as a value.
+        let tables = captured.air_wing_pilot().tables();
+        let mut source = replay_frame::frame::DecodedFrame {
+            branch: 1,
+            hour,
+            tables: std::array::from_fn(|_| {
+                replay_frame::frame::TableView::Unavailable {
+                    reason: "outside Air mission rejection fixture".into(),
+                }
+                .into()
+            }),
+            metrics: Default::default(),
+        };
+        for (table, view) in extended::air::TABLES.into_iter().zip(tables) {
+            if let replay_frame::frame::TableView::Unavailable { reason } = &view {
+                assert!(!reason.is_empty());
+            }
+            *source.tables[table.index()] = view;
+        }
+        replay_frame::frame::FrameEncoder::new()
+            .encode(source, true)
+            .unwrap();
+    }
+}
+
 /// A rejected Presentation job is terminal like every worker-only job: its
 /// join fails the merged report even when the movement pass beside it read,
 /// so the whole presentation is refused once both loans are home.
@@ -2193,8 +2246,7 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
     let [
         TableView::Complete(TableRows::DivisionMovement(movement)),
         TableView::Complete(TableRows::DivisionStatus(status)),
-        _,
-        _,
+        ..,
     ] = &before
     else {
         panic!("complete presentation tables");
@@ -2704,6 +2756,7 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
             &shared,
             Dispatch {
                 world_generation: crate::world_lifetime::generation(),
+                campaign_epoch: 1,
                 index,
                 entry: Some(clock(41, 7).borrowed()),
                 entry_ticks: 0,

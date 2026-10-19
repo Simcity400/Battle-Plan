@@ -33,6 +33,7 @@ import { bandScale, breakdownItems, breakdownTooltip, emptyHistoryState, firstVi
 import type { LineAt, LineOrder, TooltipForms } from './productionData';
 import { useLineDetail, useProductionLines, useLineBreakdown, useProductionCountry } from './useProductionLines';
 import ProductionDrill from './ProductionDrill';
+import EquipmentDesignDetail from './EquipmentDesignDetail';
 import './productionLines.css';
 
 const NO_WARNINGS: string[] = [];
@@ -193,6 +194,8 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
             productionCountry: datedCountryToken(selectedCountry), line: key == null ? '' : productionLineToken(track.source.metadata.campaignKey, track.branch.id, tag, key), factor: shownFactor } }); } : undefined}>
       {drillView}</DrillHost>}
     {menu.menu}
+    <EquipmentDesignDetail key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} runtime={runtime} track={track}
+      hour={breakdownHour ?? playhead ?? extent[1]} active={active} />
   </div>;
 }
 

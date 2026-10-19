@@ -1236,6 +1236,9 @@ mod tests {
                             friendly: i64::from(country) + 1,
                             enemy: 99,
                             impact: Default::default(),
+                            friendly_missions: 0,
+                            enemy_missions: 0,
+                            air_spotting_scale: Some(0),
                         })
                         .collect(),
                 ))
@@ -1771,6 +1774,9 @@ mod tests {
                         friendly: i64::from(country) + 1,
                         enemy: 99,
                         impact: Default::default(),
+                        friendly_missions: 0,
+                        enemy_missions: 0,
+                        air_spotting_scale: Some(0),
                     })
                     .collect(),
             ));
@@ -1880,6 +1886,9 @@ mod tests {
             friendly,
             enemy,
             impact: Default::default(),
+            friendly_missions: 0,
+            enemy_missions: 0,
+            air_spotting_scale: Some(0),
         };
         let frames: Vec<_> = (0..60)
             .filter(|hour| *hour != 33)
@@ -1900,6 +1909,7 @@ mod tests {
                 if hour >= 25 {
                     scores.push(score(66, 7100, 4_000, 1_000));
                 }
+                scores.sort_by_key(|row| (row.country, row.region));
                 *frame.tables[TableId::RaidAirScores.index()] =
                     TableView::Complete(TableRows::RaidAirScores(scores));
                 if hour >= 5 {

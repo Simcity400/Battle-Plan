@@ -5,3 +5,7 @@ Country and map presentation operand comparisons. Owns [map_inputs.rs](src/map_i
 Table completeness, exact joins, differences and named limitations use [shared oracle support](../recorder-oracle-support/README.md). Content-dependent facts resolve through the recorded content stack. Synthetic fixtures are dev-only through the support crate's `test-support` feature.
 
 Shared rules live in [AGENTS.md](../../AGENTS.md); the [recorder guide](../recorder/README.md) defines fresh-save/load and matched-native-observation checks.
+
+ShipModels.has_criticals compares with the saved critical_damage wrapper presence, independently of hull HP and serialized named entries.
+
+The retained carrier capacity predicate is unsaved and may validly be stale after refit. The oracle names its matched-native comparison requirement instead of replacing it with a recomputed saved-design predicate.

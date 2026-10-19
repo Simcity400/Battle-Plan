@@ -53,7 +53,13 @@ fn repeated_numeric_reads_skip_numeric_projection_and_evaluate_groups() {
             available_raw: replay_data::rows::Recorded::Value(Some(3)),
         }]));
     let format = replay(vec![frame.clone()]).format;
-    let mut prepared = Prepared::default();
+    let mut prepared = Prepared {
+        whole_tables: true,
+        ..Default::default()
+    };
+    // Keep full group evaluation as the reference while checking that numeric
+    // projection still skips the repeated values.
+    prepared.choices.whole_projection = true;
     prepared.observe(format, &frame).unwrap();
     let before = prepared.choices.work.history_visits;
     let projected = prepared.numbers.projected;
@@ -1582,8 +1588,10 @@ fn stockpile_rows_observation_matches_whole_tables_and_legacy_across_keyframe_ga
 #[test]
 fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Result<()> {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
-    let mut input = dashboard_core::test_fixtures::named_frame(117, Some(b"mod design"));
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let first = slot_hour(TableId::VariantDefinitions);
+    let last = first + replay_data::cadence::STAGGER_PERIOD;
+    let mut input = dashboard_core::test_fixtures::named_frame(first, Some(b"mod design"));
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *input.tables[TableId::Countries.index()]
     {
@@ -1595,21 +1603,21 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
     let mut encoder = FrameEncoder::new();
     let mut decoder = FrameDecoder::new();
     let mut tracker = FrameChangeTracker::new();
-    for hour in 117..=141 {
+    for hour in first..=last {
         input.hour = hour;
         input.metrics.table_ns.fill(0);
-        if hour == 117 || hour == 141 {
+        if hour == first || hour == last {
             input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
         }
         if let TableView::Complete(TableRows::Countries(rows)) =
             &mut *input.tables[TableId::Countries.index()]
         {
-            if hour == 118 {
+            if hour == first + 1 {
                 rows[0].tag = b"BBB".to_vec();
             }
             rows[0].political_power_raw = Some(i64::from(hour));
         }
-        let wire = Arc::new(encoder.encode(input.clone(), hour == 117)?);
+        let wire = Arc::new(encoder.encode(input.clone(), hour == first)?);
         let frame = decoder.advance(&wire)?;
         let changes = tracker.observe_updates(frame, wire.clone(), replay.format);
         prepared.observe_changed(replay.format, frame, &changes)?;
@@ -1621,7 +1629,7 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
         );
         assert_eq!(
             prepared.names.current(20).unwrap().name_tag.as_deref(),
-            Some(if hour < 141 { "AAA" } else { "BBB" })
+            Some(if hour < last { "AAA" } else { "BBB" })
         );
     }
     Ok(())

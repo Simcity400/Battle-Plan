@@ -39,11 +39,8 @@
 //!   province's recorded weather attrition entry is zero and its heat and
 //!   winter entries scaled by acclimatization are not positive.
 //!
-//! The other lines read operands the recording does not hold, and each is refused by name: the
-//! terrain line's held-variant equipment term (an equipment-variant field), the state modifier for
-//! the country (keys 0x4F/0x1EE/0x1EF), the upkeep (0x54) and country (0x4F) modifier source trees
-//! of the country's modifier accumulator, a moving unit's weather, heat and winter source trees
-//! where those lines appear, and its moving-state block.
+//! Held variant and country/state lines use the same certified shared operands
+//! as the division panel. Missing roots or labels refuse only the reached line.
 
 use super::*;
 use replay_derive::modifier_registry::Registry;
@@ -54,15 +51,7 @@ use viewer_foundation::tooltip_text::ensure_newlines;
 
 use viewer_foundation::map::counter_inputs::SCALE as ONE;
 
-const EQUIPMENT_UNRECORDED: &str =
-    "the per-terrain attrition of the division's held variants is not recorded";
-const STATE_UNRECORDED: &str = "the state's attrition modifiers for the roster owner (keys 0x4F, 0x1EE and 0x1EF) are not recorded";
-const UPKEEP_SOURCES_UNRECORDED: &str = "the country's unit_upkeep_attrition_factor sources (the country's modifier accumulator, key 0x54) are not recorded";
-const WEATHER_UNRECORDED: &str =
-    "a moving unit's province weather, heat and winter modifier source trees are not recorded";
-const MOVING_STATE_UNRECORDED: &str =
-    "a moving unit's state attrition modifier for its logical owner (key 0x4F) is not recorded";
-const COUNTRY_SOURCES_UNRECORDED: &str = "the country's attrition sources (the country's modifier accumulator, key 0x4F, depth 2) are not recorded";
+use viewer_foundation::map::division_panel as panel;
 
 /// What the lines read beyond the frame.
 struct Lookups<'b> {
@@ -231,6 +220,7 @@ fn terrain(
     context: &Context<'_>,
     lookups: &Result<&Lookups<'_>, String>,
     upkeep: i64,
+    id: u64,
     province: u32,
     out: &mut Tooltip,
 ) {
@@ -272,7 +262,24 @@ fn terrain(
                 });
             fragment(context, out, "attrition terrain", text);
             // The equipment line follows inside the same branch when nonzero.
-            refuse(out, "attrition equipment", EQUIPMENT_UNRECORDED);
+            let equipment = (|| {
+                let lookups = lookups.as_ref().map_err(Clone::clone)?;
+                panel::held_bonus(context.frame, id, (lookups.terrain)(province)? as u32)
+            })();
+            match equipment {
+                Ok(0) => (),
+                Ok(value) => fragment(
+                    context,
+                    out,
+                    "attrition equipment",
+                    localise(
+                        context.loc,
+                        "ATTRITION_EQUIPMENT",
+                        &[("ATT", Arg::Fixed5(value))],
+                    ),
+                ),
+                Err(why) => refuse(out, "attrition equipment", why),
+            }
         }
         Err(reason) => refuse(out, "attrition terrain", reason),
     }
@@ -307,7 +314,7 @@ fn lines(context: &Context<'_>, lookups: Result<&Lookups<'_>, String>, id: u64, 
         .map(|movement| movement.path_total as i32 > 0 && movement.strategic_redeployment == 0);
     match (&moving, &province) {
         (Ok(false), _) => (),
-        (Ok(true), Ok(province)) => terrain(context, &lookups, upkeep, *province, out),
+        (Ok(true), Ok(province)) => terrain(context, &lookups, upkeep, id, *province, out),
         (Err(reason), _) | (Ok(true), Err(reason)) => refuse(out, "attrition terrain", reason),
     }
     let state = province
@@ -315,23 +322,97 @@ fn lines(context: &Context<'_>, lookups: Result<&Lookups<'_>, String>, id: u64, 
         .and_then(|province| province_state(context, province));
     match &state {
         Ok(0) => (),
-        Ok(_) => refuse(out, "attrition state", STATE_UNRECORDED),
+        Ok(state) => {
+            let value = (|| {
+                let states = context
+                    .frame
+                    .complete::<tables::States>()
+                    .map_err(|why| why.to_string())?;
+                let controller = states
+                    .iter()
+                    .find(|row| row.id == *state)
+                    .ok_or("attrition state controller unavailable")?
+                    .controller;
+                panel::state_amount(
+                    context.frame,
+                    *state,
+                    context.division(id)?.roster_owner,
+                    controller,
+                )
+            })();
+            amount(
+                context,
+                out,
+                "attrition state",
+                "ATTRITION_STATE",
+                "ATT",
+                value,
+            );
+        }
         Err(reason) => refuse(out, "attrition state", reason.clone()),
     }
     supply(context, &lookups, id, out);
-    refuse(out, "attrition upkeep modifiers", UPKEEP_SOURCES_UNRECORDED);
+    fragment(
+        context,
+        out,
+        "attrition upkeep modifiers",
+        source_lines(
+            context,
+            id,
+            engine_executable::modifier_keys::UNIT_UPKEEP_ATTRITION_FACTOR,
+            -1,
+        ),
+    );
     // The moving-state, weather, heat and winter blocks run for a moving unit
     // whose logical owner is at war (mode 0).
     match (&moving, &province) {
         (Ok(false), _) => (),
         (Ok(true), Ok(province)) => {
-            if !matches!(state, Ok(0)) {
-                refuse(out, "attrition moving state", MOVING_STATE_UNRECORDED);
-            }
-            match weather_lines(context, id, *province) {
+            let gate = (|| {
+                let links = context
+                    .frame
+                    .complete::<tables::CountryLinks>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .map(|row| (row.id, row.canonical_slot))
+                    .collect();
+                panel::at_war(context.frame, &links, context.division(id)?.logical_owner)
+            })();
+            match gate {
                 Ok(false) => (),
-                Ok(true) => refuse(out, "attrition weather", WEATHER_UNRECORDED),
-                Err(reason) => refuse(out, "attrition weather", reason),
+                Err(why) => refuse(out, "attrition weather", why),
+                Ok(true) => {
+                    let value = state.clone().and_then(|state| {
+                        if state == 0 {
+                            return Ok(0);
+                        }
+                        panel::state(
+                            context.frame,
+                            state,
+                            context.division(id)?.logical_owner,
+                            engine_executable::modifier_keys::ATTRITION,
+                        )
+                    });
+                    amount(
+                        context,
+                        out,
+                        "attrition moving state",
+                        "ATTRITION_STATE",
+                        "ATT",
+                        value,
+                    );
+                    match weather_lines(context, id, *province) {
+                        Ok(false) => (),
+                        Ok(true) => refuse(
+                            out,
+                            "attrition weather",
+                            format!(
+                                "province {province} ordered weather source labels are absent from WeatherProvinces.modifiers"
+                            ),
+                        ),
+                        Err(reason) => refuse(out, "attrition weather", reason),
+                    }
+                }
             }
         }
         (Err(reason), _) | (Ok(true), Err(reason)) => {
@@ -365,11 +446,89 @@ fn lines(context: &Context<'_>, lookups: Result<&Lookups<'_>, String>, id: u64, 
     {
         border(context, &lookups, id, state, out);
     }
-    refuse(
+    fragment(
+        context,
         out,
         "attrition country modifiers",
-        COUNTRY_SOURCES_UNRECORDED,
+        source_lines(context, id, engine_executable::modifier_keys::ATTRITION, 2),
     );
+}
+
+fn amount(
+    context: &Context<'_>,
+    out: &mut Tooltip,
+    label: &str,
+    key: &str,
+    arg: &str,
+    value: Result<i64, String>,
+) {
+    match value {
+        Ok(0) => (),
+        Ok(value) => fragment(
+            context,
+            out,
+            label,
+            localise(context.loc, key, &[(arg, Arg::Fixed5(value))]),
+        ),
+        Err(why) => refuse(out, label, why),
+    }
+}
+fn source_lines(context: &Context<'_>, id: u64, key: u32, depth: i32) -> Result<String, String> {
+    let unit = context.division(id)?;
+    let owner = if (unit.expeditionary_owner as i32) > 0 {
+        unit.expeditionary_owner
+    } else {
+        unit.roster_owner
+    };
+    let identity = panel::country_identity(context.frame, owner)?;
+    let nodes = panel::tree(context.frame, 0, identity, key)?;
+    let definitions = context
+        .frame
+        .complete::<tables::ModifierDefinitions>()
+        .map_err(|why| why.to_string())?;
+    let definition = definitions
+        .iter()
+        .find(|row| row.index == key)
+        .ok_or_else(|| format!("attrition modifier {key} definition unavailable"))?;
+    dashboard_text::modifier_text::breakdown(
+        &nodes,
+        dashboard_text::modifier_text::Breakdown {
+            depth,
+            prefix: "",
+            suffix: "",
+        },
+        |node| {
+            let name = std::str::from_utf8(&node.name)
+                .map_err(|_| "attrition source label is not UTF-8")?;
+            let label = if context.loc.language == context.recorded_language {
+                name.to_owned()
+            } else {
+                context.loc.localise(&node.name).map_err(|_| {
+                    format!(
+                        "attrition source label {name} has no localisation in {}",
+                        context.loc.language
+                    )
+                })?
+            };
+            let value = dashboard_text::modifier_text::value_text(
+                definition,
+                node.value,
+                2,
+                false,
+                false,
+                |key, _| {
+                    let key = std::str::from_utf8(key)
+                        .map_err(|_| "attrition value localisation key is not UTF-8")?;
+                    localise(context.loc, key, &[])
+                },
+            )?;
+            Ok(if label.is_empty() {
+                value
+            } else {
+                format!("{label}: {value}")
+            })
+        },
+    )
 }
 
 fn border(

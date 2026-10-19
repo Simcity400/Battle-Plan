@@ -295,18 +295,26 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
     Ok(())
 }
 
-/// The air and navy modes write strategic region names, which are not drawn: their maps carry no
-/// names, not the countries'.
+/// Both strategic modes name regions rather than countries.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
-fn the_air_and_navy_modes_write_no_country_names() -> std::io::Result<()> {
+fn the_air_and_navy_modes_write_strategic_region_names() -> std::io::Result<()> {
     use viewer_world::map::map_mode::Stock;
     let fixture = Fixture::load("viewer-region-names")?;
     let hour = fixture.document.hour()?;
     let none = viewer_world::map::name_pass::NameAreas::default();
     assert_ne!(hour.name_areas(&MapMode::default())?, none);
     for stock in [Stock::StrategicAir, Stock::StrategicNavy] {
-        assert_eq!(hour.name_areas(&MapMode::Stock(stock))?, none, "{stock:?}");
+        let areas = hour.name_areas(&MapMode::Stock(stock))?;
+        assert_ne!(areas, none, "{stock:?}");
+        let placed = hour.place_name_areas(&areas, &Default::default());
+        assert!(!placed.country.is_empty(), "{stock:?}");
+        assert!(
+            placed
+                .country
+                .iter()
+                .all(|name| name.key.starts_with("strategic region "))
+        );
     }
     Ok(())
 }
@@ -441,8 +449,8 @@ fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::R
     Ok(())
 }
 
-/// The resistance and compliance hover shows the occupied state's recorded strengths and the
-/// lines the hour can give, refusing each other line by its key.
+/// The resistance and compliance hover shows the occupied state's complete recorded inputs.
+/// The text artifact retains native colour controls for a matched game-hover comparison.
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
 fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
@@ -457,7 +465,12 @@ fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
         .complete::<replay_data::rows::tables::StateResistance>()
         .map_err(std::io::Error::other)?
         .iter()
-        .find(|row| row.active != 0)
+        .find(|row| {
+            row.active != 0
+                && std::env::var("BATTLE_PLAN_RESISTANCE_STATE").or_else(|_| std::env::var("HOI4_RESISTANCE_STATE"))
+                    .ok()
+                    .is_none_or(|state| state.parse::<u32>().ok() == Some(row.state))
+        })
         .expect("an occupied state with resistance")
         .clone();
     let province = frame
@@ -502,12 +515,18 @@ fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
         hover.title
     );
     assert!(
-        hover
-            .refused
-            .keys()
-            .any(|refusal| refusal.contains("RESISTANCE_TARGET_VALUE")),
-        "{:?}",
+        hover.refused.is_empty(),
+        "{}\n{:?}",
+        hover.title,
         hover.refused
     );
+    assert!(!hover.title.contains("\n\n\n"), "{}", hover.title);
+    std::fs::write(
+        fixture.output.join("hover.txt"),
+        format!(
+            "state={} province={} hour={}\n{}\n",
+            resistance.state, province, frame.hour, hover.title
+        ),
+    )?;
     Ok(())
 }

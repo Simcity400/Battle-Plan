@@ -14,6 +14,7 @@ mod carrier;
 mod carrier_capture;
 mod demand;
 mod reuse;
+mod state_summary;
 use crate::cair_wing_pool::fuel;
 pub use carrier_capture::{
     CarrierAceSlot, CarrierBase, CarrierBuffers, CarrierCapture, CarrierCountryTerms,
@@ -21,6 +22,44 @@ pub use carrier_capture::{
     CarrierPoolFuel, CarrierRegistration, ContainerFuel, CountryOccurrence, GrowingCarrierBuffers,
 };
 pub use reuse::{HeldBase, RegistrationReuse, WalkedBase};
+pub use state_summary::{state_country_order, state_country_order_demand};
+
+/// Metadata-only projection of one accepted registered pool. The caller supplies
+/// this pass's copied pool header; no wing, fuel getter or UI state is read.
+#[allow(clippy::too_many_arguments)]
+pub fn state_pool_inputs<M: Memory>(
+    memory: &M,
+    image: usize,
+    registration: CarrierIndexedCertificate,
+    pool: usize,
+    members: Array,
+    wings_start: usize,
+    countries: &ccountry::Reader<'_, M>,
+    resolved: &mut [ResolvedLink],
+) -> Result<CarrierPool, &'static str> {
+    let metadata = carrier::pool_metadata(
+        memory,
+        image,
+        carrier::PoolObservation {
+            pointer: pool,
+            registration,
+            members,
+            wings_start,
+        },
+        countries,
+        &mut Resolver {
+            cells: crate::walk::Buffer::Fixed(resolved),
+        },
+        &mut None,
+    )?;
+    Ok(CarrierPool {
+        type_index: metadata.definition.type_index,
+        subunit_index: metadata.definition.subunit_index,
+        wings_start: metadata.wings_start,
+        wings_len: metadata.wings_len,
+        ..Default::default()
+    })
+}
 
 /// Off-thread host-name storage hint for one independently authenticated base
 /// row. A fresh reference resolver is scoped to this hint only; capture must
@@ -42,6 +81,8 @@ pub const SIZE: usize = 0x90;
 pub const TYPE: u32 = 65;
 /// Full handle containing u32 type and id.
 pub const HANDLE: usize = 0x08;
+/// Direct incoming-wing pointer vector, with append and swap-remove order.
+pub const INCOMING_WINGS: usize = 0x18;
 /// Country-ordinal container-pointer vector; a nonnull slot grants access.
 pub const COUNTRY_CONTAINERS: usize = 0x30;
 /// Country-container capacity, u32.

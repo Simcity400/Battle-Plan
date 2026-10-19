@@ -132,6 +132,75 @@ fn drain(hour: i32) -> replay_data::rows::MapEventsRow {
 }
 
 #[test]
+fn scripted_refresh_call_publishes_the_mode_ordinal_and_forwards_even_on_read_faults() {
+    let _lock = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Construct the production hook at a synthetic direct CALL without executing it.
+    // A register tap cannot relocate this instruction form.
+    let code = crate::hook::TestCode::new();
+    let (address, _) = code.stub(0, 0);
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            site::SCRIPTED_REFRESH_CALL_SENTINEL.as_ptr(),
+            address as *mut u8,
+            16,
+        );
+    }
+    hooks::set_for_tests(Family::ScriptedMapRefresh, false, false);
+    let constructed = unsafe {
+        hooks::Hooks::new(
+            &engine_native::memory::LiveMemory::new(),
+            address - site::SCRIPTED_REFRESH_CALL_RVA,
+            |family| family == Family::ScriptedMapRefresh,
+        )
+    };
+    assert!(hooks::installed(Family::ScriptedMapRefresh));
+    drop(constructed);
+    reset();
+    unsafe extern "system-unwind" fn native_refresh(manager: usize, refresh_all: u8) {
+        assert_eq!((manager, refresh_all), (0x42, 1));
+        assert_eq!(hooks::active(), 1);
+        ORIGINALS.fetch_add(1, Ordering::SeqCst);
+    }
+    ORIGINALS.store(0, Ordering::SeqCst);
+    hooks::set_original_for_tests(
+        Family::ScriptedMapRefresh,
+        native_refresh as *const () as usize,
+    );
+    let mut world = World::new();
+    world.game(77, false, 1, |_| 0);
+    let mode = world.alloc(8);
+    world.u32(mode, site::FIRST_SCRIPTED_MAP_MODE as u32 + 3);
+    world.u64(world.base() + site::MAP_MODE_SINGLETON_RVA, mode as u64);
+    hooks::set_base_for_tests(world.base());
+    unsafe {
+        hooks::scripted_refresh_for_tests(0x42, 1);
+    }
+    let row = drain(77);
+    assert_eq!(row.events.len(), 1);
+    assert_eq!(
+        row.events[0].payload,
+        MapEventPayload::ScriptedMapRefresh(3)
+    );
+    world.u64(world.base() + site::MAP_MODE_SINGLETON_RVA, 0);
+    unsafe {
+        hooks::scripted_refresh_for_tests(0x42, 1);
+    }
+    let row = drain(78);
+    let health = row.health(Family::ScriptedMapRefresh);
+    assert!(row.events.is_empty());
+    assert!(!health.complete && health.faults.contains(Fault::Read));
+    assert_eq!(health.missed, 1);
+    assert_eq!(hooks::active(), 0);
+    hooks::set_for_tests(Family::ScriptedMapRefresh, true, false);
+    unsafe { hooks::scripted_refresh_for_tests(0x42, 1) };
+    assert!(drain(79).events.is_empty());
+    assert_eq!(ORIGINALS.load(Ordering::SeqCst), 3);
+    assert_eq!(hooks::active(), 0);
+}
+
+#[test]
 fn a_building_notification_records_only_a_lowered_level_with_text_and_a_reason() {
     let _lock = LOCK
         .lock()

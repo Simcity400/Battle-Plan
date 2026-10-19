@@ -193,7 +193,10 @@ impl Renderer<'_, '_, '_> {
         let evaluator = self.evaluator()?;
         let mut items = Vec::new();
         for item in fields {
-            if evaluator.has_children(std::slice::from_ref(item))? {
+            if evaluator
+                .has_children(std::slice::from_ref(item))
+                .map_err(|why| why.to_string())?
+            {
                 items.push(item);
             }
         }
@@ -406,7 +409,8 @@ impl Renderer<'_, '_, '_> {
             installed_content_core::scope::parse(&key(item), item.key_quoted, evaluator.world().recorded());
         if item.value.items().is_some() && !matches!(parsed, Parsed::Unknown(_)) {
             let entered = evaluator
-                .enter_scope(&parsed, scopes)?
+                .enter_scope(&parsed, scopes)
+                .map_err(|why| why.to_string())?
                 .ok_or_else(|| format!("context trigger target {} resolves no scope", key(item)))?;
             let name = match parsed {
                 Parsed::Keyword(

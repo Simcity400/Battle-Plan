@@ -403,6 +403,9 @@ fn idle_and_unbonused_slots_skip_bonus_roster_and_catalogue() {
             (Outcome::Rows { len: 1 }, Outcome::Rows { len: 0 })
         );
         assert_eq!(m.calls.get(), expected_calls);
+        // The acquired status remains available to demanded sharing callbacks,
+        // including when this slot has no assigned technology.
+        assert_eq!(rows[0].status_pointer, STATUS);
         assert!(!m.reads.borrow().iter().any(|&(at, _)| at
             == STATUS + ctechnology_status::LIMITED_BONUSES
             || at == STATUS + ctechnology_status::TECHNOLOGIES_DATA));

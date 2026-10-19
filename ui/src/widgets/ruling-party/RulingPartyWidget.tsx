@@ -34,6 +34,7 @@ import { forEachCompactStackSegment } from '../../charts/stack';
 import PartyEventList from './PartyEventList';
 import { partyMarkSummaries, usePreparedParty } from './preparedParty';
 import { usePartyParity } from './partyParity';
+import CountryPeople from '../country-people/CountryPeople';
 import './rulingParty.css';
 
 const NO_WARNINGS: string[] = [];
@@ -128,13 +129,14 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
       before: row.beforeToken ?? null, after: row.afterToken ?? null, covered: row.covered })) }), {
     prepare: governments.prepareParity, ready: () => !governments.enabled || !!governments.parityRows, error: () => governments.parityError ?? null,
   });
+  const [peopleWarnings, setPeopleWarnings] = useState<string[]>([]);
   const menu = useContextMenu('Chart actions');
   useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(governmentReply.data?.warnings ?? []),
+    const warnings = [...peopleWarnings, ...(data?.warnings ?? []), ...(governmentReply.data?.warnings ?? []),
       ...(governmentReply.error ? [`Government causes could not be loaded: ${governmentReply.error}`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, governmentReply.data, governmentReply.error, onDiagnostics]);
+  }, [data, governmentReply.data, governmentReply.error, peopleWarnings, onDiagnostics]);
 
   const layers = useMemo<ChartLayer[]>(() => data ? [{
     draw: (ctx, frame, tokens, state) => {
@@ -189,6 +191,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   </div>;
   return <div className="ruling-party" ref={parityRoot}>
     {header}
+    <CountryPeople runtime={runtime} track={track} tag={tag} hour={presentationHour} active={active} view="politics" onWarnings={setPeopleWarnings} />
     {/* Names only; each popularity is still read out to assistive technology. */}
     <Legend label="Parties" items={list.map(band => {
       const raw = rawAt(band.series, Math.floor(head));

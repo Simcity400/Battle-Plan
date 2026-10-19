@@ -4,6 +4,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn event_presentation_keeps_description_picture_and_each_option_admission_trigger() {
+    engine_executable::executable_tables::initialize_for_tests().expect("supported runtime tables");
+    let parsed=parse(b"add_namespace=synthetic country_event={id=synthetic.3 title=TITLE desc=BODY picture=FIRST picture=LAST option={name=CHOICE trigger={always=yes} original_recipient_only=yes custom_effect_tooltip=EFFECT}}", "synthetic.txt", &KeyNames::default());
+    let event = parsed.get(b"synthetic.3").unwrap();
+    assert_eq!(event.sole_description_key(), Ok(Some(b"BODY".as_slice())));
+    assert_eq!(event.picture, b"LAST");
+    assert_eq!(event.option_triggers.len(), 1);
+    assert_eq!(event.option_triggers[0].len(), 1);
+    assert!(event.option_triggers[0][0].keyword_is("always"));
+    assert_eq!(event.original_recipient_only, [true]);
+    assert_eq!(event.options[0].len(), 1);
+    assert!(event.options[0][0].keyword_is("custom_effect_tooltip"));
+}
+
+#[test]
 fn title_candidates_evaluate_all_blocks_and_refuse_only_different_eligible_keys() {
     let event = |titles: &[u8]| Event {
         titles: crate::parser::parse(titles).unwrap().items,
@@ -59,6 +74,8 @@ fn sole_event_title_preserves_c_string_last_field_and_trigger_bypass() {
     event.titles[0].value = crate::parser::Value::Scalar(b"\0ignored".to_vec());
     assert_eq!(event.sole_title_key(), Ok(None));
     event.titles.push(event.titles[0].clone());
+    assert_eq!(event.sole_title_key(), Ok(None));
+    event.titles[1].value = crate::parser::Value::Scalar(b"DIFFERENT".to_vec());
     assert!(
         event
             .sole_title_key()

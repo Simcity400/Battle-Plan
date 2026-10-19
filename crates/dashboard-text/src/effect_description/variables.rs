@@ -7,7 +7,8 @@ mod tests;
 impl Renderer<'_, '_, '_> {
     pub(super) fn save_event_target(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
         self.evaluator()?
-            .save_tooltip_target(item.value.read_string().unwrap_or_default(), scopes)?;
+            .save_tooltip_target(item.value.read_string().unwrap_or_default(), scopes)
+            .map_err(|why| why.to_string())?;
         Ok(String::new())
     }
 
@@ -18,7 +19,8 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<String, String> {
         // cleared by the existing session exit.
         self.evaluator()?
-            .save_global_tooltip_target(item.value.read_string().unwrap_or_default(), scopes)?;
+            .save_global_tooltip_target(item.value.read_string().unwrap_or_default(), scopes)
+            .map_err(|why| why.to_string())?;
         Ok(String::new())
     }
 
@@ -41,13 +43,10 @@ impl Renderer<'_, '_, '_> {
         if !temporary && tooltip.is_empty() {
             return Ok(String::new());
         }
-        let values = self.evaluator()?.description_variable(
-            operation,
-            item,
-            scopes,
-            temporary,
-            !tooltip.is_empty(),
-        )?;
+        let values = self
+            .evaluator()?
+            .description_variable(operation, item, scopes, temporary, !tooltip.is_empty())
+            .map_err(|why| why.to_string())?;
         let Some((left, right)) = values else {
             return Ok(String::new());
         };
@@ -83,14 +82,14 @@ impl Renderer<'_, '_, '_> {
                     .environment()?
                     .defines()
                     .fixed5("NSupply", "MIN_TRAIN_REQUIREMENT")
-                    .map_err(|why| why.to_string())
+                    .map_err(|why| crate::triggers::Failure::from(why.to_string()))
             }),
             _ => unreachable!(),
         };
         if let Err(why) = &result {
             evaluator.refuse_description_writer(format!("effect {operation}: {why}"));
         }
-        result.map(|_| String::new())
+        result.map(|_| String::new()).map_err(|why| why.to_string())
     }
 }
 

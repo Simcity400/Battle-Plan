@@ -35,7 +35,6 @@ fn task_force_flags_distinguish_coarse_sea_and_detailed_port() {
         mission_skips: Default::default(),
         forces: &[],
         forces_complete: true,
-        coarse: false,
     };
     for (expeditionary, detailed) in [(5_000, 5_000), (0, 7), (u32::MAX, 7)] {
         let force = TaskForceRow {

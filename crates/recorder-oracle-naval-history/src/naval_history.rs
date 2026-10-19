@@ -54,7 +54,10 @@ pub fn compare(
     tokens: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let mut passed = report.attempt("naval SunkConvoys", |report| {
+    let mut passed = report.attempt("naval NavalAccidentReports", |report| {
+        crate::naval_accidents::compare(frame, saved, links, report)
+    });
+    passed &= report.attempt("naval SunkConvoys", |report| {
         compare_convoys(frame, saved, links, report)
     });
     passed &= report.attempt("naval SunkShips", |report| {
@@ -199,7 +202,8 @@ fn compare_ships(
     Ok(())
 }
 
-fn compare_ship(
+/// Compares one retained or embedded sunk-ship record with its saved representation.
+pub fn compare_ship(
     actual: &SunkShipEntry,
     expected: &saved::SunkShip,
     label: &str,

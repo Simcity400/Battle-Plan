@@ -322,7 +322,7 @@ fn count_kept(hours: usize) {
     dashboard_base::prepared::kept::note_frames(FAMILY.name, hours);
 }
 
-/// Kept hours (frames) the folds on this thread observed.
+/// Kept hours (frames), including folds carried from preparation workers.
 #[cfg(any(test, feature = "test-support"))]
 pub fn kept_hours() -> usize {
     dashboard_base::prepared::kept::counted(FAMILY.name).1

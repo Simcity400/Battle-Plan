@@ -62,6 +62,8 @@ pub const DISPLAY_GRID_MUD: usize = 0x390;
 pub const DISPLAY_WORK_COUNT: usize = 0x3b4;
 /// Province day/night array, sized to the live weather province count.
 pub const PROVINCE_CLOCKS: usize = 0x370;
+/// Held seasonal direction used by regional day/night forecasts.
+pub const DAYLIGHT_DIRECTION: usize = 0x350;
 /// Initial-mode byte: initialization sets it before the hourly update, whose weather update pass
 /// then visits every province and region in as many passes as its stored pass count; the hourly
 /// update clears it afterward.
@@ -172,6 +174,35 @@ impl<'a, M: Memory> Reader<'a, M> {
             return Err("weather suspension flags unreadable");
         }
         Ok(flags)
+    }
+
+    /// Only held/suspended clocks need this observation. Ordinary updated
+    /// direction derives from the hour without acquiring another field.
+    pub fn daylight_direction(&self) -> Result<[i64; 3], &'static str> {
+        self.pointer
+            .checked_add(DAYLIGHT_DIRECTION)
+            .and_then(|address| read::<[u8; 24]>(self.memory, address))
+            .map(|bytes| {
+                std::array::from_fn(|index| {
+                    i64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap())
+                })
+            })
+            .ok_or("weather daylight direction unreadable")
+    }
+
+    /// The native feather words may retain initialization while updates are
+    /// suspended; only an ordinary completed update proves content derivation.
+    pub fn daylight_feather(&self) -> Result<[i64; 2], &'static str> {
+        let word = |offset| {
+            self.base
+                .checked_add(offset)
+                .and_then(|address| read::<i64>(self.memory, address))
+                .ok_or("held weather daylight feather unreadable")
+        };
+        Ok([
+            word(crate::air_fuel_defines::CONTEXT_SUBTRACT_RVA)?,
+            word(crate::air_fuel_defines::CONTEXT_SCALE_RVA)?,
+        ])
     }
 
     /// Attach sizing only, using the live signed province and region counts

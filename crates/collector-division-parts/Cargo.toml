@@ -17,6 +17,7 @@ army_stat_verify = ["army_stat_changes"]
 attack_witness = []
 
 [dependencies]
+engine-naval-history.workspace = true
 engine-allocation.workspace = true
 engine-deployment.workspace = true
 engine-executable.workspace = true
@@ -30,6 +31,7 @@ collector-certificates.workspace = true
 collector-extended-support.workspace = true
 collector-hooks.workspace = true
 collector-memory.workspace = true
+collector-observers.workspace = true
 collector-primitives.workspace = true
 collector-projection.workspace = true
 collector-status.workspace = true

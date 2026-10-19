@@ -256,6 +256,7 @@ fn bench_division_status_and_maxima() {
                         Outcome::Rows { len: divisions },
                         divisions,
                         held,
+                        &[],
                     );
                     assert_eq!(outcome, Outcome::Rows { len: divisions });
                     assert_eq!(packet.project(&mut rows), outcome);

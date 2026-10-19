@@ -261,10 +261,8 @@ pub fn country_tables(frame: &DecodedFrame) -> io::Result<(&[CountryRow], &[Coun
 }
 
 pub fn mapped_slot(row: &CountryRow, links: &[CountryLinkRow]) -> io::Result<u32> {
-    let index = links
-        .binary_search_by_key(&row.id, |link| link.id)
-        .map_err(|_| invalid("Country has no recorded CountryLinks mapping"))?;
-    let slot = links[index].canonical_slot;
+    let slot = link_slot(links, row.id)
+        .ok_or_else(|| invalid("Country has no recorded CountryLinks mapping"))?;
     if slot != row.canonical_slot {
         return Err(invalid(
             "Countries and CountryLinks disagree on the canonical slot",
@@ -277,10 +275,20 @@ pub fn mapped_slot(row: &CountryRow, links: &[CountryLinkRow]) -> io::Result<u32
 /// it. Recorded tables name countries by raw link id; every product resolves
 /// them through this.
 pub fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
-    links
+    let slot = links
         .binary_search_by_key(&raw, |link| link.id)
         .ok()
-        .map(|index| links[index].canonical_slot)
+        .map(|index| links[index].canonical_slot);
+    if slot.is_none() && raw != 0 {
+        crate::triggers::Failure::input(
+            TableId::CountryLinks,
+            "canonical_slot",
+            None,
+            format!("raw country {raw} has no CountryLinks row"),
+        )
+        .resolution_failed();
+    }
+    slot
 }
 
 /// Each raw country link id's tag this hour, for a scan over a branch's hours.
@@ -459,7 +467,26 @@ impl LinkTags {
 
     /// The tag a raw link id names, if any.
     pub fn get(&self, raw: u32) -> Option<&String> {
-        self.tags.get(&raw)
+        let tag = self.tags.get(&raw);
+        if tag.is_none() && raw != 0 {
+            let (table, field) = if self
+                .from
+                .as_ref()
+                .is_some_and(|from| from.link_slots.contains_key(&raw))
+            {
+                (TableId::Countries, "tag")
+            } else {
+                (TableId::CountryLinks, "canonical_slot")
+            };
+            crate::triggers::Failure::input(
+                table,
+                field,
+                None,
+                format!("raw country {raw} has no resolved tag"),
+            )
+            .resolution_failed();
+        }
+        tag
     }
 
     /// Every raw link id and its tag.
@@ -687,6 +714,15 @@ pub fn tagged_countries_indexed<'a>(
         let entry = tagged
             .entry(country.tag.as_slice())
             .or_insert(TaggedCountry::Unresolved);
+        if country.id != 0 && !slots.contains_key(&country.id) {
+            crate::triggers::Failure::input(
+                TableId::CountryLinks,
+                "canonical_slot",
+                None,
+                format!("raw country {} has no CountryLinks mapping", country.id),
+            )
+            .resolution_failed();
+        }
         if matches!(entry, TaggedCountry::Unresolved)
             && let Some(&slot) = slots.get(&country.id)
             && slot == country.canonical_slot

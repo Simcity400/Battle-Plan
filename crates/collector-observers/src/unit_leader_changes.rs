@@ -251,13 +251,43 @@ pub fn forwarded(leader: usize, site: Lifetime) -> Notification<'static> {
     WATCHES.lifetime(leader, site)
 }
 
+// Only a failed attach/detach allocates this diagnostic, retained for the runtime's
+// static failure interface. Publication is atomic across the listed sites.
+fn hook_failure(site: Option<usize>, action: &str, detail: &str) -> &'static str {
+    let sites = site.map_or_else(
+        || {
+            MUTATIONS
+                .iter()
+                .map(|site| site.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+        |index| MUTATIONS[index].name.to_owned(),
+    );
+    Box::leak(
+        format!("unit_leader_changes [{sites}] hook {action} failed: {detail}").into_boxed_str(),
+    )
+}
+
+fn validate_sites(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
+    for (index, site) in MUTATIONS.iter().enumerate() {
+        if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+            return Err(hook_failure(
+                Some(index),
+                "sentinel validation",
+                "native bytes differ",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub struct Hooks {
     hooks: Vec<Hook>,
 }
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
-    /// A differing sentinel leaves the family uninstalled; quiet hours then
-    /// read every leader.
+    /// A differing sentinel refuses installation with the owning family and site.
     ///
     /// # Safety
     /// The memory source and base must identify the authenticated executable in
@@ -265,11 +295,8 @@ impl Hooks {
     /// its hooks and quiesce native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
-        if cfg!(feature = "unit_leader_changes")
-            && MUTATIONS.iter().all(|site| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
-            })
-        {
+        if cfg!(feature = "unit_leader_changes") {
+            validate_sites(memory, base)?;
             let callbacks: [usize; SITES] = [
                 formation as *const () as usize,
                 skill as *const () as usize,
@@ -294,10 +321,19 @@ impl Hooks {
                 link_character as *const () as usize,
                 operative_codename as *const () as usize,
                 operative_admission as *const () as usize,
+                experience_add as *const () as usize,
+                experience_add_unchecked as *const () as usize,
+                daily_progress as *const () as usize,
+                trait_progress_add as *const () as usize,
+                trait_progress_remove as *const () as usize,
+                trait_progress_prune as *const () as usize,
+                trait_progress_complete as *const () as usize,
+                trait_factor_set as *const () as usize,
+                trait_factor_remove as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| "native hook construction failed")?;
+                    .map_err(|reason| hook_failure(Some(index), "construction", &reason))?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
@@ -314,7 +350,7 @@ impl Hooks {
         // of its sites, or in a tap, holds every site back until the next
         // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
-            .map_err(|_| "native hook state change failed")?
+            .map_err(|reason| hook_failure(None, "publication", &reason))?
         {
             return Ok(false);
         }
@@ -379,10 +415,61 @@ callback!(operative_rebuild, 19);
 callback!(link_character, 20);
 callback!(operative_codename, 21);
 callback!(operative_admission, 22);
+callback!(experience_add, 23);
+callback!(experience_add_unchecked, 24);
+callback!(daily_progress, 25);
+callback!(trait_progress_add, 26);
+callback!(trait_progress_remove, 27);
+callback!(trait_progress_prune, 28);
+callback!(trait_progress_complete, 29);
+callback!(trait_factor_set, 30);
+callback!(trait_factor_remove, 31);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sentinel_refusals_identify_the_exact_site_before_any_patch_is_built() {
+        struct Refuses(usize);
+        impl Memory for Refuses {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                let Some((index, site)) = MUTATIONS
+                    .iter()
+                    .enumerate()
+                    .find(|(_, site)| site.rva == address)
+                else {
+                    return false;
+                };
+                if index == self.0 || destination.len() != site.sentinel.len() {
+                    return false;
+                }
+                destination.copy_from_slice(&site.sentinel);
+                true
+            }
+        }
+        for (index, site) in MUTATIONS.iter().enumerate() {
+            let error = validate_sites(&Refuses(index), 0).unwrap_err();
+            assert!(error.contains("unit_leader_changes"));
+            assert!(error.contains(site.name));
+            assert!(error.contains("sentinel validation"));
+        }
+    }
+
+    #[test]
+    fn hook_errors_name_the_family_sites_and_original_failure() {
+        for (index, site) in MUTATIONS.iter().enumerate() {
+            let error = hook_failure(Some(index), "construction", "synthetic refusal");
+            assert!(error.contains("unit_leader_changes"));
+            assert!(error.contains(site.name));
+            assert!(error.contains("synthetic refusal"));
+        }
+        let error = hook_failure(None, "publication", "byte verification failed");
+        for site in MUTATIONS {
+            assert!(error.contains(site.name));
+        }
+        assert!(error.contains("byte verification failed"));
+    }
 
     /// A writer moves only the leader it names, a forwarded lifetime site
     /// too, and an exile site every leader; each counts its calls; a running

@@ -333,7 +333,7 @@ fn mio_policy_uses_the_same_production_bonus_formatter() {
 }
 
 #[test]
-fn mio_inherited_organisation_block_refuses_only_that_fragment() {
+fn mio_inherited_organisation_block_renders_copied_numeric_and_tooltip_entries() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
@@ -343,7 +343,7 @@ fn mio_inherited_organisation_block_refuses_only_that_fragment() {
         unreachable!()
     };
     tokens[0].literal = b"inherited_mio".to_vec();
-    for (key, label, header) in EFFECTS {
+    for (key, _, header) in EFFECTS {
         let out = fixture.render(
             &format!("{key}={{trait=synthetic_convoy_production}}"),
             &mut scopes(),
@@ -352,14 +352,12 @@ fn mio_inherited_organisation_block_refuses_only_that_fragment() {
         assert_eq!(
             out.text,
             format!(
-                "{} (Soft+0.14, Supply--0.07)\n",
+                "{} (Soft+0.14, Supply--0.07, Power: \u{11}G+0.23\u{11}!\nRaw [Root.GetTag])\n",
                 header.trim_end_matches('\n')
             ),
             "{key}"
         );
-        assert_eq!(out.refusals, [(
-            format!("synthetic effect {label}: MIO organization_modifier inheritance needs shared modifier tooltip-table copying"), 1,
-        )].into_iter().collect());
+        assert!(out.refusals.is_empty(), "{key}: {:?}", out.refusals);
         let out = fixture.render(
             &format!("{key}={{trait=synthetic_convoy_production show_modifiers=no}}"),
             &mut scopes(),

@@ -9,7 +9,7 @@ import type { MenuItem } from '../../components/ContextMenu';
 import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
 import { gbNumber } from '../../charts/numberFormat.ts';
 import type { LineDetail, LineHistory, LineRun, LineStep, OrganisationName, OutputRun, ProductionLineDetailReply, ProductionLinesReply, ProductionLineBreakdownReply, ProductionModifierRun,
-  VariantName } from '../../generated/dashboard';
+  VariantName, OrganisationState } from '../../generated/dashboard';
 
 /** A country's production lines, from the recorded `ProductionLines`,
  * `ProductionLineOutput` and `IndustrialOrganisations` (see
@@ -56,7 +56,19 @@ const isStep = (step: LineStep) => HOUR(step.firstHour) && HOUR(step.lastHour) &
 const isRun = (run: LineRun) => HOUR(run.firstHour) && HOUR(run.lastHour) && typeof run.startsSegment === 'boolean'
   && RAW.test(run.variant) && RAW.test(run.mio) && RAW.test(run.costRaw) && RAW.test(run.speedRaw) && RAW.test(run.efficiencyRaw)
   && (run.weeklyRaw === null || RAW.test(run.weeklyRaw))
+  && (run.designReadHour === null || HOUR(run.designReadHour))
+  && (run.designAuthor === null || typeof run.designAuthor === 'string' && RAW.test(run.designAuthor))
+  && (run.designTraitCount === null || HOUR(run.designTraitCount))
+  && (run.designBonusCount === null || HOUR(run.designBonusCount) && run.designBonusCount >= 0)
   && HOUR(run.activeFactories) && HOUR(run.requestedFactories) && HOUR(run.maxFactories) && HOUR(run.priority) && HOUR(run.amount);
+
+const isOrganisationState = (state: OrganisationState | null) => state === null || state
+  && (state.readHour === null || HOUR(state.readHour)) && HOUR(state.size) && RAW.test(state.fundsRaw)
+  && HOUR(state.unspentPoints) && HOUR(state.baseTaskCapacity) && HOUR(state.activeTasks) && HOUR(state.taskSlots)
+  && Array.isArray(state.unlocked) && state.unlocked.every(token => typeof token === 'string')
+  && Array.isArray(state.planned) && state.planned.every(token => typeof token === 'string')
+  && HOUR(state.queueIndex) && NULLABLE(state.policyToken) && NULLABLE(state.policyName)
+  && (state.cooldownHour === null || HOUR(state.cooldownHour)) && typeof state.autoUpdateDesigns === 'boolean';
 
 const isOutput = (run: OutputRun) => HOUR(run.firstHour) && HOUR(run.lastHour) && run.firstHour <= run.lastHour && HOUR(run.sinceHour)
   && typeof run.wholeLife === 'boolean' && Array.isArray(run.parts)
@@ -119,6 +131,7 @@ export function validateDetailReply(data: unknown): ProductionLineDetailReply {
     && Number.isInteger(reply.decimals) && HOUR(reply.window) && HOUR(reply.firstHour) && HOUR(reply.lastHour) && reply.firstHour <= reply.lastHour
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.lines) && reply.lines.every(line => typeof line.key === 'string'
+      && Array.isArray(line.organisations) && line.organisations.every(item => RAW.test(item.id) && HOUR(item.firstHour) && isOrganisationState(item.state))
       && Array.isArray(line.runs) && ordered(line.runs) && line.runs.every(isRun)
       && Array.isArray(line.output) && ordered(line.output) && line.output.every(isOutput))
     && new Set(reply.lines.map(line => line.key)).size === reply.lines.length;
@@ -400,6 +413,25 @@ export function finalTooltip(reply: ProductionLinesReply, line: LineHistory, hou
     rows: [when, ...countRows(reply, final, hour, 'Made in all', parts)], note }));
 }
 
+/** Stored operands retain their own sample date and unknown state. */
+export function organisationRows(state: OrganisationState | null, day: (hour: number) => string): TooltipRow[] {
+  if (!state) return [{ label: 'Organisation state', value: 'Not recorded', tone: 'muted' }];
+  return [
+    { label: 'Organisation size', value: String(state.size) },
+    { label: 'Funds toward next size', value: formatFixed(state.fundsRaw, 5, 2) },
+    { label: 'Unspent trait points', value: String(state.unspentPoints) },
+    { label: 'Completed traits', value: String(state.unlocked.length) },
+    { label: 'Planned trait queue', value: String(state.planned.length) },
+    { label: 'Queue cursor', value: String(state.queueIndex) },
+    { label: 'Tasks', value: `${state.activeTasks} active / ${state.taskSlots} slots` },
+    { label: 'Base task capacity', value: String(state.baseTaskCapacity) },
+    { label: 'Policy', value: state.policyToken === null ? 'None' : state.policyName ?? 'Policy name unavailable' },
+    ...(state.cooldownHour === null ? [] : [{ label: 'Policy cooldown ends', value: day(state.cooldownHour) }]),
+    { label: 'Automatic design upgrades', value: state.autoUpdateDesigns ? 'On' : 'Off' },
+    { label: 'Organisation state read', value: state.readHour === null ? 'Daily sample; date unavailable' : day(state.readHour), tone: 'muted' },
+  ];
+}
+
 /** One line's tooltip at an hour, from its reads in the window holding it: what the
  * game's production row shows; once the line has ended by `until` (the moment the
  * view shows), its final count too. */
@@ -423,6 +455,11 @@ export function lineTooltip(reply: ProductionLinesReply, line: LineHistory, deta
       { label: 'Priority', value: String(run.priority + 1) },
       { label: 'Ordered', value: run.amount < 0 ? 'No limit' : `${run.amount} more` },
       { label: 'Military-industrial organisation', value: organisationText(organisation, run), icon: iconImage(reply, organisation?.icon ?? null) ?? undefined },
+      ...(organisation ? organisationRows(detail ? entryAt(entriesOf(detail.organisations, run.mio), hour)?.state ?? null : null, day) : []),
+      { label: 'Design author', value: run.designAuthor === null ? 'Not recorded' : run.designAuthor === '0' ? 'None' : organisationAt(reply, run.designAuthor, hour)?.name ?? 'Organisation name unavailable' },
+      ...(run.designAuthor === null ? [] : [{ label: 'Design recorded', value: run.designReadHour === null ? 'Date unavailable' : day(run.designReadHour) }]),
+      ...(run.designTraitCount === null ? [] : [{ label: 'Traits frozen into design', value: String(run.designTraitCount) }]),
+      ...(run.designBonusCount === null ? [] : [{ label: 'Frozen design bonus entries', value: String(run.designBonusCount) }]),
       ...countRows(reply, output, hour, 'Produced so far', parts),
       ...ended,
     ];

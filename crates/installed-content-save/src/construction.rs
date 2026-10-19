@@ -113,9 +113,53 @@ pub struct StateResistance {
     pub country: Option<Vec<u8>>,
     pub level: Decimal,
     pub speed: Decimal,
+    /// Stored suppression target; native omission certifies fixed5 zero.
+    pub target: Decimal,
     pub compliance: Decimal,
     pub compliance_speed: Decimal,
     pub active: bool,
+    pub added: Vec<AddedResistanceTarget>,
+    pub definitions: ActiveOccupationDefinitions,
+}
+
+/// Active definition names in serializer order, independently for both families.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActiveOccupationDefinitions {
+    pub resistance: Vec<Vec<u8>>,
+    pub compliance: Vec<Vec<u8>>,
+}
+
+fn active_occupation_definitions(items: &[Item]) -> io::Result<ActiveOccupationDefinitions> {
+    let names = |key: &[u8]| -> io::Result<Vec<Vec<u8>>> {
+        field(items, key)?
+            .map(|value| {
+                block(value)?
+                    .iter()
+                    .map(|item| {
+                        if item.key.is_some() {
+                            return Err(invalid(
+                                "active occupation definition list has a keyed entry",
+                            ));
+                        }
+                        Ok(scalar(&item.value)?.to_vec())
+                    })
+                    .collect()
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
+    };
+    Ok(ActiveOccupationDefinitions {
+        resistance: names(b"resistance_modifiers")?,
+        compliance: names(b"compliance_modifiers")?,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddedResistanceTarget {
+    pub amount: Decimal,
+    pub controller: Option<Vec<u8>>,
+    pub occupied: Option<Vec<u8>>,
+    pub tooltip: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,6 +244,8 @@ pub struct Pack {
     pub state_garrisons: BTreeMap<GarrisonKey, StateGarrison>,
     pub country_reserve_manpower: BTreeMap<Vec<u8>, Vec<Manpower>>,
     pub state_resistance: BTreeMap<u32, StateResistance>,
+    /// Per-controller occupied-country active definition lists, before map concatenation.
+    pub occupation_definitions: BTreeMap<(Vec<u8>, Vec<u8>), ActiveOccupationDefinitions>,
     pub country_collaboration: BTreeMap<(Vec<u8>, Vec<u8>), CountryCollaboration>,
     /// A state's `resources` block: its own pool by name.
     pub state_resources: BTreeMap<(u32, Vec<u8>), Decimal>,
@@ -403,12 +449,19 @@ fn railway(country: &[u8], ordinal: u32, items: &[Item]) -> io::Result<RailwayCo
     })
 }
 
-fn manpower(items: &[Item], key: &[u8]) -> io::Result<Vec<Manpower>> {
+pub(crate) fn manpower(items: &[Item], key: &[u8]) -> io::Result<Vec<Manpower>> {
     let Some(value) = field(items, key)? else {
         return Ok(Vec::new());
     };
     let mut rows = Vec::new();
-    for item in block(value)? {
+    append_manpower(block(value)?, &mut rows)?;
+    Ok(rows)
+}
+
+/// Entry grammar shared by single-wrapper pools and the faction's repeated
+/// wrappers. Appending preserves raw country spelling and occurrence order.
+pub(crate) fn append_manpower(items: &[Item], rows: &mut Vec<Manpower>) -> io::Result<()> {
+    for item in items {
         if item.key.as_deref() != Some(b"value") {
             return Err(invalid("unexpected serialized manpower entry"));
         }
@@ -424,7 +477,7 @@ fn manpower(items: &[Item], key: &[u8]) -> io::Result<Vec<Manpower>> {
             amount,
         });
     }
-    Ok(rows)
+    Ok(())
 }
 
 fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()> {
@@ -473,6 +526,10 @@ fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()>
                 return Err(invalid("duplicate occupied country scope"));
             }
             let fields = block(&item.value)?;
+            pack.occupation_definitions.insert(
+                (country.to_vec(), occupied.to_vec()),
+                active_occupation_definitions(fields)?,
+            );
             pack.occupation_settings
                 .get_mut(country)
                 .expect("settings inserted above")
@@ -733,9 +790,28 @@ pub(super) fn parse_with_countries(
                 country: bytes(fields, b"occupied_country_tag")?,
                 level: zero_omitted_fixed(fields, b"resistance")?,
                 speed: zero_omitted_fixed(fields, b"resistance_speed")?,
+                target: zero_omitted_fixed(fields, b"resistance_target")?,
                 compliance: zero_omitted_fixed(fields, b"compliance")?,
                 compliance_speed: zero_omitted_fixed(fields, b"compliance_speed")?,
                 active: false_omitted(fields, b"operational_status")?,
+                added: field(fields, b"added_resistance_targets")?
+                    .map(|value| {
+                        block(value)?
+                            .iter()
+                            .map(|entry| {
+                                let fields = block(&entry.value)?;
+                                Ok(AddedResistanceTarget {
+                                    amount: zero_omitted_fixed(fields, b"amount")?,
+                                    controller: bytes(fields, b"controller")?,
+                                    occupied: bytes(fields, b"occupied")?,
+                                    tooltip: bytes(fields, b"tooltip")?,
+                                })
+                            })
+                            .collect::<io::Result<Vec<_>>>()
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
+                definitions: active_occupation_definitions(fields)?,
             };
             if pack.state_resistance.insert(state, row).is_some() {
                 return Err(invalid("duplicate saved state resistance"));

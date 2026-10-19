@@ -26,7 +26,11 @@ impl Context<'_, '_> {
             kind,
             |key| self.equipment_name(key),
             |key| {
-                let token = self.world.token_of(key.as_bytes())?.unwrap_or(0);
+                let token = self
+                    .world
+                    .token_of(key.as_bytes())
+                    .map_err(|why| why.to_string())?
+                    .unwrap_or(0);
                 let rows = self
                     .world
                     .frame()
@@ -254,7 +258,11 @@ impl Context<'_, '_> {
             .frame()
             .complete::<tables::RaidCooldowns>()
             .map_err(|e| e.to_string())?;
-        let Some(token) = self.world.token_of(kind.name.as_bytes())? else {
+        let Some(token) = self
+            .world
+            .token_of(kind.name.as_bytes())
+            .map_err(|why| why.to_string())?
+        else {
             return Ok(None);
         };
         // Use the first matching occurrence, rather than minimum days.
@@ -291,7 +299,8 @@ impl Context<'_, '_> {
         }
         let token = self
             .world
-            .token_of(kind.name.as_bytes())?
+            .token_of(kind.name.as_bytes())
+            .map_err(|why| why.to_string())?
             .ok_or("raid type token absent")?;
         let key = definition_key(token);
         let family = if additional {
@@ -321,7 +330,8 @@ impl Context<'_, '_> {
         for row in rows.into_iter().skip(1) {
             let key = self
                 .world
-                .token(row.key)?
+                .token(row.key)
+                .map_err(|why| why.to_string())?
                 .ok_or("raid equipment token absent")?;
             let name = std::str::from_utf8(key).map_err(|e| e.to_string())?;
             let (name, amount) = amounts
@@ -354,7 +364,8 @@ impl Context<'_, '_> {
         };
         let name = || {
             self.world
-                .token(nuke_key)?
+                .token(nuke_key)
+                .map_err(|why| why.to_string())?
                 .ok_or("nuke name token absent")
                 .and_then(|b| std::str::from_utf8(b).map_err(|_| "nuke token is not UTF8"))
                 .map_err(str::to_owned)
@@ -525,7 +536,8 @@ impl Context<'_, '_> {
                 let have = |name: &str| -> Result<i32> {
                     let token = self
                         .world
-                        .token_of(name.as_bytes())?
+                        .token_of(name.as_bytes())
+                        .map_err(|why| why.to_string())?
                         .ok_or("raid pool equipment token absent")?;
                     let mut value = (pool
                         .archetype_totals

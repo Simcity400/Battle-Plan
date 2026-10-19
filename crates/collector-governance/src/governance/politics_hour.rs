@@ -787,6 +787,10 @@ impl<'a> Hour<'a> {
     }
 
     /// The party and party-leader stores' walk views, for a walked hour.
+    pub(super) fn election_cache_certified(&self) -> bool {
+        self.usual && self.key.is_some()
+    }
+
     pub(super) fn reuses(&mut self) -> (Option<LeaderReuse<'_>>, Option<PoliticsReuse<'_>>) {
         let walk = &mut self.walk;
         let (leader_changes, leader_check) = (walk.leader_changes, walk.leader_check);

@@ -71,6 +71,10 @@ pub enum ArmyAttribution {
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArmySizeParams {
+    // Reached country and hour for plain template/configuration sections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub template_at: Option<(String, i32)>,
     pub branch_id: String,
     pub tags: Vec<String>,
     pub top: Option<usize>,
@@ -141,6 +145,9 @@ pub struct ArmySeries {
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ArmySizeReply {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub template_sections: Option<Vec<String>>,
     pub branch_id: String,
     pub windows: Vec<HourSpan>,
     pub window: Option<usize>,
@@ -1488,6 +1495,9 @@ impl Product for ArmySize {
         ]
     }
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        if let Some((tag, _)) = &params.template_at {
+            validate_tag(tag)?;
+        }
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
@@ -1509,6 +1519,9 @@ impl Product for ArmySize {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
+        if params.template_at.is_some() {
+            return template_roster::query(source, params, context, cancelled);
+        }
         let branch = params
             .branch_id
             .parse()
@@ -1654,6 +1667,7 @@ fn build_reply(
         Vec::new()
     };
     let mut reply = ArmySizeReply {
+        template_sections: None,
         branch_id: params.branch_id.clone(),
         windows: if params.window.is_none() {
             windows.to_vec()
@@ -1700,6 +1714,7 @@ fn build_reply(
 
 mod composition;
 pub mod prepared;
+mod template_roster;
 pub use composition::check_content;
 use composition::{RawMixRun, composition_reply};
 mod inventory;

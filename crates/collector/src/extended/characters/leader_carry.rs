@@ -36,6 +36,11 @@ pub(super) trait Held: Copy + PartialEq + std::fmt::Debug {
     fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Self;
     /// The row's text bytes.
     fn text_len(&self) -> usize;
+    /// A refused appended value must refresh only this leader, without
+    /// discarding unrelated leaders' certified rows.
+    fn can_hold(&self) -> bool {
+        true
+    }
 }
 
 /// Appends `bytes[at..at + len]` to `text`; the span from `start`.
@@ -51,6 +56,9 @@ fn take(
 }
 
 impl Held for LeaderRow {
+    fn can_hold(&self) -> bool {
+        self.training_reason.is_none()
+    }
     fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Self {
         let (text_a_start, _) = take(bytes, (self.text_a_start, self.text_a_len), text, start);
         let (text_b_start, _) = take(bytes, (self.text_b_start, self.text_b_len), text, start);
@@ -59,7 +67,11 @@ impl Held for LeaderRow {
             name.group = take(bytes, name.group, text, start);
             name
         });
+        let training = take(bytes, self.training, text, start);
+        let training_factors = take(bytes, self.training_factors, text, start);
         LeaderRow {
+            training,
+            training_factors,
             text_a_start,
             text_b_start,
             codename,
@@ -71,6 +83,8 @@ impl Held for LeaderRow {
         self.text_a_len
             + self.text_b_len
             + self.codename.map_or(0, |name| name.custom.1 + name.group.1)
+            + self.training.1
+            + self.training_factors.1
     }
 }
 
@@ -456,6 +470,13 @@ impl<R: Held> LeaderCarry<R> {
             let (len, leader) = fresh(rest).ok_or(())?;
             let read = rest.get(..len).ok_or(())?;
             cursor += len;
+            if read.iter().any(|row| !row.can_hold()) {
+                if let Some(index) = visit.entry {
+                    self.entries[index].seen = false;
+                }
+                visit.carryable = false;
+                continue;
+            }
             let held = visit.entry.map(|index| &self.entries[index]);
             // The fresh read's rows and text, appended to the added buffers.
             let (rows_start, text_start) = (self.added_rows.len(), self.added_text.len());

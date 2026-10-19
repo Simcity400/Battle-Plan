@@ -14,6 +14,7 @@ alloc-fault-injection = ["engine-native/alloc-fault-injection"]
 
 [dependencies]
 engine-native.workspace = true
+engine-characters.workspace = true
 
 [dev-dependencies]
 engine-native = { workspace = true, features = ["test-support"] }

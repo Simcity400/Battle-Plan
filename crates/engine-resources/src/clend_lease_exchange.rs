@@ -9,7 +9,8 @@
 //! lifetime; ending lend-lease deletes the exchange and its totals.
 
 use crate::{
-    Memory, ccountry, ccountry_resources, cequipment_variant, cequipment_variant_pool as pool,
+    Memory, allocation, ccountry, ccountry_resources, cequipment_variant,
+    cequipment_variant_pool as pool,
     cpdx_array::Array,
     equipment_entry,
     memory::{RecordField, RecordLayout, RecordSources},
@@ -31,6 +32,221 @@ pub const DELIVERED: usize = 0x2d8;
 pub const SIZE: usize = 0x380;
 /// Country-resource outgoing exchange pointer array, the giver's list, with its signed count.
 pub const OUTGOING: usize = 0x758;
+/// Giver resources backlink.
+pub const GIVER_RESOURCES: usize = 0xb0;
+/// Recurring absolute, production-share and one-time equipment terms.
+pub const MONTHLY_NEED: usize = 0xd8;
+pub const PERCENTAGE_NEED: usize = 0x118;
+pub const ONCE_NEED: usize = 0x158;
+/// Native dates retained independently of delivery and fuel quantities.
+pub const LAST_DELIVERY_DATE: usize = 0x320;
+pub const ACTIVE_SINCE: usize = 0x338;
+/// Fuel quantities use fixed15, while the percentage uses fixed5.
+pub const FUEL_DAILY: usize = 0x350;
+pub const FUEL_PERCENTAGE: usize = 0x358;
+pub const FUEL_SENT: usize = 0x360;
+pub const FUEL_SUNK: usize = 0x368;
+pub const LAST_FUEL_DELIVERED: usize = 0x370;
+
+/// The pool-addition calls that commit cumulative delivered and sunk amounts.
+/// Only these call sites supply a lend-lease update; additions to other pools
+/// must not acquire lend-lease identities or appear as deliveries.
+pub const DELIVERED_POOL_RETURN_RVA: usize = 0x195897a;
+pub const SUNK_POOL_RETURN_RVA: usize = 0x195a9af;
+pub const POOL_ADDITION_RVA: usize = 0xff7830;
+pub const DELIVERED_POOL_CALL_RVA: usize = DELIVERED_POOL_RETURN_RVA - 5;
+pub const SUNK_POOL_CALL_RVA: usize = SUNK_POOL_RETURN_RVA - 5;
+pub const DELIVERED_POOL_CALL_SENTINEL: [u8; 16] = [
+    0xe8, 0xb6, 0xee, 0x69, 0xff, 0x4d, 0x8b, 0xb5, 0xb0, 0x00, 0x00, 0x00, 0x49, 0x8d, 0x4e, 0x20,
+];
+pub const SUNK_POOL_CALL_SENTINEL: [u8; 16] = [
+    0xe8, 0x81, 0xce, 0x69, 0xff, 0x44, 0x8b, 0xc6, 0x48, 0x8b, 0xd5, 0x48, 0x8b, 0xcf, 0xe8, 0x43,
+];
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    pub id: u64,
+    pub giver: u32,
+    pub receiver: u32,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Term {
+    pub variant: u64,
+    pub amount_raw: i64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TermPool {
+    pub allow_zero: bool,
+    pub equipment: Vec<Term>,
+}
+
+/// Changed-holder acquisition only. The caller reuses this storage and must
+/// withhold it on any failure. This reader schedules no census or polling.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Terms {
+    pub identity: Identity,
+    pub monthly: TermPool,
+    pub percentage: TermPool,
+    pub once: TermPool,
+    pub active_since: i32,
+    pub fuel_daily_raw: i64,
+    pub fuel_percentage_raw: i64,
+}
+
+/// A complete replacement is published as a header followed by its ordered
+/// entries. The observer supplies prepared storage; this reader never allocates.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleHeader {
+    pub counts: [u32; 3],
+    pub allow_zero: [bool; 3],
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduleItem {
+    pub mode: u8,
+    pub ordinal: u32,
+    pub variant: u64,
+    pub amount_raw: i64,
+}
+
+/// Only the three pools supplied by a reached agreement amendment.
+/// A rejected append stops the occurrence immediately; partial replacements
+/// must be withheld by the observer's interval coverage.
+pub fn schedules(
+    memory: &impl Memory,
+    base: usize,
+    sources: [usize; 3],
+    mut header: impl FnMut(ScheduleHeader) -> Result<(), &'static str>,
+    mut emit: impl FnMut(ScheduleItem) -> Result<(), &'static str>,
+) -> Result<usize, &'static str> {
+    let mut arrays = [Array::default(); 3];
+    let mut shape = ScheduleHeader::default();
+    for (index, source) in sources.into_iter().enumerate() {
+        arrays[index] = pool::entries(memory, base, source)?;
+        shape.counts[index] = arrays[index].count;
+        shape.allow_zero[index] = crate::read::<u8>(memory, address(source, pool::ALLOW_ZERO)?)
+            .ok_or("lend-lease schedule zero policy unreadable")?
+            != 0;
+    }
+    header(shape)?;
+    let mut count = 0_usize;
+    for (mode, entries) in arrays.into_iter().enumerate() {
+        for ordinal in 0..entries.count {
+            let item = equipment_entry::read(
+                memory,
+                base,
+                entries
+                    .element(ordinal, equipment_entry::STRIDE)
+                    .ok_or("lend-lease schedule entry address overflow")?,
+                ordinal,
+            )?;
+            emit(ScheduleItem {
+                mode: mode as u8,
+                ordinal,
+                variant: item.variant_handle,
+                amount_raw: item.amount_raw,
+            })?;
+            count = count
+                .checked_add(1)
+                .ok_or("lend-lease schedule count overflow")?;
+        }
+    }
+    Ok(count)
+}
+
+fn address(pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pointer
+        .checked_add(offset)
+        .ok_or("lend-lease address overflow")
+}
+
+/// Authenticate a selected exchange without walking countries, exchanges or
+/// variant pools. Its giver is the resource owner's independent backlink.
+pub fn identity(
+    memory: &impl Memory,
+    base: usize,
+    exchange: usize,
+) -> Result<Identity, &'static str> {
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("lend-lease module address overflow")? as u64;
+    if crate::read::<u64>(memory, exchange) != Some(expected) {
+        return Err("lend-lease exchange vtable unreadable or mismatch");
+    }
+    let id = crate::read::<u64>(memory, address(exchange, HANDLE)?)
+        .ok_or("lend-lease exchange reference unreadable")?;
+    // Convoy-client references are minted from the live dynamic-type counter.
+    // Their low word is not a fixed class discriminator.
+    let resources = crate::read::<u64>(memory, address(exchange, GIVER_RESOURCES)?)
+        .and_then(|p| usize::try_from(p).ok())
+        .filter(|&p| p != 0)
+        .ok_or("lend-lease giver resources unreadable or null")?;
+    let resources_vtable = base
+        .checked_add(ccountry_resources::VTABLE_RVA)
+        .ok_or("lend-lease module address overflow")? as u64;
+    if crate::read::<u64>(memory, resources) != Some(resources_vtable) {
+        return Err("lend-lease giver resources vtable unreadable or mismatch");
+    }
+    let giver = crate::read(memory, address(resources, ccountry_resources::OWNER)?)
+        .ok_or("lend-lease giver unreadable")?;
+    let receiver = crate::read(memory, address(exchange, RECEIVER)?)
+        .ok_or("lend-lease receiver unreadable")?;
+    Ok(Identity {
+        id,
+        giver,
+        receiver,
+    })
+}
+
+pub fn terms(
+    memory: &impl Memory,
+    base: usize,
+    exchange: usize,
+    expected: Identity,
+    output: &mut Terms,
+) -> Result<(), &'static str> {
+    if identity(memory, base, exchange)? != expected {
+        return Err("lend-lease terms identity changed");
+    }
+    for (offset, output) in [
+        (MONTHLY_NEED, &mut output.monthly),
+        (PERCENTAGE_NEED, &mut output.percentage),
+        (ONCE_NEED, &mut output.once),
+    ] {
+        let source = address(exchange, offset)?;
+        let entries = pool::entries(memory, base, source)?;
+        let allow_zero = crate::read::<u8>(memory, address(source, pool::ALLOW_ZERO)?)
+            .ok_or("lend-lease terms zero-entry flag unreadable")?
+            != 0;
+        allocation::resize_default(&mut output.equipment, entries.count as usize)
+            .map_err(|_| "lend-lease terms allocation failed")?;
+        for (ordinal, output) in output.equipment.iter_mut().enumerate() {
+            let entry = equipment_entry::read(
+                memory,
+                base,
+                entries
+                    .element(ordinal as u32, equipment_entry::STRIDE)
+                    .ok_or("lend-lease terms entry address invalid")?,
+                ordinal as u32,
+            )?;
+            *output = Term {
+                variant: entry.variant_handle,
+                amount_raw: entry.amount_raw,
+            };
+        }
+        output.allow_zero = allow_zero;
+    }
+    output.active_since = crate::read(memory, address(exchange, ACTIVE_SINCE)?)
+        .ok_or("lend-lease active date unreadable")?;
+    output.fuel_daily_raw = crate::read(memory, address(exchange, FUEL_DAILY)?)
+        .ok_or("lend-lease daily fuel unreadable")?;
+    output.fuel_percentage_raw = crate::read(memory, address(exchange, FUEL_PERCENTAGE)?)
+        .ok_or("lend-lease fuel share unreadable")?;
+    output.identity = expected;
+    Ok(())
+}
 
 /// Row kinds.
 pub const DELIVERED_KIND: u8 = 0;

@@ -1,4 +1,5 @@
 //! The scriptable weights used by random localisation lists.
+use crate::triggers::Failure;
 
 use installed_content_scripted_localisation::{
     scripted_localisation::RandomList, scripted_localisation::RandomMember,
@@ -20,7 +21,7 @@ impl Evaluator<'_, '_> {
         &self,
         member: &RandomMember,
         scopes: Scopes,
-    ) -> Result<i32, String> {
+    ) -> Result<i32, Failure> {
         if member.modifiers.is_empty() {
             return Ok(constant_weight(member));
         }
@@ -48,7 +49,7 @@ impl Evaluator<'_, '_> {
         &self,
         list: &RandomList,
         scopes: Scopes,
-    ) -> Result<Option<u32>, String> {
+    ) -> Result<Option<u32>, Failure> {
         if !list
             .seed
             .iter()

@@ -209,7 +209,10 @@ impl Renderer<'_, '_, '_> {
             graph.scopes.push(title_scope);
             at
         };
-        let selected = self.evaluator()?.event_scopes(at)?;
+        let selected = self
+            .evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())?;
         let title = match event.sole_title_key()? {
             Some(key) => self.localised(key, &[], selected, true)?,
             None => String::new(),
@@ -300,7 +303,8 @@ impl Renderer<'_, '_, '_> {
             ) {
                 return Ok(
                     match evaluator
-                        .enter_scope(&parsed, scopes)?
+                        .enter_scope(&parsed, scopes)
+                        .map_err(|why| why.to_string())?
                         .map(|selected| selected.this)
                     {
                         Some(Scope::Country(country) | Scope::CountryLeader { country, .. }) => {
@@ -311,10 +315,15 @@ impl Renderer<'_, '_, '_> {
                     },
                 );
             }
-            if let Some(country) = evaluator.scoped_country(value, scopes)? {
+            if let Some(country) = evaluator
+                .scoped_country(value, scopes)
+                .map_err(|why| why.to_string())?
+            {
                 return Ok((Some(country), 0));
             }
-            let state = evaluator.scoped_state_id(value, scopes)? as u32;
+            let state = evaluator
+                .scoped_state_id(value, scopes)
+                .map_err(|why| why.to_string())? as u32;
             if state != 0 {
                 return Ok((None, state));
             }
@@ -395,18 +404,24 @@ impl Renderer<'_, '_, '_> {
             }),
             seed,
         );
-        let scopes = self.evaluator()?.event_scopes(at)?;
+        let scopes = self
+            .evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())?;
         let highlighted = definition.has_state_targets
             || self
                 .evaluator()?
-                .has_children(&definition.highlight_conditions)?;
+                .has_children(&definition.highlight_conditions)
+                .map_err(|why| why.to_string())?;
         if highlighted && let Some(state) = self.highlight_state(definition, scopes)? {
             let mut graph = self.graph.borrow_mut();
             let index = graph.scopes.len();
             graph.scopes.push(EventScope::of(EventObject::State(state)));
             graph.scopes[from].from = Link::Scope(index);
         }
-        self.evaluator()?.event_scopes(at)
+        self.evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())
     }
 
     fn decision_description_seed(
@@ -510,7 +525,9 @@ impl Renderer<'_, '_, '_> {
             }
             at
         };
-        self.evaluator()?.event_scopes(at)
+        self.evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())
     }
 
     fn highlight_state(
@@ -550,7 +567,10 @@ impl Renderer<'_, '_, '_> {
             // maintains ascending unique state IDs, independently of
             // authored array order, then checks is_valid_target in fresh scopes.
             for array in &definition.target_arrays {
-                for object in evaluator.scoped_array_scopes(array, scopes)? {
+                for object in evaluator
+                    .scoped_array_scopes(array, scopes)
+                    .map_err(|why| why.to_string())?
+                {
                     if let Some(Scope::State(state)) = object
                         && state > 0
                         && state != NULL_STATE
@@ -567,7 +587,9 @@ impl Renderer<'_, '_, '_> {
                 }
             }
             for operand in &definition.target_states {
-                let state = evaluator.scoped_state_id(operand, scopes)? as u32;
+                let state = evaluator
+                    .scoped_state_id(operand, scopes)
+                    .map_err(|why| why.to_string())? as u32;
                 if state > 0
                     && state != NULL_STATE
                     && self.context.world()?.states().contains_key(&state)
@@ -582,7 +604,11 @@ impl Renderer<'_, '_, '_> {
                 }
             }
         }
-        if candidates.is_empty() && evaluator.has_children(&definition.highlight_conditions)? {
+        if candidates.is_empty()
+            && evaluator
+                .has_children(&definition.highlight_conditions)
+                .map_err(|why| why.to_string())?
+        {
             for &state in self
                 .context
                 .world()?
@@ -590,7 +616,9 @@ impl Renderer<'_, '_, '_> {
                 .keys()
                 .filter(|state| **state > 0)
             {
-                let selected = evaluator.with_this(scopes, Scope::State(state))?;
+                let selected = evaluator
+                    .with_this(scopes, Scope::State(state))
+                    .map_err(|why| why.to_string())?;
                 if evaluator
                     .evaluate(&definition.highlight_conditions, selected)
                     .decided()?

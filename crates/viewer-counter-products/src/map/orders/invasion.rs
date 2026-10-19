@@ -62,7 +62,10 @@ impl<'a> Routes<'a> {
             .ok_or("invasion movement content is unavailable")?;
         let world = self
             .world
-            .get_or_init(|| World::new(self.frame, assets.trigger_content.facts()))
+            .get_or_init(|| {
+                World::new(self.frame, assets.trigger_content.facts())
+                    .map_err(|why| why.to_string())
+            })
             .as_ref()
             .map_err(Clone::clone)?;
         let theatre = self

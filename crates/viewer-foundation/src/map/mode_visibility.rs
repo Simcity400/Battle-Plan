@@ -74,6 +74,7 @@ pub enum PriorityIcon {
     NavalCombat,
     NavalCombatResults,
     NavalMission,
+    AirMission,
     Capital,
     RocketSite,
     GunEmplacement,
@@ -85,7 +86,7 @@ pub enum PriorityIcon {
 }
 
 impl PriorityIcon {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::UnitsStack,
         Self::UnitsStackGroup,
         Self::VictoryPoints,
@@ -97,6 +98,7 @@ impl PriorityIcon {
         Self::NavalCombat,
         Self::NavalCombatResults,
         Self::NavalMission,
+        Self::AirMission,
         Self::Capital,
         Self::RocketSite,
         Self::GunEmplacement,
@@ -118,6 +120,7 @@ impl PriorityIcon {
             Self::NavalCombat => "NAVAL_COMBAT",
             Self::NavalCombatResults => "NAVAL_COMBAT_RESULTS",
             Self::NavalMission => "NAVAL_MISSION",
+            Self::AirMission => "AIR_MISSION",
             Self::Capital => "CAPITAL",
             Self::RocketSite => "ROCKET_SITE",
             Self::GunEmplacement => "GUN_EMPLACEMENT",
@@ -188,6 +191,8 @@ pub enum RaidReach {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Visibility {
     pub priorities: PriorityTable,
+    /// Native political mode, independently of a shared icon priority table.
+    pub political_mode: bool,
     /// Whether unit counters are drawn at all; their camera cutoff and the peace conference
     /// still apply.
     pub unit_counters: bool,
@@ -224,6 +229,7 @@ impl Visibility {
     /// The political mode's: everything.
     pub const POLITICAL: Self = Self {
         priorities: PriorityTable::Default,
+        political_mode: true,
         unit_counters: true,
         unit_kinds: UnitKinds::All,
         army_opacity: 1.0,

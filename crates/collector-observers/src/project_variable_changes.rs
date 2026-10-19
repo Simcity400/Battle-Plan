@@ -1,0 +1,216 @@
+//! Project variable-store ownership, registered by the existing selected project
+//! census. Native variable writers notify only a registered store; no native
+//! reads, allocation, or blocking lock on the hook path.
+use crate::country_input_changes::{self, Marks};
+use std::{
+    collections::HashMap,
+    sync::{
+        RwLock, RwLockReadGuard,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+};
+
+struct Entry {
+    owner: u32,
+    id: u32,
+    revision: AtomicU64,
+    active: AtomicUsize,
+    pending_revision: AtomicU64,
+    pending_active: AtomicUsize,
+}
+static OWNERS: RwLock<Option<HashMap<usize, Entry>>> = RwLock::new(None);
+static EPOCH: AtomicU64 = AtomicU64::new(0);
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn enabled(value: bool) {
+    ENABLED.store(value, Ordering::SeqCst);
+    // Withdraw/reacquire detail once. Its availability must not disable the
+    // existing project certificate and force whole-country reads every hour.
+    invalidate();
+}
+
+/// Worker path. Registration needs no game read and survives only for the same
+/// native store/owner. Allocation grows from observed project demand.
+pub fn register(store: usize, owner: u32, id: u32) -> Option<(u64, u64)> {
+    if !ENABLED.load(Ordering::SeqCst) {
+        return None;
+    }
+    if let Ok(entries) = OWNERS.try_read()
+        && let Some(entry) = entries.as_ref().and_then(|entries| entries.get(&store))
+        && entry.owner == owner
+        && entry.id == id
+    {
+        return (entry.active.load(Ordering::SeqCst) == 0).then(|| {
+            (
+                EPOCH.load(Ordering::SeqCst),
+                entry.revision.load(Ordering::SeqCst),
+            )
+        });
+    }
+    let mut entries = OWNERS.try_write().ok()?;
+    let entries = entries.get_or_insert_with(HashMap::new);
+    if !entries.contains_key(&store) {
+        engine_allocation::reserve_map(entries, 1).ok()?;
+        entries.insert(
+            store,
+            Entry {
+                owner,
+                id,
+                revision: AtomicU64::new(0),
+                active: AtomicUsize::new(0),
+                pending_revision: AtomicU64::new(0),
+                pending_active: AtomicUsize::new(0),
+            },
+        );
+    }
+    let entry = entries.get_mut(&store)?;
+    if entry.owner != owner || entry.id != id {
+        entry.owner = owner;
+        entry.id = id;
+        entry.revision.fetch_add(1, Ordering::SeqCst);
+    }
+    if entry.active.load(Ordering::SeqCst) != 0 {
+        return None;
+    }
+    Some((
+        EPOCH.load(Ordering::SeqCst),
+        entry.revision.load(Ordering::SeqCst),
+    ))
+}
+
+pub struct Write {
+    entries: Option<RwLockReadGuard<'static, Option<HashMap<usize, Entry>>>>,
+    store: usize,
+    _marks: Marks<'static>,
+}
+impl Drop for Write {
+    fn drop(&mut self) {
+        if let Some(entry) = self
+            .entries
+            .as_ref()
+            .and_then(|entries| entries.as_ref())
+            .and_then(|entries| entries.get(&self.store))
+        {
+            entry.revision.fetch_add(1, Ordering::SeqCst);
+            entry.active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+pub fn writing(store: usize) -> Write {
+    match OWNERS.try_read() {
+        Ok(entries) => {
+            let marks =
+                if let Some(entry) = entries.as_ref().and_then(|entries| entries.get(&store)) {
+                    entry.active.fetch_add(1, Ordering::SeqCst);
+                    entry.revision.fetch_add(1, Ordering::SeqCst);
+                    country_input_changes::project_variables_written(Some(entry.owner))
+                } else {
+                    Marks::none()
+                };
+            Write {
+                entries: Some(entries),
+                store,
+                _marks: marks,
+            }
+        }
+        Err(_) => {
+            // A concurrent registration or poisoned map cannot certify an
+            // unseen write. Revoke held maps and the country selection once.
+            EPOCH.fetch_add(1, Ordering::SeqCst);
+            Write {
+                entries: None,
+                store,
+                _marks: country_input_changes::project_variables_written(None),
+            }
+        }
+    }
+}
+
+pub fn invalidate() {
+    EPOCH.fetch_add(1, Ordering::SeqCst);
+    drop(country_input_changes::project_variables_written(None));
+}
+
+/// Worker-only lifetime maintenance after an existing complete daily project census.
+/// Failed acquisition or lock contention never declares a registered project dead.
+pub fn retain_live(mut keep: impl FnMut(u32, u32) -> bool) {
+    if let Ok(mut entries) = OWNERS.try_write()
+        && let Some(entries) = entries.as_mut()
+    {
+        entries.retain(|_, entry| keep(entry.owner, entry.id));
+    }
+}
+
+static PROJECT_HOOKS: AtomicBool = AtomicBool::new(false);
+pub fn project_hooks_enabled(value: bool) {
+    PROJECT_HOOKS.store(value, Ordering::SeqCst);
+    EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+pub fn pending_stamp(store: usize) -> Option<(u64, u64)> {
+    if !PROJECT_HOOKS.load(Ordering::SeqCst) {
+        return None;
+    }
+    let entries = OWNERS.try_read().ok()?;
+    let entry = entries.as_ref()?.get(&store)?;
+    let stamp = (
+        EPOCH.load(Ordering::SeqCst),
+        entry.pending_revision.load(Ordering::SeqCst),
+    );
+    (entry.pending_active.load(Ordering::SeqCst) == 0).then_some(stamp)
+}
+pub struct ProjectWrite {
+    entries: Option<RwLockReadGuard<'static, Option<HashMap<usize, Entry>>>>,
+    store: usize,
+}
+impl Drop for ProjectWrite {
+    fn drop(&mut self) {
+        if let Some(entry) = self
+            .entries
+            .as_ref()
+            .and_then(|entries| entries.as_ref())
+            .and_then(|entries| entries.get(&self.store))
+        {
+            entry.pending_revision.fetch_add(1, Ordering::SeqCst);
+            entry.pending_active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+/// Existing project writers already own their country marks. Forward the same
+/// object identity without reading it or invalidating unrelated project stores.
+pub fn writing_project(project: usize) -> ProjectWrite {
+    let store = project
+        .checked_add(engine_projects::nproject_cproject::VARIABLES)
+        .unwrap_or(0);
+    match OWNERS.try_read() {
+        Ok(entries) => {
+            if let Some(entry) = entries.as_ref().and_then(|entries| entries.get(&store)) {
+                entry.pending_active.fetch_add(1, Ordering::SeqCst);
+                entry.pending_revision.fetch_add(1, Ordering::SeqCst);
+            }
+            ProjectWrite {
+                entries: Some(entries),
+                store,
+            }
+        }
+        Err(_) => {
+            EPOCH.fetch_add(1, Ordering::SeqCst);
+            ProjectWrite {
+                entries: None,
+                store,
+            }
+        }
+    }
+}
+
+/// A project-pool reset invalidates every retained object, on entry and return.
+pub struct Reset;
+pub fn resetting() -> Reset {
+    invalidate();
+    Reset
+}
+impl Drop for Reset {
+    fn drop(&mut self) {
+        invalidate();
+    }
+}

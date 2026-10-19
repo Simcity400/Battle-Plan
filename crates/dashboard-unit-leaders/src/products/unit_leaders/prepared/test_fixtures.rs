@@ -51,6 +51,8 @@ pub fn branch_frame(branch: u64, hour: i32, countries: u32) -> DecodedFrame {
                 .collect(),
         ),
         TableRows::UnitLeaderTraits(Vec::new()),
+        TableRows::UnitLeaderTraitExperience(Vec::new()),
+        TableRows::LexicalTokens(Vec::new()),
         TableRows::LandCombatDetails(Vec::new()),
         TableRows::NavalCombatDetails(Vec::new()),
         TableRows::LandCombatResults(Vec::new()),
@@ -58,6 +60,7 @@ pub fn branch_frame(branch: u64, hour: i32, countries: u32) -> DecodedFrame {
         TableRows::NavalResults(Vec::new()),
         TableRows::NavalCombatResultDetails(Vec::new()),
         TableRows::OrdersGroups(Vec::new()),
+        TableRows::OrdersGroupPlans(Vec::new()),
         TableRows::Fleets(Vec::new()),
     ] {
         set(&mut frame, rows);

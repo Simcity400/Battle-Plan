@@ -49,7 +49,7 @@ fn manpower_batches_keep_every_word_and_failure_prefix() {
             memory.fault.set(fault.map(|index| 0x16004 + index * 8));
             let mut packet = packet(count);
             let allocated = packet.allocated_bytes();
-            let result = packet.capture_level(&memory, 0, A1);
+            let result = packet.capture_level(&memory, 0, A1, None);
             let retained = fault.unwrap_or(count);
             assert_eq!(packet.manpower.len(), retained);
             assert_eq!(packet.manpower, vec![1; retained]);
@@ -90,7 +90,7 @@ fn manpower_admission_wrapping_and_cached_thresholds_stay_lazy() {
     let memory = ScalarBatchMemory::new(&source);
     let mut refused = packet(64);
     assert_eq!(
-        refused.capture_level(&memory, 0, A1),
+        refused.capture_level(&memory, 0, A1, None),
         Err("division status manpower packet capacity exceeded")
     );
     assert_eq!(*memory.reads.borrow(), [(A1 + carmy::MANPOWER_DATA, 16)]);
@@ -100,9 +100,9 @@ fn manpower_admission_wrapping_and_cached_thresholds_stay_lazy() {
 
     let mut admitted = packet(130);
     let memory = ScalarBatchMemory::new(&source);
-    admitted.capture_level(&memory, 0, A1).unwrap();
+    admitted.capture_level(&memory, 0, A1, None).unwrap();
     memory.reads.borrow_mut().clear();
-    let second = admitted.capture_level(&memory, 0, A1).unwrap();
+    let second = admitted.capture_level(&memory, 0, A1, None).unwrap();
     assert_eq!((second.manpower_start, second.manpower_len), (65, 65));
     assert_eq!(admitted.required_capacities().manpower, 130);
     let mut expected = vec![(A1 + carmy::MANPOWER_DATA, 16)];
@@ -114,7 +114,7 @@ fn manpower_admission_wrapping_and_cached_thresholds_stay_lazy() {
         let source = manpower_fixture(&values);
         let memory = ScalarBatchMemory::new(&source);
         let mut packet = packet(values.len());
-        let input = packet.capture_level(&memory, 0, A1).unwrap();
+        let input = packet.capture_level(&memory, 0, A1, None).unwrap();
         assert_eq!(packet.manpower, values);
         let positive = values
             .iter()
@@ -141,7 +141,7 @@ fn manpower_admission_wrapping_and_cached_thresholds_stay_lazy() {
     );
     let memory = ScalarBatchMemory::new(&source);
     assert_eq!(
-        packet(2).capture_level(&memory, 0, A1),
+        packet(2).capture_level(&memory, 0, A1, None),
         Err("division presentation array invalid")
     );
     assert_eq!(*memory.reads.borrow(), [(A1 + carmy::MANPOWER_DATA, 16)]);
@@ -230,7 +230,7 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
         p64(&mut source.bytes, 0x40000 + (count - 1) * 8, 151);
         p64(&mut source.bytes, 0x40000 + count * 8, u64::MAX);
         let actual = ScalarBatchMemory::new(&source);
-        let result = growing.capture_level(&actual, 0, A1).unwrap();
+        let result = growing.capture_level(&actual, 0, A1, None).unwrap();
         assert_eq!((result.manpower_len, result.thresholds_len), (count, count));
         assert_eq!(growing.manpower, vec![1; count]);
         assert!(growing.thresholds.capacity() > count);
@@ -242,7 +242,7 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
             ..carmy::StatusCapacities::new(2)
         })
         .unwrap();
-        let reference = fixed.capture_level(&expected, 0, A1).unwrap();
+        let reference = fixed.capture_level(&expected, 0, A1, None).unwrap();
         assert_eq!(reference.thresholds_len, result.thresholds_len);
         assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
         growing.clear();
@@ -250,7 +250,7 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
         let actual = ScalarBatchMemory::new(&source);
         actual.fault.set(Some(fault));
         assert_eq!(
-            growing.capture_level(&actual, 0, A1),
+            growing.capture_level(&actual, 0, A1, None),
             Err("division presentation field unreadable")
         );
         assert_eq!(growing.manpower.len(), count - 1);
@@ -352,7 +352,7 @@ fn acquired_status_demand_excludes_allocator_spare_capacity() {
     packet.thresholds.reserve(30_000);
     for _ in 0..20 {
         packet.clear();
-        let input = packet.capture_level(&source, 0, A1).unwrap();
+        let input = packet.capture_level(&source, 0, A1, None).unwrap();
         assert_eq!(input.manpower_len, COUNT);
         assert_eq!(packet.capacities.manpower, COUNT);
         assert_eq!(packet.capacities.thresholds, 3);
@@ -376,8 +376,16 @@ fn carried_maxima_replace_the_stat_block_read() {
     let capture = |held: &[Option<DivisionMaxima>]| {
         let memory = ScalarBatchMemory::new(&source);
         let mut packet = packet(65);
-        let outcome =
-            packet.capture_holding(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 1, held);
+        let outcome = packet.capture_holding(
+            &memory,
+            0,
+            GS,
+            &seeds,
+            Outcome::Rows { len: 2 },
+            1,
+            held,
+            &[],
+        );
         let reads = memory.reads.borrow().clone();
         (outcome, packet.unit_maxima(0), reads)
     };
@@ -406,4 +414,51 @@ fn carried_maxima_replace_the_stat_block_read() {
         ..held
     };
     assert_eq!(capture(&[Some(other)]).1, Some(fresh));
+}
+
+#[test]
+fn carried_experience_supplies_exercise_level_without_a_native_xp_read() {
+    let source = manpower_fixture(&[100]);
+    let memory = ScalarBatchMemory::new(&source);
+    memory.fault.set(Some(A1 + carmy::EXPERIENCE));
+    let mut packet = packet(1);
+    let level = packet.capture_level(&memory, 0, A1, Some(15_000)).unwrap();
+    assert_eq!(level.experience, Some(15_000));
+    assert!(
+        !memory
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(address, _)| address == A1 + carmy::EXPERIENCE)
+    );
+}
+
+#[test]
+fn unavailable_air_supply_is_local_to_the_noncore_movement_operand() {
+    let source = manpower_fixture(&[1; 2]);
+    for (exiled, bypass) in [(0, 0), (1, 0), (0, 1)] {
+        let mut seed = carmy::DivisionSeed {
+            pointer: A1,
+            division: presentation_source()[0].division,
+            ..Default::default()
+        };
+        carmy::capture_division_seeds(&source, std::slice::from_mut(&mut seed));
+        seed.air_supply = None;
+        seed.exiled = Some(exiled);
+        seed.noncore_supply_bypass = Some(bypass);
+        let mut packet = packet(65);
+        let outcome =
+            packet.capture_holding(&source, 0, GS, &[seed], Outcome::Rows { len: 1 }, 1, &[], &[]);
+        assert_eq!(outcome, Outcome::Rows { len: 1 });
+        assert_eq!(packet.units[0].air_supply, None);
+        let mut rows = [carmy::StatusRow::default()];
+        assert_eq!(
+            carmy::project_status(&packet, &mut rows),
+            Outcome::Rows { len: 1 }
+        );
+        assert_ne!(
+            rows[0].move_flags & carmy::StatusRow::MOVE_NONCORE_AIR_REFUSED,
+            0
+        );
+    }
 }

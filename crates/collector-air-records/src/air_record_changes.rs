@@ -639,7 +639,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "air_record_changes") {
             let site = &MUTATIONS[0];
-            if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
                 return Err("air record hook sentinel differs");
             }
             let set = Set::new(0).ok_or("air record touched-holder allocation failed")?;

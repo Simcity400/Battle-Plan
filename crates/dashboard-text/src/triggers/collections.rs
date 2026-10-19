@@ -1,7 +1,8 @@
 //! Collection representative selection uses the shared evaluator.
 use super::{Evaluator, Scope, Scopes};
+use crate::triggers::{Failure, refusal::FrameInputs};
 use installed_content_core::{
-    collections::Collection, collections::Input, collections::Operator,
+    collections::{Collection, Input, Operator},
     script_constants::CollectionConstant,
 };
 use replay_data::rows::tables;
@@ -13,7 +14,7 @@ impl Evaluator<'_, '_> {
         &self,
         collection: &Collection,
         caller: Scopes,
-    ) -> Result<Option<Scopes>, String> {
+    ) -> Result<Option<Scopes>, Failure> {
         let world = self.world();
         let mut source = Vec::new();
         match &collection.input {
@@ -64,11 +65,12 @@ impl Evaluator<'_, '_> {
                         // Completeness is checked whatever the id, as before.
                         let present = world.state_exists(id as u32)?;
                         if id > 0 && present {
-                            Ok(Scope::State(id as u32))
+                            Ok::<_, Failure>(Scope::State(id as u32))
                         } else {
                             Err(format!(
                                 "collection constant state {id} resolves to a null state pointer"
-                            ))
+                            )
+                            .into())
                         }
                     };
                     match value {
@@ -108,13 +110,13 @@ impl Evaluator<'_, '_> {
         caller: Scopes,
         target: Scope,
         operators: &[Operator],
-    ) -> Result<Option<Scopes>, String> {
+    ) -> Result<Option<Scopes>, Failure> {
         let Some((operator, tail)) = operators.split_first() else {
             return self.collection_scope(caller, target, true).map(Some);
         };
         if let Operator::Limit(items) = operator {
             let selected = self.collection_scope(caller, target, false)?;
-            return if self.evaluate(items, selected).decided()? {
+            return if self.evaluate(items, selected).decided_input()? {
                 self.collection_path(caller, target, tail)
             } else {
                 Ok(None)
@@ -131,7 +133,7 @@ impl Evaluator<'_, '_> {
             } else {
                 world
                     .slot(raw)
-                    .ok_or_else(|| format!("collection country reference {raw} is unresolved"))
+                    .ok_or_else(|| -> Failure { world.unlinked("collection country", raw) })
             }
         };
         let mut targets = Vec::new();
@@ -142,8 +144,7 @@ impl Evaluator<'_, '_> {
                 };
                 let mut rows = world
                     .frame()
-                    .complete::<tables::FactionMembers>()
-                    .map_err(|why| why.to_string())?
+                    .trigger_table::<tables::FactionMembers>()?
                     .iter()
                     .filter(|row| row.faction == faction)
                     .collect::<Vec<_>>();
@@ -153,20 +154,10 @@ impl Evaluator<'_, '_> {
                 }
             }
             Operator::OwnedStates | Operator::ControlledStates => {
-                let inputs = world.country_counter_inputs(country)?;
-                let (recorded, name) = if matches!(operator, Operator::OwnedStates) {
-                    (&inputs.owned_states, "CountryCounterInputs.owned_states")
-                } else {
-                    (
-                        &inputs.controlled_states,
-                        "CountryCounterInputs.controlled_states",
-                    )
-                };
-                for &state in recorded
-                    .require(name)?
-                    .as_deref()
-                    .ok_or_else(|| format!("{name} capture unavailable"))?
-                {
+                for &state in world.ordered_country_states(
+                    country,
+                    matches!(operator, Operator::ControlledStates),
+                )? {
                     targets.push(Scope::State(state));
                 }
             }
@@ -179,7 +170,15 @@ impl Evaluator<'_, '_> {
                 for &raw in world
                     .appearance(country)?
                     .subjects
-                    .require("CountryAppearance.subjects")?
+                    .require("CountryAppearance.subjects")
+                    .map_err(|why| {
+                        Failure::input(
+                            replay_data::rows::TableId::CountryAppearance,
+                            "subjects",
+                            Some(super::Store::Country(country)),
+                            why,
+                        )
+                    })?
                 {
                     targets.push(Scope::Country(if raw == 0 { 0 } else { slot(raw as u32)? })); // Stored subject references.
                 }

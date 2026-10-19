@@ -31,3 +31,5 @@ pub mod map_event_sites;
 pub mod nuclear_strike_sites;
 pub mod operation_outcome_sites;
 pub mod politics_sites;
+pub mod script_event_registry;
+pub mod script_event_sites;

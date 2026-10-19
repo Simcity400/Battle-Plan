@@ -183,7 +183,9 @@ impl Renderer<'_, '_, '_> {
         self.localised(
             definition.localisation.as_bytes(),
             &[],
-            self.evaluator()?.event_scopes(at)?,
+            self.evaluator()?
+                .event_scopes(at)
+                .map_err(|why| why.to_string())?,
             true,
         )
     }
@@ -315,7 +317,10 @@ impl Renderer<'_, '_, '_> {
             return empty::describe();
         };
         let world = self.context.world()?;
-        let Some(token) = world.token_of(installed_content_core::parser::c_string(id))? else {
+        let Some(token) = world
+            .token_of(installed_content_core::parser::c_string(id))
+            .map_err(|why| why.to_string())?
+        else {
             return empty::describe();
         };
         if token == 0x165 {
@@ -417,7 +422,8 @@ impl Renderer<'_, '_, '_> {
                 self.evaluator()?
                     .scoped_country(item.value.scalar().unwrap_or_default(), scopes)
             })
-            .transpose()?
+            .transpose()
+            .map_err(|why| why.to_string())?
             .flatten()
         else {
             return Err("operation-token target is invalid".into());
@@ -446,7 +452,9 @@ impl Renderer<'_, '_, '_> {
         };
         let country = self.expanded(
             "[THIS.GetNameWithFlag]",
-            self.evaluator()?.event_scopes(at)?,
+            self.evaluator()?
+                .event_scopes(at)
+                .map_err(|why| why.to_string())?,
         )?;
         self.line(
             if remove {

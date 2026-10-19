@@ -197,6 +197,7 @@ pub struct Scene {
     gradient1: Bound,
     gradient2: Bound,
     secondary: Bound,
+    province_colors: Option<super::political_gpu::ProvinceColors>,
     compiled_terrain: crate::map::terrain_shader::Terrain,
     terrain_null: Bound,
     water: WaterPass,
@@ -290,6 +291,12 @@ pub struct Scene {
     )>,
     // orders: the recorded player's battle plan; see [`Scene::set_orders`].
     orders: Option<OrderPass>,
+    radar: Option<crate::map::radar_symbols::Pass>,
+    radar_refusal: Option<String>,
+    air_ranges: Option<crate::map::radar_symbols::Pass>,
+    air_ranges_refusal: Option<String>,
+    air_transfers: Option<crate::map::radar_symbols::Pass>,
+    air_transfers_refusal: Option<String>,
     pub movement_arrows: crate::map::movement_arrows::Player,
     /// The floating map text of the recorded map events; see
     /// [`Scene::install_animated_text`] and [`Scene::present_hours`].
@@ -351,6 +358,9 @@ pub struct Overlay<'a> {
     pub names: Option<&'a Placements>,
     /// The integrated country-name fade.
     pub layer_alpha: f32,
+    /// Province under the viewer pointer when strategic names are hover-only.
+    /// None keeps the native whole layer (show-all preference or no picked province).
+    pub strategic_hover: Option<u32>,
     /// Screen-space icon quads, in the order the caller pushed them, in
     /// interface pixels.
     pub sprites: Option<&'a Batch>,
@@ -372,6 +382,7 @@ impl Default for Overlay<'_> {
         Self {
             names: None,
             layer_alpha: 0.0,
+            strategic_hover: None,
             sprites: None,
             ui_scale: 1.0,
             interface: true,
@@ -672,6 +683,7 @@ impl Scene {
             gradient1,
             gradient2,
             secondary,
+            province_colors: None,
             compiled_terrain: crate::map::terrain_shader::Terrain::new(
                 device,
                 &assets.terrain_shader,
@@ -749,6 +761,12 @@ impl Scene {
             trains: None,
             aircraft: None,
             orders: None,
+            radar: None,
+            radar_refusal: None,
+            air_ranges: None,
+            air_ranges_refusal: None,
+            air_transfers: None,
+            air_transfers_refusal: None,
             animated_text: None,
             map_text_events: Default::default(),
             map_text_refusals: Default::default(),
@@ -939,6 +957,7 @@ impl Scene {
         queue: &wgpu::Queue,
         assets: &OrderAssets,
     ) -> io::Result<()> {
+        self.warm_radar(device, queue, assets);
         if self.orders.is_none() {
             self.orders = Some(OrderPass::new(
                 device,
@@ -949,6 +968,74 @@ impl Scene {
             )?);
         }
         Ok(())
+    }
+
+    fn warm_radar(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, assets: &OrderAssets) {
+        for (pass, refusal, page, label) in [
+            (
+                &mut self.radar,
+                &mut self.radar_refusal,
+                &assets.radar,
+                "Radar symbols",
+            ),
+            (
+                &mut self.air_ranges,
+                &mut self.air_ranges_refusal,
+                &assets.air_range,
+                "Air ranges",
+            ),
+            (
+                &mut self.air_transfers,
+                &mut self.air_transfers_refusal,
+                &assets.air_transfer,
+                "Air transfer progress",
+            ),
+        ] {
+            if pass.is_some() || refusal.is_some() {
+                continue;
+            }
+            match page.as_ref().map_err(Clone::clone).and_then(|page| {
+                crate::map::radar_symbols::Pass::named(
+                    device,
+                    queue,
+                    self.graphics.samples,
+                    page,
+                    &self.arrow_effect,
+                    label,
+                )
+                .map_err(|e| e.to_string())
+            }) {
+                Ok(value) => *pass = Some(value),
+                Err(reason) => *refusal = Some(reason),
+            }
+        }
+    }
+
+    pub fn set_air_ranges(&mut self, field: &crate::map::radar_symbols::Field) {
+        if let Some(pass) = &mut self.air_ranges {
+            pass.set(field);
+            pass.shown = true;
+        }
+    }
+
+    pub fn set_air_transfers(&mut self, field: &crate::map::radar_symbols::Field) {
+        if let Some(pass) = &mut self.air_transfers {
+            pass.set(field);
+            pass.shown = true;
+        }
+    }
+
+    pub fn set_radar(
+        &mut self,
+        field: &crate::map::radar_symbols::Field,
+        shown: bool,
+        hovered: Option<(u32, u32)>,
+    ) {
+        if let Some(pass) = &mut self.radar {
+            pass.set(field);
+            pass.shown = shown;
+            pass.hovered = hovered;
+        }
     }
 
     /// See [`Scene::warm_trains`].
@@ -1304,6 +1391,7 @@ impl Scene {
         assets: &OrderAssets,
         field: &OrderField,
     ) -> io::Result<()> {
+        self.warm_radar(device, queue, assets);
         if self.orders.is_none() {
             self.orders = Some(OrderPass::new(
                 device,
@@ -1535,12 +1623,55 @@ impl Scene {
                 field,
             },
         )?;
+        let colors = super::political_gpu::ProvinceColors::new(device, &base)?;
+        self.secondary = Bound {
+            texture: colors.bound.texture.clone(),
+            view: colors.bound.view.clone(),
+        };
+        self.province_colors = Some(colors);
         self.political = Some(crate::map::political_gpu::View::new(base, device, queue)?);
         Ok(())
     }
 
-    /// Show one hour's political tables: diff this view's own fill state, or share the state of
-    /// a view showing the same fill. The fill is computed with the next render.
+    /// Current secondary province colours. Changed tiles fill before terrain.
+    pub fn set_air_assignment(
+        &mut self,
+        queue: &wgpu::Queue,
+        field: &super::air_assignment::Field,
+    ) {
+        if let Some(colors) = &mut self.province_colors {
+            colors.update(queue, &field.provinces);
+        }
+    }
+
+    /// Apply this view's local Navy selection without copying province or
+    /// strategic-region membership from the prepared hour.
+    pub fn set_strategic_styles(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        styles: &BTreeMap<u32, super::map_mode::Style>,
+    ) -> io::Result<()> {
+        let Some(political) = &mut self.political else {
+            return if styles.is_empty() {
+                Ok(())
+            } else {
+                Err(invalid("PoliticalComputeNotWarmed"))
+            };
+        };
+        if political.set_strategic_styles(device, queue, styles)? {
+            let [first, second] = political.textures().cloned().expect("shown above");
+            let bound = |texture: wgpu::Texture| Bound {
+                view: texture.create_view(&Default::default()),
+                texture,
+            };
+            self.gradient1 = bound(first);
+            self.gradient2 = bound(second);
+        }
+        Ok(())
+    }
+
+    /// Show one hour's political tables; the fill is computed with the next render.
     pub fn set_political(
         &mut self,
         device: &wgpu::Device,
@@ -1979,6 +2110,9 @@ impl Scene {
         // Rebuild glyph buffers when placements change, then admit this frame's names. The near
         // names cross-fade with the far ones.
         let names = overlay.names.unwrap_or(&self.empty_placements);
+        self.name_pass.set_strategic_hover(overlay.strategic_hover);
+        self.near_name_pass
+            .set_strategic_hover(overlay.strategic_hover);
         self.name_pass
             .upload(device, names, camera, size, overlay.layer_alpha, &offsets);
         self.near_name_pass.upload(
@@ -1995,9 +2129,16 @@ impl Scene {
             let graphics = self.graphics;
             // Trade-route lines share the arrow manager; the map mode shows them.
             let trade_routes = self.visibility.trade_routes;
-            orders.prepare(camera, size, &offsets, |kind| match kind {
-                dashboard_core::protocol::PlanKind::TradeRoute => trade_routes,
-                kind => graphics.plan(kind),
+            orders.prepare(camera, size, &offsets, |draw| {
+                if draw.air_mode {
+                    self.visibility.priorities
+                        == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
+                } else {
+                    match draw.kind {
+                        dashboard_core::protocol::PlanKind::TradeRoute => trade_routes,
+                        kind => graphics.plan(kind),
+                    }
+                }
             });
             for ((pass, labels), mode) in self
                 .order_label_pass
@@ -2010,6 +2151,15 @@ impl Scene {
             }
         }
         self.sprite_pass.sync(device, queue);
+        if let Some(radar) = &mut self.radar {
+            radar.advance();
+        }
+        if let Some(ranges) = &mut self.air_ranges {
+            ranges.advance();
+        }
+        if let Some(transfers) = &mut self.air_transfers {
+            transfers.advance();
+        }
         self.sprite_pass.upload(
             device,
             queue,
@@ -2032,6 +2182,9 @@ impl Scene {
         mark(&mut encoder, "start");
         if let Some(political) = &self.political {
             political.encode(&mut encoder);
+        }
+        if let Some(colors) = &mut self.province_colors {
+            colors.encode(&mut encoder);
         }
         mark(&mut encoder, "political_compute");
         // Invoke underwater in pre-frame, before the scene's
@@ -2240,7 +2393,7 @@ impl Scene {
                         self.orders.as_ref(),
                         &self.graphics,
                         &overlay,
-                        self.visibility.trade_routes,
+                        self.visibility.trade_routes || self.visibility.priorities == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir,
                     )
                     .cast_shadows(|plans| {
                         let Some(mut pass) =
@@ -2699,7 +2852,9 @@ impl Scene {
                 self.orders.as_ref(),
                 &self.graphics,
                 &overlay,
-                self.visibility.trade_routes,
+                self.visibility.trade_routes
+                    || self.visibility.priorities
+                        == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir,
             )
             .draw(|plans| {
                 for view in 0..offsets.len() {
@@ -2749,6 +2904,45 @@ impl Scene {
         #[cfg(any(test, feature = "test-support"))]
         faults.after(failure_tests::Point::Arrows)?;
         mark(&mut encoder, "orders_main");
+        let air = self.visibility.priorities
+            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir;
+        for (radar, admitted) in [
+            (self.radar.as_ref(), true),
+            (self.air_ranges.as_ref(), air),
+            (self.air_transfers.as_ref(), air),
+        ]
+        .into_iter()
+        .filter_map(|(pass, admitted)| pass.map(|pass| (pass, admitted)))
+        {
+            for view in 0..offsets.len() {
+                let mut wrapped = camera;
+                wrapped.center[0] -= offsets[view];
+                radar.draw(
+                    arena,
+                    &mut encoder,
+                    targets,
+                    crate::map::order_pass::NativeInputs {
+                        retained: Some(&retained_scene),
+                        scene: native_frame_bytes[view],
+                        grid: bytemuck::bytes_of(&globals.light_grid),
+                        textures: [
+                            self.shadow.lit_texture(),
+                            &self.terrain_ids.view,
+                            &self.heightmap.view,
+                            &self.atlas_normal.view,
+                            &self.height_normal.view,
+                            &self.lean1.view,
+                            &self.lean2.view,
+                            &self.point_light_maps.data.view,
+                            &self.point_light_maps.indices.view,
+                        ],
+                    },
+                    &side_planes(wrapped, size),
+                    animation_time,
+                    overlay.interface && admitted,
+                )?;
+            }
+        }
         // Presentation clocks and births advance once. All Alternate seam envelopes submit the same
         // immutable canonical particle packets. Entity envelopes retain footprint flags and carrier
         // order independently of the uniform terrain's raster list.
@@ -2916,7 +3110,11 @@ impl Scene {
                             wrapped,
                             &actor_frames[view].view_projection,
                             None,
-                            &|family| overlay.interface && graphics.map_text(map_text_kind(family)),
+                            &|family| {
+                                overlay.interface
+                                    && map_text_kind(family)
+                                        .is_some_and(|kind| graphics.map_text(kind))
+                            },
                             overlay.ground.as_ref(),
                         )
                     {
@@ -3161,6 +3359,24 @@ impl Scene {
             );
         }
         warnings.extend(self.movement_arrows.warnings());
+        if let Some(radar) = &self.radar {
+            warnings.extend(radar.warnings());
+        }
+        if let Some(reason) = &self.radar_refusal {
+            warnings.push(format!("Radar symbols: 1 refused pass: {reason}"));
+        }
+        if let Some(ranges) = &self.air_ranges {
+            warnings.extend(ranges.warnings());
+        }
+        if let Some(reason) = &self.air_ranges_refusal {
+            warnings.push(format!("Air ranges: 1 refused pass: {reason}"));
+        }
+        if let Some(transfers) = &self.air_transfers {
+            warnings.extend(transfers.warnings());
+        }
+        if let Some(reason) = &self.air_transfers_refusal {
+            warnings.push(format!("Air transfer progress: 1 refused pass: {reason}"));
+        }
         if let Some(text) = &self.animated_text {
             warnings.extend(text.warnings());
         }
@@ -3281,10 +3497,10 @@ pub fn world_size(size: [u32; 2], full_resolution: bool) -> [u32; 2] {
 /// The display kind a recorded map event family's floating text is hidden with.
 fn map_text_kind(
     family: replay_data::rows::MapEventFamily,
-) -> dashboard_core::protocol::MapTextKind {
+) -> Option<dashboard_core::protocol::MapTextKind> {
     use dashboard_core::protocol::MapTextKind;
     use replay_data::rows::MapEventFamily;
-    match family {
+    Some(match family {
         MapEventFamily::FakeDivisionRevealed => MapTextKind::FakeDivisions,
         MapEventFamily::RailwayGunOverrun => MapTextKind::RailwayGuns,
         MapEventFamily::CriticalShoreBombardment => MapTextKind::Bombardments,
@@ -3292,7 +3508,8 @@ fn map_text_kind(
         MapEventFamily::ParadropLanding => MapTextKind::Paradrops,
         MapEventFamily::ResistanceActivity => MapTextKind::Resistance,
         MapEventFamily::BuildingDamage => MapTextKind::Buildings,
-    }
+        MapEventFamily::ScriptedMapRefresh => return None,
+    })
 }
 
 /// The map-frame actors that stay placed, keeping their admission, clocks, events' timing and
@@ -3326,22 +3543,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_map_event_family_has_its_own_text_switch() {
+    fn every_floating_text_family_has_its_own_text_switch() {
         let kinds: std::collections::BTreeSet<_> = replay_data::rows::MapEventFamily::ALL
             .into_iter()
-            .map(map_text_kind)
+            .filter_map(map_text_kind)
             .collect();
-        assert_eq!(kinds.len(), replay_data::rows::MapEventFamily::COUNT);
+        assert_eq!(kinds.len(), replay_data::rows::MapEventFamily::COUNT - 1);
+        assert_eq!(
+            map_text_kind(replay_data::rows::MapEventFamily::ScriptedMapRefresh),
+            None
+        );
         let graphics = dashboard_core::protocol::MapGraphics {
             text_generals: false,
             ..Default::default()
         };
-        assert!(!graphics.map_text(map_text_kind(
-            replay_data::rows::MapEventFamily::GeneralCaptured
-        )));
-        assert!(graphics.map_text(map_text_kind(
-            replay_data::rows::MapEventFamily::BuildingDamage
-        )));
+        assert!(
+            !graphics.map_text(
+                map_text_kind(replay_data::rows::MapEventFamily::GeneralCaptured).unwrap()
+            )
+        );
+        assert!(
+            graphics.map_text(
+                map_text_kind(replay_data::rows::MapEventFamily::BuildingDamage).unwrap()
+            )
+        );
     }
 
     #[test]

@@ -38,7 +38,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<Option<UnitLeader<'f>>, String> {
         let selected = self.effect_character_target(operand, scopes)?;
         let leader = match selected {
-            Some(character) => Tables::read(self.context.text.frame()).unit_leader(character.id)?,
+            Some(character) => Tables::read(self.context.text.frame())
+                .unit_leader(character.id)
+                .map_err(|why| why.to_string())?,
             None => None,
         };
         let leader = match leader {
@@ -57,7 +59,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<Option<u32>, String> {
         if let Some(country) = operand
             .map(|value| self.evaluator()?.scoped_country(value, scopes))
-            .transpose()?
+            .transpose()
+            .map_err(|why| why.to_string())?
             .flatten()
             .filter(|country| *country as i32 > 0)
         {
@@ -161,7 +164,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let captured_by = field(children(item), "captured_by").and_then(|item| item.value.scalar());
         let Some(capturer) = captured_by
             .map(|value| self.evaluator()?.scoped_country(value, scopes))
-            .transpose()?
+            .transpose()
+            .map_err(|why| why.to_string())?
             .flatten()
             .filter(|country| *country as i32 > 0)
         else {
@@ -334,7 +338,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         at: usize,
     ) -> Result<String, String> {
         let evaluator = self.evaluator()?;
-        let selected = evaluator.event_scopes(at)?;
+        let selected = evaluator.event_scopes(at).map_err(|why| why.to_string())?;
         match event
             .deterministic_title_key(|triggers| evaluator.evaluate(triggers, selected).decided())?
         {
@@ -467,7 +471,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             };
             let country = operand
                 .map(|value| self.evaluator()?.scoped_country(value, scopes))
-                .transpose()?
+                .transpose()
+                .map_err(|why| why.to_string())?
                 .flatten()
                 .unwrap_or(0);
             let mut graph = self.graph.borrow_mut();

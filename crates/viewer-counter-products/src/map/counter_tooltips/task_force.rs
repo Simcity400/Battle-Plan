@@ -127,6 +127,9 @@ pub(super) fn build(
     let handled = append_arrival(context, input, &mut out, query);
     super::task_force_summary::append(context, &input.members, input.coarse, &mut out);
     super::task_force_children::append(context, input, &mut out);
+    if input.ours && !input.coarse {
+        super::naval_management::append(context, &input.members, &mut out);
+    }
     if !input.coarse
         && let Some(authored) = &input.authored
     {
@@ -164,6 +167,7 @@ pub(super) mod tests {
         run(Context {
             nato: false,
             content: None,
+            reads: None,
             dig_in_factor: Err(unavailable.into()),
             loc,
             recorded_language: recorded_language.unwrap_or(&loc.language),

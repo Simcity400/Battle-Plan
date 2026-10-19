@@ -26,6 +26,18 @@ pub struct TriggeredIcon {
 pub struct Decision {
     pub id: Vec<u8>,
     pub name: Vec<u8>,
+    pub category: Vec<u8>,
+    pub allowed: Vec<Item>,
+    pub visible: Vec<Item>,
+    pub available: Vec<Item>,
+    pub activation: Vec<Item>,
+    pub remove_trigger: Vec<Item>,
+    pub cancel_trigger: Vec<Item>,
+    pub custom_cost_trigger: Vec<Item>,
+    pub cost: Vec<u8>,
+    pub selectable_mission: bool,
+    pub targeted: bool,
+    pub state_target: bool,
     /// Each triggered text appends, including scalar icons.
     pub icons: Vec<TriggeredIcon>,
     pub icon_refusal: Option<String>,
@@ -45,6 +57,8 @@ pub struct Decision {
     /// Content effects described in fresh country scopes.
     pub complete_effect: Vec<Item>,
     pub remove_effect: Vec<Item>,
+    pub cancel_effect: Vec<Item>,
+    pub timeout_effect: Vec<Item>,
     pub days_remove: Vec<u8>,
     pub modifier: Vec<Item>,
     /// Each targeted modifier is retained separately and visited in stored order.
@@ -144,16 +158,32 @@ impl Decision {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct CategoryConditions {
+    pub allowed: Vec<Item>,
+    pub visible: Vec<Item>,
+    pub available: Vec<Item>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Database {
     pub entries: BTreeMap<Vec<u8>, Decision>,
     /// Category name key, without the decision-country fallback ladder.
     pub categories: BTreeMap<Vec<u8>, Vec<u8>>,
     power_balance_categories: BTreeSet<Vec<u8>>,
+    pub category_conditions: BTreeMap<Vec<u8>, CategoryConditions>,
     pub notes: Vec<String>,
     unread: Option<String>,
 }
 
 impl Database {
+    /// Complete recorded-content roster, including valid emptiness.
+    pub fn roster(&self) -> Result<impl Iterator<Item = &Decision>, String> {
+        if let Some(why) = &self.unread {
+            return Err(why.clone());
+        }
+        Ok(self.entries.values())
+    }
+
     pub fn category(&self, token: &[u8]) -> Result<Option<&[u8]>, String> {
         if let Some(why) = &self.unread {
             return Err(why.clone());
@@ -345,6 +375,7 @@ fn append(
             }
             let mut decision = Decision {
                 name: id.clone(),
+                category: category_key.clone(),
                 seed_component: seed_component(&id),
                 id: id.clone(),
                 source,
@@ -352,9 +383,45 @@ fn append(
             };
             let fields = item.value.items().unwrap_or_default();
             decision.power_balance = database.power_balance_categories.contains(&category_key);
+            decision.targeted = fields.iter().any(|field| {
+                field.keyword().is_some_and(|keyword| {
+                    [
+                        "target_trigger",
+                        "target_root_trigger",
+                        "target_array",
+                        "targets",
+                        "country",
+                        "state",
+                        "targets_dynamic",
+                        "target_non_existing",
+                        "state_target",
+                    ]
+                    .iter()
+                    .any(|name| keyword.is(name))
+                })
+            });
+            decision.state_target = parser::read_bool_field(fields, "state_target", false);
+            decision.selectable_mission =
+                parser::read_bool_field(fields, "selectable_mission", false);
             decision.fixed_random_seed =
                 parser::read_bool_field(fields, "fixed_random_seed", false);
             for field in fields {
+                for (key, body) in [
+                    ("allowed", &mut decision.allowed),
+                    ("visible", &mut decision.visible),
+                    ("available", &mut decision.available),
+                    ("activation", &mut decision.activation),
+                    ("remove_trigger", &mut decision.remove_trigger),
+                    ("cancel_trigger", &mut decision.cancel_trigger),
+                    ("custom_cost_trigger", &mut decision.custom_cost_trigger),
+                ] {
+                    if field.keyword_is(key) {
+                        body.extend_from_slice(field.value.items().unwrap_or_default());
+                    }
+                }
+                if field.keyword_is("cost") {
+                    decision.cost = field.value.scalar().unwrap_or_default().to_vec();
+                }
                 if field.keyword_is("icon") {
                     match triggered_icon(&field.value) {
                         Ok(icon) => decision.icons.push(icon),
@@ -372,6 +439,14 @@ fn append(
                 } else if field.keyword_is("remove_effect") {
                     decision
                         .remove_effect
+                        .extend_from_slice(field.value.items().unwrap_or_default());
+                } else if field.keyword_is("cancel_effect") {
+                    decision
+                        .cancel_effect
+                        .extend_from_slice(field.value.items().unwrap_or_default());
+                } else if field.keyword_is("timeout_effect") {
+                    decision
+                        .timeout_effect
                         .extend_from_slice(field.value.items().unwrap_or_default());
                 } else if field.keyword_is("modifier") {
                     decision
@@ -504,9 +579,20 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
         let read = native::read(
             &layers.read(&path)?,
             native::Mode::KeepMark,
-            native::Top::File(()),
-            None,
-            &mut |(), _| Shape::SkipIfOpen,
+            native::Top::File(false),
+            Some(&names),
+            &mut |category, field| {
+                if !category {
+                    Shape::Object(true)
+                } else if matches!(
+                    field.keyword().as_deref(),
+                    Some(b"allowed" | b"visible" | b"available")
+                ) {
+                    Shape::Trigger
+                } else {
+                    Shape::SkipIfOpen
+                }
+            },
         );
         database
             .notes
@@ -525,6 +611,22 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
             database
                 .categories
                 .insert(id.to_ascii_lowercase(), id.to_vec());
+            let mut conditions = CategoryConditions::default();
+            for field in item.value.items().unwrap_or_default() {
+                let body = if field.keyword_is("allowed") {
+                    &mut conditions.allowed
+                } else if field.keyword_is("visible") {
+                    &mut conditions.visible
+                } else if field.keyword_is("available") {
+                    &mut conditions.available
+                } else {
+                    continue;
+                };
+                body.extend_from_slice(field.value.items().unwrap_or_default());
+            }
+            database
+                .category_conditions
+                .insert(id.to_ascii_lowercase(), conditions);
         }
     }
     // `common/bop` binds `decision_category`; category bodies do not

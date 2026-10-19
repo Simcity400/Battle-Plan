@@ -33,6 +33,67 @@ pub const OWNER_COPY: usize = 0x170;
 pub const PROVINCE_COPY: usize = 0x174;
 /// Unread prototype rewards, serialized as signed i32.
 pub const UNREAD_PROTOTYPE_REWARDS: usize = 0x178;
+/// Supporting assignment collection; native entries keep a reference and timer.
+pub const SUPPORTING_SCIENTISTS: usize = 0xb0;
+pub const ASSIGNMENT_STRIDE: usize = 0x30;
+pub const ASSIGNMENT_TIMER: usize = 0x10;
+pub const ASSIGNMENT_TIMED: usize = 0x28;
+/// Owned acquisition encoding, excluding native callback pointers and padding.
+pub const ASSIGNMENT_BYTES: usize = 17;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Assignment {
+    pub scientist: u64,
+    pub target: i32,
+    pub current: i32,
+    pub timed: u8,
+}
+
+/// Primary then supporting assignments in native order. The primary reference
+/// was already read with the program. No native limit is imposed on supports.
+pub fn assignments(
+    memory: &impl Memory,
+    program: usize,
+    primary: u64,
+    mut emit: impl FnMut(Assignment) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let at = |pointer: usize, offset: usize| {
+        pointer
+            .checked_add(offset)
+            .ok_or("program assignment address overflow")
+    };
+    let read_timer = |pointer: usize, scientist| -> Result<Assignment, &'static str> {
+        if scientist == 0 {
+            return Ok(Assignment::default());
+        }
+        let timer = read::<[u8; 8]>(memory, at(pointer, ASSIGNMENT_TIMER)?)
+            .ok_or("program scientist timer unreadable")?;
+        let timed = read::<u8>(memory, at(pointer, ASSIGNMENT_TIMED)?)
+            .ok_or("program scientist timer flag unreadable")?;
+        Ok(Assignment {
+            scientist,
+            target: i32::from_le_bytes(timer[..4].try_into().unwrap()),
+            current: i32::from_le_bytes(timer[4..].try_into().unwrap()),
+            timed,
+        })
+    };
+    emit(read_timer(at(program, SCIENTIST_REFERENCE_TYPE)?, primary)?)?;
+    let supports = crate::cpdx_array::Array::read(
+        memory,
+        at(program, SUPPORTING_SCIENTISTS)?,
+        ASSIGNMENT_STRIDE,
+    )
+    .ok_or("supporting scientist collection invalid or unreadable")?;
+    for ordinal in 0..supports.count {
+        let pointer = supports
+            .element(ordinal, ASSIGNMENT_STRIDE)
+            .ok_or("supporting scientist address overflow")?;
+        let scientist =
+            read::<u64>(memory, pointer).ok_or("supporting scientist reference unreadable")?;
+        emit(read_timer(pointer, scientist)?)?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -45,6 +106,12 @@ pub struct Row {
     pub unread_rewards: i32,
     pub building_start: usize,
     pub building_len: usize,
+    pub assignments_start: usize,
+    pub assignments_count: u32,
+    pub assignments_known: bool,
+    pub details_start: usize,
+    pub details_count: u32,
+    pub details_known: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,7 +231,7 @@ pub fn walk_buffer(
             }
             previous = Some(pointer);
             let (mut row, source) = read_row(memory, base, pointer)?;
-            countries.resolve(row.owner)?;
+            let owner = countries.resolve(row.owner)?;
             result.required_bytes = result
                 .required_bytes
                 .checked_add(row.building_len)
@@ -183,6 +250,105 @@ pub fn walk_buffer(
                 return Err("program building bytes unreadable");
             }
             result.bytes_len = end;
+            row.assignments_start = end;
+            let mut assignment_bytes = 0usize;
+            let mut assignments_fit = true;
+            let assignment_read = assignments(memory, pointer, row.scientist, |assignment| {
+                assignment_bytes = assignment_bytes
+                    .checked_add(ASSIGNMENT_BYTES)
+                    .ok_or("program assignment demand overflow")?;
+                let end = result
+                    .bytes_len
+                    .checked_add(ASSIGNMENT_BYTES)
+                    .ok_or("program assignment arena overflow")?;
+                if !names.ensure(end)? {
+                    assignments_fit = false;
+                    return Ok(());
+                }
+                if !assignments_fit {
+                    return Ok(());
+                }
+                let bytes = &mut names[result.bytes_len..end];
+                bytes[..8].copy_from_slice(&assignment.scientist.to_le_bytes());
+                bytes[8..12].copy_from_slice(&assignment.target.to_le_bytes());
+                bytes[12..16].copy_from_slice(&assignment.current.to_le_bytes());
+                bytes[16] = assignment.timed;
+                result.bytes_len = end;
+                row.assignments_count = row
+                    .assignments_count
+                    .checked_add(1)
+                    .ok_or("program assignment count overflow")?;
+                Ok(())
+            });
+            row.assignments_known = assignment_read.is_ok() && assignments_fit;
+            if !row.assignments_known {
+                result.bytes_len = row.assignments_start;
+                row.assignments_count = 0;
+            }
+            result.required_bytes = result
+                .required_bytes
+                .checked_add(assignment_bytes)
+                .ok_or("program assignment byte count overflow")?;
+            row.details_start = result.bytes_len;
+            if row.assignments_known {
+                // The immutable acquired membership is reused while the same arena
+                // appends detail operands; no second supporting-scientist walk.
+                let mut detail_bytes = 0usize;
+                let mut fit = true;
+                let arena = std::cell::RefCell::new(&mut names);
+                let mut detail_count = 0u32;
+                let assignment_count = row.assignments_count as usize;
+                let assignment_start = row.assignments_start;
+                let acquired = crate::program_details::observe(
+                    memory,
+                    base,
+                    game_state,
+                    pointer,
+                    &row,
+                    || {
+                        let status = nproject_cprogram_status::from_country(
+                            memory, base, owner, &countries,
+                        )?;
+                        Ok((owner.pointer, status))
+                    },
+                    assignment_count,
+                    |index| {
+                        let start = assignment_start + index * ASSIGNMENT_BYTES;
+                        u64::from_le_bytes(arena.borrow()[start..start + 8].try_into().unwrap())
+                    },
+                    |operand| {
+                        let mut names = arena.borrow_mut();
+                        detail_bytes = detail_bytes
+                            .checked_add(crate::program_details::BYTES)
+                            .ok_or("program detail demand overflow")?;
+                        let end = result
+                            .bytes_len
+                            .checked_add(crate::program_details::BYTES)
+                            .ok_or("program detail arena overflow")?;
+                        if !names.ensure(end)? {
+                            fit = false;
+                        }
+                        if fit {
+                            operand.encode(&mut names[result.bytes_len..end]);
+                            result.bytes_len = end;
+                            detail_count = detail_count
+                                .checked_add(1)
+                                .ok_or("program detail count overflow")?;
+                        }
+                        Ok(())
+                    },
+                );
+                row.details_count = detail_count;
+                row.details_known = acquired.is_ok() && fit;
+                result.required_bytes = result
+                    .required_bytes
+                    .checked_add(detail_bytes)
+                    .ok_or("program detail byte count overflow")?;
+                if !row.details_known {
+                    result.bytes_len = row.details_start;
+                    row.details_count = 0;
+                }
+            }
             output[len] = row;
             len += 1;
         }
@@ -304,6 +470,12 @@ fn read_row(
             unread_rewards: i32::from_le_bytes(copies[8..12].try_into().unwrap()),
             building_start: 0,
             building_len,
+            assignments_start: 0,
+            assignments_count: 0,
+            assignments_known: false,
+            details_start: 0,
+            details_count: 0,
+            details_known: false,
         },
         source,
     ))
@@ -313,6 +485,68 @@ fn read_row(
 mod tests {
     use super::*;
     use crate::memory::SliceMemory;
+
+    #[test]
+    fn gap_research_grants_supporting_assignments_preserve_5000_occurrences_timers_and_null_omission()
+     {
+        const BASE: usize = 0x1000;
+        const DATA: usize = 0x200;
+        const COUNT: usize = 5_000;
+        let mut bytes = vec![0; DATA + COUNT * ASSIGNMENT_STRIDE];
+        bytes[SUPPORTING_SCIENTISTS..SUPPORTING_SCIENTISTS + 8]
+            .copy_from_slice(&((BASE + DATA) as u64).to_le_bytes());
+        bytes[SUPPORTING_SCIENTISTS + 8..SUPPORTING_SCIENTISTS + 12]
+            .copy_from_slice(&(COUNT as u32).to_le_bytes());
+        bytes[SUPPORTING_SCIENTISTS + 12..SUPPORTING_SCIENTISTS + 16]
+            .copy_from_slice(&(COUNT as i32).to_le_bytes());
+        for index in 0..COUNT {
+            let at = DATA + index * ASSIGNMENT_STRIDE;
+            bytes[at..at + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+            bytes[at + ASSIGNMENT_TIMER..at + ASSIGNMENT_TIMER + 4]
+                .copy_from_slice(&i32::MIN.to_le_bytes());
+            bytes[at + ASSIGNMENT_TIMER + 4..at + ASSIGNMENT_TIMER + 8]
+                .copy_from_slice(&i32::MAX.to_le_bytes());
+            bytes[at + ASSIGNMENT_TIMED] = 253;
+        }
+        let mut values = Vec::new();
+        assignments(
+            &SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            },
+            BASE,
+            0,
+            |assignment| {
+                values.push(assignment);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(values.len(), COUNT + 1);
+        assert_eq!(values[0], Assignment::default());
+        assert_eq!(
+            values[COUNT],
+            Assignment {
+                scientist: u64::MAX,
+                target: i32::MIN,
+                current: i32::MAX,
+                timed: 253
+            }
+        );
+        bytes.truncate(DATA + COUNT * ASSIGNMENT_STRIDE - (ASSIGNMENT_STRIDE - ASSIGNMENT_TIMED));
+        assert_eq!(
+            assignments(
+                &SliceMemory {
+                    base: BASE,
+                    bytes: &bytes
+                },
+                BASE,
+                0,
+                |_| Ok(())
+            ),
+            Err("program scientist timer flag unreadable")
+        );
+    }
 
     struct AbsentPayload<'a>(SliceMemory<'a>);
     impl Memory for AbsentPayload<'_> {

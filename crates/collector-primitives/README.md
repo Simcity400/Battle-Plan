@@ -5,3 +5,5 @@ Shared typed capture rows and arenas, observed country sizing, observer publicat
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-primitives` and `cargo clippy -p collector-primitives --all-targets -- -D warnings` for its synthetic checks.
+
+SharedLane exposes drained ownership so an event family can replace its empty storage off-thread while excluding producers.

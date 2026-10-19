@@ -61,3 +61,15 @@ counts when an exact recorded delta leaves both rosters unchanged. Roster
 edits, snapshots, gaps and newly opened combats count the recorded handles
 again, including duplicate handles. This cache is the run's existing counts;
 it adds no saved state.
+
+The interactive combat-log-history product supplies the retained ledger to the existing casualties, equipment-losses and land-battles views. It keeps native history identities separate from replay episodes and resolves equipment and template labels through recorded naming operands and content. Empty months remain entries.
+The request uses the shared dated country filter, including every manual pick
+and smart-group or faction membership. Retained groups, months, manpower,
+templates, battles and active/terminal observers have independent named source
+availability. Expandable detail tables retain side countries, leaders, air
+factors and pool gates, all observer counters, leader hours, attribution,
+activity templates, division damage, equipment and aggregate losses.
+Equipment labels reuse the shared supplying-read lookup and frame cache, with
+the naming read's country and lexical operands on carried hours. Like battle
+rankings, observer filters retain unknown participants; an empty native country
+list is shown as unknown, and an absent terminal side stays absent.

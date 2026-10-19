@@ -217,6 +217,7 @@ pub fn payload(family: u8, bytes: &[u8]) -> Result<MapEventPayload, &'static str
                 key,
             })
         }
+        Family::ScriptedMapRefresh => MapEventPayload::ScriptedMapRefresh(input.u32()?),
         Family::BuildingDamage => MapEventPayload::BuildingDamage(MapEventBuildingDamage {
             building_type: input.u32()?,
             province: input.u32()?,

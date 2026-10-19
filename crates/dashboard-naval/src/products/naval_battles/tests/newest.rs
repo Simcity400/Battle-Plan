@@ -15,8 +15,8 @@ use std::{io::Read, ops::RangeInclusive};
 struct At {
     /// The open combats, each in the province of its id.
     combats: Vec<u64>,
-    /// The retained results, by id and result hour.
-    results: Vec<(u64, i32)>,
+    /// The retained results, by id, result hour and province.
+    results: Vec<(u64, i32, u32)>,
     sources: Vec<NavalResultSourceRow>,
     /// The battle census is not recorded.
     unread: bool,
@@ -58,9 +58,9 @@ fn hour_frame(hour: i32, at: At) -> DecodedFrame {
     *f.tables[TableId::NavalResults.index()] = complete(TableRows::NavalResults(
         at.results
             .iter()
-            .map(|&(id, result_hour)| NavalResultRow {
+            .map(|&(id, result_hour, province)| NavalResultRow {
                 id,
-                province: id as u32,
+                province,
                 result_hour,
                 winning_side: 1,
                 losing_side: 2,
@@ -254,7 +254,7 @@ fn newest_window_reaches_open_combats_and_retained_results() {
             at.sources.push(link(1, hour, 9, 10));
         }
         if hour >= 107 {
-            at.results.push((10, 107));
+            at.results.push((10, 107, 9));
         }
         // Combat 2 is open across the last block's first hour; its source
         // at 118 creates result 20.
@@ -265,7 +265,7 @@ fn newest_window_reaches_open_combats_and_retained_results() {
             at.sources.push(link(2, hour, 2, 20));
         }
         if hour >= 118 {
-            at.results.push((20, 118));
+            at.results.push((20, 118, 2));
         }
         at
     };
@@ -338,7 +338,7 @@ fn newest_window_proves_its_sources_against_every_earlier_source() {
             at.sources.push(link(5, hour, 3, 30));
         }
         if (102..=103).contains(&hour) {
-            at.results.push((30, 102));
+            at.results.push((30, 102, 30));
         }
         if (109..=110).contains(&hour) {
             at.combats.push(4);
@@ -347,7 +347,7 @@ fn newest_window_proves_its_sources_against_every_earlier_source() {
             at.sources.push(link(4, hour, 4, 31));
         }
         if hour >= 110 {
-            at.results.push((31, 110));
+            at.results.push((31, 110, 31));
         }
         at
     };
@@ -382,7 +382,7 @@ fn newest_window_proves_its_sources_against_every_earlier_source() {
 fn newest_window_places_results_by_every_recorded_hour() {
     let at = |hour: i32| At {
         results: if hour >= 106 {
-            vec![(40, 101)]
+            vec![(40, 101, 40)]
         } else {
             Vec::new()
         },
@@ -523,7 +523,7 @@ fn newest_window_look_back_stops_at_the_branch_start() {
     let at = |hour: i32| At {
         combats: vec![7],
         results: if hour >= 101 {
-            vec![(70, 101)]
+            vec![(70, 101, 70)]
         } else {
             Vec::new()
         },
@@ -567,10 +567,10 @@ fn newest_window_earlier_facts_read_in_parallel_equal_reading_them_in_order() {
             at.combats.push(2);
         }
         if hour >= 102 {
-            at.results.push((10, 102));
+            at.results.push((10, 102, 10));
         }
         if hour >= 117 {
-            at.results.push((11, 117));
+            at.results.push((11, 117, 11));
         }
         if hour == 102 {
             at.sources.push(link(1, hour, 3, 10));
@@ -617,7 +617,7 @@ fn newest_window_reopens_combats_after_a_gap_inside_an_earlier_block() {
     let at = |hour: i32| At {
         combats: vec![1],
         results: if hour == 104 {
-            vec![(9, 104)]
+            vec![(9, 104, 9)]
         } else {
             Vec::new()
         },

@@ -25,7 +25,7 @@
 //! fall on one side of a
 //! capture's take. The handler never handles an exception.
 use crate::{
-    hook::Hook,
+    hook::{Hook, Tap},
     watch_registry::{Notification, WatchRegistry},
 };
 use engine_mutations::{
@@ -55,8 +55,11 @@ static READS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
     "carried ScriptVariables rows differ from a fresh read",
 ]);
-/// Stores the latest complete capture walked, for off-thread sizing.
+/// Ordinary scopes from live sizing and the latest complete capture.
 static SCOPES: AtomicUsize = AtomicUsize::new(0);
+/// MIO stores, disjoint from the ordinary and faction store censuses.
+static EMBEDDED_SCOPES: AtomicUsize = AtomicUsize::new(0);
+static FACTION_SCOPES: AtomicUsize = AtomicUsize::new(0);
 
 /// One observation domain: the watched stores, the structure token and each
 /// writer site's calls.
@@ -96,6 +99,19 @@ impl Default for Watches {
 }
 
 impl Watches {
+    /// Non-consuming ownership for embedded stores outside ScriptVariables.
+    /// Taking the ordinary dirty stream never changes these certificates.
+    pub fn embedded_quiet(&self) -> Option<(u64, u64, u64)> {
+        let structure = self.structure.load(Ordering::SeqCst);
+        let (epoch, sequence) = self.registry.quiet()?;
+        (structure == self.structure.load(Ordering::SeqCst)).then_some((epoch, sequence, structure))
+    }
+
+    pub fn embedded_sequence(&self, store: usize) -> Option<(u64, u64, u64)> {
+        let structure = self.structure.load(Ordering::SeqCst);
+        let (epoch, sequence) = self.registry.sequence(store)?;
+        (structure == self.structure.load(Ordering::SeqCst)).then_some((epoch, sequence, structure))
+    }
     pub const fn new() -> Self {
         Self {
             registry: WatchRegistry::marking(),
@@ -134,6 +150,7 @@ impl Watches {
     pub fn exception(&self) {
         self.exceptions.fetch_add(1, Ordering::Relaxed);
         self.structure.fetch_add(1, Ordering::SeqCst);
+        collector_observers::project_variable_changes::invalidate();
     }
 
     /// Hook path, allocation-free: a context end of `site` whose context did
@@ -142,6 +159,12 @@ impl Watches {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.unread_contexts.fetch_add(1, Ordering::Relaxed);
         self.registry.notify_every()
+    }
+
+    fn embedded_certificate(&self, store: usize) -> Option<(u64, u64, u64)> {
+        let structure = self.structure.load(Ordering::SeqCst);
+        let ((epoch, sequence), _) = self.registry.register(store)?;
+        (self.structure.load(Ordering::SeqCst) == structure).then_some((epoch, sequence, structure))
     }
 
     fn take_marks(&self, visit: &mut dyn FnMut(usize)) -> Option<Taken> {
@@ -248,6 +271,18 @@ impl Changes for Watches {
 
 /// The hooks' domain.
 pub struct Observer;
+impl Observer {
+    pub fn embedded_quiet(&self) -> Option<(u64, u64, u64)> {
+        WATCHES.embedded_quiet()
+    }
+    pub fn embedded_sequence(&self, store: usize) -> Option<(u64, u64, u64)> {
+        WATCHES.embedded_sequence(store)
+    }
+    /// Faction ownership, supplied by the existing faction census.
+    pub fn demand_embedded(&self, count: usize) {
+        FACTION_SCOPES.fetch_max(count, Ordering::Relaxed);
+    }
+}
 impl Changes for Observer {
     fn register(&self, store: usize) -> Option<((u64, u64), bool)> {
         WATCHES.register(store)
@@ -265,6 +300,12 @@ impl Changes for Observer {
         WATCHES.mismatch();
         crate::roster_changes::mismatch();
     }
+}
+
+/// A non-consuming store certificate for embedded MIO stores. The exception/
+/// release structure word also certifies seed changes during unwinding.
+pub fn embedded_certificate(store: usize) -> Option<(u64, u64, u64)> {
+    WATCHES.embedded_certificate(store)
 }
 
 /// Whether captures read every carryable store afresh and compare, rather
@@ -329,6 +370,7 @@ unsafe extern "system" fn vectored(pointers: *mut ExceptionPointers) -> i32 {
     .map(|record| record.code);
     if code == Some(CXX_EXCEPTION) {
         WATCHES.exception();
+        collector_observers::market_changes::variables_uncertified();
     }
     HANDLING.fetch_sub(1, Ordering::SeqCst);
     EXCEPTION_CONTINUE_SEARCH
@@ -374,13 +416,38 @@ pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the stores the latest capture
-/// walked. Nothing is offered before a capture walked them: a later larger
-/// table waits for an invalidating hour, while the first installs at once.
+/// Off the game thread: prepare the ordinary stores from the existing live
+/// sizing walk before the first boundary installs a watch table.
+pub fn offer_scopes(scopes: usize) {
+    SCOPES.fetch_max(scopes, Ordering::Relaxed);
+    presize();
+}
+
+/// Existing daily MIO sizing contributes its distinct embedded stores.
+pub fn offer_embedded(scopes: usize) {
+    EMBEDDED_SCOPES.fetch_max(scopes, Ordering::Relaxed);
+    presize();
+}
+
 pub fn presize() {
-    let scopes = SCOPES.load(Ordering::Relaxed);
+    presize_watches(
+        &WATCHES.registry,
+        SCOPES.load(Ordering::Relaxed),
+        EMBEDDED_SCOPES.load(Ordering::Relaxed),
+        FACTION_SCOPES.load(Ordering::Relaxed),
+    );
+}
+
+fn presize_watches(registry: &WatchRegistry, scopes: usize, embedded: usize, factions: usize) {
+    let Some(scopes) = scopes
+        .checked_add(embedded)
+        .and_then(|scopes| scopes.checked_add(factions))
+    else {
+        let _ = engine_allocation::oom();
+        return;
+    };
     if scopes != 0 {
-        WATCHES.registry.offer(scopes);
+        registry.offer(scopes);
     }
 }
 
@@ -558,8 +625,18 @@ fn locate_temporary() -> Option<usize> {
     block.checked_add(engine_mutations::script_variable_mutations::TEMPORARY_STORE)
 }
 
+static DELAYED_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+unsafe extern "system-unwind" fn delayed_pass(country: usize) -> usize {
+    type Original = unsafe extern "system-unwind" fn(usize) -> usize;
+    let original: Original =
+        unsafe { std::mem::transmute(DELAYED_ORIGINAL.load(Ordering::Acquire)) };
+    collector_observers::script_event_observer::delayed_pass(country, || unsafe {
+        original(country)
+    })
+}
 pub struct Hooks {
     hooks: Vec<Hook>,
+    taps: Vec<Tap>,
 }
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
@@ -579,7 +656,7 @@ impl Hooks {
         if cfg!(feature = "variable_changes")
             && let Some(index) = engine_native::read::<u32>(memory, base + TLS_INDEX_RVA)
             && MUTATIONS.iter().all(|(site, _, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             TLS_INDEX.store(index as usize, Ordering::Release);
@@ -611,37 +688,92 @@ impl Hooks {
                         Hook::new_call(base + site.rva, callbacks[index], site.sentinel)
                     },
                 }
-                .map_err(|_| "native hook construction failed")?;
+                .map_err(|_| site_failure(site.name))?
+                .named(site_failure(site.name));
                 if *patch == Patch::Entry {
                     ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 }
                 hooks.push(hook);
             }
         }
-        Ok(Self { hooks })
+        if cfg!(feature = "variable_changes") && hooks.is_empty() {
+            crate::hook::installation::refused(
+                crate::hook::installation::Kind::Construction,
+                None,
+                "script variable hook TLS index or native sites unavailable",
+            );
+        }
+        let site = engine_events::script_event_sites::DELAYED_PASS;
+        let mut taps = Vec::new();
+        if !hooks.is_empty() {
+            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
+                return Err(site.failure());
+            }
+            let hook = unsafe {
+                Hook::new(
+                    base + site.rva,
+                    delayed_pass as *const () as usize,
+                    site.sentinel,
+                )
+            }
+            .map_err(|_| site.failure())?
+            .named(site.failure());
+            DELAYED_ORIGINAL.store(hook.trampoline(), Ordering::Release);
+            hooks.push(hook);
+            taps = unsafe {
+                collector_observers::script_event_observer::delayed_pass_taps(memory, base)
+            }?;
+        }
+        Ok(Self { hooks, taps })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        collector_observers::project_variable_changes::enabled(false);
+        if !enabled && collector_observers::script_event_observer::active() != 0 {
+            return Ok(false);
+        }
         if !enabled {
+            collector_observers::event_feed_observer::forwarder(
+                collector_observers::event_feed_observer::Forwarder::DelayedPass,
+                false,
+            );
             WATCHES.registry.set_enabled(false);
+            collector_observers::market_changes::observe_variables(false);
             remove_handler()?;
         }
         // One census and suspension for the whole family, shared with the
         // other families in a runtime round (`hook::shared`): a thread at any
         // of its sites, or in a tap, holds every site back until the next
         // attempt.
-        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
-            .map_err(|_| "native hook state change failed")?
-        {
+        let mut family: Vec<_> = self
+            .hooks
+            .iter_mut()
+            .chain(self.taps.iter_mut().map(Tap::publication_hook))
+            .collect();
+        if !Hook::set_enabled_batch_attach(&mut family, enabled).map_err(|_| {
+            family
+                .iter()
+                .find_map(|hook| hook.snapshot_failure())
+                .unwrap_or("Script variables / delayed pass publication failed")
+        })? {
             return Ok(false);
         }
         // The exception handler is live before observation starts; without
         // it nothing is observed and every store is read afresh.
         let observing = enabled && !self.hooks.is_empty() && install_handler();
+        collector_observers::project_variable_changes::enabled(observing);
         WATCHES.registry.set_enabled(observing);
+        collector_observers::market_changes::observe_variables(observing);
+        collector_observers::event_feed_observer::forwarder(
+            collector_observers::event_feed_observer::Forwarder::DelayedPass,
+            enabled && !self.taps.is_empty(),
+        );
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
-        self.hooks.iter().flat_map(Hook::executable_ranges)
+        self.hooks
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .chain(self.taps.iter().flat_map(Tap::executable_ranges))
     }
 }
 impl Drop for Hooks {
@@ -671,7 +803,9 @@ macro_rules! callback {
             if $filter && written == temporary() {
                 return timing.original(|| unsafe { original($first, $second $(, $arg)*) });
             }
+            let _market=collector_observers::market_changes::variable_write(written);
             let _notification = WATCHES.notify(written, $site);
+            let _project = collector_observers::project_variable_changes::writing(written);
             timing.original(|| unsafe { original($first, $second $(, $arg)*) })
         }
     };
@@ -695,7 +829,9 @@ unsafe extern "system" fn release_variables(table: usize, unused: usize) -> usiz
     let written = store(MUTATIONS[RELEASE].1, table, unused);
     let original: unsafe extern "system" fn(usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[RELEASE].load(Ordering::Acquire)) };
+    let _market = collector_observers::market_changes::variable_write(written);
     let _released = WATCHES.release(written);
+    let _project = collector_observers::project_variable_changes::writing(written);
     timing.original(|| unsafe { original(table, unused) })
 }
 
@@ -712,7 +848,9 @@ macro_rules! call_site {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::VariableChanges);
             let clear: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(CLEAR.load(Ordering::Acquire)) };
+            let _market = collector_observers::market_changes::variable_write(store_);
             let _notification = WATCHES.notify(store_, $site);
+            let _project = collector_observers::project_variable_changes::writing(store_);
             timing.original(|| unsafe { clear(store_, second, third, fourth) })
         }
     };
@@ -742,9 +880,27 @@ macro_rules! context_site {
                 unsafe { std::mem::transmute(END_CONTEXT.load(Ordering::Acquire)) };
             // SAFETY: a guarded read of the context the native call passes.
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
-            let _notification = match engine_mutations::script_variable_mutations::context_store(
-                &memory, context,
-            ) {
+            let written =
+                engine_mutations::script_variable_mutations::context_store(&memory, context);
+            let _market = match written {
+                Ok(Some(at)) => Some(collector_observers::market_changes::variable_write(at)),
+                Ok(None) => None,
+                Err(_) => {
+                    collector_observers::market_changes::variables_uncertified();
+                    None
+                }
+            };
+            let _project = match written {
+                Ok(Some(written)) => Some(collector_observers::project_variable_changes::writing(
+                    written,
+                )),
+                Ok(None) => None,
+                Err(_) => {
+                    collector_observers::project_variable_changes::invalidate();
+                    None
+                }
+            };
+            let _notification = match written {
                 Ok(Some(written)) => Some(WATCHES.notify(written, $site)),
                 Ok(None) => None,
                 Err(_) => Some(WATCHES.unread_context($site)),
@@ -772,6 +928,73 @@ context_site!(end_fire_event, 14);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_scope_and_disjoint_embedded_demands_prepare_the_first_watch_table() {
+        let watches = Watches::new();
+        // MIO sizing runs first. Ordinary scope sizing and faction ownership
+        // must contribute before the first hourly boundary, not after capture.
+        presize_watches(&watches.registry, 0, 3_000, 0);
+        presize_watches(&watches.registry, 5_000, 3_000, 1_500);
+        assert!(watches.registry.boundary(false));
+        watches.registry.set_enabled(true);
+        let status = serde_json::to_value(watches.registry.status()).unwrap();
+        assert_eq!(status["capacity"], 65_536);
+        let stores: Vec<_> = (1..=9_500).map(|index| index * 0x100).collect();
+        let certificates: Vec<_> = stores
+            .iter()
+            .map(|&store| {
+                watches
+                    .embedded_sequence(store)
+                    .expect("initial scope registered")
+            })
+            .collect();
+        let quiet = watches.embedded_quiet().unwrap();
+        // The next ordinary boundary keeps every certificate and performs no
+        // epoch reset or dirty-stream read to make room for embedded owners.
+        assert!(!watches.registry.boundary(false));
+        assert_eq!(watches.embedded_quiet(), Some(quiet));
+        for (&store, &certificate) in stores.iter().zip(&certificates) {
+            assert_eq!(watches.embedded_sequence(store), Some(certificate));
+        }
+        let changed = stores[5_000 + 3_000];
+        drop(watches.notify(changed, 0));
+        assert_ne!(
+            watches.embedded_sequence(changed),
+            Some(certificates[8_000])
+        );
+        assert_eq!(watches.embedded_sequence(stores[0]), Some(certificates[0]));
+        let mut marked = Vec::new();
+        watches.take(&mut |store| marked.push(store)).unwrap();
+        assert_eq!(marked, [changed]);
+        let status = serde_json::to_value(watches.registry.status()).unwrap();
+        assert_eq!(status["refused_registrations"], 0);
+    }
+
+    #[test]
+    fn embedded_certificates_do_not_consume_the_scope_dirty_stream_and_follow_lifetime() {
+        let watches = Watches::enabled(16);
+        let before = watches.embedded_sequence(8).unwrap();
+        let other = watches.embedded_sequence(16).unwrap();
+        drop(watches.notify(8, 0));
+        let changed = watches.embedded_sequence(8).unwrap();
+        assert_ne!(before, changed);
+        assert_eq!(other, watches.embedded_sequence(16).unwrap());
+        let mut marked = Vec::new();
+        watches.take(&mut |store| marked.push(store)).unwrap();
+        assert_eq!(marked, [8]);
+        assert_eq!(changed, watches.embedded_sequence(8).unwrap());
+        let quiet = watches.embedded_quiet().unwrap();
+        watches
+            .take(&mut |_| panic!("marks already drained"))
+            .unwrap();
+        assert_eq!(quiet, watches.embedded_quiet().unwrap());
+        drop(watches.release(16));
+        assert_ne!(changed, watches.embedded_sequence(8).unwrap());
+        let before = watches.embedded_sequence(8).unwrap();
+        watches.exception();
+        assert_ne!(before, watches.embedded_sequence(8).unwrap());
+    }
 
     /// The handler moves the hooks' structure token and counts the
     /// exception only for a C++ throw, and passes every exception on.
@@ -820,5 +1043,54 @@ mod tests {
             watches.register(8).map(|(certificate, _)| certificate),
             certificate.map(|(certificate, _)| certificate)
         );
+    }
+}
+
+#[cfg(test)]
+mod embedded_tests {
+    use super::*;
+    #[test]
+    fn embedded_certificates_do_not_consume_marks_and_cover_release_exception_and_reset() {
+        let watches = Watches::enabled(8);
+        let store = 0x1230;
+        let initial = watches.embedded_certificate(store).unwrap();
+        let writer = watches.notify(store, 0);
+        assert!(watches.embedded_certificate(store).is_none());
+        drop(writer);
+        let changed = watches.embedded_certificate(store).unwrap();
+        assert_ne!(changed, initial);
+        let mut marks = Vec::new();
+        watches.take_marks(&mut |at| marks.push(at)).unwrap();
+        assert!(marks.contains(&store));
+        assert_eq!(watches.embedded_certificate(store), Some(changed));
+        drop(watches.release(store));
+        let released = watches.embedded_certificate(store).unwrap();
+        assert_ne!(released, changed);
+        watches.exception();
+        let exception = watches.embedded_certificate(store).unwrap();
+        assert_ne!(exception, released);
+        watches.registry.boundary(true);
+        assert_ne!(watches.embedded_certificate(store), Some(exception));
+    }
+}
+
+fn site_failure(name: &str) -> &'static str {
+    match name {
+        "get_mutable_value" => "Script variables / get_mutable_value hook failed",
+        "erase_variable" => "Script variables / erase_variable hook failed",
+        "read_variables" => "Script variables / read_variables hook failed",
+        "release_variables" => "Script variables / release_variables hook failed",
+        "reset_country_variables" => "Script variables / reset_country_variables hook failed",
+        "reset_state_variables" => "Script variables / reset_state_variables hook failed",
+        "reset_global_variables" => "Script variables / reset_global_variables hook failed",
+        "end_effect_command" => "Script variables / end_effect_command hook failed",
+        "end_effect_command_run" => "Script variables / end_effect_command_run hook failed",
+        "end_effect_execute" => "Script variables / end_effect_execute hook failed",
+        "end_country_daily" => "Script variables / end_country_daily hook failed",
+        "end_delayed_events" => "Script variables / end_delayed_events hook failed",
+        "end_state_daily" => "Script variables / end_state_daily hook failed",
+        "end_scripted_window" => "Script variables / end_scripted_window hook failed",
+        "end_fire_event" => "Script variables / end_fire_event hook failed",
+        _ => "Script variables / delayed pass hook failed",
     }
 }

@@ -76,12 +76,12 @@ impl OrderPass {
         camera: Camera,
         size: [u32; 2],
         wraps: &[f32],
-        shown: impl Fn(dashboard_core::protocol::PlanKind) -> bool,
+        shown: impl Fn(&OrderDraw) -> bool,
     ) {
         self.native_plans = native::plans(&self.draws, camera, size, wraps, |draw, mode| {
             self.types
                 .get(&(draw.arrow_type.clone(), draw.texture_choice))
-                .filter(|_| shown(draw.kind))
+                .filter(|_| shown(draw))
                 .filter(|resources| resources.compiled.contains_key(&mode))
                 .map(|resources| &resources.arrow)
         });

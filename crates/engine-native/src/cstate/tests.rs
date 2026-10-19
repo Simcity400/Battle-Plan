@@ -339,6 +339,111 @@ fn both_display_names_are_copied_exactly_with_off_thread_growth() {
     ));
 }
 
+#[test]
+fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
+    let mut memory = named_states(3, &|_| (b"a".to_vec(), Vec::new()));
+    for (id, count) in [(1, 1_i32), (2, 0), (3, 7)] {
+        memory.put(
+            0x20_0000 + id * 0x1000 + CONTROLLER_GROUP_COUNT,
+            &count.to_le_bytes(),
+        );
+        memory.put(
+            0x20_0000 + id * 0x1000 + BEST_VP_INDEX,
+            &(count - 2).to_le_bytes(),
+        );
+    }
+    let mut rows = census_rows(3);
+    let mut arena = vec![0; 32];
+    let outcome = Outcome::Rows { len: 3 };
+    assert_eq!(
+        read_names_carried_scripted(
+            &memory,
+            0,
+            outcome,
+            &mut rows,
+            walk::Buffer::Fixed(&mut arena),
+            |_| None,
+            |_| (true, true)
+        )
+        .outcome,
+        outcome
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.single_controller)
+            .collect::<Vec<_>>(),
+        [Some(true), Some(false), Some(false)]
+    );
+    assert_eq!(
+        rows.iter().map(|row| row.best_vp_index).collect::<Vec<_>>(),
+        [Some(-1), Some(-2), Some(5)]
+    );
+    // No native vector payload was supplied. A quiet read carries the predicate,
+    // and does not read any native state or name at all.
+    let mut carried = census_rows(3);
+    let held = rows
+        .iter()
+        .map(|row| {
+            (
+                [
+                    &arena[row.custom_name.start..][..row.custom_name.len],
+                    &[][..],
+                ],
+                row.single_controller,
+                row.best_vp_index,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut fresh_arena = vec![0; 32];
+    let empty = MapMemory(Default::default());
+    // The roster header is read even when every state is carried.
+    let mut headers = empty;
+    for (at, byte) in &memory.0 {
+        if *at < 0x20_0000 {
+            headers.0.insert(*at, *byte);
+        }
+    }
+    assert_eq!(
+        read_names_carried_scripted(
+            &headers,
+            0,
+            outcome,
+            &mut carried,
+            walk::Buffer::Fixed(&mut fresh_arena),
+            |index| Some(held[index]),
+            |_| (true, true)
+        )
+        .outcome,
+        outcome
+    );
+    assert_eq!(carried, rows);
+    assert_eq!(fresh_arena, arena);
+    memory.0.remove(&(0x20_1000 + CONTROLLER_GROUP_COUNT));
+    assert_eq!(
+        read_names_carried_scripted(
+            &memory,
+            0,
+            outcome,
+            &mut rows,
+            walk::Buffer::Fixed(&mut arena),
+            |_| None,
+            |_| (true, true)
+        )
+        .outcome,
+        outcome
+    );
+    assert_eq!(rows[0].single_controller, None);
+    // Ordinary state/name consumers demand neither scripted operand.
+    assert_eq!(
+        read_names(&memory, 0, outcome, &mut rows, &mut arena).outcome,
+        outcome
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.best_vp_index.is_none() && row.single_controller.is_none())
+    );
+}
+
 /// The cost at twice the states 1,500 countries hold (3,000 states, each
 /// with two heap names): reads per state and wall time are reported.
 #[test]
@@ -1012,7 +1117,7 @@ fn state_census_and_flags_keep_primary_read_order_without_terminal_rereads() {
             (pointer + ID, 4),
             (pointer + OWNER, 4),
             (pointer + CONTROLLER, 4),
-            (pointer + MANPOWER_AVAILABLE, 12),
+            (pointer + MANPOWER_AVAILABLE, MANPOWER_SPAN),
             (pointer + CATEGORY, 8),
         ]);
     }
@@ -1128,12 +1233,15 @@ fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
 #[test]
 fn state_population_is_read_beside_available_manpower() {
     let mut bytes = states_with_holes();
-    for (offset, available, population) in [(0x400, 6_792_i32, 363_133_i32), (0x600, -5, 0)] {
+    for (offset, available, locked, population) in
+        [(0x400, 6_792_i32, 121_i32, 363_133_i32), (0x600, -5, -7, 0)]
+    {
         put(
             &mut bytes,
             offset + MANPOWER_AVAILABLE,
             &available.to_le_bytes(),
         );
+        put(&mut bytes, offset + MANPOWER_LOCKED, &locked.to_le_bytes());
         put(&mut bytes, offset + POPULATION, &population.to_le_bytes());
     }
     let memory = SliceMemory {
@@ -1148,9 +1256,14 @@ fn state_population_is_read_beside_available_manpower() {
     assert_eq!(
         rows[..2]
             .iter()
-            .map(|row| (row.id, row.manpower_available, row.population))
+            .map(|row| (
+                row.id,
+                row.manpower_available,
+                row.manpower_locked,
+                row.population
+            ))
             .collect::<Vec<_>>(),
-        [(1, 6_792, 363_133), (3, -5, 0)]
+        [(1, 6_792, 121, 363_133), (3, -5, -7, 0)]
     );
     let mut manpower = [Manpower::default(); 2];
     read_manpower(&memory, 0, &[0x1400, 0x1600], &[1, 3], &mut manpower).unwrap();
@@ -1159,11 +1272,13 @@ fn state_population_is_read_beside_available_manpower() {
         [
             Manpower {
                 available: 6_792,
+                locked: 121,
                 population: 363_133,
                 category: 0
             },
             Manpower {
                 available: -5,
+                locked: -7,
                 population: 0,
                 category: 0
             }

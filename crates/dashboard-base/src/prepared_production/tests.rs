@@ -214,6 +214,61 @@ fn equal_variant_reads_build_and_classify_once_but_keep_each_reads_name_date() {
 }
 
 #[test]
+fn variant_mutation_between_daily_slots_updates_ordinary_and_prepared_names() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay_data::rows::{TableRows, VariantChangeRow};
+    let flag = AtomicBool::new(false);
+    let mut frame = naming_frame();
+    let format = observer_format(&frame);
+    let mut ordinary = equipment::VariantCatalogue::default();
+    let mut state = ProductionAccumulator::new(format.version(), 1, frame.hour);
+    let mut tracker = FrameChangeTracker::new();
+    ordinary.observe(format, &frame);
+    state
+        .ingest_changed(
+            format,
+            &frame,
+            Named::default(),
+            &flag,
+            &tracker.observe(&frame, format),
+        )
+        .unwrap();
+    frame.hour += 1;
+    frame.metrics.table_ns.fill(0);
+    if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+        &mut *frame.tables[TableId::VariantDefinitions.index()]
+    {
+        rows[0].display_name = b"between samples".to_vec();
+    }
+    *frame.tables[TableId::VariantChanges.index()] =
+        TableView::Complete(TableRows::VariantChanges(vec![VariantChangeRow {
+            sequence: 1,
+            hour: frame.hour,
+            variant: 1,
+            flags: Some([1, 1, 1]),
+            ..Default::default()
+        }]));
+    ordinary.observe(format, &frame);
+    state
+        .ingest_changed(
+            format,
+            &frame,
+            Named::default(),
+            &flag,
+            &tracker.observe(&frame, format),
+        )
+        .unwrap();
+    let ordinary = ordinary.versions[&1].last().unwrap();
+    let prepared = state.variants.catalogue.versions[&1].last().unwrap();
+    assert_eq!(ordinary.first_hour, frame.hour);
+    assert_eq!(ordinary, prepared);
+    assert_eq!(
+        ordinary.raw.as_ref().unwrap().display_name,
+        "between samples"
+    );
+}
+
+#[test]
 fn endpoint_events_serialize_once_for_hashing_and_publication() {
     struct Payload(std::cell::Cell<usize>);
     impl Serialize for Payload {

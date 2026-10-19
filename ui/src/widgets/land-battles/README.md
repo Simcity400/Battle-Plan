@@ -44,3 +44,5 @@ coverage. The Land battles log and biggest list retain their parity row labels.
 The shared battle view retains the prepared-prefix metadata through loss/warning
 decoding. Cold windows are pending; provisional committed pages carry the
 Approximate coverage note until complete or an exact newest proof answers them.
+
+The expandable Game's retained Combat Log section shows ordered template wins and totals, repeated native battle references, side manpower, countries, leader identities, air factors, equipment, pool gates and modifier hours. Each active or ended observer expands to its state, counters, leader hours, damage attribution, activity groups and templates, division damage, equipment and aggregate losses. It reuses the battle view's complete country-selection resolver. Native record indices stay separate from replay battle episodes. Each section names its unavailable source independently; a terminal-event gap leaves complete retained history visible. The section loads only on demand.

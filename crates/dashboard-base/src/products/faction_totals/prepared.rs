@@ -825,8 +825,26 @@ pub fn query(
                 })
                 .collect();
             let mut warnings = Vec::new();
-            if metadata.unreadable > 0 || metadata.unnamed > 0 {
-                warnings.push(format!("{} factory reads could not name a country or show its count; affected faction totals are gaps.", metadata.unreadable + metadata.unnamed));
+            let refused = if product == "series-state" {
+                let hour = value["reads"][0]["hour"]
+                    .as_i64()
+                    .and_then(|hour| i32::try_from(hour).ok())
+                    .ok_or_else(|| crate::invalid("Invalid faction reached hour"))?;
+                let mut diagnostics = Reader::new(
+                    &store,
+                    &key,
+                    format!("factories-diagnostics-{branch}"),
+                    cancelled,
+                )?;
+                diagnostics
+                    .runs(0, hour, hour)?
+                    .first()
+                    .map_or(0, |run| run.value.max(0) as usize)
+            } else {
+                metadata.unreadable + metadata.unnamed
+            };
+            if refused > 0 {
+                warnings.push(format!("{refused} factory reads could not name a country or show its count; affected faction totals are gaps."));
             }
             (
                 keys,

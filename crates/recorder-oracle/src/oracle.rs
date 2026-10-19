@@ -81,15 +81,15 @@ use recorder_oracle_weather::weather;
 #[cfg(test)]
 use self::relations::saved_country_slot;
 use self::relations::{
-    compare_country_intel, compare_factions, compare_relation_opinions, compare_relation_tuples,
-    compare_war_relations,
+    compare_country_intel, compare_faction_goals, compare_factions, compare_relation_opinions,
+    compare_relation_tuples, compare_war_relations,
 };
 
 use self::military::{
-    compare_air_wings, compare_army_orders, compare_battle_sounds, compare_division_movement,
-    compare_division_status, compare_division_template_icons, compare_division_templates,
-    compare_divisions, compare_land_combats, compare_naval_combat_sources, compare_naval_combats,
-    compare_naval_units,
+    compare_air_wings, compare_army_orders, compare_battle_sounds, compare_country_template_state,
+    compare_division_movement, compare_division_panel_stats, compare_division_status,
+    compare_division_template_icons, compare_division_templates, compare_divisions,
+    compare_land_combats, compare_naval_combat_sources, compare_naval_combats, compare_naval_units,
 };
 
 use self::core::{
@@ -177,7 +177,37 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
             session.identity.game_version
         )));
     }
-    let save = parse_country_emissions(&save_document, &frame)?;
+    let mut save = parse_country_emissions(&save_document, &frame)?;
+    if frame
+        .complete::<tables::NavalMissionTaskForces>()?
+        .iter()
+        .any(|row| row.raiding_spotting.is_some() || row.raiding_region.is_some())
+    {
+        let lexical = frame.complete::<tables::LexicalTokens>()?;
+        let mut keys = [b"".as_slice(); 2];
+        for (key, token) in keys.iter_mut().zip([
+            engine_native::naval_mission_inputs::RAID_SPOTTING_SAVE_TOKEN,
+            engine_native::naval_mission_inputs::RAID_REGION_SAVE_TOKEN,
+        ]) {
+            let mut rows = lexical.iter().filter(|row| row.token == token);
+            *key = rows
+                .next()
+                .map(|row| row.literal.as_slice())
+                .ok_or_else(|| invalid("retained raiding save token unavailable"))?;
+            if rows.next().is_some() {
+                return Err(invalid("retained raiding save token duplicated"));
+            }
+        }
+        save.naval_missions.raiding_grid = Some(match country_emission_layout(&frame) {
+            Ok(Some(layout)) => save_document.project(&layout)?.mission_raiding_grid(keys)?,
+            _ => save_document.mission_raiding_grid(keys)?,
+        });
+    }
+    recorder_oracle_naval_missions::naval_missions::bind_patrol_save_fields(
+        &frame,
+        &save_document,
+        &mut save,
+    )?;
     validate_identity(&frame, &save)?;
     let options = ResolveOptions {
         game_dir: game_dir
@@ -312,7 +342,7 @@ pub fn command(args: Vec<OsString>) -> io::Result<()> {
         naval_result_sources::compare(&replay, &frame, report)
     });
     report.attempt_table(TableId::EventFeedHistory, |report| {
-        event_feed::compare(&replay, &frame, report)
+        event_feed::compare(&replay, &frame, &save_document, report)
     });
     report.attempt_table(TableId::MapEvents, |report| {
         map_events::compare(&replay, &frame, report)
@@ -537,6 +567,45 @@ fn compare_core(
         report.attempt("factions", |report| {
             compare_factions(frame, save, &context, report)
         });
+        report.attempt("FactionGoals", |report| {
+            compare_faction_goals(frame, save, report)
+        });
+        report.attempt("FactionMinimumUpgrades", |report| {
+            relations::faction_companions::minimum_upgrades(frame, save, report)
+        });
+        report.attempt("FactionDoctrine", |report| {
+            relations::faction_companions::doctrine(frame, save, report)
+        });
+        report.attempt("FactionResearch", |report| {
+            relations::faction_companions::research(frame, save, &context, report)
+        });
+        report.attempt("FactionProjection", |report| {
+            relations::faction_pools::projection(frame, save, report)
+        });
+        report.attempt("FactionResources", |report| {
+            relations::faction_pools::resources(frame, save, report)
+        });
+        report.attempt("FactionAdvisorModifiers", |report| {
+            relations::faction_advisors::compare(frame, save, &context, report)
+        });
+        report.attempt("FactionAccounts", |report| {
+            relations::faction_accounts::compare(frame, save, &context, report)
+        });
+        report.attempt("FactionVariables", |report| {
+            relations::faction_companions::variables(frame, save, report)
+        });
+        report.attempt("FactionRules", |report| {
+            relations::faction_companions::rules(frame, save, report)
+        });
+        report.attempt("FactionPrograms", |report| {
+            relations::faction_companions::programmes(frame, save, report)
+        });
+        report.attempt("FactionUnlocks", |report| {
+            relations::faction_companions::unlocks(frame, save, report)
+        });
+        report.attempt("FactionManpower", |report| {
+            relations::faction_companions::manpower(frame, save, &context, report)
+        });
         report.attempt("FactionTheatres", |report| {
             faction_theatres::compare(frame, save, &context, report)
         });
@@ -714,6 +783,15 @@ fn compare_extended(
             report,
         )
     });
+    report.attempt("war-goal inventories", |report| {
+        recorder_oracle_wars::wargoals::compare(
+            frame,
+            save,
+            required_context("country links", &countries)?,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
     report.attempt("politics", |report| {
         politics::compare(
             frame,
@@ -733,6 +811,9 @@ fn compare_extended(
             .int32("NMilitary", "SUPPLY_GRACE")
             .map_err(|error| error.to_string())
     });
+    report.attempt_table(TableId::DivisionPanelStats, |report| {
+        compare_division_panel_stats(frame, save, report)
+    });
     report.attempt_table(TableId::DivisionStatus, |report| {
         compare_division_status(
             frame,
@@ -743,6 +824,7 @@ fn compare_extended(
             report,
         )
     });
+    military::compare_movement_operands(frame, report);
     report.attempt("movement States", |report| {
         core::compare_railway_infrastructure(
             frame,
@@ -766,9 +848,22 @@ fn compare_extended(
             frame,
             save,
             required_context("country links", &countries)?,
+            &defines.clone().and_then(|defines| {
+                defines
+                    .fixed5_array("NNavy", "AIR_MISSION_SPOTTING_FACTORS")
+                    .map_err(|error| error.to_string())
+            }),
             report,
         );
         Ok(())
+    });
+    report.attempt_table(TableId::CountryTemplateState, |report| {
+        compare_country_template_state(
+            frame,
+            save,
+            required_context("country links", &countries)?,
+            report,
+        )
     });
     report.attempt_table(TableId::DivisionTemplates, |report| {
         compare_division_templates(
@@ -840,6 +935,22 @@ fn compare_extended(
     });
     report.attempt_table(TableId::CombatLogEquipment, |report| {
         combat_log::compare(
+            frame,
+            save,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt_table(TableId::CombatLogGroups, |report| {
+        recorder_oracle_combat_log::retained::compare(
+            frame,
+            save,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
+    report.attempt_table(TableId::CombatLogObservers, |report| {
+        recorder_oracle_combat_log::observers::compare(
             frame,
             save,
             &required_context("country links", &countries)?.links,
@@ -1035,11 +1146,25 @@ fn compare_extended(
             report,
         )
     });
+    // Own-ID spellings are raw tag-array observations. CountryLinks aliases
+    // certify object identity but do not certify their raw tag spelling.
+    let occupation_tags = complete::<tables::Countries>(frame).map(|countries| {
+        let mut tags = countries
+            .iter()
+            .map(|country| (country.id, country.tag.as_slice()))
+            .collect::<BTreeMap<_, _>>();
+        if let Ok([reserved]) = complete::<tables::ReservedCountryNaming>(frame) {
+            tags.insert(0, reserved.tag.as_slice());
+        }
+        tags
+    });
+    let occupation_settings = complete::<tables::OccupationSettings>(frame).ok();
     report.attempt("construction OccupationSettings", |report| {
         construction::occupation_settings(
             complete::<tables::OccupationSettings>(frame)?,
             &save.construction,
             &required_context("country links", &countries)?.links,
+            required_context("raw occupation country tags", &occupation_tags)?,
             report,
         )
     });
@@ -1048,6 +1173,8 @@ fn compare_extended(
             complete::<tables::StateOccupationLaws>(frame)?,
             &save.construction,
             &required_context("country links", &countries)?.links,
+            occupation_settings,
+            required_context("raw occupation country tags", &occupation_tags)?,
             report,
         )
     });
@@ -1056,6 +1183,8 @@ fn compare_extended(
             complete::<tables::StateGarrisons>(frame)?,
             &save.construction,
             &required_context("country links", &countries)?.links,
+            occupation_settings,
+            required_context("raw occupation country tags", &occupation_tags)?,
             report,
         )
     });
@@ -1064,6 +1193,8 @@ fn compare_extended(
             complete::<tables::StateAssignedManpower>(frame)?,
             &save.construction,
             &required_context("country links", &countries)?.links,
+            occupation_settings,
+            required_context("raw occupation country tags", &occupation_tags)?,
             report,
         )
     });
@@ -1088,6 +1219,30 @@ fn compare_extended(
         construction::resistance(
             complete::<tables::StateResistance>(frame)?,
             &save.construction,
+            required_context("raw occupation country tags", &occupation_tags)?,
+            report,
+        )
+    });
+    report.attempt("construction map StateResistance", |report| {
+        construction::resistance_map(
+            complete::<tables::StateResistance>(frame)?,
+            &save.construction,
+            &save.states,
+            complete::<tables::States>(frame)?,
+            &required_context("country links", &countries)?
+                .links
+                .iter()
+                .map(|(&id, country)| (id, country.tag.as_slice()))
+                .collect(),
+            required_context("raw occupation country tags", &occupation_tags)?,
+            report,
+        )
+    });
+    report.attempt("construction StateResistance hover", |report| {
+        construction::resistance_hover(
+            complete::<tables::StateResistance>(frame)?,
+            &save.construction,
+            &save.intel,
             &required_context("country links", &countries)?.links,
             report,
         )
@@ -1150,6 +1305,14 @@ fn compare_extended(
             report,
         )
     });
+    report.attempt("IntelSourcePools", |report| {
+        intel::compare_sources(
+            frame,
+            save,
+            &required_context("country links", &countries)?.links,
+            report,
+        )
+    });
     report.attempt("air", |report| {
         air::compare(
             frame,
@@ -1173,6 +1336,15 @@ fn compare_extended(
         naval_history::compare(
             frame,
             &save.naval_history,
+            &required_context("country links", &countries)?.links,
+            required_context("lexical dictionary", &tokens)?,
+            report,
+        )
+    });
+    report.attempt("naval management", |report| {
+        recorder_oracle_naval_history::naval_management::compare(
+            frame,
+            save,
             &required_context("country links", &countries)?.links,
             required_context("lexical dictionary", &tokens)?,
             report,
@@ -1277,6 +1449,43 @@ fn compare_extended(
             report,
         )
     });
+    report.attempt("Air volunteer stockpile", |report| {
+        let database = required_context("verified equipment", &equipment)?;
+        let names = required_context("lexical dictionary", &tokens)?;
+        visibility::compare_volunteer_stockpile(
+            frame,
+            save,
+            required_context("country links", &countries)?,
+            &|token| {
+                let name = names
+                    .get(&token)
+                    .ok_or_else(|| invalid("volunteer archetype token is missing"))?;
+                let mut current = database.get(name).ok_or_else(|| {
+                    invalid("volunteer archetype is absent from recorded content")
+                })?;
+                let mut seen = BTreeSet::new();
+                loop {
+                    if !seen.insert(current) {
+                        return Err(invalid("volunteer archetype content cycle"));
+                    }
+                    let definition = database
+                        .equipment
+                        .get(current)
+                        .ok_or_else(|| invalid("volunteer archetype content index invalid"))?;
+                    if database.category(definition) & engine_native::cequipment_type::PLANE_MASK
+                        != 0
+                    {
+                        return Ok(true);
+                    }
+                    match definition.archetype {
+                        Some(next) if next != current => current = next,
+                        _ => return Ok(false),
+                    }
+                }
+            },
+            report,
+        )
+    });
     report.attempt("visibility", |report| {
         visibility::compare(
             frame,
@@ -1295,3 +1504,25 @@ mod reporting_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn validation_refusal_is_incomplete_even_when_publication_was_deferred() {
+    let (mut frame, _, _, _) = fixtures::fixture();
+    frame.tables[TableId::OperationCompletions.index()] = TableView::Unavailable {
+        reason: "spool validation failed: OperationCompletions: row 7 column country: missing or not recorded row field".into(),
+    }.into();
+    let mut report = Report::default();
+    report.record_tables(&frame);
+    report
+        .deferred_tables
+        .insert(TableId::OperationCompletions, "publication pending".into());
+    assert_eq!(report.unavailable_tables(), 1);
+    assert!(
+        report
+            .outcome()
+            .unwrap_err()
+            .to_string()
+            .contains("comparison incomplete")
+    );
+}

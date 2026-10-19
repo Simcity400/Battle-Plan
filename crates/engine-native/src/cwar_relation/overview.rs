@@ -12,6 +12,8 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OwnedRow {
+    /// Authenticated sources for consumers in this census; never serialized.
+    pub source: Source,
     pub owner: u32,
     /// Position in diplomacy's complete owned vector, not the filtered war list.
     pub ordinal: u32,
@@ -20,6 +22,16 @@ pub struct OwnedRow {
     pub retired: u8,
     pub first_goal_count: u32,
     pub second_goal_count: u32,
+}
+
+/// Sources authenticated by the owned-war census at this boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Source {
+    pub relation: usize,
+    pub diplomacy: usize,
+    pub owner_slot: u32,
+    pub first_slot: u32,
+    pub second_slot: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -138,6 +150,8 @@ pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand,
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct OwnerHeader {
+    generation: u64,
+    raw: u32,
     country: usize,
     diplomacy: usize,
     owned: Array,
@@ -145,10 +159,19 @@ struct OwnerHeader {
     owned_start: usize,
     owned_count: usize,
 }
+/// Country roots authenticated by the same census, including countries with
+/// no owned war occurrence (retired counterpart lists can still name them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CountrySource {
+    pub country: u32,
+    pub slot: u32,
+    pub diplomacy: usize,
+}
 /// Header fingerprints reuse discovery only. Pointer pages are still checked,
 /// and retired bytes, goal lists and every score operand are always fresh.
 /// Full refreshes and failures invalidate the retained discovery.
 pub struct DiscoveryCache {
+    generation: u64,
     headers: Vec<OwnerHeader>,
     pointers: Vec<usize>,
     types: Vec<u8>,
@@ -175,6 +198,7 @@ impl DiscoveryCache {
         use crate::allocation;
         let types = allocation::mul(relations, 4)?;
         Ok(Self {
+            generation: 0,
             headers: allocation::filled(countries, OwnerHeader::default())?,
             pointers: allocation::filled(relations, 0)?,
             types: allocation::filled(types, 0)?,
@@ -186,6 +210,17 @@ impl DiscoveryCache {
             scope: None,
             viewpoint: None,
         })
+    }
+    pub fn country_sources(&self) -> impl Iterator<Item = CountrySource> + '_ {
+        self.headers
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.country != 0 && h.generation == self.generation)
+            .map(|(slot, h)| CountrySource {
+                country: h.raw,
+                slot: slot as u32,
+                diplomacy: h.diplomacy,
+            })
     }
     pub fn viewpoint(&self) -> Result<u32, &'static str> {
         self.viewpoint
@@ -276,6 +311,7 @@ fn gather_owned_types(
 
 #[derive(Clone, Copy, Default)]
 struct Occurrence {
+    diplomacy: usize,
     owner: u32,
     ordinal: u32,
     pointer: usize,
@@ -393,6 +429,13 @@ fn copy_wars(
         output.ensure(used[0].checked_add(1).ok_or("war owned demand overflow")?)?;
         if let Some(row) = output.get_mut(used[0]) {
             *row = OwnedRow {
+                source: Source {
+                    relation: occurrence.pointer,
+                    diplomacy: occurrence.diplomacy,
+                    owner_slot: owner.canonical_slot,
+                    first_slot: first.canonical_slot,
+                    second_slot: second.canonical_slot,
+                },
                 owner: occurrence.owner,
                 ordinal: occurrence.ordinal,
                 first_country: a,
@@ -480,6 +523,7 @@ pub fn walk_cached(
         Buffer::Fixed(goals),
         Buffer::Fixed(scores),
         cache,
+        &mut |_, _| {},
     )
 }
 
@@ -501,6 +545,33 @@ pub fn walk_cached_growing(
         Buffer::Growing(goals),
         Buffer::Growing(scores),
         cache,
+        &mut |_, _| {},
+    )
+}
+
+/// The existing authenticated owner visit, lent to another capture without
+/// repeating the country or diplomacy authentication. Its errors stay with
+/// that capture; this walk keeps its independent outcome.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_cached_growing_with_owners(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<OwnedRow>,
+    goals: &mut Vec<cwar_goal::relation::Row>,
+    scores: &mut Vec<CountryRow>,
+    cache: &mut DiscoveryCache,
+    owners: &mut dyn FnMut(ccountry::Country, usize),
+) -> [Outcome; 3] {
+    walk_cached_buffer(
+        memory,
+        base,
+        state,
+        Buffer::Growing(output),
+        Buffer::Growing(goals),
+        Buffer::Growing(scores),
+        cache,
+        owners,
     )
 }
 
@@ -513,6 +584,7 @@ fn walk_cached_buffer(
     mut goals: Buffer<'_, cwar_goal::relation::Row>,
     mut scores: Buffer<'_, CountryRow>,
     cache: &mut DiscoveryCache,
+    owners: &mut dyn FnMut(ccountry::Country, usize),
 ) -> [Outcome; 3] {
     if cache.scope != Some((base, state)) {
         cache.invalidate();
@@ -523,6 +595,10 @@ fn walk_cached_buffer(
     let mut wanted = [0_usize; 3];
     let mut score_failure = None;
     let result = (|| {
+        cache.generation = cache
+            .generation
+            .checked_add(1)
+            .ok_or("war country source generation exhausted")?;
         let countries = ccountry::Reader::new(memory, base, state)?;
         if output.is_growing() {
             cache
@@ -629,6 +705,7 @@ fn walk_cached_buffer(
                 if pointer(&record[24..]) != country.pointer {
                     return Err("war overview diplomacy owner mismatch");
                 }
+                owners(country, root);
                 let owned = vectors[index];
                 if output.is_growing() {
                     let required = entry_start
@@ -640,6 +717,8 @@ fn walk_cached_buffer(
                     output.ensure(required)?;
                 }
                 let mut header = OwnerHeader {
+                    generation: cache.generation,
+                    raw: country.id,
                     country: country.pointer,
                     diplomacy: root,
                     owned,
@@ -730,6 +809,7 @@ fn walk_cached_buffer(
                         has_war = true;
                         wanted[0] += 1;
                         pending[pending_len] = Occurrence {
+                            diplomacy: root,
                             owner: country.id,
                             ordinal: ordinals[index],
                             pointer: wars[index],

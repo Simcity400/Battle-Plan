@@ -16,6 +16,7 @@ use replay_data::{rows::TableId, rows::tables};
 #[cfg(test)]
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
+mod retained;
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::{io, sync::atomic::AtomicBool};
@@ -23,6 +24,7 @@ use std::{io, sync::atomic::AtomicBool};
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Projection {
     last_sequence: Option<u64>,
+    script_state: replay_data::event_feed_rows::state::ScriptEventState,
     /// The branch's recorded event losses, as the reads each lies between.
     event_losses: Vec<(i32, i32)>,
 }
@@ -70,9 +72,26 @@ impl Projection {
                 format!("{:?} read at {}: {}; {} outstanding observations. Missing rows do not prove no event occurred.",
                     pack.coverage, pack.read_hour, failure, pack.outstanding), 1);
         }
+        for family in pack.refused_script_families() {
+            builder.sampled_unavailable("nativeScriptFamilyCoverage", family,
+                format!("{family}: interval ending at {} has unobserved native writers; missing changes and unchanged carry are unavailable.", pack.read_hour), 1);
+        }
+        let mut rosters = std::collections::BTreeMap::new();
+        self.script_state.observe_decisions(pack,|state,event|{
+            if event.script.is_some_and(|script|matches!(script.change,Some(replay_data::event_feed_rows::EventFeedScriptChange::Decision(change)) if change.operation==replay_data::event_feed_rows::decisions::Operation::Rebuild && change.container==3)){
+                rosters.insert(event.sequence,super::decision_roster::Inputs::captured(state,event,pack.coverage==EventFeedCoverage::Complete && pack.script_refusals==0));
+            }Ok(())
+        })?;
         for event in &pack.events {
             check_cancel(cancelled)?;
             self.last_sequence = Some(event.sequence);
+            // Retained membership is consumed by the script-state row API;
+            // it is not an invented fire at attachment time.
+            if event.source == EventFeedSource::ScriptState
+                && !rosters.contains_key(&event.sequence)
+            {
+                continue;
+            }
             let participants =
                 [event.actor, event.target].map(|country| tag_at(event.hour, country));
             // Every window's derived peace rows defer to the exact native end.
@@ -86,8 +105,12 @@ impl Projection {
             if event.hour < builder.feed.first || event.hour > builder.feed.last {
                 continue;
             }
-            for (role, tag) in ["actor", "target"].into_iter().zip(&participants) {
-                if tag.is_none() {
+            for ((role, tag), country) in ["actor", "target"]
+                .into_iter()
+                .zip(&participants)
+                .zip([event.actor, event.target])
+            {
+                if tag.is_none() && !(event.script.is_some() && country.reference as i32 <= 0) {
                     builder.sampled_unavailable("nativeEventCountry", "Native event country",
                         format!("The {role} of event {} at {} has no exact country-reference, ID and instance witness.",
                             event.sequence, event.hour), 1);
@@ -102,8 +125,28 @@ impl Projection {
                 EventFeedSource::Release => EventFeedKind::Released,
                 EventFeedSource::StateTransfer => EventFeedKind::StateTransferred,
                 EventFeedSource::PeaceConference => EventFeedKind::PeaceConferenceStarted,
+                EventFeedSource::ScriptEvent => EventFeedKind::ScriptEventFired,
+                EventFeedSource::NewsEvent => EventFeedKind::NewsEventFired,
+                EventFeedSource::EventOption => EventFeedKind::EventOptionSelected,
+                EventFeedSource::DecisionSelected => EventFeedKind::DecisionSelected,
+                EventFeedSource::DecisionRemoved => EventFeedKind::DecisionRemoved,
+                EventFeedSource::DecisionCancelled => EventFeedKind::DecisionCancelled,
+                EventFeedSource::DecisionTimedOut => EventFeedKind::DecisionTimedOut,
+                EventFeedSource::DecisionActivated => EventFeedKind::DecisionActivated,
+                EventFeedSource::DecisionCompleted => EventFeedKind::DecisionCompleted,
+                EventFeedSource::DecisionReenabled => EventFeedKind::DecisionReenabled,
+                EventFeedSource::DecisionRemovalEffect => EventFeedKind::DecisionRemovalEffect,
+                EventFeedSource::DecisionCancellationEffect => {
+                    EventFeedKind::DecisionCancellationEffect
+                }
+                EventFeedSource::DecisionCompletionEffect => {
+                    EventFeedKind::DecisionCompletionEffect
+                }
+                EventFeedSource::DecisionTimeoutEffect => EventFeedKind::DecisionTimeoutEffect,
+                EventFeedSource::DecisionDurationChanged => EventFeedKind::DecisionDurationChanged,
+                EventFeedSource::ScriptState => EventFeedKind::DecisionRosterRebuilt,
             };
-            let cause = match event.cause {
+            let mut cause = match event.cause {
                 Recorded::Value(cause) => {
                     let ally = cause.ally.map(|ally| tag_at(event.hour, ally));
                     if ally == Some(None) {
@@ -115,6 +158,145 @@ impl Projection {
                 }
                 Recorded::NotRecorded => None,
             };
+            let item = if let Some(script) = event.script {
+                let token = &pack.script_tokens[script.token_start as usize
+                    ..script.token_start as usize + script.token_len as usize];
+                let token = if script.token_unrecorded {
+                    builder.sampled_unavailable(
+                        "scriptEventToken",
+                        "Script content identity",
+                        format!(
+                            "Occurrence {} content token was not captured.",
+                            event.sequence
+                        ),
+                        1,
+                    );
+                    None
+                } else {
+                    match std::str::from_utf8(token) {
+                        Ok(token) if !token.is_empty() => Some(token.to_owned()),
+                        Ok(_) => script.native_event.map(|id| id.id.to_string()),
+                        Err(_) => {
+                            builder.sampled_unavailable(
+                                "scriptEventToken",
+                                "Script content identity",
+                                format!(
+                                    "Occurrence {} has a non-UTF-8 content token.",
+                                    event.sequence
+                                ),
+                                1,
+                            );
+                            None
+                        }
+                    }
+                };
+                if script.scope_unrecorded {
+                    builder.sampled_unavailable(
+                        "scriptEventScope",
+                        "Bound script scope",
+                        format!(
+                            "Occurrence {} scope graph was not fully captured.",
+                            event.sequence
+                        ),
+                        1,
+                    );
+                }
+                let words = cause.get_or_insert_with(|| EventFeedCause {
+                    how: None,
+                    within: None,
+                    conference: None,
+                    state: None,
+                    ally: None,
+                    reason: None,
+                    notes: Vec::new(),
+                });
+                if let Some(id) = script.native_event {
+                    words.notes.push(format!("Native event identity: {id}."));
+                }
+                if let Some(id) = script.instance {
+                    words.notes.push(format!("Event instance: {id}."));
+                }
+                if let Some(option) = script.option {
+                    words
+                        .notes
+                        .push(format!("Selected native option ordinal: {option}."));
+                }
+                if let Some(state) = script.lifecycle {
+                    words
+                        .notes
+                        .push(format!("Native lifecycle result: {state}."));
+                }
+                if let Some(days) = script.days {
+                    words
+                        .notes
+                        .push(format!("Native duration result: {days} days."));
+                }
+                if let Some(target) = script.country_target {
+                    words
+                        .notes
+                        .push(format!("Country target reference: {target}."));
+                }
+                if let Some(target) = script.numeric_target {
+                    words.notes.push(format!("Numeric target: {target}."));
+                }
+                for (id, scope) in pack.script_scopes[script.scope_start as usize
+                    ..script.scope_start as usize + script.scope_len as usize]
+                    .iter()
+                    .enumerate()
+                {
+                    words.notes.push(format!("Scope {id}: country reference {}; state {}; ROOT {}, FROM {}, PREV {}; random words {}, {}.",
+                        scope.country, scope.state, scope.bindings[0], scope.bindings[1], scope.bindings[2], scope.random[0], scope.random[1]));
+                    for (kind, reference) in [
+                        "character",
+                        "operation",
+                        "ace",
+                        "unit",
+                        "industrial organisation",
+                        "purchase contract",
+                        "raid",
+                        "project",
+                        "faction",
+                    ]
+                    .into_iter()
+                    .zip(scope.references)
+                    {
+                        if reference != 0 {
+                            words
+                                .notes
+                                .push(format!("Scope {id} {kind} reference: {reference}."));
+                        }
+                    }
+                    for (missing, operand) in [
+                        (scope.combat_context_unrecorded, "combat context"),
+                        (scope.target_storage_unrecorded, "saved targets"),
+                        (scope.tooltip_storage_unrecorded, "tooltip targets"),
+                    ] {
+                        if missing {
+                            builder.sampled_unavailable("scriptEventScope", "Bound script scope",
+                            format!("Occurrence {} scope {id}: {operand} operands were not captured.", event.sequence), 1);
+                        }
+                    }
+                }
+                builder.script_inputs.insert(
+                    format!("native:{}:{}", event.generation, event.sequence),
+                    {
+                        let mut inputs = super::script_effects::Inputs::captured(pack, event);
+                        inputs.roster = rosters.remove(&event.sequence);
+                        inputs
+                    },
+                );
+                // Bind presentation to this occurrence's scope/ordinal, even
+                // when several executions share one authored identity.
+                let index = u32::try_from(builder.feed.items.len())
+                    .map_err(|_| io::Error::other("Too many event-feed script items"))?;
+                builder
+                    .feed
+                    .items
+                    .push(super::plain_item(token, None, None, None));
+                Some(index)
+            } else {
+                None
+            };
             builder.feed.rows.push(EventFeedRow {
                 id: format!("native:{}:{}", event.generation, event.sequence),
                 hour: event.hour,
@@ -125,12 +307,13 @@ impl Projection {
                 kind,
                 tags: participants.iter().flatten().cloned().collect(),
                 participants: Some(participants),
-                item: None,
+                item,
                 amount: None,
                 cause,
                 strike: None,
             });
         }
+        retained::append(builder, pack, &self.script_state, &mut tag_at)?;
         Ok(())
     }
     #[cfg(test)]
@@ -158,7 +341,25 @@ impl Projection {
                     .and_then(|names| names.tag(country))
             },
             cancelled,
-        )
+        )?;
+        for event in &pack.events {
+            if let Some(inputs) = builder
+                .script_inputs
+                .get_mut(&format!("native:{}:{}", event.generation, event.sequence))
+            {
+                inputs.resolve(|country| {
+                    names
+                        .get(&event.hour)
+                        .and_then(Option::as_ref)
+                        .and_then(|names| {
+                            names
+                                .tag(country)
+                                .and_then(|_| names.slots.get(&country.reference).copied())
+                        })
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -261,6 +462,13 @@ pub(super) fn scan(
                         continue;
                     }
                     for event in &pack.events {
+                        if let Some(script) = event.script {
+                            for scope in &pack.script_scopes[script.scope_start as usize
+                                ..script.scope_start as usize + script.scope_len as usize]
+                            {
+                                wanted.entry(event.hour).or_default().insert(scope.country);
+                            }
+                        }
                         let ally = match event.cause {
                             Recorded::Value(NativeCause {
                                 ally: Some(ally), ..
@@ -343,6 +551,20 @@ pub(super) fn scan(
                 error.to_string(),
                 1,
             );
+        }
+        for event in &pack.events {
+            if let Some(inputs) = builder
+                .script_inputs
+                .get_mut(&format!("native:{}:{}", event.generation, event.sequence))
+            {
+                inputs.resolve(|country| {
+                    names.get(&event.hour).and_then(|names| {
+                        names
+                            .tag(country)
+                            .and_then(|_| names.slots.get(&country.reference).copied())
+                    })
+                });
+            }
         }
     }
     Ok(())

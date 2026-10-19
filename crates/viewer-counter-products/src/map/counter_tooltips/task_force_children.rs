@@ -667,6 +667,7 @@ mod tests {
             TableRows::FleetCounterInputs(vec![FleetCounterInputRow {
                 fleet: 10,
                 mission_region_count: 1,
+                mission_regions: (None).into(),
                 ..Default::default()
             }]),
         );
@@ -727,6 +728,7 @@ mod tests {
             TableRows::FleetCounterInputs(vec![FleetCounterInputRow {
                 fleet: 10,
                 mission_region_count: -1,
+                mission_regions: (None).into(),
                 ..Default::default()
             }]),
         );

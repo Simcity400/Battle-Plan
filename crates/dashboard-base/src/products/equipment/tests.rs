@@ -961,10 +961,12 @@ fn variant_span_advance_requires_a_full_country_comparison_at_the_next_read() {
 
 fn pending_variant_operands(count: u32) {
     use crate::prepared::frame_changes::FrameChangeTracker;
-    use replay_data::{rows::CountryAppearanceRow, rows::CountryLinkRow};
-    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
+    use replay_data::rows::{CountryAppearanceRow, CountryLinkRow};
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
     let format = replay_data::format::FormatVersion::CURRENT;
-    let mut input = named_frame(117, Some(b"mod design"));
+    // Keep the scripted skipped reads between native daily census slots.
+    let first = slot_hour(TableId::VariantDefinitions);
+    let mut input = named_frame(first, Some(b"mod design"));
     *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=count)
             .map(|id| CountryRow {
@@ -1029,7 +1031,7 @@ fn pending_variant_operands(count: u32) {
     );
     let (mut actual, mut oracle) = (VariantCatalogue::default(), VariantCatalogue::default());
     for offset in 0..=8 {
-        input.hour = 117 + offset;
+        input.hour = first + offset;
         input.metrics.table_ns.fill(0);
         if [0, 4, 6, 8].contains(&offset) {
             input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;

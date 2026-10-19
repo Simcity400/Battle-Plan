@@ -3,8 +3,8 @@
 //! definition categories only when a branch reaches them; registration order
 //! and repeated slots are retained.
 
-use installed_content_core::{province_geometry::Bounds, province_geometry::ProvinceGeometry};
-use replay_data::{rows::AirWingRow, rows::ArmyOrderPlanRow};
+use installed_content_core::province_geometry::ProvinceGeometry;
+use replay_data::rows::{AirWingRow, ArmyOrderPlanRow};
 
 /// Allocated convoys are already stored on the invasion order.
 pub(super) fn invasion(plan: &ArmyOrderPlanRow) -> Result<i32, String> {
@@ -88,172 +88,16 @@ pub(super) fn distance(map: &ProvinceGeometry, source: u32, destination: u32) ->
             [0; 2]
         }
     };
-    installed_content_core::province_geometry::native_fixed_sqrt(province_squared(
-        point(source),
-        point(destination),
-        map.width,
-    ) as u32)
+    installed_content_core::province_geometry::native_fixed_sqrt(
+        viewer_foundation::map::air_region_reach::province_squared(
+            point(source),
+            point(destination),
+            map.width,
+        ) as u32,
+    )
 }
 
-/// The template centre and rectangles. The first painted province chooses
-/// the primary cluster, separately from a state's minimum-width wrapped box.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct RegionGeometry {
-    centre: [i32; 2],
-    rectangles: [Bounds; 2],
-    count: usize,
-}
-
-/// The two base anchors use different wrapped-distance laws.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Origin {
-    State([i32; 2]),
-    Host([i32; 2]),
-}
-
-impl Origin {
-    fn point(self) -> [i32; 2] {
-        match self {
-            Self::State(point) | Self::Host(point) => point,
-        }
-    }
-}
-
-impl RegionGeometry {
-    pub(super) fn new(map: &ProvinceGeometry, provinces: &[u32]) -> Self {
-        let half = map.width / 2;
-        let mut primary = [0; 4];
-        let mut secondary = [0; 4];
-        let mut first_x = 0_i32;
-        for province in provinces {
-            // Missing or unpainted province records have no valid raster box.
-            // Invalid IDs resolve to the unpainted slot zero.
-            let Some(&bounds) = map.bounds.get(province) else {
-                continue;
-            };
-            if primary[2] == 0 {
-                primary = bounds;
-                first_x = bounds[0];
-            } else if secondary[2] == 0 && bounds[0].wrapping_sub(first_x).wrapping_abs() > half {
-                secondary = bounds;
-            } else if secondary[2] > 0 && (bounds[0] > half) != (first_x > half) {
-                grow(&mut secondary, bounds);
-            } else {
-                grow(&mut primary, bounds);
-            }
-        }
-        let mut centre = [
-            primary[0].wrapping_add(primary[2] / 2),
-            primary[1].wrapping_add(primary[3] / 2),
-        ];
-        let count = if secondary[2] > 0 {
-            let right_x = if first_x > half {
-                primary[0]
-            } else {
-                secondary[0]
-            };
-            centre[0] = (primary[2].wrapping_add(secondary[2]) / 2)
-                .wrapping_sub(map.width)
-                .wrapping_add(right_x);
-            2
-        } else {
-            1
-        };
-        Self {
-            centre,
-            rectangles: [primary, secondary],
-            count,
-        }
-    }
-
-    /// Preserve the nonconservative centre prefilter and split-box y intersection
-    /// before testing provinces. `origin` is the state bounding centre or the host
-    /// ship's task-force province position, selected by the source-base law.
-    pub(super) fn reaches(
-        &self,
-        map: &ProvinceGeometry,
-        provinces: &[u32],
-        origin: Origin,
-        range: i64,
-    ) -> bool {
-        let pixels = (range / 100_000) as i32;
-        let squared_range = pixels.wrapping_mul(pixels);
-        let mut widths = 0_i32;
-        let mut bottom = 0_i32;
-        let mut top = map.height;
-        for &[_, y, width, height] in &self.rectangles[..self.count] {
-            widths = widths.wrapping_add(width);
-            bottom = bottom.max(y);
-            top = top.min(y.wrapping_add(height));
-        }
-        let height = top.wrapping_sub(bottom);
-        if height <= 0 {
-            return false;
-        }
-        let half_height = height / 2;
-        let half_width = widths / 2;
-        let bound = squared_range
-            .wrapping_add(half_width.wrapping_mul(half_width))
-            .wrapping_add(half_height.wrapping_mul(half_height));
-        if wrapped_squared(origin.point(), self.centre, map.width) > bound {
-            return false;
-        }
-        provinces.iter().any(|id| {
-            // Province lookup uses slot zero for invalid IDs, with centroid at the
-            // origin. Unpainted valid records likewise keep zero content coordinates.
-            let point = map.centroids.get(id).copied().unwrap_or([0; 2]);
-            let distance = match origin {
-                Origin::State(origin) => wrapped_squared(point, origin, map.width),
-                Origin::Host(origin) => province_squared(point, origin, map.width),
-            };
-            distance <= squared_range
-        })
-    }
-}
-
-fn grow(rectangle: &mut Bounds, [x, y, width, height]: Bounds) {
-    if x < rectangle[0] {
-        rectangle[2] = rectangle[2].wrapping_add(rectangle[0].wrapping_sub(x));
-        rectangle[0] = x;
-    }
-    if rectangle[0].wrapping_add(rectangle[2]) < x.wrapping_add(width) {
-        rectangle[2] = width.wrapping_sub(rectangle[0]).wrapping_add(x);
-    }
-    if y < rectangle[1] {
-        rectangle[3] = rectangle[3].wrapping_add(rectangle[1].wrapping_sub(y));
-        rectangle[1] = y;
-    }
-    if rectangle[1].wrapping_add(rectangle[3]) < y.wrapping_add(height) {
-        rectangle[3] = height.wrapping_add(y).wrapping_sub(rectangle[1]);
-    }
-}
-
-/// Wrap once with strict half-width ties. Distance arithmetic uses signed
-/// i32, including overflow in the squared sum.
-fn wrapped_squared(from: [i32; 2], to: [i32; 2], width: i32) -> i32 {
-    let mut dx = from[0].wrapping_sub(to[0]);
-    let dy = from[1].wrapping_sub(to[1]);
-    if dx > width / 2 {
-        dx = dx.wrapping_sub(width);
-    } else if dx < -(width / 2) {
-        dx = dx.wrapping_add(width);
-    }
-    dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy))
-}
-
-/// Hosted per-province reach uses an absolute-delta law that differs from
-/// ordinary region reach at i32::MIN. Preserve that overflow case.
-fn province_squared(from: [i32; 2], to: [i32; 2], width: i32) -> i32 {
-    let delta = from[0].wrapping_sub(to[0]);
-    let absolute = delta.wrapping_abs();
-    let dx = if absolute > width / 2 {
-        width.wrapping_sub(absolute)
-    } else {
-        delta
-    };
-    let dy = from[1].wrapping_sub(to[1]);
-    dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy))
-}
+pub(super) use viewer_foundation::map::air_region_reach::{Origin, RegionGeometry};
 
 #[cfg(test)]
 mod tests;

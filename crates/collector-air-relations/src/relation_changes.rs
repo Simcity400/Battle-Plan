@@ -135,7 +135,7 @@ impl Hooks {
                 remove as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
                     return Err("relation hook sentinel differs");
                 }
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -215,6 +215,11 @@ unsafe extern "system" fn reset(diplomacy: usize, retain: u8, rebuild: u8, keep:
         0,
     );
     let _wars = crate::war_changes::forwarded(crate::war_changes::Site::DiplomacyReset);
+    let _participation = crate::war_changes::participation_change(
+        crate::war_changes::Site::DiplomacyReset,
+        diplomacy,
+        diplomacy,
+    );
     let original: unsafe extern "system" fn(usize, u8, u8, usize) =
         unsafe { std::mem::transmute(ORIGINAL[1].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(diplomacy, retain, rebuild, keep) })

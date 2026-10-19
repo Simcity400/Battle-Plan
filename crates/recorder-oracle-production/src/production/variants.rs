@@ -1,5 +1,19 @@
 use super::*;
 
+pub(super) fn author_live(
+    frame: &replay_frame::frame::DecodedFrame,
+    handle: u64,
+) -> std::io::Result<bool> {
+    if handle == 0 {
+        return Ok(false);
+    }
+    complete::<tables::DesignOrganisationLiveness>(frame)?
+        .iter()
+        .find(|row| row.organisation == handle)
+        .map(|row| row.live)
+        .ok_or_else(|| invalid(format!("design author {handle} liveness is not recorded")))
+}
+
 pub(super) fn compare_variants(
     frame: &DecodedFrame,
     saved: &production::Pack,
@@ -36,7 +50,8 @@ pub(super) fn compare_variants(
         compare_variant_upgrades(frame, saved, tokens, report)
     });
     complete &= report.attempt("VariantStats", |report| {
-        compare_variant_stats(frame, saved, report)
+        compare_variant_stats(frame, saved, report)?;
+        mios::compare_designs(frame, saved, tokens, report)
     });
     report.limitation("the variant writer does not serialize the classifier_flags or mission_mask caches; their captured native operands have no direct save comparison", "VariantDefinitions.classifier_flags, VariantDefinitions.mission_mask");
     report.limitation("native boolean serialization maps every nonzero byte to yes; text flags cannot certify raw byte values beyond truthiness", "VariantDefinitions.append_variant_name, VariantDefinitions.obsolete, VariantDefinitions.icon_active, VariantModules.definition_active");
@@ -178,6 +193,25 @@ fn compare_variant_definitions(
                 (version != 0).then_some(version),
                 expected.version,
             );
+        }
+        if let Some(design) = report.recorded(
+            &actual.design,
+            "VariantDefinitions.design",
+            format!("{label}.design"),
+        ) {
+            compare_design_state(
+                frame,
+                design,
+                match actual.version {
+                    replay_data::rows::Recorded::Value(v) => Some(v),
+                    _ => None,
+                },
+                &expected.design,
+                expected.organisation_marker,
+                &label,
+                tokens,
+                report,
+            )?;
         }
         // The writer omits an unset explicit model; presence compares too.
         name_field(
@@ -399,7 +433,7 @@ fn compare_variant_stats(
         }
     }
     report.compared("VariantStats", 0);
-    report.limitation("the variant writer does not serialize the ten native stat caches; saved definitions are not recomputed or substituted for speed, range, air attack, agility, maximum speed, reliability, air defense, thrust, fuel or build cost", format!("VariantStats: {} decoded rows, zero save comparisons", stats.len()));
+    report.limitation("the variant writer does not serialize the native stat sheet or mission-specific caches; the save comparison does not substitute recomputed values for native runtime results", format!("VariantStats: {} decoded rows, zero save comparisons", stats.len()));
     if census_matches {
         Ok(())
     } else {
@@ -407,4 +441,178 @@ fn compare_variant_stats(
             "variant stats and complete save registry censuses differ",
         ))
     }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Compare the independent recorded version, saved design and marker with their existing join context."
+)]
+fn compare_design_state(
+    frame: &DecodedFrame,
+    actual: &replay_data::rows::VariantDesignState,
+    version: Option<u8>,
+    expected: &production::DesignState,
+    marker: Option<i32>,
+    label: &str,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    equal(
+        report,
+        format!("{label}.parent_id"),
+        actual.parent,
+        expected.parent,
+    );
+    equal(
+        report,
+        format!("{label}.max_version"),
+        (version == Some(0)).then_some(actual.max_version),
+        expected.max_version,
+    );
+    equal(
+        report,
+        format!("{label}.is_frame"),
+        Some(actual.is_frame != 0),
+        expected.is_frame,
+    );
+    for (field, value, saved) in [
+        (
+            "auto_upgraded",
+            actual.auto_upgraded,
+            expected.auto_upgraded,
+        ),
+        ("highlight", actual.highlight, expected.highlight),
+        (
+            "can_upgrade_type",
+            actual.can_upgrade_type,
+            expected.can_upgrade_type,
+        ),
+        (
+            "can_upgrade_variant",
+            actual.can_upgrade_variant,
+            expected.can_upgrade_variant,
+        ),
+        (
+            "can_upgrade_modules",
+            actual.can_upgrade_modules,
+            expected.can_upgrade_modules,
+        ),
+    ] {
+        equal(
+            report,
+            format!("{label}.{field}"),
+            (value != 0).then_some(true),
+            saved,
+        );
+    }
+    equal(
+        report,
+        format!("{label}.manpower"),
+        (actual.manpower > 0).then_some(actual.manpower),
+        expected.manpower,
+    );
+    equal(
+        report,
+        format!("{label}.role_icon_index"),
+        (actual.role_icon_index > 0).then_some(actual.role_icon_index),
+        expected.role_icon_index,
+    );
+    equal(
+        report,
+        format!("{label}.division_names_group"),
+        actual
+            .division_names_group
+            .as_deref()
+            .map(|text| text.split(|byte| *byte == 0).next().unwrap_or_default()),
+        expected.division_names_group.as_deref(),
+    );
+    equal(
+        report,
+        format!("{label}.named_equipment_bonuses"),
+        (!actual.named_bonuses.is_empty()).then_some(actual.named_bonuses.as_slice()),
+        expected.named_bonuses.as_deref(),
+    );
+    equal(
+        report,
+        format!("{label}.number_of_design_team_traits"),
+        (actual.design_team_traits != 0).then_some(actual.design_team_traits),
+        marker,
+    );
+    let mut ideas = Vec::new();
+    let snapshots = if actual.bonus_sources.is_empty() {
+        &[][..]
+    } else {
+        complete::<tables::VariantBonusSnapshots>(frame)?
+    };
+    for id in &actual.bonus_sources {
+        let source = &snapshots[snapshots
+            .binary_search_by_key(id, |row| row.id)
+            .map_err(|_| invalid("design bonus snapshot reference missing"))?]
+        .source;
+        if let Some(token) = source.idea_token
+            && !ideas.contains(&token)
+        {
+            ideas.push(token);
+        }
+    }
+    equal(
+        report,
+        format!("{label}.ideas.present"),
+        !actual.bonus_sources.is_empty(),
+        expected.ideas.is_some(),
+    );
+    let saved_ideas = expected.ideas.as_deref().unwrap_or_default();
+    equal(
+        report,
+        format!("{label}.ideas.count"),
+        ideas.len(),
+        saved_ideas.len(),
+    );
+    for (index, (actual, expected)) in ideas.into_iter().zip(saved_ideas).enumerate() {
+        compare_token(
+            tokens,
+            actual,
+            expected,
+            &format!("{label}.ideas[{index}]"),
+            TokenWriter::Token,
+            report,
+        )?;
+    }
+    equal(
+        report,
+        format!("{label}.design_team"),
+        author_live(frame, actual.design_team)?.then_some(actual.design_team),
+        expected.design_team,
+    );
+    equal(
+        report,
+        format!("{label}.design_team_bonus.present"),
+        !actual.design_team_bonus.is_empty(),
+        expected.design_team_bonus.is_some(),
+    );
+    let saved = expected.design_team_bonus.as_deref().unwrap_or_default();
+    equal(
+        report,
+        format!("{label}.design_team_bonus.count"),
+        actual.design_team_bonus.len(),
+        saved.len(),
+    );
+    for (index, (actual, (name, amount))) in actual.design_team_bonus.iter().zip(saved).enumerate()
+    {
+        compare_token(
+            tokens,
+            actual.index,
+            name,
+            &format!("{label}.design_team_bonus[{index}].name"),
+            TokenWriter::Token,
+            report,
+        )?;
+        equal(
+            report,
+            format!("{label}.design_team_bonus[{index}].value"),
+            actual.value,
+            amount.raw,
+        );
+    }
+    Ok(())
 }

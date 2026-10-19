@@ -1,4 +1,4 @@
-//! Private codec/history/seek fixtures; all remain unrun.
+//! Private codec/history/seek fixtures.
 use super::*;
 use crate::value::Value;
 use crate::{
@@ -100,12 +100,35 @@ fn historical_prefix_preserves_every_format99_icon_field() {
         row.formation_division_count
     );
     assert_eq!(decoded.display_name, Recorded::NotRecorded);
+    assert_eq!(decoded.grids, Recorded::NotRecorded);
+    assert_eq!(decoded.base_width, Recorded::NotRecorded);
     let absent = DivisionTemplateIconRow::NAMES
         .iter()
         .enumerate()
         .skip(14)
         .fold(0_u64, |mask, (field, _)| mask | (1_u64 << field));
     assert_eq!(decoded.not_recorded_fields(), absent);
+}
+
+#[test]
+fn current_template_icon_name_layout_and_settings_round_trip_independently() {
+    let mut row = icon(TemplateNameValue::SameAsDivisionTemplates);
+    row.layout = Recorded::Value(Some(crate::rows::TemplateLayout::default().into()));
+    row.settings = Recorded::Value(Some(
+        crate::rows::TemplateSettings {
+            priority: -7,
+            forbidden_equipment: Some(vec![19, 23]),
+            ..Default::default()
+        }
+        .into(),
+    ));
+    let mut bytes = Vec::new();
+    row.encode_fields(&mut bytes).unwrap();
+    let mut decoder = Decoder::new(&bytes);
+    let decoded = DivisionTemplateIconRow::decode_fields(row.key(), &mut decoder).unwrap();
+    decoder.finish().unwrap();
+    assert_eq!(decoded, row);
+    assert_eq!(decoded.not_recorded_fields(), 0);
 }
 
 #[test]

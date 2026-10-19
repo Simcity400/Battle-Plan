@@ -1,6 +1,50 @@
-//! Grouped-table decode work on the calling thread, for consumer tests.
-use super::{BlockIndex, TableId};
-use std::cell::RefCell;
+//! Synthetic recording fixtures and grouped-table decode work for consumer tests.
+use super::{BlockIndex, Replay, TableId};
+use crate::frame::{Frame, FrameDecoder};
+use std::{cell::RefCell, io};
+
+/// Write a synthetic one-block recording with the supplied frames. The ordinary
+/// current block writer preserves grammar and checksums without admitting the
+/// campaign identities, so consumers can exercise a malformed intermediate hour.
+pub fn with_block_frames(replay: &Replay, frames: &[Frame]) -> io::Result<Replay> {
+    if replay.index.len() != 1 {
+        return Err(super::invalid("fixture requires a one-block recording"));
+    }
+    let first = frames
+        .first()
+        .ok_or_else(|| super::invalid("fixture requires at least one frame"))?;
+    let cores = super::pack::Cores::new(1);
+    let mut block = super::grouped::BlockWriter::new(first);
+    let mut anchors = super::grouped::Anchors::default();
+    let mut decoder = FrameDecoder::new();
+    for frame in frames {
+        let decoded = decoder.advance(frame)?;
+        let mut payload = Vec::new();
+        let sizes = frame.encode_with_sizes(&mut payload)?;
+        block.push(
+            frame,
+            decoded,
+            &payload,
+            &sizes,
+            &mut anchors,
+            super::MAX_BLOCK_RAW_BYTES,
+            &cores,
+        )?;
+    }
+    let mut bytes = replay.bytes[..replay.header_end].to_vec();
+    let mut index = Vec::new();
+    super::append_blocks(&mut bytes, &mut index, &[block.compress(&cores)?])?;
+    super::finish_file(
+        &mut bytes,
+        &replay.sessions,
+        &replay.branches,
+        &replay.gaps,
+        &replay.controls,
+        &replay.recovery_notes,
+        &index,
+    )?;
+    Replay::open(bytes)
+}
 
 type Decodes = Vec<(u64, i32, TableId, usize)>;
 

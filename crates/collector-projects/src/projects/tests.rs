@@ -12,7 +12,10 @@ fn projects_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_
     job.capacity_charge = Charge::empty_on(&LOCAL);
     job.update_capacity_charge();
     let expected = |job: &ProjectsJob| {
-        vector_bytes(&job.census) + vector_bytes(&job.statuses) + vector_bytes(&job.pointers)
+        vector_bytes(&job.census)
+            + vector_bytes(&job.statuses)
+            + vector_bytes(&job.pointers)
+            + vector_bytes(&job.assignment_references)
     };
     let initial = LOCAL.snapshot().current.auxiliary_vectors;
     assert_eq!(initial, expected(&job));
@@ -219,6 +222,7 @@ fn conversion_preserves_native_keys_fixed_values_presence_and_literal_building_b
     captured.names.required = 4;
     captured.projects.outcome = Outcome::Rows { len: 1 };
     captured.projects.rows[0] = nproject_cproject::Row {
+        source_pointer: 0,
         owner: u32::MAX,
         local_id: u32::MAX,
         definition_id: u32::MAX,
@@ -645,6 +649,7 @@ fn copy_fixture_program(log: &mut RawLog<2>, memory: &ProgramSource<'_>) -> bool
         memory,
         kit::BASE,
         ProjectCensus {
+            game_state: kit::GAME_STATE,
             links: &links,
             countries: &COUNTRIES,
             vtable: 0,
@@ -657,6 +662,7 @@ fn copy_fixture_program(log: &mut RawLog<2>, memory: &ProgramSource<'_>) -> bool
             }],
         },
         memory.pointer,
+        &mut Vec::with_capacity(1),
     )
 }
 
@@ -678,6 +684,16 @@ fn program_script(bytes: &[u8], pointer: usize) -> Vec<(Option<usize>, usize)> {
         (Some(heap + text_len), 1),
         (Some(heap), text_len),
         (Some(program_links(bytes).data + 4), 4),
+        (
+            at(nproject_cprogram::SCIENTIST_REFERENCE_TYPE + nproject_cprogram::ASSIGNMENT_TIMER),
+            8,
+        ),
+        (
+            at(nproject_cprogram::SCIENTIST_REFERENCE_TYPE + nproject_cprogram::ASSIGNMENT_TIMED),
+            1,
+        ),
+        (at(nproject_cprogram::SUPPORTING_SCIENTISTS), 16),
+        (at(0x48), 8),
     ]
 }
 
@@ -686,9 +702,30 @@ fn scalar_program_script(
     memory: &ProgramSource<'_>,
     script: &[(Option<usize>, usize)],
 ) -> bool {
-    script
+    let child = script
+        .iter()
+        .position(|&(address, _)| {
+            address
+                .and_then(|address| address.checked_sub(memory.pointer))
+                .is_some_and(|offset| {
+                    offset
+                        == nproject_cprogram::SCIENTIST_REFERENCE_TYPE
+                            + nproject_cprogram::ASSIGNMENT_TIMER
+                        || offset == nproject_cprogram::SUPPORTING_SCIENTISTS
+                })
+        })
+        .unwrap_or(script.len());
+    if !script[..child]
         .iter()
         .all(|&(address, len)| span(log, memory, address, len, M_PROGRAMS).is_some())
+    {
+        return false;
+    }
+    // A refused assignment child leaves its independently authenticated program.
+    let _ = script[child..]
+        .iter()
+        .all(|&(address, len)| span(log, memory, address, len, M_PROGRAMS).is_some());
+    true
 }
 
 fn dirty_program_log(span_capacity: usize, byte_capacity: usize) -> RawLog<2> {
@@ -750,7 +787,7 @@ fn program_body_batch_matches_scalar_at_every_fault_and_partial_byte() {
                     61
                 );
                 assert!(actual.spans.iter().all(|span| span.mask == M_PROGRAMS));
-                assert_eq!(actual.raw_bytes, [105, 0]);
+                assert_eq!(actual.raw_bytes, [138, 0]);
             }
         }
     }
@@ -761,8 +798,8 @@ fn program_body_batch_preserves_every_capacity_prefix_and_growth() {
     let bytes = projects_test_kit::fixture();
     let pointer = projects_test_kit::GAME_STATE + projects_test_kit::PROG1;
     let script = program_script(&bytes, pointer);
-    for span_capacity in 0..=11 {
-        for byte_capacity in 0..=106 {
+    for span_capacity in 0..=14 {
+        for byte_capacity in 0..=131 {
             let source = ProgramSource::new(&bytes);
             let reference = ProgramSource::new(&bytes);
             let mut actual = dirty_program_log(span_capacity, byte_capacity);
@@ -945,6 +982,7 @@ fn program_body_batch_keeps_identity_owner_presence_and_string_gates() {
         &source,
         usize::MAX,
         ProjectCensus {
+            game_state: kit::GAME_STATE,
             links: &links,
             countries: &COUNTRIES,
             vtable: 0,
@@ -952,6 +990,7 @@ fn program_body_batch_keeps_identity_owner_presence_and_string_gates() {
             census: &[]
         },
         pointer,
+        &mut Vec::with_capacity(1),
     ));
     assert!(source.calls.borrow().is_empty());
     assert!(source.scatters.borrow().is_empty());
@@ -964,8 +1003,8 @@ fn program_body_batch_preserves_duplicate_observations() {
     let source = ProgramSource::new(&bytes);
     let reference = ProgramSource::new(&bytes);
     let script = program_script(&bytes, source.pointer);
-    let mut actual = dirty_program_log(32, 256);
-    let mut expected = dirty_program_log(32, 256);
+    let mut actual = dirty_program_log(32, 512);
+    let mut expected = dirty_program_log(32, 512);
     for _ in 0..2 {
         assert!(copy_fixture_program(&mut actual, &source));
         assert!(scalar_program_script(&mut expected, &reference, &script));
@@ -973,8 +1012,8 @@ fn program_body_batch_preserves_duplicate_observations() {
     assert_program_logs_equal(&actual, &expected);
     assert_eq!(*source.calls.borrow(), *reference.calls.borrow());
     assert_eq!(source.scatters.borrow().len(), 2);
-    assert_eq!(actual.spans.len(), 20);
-    assert_eq!(actual.raw_bytes, [210, 0]);
+    assert_eq!(actual.spans.len(), 28);
+    assert_eq!(actual.raw_bytes, [276, 0]);
 }
 
 #[test]
@@ -1029,7 +1068,7 @@ fn program_body_batch_keeps_plan_blocking_and_cold_retirement() {
             assert!(copy_fixture_program(&mut log, &fresh));
             assert!(!log.planned_capture_failed());
             assert_eq!(fresh.scatters.borrow().len(), 1);
-            assert_eq!(fresh.calls.borrow().len(), 10);
+            assert_eq!(fresh.calls.borrow().len(), 14);
             log.finish_planned_capture();
             log.prepare_read_plan();
             log.clear();
@@ -1261,6 +1300,7 @@ fn staging_overflow_falls_back_to_typed_walk() {
         census: Vec::with_capacity(1),
         statuses: Vec::with_capacity(1),
         pointers: Vec::with_capacity(1),
+        assignment_references: Vec::with_capacity(1),
         worker_growth: false,
         capacity_charge: crate::raw_memory::Charge::default(),
     };
@@ -1382,4 +1422,72 @@ fn projects_are_read_after_the_daily_tick_and_within_the_hour_of_a_marked_write(
         project_hour(&mut captured, &bytes, 49, &mut store, &changes),
         [1, 2, 3]
     );
+}
+
+#[test]
+fn retained_scientist_origin_uses_its_daily_arena_and_is_not_published_as_an_hourly_read() {
+    let (_, mut captured) = small();
+    captured
+        .scientist_names
+        .extend_from_slice(b"events/replacement.txt");
+    captured.scientists.rows[0] = scientist_roster::Row {
+        character: 7,
+        country: 5000,
+        template_visibility: Some(1),
+        template_origin: Some((0, 22, 17)),
+        ..Default::default()
+    };
+    captured.scientists.outcome = Outcome::Rows { len: 1 };
+    captured.scientist_injury_read = true;
+    let tables = captured.tables();
+    let TableView::Complete(rows::TableRows::ScientistDaily(scientists)) = &tables[19] else {
+        panic!("roster unavailable")
+    };
+    assert_eq!(
+        scientists[0].template_origin,
+        rows::Recorded::Value(Some(rows::ScientistTemplateOrigin {
+            file: b"events/replacement.txt".to_vec(),
+            line: 17
+        }))
+    );
+    rows::TableRows::ScientistDaily(scientists.clone())
+        .encode_rows(&mut Vec::new())
+        .unwrap();
+    captured.scientist_injury_read = false;
+    let tables = captured.tables();
+    let TableView::Complete(rows::TableRows::Scientists(scientists)) = &tables[8] else {
+        panic!("roster unavailable")
+    };
+    assert!(
+        matches!(&tables[19], TableView::Unavailable { reason } if reason == replay_data::cadence::SKIPPED_REASON)
+    );
+    rows::TableRows::Scientists(scientists.clone())
+        .encode_rows(&mut Vec::new())
+        .unwrap();
+}
+
+#[test]
+fn failed_scientist_daily_acquisition_keeps_its_own_read_boundary() {
+    for (hour, force_full) in [(1, false), (4, false), (1, true)] {
+        for previous_read in [false, true] {
+            let mut captured = Captured::vacant();
+            captured.scientist_injury_read = previous_read;
+            captured.fail_gated_capture(hour, force_full, "fixture worker failure");
+            assert_eq!(
+                captured.outcomes()[19],
+                super::super::failed_capture(
+                    TableId::ScientistDaily,
+                    hour,
+                    force_full,
+                    "fixture worker failure"
+                )
+            );
+            assert_eq!(
+                captured.outcomes()[8],
+                Outcome::Unavailable {
+                    reason: "fixture worker failure"
+                }
+            );
+        }
+    }
 }

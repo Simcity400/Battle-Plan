@@ -11,6 +11,10 @@ use replay_frame::frame::DecodedFrame;
 
 use super::{Report, TokenNames, complete, country_tag, invalid, required_country_tag};
 
+mod network_auxiliary;
+mod sources;
+pub use sources::compare as compare_sources;
+
 #[derive(Clone, Copy)]
 pub struct ScopeKinds {
     pub global: u8,
@@ -84,8 +88,17 @@ pub fn compare(
     completed &= report.attempt("IntelNetworks", |report| {
         compare_intel_networks(frame, save, countries, tokens, report)
     });
+    completed &= report.attempt("IntelNetworkSummaries", |report| {
+        compare_network_summaries(frame, save, countries, report)
+    });
+    completed &= report.attempt("IntelNetworkAuxiliaries", |report| {
+        network_auxiliary::compare(frame, save, countries, tokens, report)
+    });
     completed &= report.attempt("StrategicOperatives", |report| {
         compare_strategic_operatives(frame, save, countries, report)
+    });
+    completed &= report.attempt("PropagandaEfforts", |report| {
+        compare_propaganda(frame, save, report)
     });
     completed &= report.attempt("Autonomy", |report| {
         compare_autonomy(frame, save, countries, tokens, report)
@@ -1513,21 +1526,197 @@ fn compare_intel_networks(
             format!("0x6B={:?}", target_key.map(String::from_utf8_lossy)),
         );
     }
-    report.limitation(
-        "intel coverage (0x30B5), records (0x4C00), static source (0x4B34), strength sums and the list (0x3D1E) have no recorded field; retained natively but not verified here",
-        "IntelNetworks.coverage, records, source, sums, extra_3d1e",
-    );
     report.compared("IntelNetworks", matched);
     Ok(())
 }
 
-/// StrategicOperatives against each saved strategic operative, joined by the
-/// country slot the manager's vector and the save both key it by; a row's raw
-/// owner must resolve to that slot's country. The writer always saves both
-/// activity levels (`subversive_activity_level` and `danger_level` values)
-/// and each influence map in table order, omitting an empty map and keeping
-/// zero entries. Diplomatic pressure saves acceptance as `opinion` and
-/// tension as raw Q15 integers.
+/// Independent native network caches, joined by manager owner slot and target.
+fn compare_network_summaries(
+    frame: &DecodedFrame,
+    save: &saved::Pack,
+    countries: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut recorded = BTreeMap::new();
+    for row in complete::<tables::IntelNetworkSummaries>(frame)? {
+        let owner = countries
+            .get(&row.owner_country)
+            .ok_or_else(|| invalid("network summary owner is unknown"))?;
+        let target = required_country_tag(row.target_country, countries)?;
+        if recorded
+            .insert((owner.canonical_slot, target.to_vec()), row)
+            .is_some()
+        {
+            return Err(invalid("duplicate network summary pair"));
+        }
+    }
+    let mut matched = 0;
+    for operative in save
+        .strategic_operatives
+        .iter()
+        .flat_map(|objects| objects.values())
+    {
+        for (ordinal, expected) in operative.networks.iter().enumerate() {
+            let label = format!(
+                "intel_network.owner_slot.{}.{}",
+                operative.index,
+                text(&expected.target)
+            );
+            let Some(row) = recorded.remove(&(operative.index, expected.target.clone())) else {
+                report.difference(label, "absent", "saved network summary");
+                continue;
+            };
+            let coverage = expected
+                .coverage
+                .as_ref()
+                .ok_or_else(|| invalid("saved network coverage absent"))?;
+            equal(
+                report,
+                &format!("{label}.ordinal"),
+                row.ordinal as usize,
+                ordinal,
+            );
+            equal(
+                report,
+                &format!("{label}.coverage.core_states"),
+                row.covered_core_states,
+                coverage.core_states,
+            );
+            equal(
+                report,
+                &format!("{label}.coverage.controlled_states"),
+                row.covered_controlled_states,
+                coverage.controlled_states,
+            );
+            equal(
+                report,
+                &format!("{label}.coverage.owned_worth"),
+                row.covered_worth,
+                coverage.owned_worth,
+            );
+            report.scalar(
+                &label,
+                "strength_sum",
+                Some(row.controlled_strength_sum),
+                expected.strength_sum.as_ref(),
+            );
+            report.scalar(
+                &label,
+                "strength_sum_over_cores",
+                Some(row.core_strength_sum),
+                expected.strength_sum_over_cores.as_ref(),
+            );
+            report.scalar(
+                &label,
+                "state_strength_max",
+                Some(row.max_state_strength),
+                expected.state_strength_max.as_ref(),
+            );
+            matched += 1;
+        }
+    }
+    for ((owner, target), _) in recorded {
+        report.difference(
+            format!("intel_network.owner_slot.{owner}.{}", text(&target)),
+            "recorded network summary",
+            "absent",
+        );
+    }
+    report.compared("IntelNetworkSummaries", matched);
+    Ok(())
+}
+
+/// Every actual saved manager slot, including the reserved and unused-country
+/// objects. The ordered logical history and weekly cache are independent.
+fn compare_propaganda(
+    frame: &DecodedFrame,
+    save: &saved::Pack,
+    report: &mut Report,
+) -> io::Result<()> {
+    use replay_data::rows::PropagandaEffortRow;
+    let rows = complete::<tables::PropagandaEfforts>(frame)?;
+    let mut actual = BTreeMap::<u32, Vec<&PropagandaEffortRow>>::new();
+    for row in rows {
+        actual.entry(row.slot).or_default().push(row);
+    }
+    let mut matched = 0;
+    for (&slot, expected) in save.strategic_operatives.iter().flatten() {
+        let label = format!("strategic_operative.{slot}.propaganda");
+        let Some(mut entries) = actual.remove(&slot) else {
+            report.difference(
+                label,
+                "absent",
+                "saved strategic operative history and drift",
+            );
+            continue;
+        };
+        entries.sort_unstable_by_key(|row| row.sequence);
+        if entries
+            .windows(2)
+            .any(|pair| pair[0].sequence == pair[1].sequence)
+        {
+            return Err(invalid("duplicate recorded propaganda sequence"));
+        }
+        let header = entries
+            .pop()
+            .filter(|row| row.sequence == u64::MAX)
+            .ok_or_else(|| invalid("recorded propaganda history lacks its owner header"))?;
+        if entries.iter().any(|row| row.country != header.country) {
+            return Err(invalid(
+                "propaganda history and header name different native owners",
+            ));
+        }
+        equal(
+            report,
+            &format!("{label}.recent_propaganda_effort.len"),
+            entries.len(),
+            expected.recent_propaganda_effort.len(),
+        );
+        for (ordinal, (row, saved)) in entries
+            .iter()
+            .zip(&expected.recent_propaganda_effort)
+            .enumerate()
+        {
+            equal(
+                report,
+                &format!("{label}.recent_propaganda_effort.{ordinal}.stability"),
+                row.stability,
+                saved.stability,
+            );
+            equal(
+                report,
+                &format!("{label}.recent_propaganda_effort.{ordinal}.war_support"),
+                row.war_support,
+                saved.war_support,
+            );
+        }
+        let drift = PropagandaEffortRow::weekly_drift(rows, slot)
+            .ok_or_else(|| invalid("propaganda weekly drift header absent"))?;
+        equal(
+            report,
+            &format!("{label}.propaganda_weekly_drift.stability"),
+            drift.0,
+            expected.propaganda_weekly_drift.stability,
+        );
+        equal(
+            report,
+            &format!("{label}.propaganda_weekly_drift.war_support"),
+            drift.1,
+            expected.propaganda_weekly_drift.war_support,
+        );
+        matched += 1;
+    }
+    for (slot, _) in actual {
+        report.difference(
+            format!("strategic_operative.{slot}.propaganda"),
+            "recorded",
+            "absent from save",
+        );
+    }
+    report.compared("PropagandaEfforts", matched);
+    Ok(())
+}
+
 fn compare_strategic_operatives(
     frame: &DecodedFrame,
     save: &saved::Pack,
@@ -3401,6 +3590,61 @@ mod tests {
     use replay_frame::frame::TableView;
 
     #[test]
+    fn network_summaries_compare_each_saved_cache_independently_of_state_values() {
+        let (_, _, countries) = operation_links();
+        let countries = countries.iter().map(|(id, row)| (*id, row)).collect();
+        let save = parsed(
+            br#"countries={GER={} SOV={}} strategic_operatives={strategic_operative={7={
+            intel_network={target="SOV" intel_network={}
+                coverage={core_states=17 controlled_states=29 owned_worth=31}
+                strength_sum=-0.00001 strength_sum_over_cores=2.00003 state_strength_max=4.00007
+            }
+        }}}"#,
+        );
+        let expected = replay_data::rows::IntelNetworkSummaryRow {
+            owner_country: 101,
+            target_country: 102,
+            ordinal: 0,
+            covered_core_states: 17,
+            covered_controlled_states: 29,
+            covered_worth: 31,
+            controlled_strength_sum: -1,
+            core_strength_sum: 200_003,
+            max_state_strength: 400_007,
+        };
+        let compare = |row| {
+            let mut report = Report::default();
+            compare_network_summaries(
+                &frame(
+                    TableId::IntelNetworkSummaries,
+                    TableRows::IntelNetworkSummaries(vec![row]),
+                ),
+                &save,
+                &countries,
+                &mut report,
+            )
+            .unwrap();
+            report
+        };
+        let report = compare(expected);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["IntelNetworkSummaries"], 1);
+        for field in 0..7 {
+            let mut changed = expected;
+            match field {
+                0 => changed.covered_core_states += 1,
+                1 => changed.covered_controlled_states += 1,
+                2 => changed.covered_worth += 1,
+                3 => changed.controlled_strength_sum += 1,
+                4 => changed.core_strength_sum += 1,
+                5 => changed.max_state_strength += 1,
+                _ => changed.ordinal += 1,
+            }
+            assert_eq!(compare(changed).differences.len(), 1, "field {field}");
+        }
+    }
+
+    #[test]
     fn captured_reference_oracle_checks_order_nulls_and_duplicates() {
         let country = CountryRow {
             id: 7,
@@ -3563,6 +3807,66 @@ mod tests {
         state: 2,
         character: 3,
     };
+
+    #[test]
+    fn propaganda_oracle_checks_unused_slots_logical_order_and_independent_drift() {
+        use replay_data::rows::PropagandaEffortRow as Row;
+        let save = parsed(
+            br#"countries={} strategic_operatives={strategic_operative={0={
+            recent_propaganda_effort={{stability=0.00033 war_support=-0.00039}{stability=0.00051 war_support=0.00057}}
+            propaganda_weekly_drift={stability=0.03048 war_support=-0.03048}
+        }}}"#,
+        );
+        let rows = vec![
+            Row {
+                slot: 0,
+                country: 0,
+                sequence: 7,
+                stability: 11,
+                war_support: -13,
+                derived_drift: 0,
+            },
+            Row {
+                slot: 0,
+                country: 0,
+                sequence: 8,
+                stability: 17,
+                war_support: 19,
+                derived_drift: 0,
+            },
+            Row {
+                slot: 0,
+                country: 0,
+                sequence: u64::MAX,
+                stability: 999,
+                war_support: -999,
+                derived_drift: 0,
+            },
+        ];
+        let check = |rows| {
+            let mut report = Report::default();
+            compare_propaganda(
+                &frame(
+                    TableId::PropagandaEfforts,
+                    TableRows::PropagandaEfforts(rows),
+                ),
+                &save,
+                &mut report,
+            )
+            .unwrap();
+            report
+        };
+        assert!(check(rows.clone()).differences.is_empty());
+        let mut changed = rows.clone();
+        changed[0].stability += 1;
+        assert_eq!(check(changed).differences.len(), 1);
+        let mut derived = rows;
+        derived[2].derived_drift = 1;
+        derived[2].stability = 0;
+        derived[2].war_support = 0;
+        assert_eq!(check(derived).differences.len(), 2);
+        assert_eq!(check(Vec::new()).differences.len(), 1);
+    }
 
     fn frame(table: TableId, rows: TableRows) -> DecodedFrame {
         let mut frame = DecodedFrame {
@@ -6500,18 +6804,16 @@ mod tests {
         let report = compare_missions(rows.clone(), &pack).unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["OperativeMissions"], 2);
-        {
-            let subject = "OperativeMissions.pending_variant / pending_country / pending_state / pending_ideology";
-            assert!(
-                report
-                    .limitations
-                    .values()
-                    .flatten()
-                    .any(|entry| entry == subject),
-                "{subject}: {:?}",
-                report.limitations
-            );
-        }
+        let subject = "OperativeMissions.pending_variant / pending_country / pending_state / pending_ideology";
+        assert!(
+            report
+                .limitations
+                .values()
+                .flatten()
+                .any(|entry| entry == subject),
+            "{subject}: {:?}",
+            report.limitations
+        );
         type Change = fn(&mut [replay_data::rows::OperativeMissionRow]);
         let changes: [(usize, &str, Change); 13] = [
             // A changed portrait, and a missionless operative whose save omits gfx.
@@ -7175,19 +7477,12 @@ mod tests {
             .unwrap();
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["IntelNetworks"], 2);
-        for text in ["coverage", "records", "target literal"]
-            .into_iter()
-            .take(2)
-        {
-            assert!(
-                report
-                    .limitations
-                    .keys()
-                    .any(|reason| reason.contains(text)),
-                "{text}: {:?}",
-                report.limitations.keys()
-            );
-        }
+        assert!(
+            report
+                .limitations
+                .keys()
+                .all(|reason| !reason.contains("have no recorded fields"))
+        );
 
         let mut rows = network_rows();
         rows[0].subnetwork_selector = 1;

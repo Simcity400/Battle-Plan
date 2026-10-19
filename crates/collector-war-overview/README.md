@@ -1,7 +1,18 @@
 # collector-war-overview
 
-War overview capture: WarOwnedRelations, WarRelationGoals, WarOverviewCountries and WarNameRules. The host owns the WarOverview job's dispatch, loans and table assembly.
+War overview capture: WarOwnedRelations, WarRelationGoals, WarOverviewCountries and WarNameRules, plus complete CountryWargoals, WargoalTargets and WargoalJustifications. The host owns the WarOverview job's dispatch, loans and table assembly.
+War overview capture: WarOwnedRelations, WarRelationGoals, WarOverviewCountries, WarNameRules, WarParticipation, WarCapturedProvinces and WarLendLeaseHistories. The host owns the WarOverview job's dispatch, loans and table assembly.
+
+Participation uses the existing census's authenticated relation and country/diplomacy sources. Native writer hooks mark changed score/history columns, coalescing repeated writes until the acquisition worker reads them. Casualty refresh compares signed thousand-unit quotients and capitulation flags; unchanged refreshes read nothing. Province events queue identity/replacement marks; only worker-confirmed first credit marks capture-score reads. Scalar changes share captured membership. Quiet hours return shared tables without scanning receivers. Hook paths never allocate or wait; lost observation is unavailable until a full refresh.
+
+A single pass over owned-war rows identifies war-roster owners, including retained/asymmetric endpoints. Their actual per-pair relation-status containers supply all nonzero delivery histories. Zero fields allocate nothing. The native histories are inline in eagerly allocated status entries, so seed work counts matrix cells and allocated status entries, rather than assuming a sparse native history index. No candidate same-side pairs, roster unions or demand intersections are computed. Playback selects the native displayed side and excludes self/opponent credit. Complete-table absence certifies exact zero for recorded roster owners.
+
+Ordinary lifetime revisions reconcile membership and carry existing exact histories. Newly admitted or replaced diplomacy roots seed; shared status reset/load/construction and relation-slot writers name only their receiving owner, and diplomacy reset names its root. Whole-ledger replacement seeds only its relation. Retired owner indexes cannot remove rows whose storage was recycled into another owner. Explicit full refresh or a new world/unobserved epoch invalidates all selected roots. All fifteen detours and forwarded lifetime marks use sampled `war_participation` timing, separating original calls from observer work. Status reports cumulative seed roster/matrix/status visits, owner reads and nonzero rows.
 
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-war-overview` and `cargo clippy -p collector-war-overview --all-targets -- -D warnings` for its synthetic checks.
+
+The existing authenticated diplomacy visit lends its country and diplomacy root to the inventory reader. Country-scoped writer certificates carry unchanged inventories without native payload reads. Initial/forced observations and changed owners reuse flat buffers; no goal allocates a target list every hour. The shared store is lent for acquisition only. Unavailable certificates refuse the inventory by name after its initial observation instead of starting an hourly full scan. Goal and justification rows retain the complete saved roster and the separate unused roster.
+
+Goal and justification certificates are independent: each dirty domain reads only its own payloads. A rotating one-in-24 owner slice verifies carried domains with reusable scratch storage. Owner buffers stay in place; the shared scratch reads only carried domains, while dirty domains update their own buffers. A mismatch poisons observation and refuses further uncertified snapshots.

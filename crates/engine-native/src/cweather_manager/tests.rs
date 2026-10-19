@@ -2,6 +2,37 @@ use super::*;
 use crate::memory::SliceMemory;
 
 #[test]
+fn held_daylight_direction_keeps_signed_words_and_refuses_short_spans() {
+    let mut bytes = vec![0_u8; DAYLIGHT_DIRECTION + 24];
+    bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+    let direction = [i64::MIN, -1, i64::MAX];
+    for (index, value) in direction.into_iter().enumerate() {
+        bytes[DAYLIGHT_DIRECTION + index * 8..DAYLIGHT_DIRECTION + index * 8 + 8]
+            .copy_from_slice(&value.to_le_bytes());
+    }
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        Reader::with_manager(&memory, 0, 0x1000)
+            .unwrap()
+            .daylight_direction(),
+        Ok(direction)
+    );
+    let short = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes[..bytes.len() - 1],
+    };
+    assert!(
+        Reader::with_manager(&short, 0, 0x1000)
+            .unwrap()
+            .daylight_direction()
+            .is_err()
+    );
+}
+
+#[test]
 fn suspension_flags_keep_raw_bytes_and_refuse_short_reads() {
     let mut bytes = vec![0; SUSPEND_FLAGS + 2];
     bytes[..8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());

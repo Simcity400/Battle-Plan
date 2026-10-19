@@ -29,6 +29,7 @@ static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled:
 ]);
 /// Scopes the latest complete capture walked, for off-thread sizing.
 static SCOPES: AtomicUsize = AtomicUsize::new(0);
+static EMBEDDED_SCOPES: AtomicUsize = AtomicUsize::new(0);
 
 /// One observation domain: the watched managers, which every writer marks,
 /// the structure token, and each writer site's calls.
@@ -233,8 +234,20 @@ pub fn boundary(invalidate: bool) {
 /// Off the game thread: size the watches for the scopes the latest capture
 /// walked. Nothing is offered before a capture walked them: a later larger
 /// table waits for an invalidating hour, while the first installs at once.
+/// Existing daily MIO sizing contributes embedded stores without an hourly scan.
+pub fn offer_embedded(scopes: usize) {
+    EMBEDDED_SCOPES.fetch_max(scopes, Ordering::Relaxed);
+    presize();
+}
+
 pub fn presize() {
-    let scopes = SCOPES.load(Ordering::Relaxed);
+    let Some(scopes) = SCOPES
+        .load(Ordering::Relaxed)
+        .checked_add(EMBEDDED_SCOPES.load(Ordering::Relaxed))
+    else {
+        let _ = engine_allocation::oom();
+        return;
+    };
     if scopes != 0 {
         WATCHES.registry.offer(scopes);
     }
@@ -324,7 +337,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "flag_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

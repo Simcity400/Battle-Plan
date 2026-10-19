@@ -13,7 +13,7 @@ use std::{collections::BTreeSet, io};
 
 pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     report.limitation(
-        "recording self-check only: text saves retain no fake division reveals, railway gun overruns, critical shore bombardments, general captures, paradrop landings, resistance activities or building damage notifications. Saved state cannot certify which happened, when, or complete capture; matched native observations and world/load, unwind and detach checks are required",
+        "recording self-check only: text saves retain no fake division reveals, railway gun overruns, critical shore bombardments, general captures, paradrop landings, resistance activities, building damage notifications or forced scripted map refreshes. Saved state cannot certify which happened, when, or complete capture; matched native observations and world/load, unwind and detach checks are required",
         "MapEvents",
     );
     let selected = [TableId::MapEvents];
@@ -177,6 +177,7 @@ fn joins(frame: &DecodedFrame, row: &MapEventsRow, report: &mut Report) -> io::R
                     ("overlord", activity.overlord),
                 ]);
             }
+            MapEventPayload::ScriptedMapRefresh(_) => {}
             MapEventPayload::BuildingDamage(building) => {
                 province(building.province, "province");
                 checked.push(("controller", building.controller));

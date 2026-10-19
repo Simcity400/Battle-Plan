@@ -2,6 +2,7 @@ import { registerWidgets } from '../dashboard/definitions.ts';
 import type { WidgetRenderer } from '../dashboard/definitions.ts';
 import { widgetMetas } from './definitions.ts';
 export const rendererLoaders = {
+  'war-goals': () => import('./war-goals'),
   'map': () => import('./map'),
   'national-focus': () => import('./national-focus'),
   'research': () => import('./research'),

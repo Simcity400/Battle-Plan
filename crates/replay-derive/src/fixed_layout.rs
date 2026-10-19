@@ -107,6 +107,27 @@ pub const TRANSPORT_AIR: Family = Family {
     tables: &[],
 };
 
+/// Regional Air detection and base fuel/volunteer terms. Raw fields remain
+/// available when a playback modifier identity cannot be proved.
+pub const AIR_MAP: Family = Family {
+    name: "Air map detection and base modifiers",
+    keys: &[
+        keys::REGION_AIR_DETECTION,
+        keys::AIR_INTERCEPT_DETECTION,
+        keys::AIR_SUPERIORITY_DETECTION,
+        keys::AIR_HOME_DEFENCE_FACTOR,
+        keys::AIR_POWER_PROJECTION_FACTOR,
+        keys::AIR_VOLUNTEER_CAPACITY,
+        keys::AIR_STRATEGIC_BOMBER_NIGHT_PENALTY,
+        keys::AIR_NIGHT_PENALTY,
+        keys::AIR_WEATHER_PENALTY,
+        keys::AIR_CARRIER_NIGHT_PENALTY_REDUCTION_FACTOR,
+        keys::AIR_FUEL_CONSUMPTION_FACTOR,
+    ],
+    tokens: &[],
+    tables: &[],
+};
+
 /// The railway-gun tooltip reads the current variant's stat 0x3E through
 /// this token. Its guard withholds only the ETA suffix, preserving the row.
 pub const RAILWAY_SPEED: Family = Family {
@@ -344,6 +365,27 @@ pub const STATE_RESOURCES: Family = Family {
     tables: &[TableId::StateResourceInputs],
 };
 
+/// Country recruitment and mobilisation operands in the existing counter census.
+pub const COUNTRY_RECRUITMENT: Family = Family {
+    name: "country recruitment",
+    keys: &engine_native::ccountry::RECRUITMENT_MODIFIER_KEYS,
+    tokens: &[],
+    tables: &[TableId::CountryCounterInputs],
+};
+
+/// Effective state recruitment operands in the existing resource census.
+pub const STATE_RECRUITMENT: Family = Family {
+    name: "state recruitment",
+    keys: &[
+        keys::LOCAL_MANPOWER,
+        keys::LOCAL_NON_CORE_MANPOWER,
+        keys::RECRUITABLE_POPULATION,
+        keys::RECRUITABLE_POPULATION_FACTOR,
+    ],
+    tokens: &[],
+    tables: &[TableId::StateResourceInputs],
+};
+
 /// The raid launch gate's daily range terms: key 5 on the country and,
 /// in AceRangeInputs, on the ace and its type, plus the raid unit range limit.
 pub const RAID_LAUNCH: Family = Family {
@@ -504,6 +546,7 @@ pub const FAMILIES: &[Family] = &[
     TASK_FORCE_COUNTER_ETA,
     TRANSPORT_RISK,
     TRANSPORT_AIR,
+    AIR_MAP,
     RAILWAY_SPEED,
     LAND_COMBAT_DIVISIONS,
     DIVISION_STATUS,
@@ -525,6 +568,8 @@ pub const FAMILIES: &[Family] = &[
     STATE_VISIBILITY,
     POWER_BALANCE,
     STATE_RESOURCES,
+    COUNTRY_RECRUITMENT,
+    STATE_RECRUITMENT,
     RAID_LAUNCH,
     COMMAND_POWER,
     COUNTRY_ACE_MODIFIERS,
@@ -710,6 +755,8 @@ mod tests {
             NAVAL_TREES,
             PARADROP_PREPARATION,
             PARADROP_TRANSPORT,
+            COUNTRY_RECRUITMENT,
+            STATE_RECRUITMENT,
         ] {
             for &key in family.keys {
                 let mut frame = fixture();
@@ -746,6 +793,33 @@ mod tests {
         );
         for key in NAVAL_TREES.keys {
             assert!(keys::ALL_INDICES.contains(key));
+        }
+    }
+
+    #[test]
+    fn recruitment_families_cover_all_eight_keys_and_their_capture_tables() {
+        assert_eq!(
+            COUNTRY_RECRUITMENT.keys,
+            [
+                keys::MOBILIZATION_SPEED,
+                keys::CONSCRIPTION,
+                keys::CONSCRIPTION_FACTOR,
+                keys::NON_CORE_MANPOWER,
+            ]
+        );
+        assert_eq!(COUNTRY_RECRUITMENT.tables, [TableId::CountryCounterInputs]);
+        assert_eq!(
+            STATE_RECRUITMENT.keys,
+            [
+                keys::LOCAL_MANPOWER,
+                keys::LOCAL_NON_CORE_MANPOWER,
+                keys::RECRUITABLE_POPULATION,
+                keys::RECRUITABLE_POPULATION_FACTOR,
+            ]
+        );
+        assert_eq!(STATE_RECRUITMENT.tables, [TableId::StateResourceInputs]);
+        for family in [COUNTRY_RECRUITMENT, STATE_RECRUITMENT] {
+            assert!(FAMILIES.iter().any(|entry| entry.name == family.name));
         }
     }
 

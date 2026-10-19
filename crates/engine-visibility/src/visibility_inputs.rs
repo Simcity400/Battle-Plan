@@ -182,14 +182,27 @@ pub fn states_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: Buffer<'_, StateRow>,
+    output: Buffer<'_, StateRow>,
 ) -> Outcome {
+    states_buffer_extent(memory, base, game_state, output, &mut None)
+}
+
+/// The existing census's array extent, including null slots, without another read.
+pub fn states_buffer_extent(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: Buffer<'_, StateRow>,
+    extent: &mut Option<u32>,
+) -> Outcome {
+    *extent = None;
     let result = (|| {
         let array = game_state
             .checked_add(cgame_state::STATES)
             .and_then(|address| Array::read(memory, address, 8))
             .filter(|array| array.count > 1)
             .ok_or("state array unreadable or empty")?;
+        *extent = Some(array.count);
         // Fog rebuild visits the state registry.
         output.ensure(array.count as usize)?;
         let vtable = base
@@ -364,6 +377,22 @@ mod tests {
             states(&memory, 0, STATE, &mut rows),
             Outcome::Rows { len: 0 }
         );
+    }
+
+    #[test]
+    fn scripted_state_extent_reuses_the_census_header_and_keeps_null_holes() {
+        let mut bytes = states_fixture(&[(1, 1), (1, 1), (1, 1)]);
+        put(&mut bytes, ARRAY + 2 * 8, &0_u64.to_le_bytes());
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut extent = None;
+        assert_eq!(
+            states_buffer_extent(&memory, 0, STATE, Buffer::Fixed(&mut []), &mut extent),
+            Outcome::Rows { len: 0 }
+        );
+        assert_eq!(extent, Some(4));
     }
 
     #[test]

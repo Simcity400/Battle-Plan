@@ -4,6 +4,11 @@
 //! published campaign census comes from the game's dense saved equipment array.
 //! A truncated census is not a complete source for its dependent leaf tables.
 
+mod design;
+pub mod mutations;
+pub mod source_mutations;
+pub use design::*;
+
 use crate::{
     Memory, cequipment_type, cgame_state,
     cpdx_array::Array,
@@ -81,8 +86,6 @@ pub const MISSION_MASK: usize = 0x410;
 /// derivative creation increments the base byte and cloning copies it.
 /// Serialization zero-extends nonzero values.
 pub const VERSION: usize = 0x41c;
-/// Raw saved variant byte for token 0x2B9D; meaning remains unproven.
-pub const SERIALIZED_FLAG_2B9D: usize = 0x41e;
 /// CEquipmentVariant obsolete byte.
 pub const OBSOLETE: usize = 0x424;
 /// CEquipmentVariant explicit entity MSVC string.
@@ -275,9 +278,16 @@ pub struct TextSpan {
 
 /// The equipment type is named by `identity.equipment_token`; its text is
 /// content, so the name string is not copied per variant.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct DefinitionRow {
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DefinitionRow<D = VariantDesignState> {
     pub identity: Row,
+    /// Authenticated pass-local type address, never a replay identity.
+    pub archetype_pointer: usize,
+    /// Sample-local organisation resolution already used for save admission.
+    /// Only the current native visit may dereference it; never a replay identity.
+    pub organisation_pointer: Option<usize>,
+    /// Sample-local direct-source bindings; never serialized. None for a carried deep value.
+    pub source_links: Option<DesignSourceLinks>,
     pub display_name: TextSpan,
     pub variant_name: TextSpan,
     /// The designer's saved model choice; empty when unset.
@@ -288,6 +298,7 @@ pub struct DefinitionRow {
     pub icon_kind: u32,
     pub icon: TextSpan,
     pub version: u8,
+    pub design: D,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,6 +320,34 @@ pub fn walk_definitions(
     output: &mut Vec<DefinitionRow>,
     bytes: &mut Vec<u8>,
 ) -> TextOutcome {
+    walk_definitions_with(memory, base, variants, output, bytes, Ok)
+}
+
+/// The same native visit with worker-owned applied-source interning. Mapping
+/// runs only after the design's complete native inputs have been read.
+pub fn walk_definitions_with<D: Default>(
+    memory: &impl Memory,
+    base: usize,
+    variants: &[RegistryRow],
+    output: &mut Vec<DefinitionRow<D>>,
+    bytes: &mut Vec<u8>,
+    map: impl FnMut(VariantDesignState) -> Result<D, &'static str>,
+) -> TextOutcome {
+    walk_definitions_carried(memory, base, variants, output, bytes, |_| Ok(None), map)
+}
+
+/// A caller with a complete writer certificate may carry the added deep state.
+/// Prefix authentication and text reads retain their ordinary census contract.
+/// Only misses request deep spans; carried values never authorize native reads.
+pub fn walk_definitions_carried<D: Default>(
+    memory: &impl Memory,
+    base: usize,
+    variants: &[RegistryRow],
+    output: &mut Vec<DefinitionRow<D>>,
+    bytes: &mut Vec<u8>,
+    mut carry: impl FnMut(&RegistryRow) -> Result<Option<D>, &'static str>,
+    mut map: impl FnMut(VariantDesignState) -> Result<D, &'static str>,
+) -> TextOutcome {
     let result = (|| {
         let mut len = 0;
         let mut bytes_len = 0_usize;
@@ -316,11 +355,12 @@ pub fn walk_definitions(
         if variants.len() > output.len() {
             crate::allocation::reserve(output, variants.len() - output.len())
                 .map_err(|_| "variant definition allocation failed")?;
-            output.resize(variants.len(), DefinitionRow::default());
+            output.resize_with(variants.len(), DefinitionRow::default);
         }
         const BATCH: usize = 64;
-        const STRIDE: usize = 131 + ICON_ENTRY_RECORDED;
-        const FIELDS: [RecordField; 8] = [
+        const PREFIX_WIDTH: usize = 131 + ICON_ENTRY_RECORDED;
+        const STRIDE: usize = PREFIX_WIDTH + design::DESIGN_WIDTH;
+        const PREFIX_FIELDS: [RecordField; 8] = [
             RecordField {
                 source_offset: EQUIPMENT_TOKEN,
                 destination_offset: 0,
@@ -362,6 +402,30 @@ pub fn walk_definitions(
                 len: 1,
             },
         ];
+        const FIELDS: [RecordField; PREFIX_FIELDS.len() + design::DESIGN_FIELDS.len()] = {
+            let mut result = [RecordField {
+                source_offset: 0,
+                destination_offset: 0,
+                len: 0,
+            }; PREFIX_FIELDS.len() + design::DESIGN_FIELDS.len()];
+            let mut i = 0;
+            while i < PREFIX_FIELDS.len() {
+                result[i] = PREFIX_FIELDS[i];
+                i += 1;
+            }
+            let mut j = 0;
+            while j < design::DESIGN_FIELDS.len() {
+                let field = design::DESIGN_FIELDS[j];
+                result[i] = RecordField {
+                    source_offset: field.source_offset,
+                    destination_offset: PREFIX_WIDTH + field.destination_offset,
+                    len: field.len,
+                };
+                i += 1;
+                j += 1;
+            }
+            result
+        };
         const EQUIPMENT_FIELDS: [RecordField; 2] = [
             RecordField {
                 source_offset: 0,
@@ -381,6 +445,11 @@ pub fn walk_definitions(
         }];
         const LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&FIELDS, STRIDE).expect("valid record layout");
+        const PREFIX_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&PREFIX_FIELDS, STRIDE).expect("valid prefix layout");
+        const DESIGN_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&design::DESIGN_FIELDS, design::DESIGN_WIDTH)
+                .expect("valid design layout");
         const EQUIPMENT_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&EQUIPMENT_FIELDS, 20).expect("valid record layout");
         const ARCHETYPE_LAYOUT: RecordLayout<'static> =
@@ -401,16 +470,60 @@ pub fn walk_definitions(
         let mut equipment = [0; BATCH * 20];
         let mut archetypes = [0; BATCH];
         let mut archetype_bytes = [0; BATCH * 12];
+        let mut references = crate::creference_registry::ScopedResolver::new(base);
         for sources in variants.chunks(BATCH) {
+            let mut carried: [Option<D>; BATCH] = std::array::from_fn(|_| None);
+            let mut misses = [0; BATCH];
+            let mut miss_count = 0;
+            for (index, source) in sources.iter().enumerate() {
+                carried[index] = carry(source)?;
+                if carried[index].is_none() {
+                    misses[miss_count] = index;
+                    miss_count += 1;
+                }
+            }
             for (pointer, source) in pointers.iter_mut().zip(sources) {
                 *pointer = source.pointer();
             }
+            let layout = if miss_count == sources.len() {
+                &LAYOUT
+            } else {
+                &PREFIX_LAYOUT
+            };
             let copied = memory.copy_records(
                 RecordSources::Pointers(&pointers[..sources.len()]),
-                &LAYOUT,
+                layout,
                 &mut fields,
             );
-            let ready = copied / FIELDS.len();
+            let field_count = if miss_count == sources.len() {
+                FIELDS.len()
+            } else {
+                PREFIX_FIELDS.len()
+            };
+            let ready = copied / field_count;
+            let mut deep_ready = ready;
+            if miss_count != 0 && miss_count != sources.len() {
+                let mut demanded = [0; BATCH];
+                let count = misses[..miss_count].partition_point(|index| *index < ready);
+                for (pointer, index) in demanded.iter_mut().zip(&misses[..count]) {
+                    *pointer = pointers[*index];
+                }
+                let mut deep = [0; BATCH * design::DESIGN_WIDTH];
+                let copied = memory.copy_records(
+                    RecordSources::Pointers(&demanded[..count]),
+                    &DESIGN_LAYOUT,
+                    &mut deep,
+                );
+                let complete = copied / design::DESIGN_FIELDS.len();
+                for (ordinal, index) in misses[..complete].iter().enumerate() {
+                    fields[*index * STRIDE + PREFIX_WIDTH..(*index + 1) * STRIDE].copy_from_slice(
+                        &deep[ordinal * design::DESIGN_WIDTH..(ordinal + 1) * design::DESIGN_WIDTH],
+                    );
+                }
+                if complete < count {
+                    deep_ready = misses[complete];
+                }
+            }
             for (pointer, field) in definitions
                 .iter_mut()
                 .zip(fields.chunks_exact(STRIDE))
@@ -440,7 +553,7 @@ pub fn walk_definitions(
             );
             for (index, variant) in sources.iter().enumerate() {
                 if index >= ready {
-                    return Err(match copied % FIELDS.len() {
+                    return Err(match copied % field_count {
                         0 => "variant identity fields unreadable",
                         1 => "variant equipment definition unreadable or null",
                         2 => "variant obsolete byte unreadable",
@@ -448,8 +561,12 @@ pub fn walk_definitions(
                         4 => "variant string headers unreadable",
                         5 => "variant explicit entity header unreadable",
                         6 => "variant icon entry unreadable",
-                        _ => "variant version byte unreadable",
+                        7 => "variant version byte unreadable",
+                        _ => "variant design fields unreadable",
                     });
+                }
+                if index >= deep_ready {
+                    return Err("variant design fields unreadable");
                 }
                 if definitions[index] == 0 {
                     return Err("variant equipment definition unreadable or null");
@@ -511,8 +628,24 @@ pub fn walk_definitions(
                     };
                     bytes_len += size;
                 }
+                let (design, organisation_pointer, source_links) =
+                    if let Some(carried) = carried[index].take() {
+                        (carried, None, None)
+                    } else {
+                        let (state, pointer, links) = design::read_design_prefetched(
+                            memory,
+                            base,
+                            variant.pointer(),
+                            &field[PREFIX_WIDTH..],
+                            &mut references,
+                        )?;
+                        (map(state)?, pointer, Some(links))
+                    };
                 output[len] = DefinitionRow {
                     identity: row,
+                    archetype_pointer: archetypes[index],
+                    organisation_pointer,
+                    source_links,
                     display_name: spans[0],
                     variant_name: spans[1],
                     explicit_entity: spans[2],
@@ -520,6 +653,7 @@ pub fn walk_definitions(
                     icon_kind: u32::from_le_bytes(field[134..138].try_into().unwrap()),
                     icon: spans[3],
                     version: field[130 + ICON_ENTRY_RECORDED],
+                    design,
                 };
                 len += 1;
             }
@@ -533,12 +667,82 @@ pub fn walk_definitions(
     result.unwrap_or_else(text_failure)
 }
 
-/// Signed 64-bit stat-cache slots. Names and display scales are metadata;
-/// preserve every stored bit.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Number of native equipment statistic slots in the authenticated executable.
+/// Mods can supply any of these slots; none is selected by equipment family.
+pub const STAT_COUNT: usize = 78;
+/// First native signed fixed5 statistic. Slot names come from executable metadata.
+pub const STATS: usize = 0x100;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StatsRow {
     pub variant: u64,
     pub values: [i64; 10],
+    pub organisation: Organisation,
+}
+
+/// Frozen design authorship and bonus entries, independent of current MIO traits.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct Organisation {
+    pub author: u64,
+    pub trait_count: i32,
+    pub bonuses: Vec<OrganisationBonus>,
+}
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct OrganisationBonus {
+    pub key: u32,
+    pub value_raw: i64,
+}
+pub const INDUSTRIAL_ORGANISATION: usize = 0x488;
+pub const ORGANISATION_BONUSES: usize = 0x498;
+pub const ORGANISATION_TRAIT_COUNT: usize = 0x4b0;
+/// Receiver certificates are checked only in the existing daily detail walk.
+pub trait OrganisationCarry {
+    fn fresh(
+        &mut self,
+        index: usize,
+        source: &RegistryRow,
+        old: &Organisation,
+    ) -> Result<bool, &'static str>;
+    fn read(&mut self, _index: usize, _source: &RegistryRow, _row: &Organisation) {}
+}
+impl OrganisationCarry for () {
+    fn fresh(&mut self, _: usize, _: &RegistryRow, _: &Organisation) -> Result<bool, &'static str> {
+        Ok(true)
+    }
+}
+fn read_organisation(
+    memory: &impl Memory,
+    pointer: usize,
+    row: &mut Organisation,
+) -> Result<(), &'static str> {
+    let mut author = [0_u8; 8];
+    let mut marker = [0_u8; 4];
+    let mut header = [0_u8; 16];
+    if memory.copy_scattered(
+        [
+            at(pointer, INDUSTRIAL_ORGANISATION)?,
+            at(pointer, ORGANISATION_TRAIT_COUNT)?,
+            at(pointer, ORGANISATION_BONUSES)?,
+        ],
+        &mut [&mut author, &mut marker, &mut header],
+    ) != 3
+    {
+        return Err("design MIO fields unreadable");
+    }
+    row.author = u64::from_le_bytes(author);
+    row.trait_count = i32::from_le_bytes(marker);
+    let array = Array::from_header(header, 16).ok_or("design MIO bonus array invalid")?;
+    crate::allocation::resize_default(&mut row.bonuses, array.count as usize)
+        .map_err(|_| "design MIO bonus allocation failed")?;
+    for (index, bonus) in row.bonuses.iter_mut().enumerate() {
+        let address = array
+            .element(index as u32, 16)
+            .ok_or("design MIO bonus address overflow")?;
+        bonus.key = read(memory, address).ok_or("design MIO bonus key unreadable")?;
+        bonus.value_raw =
+            read(memory, at(address, 8)?).ok_or("design MIO bonus value unreadable")?;
+    }
+    Ok(())
 }
 
 /// Uses the same complete supplied variant census as `walk_definitions`. A
@@ -547,6 +751,15 @@ pub fn walk_stats(
     memory: &impl Memory,
     variants: &[RegistryRow],
     output: &mut Vec<StatsRow>,
+) -> Outcome {
+    walk_stats_carried(memory, variants, output, &mut ())
+}
+
+pub fn walk_stats_carried(
+    memory: &impl Memory,
+    variants: &[RegistryRow],
+    output: &mut Vec<StatsRow>,
+    carry: &mut impl OrganisationCarry,
 ) -> Outcome {
     let result = (|| {
         if variants.len() > output.len() {
@@ -606,10 +819,12 @@ pub fn walk_stats(
                 for (value, bytes) in values.iter_mut().zip(field.chunks_exact(8)) {
                     *value = i64::from_le_bytes(bytes.try_into().unwrap());
                 }
-                output[len] = StatsRow {
-                    variant: source.id,
-                    values,
-                };
+                if carry.fresh(len, source, &output[len].organisation)? {
+                    read_organisation(memory, source.pointer(), &mut output[len].organisation)?;
+                }
+                output[len].variant = source.id;
+                output[len].values = values;
+                carry.read(len, source, &output[len].organisation);
                 len += 1;
             }
         }

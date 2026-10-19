@@ -955,8 +955,10 @@ fn casualty_pairs(branch: u64) -> String {
 /// prepared prefix instead of null: lanes walked through the prefix's change
 /// inputs, the hours after it pending rather than unobserved, and for a read
 /// past it the groups at that hour from its frame alone, whose sides, names
-/// and casualty counters are those the complete walk observes there. Once
-/// complete, nothing is pending and no hour is listed apart.
+/// and casualty counters are those the complete walk observes there. Native
+/// snapshots supply contributions at every requested hour independently of
+/// preparation; once complete, nothing is pending and those snapshots stay
+/// identical.
 #[test]
 fn wars_answer_their_prepared_prefix_with_the_groups_at_a_later_hour() {
     let replay = scenario(4, false);
@@ -971,6 +973,9 @@ fn wars_answer_their_prepared_prefix_with_the_groups_at_a_later_hour() {
         let cold = query(&source, "wars", params(&[])).unwrap();
         assert!(cold["wars"].as_array().unwrap().is_empty());
         assert!(!cold["pending"].as_array().unwrap().is_empty());
+        assert!(cold.get("current").is_none());
+        let cold_read = query(&source, "wars", params(&[115])).unwrap();
+        assert_eq!(cold_read["current"].as_array().unwrap().len(), 1);
         while coverage(&source, None, 1, &flag)
             .unwrap()
             .is_none_or(|coverage| coverage.last_hour < 103)
@@ -997,11 +1002,51 @@ fn wars_answer_their_prepared_prefix_with_the_groups_at_a_later_hour() {
             }
         }
         assert!(!prefix["wars"].as_array().unwrap().is_empty());
+        assert!(
+            prefix["wars"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|war| { war["lastHour"].as_i64().unwrap() <= i64::from(accepted.last_hour) })
+        );
         let current = prefix["current"].as_array().unwrap();
-        assert_eq!(current.len(), 1, "only the read past the prefix: {prefix}");
-        assert_eq!(current[0]["hour"], 115);
-        assert_eq!(current[0]["available"], true);
-        let at = current[0]["wars"].as_array().unwrap();
+        assert_eq!(
+            current
+                .iter()
+                .map(|read| read["hour"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            [i64::from(accepted.last_hour), 115],
+            "exactly the requested native snapshots: {prefix}"
+        );
+        assert_eq!(current[1], cold_read["current"][0]);
+        let prefix_opponents = if accepted.last_hour < 109 {
+            json!(["TWO", "THREE"])
+        } else {
+            json!(["TWO"])
+        };
+        for (read, opponents) in current.iter().zip([prefix_opponents, json!(["TWO"])]) {
+            assert_eq!(read["available"], true);
+            assert_eq!(read["wars"].as_array().unwrap().len(), 1);
+            let contributions = read["contributions"].as_array().unwrap();
+            assert_eq!(contributions.len(), 1);
+            assert_eq!(contributions[0]["viewpointSide"], json!(["ONE"]));
+            assert_eq!(contributions[0]["opposingSide"], opponents);
+            assert_eq!(contributions[0]["participants"], json!([]));
+            assert_eq!(
+                contributions[0]["reason"],
+                "Recorded content is needed for lend-lease participation"
+            );
+            let observation = &read["wars"][0]["observations"][0];
+            assert_eq!(
+                observation["viewpointSide"],
+                contributions[0]["viewpointSide"]
+            );
+            assert_eq!(
+                observation["opposingSide"],
+                contributions[0]["opposingSide"]
+            );
+        }
+        let at = current[1]["wars"].as_array().unwrap();
         assert!(!at.is_empty());
         assert!(
             at.iter()
@@ -1009,7 +1054,8 @@ fn wars_answer_their_prepared_prefix_with_the_groups_at_a_later_hour() {
         );
         run(&source, None, &flag, |_| {}).unwrap();
         let complete = query(&source, "wars", params(&[accepted.last_hour, 115])).unwrap();
-        assert!(complete.get("pending").is_none() && complete.get("current").is_none());
+        assert!(complete.get("pending").is_none());
+        assert_eq!(complete["current"], prefix["current"]);
         let wars = complete["wars"].as_array().unwrap();
         for war in at {
             let observed = &war["observations"][0];

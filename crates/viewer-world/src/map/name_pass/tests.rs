@@ -116,6 +116,7 @@ fn world_name(key: String, x: f32, z: f32, glyphs: usize, wrapped: bool) -> Worl
         uvs.push([0.0, 0.0, 0.1, 0.1]);
     }
     WorldName {
+        strategic_provinces: None,
         key,
         text: String::new(),
         pages: vec![0; glyphs],
@@ -375,6 +376,7 @@ fn the_fade_settles_at_the_content_cutoff_and_takes_one_second() {
 
 fn placed_name(text: &str, glyphs: usize) -> WorldName {
     WorldName {
+        strategic_provinces: None,
         key: "GER".into(),
         text: text.into(),
         pages: vec![0; glyphs],
@@ -626,4 +628,175 @@ fn state_areas_name_each_states_provinces_and_go_close_in() {
     let both = far.clone().with_near(states.clone());
     assert_eq!(both.near.as_deref(), Some(&states));
     assert_ne!(both, far);
+}
+
+#[test]
+fn strategic_names_group_land_and_sea_by_content_and_withhold_unresolved_names() {
+    use installed_content_core::{map::CountryColors, map::ProvinceDefinition, map::ProvinceKind};
+    use installed_content_regions::regions::StrategicRegion;
+    let map = MapData {
+        width: 3,
+        height: 1,
+        province_ids: vec![1, 2, 3],
+        definitions: [
+            (1, ProvinceKind::Land),
+            (2, ProvinceKind::Sea),
+            (3, ProvinceKind::Lake),
+        ]
+        .map(|(id, kind)| {
+            (
+                id,
+                ProvinceDefinition {
+                    id,
+                    kind,
+                    rgb: [0; 3],
+                    continent: 0,
+                },
+            )
+        })
+        .into(),
+        country_colors: CountryColors::default(),
+    };
+    let regions = [
+        (
+            19,
+            StrategicRegion {
+                id: 19,
+                provinces: vec![1, 2, 999],
+                ..Default::default()
+            },
+        ),
+        (
+            31,
+            StrategicRegion {
+                id: 31,
+                provinces: vec![3],
+                ..Default::default()
+            },
+        ),
+    ]
+    .into();
+    let areas = NameAreas::strategic(&map, &regions, |r| {
+        if r.id == 19 {
+            Ok("Synthetic coast".into())
+        } else {
+            Err("synthetic naming refusal".into())
+        }
+    });
+    assert_eq!(areas.countries[0].members, BTreeSet::from([1, 2]));
+    assert_eq!(areas.countries[0].text, Ok("Synthetic coast".into()));
+    assert_eq!(areas.countries[1].members, BTreeSet::from([3]));
+    assert!(areas.countries.iter().all(|area| area.faction));
+    assert!(areas.countries[1].text.is_err());
+}
+
+#[test]
+fn strategic_hover_admits_one_connected_area_across_font_pages_and_wrapped_copies() {
+    let mut first = world_name("synthetic coast".into(), 100.0, 1000.0, 2, true);
+    first.strategic_provinces = Some(Arc::from([1, 2]));
+    first.pages = vec![0, 2];
+    let mut second = first.clone();
+    second.key = "synthetic inland".into();
+    second.strategic_provinces = Some(Arc::from([3]));
+    // A disconnected component of the same region has the same name but a separate draw.
+    let mut disconnected = first.clone();
+    disconnected.strategic_provinces = Some(Arc::from([4, 5]));
+    let ordinary = world_name("synthetic country".into(), 100.0, 1000.0, 1, false);
+    let (_, names) = static_names(
+        &Placements {
+            country: vec![first, second, disconnected, ordinary],
+            ..Default::default()
+        },
+        u64::MAX,
+    );
+    let draw = |hover| {
+        native_hover_copies(
+            &names,
+            camera([100.0, 1000.0], 310.0),
+            [1920, 1080],
+            1.0,
+            &[0.0, -W, W],
+            hover,
+        )
+    };
+    assert_eq!(
+        draw(Some(1))
+            .iter()
+            .map(|d| (d.page, d.vertices.start))
+            .collect::<Vec<_>>(),
+        [(0, 0), (2, 6), (0, 36)]
+    );
+    assert_eq!(
+        draw(Some(3))
+            .iter()
+            .map(|d| (d.page, d.vertices.start))
+            .collect::<Vec<_>>(),
+        [(0, 12), (2, 18), (0, 36)]
+    );
+    assert_eq!(draw(Some(1)), draw(Some(2)));
+    assert_eq!(
+        draw(Some(4))
+            .iter()
+            .map(|d| (d.page, d.vertices.start))
+            .collect::<Vec<_>>(),
+        [(0, 24), (2, 30), (0, 36)],
+        "hover selects the connected area rather than every component of its region"
+    );
+    assert_eq!(
+        draw(Some(0)).len(),
+        1,
+        "a picked province without a region names no strategic area"
+    );
+    assert_eq!(
+        draw(None).len(),
+        7,
+        "show-all or no picked province keeps the whole native layer"
+    );
+    assert!(
+        native_hover_copies(
+            &names,
+            camera([100.0, 1000.0], 310.0),
+            [1920, 1080],
+            0.0,
+            &[0.0],
+            Some(1)
+        )
+        .is_empty()
+    );
+    // No generation/placement rebuild when only the local pointer changes.
+    assert_eq!(
+        names
+            .iter()
+            .map(|n| n.strategic_provinces.as_deref())
+            .collect::<Vec<_>>(),
+        [
+            Some([1, 2].as_slice()),
+            Some([1, 2].as_slice()),
+            Some([3].as_slice()),
+            Some([3].as_slice()),
+            Some([4, 5].as_slice()),
+            Some([4, 5].as_slice()),
+            None,
+        ]
+    );
+    assert!(Arc::ptr_eq(
+        names[0].strategic_provinces.as_ref().unwrap(),
+        names[1].strategic_provinces.as_ref().unwrap()
+    ));
+}
+
+#[test]
+fn strategic_region_switch_resets_the_fade_only_on_the_hover_path() {
+    let current = LayerFade(1.0);
+    assert_eq!(current.strategic_hover(false, Some(19), Some(19)), current);
+    assert_eq!(
+        current.strategic_hover(false, Some(31), Some(19)),
+        LayerFade(0.0)
+    );
+    assert_eq!(current.strategic_hover(true, Some(31), Some(19)), current);
+    assert_eq!(current.strategic_hover(false, None, Some(19)), current);
+    let reset = current.strategic_hover(false, Some(19), None);
+    let camera = camera([100.0, 1000.0], 310.0);
+    assert_eq!(reset.step(camera, 0.25).0, 0.25);
+    assert_eq!(reset.step(camera, 1.5).0, 1.0);
 }

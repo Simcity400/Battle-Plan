@@ -38,6 +38,9 @@ fn event_feed_history_seeds_sequence_generation_and_counts_from_retained_rows() 
                 instance: 7,
             };
             let mut row = EventFeedHistoryRow {
+                script_refusals: 0,
+                script_tokens: Vec::new(),
+                script_scopes: Vec::new(),
                 generation: branch,
                 read_hour: hour,
                 coverage: EventFeedCoverage::Complete,
@@ -50,6 +53,7 @@ fn event_feed_history_seeds_sequence_generation_and_counts_from_retained_rows() 
                 failure: None,
                 events: if hour == first {
                     vec![EventFeedEvent {
+                        script: None,
                         sequence,
                         generation: branch,
                         hour,
@@ -421,11 +425,12 @@ fn naval_sequence_prepares_every_retained_branch_before_resuming_same_process() 
 }
 
 #[test]
-fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resume() {
+fn market_and_other_event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resume()
+ {
     use crate::event_ledger::EventLedger;
     use replay_data::{
         rows::AirLossEventRow, rows::BuildingBombingDamageRow, rows::CampaignRow, rows::ClockRow,
-        rows::NuclearStrikeRow, rows::TableId, rows::TableRows,
+        rows::MarketEventRow, rows::NuclearStrikeRow, rows::TableId, rows::TableRows,
     };
     use replay_frame::{
         branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame,
@@ -473,6 +478,7 @@ fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resu
                                         | TableId::AirLossEvents
                                         | TableId::BuildingBombingDamage
                                         | TableId::NuclearStrikes
+                                        | TableId::MarketEvents
                                 ) {
                                     return TableUpdate::Unavailable {
                                         reason: "outside air history fixture".into(),
@@ -516,6 +522,14 @@ fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resu
                                             ..Default::default()
                                         }])
                                     }
+                                    TableId::MarketEvents if hour == first => {
+                                        TableRows::MarketEvents(vec![MarketEventRow {
+                                            id: loss_id + 100,
+                                            hour,
+                                            kind: 6,
+                                            ..Default::default()
+                                        }])
+                                    }
                                     table => TableRows::empty(table),
                                 };
                                 if partial
@@ -525,6 +539,7 @@ fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resu
                                         TableId::AirLossEvents
                                             | TableId::BuildingBombingDamage
                                             | TableId::NuclearStrikes
+                                            | TableId::MarketEvents
                                     )
                                 {
                                     TableUpdate::Truncated { rows, missing: 1 }
@@ -544,14 +559,14 @@ fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resu
     assert!(retained.index.len() >= 2);
     assert_eq!(
         event_ledger_sequences(&retained).unwrap(),
-        [Some(80), Some(9), Some(3)]
+        [Some(80), Some(9), Some(3), Some(180)]
     );
     let older = replay(other_id, &[(1, 2, 5, 150, 40, true)]);
     fs::write(root.join(format!("{id}.battleplan")), retained.bytes()).unwrap();
     fs::write(root.join(format!("{other_id}.battleplan")), older.bytes()).unwrap();
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
     let seeds = prepared.event_ledger_sequences();
-    assert_eq!(seeds, [Some(80), Some(150), Some(40)]);
+    assert_eq!(seeds, [Some(80), Some(150), Some(40), Some(180)]);
     let (mut tracker, lease) = prepared.take(id, &session).unwrap();
     let continued = tracker.observe(Some(6), 7, Some(2), &[]).unwrap();
     assert_eq!(continued.branch, 2);
@@ -561,9 +576,13 @@ fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resu
     // Fresh producer instances use those exact retained-history seeds before admission.
     let losses = EventLedger::<crate::air_losses::Entry>::new();
     let bombing = EventLedger::<crate::building_bombing::Entry>::new();
+    let market = EventLedger::<MarketEventRow>::new();
+    market.restore_sequence(seeds[3]).unwrap();
     losses.restore_sequence(seeds[0]).unwrap();
     bombing.restore_sequence(seeds[1]).unwrap();
     // Callbacks never allocate: storage is prepared off-thread and installed by a drain.
+    market.prepare(1);
+    assert!(market.drain(&mut Vec::new()).is_err());
     losses.prepare(1);
     bombing.prepare(1);
     assert!(losses.drain(&mut Vec::new()).is_err());
@@ -581,6 +600,7 @@ fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resu
         })
     };
     for hour in [6, 7] {
+        market.boundary(clock(hour));
         losses.boundary(clock(hour));
         bombing.boundary(clock(hour));
     }
@@ -604,6 +624,19 @@ fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resu
             })),
         )
         .unwrap();
+    let token = market.claim((5000, 17)).unwrap();
+    market
+        .complete(
+            token,
+            Ok(Some(MarketEventRow {
+                kind: 6,
+                ..Default::default()
+            })),
+        )
+        .unwrap();
+    let mut market_rows = Vec::with_capacity(1);
+    market.drain(&mut market_rows).unwrap();
+    assert_eq!(market_rows[0].id, 181);
     let mut loss_rows = Vec::with_capacity(1);
     let mut damage_rows = Vec::with_capacity(1);
     losses.drain(&mut loss_rows).unwrap();
@@ -612,7 +645,7 @@ fn event_ledger_sequences_restore_all_retained_prefixes_before_same_process_resu
     assert_eq!(damage_rows[0].id, 151);
     assert_eq!(
         PreparedCampaigns::default().event_ledger_sequences(),
-        [None, None, None]
+        [None, None, None, None]
     );
     drop(lease);
     drop(prepared);

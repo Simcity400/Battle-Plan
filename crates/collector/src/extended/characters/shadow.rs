@@ -34,6 +34,8 @@ impl<R> NativeShadow<R> {
 #[derive(Default)]
 pub(crate) struct CharacterShadow {
     branch: Option<BranchId>,
+    /// The globally unique held-leader layout certifies the complete training table.
+    pub(super) training: Option<((u64, u64), Weak<TableRows>)>,
     pub(super) characters: NativeShadow<ccharacter::Row>,
     pub(super) leaders: NativeShadow<ccountry_leader::Row>,
     pub(super) advisors: NativeShadow<cadvisor::Row>,
@@ -77,6 +79,7 @@ impl<'a> CharacterConversion<'a> {
             shadow.leaders.clear();
             shadow.advisors.clear();
             shadow.traits.clear();
+            shadow.training = None;
             shadow.branch = Some(branch);
         }
         Self { shadow, cached }

@@ -1,12 +1,57 @@
 # dashboard-base
 
+The variant catalogue retains equal unavailable module/upgrade operands without
+walking every design. Recorded invalidations still select changed designs and
+used spellings. Production-line span compaction preserves frozen design
+availability and supplying dates, including loss and recovery between line reads.
+The shared catalogue and compaction implementation here includes their current
+main performance changes so these contracts can be checked on the stacked branch.
+
+Equipment naming observes recorded design mutations between daily censuses in
+ordinary and prepared products. The on-demand design sheet joins modules,
+upgrades, equipment content, applied company bonuses and organisation snapshots.
+It resolves shared named-source snapshots, preserves native residuals and reports
+when current source components differ from the design's last cached rebuild.
+Build/resource operands, manpower, terrain attrition and mission caches remain
+available separately from the calculated stat components.
+
+Country-cost queries join demanded effective operands through recorded modifier
+registrations. Individual module XP contributions resolve authored conversion
+and XP rules from the verified content stack, with explicit failures for missing
+country scope or content. The selected source/target generic-upgrade query keeps mixed authored cost
+currencies and the separate generic rounding path. Selected-pair generic and module save-XP queries retain licensing, source-family DLC gates, source/target template selection, target-declared slots, organisation changes and final factor/minimum order. Organisation costs join completed traits, organisation availability/visibility, the initial trait, selected policy and its owning country; unproven inherited conditions/modifiers refuse by name.
+
+Industrial queries compute only the requested source and target. Build,
+conversion and dismantle pools retain their separate IC factors, hull costs,
+positive upgrade deltas and ordered resources. Resource floors precede
+first-smallest pruning and signed integer truncation, then target resource order
+is restored. The comparison uses no organisation; an explicit organisation joins
+current equipment-filtered trait and policy production bonuses. The same_as_mio
+predicate joins the organisation's inherited equipment filter; missing reached
+operands refuse individually. The existing detail sections show total IC,
+contributors and resources.
+
+Production lines includes an Equipment designs section over the complete saved
+roster. Its interactive detail product shows ancestry/designer attribution, all
+stat slots, contributors, mission terms, build resources, country operands and
+source-specific XP contributions. Mission queries join the selected design's
+source terms, native exclusion masks and saved result caches; a contributor
+mismatch remains a named refusal without replacing the known native result.
+Build resources join recorded resource definitions and token names. Module country admission uses the shared
+recorded trigger evaluator. Ship/wing context joins only the selected unit's XP
+and assigned ace. Detail reveal shares replay's directed access and reserved
+intel rules; the query accepts explicit observer, target and fog context. The default reveal query joins the observed game fog singleton, while explicit fog choices remain conditional queries. Slot required flags and category declarations follow content aliases and inheritance. Full structural dependency/count/role validity and technology/project unlock sources derive from recorded content and country state. Selected wing detail shows the replacement byte and complete ordered equipment bank. Reached missing operands remain named refusals without discarding readable sheet sections.
+Faction details show held goals/manifest/sections, current authored conditions and reward descriptions, exact member balances/gains/baselines/upgrades, projection/shares/rank, variables/seed, research inputs, doctrine folders, minimum upgrades, projection totals and faction/system extracted resources. Shared programmes retain their explicit supplying read hour. Advisor and upgrade modifier ownership, research support levels, shared doctrine progress, score explanations and goal command gates join their recorded operands and content. Individually missing condition or dynamic progress inputs are named and counted; independent sections survive sibling failures.
+
 The dashboard's shared product layer, below every product crate and the
 [dashboard](../dashboard/README.md) itself: recording sources and their content,
 the catalogue loader, the prepared store's shared pages, the product contract and
 the shared products other products build on. Nothing here names the product
 registry, the preparation pipeline or the service; the dashboard re-exports every
 module at its old `dashboard::` path, and product crates name what they use
-here as `dashboard_base::…`.
+here as `dashboard_base::â€¦`.
+
+The interactive `faction-details` product selects one full faction handle at one recorded hour. It reads manifests, runtime goals and their retained progress, histories, extra slots and dates through the replay row API. Goal names and descriptions use the recorded content catalogue and faction/selected-country localisation environment. Research/manpower access unlocks, rules, shared programmes and signed manpower contributions are independent sections of the same selected-faction reply. Programme details join existing project tables at the programme table's certified supplying hour, which the reply dates independently of the current reference list; the manpower total follows the native signed wrapping sum. Unavailable tables, content and individual text remain explicit refusals without hiding independent known values.
 
 | Module | What it does |
 |---|---|
@@ -22,6 +67,10 @@ here as `dashboard_base::…`.
 | [test_fixtures.rs](src/test_fixtures.rs) | Test sources and content options over dashboard-core's recording builders. |
 
 ## Prepared series
+
+The prepared map's native selection includes naval repair task settings, fleet home-base
+automation and intended composition for owned naval hovers. These rows are map inputs;
+they do not extend the shared authored-trigger kit used by unrelated products.
 
 Independent family folds share the publication predicate in `prepared::pages`:
 a continuing, unmeasured batch below its recording limit waits while pending
@@ -59,6 +108,11 @@ Inactive keys with no pending rows or partial summaries reuse the empty payload
 directly. Every key keeps its
 ordinary directory entry and byte extent; active runs and pending summaries are
 encoded for the current batch bounds.
+
+Only a bucket with ordered endpoints and the same exact absolute total as its
+constant span is eligible for span compaction. Other merged buckets retain their
+whole values, including backdated endpoints and sparse totals whose hypothetical
+constant span would overflow.
 
 Equal authenticated observations extend their held run in one step, keeping
 supplying boundaries, repeated-hour observations and unknown intervals separate.
@@ -295,9 +349,9 @@ continue to use their independent supplying-block observations.
 Capacity charges use actual vector and string capacities. On a 64-bit target a
 banked holder's compact observation has 64 inline bytes plus its fitted native
 key; all three bank measures share it. A subject relation has 80 inline bytes
-plus its two tags and optional level token. At 1,500 holders with 20–40-byte
-native keys, the banked observations occupy about 0.12–0.15 MiB per block and
-80–100 MiB for 663 blocks, plus charged cache entries. Subject sizing follows
+plus its two tags and optional level token. At 1,500 holders with 20â€“40-byte
+native keys, the banked observations occupy about 0.12â€“0.15 MiB per block and
+80â€“100 MiB for 663 blocks, plus charged cache entries. Subject sizing follows
 the live relation count and token lengths. Exact bank folds retain the selected
 holders' three banks and read-hour runs, with a bound of their largest charged
 block times the largest exact working set requested. Proved occupation windows
@@ -575,7 +629,9 @@ views keep their coverage gate.
 ## Prepared map checkpoints
 
 [prepared_map.rs](src/prepared_map.rs) prepares the map's native inputs and shared
-authored-trigger tables. Independent native checkpoints retain decoded rows,
+authored-trigger tables, including the operative hovers' intel contributions,
+source entries, national network caches and propaganda history. Independent
+native checkpoints retain decoded rows,
 partial censuses, unavailable fields and supplying hours every 720 accepted
 updates. Each existing Store range uses zstd9 with a checksum. Hourly updates
 remain in the recording; no prepared update pages or packet seeds are written.
@@ -648,6 +704,9 @@ builder: there are no country amounts, ranks or known inventory.
 Cold research state replies retain the last witnessed slot availability when
 current inputs are unavailable. Those slots have no current state or fabricated
 read coverage, so the active view shows them as unavailable.
+Prepared slot reads retain their supplying hour independently of progress,
+including empty slots and reads witnessing a removed slot. Unavailable inputs
+keep the preceding supplying hour; a new empty read clears earlier progress.
 
 Prepared map selection retains the Operatives map's mission, operation, agency-buffer, strategic-operative and stability inputs alongside the shared map and trigger operands.
 
@@ -723,6 +782,32 @@ Production presentation retains counted variant membership by holder inventory
 version, replacing only changed holders while dating names at each presentation.
 These operand and membership caches are transient.
 
+Reached research replies include the unused grant inventory. The projection preserves repeated IDs and restrictions in native order, proves a continuous supplying owner read at the requested hour and resolves labels through the bound recorded content.
+
+Research numeric state and held grants remain available when content presentation refuses; that refusal supplies a warning, and stale artwork/localisation bindings are cleared.
+
+Faction details include phase-derived account balances, shares, rank and totals; member selections; advisor/spymaster modifier ownership; applied goal-section sources; doctrine-sharing mastery minima; and programme support levels at their explicit daily supplying hour. Goal availability binds leader ROOT and acting-country FROM independently. Command gates combine the runtime DLC mask, membership, authored checks, held goals, category capacity and initiative; term dates remain available without inventing an independent cooldown. Missing reached operands have individual named refusals.
+
+Faction goal confirmation excludes every already-held candidate; each nonzero held status has free replacement cost. Held-goal removal checks do not depend on the replaced goal's own availability. Contribution explanations derive the subject scaler and scientist term from the carried country operand; the expected manpower term uses the controlled-state roster and controller recruitment operands at one explicitly labelled supplying hour, including held available/locked/population words, cores, noncore modifiers, selected upgrade and recorded content defines. A zero effective subject scaler proves zero without reaching those inputs. Only individually missing reached operands refuse a member prediction.
+The interactive country-people product answers only the requested reached country and hour. It derives native manpower pool sums, recruitment targets and rates, effective state recruitment and deployed branch manpower, and returns exile resources and election details. Content defines and modifier metadata resolve through the recording's stack; missing operands produce counted named refusals.
+
+Runtime country-people replies and offline content preparation share the validated recruitment defines cache for each resolved stack, including named failures. Missing defines refuse only their dependent recruitment results.
+
+Ordinary army manpower uses native roster/effective/logical ownership and excludes exile-origin templates in ordinary, sent and volunteer loops. Effective recruitment starts with the signed country residual; any missing controlled-state row refuses the total by name while retaining known state details. Ordinary and exile-attributed air crews are independent channels; exile cards show deployed crews even when the wing belongs to the host pool.
+Equipment design details show the demanded country's consumable discount roster
+and the selected source's clamped discount. Exhausted unpruned entries remain
+visible because native selection does not filter remaining uses.
+
+Selected-unit numerical contributors join content static XP modifiers, discrete ship levels, wing tenth-step XP scaling, equipment-pool category exclusions and alive ace definition effects. Own-entry eligibility/clamps and separate owner effectiveness/wing-country bonus stages remain visible. The sub-unit pool uses its recorded database index. Carrier effects join the existing complete positive-equipment flag word, including nonselected hulls. Ship display precision crossing a mod threshold refuses individually; a foreign wing training owner outside existing air-design demands also refuses by name.
+
+
+Equipment-design detail selects CountryCommandPower with its selected-unit rows, so ace effectiveness and range/speed owner stages remain available in selected replay reads.
+
+Prepared map selection includes division career history and existing manpower contributors for the deployed singleton hover's retained career and exact XP normalization. It shares the recorded operands instead of recording a second normalized XP value.
+
+Research continuations persist simulation history and rebuild allocation budgets from restored allocations on their first observation; process-local capacities are not persisted.
+
+Factory preparation keeps a sparse branch-wide per-observation refusal count. Reached faction totals read that count at the requested hour, so later failures do not appear in earlier replies.
 Within one immutable series reader, contiguous event pages retain their merged
 frontier and per-key endpoint ordinals. A changed selection, window, cursor or
 coverage clamp starts an ordinary seek. Point reads retain each key's last
@@ -764,3 +849,30 @@ indexes from the next complete read. Appearance fields other than the original
 naming tag leave this projection unchanged. Gaps, refusals and restore retain
 the ordinary full-read and naming-unknown boundaries. These dependency indexes
 are runtime state.
+
+Prepared map selection includes CountryTemplateState for the existing garrison/staff sections. Its regression encodes a recording, prepares a sparse checkpoint with the production selection and restores it with the production map Reader.
+The production prepared-map selection includes the five shared movement-speed
+operand tables alongside division movement and status, so checkpoint seek and
+subsequent recorded updates retain the inputs arrival estimates consume.
+Country identity history resolves captured scope references only with the occurrence hour and matching native country ID/instance witness, retaining alias and missing-read refusals.
+
+Within one immutable series reader, contiguous event pages retain their merged
+frontier and per-key endpoint ordinals. A changed selection, window, cursor or
+coverage clamp starts an ordinary seek. Point reads retain each key's last
+resolved global run bounds, authenticating the requested hour's local run
+before reuse, so a missing hour cannot become known through the retained bounds.
+These transient lookups end with the reader.
+
+Faction condition and command-gate explanations format failures only when appending reply reason strings.
+Within one immutable series reader, contiguous event pages retain their merged
+frontier and per-key endpoint ordinals. A changed selection, window, cursor or
+coverage clamp starts an ordinary seek. Point reads retain each key's last
+resolved global run bounds, authenticating the requested hour's local run
+before reuse, so a missing hour cannot become known through the retained bounds.
+These transient lookups end with the reader.
+
+The native map selection also retains naval repair-base allocations and ordered repair queues for the Navy base capacity text.
+
+Prepared map checkpoints retain AirTransferInputs for selected-wing transfer arrows and progress; these inputs are ordinary recorded simulation state.
+
+Prepared map checkpoints retain the complete sparse Navy mine vectors and ordered standing incident reports. The mine extent witness, signed amounts and stored full incident identities survive checkpoint reconstruction unchanged.

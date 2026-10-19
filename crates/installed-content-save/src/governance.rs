@@ -7,6 +7,9 @@ use super::{
     required_bytes, scalar,
 };
 
+mod doctrine;
+pub use doctrine::*;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
     pub countries: BTreeMap<Vec<u8>, Country>,
@@ -25,6 +28,10 @@ pub struct DoctrineStatus {
     /// Enabled tactics as database IDs in vector order.
     /// The writer omits an empty vector.
     pub enable_tactic: Vec<i32>,
+    pub folders: Vec<DoctrineFolder>,
+    pub cost_reductions: Vec<Option<DoctrineCostReduction>>,
+    pub daily_mastery: Vec<Option<DoctrineMasteryGrant>>,
+    pub equipment_bonuses: Vec<DoctrineEquipmentBonus>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -108,6 +115,22 @@ pub struct Research {
     pub technologies: Vec<(Vec<u8>, Technology)>,
     /// Saved array order and repeated idle/technology keys remain intact.
     pub slots: Vec<ResearchSlot>,
+    pub next_bonus_id: Option<i32>,
+    pub grants: Vec<ResearchGrant>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResearchGrant {
+    pub cost: bool,
+    pub id: i32,
+    pub name: Vec<u8>,
+    pub uses: i32,
+    pub claims: i32,
+    pub speed_raw: i64,
+    pub ahead_raw: i64,
+    pub cost_raw: i64,
+    pub technologies: Vec<Vec<u8>>,
+    pub categories: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -391,13 +414,48 @@ fn parse_research(items: &[Item]) -> io::Result<Research> {
             points_factor: decimal(fields, b"points_factor")?,
         });
     }
+    let mut grants = Vec::new();
+    for cost in [false, true] {
+        for item in items.iter().filter(|item| {
+            item.key.as_deref()
+                == Some(if cost {
+                    b"limited_use_cost_reduction_bonus".as_slice()
+                } else {
+                    b"limited_use_bonus".as_slice()
+                })
+        }) {
+            let fields = block(&item.value)?;
+            let repeated = |key: &[u8]| {
+                fields
+                    .iter()
+                    .filter(|field| field.key.as_deref() == Some(key))
+                    .map(|field| scalar(&field.value).map(|value| value.to_vec()))
+                    .collect::<io::Result<Vec<_>>>()
+            };
+            grants.push(ResearchGrant {
+                cost,
+                id: optional_integer(fields, b"id")?
+                    .ok_or_else(|| invalid("research grant lacks ID"))?,
+                name: required_literal(fields, b"name")?,
+                uses: optional_integer(fields, b"uses")?.unwrap_or(0),
+                claims: optional_integer(fields, b"claim")?.unwrap_or(0),
+                speed_raw: decimal(fields, b"bonus")?.map_or(0, |value| value.raw),
+                ahead_raw: decimal(fields, b"ahead_reduction")?.map_or(0, |value| value.raw),
+                cost_raw: decimal(fields, b"cost_reduction")?.map_or(0, |value| value.raw),
+                technologies: repeated(b"technology")?,
+                categories: repeated(b"category")?,
+            });
+        }
+    }
     Ok(Research {
         technologies,
         slots,
+        next_bonus_id: optional_integer(items, b"next_bonus_id")?,
+        grants,
     })
 }
 
-fn parse_decisions(items: &[Item]) -> io::Result<Decisions> {
+pub fn parse_decisions(items: &[Item]) -> io::Result<Decisions> {
     let mut containers: [Vec<Decision>; 5] = Default::default();
     // The decision writer saves the five source vectors in this order;
     // the two targeted containers have distinct saved labels.
@@ -652,6 +710,10 @@ fn parse_doctrine(items: &[Item]) -> io::Result<Vec<DoctrineStatus>> {
             Ok(DoctrineStatus {
                 country: bytes(fields, b"country")?,
                 enable_tactic,
+                folders: doctrine::folders(fields)?,
+                cost_reductions: doctrine::cost_reductions(fields)?,
+                daily_mastery: doctrine::mastery_grants(fields)?,
+                equipment_bonuses: doctrine::equipment_bonuses(fields)?,
             })
         })
         .collect()
@@ -664,6 +726,28 @@ mod tests {
 
     fn parse_text(text: &[u8]) -> io::Result<Pack> {
         parse(&installed_content_core::parser::parse(text)?.items)
+    }
+
+    #[test]
+    fn gap_research_grants_research_grant_inventory_keeps_unused_grants_duplicates_restrictions_and_counter()
+     {
+        let research = parse_research(&installed_content_core::parser::parse(br#"next_bonus_id=-2147483648
+            limited_use_bonus={id=7 name=mod_grant uses=3 claim=2 bonus=0.25 ahead_reduction=-1.5 technology=mod_tech technology=mod_tech category=mod_category}
+            limited_use_bonus={id=7 name=mod_repeated uses=-1}
+            limited_use_cost_reduction_bonus={id=8 name=mod_cost uses=1 cost_reduction=0.4 category=mod_category}"#).unwrap().items).unwrap();
+        assert_eq!(research.next_bonus_id, Some(i32::MIN));
+        assert_eq!(research.grants.len(), 3);
+        assert_eq!(
+            research.grants[0].technologies,
+            [b"mod_tech".to_vec(), b"mod_tech".to_vec()]
+        );
+        assert_eq!(research.grants[0].claims, 2);
+        assert_eq!(research.grants[0].speed_raw, 25_000);
+        assert_eq!(research.grants[0].ahead_raw, -150_000);
+        assert_eq!(research.grants[1].id, 7);
+        assert_eq!(research.grants[1].uses, -1);
+        assert!(research.grants[2].cost);
+        assert_eq!(research.grants[2].cost_raw, 40_000);
     }
 
     #[test]
@@ -758,14 +842,22 @@ mod tests {
         assert_eq!(
             pack.doctrine.unwrap(),
             [
-                DoctrineStatus::default(),
+                DoctrineStatus {
+                    folders: vec![DoctrineFolder {
+                        folder: b"land".to_vec(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
                 DoctrineStatus {
                     country: Some(b"GER".to_vec()),
                     enable_tactic: vec![43, 7, 43],
+                    ..Default::default()
                 },
                 DoctrineStatus {
                     country: Some(b"ITA".to_vec()),
                     enable_tactic: Vec::new(),
+                    ..Default::default()
                 },
             ]
         );

@@ -299,6 +299,8 @@ fn batched_naming_carried_members_and_heap_cache_equal_serial() {
         }
         let memory = reads(&bytes, false, None, false);
         actual.attack.certify(
+            &memory,
+            0,
             &seeds,
             Outcome::Rows { len: seeds.len() },
             Some(&mut store),
@@ -368,6 +370,8 @@ fn batched_naming_selects_once_with_sampled_touched_and_reordered_seeds() {
         }
         let memory = reads(&bytes, false, None, false);
         actual.attack.certify(
+            &memory,
+            0,
             &seeds,
             Outcome::Rows { len: seeds.len() },
             Some(&mut store),

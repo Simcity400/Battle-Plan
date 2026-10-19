@@ -731,7 +731,19 @@ fn fleets(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
             r,
             &format!("{label}.mission_region_count"),
             (row.mission_region_count > 0).then_some(row.mission_region_count as usize),
-            expected.strategic_regions,
+            expected.strategic_regions.as_ref().map(Vec::len),
+        );
+        let mut membership = expected.strategic_regions.clone().unwrap_or_default();
+        membership.sort_unstable();
+        eq(
+            r,
+            &format!("{label}.mission_regions"),
+            row.mission_regions
+                .require("fleet mission regions")
+                .map_err(invalid)?
+                .as_ref()
+                .map(|rows| rows.as_slice()),
+            Some(membership.as_slice()),
         );
         eq(
             r,
@@ -896,24 +908,151 @@ fn countries(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
     Ok(())
 }
 
-fn saved_groups(save: &Save) -> BTreeMap<u64, (bool, Option<i32>, Option<i32>)> {
+fn saved_groups(save: &Save) -> BTreeMap<u64, &installed_content_save::naval_history::OrdersGroup> {
     save.naval_history
         .theatre_countries
         .iter()
         .flat_map(|countries| countries.values())
         .flat_map(|country| &country.land)
         .flat_map(|theatre| &theatre.definitions)
-        .map(|group| {
-            (
-                group.id,
-                (
-                    group.withdrawing,
-                    group.distance,
-                    group.invasion_source_distance,
-                ),
-            )
-        })
+        .map(|group| (group.id, group))
         .collect()
+}
+
+fn hq_template_context(
+    frame: &DecodedFrame,
+    row: &replay_data::rows::OrdersGroupCounterInputRow,
+    saved: &installed_content_save::naval_history::OrdersGroup,
+    r: &mut Report,
+) -> io::Result<()> {
+    let value = row
+        .template_context
+        .require("OrdersGroupCounterInputs.template_context")
+        .map_err(invalid)?
+        .as_ref()
+        .ok_or_else(|| invalid("OrdersGroupCounterInputs.template_context acquisition refused"))?;
+    let label = format!("OrdersGroupCounterInputs {}.template_context", row.group);
+    let target = if value.target == 0 {
+        None
+    } else {
+        frame
+            .complete::<tables::DivisionTemplates>()?
+            .iter()
+            .any(|row| row.template == value.target)
+            .then_some(value.target)
+    };
+    eq(r, &format!("{label}.target"), target, saved.target_template);
+    eq(
+        r,
+        &format!("{label}.deployed"),
+        value.deployed != 0,
+        saved.hq_deployed,
+    );
+    eq(
+        r,
+        &format!("{label}.queued"),
+        value.queued != 0,
+        saved.hq_queued,
+    );
+    eq(
+        r,
+        &format!("{label}.deployment present"),
+        value.deployment.is_some(),
+        saved.hq_deployment.is_some(),
+    );
+    match (&value.deployment, &saved.hq_deployment) {
+        (Some(actual), Some(expected)) => {
+            let countries = country_context(frame)?;
+            eq(
+                r,
+                &format!("{label}.country"),
+                required_country_tag(actual.country, &countries.links)?,
+                expected.country.as_slice(),
+            );
+            eq(
+                r,
+                &format!("{label}.priority"),
+                actual.priority,
+                expected.priority,
+            );
+            eq(
+                r,
+                &format!("{label}.allow_zero_entries"),
+                Some(actual.allow_zero != 0),
+                expected.equipment.allow_zero_entries,
+            );
+            eq(
+                r,
+                &format!("{label}.assembled manpower"),
+                actual.assembled_manpower,
+                expected.assembled_manpower,
+            );
+            eq(
+                r,
+                &format!("{label}.requested manpower"),
+                actual.requested_manpower,
+                expected.requested_manpower,
+            );
+            eq(r, &format!("{label}.order"), actual.order, expected.order);
+            eq(
+                r,
+                &format!("{label}.requisitioned"),
+                actual.requisitioned != 0,
+                expected.requisitioned,
+            );
+            let equipment = value
+                .equipment
+                .iter()
+                .filter(|row| actual.allow_zero != 0 || row.amount != 0)
+                .map(|row| (row.variant, row.amount))
+                .collect::<Vec<_>>();
+            let expected_equipment = expected
+                .equipment
+                .equipment
+                .iter()
+                .map(|row| (row.variant, row.amount.raw))
+                .collect::<Vec<_>>();
+            eq(
+                r,
+                &format!("{label}.assembled equipment"),
+                equipment,
+                expected_equipment,
+            );
+            let tokens = complete::<tables::LexicalTokens>(frame)?
+                .iter()
+                .map(|row| (row.token, row.literal.as_slice()))
+                .collect::<BTreeMap<_, _>>();
+            let required = value
+                .required
+                .iter()
+                .filter(|row| row.amount != 0)
+                .map(|row| {
+                    let token = tokens
+                        .get(&row.token)
+                        .ok_or_else(|| invalid("headquarters required equipment token missing"))?;
+                    Ok((c_string(token).to_vec(), row.amount))
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            let expected_required = expected
+                .required
+                .iter()
+                .map(|(token, amount)| (token.clone(), amount.raw))
+                .collect::<Vec<_>>();
+            eq(
+                r,
+                &format!("{label}.requested equipment"),
+                required,
+                expected_required,
+            );
+        }
+        (None, _) if !value.equipment.is_empty() || !value.required.is_empty() => {
+            return Err(invalid(
+                "headquarters context without holder contains equipment",
+            ));
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn groups(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
@@ -932,7 +1071,27 @@ fn groups(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let mut unsaved = 0;
     for row in rows {
         match saved.get(&row.group) {
-            Some(&(withdrawing, distance, invasion_source_distance)) => {
+            Some(group) => {
+                hq_template_context(frame, row, group, r)?;
+                let (withdrawing, distance, invasion_source_distance, nearest_front) = (
+                    group.withdrawing,
+                    group.distance,
+                    group.invasion_source_distance,
+                    group.hq_nearest_front,
+                );
+                let value = row
+                    .hq_nearest_front
+                    .require("OrdersGroupCounterInputs.hq_nearest_front")
+                    .map_err(invalid)?
+                    .ok_or_else(|| {
+                        invalid("OrdersGroupCounterInputs.hq_nearest_front acquisition refused")
+                    })?;
+                eq(
+                    r,
+                    &format!("OrdersGroupCounterInputs {}.hq_nearest_front", row.group),
+                    (value >= 0).then_some(value),
+                    nearest_front,
+                );
                 eq(
                     r,
                     &format!("OrdersGroupCounterInputs {}.withdrawing", row.group),

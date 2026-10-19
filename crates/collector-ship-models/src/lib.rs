@@ -8,6 +8,7 @@ use collector_memory::read_accounting;
 use collector_memory::terminal as allocation;
 use collector_observers::air_base_carry_changes;
 use collector_observers::naval_tree_changes;
+use collector_observers::unit_history_changes;
 use collector_primitives::clock;
 use collector_primitives::table_capture;
 use collector_projection::projection;
@@ -17,6 +18,7 @@ use collector_status::status;
 use collector_test_support as _;
 use collector_timing::hook_timing;
 
+mod air_capacity;
 pub mod ship_model_changes;
 pub mod ship_models;
 

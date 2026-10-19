@@ -54,6 +54,11 @@ impl Content {
                     speed: rail.speed,
                     maximum_level: rail.maximum_level,
                 }),
+                noncore_supply: movement
+                    .noncore_supply
+                    .each_ref()
+                    .map(|value| value.as_ref().ok().copied()),
+                combat_movement: movement.combat_movement.as_ref().ok().copied(),
             },
             terrain_movement: terrain
                 .categories
@@ -92,10 +97,8 @@ impl Geography for Content {
         self.map.terrain(province).map(|terrain| terrain.index)
     }
 
-    fn land(&self, province: u32) -> Option<bool> {
-        self.map
-            .terrain(province)
-            .map(|terrain| terrain.flags & 1 != 0)
+    fn terrain_flags(&self, province: u32) -> Option<u8> {
+        self.map.terrain(province).map(|terrain| terrain.flags)
     }
 
     fn terrain_movement(&self, index: i32) -> Option<i64> {
@@ -132,7 +135,55 @@ struct Edge {
     path: Vec<u32>,
     numerator: i64,
     speed: Result<i64, String>,
+    distance: Option<i64>,
     key: MovementRowKey,
+}
+
+/// Exact native observations at the same held boundary as playback's inputs.
+/// This is independent of the cross-hour progress witness below.
+#[derive(Default)]
+pub struct NativeSamples {
+    pub matched: u64,
+    pub differed: u64,
+    pub refused: u64,
+    pub absent: u64,
+    pub unavailable_hours: u64,
+    listed: Vec<String>,
+}
+
+impl NativeSamples {
+    fn compare(&mut self, native: Option<i64>, derived: &Result<i64, String>) {
+        match (native, derived) {
+            (Some(native), Ok(derived)) if native == *derived => self.matched += 1,
+            (Some(_), Ok(_)) => self.differed += 1,
+            _ => self.refused += 1,
+        }
+    }
+
+    pub fn required_failures(&self) -> [u64; 2] {
+        [
+            self.differed,
+            self.refused + self.absent + self.unavailable_hours + u64::from(self.matched == 0),
+        ]
+    }
+
+    fn optional_failures(&self) -> [u64; 2] {
+        if self.matched + self.differed + self.refused == 0 {
+            [0, 0]
+        } else {
+            self.required_failures()
+        }
+    }
+
+    pub fn print(&self) {
+        println!(
+            "division movement same-boundary native samples: {} equal, {} differing, {} refused, {} movers without samples, {} hours with unavailable tables",
+            self.matched, self.differed, self.refused, self.absent, self.unavailable_hours
+        );
+        for line in &self.listed {
+            println!("  native sample: {line}");
+        }
+    }
 }
 
 #[derive(Default)]
@@ -144,6 +195,8 @@ pub struct Checker {
     /// Pairs whose step differs from the earlier hour's derived speed but equals the
     /// later hour's, over the same edge.
     pub matched_later: u64,
+    /// Equal progress steps clipped at the native first-edge distance.
+    pub matched_clipped: u64,
     pub differed: u64,
     /// Pairs whose numerator did not advance (a stopped or blocked move).
     pub stalled: u64,
@@ -152,6 +205,7 @@ pub struct Checker {
     listed: Vec<String>,
     /// Differences by the terms the division's edge took, for diagnosis.
     differences: BTreeMap<String, u64>,
+    pub native: NativeSamples,
 }
 
 impl Checker {
@@ -167,6 +221,7 @@ impl Checker {
             return;
         };
         let current = edges(frame, content);
+        self.observe_native(frame, &current);
         if let Some((hour, previous)) = self.previous.take()
             && hour + 1 == frame.hour
         {
@@ -185,11 +240,32 @@ impl Checker {
                 match &before.speed {
                     Err(reason) => *self.refused.entry(reason.clone()).or_default() += 1,
                     Ok(_) if step == 0 => self.stalled += 1,
-                    Ok(speed) if *speed == step => self.matched += 1,
+                    Ok(speed)
+                        if progress_matches(
+                            before.numerator,
+                            after.numerator,
+                            *speed,
+                            before.distance,
+                        ) =>
+                    {
+                        self.matched += 1;
+                        self.matched_clipped += u64::from(*speed != step);
+                    }
                     // The step runs after the next update's own writers of some operands:
                     // the later hour's terms, over the same edge, can be the ones it read.
-                    Ok(_) if after.speed.as_ref().is_ok_and(|speed| *speed == step) => {
+                    Ok(_)
+                        if after.speed.as_ref().is_ok_and(|speed| {
+                            progress_matches(
+                                before.numerator,
+                                after.numerator,
+                                *speed,
+                                before.distance,
+                            )
+                        }) =>
+                    {
                         self.matched_later += 1;
+                        self.matched_clipped +=
+                            u64::from(after.speed.as_ref().is_ok_and(|speed| *speed != step));
                     }
                     Ok(speed) => {
                         self.differed += 1;
@@ -208,7 +284,56 @@ impl Checker {
         self.previous = Some((frame.hour, current));
     }
 
+    pub fn observe_samples_only(&mut self, frame: &DecodedFrame) {
+        let Some(Ok(content)) = self.content.as_ref() else {
+            self.native.unavailable_hours += 1;
+            return;
+        };
+        let current = edges(frame, content);
+        self.observe_native(frame, &current);
+    }
+
+    fn observe_native(&mut self, frame: &DecodedFrame, current: &BTreeMap<u64, Edge>) {
+        let Ok(movement) = frame.complete::<tables::DivisionMovement>() else {
+            self.native.unavailable_hours += 1;
+            return;
+        };
+        for row in movement.iter().filter(|row| row.path_total != 0) {
+            let sample = match &row.combat_references {
+                Recorded::Value(Some(packet)) if packet.valid_at(frame.hour, row.combat_count) => {
+                    packet.speed_witness.get()
+                }
+                _ => None,
+            };
+            let Some(native) = sample else {
+                self.native.absent += 1;
+                continue;
+            };
+            let derived = current
+                .get(&row.division)
+                .map(|edge| edge.speed.clone())
+                .unwrap_or_else(|| Err("the mover's first edge is unavailable".into()));
+            self.native.compare(*native, &derived);
+            if (native.is_none() || !derived.as_ref().is_ok_and(|speed| Some(*speed) == *native))
+                && self.native.listed.len() < super::LISTED
+            {
+                self.native.listed.push(format!(
+                    "division {:#x} hour {}: native {native:?}, playback {derived:?}",
+                    row.division, frame.hour
+                ));
+            }
+        }
+    }
+
+    pub fn print_samples(&self) {
+        if let Some(Err(reason)) = &self.content {
+            println!("division movement native sample content refused: {reason}");
+        }
+        self.native.print();
+    }
+
     pub fn print(&self) {
+        self.print_samples();
         match &self.content {
             Some(Err(reason)) => println!("division movement speed: content refused: {reason}"),
             _ => {
@@ -223,6 +348,10 @@ impl Checker {
                 for (kind, count) in &self.differences {
                     println!("  differing with {kind}: {count}");
                 }
+                println!(
+                    "  equal steps clipped at the first-edge distance: {}",
+                    self.matched_clipped
+                );
                 for (reason, count) in &self.refused {
                     println!("  refused ({reason}): {count}");
                 }
@@ -233,20 +362,28 @@ impl Checker {
         }
     }
 
-    /// The witness reports differences without failing: the next hour's update can
-    /// rewrite an operand before its movement step.
+    /// Cross-hour progress categories are diagnostic: writers can change an
+    /// operand between either endpoint and the movement step. Only content
+    /// failure or a present same-boundary native witness affects the result.
     pub fn failures(&self) -> [u64; 2] {
         match &self.content {
             Some(Err(_)) => [0, 1],
-            _ => [0, 0],
+            _ => self.native.optional_failures(),
         }
     }
 }
 
-/// The terms a differing division's edge took that the recording omits or that the
-/// next hour's update can rewrite first: an unbypassed noncore-supply term, days out of
-/// supply, partial supply, fuel, a retreat and a commander block with entries, its
-/// armour speed entry apart.
+/// Movement can stop at the first edge's distance while entry is blocked. The
+/// observed numerator then witnesses the clipped step, rather than a smaller
+/// speed. No tolerance is applied to either branch.
+fn progress_matches(before: i64, after: i64, speed: i64, distance: Option<i64>) -> bool {
+    let advanced = before.wrapping_add(speed).max(0);
+    after == advanced || distance.is_some_and(|distance| after == distance && advanced >= distance)
+}
+
+/// The terms a differing division's edge took that the next hour's update can rewrite
+/// first: days out of supply, partial supply, fuel, a retreat and a commander block
+/// with entries, its armour speed entry apart.
 fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> String {
     let status = frame
         .complete::<tables::DivisionStatus>()
@@ -260,11 +397,6 @@ fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> S
         return "no status".into();
     };
     let mut terms = Vec::new();
-    if status.move_flags & replay_data::rows::DivisionStatusRow::MOVE_NONCORE_SUPPLY_BYPASS == 0
-        && status.move_flags & replay_data::rows::DivisionStatusRow::MOVE_EXILED == 0
-    {
-        terms.push("noncore unbypassed");
-    }
     if matches!(status.out_of_supply_days, Recorded::Value(Some(days)) if days != 0) {
         terms.push("days out of supply");
     }
@@ -335,6 +467,17 @@ fn edges(frame: &DecodedFrame, content: &Content) -> BTreeMap<u64, Edge> {
                 path: row.path.clone(),
                 numerator: row.numerator,
                 speed,
+                distance: content
+                    .map
+                    .terrain(division.province)
+                    .zip(content.map.terrain(first))
+                    .and_then(|(from, to)| {
+                        if from.flags & 3 == 0 && to.flags & 1 != 0 {
+                            Some(content.defines.embark_distance)
+                        } else {
+                            content.map.distance(division.province, first)
+                        }
+                    }),
                 key: MovementRowKey {
                     // A fuel word below a whole tank is decided by the speed term itself;
                     // here any positive word under the largest recorded fuel is flagged.
@@ -345,4 +488,91 @@ fn edges(frame: &DecodedFrame, content: &Content) -> BTreeMap<u64, Edge> {
         );
     }
     edges
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_movement_samples_require_exact_equality_and_complete_coverage() {
+        let mut samples = NativeSamples::default();
+        assert_eq!(samples.required_failures(), [0, 1]);
+        samples.compare(Some(12_785), &Ok(12_785));
+        assert_eq!(samples.required_failures(), [0, 0]);
+        samples.compare(Some(12_785), &Ok(12_784));
+        samples.compare(Some(12_785), &Ok(12_786));
+        assert_eq!(samples.required_failures(), [2, 0]);
+        samples.compare(None, &Ok(12_785));
+        samples.compare(Some(12_785), &Err("missing state term".into()));
+        samples.absent = 3;
+        samples.unavailable_hours = 1;
+        assert_eq!(samples.required_failures(), [2, 6]);
+    }
+    #[test]
+    fn movement_witness_compares_native_progress_clipping_without_a_tolerance() {
+        assert!(progress_matches(
+            1_016_240,
+            1_016_666,
+            5_000,
+            Some(1_016_666)
+        ));
+        assert!(!progress_matches(
+            1_016_240,
+            1_016_665,
+            5_000,
+            Some(1_016_666)
+        ));
+        assert!(!progress_matches(
+            1_010_000,
+            1_016_666,
+            5_000,
+            Some(1_016_666)
+        ));
+        assert!(progress_matches(
+            1_010_000,
+            1_015_000,
+            5_000,
+            Some(1_016_666)
+        ));
+        assert!(!progress_matches(1_016_240, 1_016_666, 5_000, None));
+    }
+    fn checker() -> Checker {
+        Checker::new(Ok(Content {
+            map: MovementMap::default(),
+            defines: Defines::default(),
+            terrain_movement: Vec::new(),
+            regions: BTreeMap::new(),
+            sub_units: Err("unused".into()),
+        }))
+    }
+    #[test]
+    fn cross_hour_progress_reports_without_failing_or_requiring_observations() {
+        assert_eq!(Checker::default().failures(), [0, 0]);
+        let mut checker = checker();
+        assert_eq!(checker.failures(), [0, 0]);
+        checker.matched = 1;
+        assert_eq!(checker.failures(), [0, 0]);
+        checker.matched_later = 2;
+        checker.differed = 3;
+        assert_eq!(checker.failures(), [0, 0]);
+        checker.refused.insert("missing state terms".into(), 4);
+        checker.stalled = 5;
+        assert_eq!(checker.failures(), [0, 0]);
+        checker.content = Some(Err("movement content unavailable".into()));
+        assert_eq!(checker.failures(), [0, 1]);
+    }
+    #[test]
+    fn report_only_progress_does_not_hide_native_sample_failures() {
+        let mut checker = checker();
+        checker.differed = 35;
+        checker.refused.insert("missing state terms".into(), 4);
+        checker.native.compare(Some(12_785), &Ok(12_785));
+        assert_eq!(checker.failures(), [0, 0]);
+        checker.native.compare(Some(12_785), &Ok(12_784));
+        assert_eq!(checker.failures(), [1, 0]);
+        checker.native.compare(None, &Ok(12_785));
+        assert_eq!(checker.failures(), [1, 1]);
+        checker.native.absent = 1;
+        assert_eq!(checker.failures(), [1, 2]);
+    }
 }

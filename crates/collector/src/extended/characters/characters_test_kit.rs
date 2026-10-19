@@ -2,7 +2,7 @@ use super::tests::{
     ADDRESS, CHARACTERS, IMAGE, MANAGER, ROSTER, UNITS, fixture, literal, pointer, put,
 };
 use super::{
-    Buffer, Capacities, Captured, CharactersCopyContext, CharactersCopyReport, CharactersJob,
+    Buffer, Capacities, Captured, CharactersCopyContext, CharactersCopyReport, CharactersJob, N,
     copy_characters_refresh, walk_family,
 };
 use engine_native::{
@@ -289,14 +289,14 @@ pub(crate) fn split(
         force_full: false,
         base: BASE,
         game_state: GAME_STATE,
-        active: [true; 5],
+        active: [true; N],
         trait_rows,
         trait_bytes,
     };
     let mut first = CharactersJob::new();
     let report = copy_characters_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
-    let mut ticks = [0u64; 5];
+    let mut ticks = [0u64; N];
     captured.decode_characters_payload(BASE, &first, &mut ticks);
     (captured, report, first)
 }

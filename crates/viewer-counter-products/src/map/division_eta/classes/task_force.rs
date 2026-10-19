@@ -300,6 +300,10 @@ mod tests {
                 river_crossing_two: 0,
                 river_crossing_three: 0,
                 organisation: Err("unrelated organisation defines unavailable".into()),
+                noncore_supply: std::array::from_fn(|_| {
+                    Err("unrelated noncore supply defines unavailable".into())
+                }),
+                combat_movement: Err("unrelated combat movement define unavailable".into()),
                 rail: Err("unrelated railway defines unavailable".into()),
                 naval: Err("unrelated range defines unavailable".into()),
             },

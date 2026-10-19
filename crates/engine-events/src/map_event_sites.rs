@@ -27,6 +27,28 @@
 //! game. A refused read refuses the whole event.
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cprovince, cstate, cunit, read};
 
+/// A forced scripted map refresh, after its native mode-name and limit gates.
+pub const SCRIPTED_REFRESH_CALL_RVA: usize = 0x0035_71d1;
+pub const SCRIPTED_REFRESH_CALL_SENTINEL: [u8; 16] = [
+    0xe8, 0xfa, 0xe8, 0xbc, 0x00, 0x4c, 0x8d, 0x9c, 0x24, 0xe0, 0x00, 0x00, 0x00, 0x49, 0x8b, 0x5b,
+];
+/// The current map-mode object; its first word is the selected mode.
+pub const MAP_MODE_SINGLETON_RVA: usize = 0x0332_4028;
+/// The first scripted mode follows the native modes.
+pub const FIRST_SCRIPTED_MAP_MODE: i32 = 40;
+
+pub fn scripted_map_mode(memory: &impl Memory, base: usize) -> Result<u32, &'static str> {
+    let pointer = base
+        .checked_add(MAP_MODE_SINGLETON_RVA)
+        .and_then(|address| read::<u64>(memory, address))
+        .filter(|&pointer| pointer != 0)
+        .ok_or("map-mode object is unavailable")?;
+    let mode = read::<i32>(memory, pointer as usize).ok_or("map-mode selection is unreadable")?;
+    mode.checked_sub(FIRST_SCRIPTED_MAP_MODE)
+        .and_then(|index| u32::try_from(index).ok())
+        .ok_or("forced map refresh names no scripted mode")
+}
+
 /// The call asking the local viewer's intel level of a revealed fake division
 /// (`RCX`, the division), after the queued-for-deletion refusal.
 pub const FAKE_REVEAL_VISIBILITY_CALL_RVA: usize = 0x012a_6060;

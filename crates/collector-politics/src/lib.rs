@@ -5,6 +5,7 @@ use collector_observers::country_input_changes;
 use collector_observers::event_feed_observer;
 use collector_observers::naval_tree_changes;
 use collector_observers::political_status_changes;
+use collector_observers::script_event_observer;
 use collector_observers::war_provenance;
 use collector_primitives::clock;
 use collector_primitives::shared_lane;

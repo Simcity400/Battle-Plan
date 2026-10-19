@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn production_design_discounts_preserve_order_empty_omission_and_exhausted_uses() {
+    let doc = installed_content_core::parser::parse(
+        br#"discount={
+        { uses=-1 discount=1.23457 types={ synthetic_frame synthetic_frame } }
+        { uses=9 discount=-0.00001 types={} }
+    }"#,
+    )
+    .unwrap();
+    let rows = parse_production(&doc.items).unwrap().design_templates;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].uses, -1);
+    assert_eq!(rows[0].factor.raw, 123_457);
+    assert_eq!(
+        rows[0].equipment,
+        [b"synthetic_frame".to_vec(), b"synthetic_frame".to_vec()]
+    );
+    assert_eq!(rows[1].factor.raw, -1);
+    assert!(rows[1].equipment.is_empty());
+    assert!(parse_production(&[]).unwrap().design_templates.is_empty());
+    let malformed = installed_content_core::parser::parse(b"discount={{ uses=1 types={} }}").unwrap();
+    assert!(parse_production(&malformed.items).is_err());
+}
+
+#[test]
 fn deployment_conveyor_requires_its_unconditional_name_key() {
     let parse = |field: &str| {
         let doc = installed_content_core::parser::parse(format!("military_deployment_conveyor={{id={{id=1 type=8}} division_template_id={{id=2 type=9}} amount=1 location=0 priority=1 {field}}}").as_bytes()).unwrap();
@@ -533,4 +557,95 @@ fn absent_containers_stay_absent_and_foreign_keys_are_refused() {
     ] {
         assert!(pack(text.as_bytes()).is_err(), "{text}");
     }
+}
+
+#[test]
+fn country_template_selection_retains_empty_missing_and_full_references() {
+    let document = installed_content_core::parser::parse(
+        br#"countries={
+        AAA={templates_locked=yes deployment={hq_next_deploy_order=19 default_hq_template={id=4294967295 type=52}}}
+        BBB={deployment={}}
+        CCC={}
+    }"#,
+    )
+    .unwrap();
+    let pack = parse(&document.items).unwrap();
+    assert_eq!(
+        pack.template_states[b"AAA".as_slice()],
+        TemplateState {
+            selected_staff: Some(Some((u64::from(u32::MAX) << 32) | 52)),
+            next_hq_order: Some(19),
+            lock_all: true,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        pack.template_states[b"BBB".as_slice()],
+        TemplateState {
+            selected_staff: Some(None),
+            lock_all: false,
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        pack.template_states[b"CCC".as_slice()],
+        TemplateState {
+            selected_staff: None,
+            lock_all: false,
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn country_garrison_priority_keeps_default_signed_value_and_missing_wrapper_distinct() {
+    let document = installed_content_core::parser::parse(
+        br#"countries={
+        AAA={occupation_status={}}
+        BBB={occupation_status={priority=-2147483648}}
+        CCC={}
+    }"#,
+    )
+    .unwrap();
+    let pack = parse(&document.items).unwrap();
+    assert_eq!(
+        pack.template_states[b"AAA".as_slice()].garrison_priority,
+        Some(1)
+    );
+    assert_eq!(
+        pack.template_states[b"BBB".as_slice()].garrison_priority,
+        Some(i32::MIN)
+    );
+    assert_eq!(
+        pack.template_states[b"CCC".as_slice()].garrison_priority,
+        None
+    );
+}
+
+#[test]
+fn country_template_state_keeps_inherited_garrison_groups_and_state_overrides() {
+    let document = installed_content_core::parser::parse(
+        br#"countries={AAA={occupation_status={
+        division_template_id={id=3 type=52}
+        occupation={BBB={garrison_template_by_state={0={id=9 type=52}}}
+                    CCC={division_template_id={id=4 type=52}}}
+    }}}"#,
+    )
+    .unwrap();
+    let pack = parse(&document.items).unwrap();
+    let selections = pack.template_states[b"AAA".as_slice()]
+        .garrisons
+        .as_ref()
+        .unwrap();
+    assert_eq!(selections.len(), 4);
+    assert_eq!(selections[&(None, None)], Some((3_u64 << 32) | 52));
+    assert_eq!(selections[&(Some(b"BBB".to_vec()), None)], None);
+    assert_eq!(
+        selections[&(Some(b"BBB".to_vec()), Some(0))],
+        Some((9_u64 << 32) | 52)
+    );
+    assert_eq!(
+        selections[&(Some(b"CCC".to_vec()), None)],
+        Some((4_u64 << 32) | 52)
+    );
 }

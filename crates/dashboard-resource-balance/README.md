@@ -57,3 +57,10 @@ Trade query samplers retain their reduced exchanges, resource dictionary and
 country-holder inputs for the reply, refreshing them from every visited frame's
 actual table changes. Reached-hour refusals and the ordinary holder and flow
 projections still run at each visited hour.
+
+The `market-lendlease` product reconstructs only the selected hour and demanded tables, sharing one source-local frame for the Trade flows Market & lend-lease view and its catalogue variant card. It preserves unavailable collections and exact integer strings and resolves demanded equipment/subsidy names through recorded content.
+
+The market-lendlease product reads the complete MarketEvents ledger, including
+explicit holder-level amount-refusal rows. It retains named amount refusals for the affected contract
+or agreement alongside complete fuel, payment and lifetime occurrences; missing
+amounts never become a zero or an empty observed-delivery list.

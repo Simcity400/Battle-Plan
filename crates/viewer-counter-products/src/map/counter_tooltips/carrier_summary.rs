@@ -334,7 +334,7 @@ fn optional_registration<'a>(
         .map(|index| &rows[index]))
 }
 
-fn wing<'a>(context: &Context<'a>, id: u64) -> Result<&'a AirWingRow, String> {
+pub(super) fn wing<'a>(context: &Context<'a>, id: u64) -> Result<&'a AirWingRow, String> {
     let rows = context
         .frame
         .complete::<tables::AirWings>()
@@ -385,11 +385,15 @@ fn seed(context: &Context<'_>, numeric_id: u32) -> Result<u32, String> {
 /// stateless summary's subsequent mission pretest dereferences that same host
 /// and its task force. Do not invent a completed null-host summary.
 fn host(context: &Context<'_>, base: &AirBaseRow) -> Result<(u32, u32, bool), String> {
-    if base.state.is_some() {
-        return Err(format!(
-            "air base {} is state-backed, not a carrier summary",
-            base.id
-        ));
+    if let Some(id) = base.state {
+        let state = context
+            .frame
+            .complete::<tables::States>()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .find(|state| state.id == id)
+            .ok_or("air-base state is unavailable")?;
+        return Ok((slot(context, state.controller)?, id, false));
     }
     if base.host == 0 {
         return Err(format!(
@@ -432,6 +436,33 @@ fn host(context: &Context<'_>, base: &AirBaseRow) -> Result<(u32, u32, bool), St
 }
 
 fn host_name(context: &Context<'_>, base: &AirBaseRow) -> Result<String, String> {
+    if let Some(id) = base.state {
+        let state = context
+            .frame
+            .complete::<tables::States>()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .find(|state| state.id == id)
+            .ok_or("air-base state is unavailable")?;
+        return viewer_foundation::tooltip_text::state_name(
+            context.loc,
+            context.recorded_language,
+            id,
+            &state.custom_name,
+            &state.owner_name,
+            || {
+                let key = context
+                    .content
+                    .ok_or("air-base content unavailable")?
+                    .state_name_keys
+                    .get(&id)
+                    .ok_or("air-base state content name absent")?
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                localise(context.loc, key, &[])
+            },
+        );
+    }
     let inputs = base
         .carrier
         .require("AirBases.carrier")?
@@ -502,7 +533,33 @@ fn country_groups(
     raw: u32,
     kind: i32,
     mission: bool,
+    state_base: bool,
 ) -> Result<String, String> {
+    if state_base {
+        let wings = registration
+            .wings
+            .iter()
+            .map(|&id| wing(context, id))
+            .collect::<Result<Vec<_>, _>>()?;
+        return wing_groups(context.loc, kind, false, wings, |wing| {
+            if slot(context, wing.owner)? != registration.slot {
+                return Err(
+                    "state air-base registered wing country disagrees with its container".into(),
+                );
+            }
+            let index = wing
+                .pool_subunit
+                .require("AirWings.pool_subunit")?
+                .as_ref()
+                .ok_or("state air-base wing pool definition unavailable")?;
+            let (name, _) = context
+                .units
+                .as_ref()
+                .map_err(Clone::clone)?
+                .subunit(*index)?;
+            wing_short_name(context.loc, tag(context, raw)?, name)
+        });
+    }
     let pools = pools(registration)?;
     let inputs = registration
         .carrier
@@ -562,6 +619,15 @@ fn append_country(out: &mut Tooltip, context: &Context<'_>, text: String) {
 /// Both carrier controls share this stateless air-base consumer. Captured
 /// simulation facts are independent of the viewer's local selection and NATO.
 pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
+    if context
+        .frame
+        .complete::<tables::AirBases>()
+        .ok()
+        .and_then(|rows| rows.iter().find(|row| row.id == id))
+        .is_some_and(|base| base.kind == 1 && base.state.is_some())
+    {
+        return rocket_summary(context, id, out);
+    }
     let reached = (|| {
         let rows = context
             .frame
@@ -623,16 +689,22 @@ pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
                 Ok((row, count)) => {
                     total = total.map(|total| total.wrapping_add(count));
                     if tier > 2 {
-                        let text =
-                            country_groups(context, row, occurrence.country, base.kind, mission)
-                                .and_then(|groups| {
-                                    if groups.is_empty() {
-                                        return Ok(groups);
-                                    }
-                                    let tag = tag(context, occurrence.country)?;
-                                    let name = context.country_name(occurrence.slot)?;
-                                    Ok(full_country_header(tag, &name) + &groups)
-                                });
+                        let text = country_groups(
+                            context,
+                            row,
+                            occurrence.country,
+                            base.kind,
+                            mission,
+                            base.state.is_some(),
+                        )
+                        .and_then(|groups| {
+                            if groups.is_empty() {
+                                return Ok(groups);
+                            }
+                            let tag = tag(context, occurrence.country)?;
+                            let name = context.country_name(occurrence.slot)?;
+                            Ok(full_country_header(tag, &name) + &groups)
+                        });
                         match text {
                             Ok(text) if !text.is_empty() => countries.push(text),
                             Ok(_) => (),
@@ -706,12 +778,15 @@ pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
     let positive_total = totals.as_ref().is_ok_and(|&total| total > 0);
     match (name, totals) {
         (Ok(name), Ok(total)) => {
-            let title = full_header(context.loc, base.kind, &name, total, base.capacity, "").map(
-                |mut title| {
-                    title.pop();
-                    title
-                },
-            );
+            let title = if base.state.is_some() {
+                state_header(context, base, &name, total)
+            } else {
+                full_header(context.loc, base.kind, &name, total, base.capacity, "")
+            }
+            .map(|mut title| {
+                title.pop();
+                title
+            });
             append(out, context, false, "carrier full header", title);
         }
         (name, total) => {
@@ -743,21 +818,292 @@ pub(super) fn summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
         return;
     }
     match context.vision.shares_vision_or_fog(controller) {
+        Ok(true) if base.state.is_some() => state_fuel(context, id, out),
         Ok(true) => footer(context, id, out),
         Ok(false) => (),
         Err(reason) => refuse(out, "carrier fuel gate", reason.describe()),
     }
 }
 
+fn state_header(
+    context: &Context<'_>,
+    base: &AirBaseRow,
+    name: &str,
+    planes: i32,
+) -> Result<String, String> {
+    let (level, damaged) = state_levels(context, base, false)?;
+    state_header_text(
+        context.loc,
+        base.kind,
+        name,
+        level,
+        damaged,
+        planes,
+        base.capacity,
+    )
+}
+
+fn state_levels(
+    context: &Context<'_>,
+    base: &AirBaseRow,
+    rocket: bool,
+) -> Result<(i32, i32), String> {
+    let state = base.state.ok_or("state air-base has no state")?;
+    let content = context
+        .content
+        .ok_or("air-base building content unavailable")?;
+    let rows = context
+        .frame
+        .complete::<tables::StateBuildings>()
+        .map_err(|e| e.to_string())?;
+    let tokens = viewer_foundation::table_access::TokenNames::new(context.frame)
+        .map_err(|e| e.to_string())?;
+    let mut level = 0_i32;
+    let mut damaged = 0_i32;
+    for kind in content.building_facts.ordered.iter().filter(|kind| {
+        if rocket {
+            kind.rocket_launch_capacity > 0
+        } else {
+            kind.air_base
+        }
+    }) {
+        for row in rows.iter().filter(|row| row.location == state) {
+            let spelling = tokens.name(row.building_type).map_err(|e| e.to_string())?;
+            let keys = content.building_facts.keys.keys(spelling);
+            if !keys.iter().any(|key| key == &kind.name) {
+                continue;
+            }
+            if keys.len() != 1
+                || content
+                    .building_facts
+                    .ordered
+                    .iter()
+                    .filter(|other| other.name == kind.name)
+                    .count()
+                    != 1
+            {
+                return Err(format!(
+                    "air-base building {} has ambiguous recorded template identity",
+                    kind.name
+                ));
+            }
+            level = level.wrapping_add(i32::from(row.level));
+            damaged = damaged.wrapping_add(i32::from(row.level.wrapping_sub(row.healthy_level)));
+        }
+    }
+    Ok((level, damaged))
+}
+
+fn state_header_text(
+    loc: &Localisation,
+    kind: i32,
+    name: &str,
+    level: i32,
+    damaged: i32,
+    planes: i32,
+    capacity: i32,
+) -> Result<String, String> {
+    let mut text = localise(
+        loc,
+        "AIR_BASE_LEVEL",
+        &[("NAME", Arg::Text(name)), ("VAL", Arg::Int32(level))],
+    )?;
+    ensure_newlines(&mut text, 2);
+    text.push_str(&occupancy(loc, kind, planes, capacity)?);
+    if damaged > 0 {
+        text.push_str(&localise(loc, "AIRBASE_CAPACITY_LIMITED_BY_DAMAGE", &[])?);
+        text.push('\n');
+    }
+    text.push('\n');
+    Ok(text)
+}
+
+/// Rocket-site controls have their own summary; they do not use air-port
+/// intelligence tiers, the ordinary base's occupancy key or its fuel footer.
+fn rocket_summary(context: &Context<'_>, id: u64, out: &mut Tooltip) {
+    let base = context
+        .frame
+        .complete::<tables::AirBases>()
+        .ok()
+        .and_then(|rows| rows.iter().find(|row| row.id == id));
+    let Some(base) = base else {
+        return refuse(out, "rocket-site summary", "rocket base unavailable");
+    };
+    let title = host_name(context, base).and_then(|name| {
+        state_levels(context, base, true).and_then(|(level, _)| {
+            localise(
+                context.loc,
+                "ROCKET_SITE_LEVEL",
+                &[("NAME", Arg::Text(&name)), ("VAL", Arg::Int32(level))],
+            )
+        })
+    });
+    append(
+        out,
+        context,
+        false,
+        "rocket-site header",
+        title.map(|text| text + "\n"),
+    );
+    let inventory = (|| {
+        let order = base
+            .carrier
+            .require("AirBases.carrier")?
+            .as_ref()
+            .and_then(|value| value.registered_countries.as_deref())
+            .ok_or("rocket-site dense country order unavailable")?;
+        let mut countries = Vec::new();
+        let mut total = 0_i32;
+        for occurrence in order {
+            if slot(context, occurrence.country)? != occurrence.slot {
+                return Err(
+                    "rocket-site dense country reference differs from its indexed slot".to_owned(),
+                );
+            }
+            let registered = registration(context, id, occurrence.slot)?;
+            let count = planes(context, &registered.wings)?;
+            total = total.wrapping_add(count);
+            countries.push((occurrence, registered));
+        }
+        Ok((total, countries))
+    })();
+    let (total, countries) = match inventory {
+        Ok(value) => value,
+        Err(why) => return refuse(out, "rocket-site occupancy and groups", why),
+    };
+    let colour = if base.capacity < total { 'R' } else { 'G' };
+    let value = format!("\u{11}{colour}{total}\u{11}!");
+    let maximum = format!("\u{11}{colour}{}\u{11}!", base.capacity);
+    append(
+        out,
+        context,
+        false,
+        "rocket-site capacity",
+        localise(
+            context.loc,
+            "ROCKET_SITE_CAPACITY",
+            &[("VAL", Arg::Text(&value)), ("MAX", Arg::Text(&maximum))],
+        )
+        .map(|text| text + "\n"),
+    );
+    if total <= 0 {
+        return;
+    }
+    for (occurrence, registered) in countries {
+        let groups = (|| {
+            let mut groups = BTreeMap::<(String, String), i32>::new();
+            for &id in &registered.wings {
+                let wing = wing(context, id)?;
+                let status = if wing.mission_mask != 0 {
+                    let mission = mission_key(wing.mission_mask)
+                        .map(|key| localise(context.loc, key, &[]))
+                        .transpose()?
+                        .unwrap_or_default();
+                    localise(
+                        context.loc,
+                        "AIRWING_MISSION_WING_STATUS_MISSION",
+                        &[("MIS", Arg::Text(&mission))],
+                    )?
+                } else {
+                    // This wrapper is state-backed. Its registered pools name
+                    // this base, so the carrier-mission pretest is false.
+                    let raid = wing
+                        .assigned_to_raid()
+                        .ok_or("rocket-site wing raid liveness unavailable")?;
+                    localise(
+                        context.loc,
+                        if raid {
+                            "AIRWING_MISSION_WING_STATUS_RAID"
+                        } else {
+                            "AIRWING_MISSION_WING_STATUS_IDLE"
+                        },
+                        &[],
+                    )?
+                };
+                if slot(context, wing.owner)? != occurrence.slot {
+                    return Err("rocket-site wing pool owner differs from its container".into());
+                }
+                let index = wing
+                    .pool_subunit
+                    .require("AirWings.pool_subunit")?
+                    .as_ref()
+                    .ok_or("rocket-site wing pool definition unavailable")?;
+                let (name, _) = context
+                    .units
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .subunit(*index)?;
+                let name = wing_short_name(context.loc, tag(context, occurrence.country)?, name)?;
+                let count = groups.entry((name, status)).or_default();
+                *count = count.wrapping_add(1);
+            }
+            let mut text = String::new();
+            for ((name, status), count) in groups {
+                text.push_str(&localise(
+                    context.loc,
+                    if count == 1 {
+                        "AIRWING_MISSION_WINGS_STATUS_1"
+                    } else {
+                        "AIRWING_MISSION_WINGS_STATUS_2"
+                    },
+                    &[
+                        ("NUM", Arg::Int32(count)),
+                        ("NAME", Arg::Text(&name)),
+                        ("STATUS", Arg::Text(&status)),
+                    ],
+                )?);
+            }
+            Ok::<_, String>(text)
+        })();
+        append(
+            out,
+            context,
+            false,
+            "rocket-site wing status groups",
+            groups,
+        );
+    }
+}
+
+fn state_fuel(context: &Context<'_>, base: u64, out: &mut Tooltip) {
+    fuel_footer(context, base, true, out);
+}
+
 fn footer(context: &Context<'_>, base: u64, out: &mut Tooltip) {
+    fuel_footer(context, base, false, out);
+}
+
+fn fuel_footer(context: &Context<'_>, base: u64, state: bool, out: &mut Tooltip) {
+    let label = |carrier, land| if state { land } else { carrier };
     let row = match optional_registration(context, base, context.vision.ours()) {
         Ok(Some(row)) => row,
         Ok(None) => return,
         Err(reason) => {
-            refuse(out, "carrier viewer fuel container", reason);
+            refuse(
+                out,
+                label(
+                    "carrier viewer fuel container",
+                    "state air-base fuel container",
+                ),
+                reason,
+            );
             return;
         }
     };
+    if state {
+        let header = (|| {
+            let allocated = row
+                .fuel_allocated_raw
+                .require("AirBaseRegistrations.fuel_allocated_raw")?
+                .ok_or("state air-base allocated fuel unavailable")?;
+            let demand = row
+                .fuel_demand_raw
+                .require("AirBaseRegistrations.fuel_demand_raw")?
+                .ok_or("state air-base demanded fuel unavailable")?;
+            fuel_header(context.loc, allocated, demand)
+        })();
+        append(out, context, false, "state air-base fuel header", header);
+    }
     let inputs = row
         .carrier
         .require("AirBaseRegistrations.carrier")
@@ -773,30 +1119,73 @@ fn footer(context: &Context<'_>, base: u64, out: &mut Tooltip) {
     let inputs = match inputs {
         Ok(inputs) => inputs,
         Err(reason) => {
-            refuse(out, "carrier viewer fuel inputs", reason);
+            refuse(
+                out,
+                label("carrier viewer fuel inputs", "state air-base fuel inputs"),
+                reason,
+            );
             fuel_description(context, out);
             return;
         }
     };
-    let header = (|| {
-        let allocated = inputs
-            .fuel_allocated_raw
-            .ok_or("carrier allocated fuel was unreadable when recorded")?;
-        let demand = inputs
-            .fuel_demand_raw
-            .ok_or("carrier demanded fuel was unreadable when recorded")?;
-        fuel_header(context.loc, allocated, demand)
-    })();
-    append(out, context, false, "carrier fuel header", header);
+    if !state {
+        let header = (|| {
+            let allocated = inputs
+                .fuel_allocated_raw
+                .ok_or("carrier allocated fuel was unreadable when recorded")?;
+            let demand = inputs
+                .fuel_demand_raw
+                .ok_or("carrier demanded fuel was unreadable when recorded")?;
+            fuel_header(context.loc, allocated, demand)
+        })();
+        append(out, context, false, "carrier fuel header", header);
+    }
     let inventory = match pools(row) {
         Ok(pools) => pools,
         Err(reason) => {
-            refuse(out, "carrier fuel pool inventory", reason);
+            refuse(
+                out,
+                label(
+                    "carrier fuel pool inventory",
+                    "state air-base fuel pool inventory",
+                ),
+                reason,
+            );
             fuel_description(context, out);
             return;
         }
     };
     let mut groups = BTreeMap::<i32, Vec<&CarrierAirPool>>::new();
+    let mut state_fuel = super::air_fuel::Reader::new(context);
+    let mut amount = |pool: &CarrierAirPool, maximum: bool| -> Result<i64, String> {
+        if state {
+            if pool.wing_count == 0 {
+                return Ok(0);
+            }
+            let bases = context
+                .frame
+                .complete::<tables::AirBases>()
+                .map_err(|e| e.to_string())?;
+            let base = bases
+                .binary_search_by_key(&base, |row| row.id)
+                .ok()
+                .map(|index| &bases[index])
+                .ok_or("state Air fuel base unavailable")?;
+            return state_fuel.pool(base, row, pool, maximum);
+        }
+        (if maximum {
+            pool.maximum_fuel_raw
+        } else {
+            pool.current_fuel_raw
+        })
+        .ok_or_else(|| {
+            format!(
+                "carrier subtype {} {} fuel was unreadable when recorded",
+                pool.type_index,
+                if maximum { "maximum" } else { "current" }
+            )
+        })
+    };
     // The complete sort is stable, including its >=33 low-buffer
     // merges/rotations. Equal signed keys keep original inventory order;
     // Use the first pool's definition even when DB indices differ.
@@ -807,17 +1196,16 @@ fn footer(context: &Context<'_>, base: u64, out: &mut Tooltip) {
         if maximum {
             ensure_newlines(&mut out.title, 2);
             let total = inventory.iter().try_fold(0_i64, |sum, pool| {
-                pool.maximum_fuel_raw
-                    .map(|value| sum.wrapping_add(value))
-                    .ok_or_else(|| {
-                        "carrier maximum fuel total contains an unreadable pool".to_owned()
-                    })
+                amount(pool, true).map(|value| sum.wrapping_add(value))
             });
             append(
                 out,
                 context,
                 false,
-                "carrier maximum fuel total",
+                label(
+                    "carrier maximum fuel total",
+                    "state air-base maximum fuel total",
+                ),
                 total.and_then(|total| maximum_header(context.loc, total)),
             );
         }
@@ -828,18 +1216,7 @@ fn footer(context: &Context<'_>, base: u64, out: &mut Tooltip) {
                 let mut fuel = 0_i64;
                 for pool in pools {
                     count = count.wrapping_add(planes(context, pool_ids(row, pool))?);
-                    let value = if maximum {
-                        pool.maximum_fuel_raw
-                    } else {
-                        pool.current_fuel_raw
-                    }
-                    .ok_or_else(|| {
-                        format!(
-                            "carrier subtype {} {} fuel was unreadable when recorded",
-                            first.type_index,
-                            if maximum { "maximum" } else { "current" }
-                        )
-                    })?;
+                    let value = amount(pool, maximum)?;
                     fuel = fuel.wrapping_add(value);
                 }
                 let (name, category) = context
@@ -854,9 +1231,15 @@ fn footer(context: &Context<'_>, base: u64, out: &mut Tooltip) {
                 context,
                 false,
                 if maximum {
-                    "carrier pool maximum fuel"
+                    label(
+                        "carrier pool maximum fuel",
+                        "state air-base pool maximum fuel",
+                    )
                 } else {
-                    "carrier pool current fuel"
+                    label(
+                        "carrier pool current fuel",
+                        "state air-base pool current fuel",
+                    )
                 },
                 line,
             );
@@ -1082,6 +1465,8 @@ mod tests {
                             },
                         ]),
                     })),
+                    fuel_demand_raw: Default::default(),
+                    fuel_allocated_raw: Default::default(),
                 },
                 AirBaseRegistrationRow {
                     base: BASE,
@@ -1098,6 +1483,8 @@ mod tests {
                         }]),
                         ..Default::default()
                     })),
+                    fuel_demand_raw: Default::default(),
+                    fuel_allocated_raw: Default::default(),
                 },
             ]),
         );
@@ -1136,6 +1523,8 @@ mod tests {
                     ("FUEL_DAILY_REQUIRED_MAX", "maximum $NUM$"),
                     ("FUEL_DAILY_REQUIRED_MAX_DESC_NAVY", "maximum details"),
                     ("FUEL_DAILY", "$AMOUNT$/day"),
+                    ("ROCKET_SITE_CAPACITY", "$VAL$/$MAX$"),
+                    ("AIR_BASE_RIGHT_CLICK", "move"),
                 ]
                 .into_iter()
                 .map(|(key, text)| (key.to_owned(), text.to_owned())),
@@ -1180,6 +1569,7 @@ mod tests {
         run(&Context {
             nato,
             content: None,
+            reads: None,
             dig_in_factor: Err("unreached".into()),
             loc: &loc,
             recorded_language: recorded.unwrap_or(&loc.language),
@@ -1202,6 +1592,333 @@ mod tests {
             summary(context, BASE, &mut out)
         });
         out
+    }
+
+    #[test]
+    fn state_fuel_emits_empty_registered_subtypes_and_full_header_without_wing_operands() {
+        let mut frame = fixture();
+        put(
+            &mut frame,
+            TableRows::AirBaseRegistrations(vec![AirBaseRegistrationRow {
+                base: BASE,
+                slot: 1,
+                fuel_demand_raw: Recorded::Value(Some(100_000)),
+                fuel_allocated_raw: Recorded::Value(Some(300_000)),
+                carrier: Recorded::Value(Some(AirBaseRegistrationCarrierInputs {
+                    country: 1001,
+                    fuel_demand_raw: Some(100_000),
+                    fuel_allocated_raw: Some(300_000),
+                    pools: Some(vec![CarrierAirPool {
+                        type_index: -5,
+                        subunit_index: 2,
+                        ..Default::default()
+                    }]),
+                })),
+                ..Default::default()
+            }]),
+        );
+        let mut tooltip = Tooltip::default();
+        with_context(&frame, false, false, None, |context| {
+            state_fuel(context, BASE, &mut tooltip)
+        });
+        assert!(tooltip.title.contains("maximum 0"), "{}", tooltip.title);
+        assert_eq!(
+            tooltip.title.matches("\u{11}H0\u{11}!/day").count(),
+            2,
+            "{}",
+            tooltip.title
+        );
+        assert!(tooltip.title.contains("72"), "{}", tooltip.title);
+        assert!(tooltip.refused.is_empty(), "{:?}", tooltip.refused);
+    }
+
+    #[test]
+    fn state_idle_current_fuel_is_known_zero_when_cached_maximum_operands_are_refused() {
+        let mut frame = fixture();
+        put(
+            &mut frame,
+            TableRows::AirBases(vec![AirBaseRow {
+                id: BASE,
+                state: Some(1),
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::AirWings(vec![AirWingRow {
+                id: 101,
+                owner: 1001,
+                planes: 1,
+                fuel_current_type: Recorded::Value(Some(0)),
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::AirBaseRegistrations(vec![AirBaseRegistrationRow {
+                base: BASE,
+                slot: 1,
+                wings: vec![101],
+                fuel_demand_raw: Recorded::Value(Some(0)),
+                fuel_allocated_raw: Recorded::Value(Some(0)),
+                carrier: Recorded::Value(Some(AirBaseRegistrationCarrierInputs {
+                    country: 1001,
+                    fuel_demand_raw: Some(0),
+                    fuel_allocated_raw: Some(0),
+                    pools: Some(vec![CarrierAirPool {
+                        subunit_index: 1,
+                        wing_count: 1,
+                        ..Default::default()
+                    }]),
+                })),
+                ..Default::default()
+            }]),
+        );
+        let mut tooltip = Tooltip::default();
+        with_context(&frame, false, false, None, |context| {
+            state_fuel(context, BASE, &mut tooltip)
+        });
+        assert!(
+            tooltip.title.contains("\u{11}H0\u{11}!/day"),
+            "{}",
+            tooltip.title
+        );
+        assert!(
+            !tooltip
+                .refused
+                .keys()
+                .any(|key| key.contains("pool current fuel")),
+            "{:?}",
+            tooltip.refused
+        );
+        assert!(
+            tooltip
+                .refused
+                .keys()
+                .any(|key| key.contains("pool maximum fuel"))
+        );
+    }
+
+    #[test]
+    fn accessible_base_wrapper_replaces_delayed_fuel_text_even_with_empty_selection() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let frame = fixture();
+        with_context(&frame, false, false, None, |context| {
+            let mut out = Tooltip {
+                body: "old fuel description".into(),
+                ..Default::default()
+            };
+            super::super::air_base_transfer::append(context, BASE, &[], &mut out);
+            assert!(out.body.is_empty());
+            assert!(out.refused.is_empty(), "{:?}", out.refused);
+        });
+        let mut failed = frame.clone();
+        failed.tables[TableId::AirWings.index()] = replay_frame::frame::TableView::Unavailable {
+            reason: "selected wings unavailable".into(),
+        }
+        .into();
+        with_context(&failed, false, false, None, |context| {
+            let mut out = Tooltip {
+                body: "unreached fuel description".into(),
+                ..Default::default()
+            };
+            super::super::air_base_transfer::append(context, BASE, &[101], &mut out);
+            assert!(out.body.is_empty());
+            assert_eq!(out.refused.values().sum::<usize>(), 1);
+        });
+        let mut missing = frame;
+        let rows = registrations(&missing)
+            .into_iter()
+            .filter(|row| row.slot != 1)
+            .collect();
+        put(&mut missing, TableRows::AirBaseRegistrations(rows));
+        with_context(&missing, false, false, None, |context| {
+            let mut out = Tooltip {
+                body: "kept fuel description".into(),
+                ..Default::default()
+            };
+            super::super::air_base_transfer::append(context, BASE, &[], &mut out);
+            assert_eq!(out.body, "kept fuel description");
+            assert!(out.refused.is_empty(), "{:?}", out.refused);
+        });
+    }
+
+    #[test]
+    fn ordinary_land_transfer_does_not_demand_unreached_equipment_classification() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let mut frame = fixture();
+        let target = BASE + 1;
+        let mut bases = frame.complete::<tables::AirBases>().unwrap().to_vec();
+        bases.push(AirBaseRow {
+            id: target,
+            state: Some(81),
+            ..Default::default()
+        });
+        put(&mut frame, TableRows::AirBases(bases));
+        let mut rows = registrations(&frame);
+        rows.push(AirBaseRegistrationRow {
+            base: target,
+            slot: 1,
+            capacity_raw: 1,
+            ..Default::default()
+        });
+        put(&mut frame, TableRows::AirBaseRegistrations(rows));
+        put(
+            &mut frame,
+            TableRows::StateFlags(vec![StateFlagRow {
+                state: 81,
+                ..Default::default()
+            }]),
+        );
+        let mut wings = frame.complete::<tables::AirWings>().unwrap().to_vec();
+        let wing = wings.iter_mut().find(|wing| wing.id == 101).unwrap();
+        wing.air_base = BASE;
+        wing.owner = 1001;
+        wing.pool_subunit = None.into();
+        wing.raid_reference = None.into();
+        wing.map_flags = Some(16).into();
+        put(&mut frame, TableRows::AirWings(wings));
+        with_context(&frame, false, false, None, |context| {
+            let mut out = Tooltip::default();
+            super::super::air_base_transfer::append(context, target, &[101], &mut out);
+            assert_eq!(out.body, "move\n");
+            assert!(out.refused.is_empty(), "{:?}", out.refused);
+        });
+    }
+
+    #[test]
+    fn rocket_site_groups_include_empty_wings_and_use_its_own_capacity_key() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let mut frame = fixture();
+        put(
+            &mut frame,
+            TableRows::States(vec![StateRow {
+                id: 81,
+                controller: 1001,
+                custom_name: b"Rocket field".to_vec(),
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::AirBases(vec![AirBaseRow {
+                id: BASE,
+                state: Some(81),
+                kind: 1,
+                capacity: 5,
+                carrier: Some(AirBaseCarrierInputs {
+                    registered_countries: Some(vec![AirBaseCountryOccurrence {
+                        country: 1001,
+                        slot: 1,
+                    }]),
+                    host_name: None,
+                })
+                .into(),
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::AirBaseRegistrations(vec![AirBaseRegistrationRow {
+                base: BASE,
+                slot: 1,
+                wings: vec![101, 103],
+                ..Default::default()
+            }]),
+        );
+        put(
+            &mut frame,
+            TableRows::AirWings(
+                [101, 103]
+                    .into_iter()
+                    .map(|id| AirWingRow {
+                        id,
+                        owner: 1001,
+                        planes: i32::from(id == 101),
+                        pool_subunit: Some(1).into(),
+                        map_flags: Some(16).into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        with_context(&frame, false, false, None, |context| {
+            let mut out = Tooltip::default();
+            summary(context, BASE, &mut out);
+            assert!(
+                out.title.contains("\u{11}G1\u{11}!/\u{11}G5\u{11}!"),
+                "{:?}",
+                out.title
+            );
+            let idle = localise(context.loc, "AIRWING_MISSION_WING_STATUS_IDLE", &[]).unwrap();
+            let group = localise(
+                context.loc,
+                "AIRWING_MISSION_WINGS_STATUS_2",
+                &[
+                    ("NUM", Arg::Int32(2)),
+                    ("NAME", Arg::Text("Own plane")),
+                    ("STATUS", Arg::Text(&idle)),
+                ],
+            )
+            .unwrap();
+            assert!(out.title.contains(&group), "{:?}", out.title);
+            assert!(!out.title.contains("Fuel"));
+        });
+    }
+
+    #[test]
+    fn state_header_uses_level_value_damage_gate_and_signed_occupancy_colours() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let loc: Localisation = [
+            ("AIR_BASE_LEVEL", "$NAME$/$VAL$"),
+            ("AIRBASE_AIRPLANES_KNOWN", "$VALUE$:$CAPACITY$"),
+            ("AIRBASE_CAPACITY_LIMITED_BY_DAMAGE", "damaged"),
+        ]
+        .into_iter()
+        .map(|(key, text)| (key.into(), text.into()))
+        .collect();
+        let damaged = state_header_text(&loc, 0, "Field", 7, 1, 6, 5).unwrap();
+        assert_eq!(
+            damaged,
+            "Field/7\n\n\u{11}R6\u{11}!:\u{11}R5\u{11}!\ndamaged\n\n"
+        );
+        let healthy = state_header_text(&loc, 0, "Field", -1, 0, -2, -1).unwrap();
+        assert!(!healthy.contains("damaged"));
+        assert!(healthy.contains("\u{11}G-2"));
+    }
+
+    #[test]
+    fn state_summary_uses_state_controller_name_and_registered_pool_owner_without_carrier_suffix() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let mut frame = fixture();
+        put(
+            &mut frame,
+            TableRows::States(vec![StateRow {
+                id: 81,
+                controller: 1001,
+                custom_name: b"Land field".to_vec(),
+                ..Default::default()
+            }]),
+        );
+        let base = AirBaseRow {
+            id: BASE,
+            state: Some(81),
+            host: 0,
+            ..Default::default()
+        };
+        with_context(&frame, false, false, None, |context| {
+            assert_eq!(host(context, &base), Ok((1, 81, false)));
+            assert_eq!(host_name(context, &base), Ok("Land field".to_owned()));
+            let registration = AirBaseRegistrationRow {
+                base: BASE,
+                slot: 1,
+                wings: vec![101, 101],
+                ..Default::default()
+            };
+            let text = country_groups(context, &registration, 1001, 0, false, true).unwrap();
+            assert!(text.contains("Own plane"), "{text:?}");
+            assert!(!text.contains("Foreign plane"));
+        });
     }
 
     fn registrations(frame: &DecodedFrame) -> Vec<AirBaseRegistrationRow> {

@@ -20,6 +20,11 @@ pub mod csub_intel_network;
 pub mod intel_network_graph;
 pub mod intel_network_graph_row;
 pub mod intel_network_graph_vertex;
+pub mod intel_source_sites;
+pub mod intel_sources;
 pub mod operation_token_map;
 pub mod operation_token_target_entry;
+pub mod propaganda_history;
 pub mod strategic_operatives;
+
+pub mod network_auxiliary;

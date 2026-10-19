@@ -19,3 +19,6 @@
 **Files:** [ArmySizeWidget.tsx](ArmySizeWidget.tsx) loads and renders; `ArmyBreakdown.tsx`/`ArmyCountryChip.tsx` own details/header. [armySizeData.ts](armySizeData.ts) validates/windows data; `armyDrill.ts` shapes exact parts and pins; adjacent tests cover these rules. `armySize.css`, `definition.ts` and `index.ts` own styling, settings and registration.
 
 Shared framework conventions: [widgets](../README.md).
+
+`country-people` adds reached recruitment, mobilisation, deployed branch crews and state pools to the manpower breakdown. Details follow the same country and hour; each sliced operand preserves its supplying date.
+The existing breakdown includes a plain Division templates section at its selected country/hour: every used and unused template with layout/settings/restrictions/naming groups/roles/caches, then country staff/garrison and template-bound HQ context. The exact-hour `army-size` request uses roster ownership rather than deployed membership; a country with zero deployed divisions still has these sections. Requests and responses retain source/content/date identity. No widget is added.

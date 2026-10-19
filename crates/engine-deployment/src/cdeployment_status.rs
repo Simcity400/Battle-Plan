@@ -27,6 +27,53 @@ pub const CONVEYOR_STRIDE: usize = 0x08;
 /// CDeploymentStatus owning CCountry pointer.
 pub const OWNER: usize = 0x118;
 
+/// The stored military-staff template reference.
+pub const SELECTED_STAFF_TEMPLATE: usize = 0xac;
+/// Monotonic allocation order of the next headquarters deployment.
+pub const NEXT_HQ_ORDER: usize = 0xa8;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TemplateState {
+    pub country: u32,
+    /// Full reference word, including a retained reference that no longer resolves.
+    pub selected_staff: u64,
+    pub next_hq_order: i32,
+    pub lock_all: u8,
+    /// Authenticated source identity for the caller's writer certificate.
+    pub manager: usize,
+}
+
+/// Country identity was authenticated by the supplying census. The manager's
+/// vtable and owner backlink authenticate the selection independently of its
+/// queue membership; countries with an empty template roster still have state.
+pub fn template_state(
+    memory: &impl Memory,
+    base: usize,
+    country: ccountry::Country,
+) -> Result<TemplateState, &'static str> {
+    let at = manager(memory, base, country)?;
+    let selected_staff = at
+        .checked_add(SELECTED_STAFF_TEMPLATE)
+        .and_then(|at| read::<u64>(memory, at))
+        .ok_or("military staff template unreadable")?;
+    let next_hq_order = at
+        .checked_add(NEXT_HQ_ORDER)
+        .and_then(|at| read::<i32>(memory, at))
+        .ok_or("headquarters deployment order unreadable")?;
+    let lock_all = country
+        .pointer
+        .checked_add(ccountry::LOCK_ALL_TEMPLATES)
+        .and_then(|at| read::<u8>(memory, at))
+        .ok_or("country template lock unreadable")?;
+    Ok(TemplateState {
+        country: country.id,
+        selected_staff,
+        next_hq_order,
+        lock_all,
+        manager: at,
+    })
+}
+
 pub use cmilitary_deployment_conveyor::Row as ConveyorRow;
 pub use cmilitary_deployment_line::Row as LineRow;
 

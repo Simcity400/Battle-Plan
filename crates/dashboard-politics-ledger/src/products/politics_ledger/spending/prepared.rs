@@ -2639,6 +2639,24 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// The caller's presentation controls for a test worker.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_presentation() -> Option<(usize, usize)> {
+    TEST_PRESENTATION.with(std::cell::Cell::get)
+}
+
+/// Inherit presentation controls for the lifetime of a test worker.
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_test_presentation(value: Option<(usize, usize)>) -> impl Drop {
+    struct Reset(Option<(usize, usize)>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PRESENTATION.with(|value| value.set(self.0));
+        }
+    }
+    Reset(TEST_PRESENTATION.with(|held| held.replace(value)))
+}
+
 /// Run `run` presenting on `threads` threads whenever at least `least`
 /// countries are left to present at an hour.
 #[cfg(any(test, feature = "test-support"))]

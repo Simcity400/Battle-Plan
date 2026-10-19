@@ -245,6 +245,12 @@ fn ledger_frame(branch: u64, hour: i32) -> DecodedFrame {
         TableId::VariantUpgrades,
         TableRows::VariantUpgrades(Vec::new()),
     );
+    // The quiet baseline has no writer-observed changes between variant reads.
+    set(
+        &mut observed,
+        TableId::VariantChanges,
+        TableRows::VariantChanges(Vec::new()),
+    );
     set(
         &mut observed,
         TableId::CountryAppearance,
@@ -528,6 +534,68 @@ fn economy_ledgers_prepared_on_their_own_publish_and_save_what_hourly_preparatio
             );
         }
         clear(source);
+    }
+}
+
+#[test]
+fn stockpile_variant_changes_and_missing_intervals_publish_and_save_as_hourly_preparation() {
+    use replay_data::rows::{VariantChangeRow, VariantScalarChange};
+    for rename in [true, false] {
+        let label = if rename { "rename" } else { "unavailable" };
+        let renamed = b"Renamed equipment";
+        let frames = (0..32)
+            .map(|offset| {
+                let mut frame = ledger_frame(1, BASE + offset);
+                if rename
+                    && offset >= 25
+                    && let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+                        &mut *frame.tables[TableId::VariantDefinitions.index()]
+                {
+                    rows[0].display_name = renamed.to_vec();
+                }
+                if offset == 25 {
+                    *frame.tables[TableId::VariantChanges.index()] = if rename {
+                        TableView::Complete(TableRows::VariantChanges(vec![VariantChangeRow {
+                            sequence: 1,
+                            hour: frame.hour,
+                            variant: 10,
+                            scalar: Some(VariantScalarChange {
+                                display_name: Some(renamed.to_vec()),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        }]))
+                    } else {
+                        TableView::Unavailable {
+                            reason: "synthetic variant change interval unavailable".into(),
+                        }
+                    };
+                }
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        let mut fixture = Fixture::new(&replay);
+        let expected = hourly(&mut fixture, "stockpile-variant-changes", plain);
+        let source = fixture.source("stockpile-variant-changes");
+        independent::with_test_families(&ledgers(), || {
+            prepass::with_test_prepass(2, None, || plain(&source))
+        });
+        let actual = payloads(&source, None);
+        clear(source);
+        assert_same(&actual, &expected, label, true);
+        if rename {
+            let continuation = decoded(&actual[&("stockpile-continuation-1".into(), 0)]);
+            assert!(
+                continuation["names"]["versions"]["10"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|version| version["first_hour"] == BASE + 25
+                        && version["raw"]["display_name"] == "Renamed equipment"),
+                "a writer-observed rename is dated between the daily variant reads"
+            );
+        }
     }
 }
 
@@ -912,6 +980,10 @@ fn production_selections_answer_the_prepared_prefix_with_the_hours_still_pending
             !cold["countries"].as_array().unwrap().is_empty(),
             "the prefix delivered equipment: {cold}"
         );
+        assert_eq!(
+            cold["countries"][0]["values"][0]["key"], ":infantry_equipment_1",
+            "the prefix already includes the supplying design identity"
+        );
         // The prefix's countries are those the complete pages give at its last hour.
         let complete = query(&source, "production-select", selection(BASE + 11)).unwrap();
         assert_eq!(complete["coverage"]["complete"], true);
@@ -1028,7 +1100,11 @@ fn exact_banked_experience_keeps_its_cadence_read_across_one_hour_blocks() {
                 if *hour < 41 { "100" } else { "200" },
                 "hour {hour}: the latest supplying read, not the block's keyframe"
             );
-            assert_eq!(state["readHour"], BASE + if *hour < 41 { 17 } else { 41 });
+            assert_eq!(
+                state["readHour"],
+                BASE + if *hour < 41 { 17 } else { 41 },
+                "hour {hour}: {state}"
+            );
         }
         let (store, key) = super::super::super::files(&source, None).unwrap();
         let mut writer = store.replace(key).unwrap();

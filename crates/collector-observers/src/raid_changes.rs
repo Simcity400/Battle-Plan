@@ -4,7 +4,7 @@
 //! [`DirtySet`]s, counts its site and calls the original; it never changes
 //! game behaviour.
 //!
-//! Three sets, each taken once an hour by one job; the first two by the
+//! Four sets, each taken once an hour by one job; the first two by the
 //! RaidState job ([`crate::extended::raid_state_inputs`]):
 //! - `STATES` (state ids, `cstate::ID`): the state writers name their state
 //!   directly, the pool method through its pool's offset, the origin
@@ -30,6 +30,13 @@
 //!   the route, the route update its sender link and the constructors the link RDX points
 //!   to (a route's sender, or a new country resources object's country, whose delivery
 //!   routes it builds); the save loader names every country.
+//!   Supply's port-to-port updater names its route's sender too. Origin refresh
+//!   marks only a changed kind (or an unreadable check): its inline clear bypasses
+//!   the route updater, while its path rebuilds pass through that updater. Its
+//!   flight refuses a route take even when no kind change has been published yet.
+//!   Both origin paths mark the origin's client country, the census list owner;
+//!   a rights-held origin can have a different route sender. The nested updater
+//!   receives that owner through a scope matching only the origin's embedded route.
 //!
 //! A take that returns the epoch of the family's previous read certifies
 //! that every state or country no take visited since then is unchanged; the
@@ -43,9 +50,7 @@ use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
 };
-use engine_mutations::{
-    raid_mutations::DAILY_CAPACITIES, raid_mutations::MUTATIONS, raid_mutations::Receiver,
-};
+use engine_mutations::raid_mutations::{DAILY_CAPACITIES, MUTATIONS, ORIGIN_ROUTE_SITE, Receiver};
 use engine_native::Memory;
 use std::{
     cell::Cell,
@@ -66,6 +71,8 @@ std::thread_local! {
     /// The calling thread is inside a daily pass whose every capacity store
     /// was read unchanged before it ran ([`daily_refresh_base_capacities`]).
     static CERTIFIED_PASS: Cell<bool> = const { Cell::new(false) };
+    /// Only this origin's embedded updater uses its list owner instead of its sender.
+    static REFRESHING_ORIGIN: Cell<Option<usize>> = const { Cell::new(None) };
 }
 /// The module base the capacity setter's tag resolves against; stored before
 /// any hook is enabled.
@@ -109,6 +116,7 @@ pub struct Watches {
     countries: DirtySet,
     sites: DirtySet,
     routes: DirtySet,
+    origin_flights: AtomicUsize,
     calls: [AtomicU64; SITES],
     /// Receivers whose id did not read.
     unnamed: AtomicU64,
@@ -159,6 +167,7 @@ impl Watches {
             countries: DirtySet::new(),
             sites: DirtySet::new(),
             routes: DirtySet::new(),
+            origin_flights: AtomicUsize::new(0),
             calls: [const { AtomicU64::new(0) }; SITES],
             unnamed: AtomicU64::new(0),
             buildings: [const { AtomicU64::new(0) }; 2],
@@ -197,6 +206,46 @@ impl Watches {
             Target::EveryRoute => Some(self.routes.notify_every()),
             Target::Nothing => None,
         }
+    }
+
+    /// The origin refresh can clear kind without the route updater. Keep its
+    /// whole original in flight, but mark only a changed or unreadable kind.
+    /// Path changes with an unchanged kind are covered by the nested updater,
+    /// scoped to this origin so it marks the same own or rights-holder list owner.
+    fn refresh_origin<R>(
+        &self,
+        origin: usize,
+        mut kind: impl FnMut() -> Option<u8>,
+        target: impl FnOnce() -> Target,
+        original: impl FnOnce() -> R,
+    ) -> R {
+        struct Flight<'a> {
+            active: &'a AtomicUsize,
+            previous_origin: Option<usize>,
+        }
+        impl Drop for Flight<'_> {
+            fn drop(&mut self) {
+                REFRESHING_ORIGIN.with(|current| current.set(self.previous_origin));
+                self.active.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        self.origin_flights.fetch_add(1, Ordering::SeqCst);
+        let _flight = Flight {
+            active: &self.origin_flights,
+            previous_origin: REFRESHING_ORIGIN.with(|current| current.replace(Some(origin))),
+        };
+        let before = kind();
+        let result = original();
+        let after = kind();
+        drop(self.notify(
+            ORIGIN_ROUTE_SITE,
+            if before.is_none() || after.is_none() || before != after {
+                target()
+            } else {
+                Target::Nothing
+            },
+        ));
+        result
     }
 
     /// Hook path, allocation-free: the capacity setter `site` is about to
@@ -247,6 +296,9 @@ impl Watches {
     /// enabling starts an epoch.
     fn apply(&self) {
         let hooks = self.hooks.load(Ordering::SeqCst);
+        crate::division_panel_changes::state_forwarder(
+            hooks && self.forwarder.load(Ordering::SeqCst) && !self.states.poisoned(),
+        );
         self.states
             .set_enabled(hooks && self.forwarder.load(Ordering::SeqCst));
         self.countries.set_enabled(hooks);
@@ -317,7 +369,21 @@ pub trait Changes: Sync {
 
 impl Changes for Watches {
     fn take(&self, family: Family, visit: &mut dyn FnMut(usize)) -> Option<u64> {
-        self.sets()[family as usize].take(visit)
+        let origin_calls = (family == Family::Routes)
+            .then(|| self.calls[ORIGIN_ROUTE_SITE].load(Ordering::Acquire));
+        if family == Family::Routes && self.origin_flights.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
+        let epoch = self.sets()[family as usize].take(visit);
+        // A refresh may start and finish inside the bitmap walk. Its completed
+        // call count catches that overlap even when both flight reads see zero.
+        if let Some(before) = origin_calls
+            && (self.origin_flights.load(Ordering::SeqCst) != 0
+                || self.calls[ORIGIN_ROUTE_SITE].load(Ordering::Acquire) != before)
+        {
+            return None;
+        }
+        epoch
     }
     fn mismatch(&self, family: Family) {
         self.sets()[family as usize].poison();
@@ -357,7 +423,20 @@ fn target(receiver: Receiver, first: usize, second: usize, third: usize) -> Targ
             }
         }
         Receiver::EveryCountry => Target::EverySite,
-        Receiver::Route | Receiver::RouteSender => {
+        Receiver::Route | Receiver::RouteSender | Receiver::OriginRoute => {
+            // Rights-held origins keep the holder as their census owner even
+            // when the embedded route sends resources from the grantor.
+            let (receiver, first) = if matches!(receiver, Receiver::Route) {
+                REFRESHING_ORIGIN
+                    .with(Cell::get)
+                    .filter(|origin| {
+                        origin.checked_add(engine_resources::cresource_origin::DELIVERY_ROUTE)
+                            == Some(first)
+                    })
+                    .map_or((receiver, first), |origin| (Receiver::OriginRoute, origin))
+            } else {
+                (receiver, first)
+            };
             match engine_mutations::raid_mutations::route_country(&memory, receiver, first, second)
             {
                 Ok(Some(raw)) => Target::Route(Some(raw as usize)),
@@ -407,6 +486,7 @@ std::thread_local! {
 pub fn active() -> usize {
     WATCHES.sets().iter().map(|set| set.active()).sum::<usize>()
         + DAILY_FLIGHTS.load(Ordering::SeqCst)
+        + WATCHES.origin_flights.load(Ordering::SeqCst)
 }
 
 /// Game thread, in the hourly callback before any capture. `invalidate`
@@ -421,6 +501,7 @@ pub fn boundary(invalidate: bool) {
 /// Disable the state set for the attachment: a writer it cannot observe may
 /// run (nudge mode, or no building family to forward building writes).
 pub fn poison() {
+    crate::division_panel_changes::state_forwarder(false);
     WATCHES.states.poison();
 }
 
@@ -465,7 +546,7 @@ pub fn collect() {
 /// One hour's use of a family's marks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Owners the take marked.
+    /// Owners marked by writer notifications or the changed route census.
     pub marked: u64,
     /// Owners read: the slice, the marked, the new and the re-read.
     pub read: u64,
@@ -541,7 +622,7 @@ pub fn status() -> impl serde::Serialize {
         "unchanged_capacities": WATCHES.unchanged_capacities.load(Ordering::Relaxed),
         "certified_daily_passes": WATCHES.daily_passes[0].load(Ordering::Relaxed),
         "per_call_daily_passes": WATCHES.daily_passes[1].load(Ordering::Relaxed),
-        "scope": "cumulative since attach; each hour the RaidState job reads its daily slice of states and countries, and the RaidLaunch job its daily slice of RaidAirSites countries, and every owner a hooked writer marked since the previous hour (early_owners; the capacity setter marks only a store that changes the value, unchanged_capacities counts the others; a daily capacity pass whose every store keeps its value and that withdraws no base is read once before it runs and its stores skip the setter's own read (certified_daily_passes), while any other pass leaves each store to the setter (per_call_daily_passes)), so the raid state rows, CountryBuildingResources and RaidAirSites equal the game's at every hour, except StateResourceInputs.supply_route, which follows the hourly supply rebuild and is read with its state; an hour whose take does not return the previous read's epoch (disabled, poisoned, an unnamed writer, an id beyond the bitmap, an invalidating hour) reads every owner (full_reads); every hour compares each unmarked owner it read (its slice; every owner in verify mode) with its previous read and disables the family at the first difference (sampled_*)"
+        "scope": "cumulative since attach; each hour the RaidState job reads its daily slice of states and countries, and the RaidLaunch job its daily slice of RaidAirSites countries, and every owner a hooked writer marked since the previous hour (early_owners; the capacity setter marks only a store that changes the value, unchanged_capacities counts the others; a daily capacity pass whose every store keeps its value and that withdraws no base is read once before it runs and its stores skip the setter's own read (certified_daily_passes), while any other pass leaves each store to the setter (per_call_daily_passes)), so the raid state rows, CountryBuildingResources, RaidAirSites and TradeRoutes equal the game's at every hour (changed route membership, storage or market endpoint demand marks its census owner too; supply port-to-port updates and origin inline clears mark their route owners), except StateResourceInputs.supply_route, which follows the hourly supply rebuild and is read with its state; an hour whose take does not return the previous read's epoch (disabled, poisoned, an unnamed writer, an id beyond the bitmap, an invalidating hour) reads every owner (full_reads); every hour compares each unmarked owner it read (its slice; every owner in verify mode) with its previous read and disables the family at the first difference (sampled_*)"
     })
 }
 
@@ -561,7 +642,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "raid_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             BASE.store(base, Ordering::Release);
@@ -599,6 +680,8 @@ impl Hooks {
                 construct_trade_route as *const () as usize,
                 construct_country_resources as *const () as usize,
                 load_trade_route as *const () as usize,
+                update_supply_trade_route as *const () as usize,
+                refresh_origin_trade_route as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -609,7 +692,7 @@ impl Hooks {
             // Without the daily pass's patch every store takes the setter's
             // own path.
             let daily = DAILY_CAPACITIES;
-            if engine_native::read::<[u8; 16]>(memory, base + daily.rva) == Some(daily.sentinel) {
+            if crate::hook::installation::sentinel(memory, base + daily.rva, daily.sentinel) {
                 let hook = unsafe {
                     Hook::new(
                         base + daily.rva,
@@ -626,6 +709,11 @@ impl Hooks {
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
+            crate::occupation_changes::forwarder(
+                crate::occupation_changes::Forwarder::States,
+                false,
+            );
+            crate::division_panel_changes::state_forwarder(false);
             AIR_CLEARS.fetch_add(1, Ordering::SeqCst);
             WATCHES.hooks.store(false, Ordering::SeqCst);
             WATCHES.apply();
@@ -668,6 +756,10 @@ impl Hooks {
             crate::air_base_carry_changes::Forwarder::Raid,
             enabled && !self.hooks.is_empty(),
         );
+        crate::occupation_changes::forwarder(
+            crate::occupation_changes::Forwarder::States,
+            enabled && !self.hooks.is_empty(),
+        );
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
@@ -698,7 +790,20 @@ macro_rules! callback {
             fourth: usize,
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
-            let _mark = WATCHES.notify($site, target(MUTATIONS[$site].1, first, second, third));
+            let _occupation = matches!($site, 0 | 5).then(|| {
+                (
+                    crate::occupation_changes::changed(first),
+                    crate::occupation_changes::changed(
+                        first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
+                    ),
+                )
+            });
+            let target = target(MUTATIONS[$site].1, first, second, third);
+            let _panel = match target {
+                Target::State(id) => Some(crate::division_panel_changes::state_notify(id)),
+                _ => None,
+            };
+            let _mark = WATCHES.notify($site, target);
             // The core insert and erase also write the tag's core states,
             // which the country counter inputs observe through this patch.
             let _inputs = crate::country_input_changes::forwarded_raid($site, first, second);
@@ -773,6 +878,26 @@ callback!(construct_trade_route, 30);
 callback!(construct_country_resources, 31);
 // Route save loading (route, reader, token).
 callback!(load_trade_route, 32);
+// Port-to-port supply route update (route, from province, to province).
+callback!(update_supply_trade_route, 33);
+
+unsafe extern "system" fn refresh_origin_trade_route(
+    first: usize,
+    second: usize,
+    third: usize,
+    fourth: usize,
+) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
+        unsafe { std::mem::transmute(ORIGINAL[ORIGIN_ROUTE_SITE].load(Ordering::Acquire)) };
+    WATCHES.refresh_origin(
+        first,
+        || engine_mutations::raid_mutations::origin_route_kind(&memory, first),
+        || target(Receiver::OriginRoute, first, second, third),
+        || timing.original(|| unsafe { original(first, second, third, fourth) }),
+    )
+}
 
 /// `country air pool capacity setter(base, capacity, tag)` stores `capacity` unchanged at the
 /// slot's container capacity (the daily pass stores most containers' value again): only a store
@@ -1003,9 +1128,188 @@ mod tests {
             | Receiver::CountryTag
             | Receiver::EveryCountry
             | Receiver::PoolCapacity => Family::Sites,
-            Receiver::Route | Receiver::RouteSender | Receiver::EveryRoute => Family::Routes,
+            Receiver::Route
+            | Receiver::RouteSender
+            | Receiver::OriginRoute
+            | Receiver::EveryRoute => Family::Routes,
             _ => Family::States,
         }
+    }
+
+    #[test]
+    fn supply_route_updater_marks_its_sender() {
+        let site = site("update_supply_trade_route");
+        assert_eq!(MUTATIONS[site].1, Receiver::Route);
+        let watches = Watches::enabled(64, 64);
+        let epoch = take(&watches, Family::Routes).0;
+        let mut route = [0_u8; 0x40];
+        route[engine_resources::resource_map::ROUTE_LINKS[0]..][..4]
+            .copy_from_slice(&6_u32.to_le_bytes());
+        route[engine_resources::resource_map::ROUTE_LINKS[1]..][..4]
+            .copy_from_slice(&11_u32.to_le_bytes());
+        let mark = watches.notify(
+            site,
+            target(MUTATIONS[site].1, route.as_ptr() as usize, 0, 0),
+        );
+        assert_eq!(take(&watches, Family::Routes).0, None);
+        drop(mark);
+        assert_eq!(take(&watches, Family::Routes), (epoch, vec![6]));
+    }
+
+    #[test]
+    fn origin_inline_clear_marks_only_a_changed_owner_and_refuses_a_running_refresh() {
+        assert_eq!(site("refresh_origin_trade_route"), ORIGIN_ROUTE_SITE);
+        assert_eq!(MUTATIONS[ORIGIN_ROUTE_SITE].1, Receiver::OriginRoute);
+        let watches = Watches::enabled(64, 64);
+        let epoch = take(&watches, Family::Routes).0;
+        for (before, after, marked) in [
+            (Some(2), Some(0), true),
+            (Some(0), Some(0), false),
+            (Some(2), Some(2), false),
+            (None, Some(0), true),
+            (Some(2), None, true),
+        ] {
+            let kind = Cell::new(before);
+            assert_eq!(
+                watches.refresh_origin(
+                    0,
+                    || kind.get(),
+                    || Target::Route(Some(6)),
+                    || {
+                        assert_eq!(take(&watches, Family::Routes).0, None);
+                        kind.set(after);
+                        123
+                    },
+                ),
+                123
+            );
+            assert_eq!(
+                take(&watches, Family::Routes),
+                (epoch, if marked { vec![6] } else { vec![] })
+            );
+        }
+        // Rebuilding a path can keep its kind: the nested updater still marks
+        // it even though the enclosing refresh has no inline kind change.
+        watches.refresh_origin(
+            0,
+            || Some(2),
+            || unreachable!("unchanged refresh does not name an owner"),
+            || {
+                drop(watches.notify(
+                    engine_mutations::raid_mutations::FIRST_ROUTE_SITE,
+                    Target::Route(Some(6)),
+                ))
+            },
+        );
+        assert_eq!(take(&watches, Family::Routes), (epoch, vec![6]));
+        let mut origin = [0_u8; 0x400];
+        origin[engine_mutations::raid_mutations::ORIGIN_OWNER..][..4]
+            .copy_from_slice(&6_u32.to_le_bytes());
+        assert_eq!(
+            target(Receiver::OriginRoute, origin.as_ptr() as usize, 0, 0),
+            Target::Route(Some(6))
+        );
+        assert_eq!(target(Receiver::OriginRoute, 0, 0, 0), Target::Route(None));
+    }
+
+    #[test]
+    fn an_origin_refresh_completed_inside_the_route_take_refuses_the_certificate() {
+        let watches = Watches::enabled(64, 64);
+        let epoch = take(&watches, Family::Routes).0;
+        drop(watches.notify(
+            engine_mutations::raid_mutations::FIRST_ROUTE_SITE,
+            Target::Route(Some(3)),
+        ));
+        assert_eq!(
+            watches.take(Family::Routes, &mut |id| {
+                assert_eq!(id, 3);
+                let kind = Cell::new(Some(2));
+                watches.refresh_origin(
+                    0,
+                    || kind.get(),
+                    || Target::Route(Some(6)),
+                    || kind.set(Some(0)),
+                );
+            }),
+            None
+        );
+        assert_eq!(take(&watches, Family::Routes), (epoch, vec![6]));
+    }
+
+    #[test]
+    fn rights_origin_clear_and_nested_repath_mark_the_holder_instead_of_the_sender() {
+        let watches = Watches::enabled(64, 64);
+        let epoch = take(&watches, Family::Routes).0;
+        let mut origin = [0_u8; 0x400];
+        origin[engine_mutations::raid_mutations::ORIGIN_OWNER..][..4]
+            .copy_from_slice(&11_u32.to_le_bytes());
+        origin[engine_resources::cresource_origin::DELIVERY_ROUTE
+            + engine_resources::resource_map::ROUTE_LINKS[0]..][..4]
+            .copy_from_slice(&6_u32.to_le_bytes());
+        let origin = origin.as_ptr() as usize;
+        let route = origin + engine_resources::cresource_origin::DELIVERY_ROUTE;
+        let mut unrelated = [0_u8; 0x40];
+        unrelated[engine_resources::resource_map::ROUTE_LINKS[0]..][..4]
+            .copy_from_slice(&6_u32.to_le_bytes());
+        let unrelated = unrelated.as_ptr() as usize;
+        for repath in [false, true] {
+            let kind = Cell::new(Some(2));
+            assert_eq!(
+                watches.refresh_origin(
+                    origin,
+                    || kind.get(),
+                    || target(Receiver::OriginRoute, origin, 0, 0),
+                    || {
+                        assert_eq!(take(&watches, Family::Routes).0, None);
+                        // Other routes still use their own sender during a refresh.
+                        assert_eq!(
+                            target(Receiver::Route, unrelated, 0, 0),
+                            Target::Route(Some(6))
+                        );
+                        if repath {
+                            // The nested update keeps kind and census membership.
+                            drop(watches.notify(
+                                engine_mutations::raid_mutations::FIRST_ROUTE_SITE,
+                                target(Receiver::Route, route, 0, 0),
+                            ));
+                        } else {
+                            kind.set(Some(0));
+                        }
+                        123
+                    },
+                ),
+                123
+            );
+            assert_eq!(take(&watches, Family::Routes), (epoch, vec![11]));
+            assert_eq!(REFRESHING_ORIGIN.with(Cell::get), None);
+            assert_eq!(target(Receiver::Route, route, 0, 0), Target::Route(Some(6)));
+        }
+    }
+
+    #[test]
+    fn origin_owner_context_is_restored_after_nested_refresh_and_unwind() {
+        let watches = Watches::enabled(64, 64);
+        let epoch = take(&watches, Family::Routes).0;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            watches.refresh_origin(
+                100,
+                || Some(2),
+                || unreachable!(),
+                || {
+                    watches.refresh_origin(
+                        200,
+                        || Some(2),
+                        || unreachable!(),
+                        || assert_eq!(REFRESHING_ORIGIN.with(Cell::get), Some(200)),
+                    );
+                    assert_eq!(REFRESHING_ORIGIN.with(Cell::get), Some(100));
+                    panic!("synthetic original unwinds");
+                },
+            );
+        }));
+        assert!(result.is_err());
+        assert_eq!(REFRESHING_ORIGIN.with(Cell::get), None);
+        assert_eq!(take(&watches, Family::Routes), (epoch, vec![]));
     }
 
     /// A state writer marks its state, an override writer its link and a

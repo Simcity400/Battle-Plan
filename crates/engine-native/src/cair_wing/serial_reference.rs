@@ -74,17 +74,18 @@ pub(super) fn walk_projected(
                 "strategic air country vtable mismatch",
             )?;
             let owner = reader.field::<u32>(owner_pointer, cstrategic_air::COUNTRY)?;
-            let owner_slot = if slot == 0 && score.is_some() {
+            let owner_country = if slot == 0 && score.is_some() {
                 let country =
                     crate::game_score_inputs::read_slot_zero(memory, base, countries.arrays()[0])?
                         .ok_or("strategic air slot zero owner has no catalogue object")?;
                 if country.id != owner {
                     return Err("strategic air slot zero owner differs from catalogue object");
                 }
-                country.canonical_slot
+                country
             } else {
-                countries.resolve(owner)?.canonical_slot
+                countries.resolve(owner)?
             };
+            let owner_slot = owner_country.canonical_slot;
             if owner_slot != slot {
                 return Err("strategic air owner differs from canonical country slot");
             }
@@ -198,6 +199,8 @@ pub(super) fn walk_projected(
                             },
                         ) {
                             Ok(Some(mut row)) => {
+                                row.owner_pointer = owner_country.pointer;
+                                row.owner_slot = owner_slot;
                                 visit(
                                     wing,
                                     pool,

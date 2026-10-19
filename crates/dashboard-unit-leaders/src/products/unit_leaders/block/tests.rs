@@ -117,7 +117,7 @@ fn tag_resolver_declarations_fit_the_bound_watch_and_kept_frame() {
         triggers::inputs::{Key, Since},
     };
     let selection = selected(true);
-    let reduced = reduction(false);
+    let reduced = reduction();
     for key in [
         Key::Scopes(Query::AliasEntry("AAA".into())),
         Key::Scopes(Query::ResolveTag("AAA".into())),

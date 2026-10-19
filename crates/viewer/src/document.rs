@@ -264,6 +264,8 @@ pub struct Content {
     pub game_counters: counters::CounterSettings,
     /// The configured user folder's local world target size; no recorder UI state.
     pub game_full_resolution: bool,
+    /// Local show-all strategic names preference; never read from the recording.
+    pub game_strategic_names: bool,
     /// The user's `settings.txt` sound volumes.
     pub game_audio: dashboard::protocol::MapAudio,
     /// The game's second master factor (`dev_master_volume`), a fraction.
@@ -307,6 +309,12 @@ pub struct Content {
     pub adjacency_icons: viewer_world::map::adjacency_icons::AdjacencyIcons,
     /// The trade-route lines' defines, or why they cannot be read.
     pub trade_routes: Result<viewer_world::map::trade_routes::TradeRouteDefines, String>,
+    air_assignment_colors: Result<viewer_world::map::air_assignment::Colors, String>,
+    occupation_stripe_alpha: Result<viewer_world::map::occupation_stripes::Alpha, String>,
+    naval_selection_colors: Result<viewer_world::map::naval_selection::Colors, String>,
+    naval_region_eligibility: BTreeSet<u32>,
+    air_order_colors: Result<viewer_world::map::air_orders::Colors, String>,
+    air_transfer_color: Result<[f32; 4], String>,
     // rivers
     /// `map/terrain/RiverSurface_*`.
     pub river_assets: RiverAssets,
@@ -320,6 +328,7 @@ pub struct Content {
     /// The counter, base and combat anchors from `map/unitstacks.txt` and
     /// `map/buildings.txt`.
     pub counters: Arc<CounterContent>,
+    radar_centers: viewer_world::map::radar_symbols::Centers,
     /// Raid hover identity and its immutable content, fresh for every content rebuild.
     pub raid_hover: Arc<raids::tooltips::Content>,
     // the map's table frame
@@ -356,7 +365,7 @@ pub struct Content {
     pub bridges: Bridges,
     /// The land division entities, the sub-unit keys and the graphical
     /// cultures; the placed figures are per hour and come from
-    /// [`Document::unit_model_field`].
+    /// [`Document::unit_model_field_sailing`].
     pub unit_models: UnitModelAssets,
     // orders: the recorded player's battle plan
     /// `gfx/maparrows/maparrows.txt` and the mask and pattern pages of every
@@ -439,6 +448,12 @@ impl std::ops::Deref for Hour<'_> {
 /// layers are their depth order among themselves, and no other part of the
 /// overlay reads them.
 pub struct PreparedOverlay {
+    pub radar: viewer_world::map::radar_symbols::Field,
+    pub air_ranges: viewer_world::map::air_ranges::Fields,
+    pub air_assignment: viewer_world::map::air_assignment::Field,
+    pub occupation_stripes: viewer_world::map::air_assignment::Field,
+    pub naval_selection: viewer_world::map::naval_selection::Field,
+    pub air_orders: Arc<viewer_world::map::air_orders::Prepared>,
     /// The labels' prepared values, drawn through this view's native pools.
     labels: labels::PreparedLabels,
     /// The raid icons, drawn before the labels.
@@ -474,12 +489,14 @@ pub struct PreparedOverlay {
     /// The resources mode's state icons and the strait and canal icons, presented through this
     /// view's pools.
     resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
+    occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
+    occupation_hits: Vec<viewer_world::map::occupation_icons::Hit>,
     adjacency_icons: viewer_world::map::adjacency_icons::PreparedAdjacencyIcons,
     /// The strait and canal icons' priority in the view's map mode.
     adjacency_priority: i8,
-    /// Both icon families as last drawn.
+    /// The resource, occupation and adjacency icons as last drawn.
     mode_icons: Batch,
-    /// What the last draw of both refused, by reason.
+    /// What the last draw refused, by reason.
     mode_icon_refused: BTreeMap<String, usize>,
 }
 /// A dump retains the same presented windows across its scene frames.
@@ -544,6 +561,12 @@ impl DumpOverlay<'_> {
     /// The overlay as of the last presented frame: its intel icons' report and hover shapes.
     pub fn prepared(&self) -> &PreparedOverlay {
         &self.prepared
+    }
+
+    pub(crate) fn naval_dominance_sources(
+        &self,
+    ) -> Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap> {
+        self.tables.naval_dominance_sources()
     }
 
     pub(crate) fn refuse_settlement(&mut self, retries: Vec<Retry>) {
@@ -673,6 +696,7 @@ impl PreparedOverlay {
                     windows,
                     fonts: &hour.icons.fonts,
                     localisation: &hour.names.localisation,
+                    recorded_language: &hour.counter_content.recorded_language,
                     map: &hour.map,
                     camera,
                     viewport,
@@ -682,6 +706,9 @@ impl PreparedOverlay {
                     settings: self.counter_view.settings,
                     display,
                     selected: &self.counter_view.selected,
+                    selected_air: &self.counter_view.air_selected,
+                    selected_air_bases: &self.counter_view.air_bases,
+                    selected_fleets: &self.counter_view.fleets_selected,
                     hovered: self.counter_view.hovered,
                     schedule: self.counter_view.presentation.schedule(),
                     visibility: self.counter_view.visibility,
@@ -737,6 +764,15 @@ impl PreparedOverlay {
                     self.resource_icons
                         .draw(context, &mut views.resources, &mut mode_icons);
                 let mut refused = resources.refused;
+                let occupation = self.occupation_icons.draw(
+                    context,
+                    &mut views.occupation,
+                    &mut mode_icons,
+                    &mut self.occupation_hits,
+                );
+                for (reason, count) in occupation.refused {
+                    *refused.entry(reason).or_default() += count;
+                }
                 for (reason, count) in &self.adjacency_icons.report {
                     *refused.entry(reason.clone()).or_default() += count;
                 }
@@ -786,12 +822,36 @@ impl PreparedOverlay {
         &self.raid_report
     }
 
-    /// The warning-area lines of the resource and strait icons: what their last draw refused.
+    /// The warning-area lines of the mode icons: what their last draw refused.
     pub fn mode_icon_warnings(&self) -> Vec<String> {
         self.mode_icon_refused
             .iter()
             .map(|(reason, count)| format!("Map icons: {count} not drawn: {reason}."))
             .collect()
+    }
+
+    pub fn occupation_hits(&self) -> &[viewer_world::map::occupation_icons::Hit] {
+        &self.occupation_hits
+    }
+
+    /// All views upload this same current secondary province field, including its empty clear.
+    pub fn province_stripes(&self) -> &viewer_world::map::air_assignment::Field {
+        use viewer_foundation::map::mode_visibility::PriorityTable;
+        match self.counter_view.visibility.priorities {
+            PriorityTable::Resistance => &self.occupation_stripes,
+            PriorityTable::StrategicNavy => &self.naval_selection.assignment,
+            _ => &self.air_assignment,
+        }
+    }
+
+    pub fn stripe_warnings(&self) -> impl Iterator<Item = String> + '_ {
+        self.occupation_stripes
+            .refused
+            .iter()
+            .map(|(why, count)| format!("Occupation country stripes: {count} withheld: {why}"))
+            .chain(self.air_assignment.refused.iter().map(|(why, count)| {
+                format!("Air assignment stripes: {count} refused regions: {why}")
+            }))
     }
 
     /// The hit shapes of the raid icons the latest draw laid out for hovering, drawn or hidden;
@@ -903,7 +963,7 @@ impl PreparedOverlay {
 struct OverlayParts<'a> {
     pings: &'a [Quad],
     bases: &'a [Quad],
-    /// The map mode's resource and strait icons, which the mode alone shows.
+    /// The map mode's resource, occupation and strait icons.
     mode_icons: &'a [Quad],
     raids: &'a [Quad],
     /// The Operatives map mode's state containers.
@@ -1363,6 +1423,7 @@ impl Document {
         let game_full_resolution = settings
             .bool_at(&["maprenderingoptions", "draw_map_full_res"])
             .unwrap_or(true);
+        let game_strategic_names = settings.bool_at(&["strategic_regions"]).unwrap_or(false);
         let game_audio = dashboard::map_settings::game_audio(&settings);
         let game_dev_master = dashboard::map_settings::game_dev_master(&settings);
         let map_defines = crate::map_assets::graphics_define(
@@ -1680,6 +1741,7 @@ impl Document {
                 )
             })?);
             let mut counters = h_counters.join().expect("counters loader panicked")?;
+            counters.recorded_labels = Some(Arc::clone(&recorded_labels));
             if let Err(error) = counters.fog.as_ref() {
                 joined_warnings.push(format!(
                     "Fog of war cannot be rebuilt from this content ({error}): no fog is drawn and land stacks are drawn in full."
@@ -2112,6 +2174,7 @@ impl Document {
                         recorded_language.clone(),
                         terrain,
                         infrastructure.clone(),
+                        viewer_world::map::map_mode::strategic::Content::new(defines, &regions)?,
                     )
                 },
             )?)
@@ -2121,6 +2184,35 @@ impl Document {
         warnings.extend(intel_assets.warnings.iter().cloned());
         let mut counter_assets = counter_assets;
         let mut icon_images = icon_images;
+        // The occupation catalogue reads settled script and modifier names after the content
+        // loaders above. Runtime badge sprites and inline trend icons share the native GUI.
+        let occupation = crate::map_assets::graphics_define(
+            &content.layers,
+            "occupation map icons",
+            &art_defines,
+            &defines,
+            viewer_world::map::occupation_icons::IconDefines::load,
+        )
+        .and_then(|defines| {
+            Ok(viewer_world::map::occupation_icons::Content {
+                definitions: installed_content_core::occupation_modifiers::Definitions::read(
+                    &content.layers,
+                )?,
+                defines,
+            })
+        })
+        .map_err(|error| error.to_string());
+        match &occupation {
+            Ok(occupation) => {
+                warnings.extend(occupation.warnings().cloned());
+                counter_assets.gui.load(
+                    &content.layers,
+                    &viewer_world::map::occupation_icons::gui_assets(occupation),
+                    &mut icon_images,
+                )?;
+            }
+            Err(why) => warnings.push(format!("Occupation map icons: 1 content refusal: {why}")),
+        }
         let intel_sprites = intel_assets.gui_assets(counter_assets.gui.registry());
         counter_assets
             .gui
@@ -2132,6 +2224,7 @@ impl Document {
             combat: Arc::new(combat_assets),
             raids: Arc::new(raid_assets),
             intel: Arc::new(intel_assets),
+            occupation,
             images: icon_images,
             fonts: icon_fonts,
             counters: Arc::new(counter_assets),
@@ -2219,6 +2312,7 @@ impl Document {
             states.definitions(),
             &icons.combat.temperature,
             icons.combat.sub_units(),
+            Arc::clone(&recorded_labels),
         );
         warnings.extend(province_hover.warnings());
         let naval_dominance = viewer_world::map::naval_dominance::Content::new(
@@ -2248,6 +2342,8 @@ impl Document {
         let modifier_names = Arc::new(combat::modifier_text::name_index_cache());
         let regions = Arc::new(regions);
         let combat = Arc::new(combat::Content {
+            medals: Default::default(),
+            attrition: Default::default(),
             assets: Arc::clone(&icons.combat),
             localisation: Arc::clone(&names.localisation),
             recorded_language: recorded_language.clone(),
@@ -2303,6 +2399,7 @@ impl Document {
             sub_units: icons.combat.shared_sub_units(),
             movement_terrain: icons.combat.movement_terrain(),
             building_facts: Arc::clone(&map_buildings.facts),
+            air_base_first_provinces: Arc::clone(&counters.air_base_first_provinces),
             movement: movement.clone(),
             eta_cache: Arc::clone(&eta_cache),
         });
@@ -2332,10 +2429,66 @@ impl Document {
             viewer_world::map::trade_routes::TradeRouteDefines::read,
         )
         .map_err(|error| error.to_string());
+        let air_assignment_colors = crate::map_assets::graphics_define(
+            &content.layers,
+            "Air assignment stripes",
+            &art_defines,
+            &defines,
+            viewer_world::map::air_assignment::Colors::read,
+        )
+        .map_err(|error| error.to_string());
+        let occupation_stripe_alpha = crate::map_assets::graphics_define(
+            &content.layers,
+            "occupation country stripes",
+            &art_defines,
+            &defines,
+            viewer_world::map::occupation_stripes::Alpha::read,
+        )
+        .map_err(|error| error.to_string());
+        let naval_region_eligibility = viewer_world::map::naval_selection::eligible_regions(
+            &icons.raids.region_provinces,
+            &icons.raids.geometry,
+        );
+        let naval_selection_colors = crate::map_assets::graphics_define(
+            &content.layers,
+            "Navy local selection colours",
+            &art_defines,
+            &defines,
+            viewer_world::map::naval_selection::Colors::read,
+        )
+        .map_err(|error| error.to_string());
+        let radar_centers = viewer_world::map::radar_symbols::Centers::new(
+            &icons.raids.trigger_content.state_provinces,
+            &counters.bounds,
+            map.width as i32,
+        );
+        let air_order_colors = crate::map_assets::graphics_define(
+            &content.layers,
+            "Air mission arrows",
+            &art_defines,
+            &defines,
+            viewer_world::map::air_orders::Colors::read,
+        )
+        .map_err(|error| error.to_string());
+        let air_transfer_color = crate::map_assets::graphics_define(
+            &content.layers,
+            "Air transfer arrows",
+            &art_defines,
+            &defines,
+            viewer_world::map::air_transfers::color,
+        )
+        .map_err(|error| error.to_string());
         let content = Content {
+            radar_centers,
             resource_icons,
             adjacency_icons,
             trade_routes,
+            air_assignment_colors,
+            occupation_stripe_alpha,
+            naval_selection_colors,
+            naval_region_eligibility,
+            air_order_colors,
+            air_transfer_color,
             counter_content,
             combat,
             visual_mods: visual_mods.map(<[installed_content_core::content::visual::Choice]>::to_vec),
@@ -2349,6 +2502,7 @@ impl Document {
             game_display,
             game_counters,
             game_full_resolution,
+            game_strategic_names,
             game_audio,
             game_dev_master,
             assets,
@@ -2554,7 +2708,8 @@ impl Document {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<(viewer_world::map::unit_history::Field, ModelReport)> {
-        self.hour()?.unit_model_field(perspective)
+        self.hour()?
+            .unit_model_field_sailing(perspective, 0.0, &|_| false)
     }
 
     /// See [`Hour::unit_model_field_sailing`].
@@ -2588,8 +2743,7 @@ impl Document {
         perspective: &perspective::Choice,
         omitted: Omissions,
         counter_settings: counters::CounterSettings,
-        visibility: viewer_foundation::map::mode_visibility::Visibility,
-        operatives: bool,
+        mode: &viewer_world::map::map_mode::MapMode,
     ) -> io::Result<DumpOverlay<'_>> {
         self.hour()?.dump_overlay(
             camera,
@@ -2598,8 +2752,7 @@ impl Document {
             perspective,
             omitted,
             counter_settings,
-            visibility,
-            operatives,
+            mode,
         )
     }
 
@@ -2646,6 +2799,12 @@ pub(crate) struct OverlayTables {
 }
 
 impl OverlayTables {
+    pub(crate) fn naval_dominance_sources(
+        &self,
+    ) -> Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap> {
+        self.counters.naval_dominance_sources()
+    }
+
     /// See [`counters::HourTables::land_combat_gaps`].
     #[cfg(test)]
     pub(crate) fn land_combat_gaps(
@@ -2685,6 +2844,26 @@ impl OverlayTables {
 }
 
 impl<'a> Hour<'a> {
+    pub(crate) fn air_ranges(
+        &self,
+        viewer: u32,
+        selected: &[u64],
+    ) -> viewer_world::map::air_ranges::Fields {
+        let defines = &self.icons.raids.defines;
+        viewer_world::map::air_ranges::read_fields(
+            self.frame,
+            viewer,
+            selected,
+            viewer_foundation::map::air_range::Defines {
+                map_scale: defines.map_scale,
+                ace_wing_size: defines.ace_wing_size,
+                ace_wing_size_max_bonus: defines.ace_wing_size_max_bonus,
+            },
+            &self.radar_centers,
+            &self.icons.raids.geometry.centroids,
+            self.heights(),
+        )
+    }
     pub fn new(content: &'a Content, frame: &'a DecodedFrame, hour_fraction: f32) -> Self {
         Self {
             content,
@@ -2709,7 +2888,9 @@ impl<'a> Hour<'a> {
         let evaluator = dashboard::triggers::Evaluator::new(self.trigger_world(), None);
         let scopes = dashboard::triggers::Scopes::of(dashboard::triggers::Scope::Country(country));
         Some(song_chances(content, |body| {
-            evaluator.mean_time_to_happen("music chance", body, scopes)
+            evaluator
+                .mean_time_to_happen("music chance", body, scopes)
+                .map_err(|why| why.to_string())
         }))
     }
 
@@ -3010,18 +3191,149 @@ impl<'a> Hour<'a> {
         );
         let routes = self.trade_route_lines(ours);
         let route_warnings = routes.report.warnings();
+        let air = self.air_orders(ours, &[], &[]);
+        let air_warnings = air.warnings();
         if raid_field.draws.is_empty()
             && report == Default::default()
             && routes.field.draws.is_empty()
             && route_warnings.is_empty()
+            && air.field.draws.is_empty()
+            && air_warnings.is_empty()
         {
             return Ok((plan, routes.convoys.clone()));
         }
         let mut field = viewer_foundation::map::ribbon_mesh::append(&plan, &raid_field);
         field = viewer_foundation::map::ribbon_mesh::append(&field, &routes.field);
+        field = viewer_foundation::map::ribbon_mesh::append(&field, &air.field);
         field.report.raid_arrows = report;
         field.report.trade_routes = route_warnings;
+        field.report.air_orders = air_warnings;
         Ok((Arc::new(field), routes.convoys.clone()))
+    }
+
+    /// Air arrows read game state; the local range presentation supplies highlights.
+    pub fn air_orders(
+        &self,
+        viewer: u32,
+        selected: &[u64],
+        selected_wings: &[u64],
+    ) -> viewer_world::map::air_orders::Prepared {
+        let mut prepared = viewer_world::map::air_orders::read(
+            self.frame,
+            &viewer_world::map::air_orders::Inputs {
+                arrow: self
+                    .orders
+                    .types
+                    .get(viewer_world::map::air_orders::MISSION_ARROW),
+                colors: self
+                    .air_order_colors
+                    .as_ref()
+                    .copied()
+                    .map_err(String::as_str),
+                heights: self.heights(),
+                viewer,
+                highlighted_bases: selected,
+                base_position: &|base| self.air_order_position(base),
+                region_position: &|region| self.counters.region_icon(region),
+            },
+        );
+        prepared.transfers = viewer_world::map::air_transfers::read(
+            self.frame,
+            &viewer_world::map::air_transfers::Inputs {
+                viewer,
+                selected: selected_wings,
+                arrow: self
+                    .orders
+                    .types
+                    .get(viewer_world::map::air_transfers::ARROW),
+                color: self
+                    .air_transfer_color
+                    .as_ref()
+                    .copied()
+                    .map_err(String::as_str),
+                heights: self.heights(),
+                base_position: &|base| self.air_order_position(base),
+            },
+        );
+        prepared
+    }
+
+    fn air_order_position(
+        &self,
+        base: &replay_data::rows::AirBaseRow,
+    ) -> Result<Option<[f32; 3]>, String> {
+        let state = base.state;
+        let province = if let Some(state) = state {
+            let kind = match base.kind {
+                1 => 1,
+                2 => 2,
+                _ => 0,
+            };
+            let province = self
+                .counters
+                .air_base_first_provinces
+                .get(&(state, kind))
+                .copied()
+                .transpose()
+                .map_err(str::to_owned)?;
+            let Some(province) = province else {
+                return Ok(None);
+            };
+            province
+        } else {
+            let ships = self
+                .frame
+                .complete::<row_tables::Ships>()
+                .map_err(|e| e.to_string())?;
+            let Some(ship) = ships
+                .binary_search_by_key(&base.host, |row| row.id)
+                .ok()
+                .map(|at| &ships[at])
+            else {
+                return Ok(None);
+            };
+            let forces = self
+                .frame
+                .complete::<row_tables::TaskForces>()
+                .map_err(|e| e.to_string())?;
+            let Some(force) = forces
+                .binary_search_by_key(&ship.task_force, |row| row.id)
+                .ok()
+                .map(|at| &forces[at])
+            else {
+                return Ok(None);
+            };
+            force.province
+        };
+        // State endpoints search the ordinary air-base bucket queue, regardless
+        // of the selected base's subtype. Hosted endpoints use the province centre.
+        if state.is_some()
+            && self.counters.kinds.get(&province) == Some(&installed_content_core::map::ProvinceKind::Land)
+            && let Some(icon) = self.counters.site_icons
+                [viewer_foundation::map::building_facts::AIR_BASE]
+                .get(&province)
+        {
+            match &icon.anchor {
+                Ok(viewer_foundation::map::building_facts::IconAnchor::Record(position)) => {
+                    return Ok(Some(*position));
+                }
+                Ok(viewer_foundation::map::building_facts::IconAnchor::Province) => (),
+                Err(why) => return Err(why.clone()),
+            }
+        }
+        let [x, z] = self
+            .icons
+            .raids
+            .geometry
+            .centroids
+            .get(&province)
+            .copied()
+            .ok_or_else(|| format!("Air arrow province {province} has no content centroid"))?;
+        Ok(Some([
+            x as f32,
+            self.heights().native_height(x as f32, z as f32),
+            z as f32,
+        ]))
     }
 
     /// The battle plan alone; ordinary plans are memoised on [`orders::TABLES`].
@@ -3180,14 +3492,6 @@ impl<'a> Hour<'a> {
                 },
                 localisation: &self.names.localisation,
             })
-    }
-
-    #[cfg(test)]
-    pub fn unit_model_field(
-        &self,
-        perspective: &perspective::Choice,
-    ) -> io::Result<(viewer_world::map::unit_history::Field, ModelReport)> {
-        self.unit_model_field_sailing(perspective, 0.0, &|_| false)
     }
 
     /// The hour's unit models with the raid units, and the trade-route convoys sailing at `time`
@@ -3574,10 +3878,21 @@ impl<'a> Hour<'a> {
     ) -> io::Result<name_pass::NameAreas> {
         use viewer_world::map::map_mode::{self, NameLayer};
         let groups = match layer {
-            // Strategic region names are not drawn, and the countries' are not the mode's (named
-            // in the mode's warnings).
-            NameLayer::Nothing | NameLayer::StrategicRegions => {
+            NameLayer::Nothing => {
                 return Ok(name_pass::NameAreas::default());
+            }
+            NameLayer::StrategicRegions => {
+                return Ok(name_pass::NameAreas::strategic(
+                    &self.map,
+                    &self.strategic_regions,
+                    |region| {
+                        viewer_foundation::tooltip_text::localise(
+                            &self.names.localisation,
+                            &region.name_key,
+                            &[],
+                        )
+                    },
+                ));
             }
             NameLayer::States => {
                 let content = &self.counter_content;
@@ -3743,6 +4058,7 @@ impl<'a> Hour<'a> {
                 windows: &windows,
                 fonts: &self.icons.fonts,
                 localisation: &self.names.localisation,
+                recorded_language: &self.counter_content.recorded_language,
                 map: &self.map,
                 camera,
                 viewport,
@@ -3752,6 +4068,9 @@ impl<'a> Hour<'a> {
                 settings: view.settings,
                 display: &counters::CounterDisplay::default(),
                 selected: &view.selected,
+                selected_air: &view.air_selected,
+                selected_air_bases: &view.air_bases,
+                selected_fleets: &view.fleets_selected,
                 hovered: view.hovered,
                 schedule: view.presentation.schedule(),
                 visibility: view.visibility,
@@ -3819,6 +4138,27 @@ impl<'a> Hour<'a> {
             ),
             Err(_) => Default::default(),
         };
+        let occupation_icons = match &self.icons.occupation {
+            Ok(content) => viewer_world::map::occupation_icons::prepare(
+                &viewer_world::map::occupation_icons::Inputs {
+                    content,
+                    mode: view.occupation,
+                    country: tables.ours(),
+                    state_provinces: &self.icons.raids.trigger_content.state_provinces,
+                    centroid: &|province| {
+                        let (_, geography) = self.icons.raids.mission_topology().ok()?;
+                        let [x, z] = *geography.centroids.get(&province)?;
+                        let (x, z) = (x as f32, z as f32);
+                        Some([x, self.heights().surface_height(x, z), z])
+                    },
+                    camera,
+                    viewport,
+                    ui_scale,
+                },
+                frame,
+            ),
+            Err(_) => Default::default(),
+        };
         let counters = &self.counters;
         let anchor =
             |province| counters.anchor(province, viewer_foundation::map::unit_rules::STANDSTILL);
@@ -3835,8 +4175,80 @@ impl<'a> Hour<'a> {
             &self.counters.defines.priorities,
             &view.visibility,
         );
+        let air_assignment = if view.visibility.priorities
+            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
+        {
+            let defines = &self.icons.raids.defines;
+            viewer_world::map::air_assignment::read(
+                frame,
+                &view.air_selected,
+                tables.ours(),
+                viewer_foundation::map::air_range::Defines {
+                    map_scale: defines.map_scale,
+                    ace_wing_size: defines.ace_wing_size,
+                    ace_wing_size_max_bonus: defines.ace_wing_size_max_bonus,
+                },
+                viewer_world::map::air_assignment::Content {
+                    geometry: &self.icons.raids.geometry,
+                    states: &self.icons.raids.trigger_content.state_provinces,
+                    regions: &self.icons.raids.region_provinces,
+                    colors: self
+                        .air_assignment_colors
+                        .as_ref()
+                        .copied()
+                        .map_err(String::as_str),
+                },
+            )
+        } else {
+            Default::default()
+        };
         Ok(PreparedOverlay {
+            air_orders: Arc::new(self.air_orders(tables.ours(), &[], &view.air_selected)),
+            air_assignment,
+            occupation_stripes: if view.visibility.priorities
+                == viewer_foundation::map::mode_visibility::PriorityTable::Resistance
+            {
+                viewer_world::map::occupation_stripes::read(
+                    frame,
+                    tables.ours(),
+                    &self.map,
+                    &self.icons.raids.trigger_content.state_provinces,
+                    self.occupation_stripe_alpha
+                        .as_ref()
+                        .copied()
+                        .map_err(String::as_str),
+                )
+            } else {
+                Default::default()
+            },
+            naval_selection: if view.visibility.priorities
+                == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy
+            {
+                viewer_world::map::naval_selection::read(
+                    frame,
+                    tables.ours(),
+                    &view.selected,
+                    &view.fleets_selected,
+                    &self.icons.raids.region_provinces,
+                    &self.naval_region_eligibility,
+                    self.naval_selection_colors
+                        .as_ref()
+                        .copied()
+                        .map_err(String::as_str),
+                )
+            } else {
+                Default::default()
+            },
+            air_ranges: self.air_ranges(tables.ours(), &view.air_selected),
+            radar: viewer_world::map::radar_symbols::Field::read(
+                frame,
+                tables.ours(),
+                self.heights(),
+                &self.radar_centers,
+            ),
             resource_icons,
+            occupation_icons,
+            occupation_hits: Vec::new(),
             adjacency_icons,
             adjacency_priority,
             mode_icons: Batch::default(),
@@ -3972,14 +4384,12 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         omitted: Omissions,
         counter_settings: counters::CounterSettings,
-        visibility: viewer_foundation::map::mode_visibility::Visibility,
-        operatives: bool,
+        mode: &viewer_world::map::map_mode::MapMode,
     ) -> io::Result<DumpOverlay<'a>> {
         let layers = OverlayLayers::omitting(omitted);
         let tables = self.hour_tables(perspective, None)?;
         let mut view = CounterView::new(counter_settings);
-        view.visibility = visibility;
-        view.operatives = operatives;
+        view.set_mode(mode);
         let prepared = self.prepare_overlay_cached(camera, viewport, ui_scale, &tables, &view)?;
         Ok(DumpOverlay {
             hour: self,

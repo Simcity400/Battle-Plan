@@ -30,8 +30,8 @@ pub const ANY_SIDE_ENGAGED_RVA: usize = 0x013c_d880;
 /// to the retained last leader after it. Selection keeps the first highest-skill candidate, or null
 /// when none. Unit addition/removal, round preparation while null, post-load rebuild and leader
 /// rebuild publish this selection; only nonnull selections replace the last leader. Both initialize
-/// to zero. Saves restore only last leader, so current commander can remain null until the next
-/// combat tick.
+/// to zero. Saves restore only last leader; a null selection at any later tick also leaves that
+/// retained identity unchanged.
 pub const COMMANDER: usize = 0x110;
 /// Stored screening operands.
 pub const SCREENING: usize = 0x128;

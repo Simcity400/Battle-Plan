@@ -53,6 +53,7 @@ pub(crate) struct Bases {
     pub names_len: usize,
     indexed: bool,
     demand: CarrierDemand,
+    state_segments: Vec<(u64, usize)>,
 }
 
 impl Bases {
@@ -66,8 +67,96 @@ impl Bases {
             names_len: 0,
             indexed: true,
             demand: CarrierDemand::default(),
+            state_segments: Vec::new(),
         }
     }
+    /// Reserve all state-summary output and byte scratch in bulk before the
+    /// memo's capacity fingerprint. Reads only the already owned log.
+    pub fn prepare_states(&mut self, job: &super::AirBasesJob) {
+        self.state_segments.clear();
+        if allocation::reserve(&mut self.state_segments, job.segments.len()).is_ok() {
+            self.state_segments.extend(
+                job.segments
+                    .iter()
+                    .map(|segment| (segment.handle, segment.pointer)),
+            );
+            self.state_segments
+                .sort_unstable_by_key(|(handle, _)| *handle);
+        }
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let count = job.segments.iter().try_fold(0_usize, |sum, segment| {
+            sum.checked_add(
+                engine_native::cair_base::state_country_order_demand(&recorded, segment.pointer)
+                    .unwrap_or(0),
+            )
+        });
+        if let Some(count) = count {
+            if let Some(total) = job.carrier.demand.countries.checked_add(count) {
+                prepare(&mut self.countries, total);
+            }
+            if let Some(bytes) = count
+                .checked_mul(8)
+                .and_then(|bytes| job.carrier.demand.name_bytes.checked_add(bytes))
+            {
+                prepare(&mut self.names, bytes);
+            }
+            if let Some(rows) = job.carrier.demand.bases.checked_add(job.segments.len()) {
+                prepare(&mut self.rows, rows);
+            }
+        }
+    }
+
+    /// Append state bases' insertion order to the existing independent packet.
+    /// Source addresses are authenticated acquisition context, never wire values.
+    pub fn decode_states(
+        &mut self,
+        job: &super::AirBasesJob,
+        image: usize,
+        source: &[engine_native::cair_base::Row],
+        resolved: &mut [engine_native::cair_base::ResolvedLink],
+    ) {
+        let recorded = crate::raw::Recorded::build(&job.log);
+        let countries = engine_native::ccountry::Reader::new(&recorded, image, job.game_state);
+        for base in source.iter().filter(|base| base.state.is_some()) {
+            if self.len >= self.rows.len() {
+                break;
+            }
+            let mut row = CarrierBase {
+                base: base.id,
+                countries: Err("state air-base country-order certificate unavailable"),
+                host_name: Ok(None),
+            };
+            let pointer = self
+                .state_segments
+                .binary_search_by_key(&base.id, |(handle, _)| *handle)
+                .ok()
+                .map(|at| self.state_segments[at].1);
+            let (Some(pointer), Ok(countries)) = (pointer, &countries) else {
+                continue;
+            };
+            {
+                let start = self.countries_len;
+                row.countries = engine_native::cair_base::state_country_order(
+                    &recorded,
+                    image,
+                    pointer,
+                    base,
+                    countries,
+                    resolved,
+                    &mut self.countries[start..],
+                    &mut self.names[self.names_len..],
+                )
+                .map(|len| {
+                    self.countries_len += len;
+                    (start, len)
+                });
+            }
+            self.rows[self.len] = row;
+            self.len += 1;
+        }
+        self.index_rows();
+    }
+
     pub fn reset(&mut self) {
         self.len = 0;
         self.countries_len = 0;
@@ -104,6 +193,7 @@ impl Bases {
         self.rows.capacity() * size_of::<CarrierBase>()
             + self.countries.capacity() * size_of::<CountryOccurrence>()
             + self.names.capacity()
+            + self.state_segments.capacity() * size_of::<(u64, usize)>()
     }
     pub fn capacity(&self) -> [usize; 3] {
         [self.rows.len(), self.countries.len(), self.names.len()]
@@ -130,6 +220,43 @@ impl Bases {
         }
         rows.get(index)
     }
+    /// Compare borrowed optional payloads before allocating a replay row.
+    pub fn equal(
+        &self,
+        base: u64,
+        recorded: &rows::Recorded<Option<rows::AirBaseCarrierInputs>>,
+    ) -> bool {
+        let rows::Recorded::Value(recorded) = recorded else {
+            return false;
+        };
+        let Some(row) = self.row(base) else {
+            return recorded.is_none();
+        };
+        let Some(recorded) = recorded else {
+            return false;
+        };
+        let countries = row
+            .countries
+            .ok()
+            .and_then(|range| span(&self.countries, self.countries_len, range));
+        let equal_countries = match (countries, recorded.registered_countries.as_deref()) {
+            (None, None) => true,
+            (Some(left), Some(right)) => {
+                left.len() == right.len()
+                    && left.iter().zip(right).all(|(left, right)| {
+                        left.country == right.country && left.slot == right.slot
+                    })
+            }
+            _ => false,
+        };
+        let name = row
+            .host_name
+            .ok()
+            .flatten()
+            .and_then(|range| span(&self.names, self.names_len, range));
+        equal_countries && name == recorded.host_name.as_deref()
+    }
+
     pub fn packet(&self, base: u64) -> rows::Recorded<Option<rows::AirBaseCarrierInputs>> {
         rows::Recorded::Value(self.row(base).map(|row| rows::AirBaseCarrierInputs {
             registered_countries: row.countries.ok().and_then(|range| {
@@ -153,6 +280,7 @@ impl Bases {
 }
 
 pub(crate) struct Registrations {
+    state: super::state_fuel_inputs::Packet,
     pub rows: Vec<CarrierRegistration>,
     pub pools: Vec<CarrierPool>,
     pub len: usize,
@@ -164,6 +292,7 @@ pub(crate) struct Registrations {
 impl Registrations {
     pub fn new(rows: usize) -> Self {
         Self {
+            state: Default::default(),
             rows: allocation::owned_vec(allocation::default_vec(rows)),
             pools: Vec::new(),
             len: 0,
@@ -173,6 +302,7 @@ impl Registrations {
         }
     }
     pub fn reset(&mut self) {
+        self.state.clear();
         self.len = 0;
         self.pools_len = 0;
         self.indexed = true;
@@ -197,7 +327,8 @@ impl Registrations {
         self.prepare(self.demand);
     }
     pub fn bytes(&self) -> usize {
-        self.rows.capacity() * size_of::<CarrierRegistration>()
+        self.state.bytes() as usize
+            + self.rows.capacity() * size_of::<CarrierRegistration>()
             + self.pools.capacity() * size_of::<CarrierPool>()
     }
     pub fn capacity(&self) -> [usize; 2] {
@@ -208,7 +339,27 @@ impl Registrations {
         self.rows[..self.len].sort_unstable_by_key(|row| (row.base, row.slot));
         self.indexed = true;
     }
+    pub(crate) fn install_states(&mut self, packet: &super::state_fuel_inputs::Packet) {
+        self.state.clear();
+        if allocation::reserve(&mut self.state.rows, packet.rows.len()).is_err()
+            || allocation::reserve(&mut self.state.pools, packet.pools.len()).is_err()
+        {
+            return;
+        }
+        self.state.rows.extend_from_slice(&packet.rows);
+        self.state.pools.extend_from_slice(&packet.pools);
+        self.state
+            .rows
+            .sort_unstable_by_key(|row| (row.base, row.slot));
+    }
     fn row(&self, base: u64, slot: u32) -> Option<&CarrierRegistration> {
+        if let Ok(index) = self
+            .state
+            .rows
+            .binary_search_by_key(&(base, slot), |row| (row.base, row.slot))
+        {
+            return self.state.rows.get(index);
+        }
         if !self.indexed {
             return None;
         }
@@ -230,7 +381,16 @@ impl Registrations {
         rows.get(index)
     }
     fn pool_slice(&self, row: &CarrierRegistration, wing_len: usize) -> Option<&[CarrierPool]> {
-        let pools = span(&self.pools, self.pools_len, row.pools.ok()?)?;
+        let state = self
+            .state
+            .rows
+            .binary_search_by_key(&(row.base, row.slot), |item| (item.base, item.slot))
+            .is_ok();
+        let pools = if state {
+            span(&self.state.pools, self.state.pools.len(), row.pools.ok()?)?
+        } else {
+            span(&self.pools, self.pools_len, row.pools.ok()?)?
+        };
         let mut consumed = 0;
         for pool in pools {
             if pool.wings_start != consumed {
@@ -242,6 +402,23 @@ impl Registrations {
             }
         }
         (consumed == wing_len).then_some(pools)
+    }
+    pub(crate) fn state_fuel(&self, source: &cair_base::RegistrationRow) -> [Option<i64>; 2] {
+        self.state
+            .rows
+            .binary_search_by_key(&(source.base, source.slot), |row| (row.base, row.slot))
+            .ok()
+            .map(|index| {
+                let row = &self.state.rows[index];
+                [row.fuel.demand.ok(), row.fuel.allocated.ok()]
+            })
+            .unwrap_or([None, None])
+    }
+    fn is_state(&self, row: &CarrierRegistration) -> bool {
+        self.state
+            .rows
+            .binary_search_by_key(&(row.base, row.slot), |item| (item.base, item.slot))
+            .is_ok()
     }
     pub fn packet(
         &self,
@@ -262,8 +439,12 @@ impl Registrations {
             });
             rows::AirBaseRegistrationCarrierInputs {
                 country: row.country,
-                fuel_demand_raw: row.fuel.demand.ok(),
-                fuel_allocated_raw: row.fuel.allocated.ok(),
+                fuel_demand_raw: (!self.is_state(row))
+                    .then(|| row.fuel.demand.ok())
+                    .flatten(),
+                fuel_allocated_raw: (!self.is_state(row))
+                    .then(|| row.fuel.allocated.ok())
+                    .flatten(),
                 pools,
             }
         }))
@@ -281,8 +462,14 @@ impl Registrations {
             (None, None) => true,
             (Some(row), Some(old)) => {
                 if row.country != old.country
-                    || row.fuel.demand.ok() != old.fuel_demand_raw
-                    || row.fuel.allocated.ok() != old.fuel_allocated_raw
+                    || (!self.is_state(row))
+                        .then(|| row.fuel.demand.ok())
+                        .flatten()
+                        != old.fuel_demand_raw
+                    || (!self.is_state(row))
+                        .then(|| row.fuel.allocated.ok())
+                        .flatten()
+                        != old.fuel_allocated_raw
                 {
                     return false;
                 }

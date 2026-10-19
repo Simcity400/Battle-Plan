@@ -46,7 +46,7 @@ enum Event {
         entry: ResearchEntry,
     },
     Read {
-        progress: ResearchProgress,
+        progress: Option<ResearchProgress>,
     },
 }
 #[derive(Serialize, Deserialize)]
@@ -192,11 +192,15 @@ impl Prepared {
                     progress.is_some_and(|progress| progress.first_hour == hour),
                     false,
                 );
-                if let Some(progress) = progress.filter(|progress| {
-                    progress.last_hour == hour && country.last_read == Some(hour)
-                }) {
-                    let mut progress = progress.clone();
-                    progress.progress_raw.clear();
+                // A fresh read dates slot availability even without progress.
+                if country.last_read == Some(hour) {
+                    let progress = progress
+                        .filter(|progress| progress.last_hour == hour)
+                        .cloned()
+                        .map(|mut progress| {
+                            progress.progress_raw.clear();
+                            progress
+                        });
                     self.values
                         .event(keys.progress, hour, &Event::Read { progress })?;
                 }
@@ -477,6 +481,7 @@ pub struct ResearchState {
     pub slots: Vec<ResearchStateSlot>,
     pub data: super::ResearchReply,
     pub preparing: Vec<String>,
+    pub grants: super::grants::GrantInventory,
 }
 
 #[derive(Clone, Debug, Serialize, ts_rs::TS)]
@@ -673,12 +678,17 @@ pub fn state_query(
         let state = source.state::<super::State>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         let data = super::present(source, context, &mut state, history, 0, cancelled)?;
+        let grants =
+            super::grants::at_hour(source, branch, read.hour, &read.tag, cancelled, |token| {
+                state.artwork.as_mut().and_then(|art| art.localise(token))
+            })?;
         states.push(ResearchState {
             tag: read.tag,
             hour: read.hour,
             slots,
             data,
             preparing,
+            grants,
         });
     }
     let mut data = serde_json::to_value(ResearchStateReply {
@@ -733,15 +743,16 @@ fn values_query(
                 let mut progress = None;
                 let mut supplying_hour = None;
                 if let Some((hour, value)) = reader.latest_event(keys.progress, read.hour)?
-                    && let Event::Read {
-                        progress: mut value,
-                    } = serde_json::from_value::<Event>(value)?
-                    && let Some(run) = reader.value_at(keys.progress, hour)?
+                    && let Event::Read { progress: value } = serde_json::from_value::<Event>(value)?
                 {
-                    value.last_hour = value.last_hour.min(read.hour);
-                    value.progress_raw = run.value.to_string();
-                    progress = Some(value);
                     supplying_hour = Some(hour);
+                    if let Some(mut value) = value
+                        && let Some(run) = reader.value_at(keys.progress, hour)?
+                    {
+                        value.last_hour = value.last_hour.min(read.hour);
+                        value.progress_raw = run.value.to_string();
+                        progress = Some(value);
+                    }
                 }
                 slots.push(serde_json::json!({ "index": index, "available": reader.value_at(keys.available, read.hour)?.is_some(), "state": state, "progress": progress, "readHour": supplying_hour }));
             }

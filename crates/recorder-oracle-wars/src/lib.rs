@@ -4,3 +4,5 @@ use recorder_oracle_support::fixtures;
 use recorder_oracle_support::report::Report;
 use recorder_oracle_support::support::*;
 pub mod wars;
+
+pub mod wargoals;

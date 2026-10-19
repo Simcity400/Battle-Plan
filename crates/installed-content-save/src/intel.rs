@@ -7,7 +7,11 @@ use super::{
     Decimal, GameDate, block, boolean, bytes, decimal, field, integer, invalid, required_block,
     required_bytes, scalar,
 };
-use installed_content_core::{parser::Item, parser::Value};
+use installed_content_core::parser::{Item, Value};
+#[path = "intel_network_auxiliary.rs"]
+pub mod network_auxiliary;
+#[path = "intel_sources.rs"]
+pub mod sources;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
@@ -23,6 +27,9 @@ pub struct Pack {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Country {
+    pub sources: Option<sources::Sources>,
+    pub radar_source: Option<sources::Reference>,
+    pub token_source: Option<sources::Reference>,
     pub agency: Option<Agency>,
     pub diplomacy: Option<Diplomacy>,
     pub flags: Option<Vec<Flag>>,
@@ -111,6 +118,7 @@ pub struct Diplomacy {
     pub last_surrender_date: Option<GameDate>,
     pub faction_join_date: Option<GameDate>,
     pub legitimacy: Option<Decimal>,
+    pub exile_host: Option<Vec<u8>>,
     pub exile_army_leaders: Option<i32>,
 }
 
@@ -338,7 +346,15 @@ pub struct CryptologyTarget {
 /// mirrors them. Ownership through the strategic index remains unresolved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IntelNetworkEntry {
+    pub auxiliary: network_auxiliary::Network,
     pub target: Vec<u8>,
+    pub source: Option<sources::Reference>,
+    /// Independently saved coverage and aggregate caches; absence is retained
+    /// for partial save projections and fails a requested summary comparison.
+    pub coverage: Option<NetworkCoverage>,
+    pub strength_sum: Option<Decimal>,
+    pub strength_sum_over_cores: Option<Decimal>,
+    pub state_strength_max: Option<Decimal>,
     pub state_ids: Vec<i32>,
     pub strengths: Vec<Decimal>,
     /// Each state's daily gain (`gain`) and its parts from operatives and from
@@ -353,6 +369,13 @@ pub struct IntelNetworkEntry {
     /// from the local graph's per-state strength array above.
     pub subnetworks: Vec<SavedSubnetwork>,
     pub selectors: Vec<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NetworkCoverage {
+    pub core_states: i32,
+    pub controlled_states: i32,
+    pub owned_worth: i32,
 }
 
 /// One saved subnetwork (`sub_intel_networks` entry).
@@ -386,6 +409,29 @@ pub struct StrategicOperative {
     /// `diplomatic_pressure_from_countries` in saved order; None when the
     /// writer omitted the empty map.
     pub diplomatic_pressure: Option<Vec<SavedPressure>>,
+    /// Logical begin-to-end history, omitted when empty. Values are the two
+    /// independently serialized Q15 channels, recovered exactly from the
+    /// shared five-decimal save formatter's output.
+    pub recent_propaganda_effort: Vec<PropagandaEffort>,
+    /// The independently saved weekly cache; the writer omits a zero pair.
+    pub propaganda_weekly_drift: PropagandaEffort,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PropagandaEffort {
+    /// Native signed Q15 words, not the save decimal numerator.
+    pub stability: i64,
+    pub war_support: i64,
+}
+
+fn parse_propaganda_effort(value: &Value) -> io::Result<PropagandaEffort> {
+    let fields = block(value)?;
+    Ok(PropagandaEffort {
+        stability: super::economy::FuelQuantity::parse(&required_bytes(fields, b"stability")?)?
+            .raw()?,
+        war_support: super::economy::FuelQuantity::parse(&required_bytes(fields, b"war_support")?)?
+            .raw()?,
+    })
 }
 
 /// One saved diplomatic-pressure entry: the pressuring country and the raw
@@ -693,29 +739,52 @@ fn parse_intel_network_entry(items: &[Item]) -> io::Result<IntelNetworkEntry> {
     // them. Parallel state_id/strength/sub_network_id share one length.
     let target = required_bytes(items, b"target")?;
     let inner = required_block(items, b"intel_network")?;
+    let has_states = field(inner, b"state_id")?.is_some();
+    let list = |key: &[u8]| -> io::Result<&[Item]> {
+        match field(inner, key)? {
+            Some(value) => block(value),
+            None if !has_states => Ok(&[]),
+            None => Err(invalid(format!(
+                "intel network lacks {}",
+                String::from_utf8_lossy(key)
+            ))),
+        }
+    };
+    if !has_states
+        && [
+            b"strength".as_slice(),
+            b"sub_network_id",
+            b"gain",
+            b"gain_breakdown",
+        ]
+        .iter()
+        .any(|key| inner.iter().any(|item| item.key.as_deref() == Some(*key)))
+    {
+        return Err(invalid("intel network parallel arrays lack state_id"));
+    }
     let mut state_ids = Vec::new();
-    for entry in required_block(inner, b"state_id")? {
+    for entry in list(b"state_id")? {
         if entry.key.is_some() {
             return Err(invalid("intel state_id list must be anonymous"));
         }
         state_ids.push(integer(scalar(&entry.value)?)?);
     }
     let mut strengths = Vec::new();
-    for entry in required_block(inner, b"strength")? {
+    for entry in list(b"strength")? {
         if entry.key.is_some() {
             return Err(invalid("intel strength list must be anonymous"));
         }
         strengths.push(Decimal::parse(scalar(&entry.value)?)?);
     }
     let mut selectors = Vec::new();
-    for entry in required_block(inner, b"sub_network_id")? {
+    for entry in list(b"sub_network_id")? {
         if entry.key.is_some() {
             return Err(invalid("intel sub_network_id list must be anonymous"));
         }
         selectors.push(integer(scalar(&entry.value)?)?);
     }
     let mut gains = Vec::new();
-    for entry in required_block(inner, b"gain")? {
+    for entry in list(b"gain")? {
         if entry.key.is_some() {
             return Err(invalid("intel gain list must be anonymous"));
         }
@@ -723,7 +792,7 @@ fn parse_intel_network_entry(items: &[Item]) -> io::Result<IntelNetworkEntry> {
     }
     let mut gains_from_operatives = Vec::new();
     let mut gains_from_adjacency = Vec::new();
-    for entry in required_block(inner, b"gain_breakdown")? {
+    for entry in list(b"gain_breakdown")? {
         if entry.key.is_some() {
             return Err(invalid("intel gain_breakdown list must be anonymous"));
         }
@@ -752,7 +821,7 @@ fn parse_intel_network_entry(items: &[Item]) -> io::Result<IntelNetworkEntry> {
     {
         return Err(invalid("intel parallel arrays have different lengths"));
     }
-    if state_ids.is_empty() {
+    if has_states && state_ids.is_empty() {
         return Err(invalid(
             "native intel network writer omits empty state lists",
         ));
@@ -804,7 +873,24 @@ fn parse_intel_network_entry(items: &[Item]) -> io::Result<IntelNetworkEntry> {
         }
     }
     Ok(IntelNetworkEntry {
+        auxiliary: network_auxiliary::parse(items, inner)?,
         target,
+        source: field(items, b"intel_source")?
+            .map(sources::reference)
+            .transpose()?,
+        coverage: field(items, b"coverage")?
+            .map(|value| {
+                let fields = block(value)?;
+                Ok::<_, io::Error>(NetworkCoverage {
+                    core_states: integer(&required_bytes(fields, b"core_states")?)?,
+                    controlled_states: integer(&required_bytes(fields, b"controlled_states")?)?,
+                    owned_worth: integer(&required_bytes(fields, b"owned_worth")?)?,
+                })
+            })
+            .transpose()?,
+        strength_sum: decimal(items, b"strength_sum")?,
+        strength_sum_over_cores: decimal(items, b"strength_sum_over_cores")?,
+        state_strength_max: decimal(items, b"state_strength_max")?,
         state_ids,
         strengths,
         gains,
@@ -862,6 +948,24 @@ fn parse_strategic_operatives(items: &[Item]) -> io::Result<BTreeMap<u32, Strate
             diplomatic_pressure: field(fields, b"diplomatic_pressure_from_countries")?
                 .map(parse_diplomatic_pressure)
                 .transpose()?,
+            recent_propaganda_effort: field(fields, b"recent_propaganda_effort")?
+                .map(|value| {
+                    block(value)?
+                        .iter()
+                        .map(|entry| {
+                            if entry.key.is_some() {
+                                return Err(invalid("propaganda effort history entry is keyed"));
+                            }
+                            parse_propaganda_effort(&entry.value)
+                        })
+                        .collect::<io::Result<Vec<_>>>()
+                })
+                .transpose()?
+                .unwrap_or_default(),
+            propaganda_weekly_drift: field(fields, b"propaganda_weekly_drift")?
+                .map(parse_propaganda_effort)
+                .transpose()?
+                .unwrap_or_default(),
         };
         if result.insert(index, operative).is_some() {
             return Err(invalid("duplicate strategic operative index"));
@@ -1006,6 +1110,7 @@ fn parse_diplomacy(owner: &[u8], items: &[Item]) -> io::Result<Diplomacy> {
         last_surrender_date: date(items, b"last_surrender_date")?,
         faction_join_date: date(items, b"faction_join_date")?,
         legitimacy: decimal(items, b"legitimacy")?,
+        exile_host: bytes(items, b"hosting_our_government_in_exile")?,
         exile_army_leaders: bytes(items, b"exile_army_leaders")?
             .map(|value| integer(&value))
             .transpose()?,
@@ -1389,6 +1494,9 @@ pub(super) fn parse_with_countries(
             .ok_or_else(|| invalid("intel country lacks tag"))?;
         let items = block(&item.value)?;
         let country = Country {
+            sources: field(items, b"intel")?.map(sources::parse).transpose()?,
+            radar_source: sources::owner_reference(items, b"radar")?,
+            token_source: sources::owner_reference(items, b"tokens")?,
             agency: field(items, b"intelligence_agency")?
                 .map(|value| parse_agency(block(value)?))
                 .transpose()?,
@@ -1433,6 +1541,147 @@ pub(super) fn parse_with_countries(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn propaganda_fixed15_channels_recover_fractional_negative_and_integral_native_words() {
+        let save = parsed(
+            br"countries={} strategic_operatives={strategic_operative={
+            0={recent_propaganda_effort={
+                {stability=0.00100 war_support=-0.00100}
+                {stability=1 war_support=-2}
+                {stability=-0.00003 war_support=0.00006}
+            } propaganda_weekly_drift={stability=0.00704 war_support=-0.00704}}
+        }}",
+        )
+        .unwrap();
+        let objects = save.strategic_operatives.unwrap();
+        assert_eq!(
+            objects[&0].recent_propaganda_effort,
+            [
+                PropagandaEffort {
+                    stability: 33,
+                    war_support: -33
+                },
+                PropagandaEffort {
+                    stability: 32_768,
+                    war_support: -65_536
+                },
+                PropagandaEffort {
+                    stability: -1,
+                    war_support: 2
+                },
+            ]
+        );
+        assert_eq!(
+            objects[&0].propaganda_weekly_drift,
+            PropagandaEffort {
+                stability: 231,
+                war_support: -231
+            }
+        );
+    }
+
+    #[test]
+    fn propaganda_fixed15_native_boundaries_have_exact_preimages_without_float_rounding() {
+        for (literal, raw) in [
+            ("0", 0),
+            ("-0.00000", 0),
+            ("+0.00003", 1),
+            ("-0.00003", -1),
+            ("0.00006", 2),
+            ("0.00100", 33),
+            ("-0.00704", -231),
+            ("0.99996", 32_767),
+            ("1", 32_768),
+            ("-1", -32_768),
+            ("1.000000", 32_768),
+            ("1.00003", 32_769),
+            ("-1.00003", -32_769),
+            ("1000000000000.00003", 32_768_000_000_000_001),
+            ("-281474976710655.99996", i64::MIN + 1),
+            ("281474976710655.99996", i64::MAX),
+        ] {
+            let text = format!("effort={{stability={literal} war_support={literal}}}");
+            let tree = installed_content_core::parser::parse(text.as_bytes()).unwrap();
+            assert_eq!(
+                parse_propaganda_effort(&tree.items[0].value).unwrap(),
+                PropagandaEffort {
+                    stability: raw,
+                    war_support: raw
+                },
+                "{literal}"
+            );
+        }
+    }
+
+    #[test]
+    fn propaganda_fixed15_refuses_non_native_precision_overflow_and_missing_channels() {
+        for literal in [
+            "0.00001",
+            "0.00004",
+            "-0.00001",
+            "0.000001",
+            "1.000001",
+            "281474976710656.00000",
+            "-281474976710656.00000",
+            "--281474976710656.00000",
+            "NaN",
+            "1e2",
+            "1.",
+        ] {
+            for channel in ["stability", "war_support"] {
+                let other = if channel == "stability" {
+                    "war_support"
+                } else {
+                    "stability"
+                };
+                let text = format!("effort={{{channel}={literal} {other}=0}}");
+                let tree = installed_content_core::parser::parse(text.as_bytes()).unwrap();
+                assert!(
+                    parse_propaganda_effort(&tree.items[0].value).is_err(),
+                    "{channel}={literal}"
+                );
+            }
+        }
+        for text in [
+            b"effort={stability=0}".as_slice(),
+            b"effort={war_support=0}",
+        ] {
+            let tree = installed_content_core::parser::parse(text).unwrap();
+            assert!(parse_propaganda_effort(&tree.items[0].value).is_err());
+        }
+    }
+
+    #[test]
+    fn propaganda_history_keeps_zero_occurrences_and_independent_loaded_drift() {
+        let save = parsed(br#"countries={} strategic_operatives={strategic_operative={
+            0={recent_propaganda_effort={{stability=0 war_support=0}{stability=-281474976710655.99996 war_support=281474976710655.99996}}
+               propaganda_weekly_drift={stability=0.00051 war_support=-0.00057}}
+            5000={}
+        }}"#).unwrap();
+        let objects = save.strategic_operatives.unwrap();
+        assert_eq!(
+            objects[&0].recent_propaganda_effort,
+            [
+                PropagandaEffort::default(),
+                PropagandaEffort {
+                    stability: i64::MIN + 1,
+                    war_support: i64::MAX
+                },
+            ]
+        );
+        assert_eq!(
+            objects[&0].propaganda_weekly_drift,
+            PropagandaEffort {
+                stability: 17,
+                war_support: -19
+            }
+        );
+        assert!(objects[&5000].recent_propaganda_effort.is_empty());
+        assert_eq!(
+            objects[&5000].propaganda_weekly_drift,
+            PropagandaEffort::default()
+        );
+    }
     use super::*;
 
     fn parsed(input: &[u8]) -> io::Result<Pack> {

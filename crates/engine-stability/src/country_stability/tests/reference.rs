@@ -114,7 +114,8 @@ fn inputs<M: Memory>(
         return Err("country stability fields unreadable");
     }
     let children = Array::from_header(children, 8).ok_or("country modifier children invalid")?;
-    let (at_war, offensive_war, defensive_war) = war_flags(memory, base, countries, country)?;
+    let (at_war, offensive_war, defensive_war, diplomacy) =
+        war_flags(memory, base, countries, country)?;
     phase!(Totals);
     let mut totals = [None; TOTALS];
     let (sorted, len) = context.keys.sorted_totals();
@@ -141,6 +142,11 @@ fn inputs<M: Memory>(
     }
     Ok(InputRow {
         country: country.id,
+        manpower: if context.manpower_enabled {
+            crate::ccountry_manpower::read_authenticated(memory, c, diplomacy)
+        } else {
+            Default::default()
+        },
         stability_raw: i64_at(&bases, 0),
         war_support_raw: i64_at(&bases, 8),
         at_war,
@@ -186,7 +192,7 @@ fn war_flags<M: Memory>(
     base: usize,
     countries: &ccountry::Reader<'_, M>,
     country: ccountry::Country,
-) -> Result<(bool, bool, bool), &'static str> {
+) -> Result<(bool, bool, bool, usize), &'static str> {
     phase!(Wars);
     let diplomacy = pointer(memory, at(country.pointer, ccountry::DIPLOMACY_STATUS)?)?;
     let mut head = [0_u8; 8];
@@ -251,7 +257,7 @@ fn war_flags<M: Memory>(
         }
         Ok(())
     })?;
-    Ok((at_war, offensive, defensive))
+    Ok((at_war, offensive, defensive, diplomacy))
 }
 
 /// Interception history sum from the country's interception history for the complete ring, without

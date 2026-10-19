@@ -29,6 +29,9 @@ mod collections;
 #[path = "temp_tests.rs"]
 mod temp_variables;
 
+#[path = "map_script_tests.rs"]
+mod map_scripts;
+
 #[path = "dynamic_modifier_tests.rs"]
 mod dynamic_modifiers;
 
@@ -805,6 +808,454 @@ fn conditionals_load_limits_and_alternative_chains() {
     });
 }
 
+/// Colour callbacks retain raw input refusals even when their final Boolean
+/// result is known. Each missing input appears once, independently of outputs.
+fn colour_refusals(eval: &Evaluator, scopes: Scopes, body: &str, inputs: &[&str]) {
+    let Eval::Unknown(reasons) = eval.evaluate_colour(&items(body), scopes, &[]) else {
+        panic!("colour should refuse {inputs:?}: {body}");
+    };
+    assert_eq!(reasons.len(), inputs.len(), "{reasons:?}");
+    for input in inputs {
+        assert_eq!(
+            reasons.iter().filter(|why| why.contains(input)).count(),
+            1,
+            "{reasons:?}"
+        );
+    }
+}
+
+#[test]
+fn colour_callbacks_refuse_unknown_conditions_even_without_temp_writes() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let f = variables_frame();
+    with_world(&f, "", Err("none"), |world| {
+        let eval = Evaluator::new(world, None);
+        let scopes = Scopes::of(Scope::Country(1));
+        for body in [
+            "set_temp_variable = { alpha = 1 } if = { limit = { has_stability > 0.5 } set_temp_variable = { red = 1 } }",
+            "set_temp_variable = { alpha = 1 } if = { limit = { has_stability > 0.5 } always = yes }",
+            "OR = { has_stability > 0.5 always = yes } set_temp_variable = { alpha = 0 }",
+            "has_stability > 0.5 always = no",
+        ] {
+            colour_refusals(&eval, scopes, body, &["CountryStabilityInputs"]);
+        }
+        // Native short circuiting still prevents an unreached input from being read.
+        assert_eq!(eval.evaluate_colour(&items("if = { limit = { always = no } has_stability > 0.5 } set_temp_variable = { alpha = 1 }"), scopes, &[]), Eval::True);
+        // Ordinary three-valued trigger evaluation keeps its existing rules.
+        assert_eq!(
+            eval.evaluate(&items("OR = { has_stability > 0.5 always = yes }"), scopes),
+            Eval::True
+        );
+    });
+}
+
+#[test]
+fn colour_callbacks_refuse_uncertain_scratch_even_after_known_overwrites() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let f = variables_frame();
+    with_world(&f, "", Err("none"), |world| {
+        let eval = Evaluator::new(world, None);
+        let scopes = Scopes::of(Scope::Country(1));
+        colour_refusals(
+            &eval,
+            scopes,
+            r#"
+            if = { limit = { is_in_tech_sharing_group = mod_group }
+                set_temp_variable = { scratch = 1 }
+                add_to_temp_variable = { scratch = 1 }
+                set_temp_variable = { red = 0 }
+            }
+            set_temp_variable = { red = 1 }
+            set_temp_variable = { green = 0 }
+            set_temp_variable = { blue = 0 }
+            set_temp_variable = { alpha = 1 }
+            set_temp_variable = { highlighted = 0 }
+        "#,
+            &["ResearchModifiers"],
+        );
+        // A separate callback starts a fresh refusal set.
+        assert_eq!(
+            eval.evaluate_colour(
+                &items("set_temp_variable = { alpha = 1 } set_temp_variable = { red = 1 }"),
+                scopes,
+                &[]
+            ),
+            Eval::True
+        );
+    });
+}
+
+#[test]
+fn colour_callbacks_name_each_missing_input_once_independently_of_destinations() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let f = variables_frame();
+    with_world(&f, "", Err("none"), |world| {
+        let eval = Evaluator::new(world, None);
+        let scopes = Scopes::of(Scope::Country(1));
+        for destination in ["red", "blue"] {
+            colour_refusals(
+                &eval,
+                scopes,
+                &format!(
+                    r#"
+                set_temp_variable = {{ alpha = 1 }}
+                if = {{ limit = {{ has_stability > 0.5 }} set_temp_variable = {{ red = 1 }} }}
+                if = {{ limit = {{ is_in_tech_sharing_group = mod_group }} set_temp_variable = {{ {destination} = 1 }} }}
+            "#
+                ),
+                &["CountryStabilityInputs", "ResearchModifiers"],
+            );
+        }
+        colour_refusals(
+            &eval,
+            scopes,
+            r#"
+            set_temp_variable = { alpha = 1 }
+            if = { limit = { has_stability > 0.5 }
+                set_temp_variable = { red = 1 } set_temp_variable = { blue = 1 }
+            }
+            if = { limit = { has_stability > 0.7 } set_temp_variable = { green = 1 } }
+            set_temp_variable = { red = stability }
+        "#,
+            &["CountryStabilityInputs"],
+        );
+    });
+}
+
+#[test]
+fn colour_callbacks_keep_a_later_failure_after_an_alias_observed_another_input() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let f = positive_variables_frame();
+    let aliases =
+        "ALI = { original_tag = GER OR = { is_in_tech_sharing_group = mod_group always = yes } }";
+    with_world(&f, aliases, Err("none"), |world| {
+        colour_refusals(
+            &Evaluator::new(world, None),
+            Scopes::of(Scope::Country(1)),
+            "set_temp_variable = { red = ALI.stability } set_temp_variable = { alpha = 1 }",
+            &["ResearchModifiers", "CountryStabilityInputs"],
+        );
+    });
+}
+
+#[test]
+fn colour_callbacks_preserve_input_identity_through_an_unresolved_alias() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let f = positive_variables_frame();
+    with_world(
+        &f,
+        "ALI = { original_tag = GER is_in_tech_sharing_group = mod_group }",
+        Err("none"),
+        |world| {
+            colour_refusals(
+                &Evaluator::new(world, None),
+                Scopes::of(Scope::Country(1)),
+                "set_temp_variable = { red = ALI.stability }",
+                &["ResearchModifiers"],
+            );
+        },
+    );
+}
+
+#[test]
+fn calculated_stability_and_its_modifier_callback_share_the_missing_field_identity() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut f = variables_frame();
+    let row = replay_data::rows::CountryStabilityInputRow {
+        country: 101,
+        stability_factor: None,
+        party_popularity_stability_factor: Some(0),
+        war_stability_factor: Some(0),
+        offensive_war_stability_factor: Some(0),
+        defensive_war_stability_factor: Some(0),
+        war_support_factor: Some(0),
+        ..Default::default()
+    };
+    *f.tables[TableId::CountryStabilityInputs.index()] =
+        TableView::Complete(TableRows::CountryStabilityInputs(vec![row.clone()]));
+    with_world(&f, "", Err("none"), |world| {
+        let eval = Evaluator::new(world, None);
+        let (_, failures) = super::refusal::capture(|| {
+            assert!(eval.country_stability_value(1, false).is_err());
+            assert!(eval.stability_modifier_input(&row, 1, 0).is_err());
+        });
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures
+                .first()
+                .unwrap()
+                .contains("CountryStabilityInputs.stability_factor")
+        );
+    });
+}
+
+#[test]
+fn original_tag_alias_and_direct_scope_read_share_the_failed_appearance_input() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut f = positive_variables_frame();
+    *f.tables[TableId::CountryAppearance.index()] = TableView::Unavailable {
+        reason: "synthetic appearance acquisition failed".into(),
+    };
+    with_world(
+        &f,
+        "ALI = { original_tag = GER always = yes }",
+        Err("none"),
+        |world| {
+            colour_refusals(
+                &Evaluator::new(world, None),
+                Scopes::of(Scope::Country(1)),
+                "OR = { tag = ALI always = yes } OR = { is_subject = yes always = yes } set_temp_variable = { alpha = 1 }",
+                &["CountryAppearance"],
+            );
+        },
+    );
+}
+
+#[test]
+fn cached_core_gaps_and_direct_table_reads_keep_one_source_identity() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut f = positive_variables_frame();
+    *f.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+        reason: "synthetic missing links".into(),
+    };
+    with_world(&f, "", Err("none"), |world| {
+        for _ in 0..2 {
+            let (_, failures) = super::refusal::capture(|| {
+                world
+                    .core_gap()
+                    .unwrap()
+                    .context(|why| format!("core preflight: {why}"));
+                world.table_gap("CountryLinks").unwrap();
+                assert!(super::world::table::<tables::CountryLinks>(world.frame()).is_err());
+            });
+            assert_eq!(failures.len(), 1, "{failures:?}");
+            assert!(failures.first().unwrap().contains("CountryLinks"));
+        }
+    });
+}
+
+#[test]
+fn colour_callbacks_tag_alias_context_preserves_the_one_source_failure() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let f = positive_variables_frame();
+    with_world(
+        &f,
+        "ALI = { original_tag = GER is_in_tech_sharing_group = mod_group }",
+        Err("none"),
+        |world| {
+            colour_refusals(
+                &Evaluator::new(world, None),
+                Scopes::of(Scope::Country(1)),
+                "tag = ALI",
+                &["ResearchModifiers"],
+            );
+        },
+    );
+}
+
+#[test]
+fn colour_callbacks_sharing_lookup_keeps_lexical_failure_global_across_scopes() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut f = positive_variables_frame();
+    *f.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        reason: "synthetic missing dictionary".into(),
+    };
+    with_world(&f, "", Err("none"), |world| {
+        let eval = Evaluator::new(world, None);
+        for body in [
+            "is_in_tech_sharing_group = mod_group",
+            "is_in_tech_sharing_group = mod_group GER = { is_in_tech_sharing_group = mod_group }",
+            "GER = { is_in_tech_sharing_group = mod_group } is_in_tech_sharing_group = mod_group",
+            "GER = { set_temp_variable = { red = 0 } is_in_tech_sharing_group = mod_group }",
+        ] {
+            colour_refusals(
+                &eval,
+                Scopes::of(Scope::Country(2)),
+                body,
+                &["LexicalTokens"],
+            );
+        }
+    });
+}
+
+#[test]
+fn colour_callbacks_global_table_failures_have_no_country_scope_even_when_cached() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut f = positive_variables_frame();
+    *f.tables[TableId::SimulationFeatures.index()] = TableView::Unavailable {
+        reason: "synthetic missing global inputs".into(),
+    };
+    with_world(&f, "", Err("none"), |world| {
+        let eval = Evaluator::new(world, None);
+        for _ in 0..2 {
+            colour_refusals(
+                &eval,
+                Scopes::of(Scope::Country(2)),
+                "set_temp_variable = { red = global.states^num } GER = { set_temp_variable = { blue = global.states^num } }",
+                &["SimulationFeatures"],
+            );
+        }
+    });
+}
+
+#[test]
+fn colour_callbacks_identify_roster_failures_across_iterators_and_builtin_arrays() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut f = positive_variables_frame();
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    {
+        for row in rows {
+            row.owned_states = None.into();
+            row.controlled_states = None.into();
+        }
+    }
+    with_world(&f, "", Err("none"), |world| {
+        let eval = Evaluator::new(world, None);
+        let scopes = Scopes::of(Scope::Country(2));
+        // The iterator adds a refused-token prefix; the array does not. Neither
+        // the presentation nor the order of reads changes the input's identity.
+        let mut previous = None;
+        for body in [
+            "OR = { any_owned_state = { always = yes } always = yes } set_temp_variable = { red = owned_states^num }",
+            "set_temp_variable = { red = owned_states^num } OR = { any_owned_state = { always = yes } always = yes }",
+        ] {
+            colour_refusals(&eval, scopes, body, &["CountryCounterInputs.owned_states"]);
+            let result = eval.evaluate_colour(&items(body), scopes, &[]);
+            if let Some(previous) = previous {
+                assert_eq!(result, previous);
+            }
+            previous = Some(result);
+        }
+        colour_refusals(
+            &eval,
+            scopes,
+            "OR = { any_owned_state = { always = yes } always = yes } set_temp_variable = { red = controlled_states^num }",
+            &[
+                "CountryCounterInputs.owned_states",
+                "CountryCounterInputs.controlled_states",
+            ],
+        );
+        // Two countries' equal errors are two distinct inputs, not equal text.
+        let Eval::Unknown(reasons) = eval.evaluate_colour(&items(
+            "OR = { any_owned_state = { always = yes } always = yes } GER = { OR = { any_owned_state = { always = yes } always = yes } }"
+        ), scopes, &[]) else { panic!("both country rosters must refuse") };
+        assert_eq!(reasons.len(), 2, "{reasons:?}");
+        assert!(
+            reasons.iter().any(|why| why.contains("Country(1)")),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons.iter().any(|why| why.contains("Country(2)")),
+            "{reasons:?}"
+        );
+    });
+}
+
+#[test]
+fn unavailable_roster_order_keeps_its_field_identity_through_the_iterator_fallback() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut f = positive_variables_frame();
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    {
+        rows.iter_mut()
+            .for_each(|row| row.owned_states = Recorded::NotRecorded);
+    }
+    with_world(&f, "", Err("none"), |world| {
+        colour_refusals(
+            &Evaluator::new(world, None),
+            Scopes::of(Scope::Country(1)),
+            "OR = { any_owned_state = { set_temp_variable = { red = 1 } } always = yes } set_temp_variable = { blue = owned_states^num }",
+            &["CountryCounterInputs.owned_states"],
+        );
+    });
+}
+
+#[test]
+fn colour_callbacks_refuse_optional_destination_insertion_without_a_store() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let f = variables_frame();
+    with_world(&f, "", Err("none"), |world| {
+        let eval = Evaluator::new(world, None);
+        let scopes = Scopes::of(Scope::Country(1));
+        for operation in ["divide_temp_variable", "modulo_temp_variable"] {
+            colour_refusals(
+                &eval,
+                scopes,
+                &format!(
+                    r#"
+                set_temp_variable = {{ alpha = 1 }}
+                if = {{ limit = {{ has_stability > 0.5 }}
+                    {operation} = {{ var = red?1 value = 0 }}
+                }}
+            "#
+                ),
+                &["CountryStabilityInputs"],
+            );
+        }
+    });
+}
+
+#[test]
+fn colour_callbacks_refuse_uncertain_iterator_stop_and_scope_rosters() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let roles = LeaderRoles::new(Vec::new());
+    let mut f = variables_frame();
+    *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        [64, 65]
+            .into_iter()
+            .map(|id| replay_data::rows::StateRow {
+                id,
+                owner: 101,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.country == 101)
+            .unwrap()
+            .owned_states = Some(vec![64, 65]).into();
+    }
+    with_world(&f, "", Ok(&roles), |world| {
+        let eval = Evaluator::new(world, None);
+        colour_refusals(
+            &eval,
+            Scopes::of(Scope::Country(1)),
+            r#"
+            set_temp_variable = { alpha = 1 }
+            any_owned_state = {
+                if = { limit = { state = 64 } ROOT = { has_stability > 0.5 } }
+                if = { limit = { state = 65 } set_temp_variable = { red = 1 } }
+            }
+        "#,
+            &["CountryStabilityInputs"],
+        );
+    });
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.country == 101)
+            .unwrap()
+            .owned_states = None.into();
+    }
+    with_world(&f, "", Ok(&roles), |world| {
+        colour_refusals(
+            &Evaluator::new(world, None),
+            Scopes::of(Scope::Country(1)),
+            r#"
+            OR = { any_owned_state = { always = yes } always = yes }
+            set_temp_variable = { alpha = 1 } set_temp_variable = { red = 1 }
+        "#,
+            &["CountryCounterInputs.owned_states"],
+        );
+    });
+}
+
 /// A key names a character by the content's character templates
 /// (by token, so without case), not by the live characters:
 /// a template the scope country has no character of leaves the empty scope
@@ -884,7 +1335,7 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     struct Side;
     impl Combat for Side {
-        fn country(&self) -> Result<u32, String> {
+        fn country(&self) -> Result<u32, crate::triggers::Failure> {
             Ok(4)
         }
         fn trigger(
@@ -896,7 +1347,7 @@ fn combat_reset_clears_country_carrier_but_tag_reads_the_combat_country() {
         ) -> Option<Eval> {
             None
         }
-        fn category_share(&self, _: u64) -> Result<i64, String> {
+        fn category_share(&self, _: u64) -> Result<i64, crate::triggers::Failure> {
             Err("unused combat equipment count".into())
         }
     }
@@ -1729,7 +2180,7 @@ fn recorded_builtin_owned_controlled_states_counts_aliases_and_requires_complete
 }
 
 /// Built-in game variables shadow the stored keys and are
-/// refused by name; `has_variable` does not consult them. Saved event
+/// resolved from recorded operands or refused by input name; `has_variable` does not consult them. Saved event
 /// targets without a registry, draws and unsupported temp writers are refused.
 #[test]
 fn runtime_only_operands_are_refused_by_name() {
@@ -1742,7 +2193,7 @@ fn runtime_only_operands_are_refused_by_name() {
     let why = |trigger: &str| check(&frame, "", 0, trigger).decided().unwrap_err();
     let builtin = why("check_variable = { stability > 0 }");
     assert!(
-        builtin.contains(REFUSED) && builtin.contains("built-in"),
+        builtin.contains("stability") && builtin.contains("CountryStabilityInputs"),
         "{builtin}"
     );
     assert_eq!(
@@ -2220,7 +2671,7 @@ fn format99_has_ideology_reads_current_pointer_independently_of_map_key() {
     };
     rows[0].current_ideology = Recorded::Value(None);
     assert!(matches!(evaluate(&frame), Eval::Unknown(reasons)
-        if reasons.iter().any(|reason| reason.contains("CountryLeaderRoles.current_ideology capture refused"))));
+        if reasons.iter().any(|reason| reason.contains("CountryLeaderRoles.current_ideology capture unavailable"))));
     let TableView::Complete(TableRows::CountryLeaderRoles(rows)) =
         &mut *frame.tables[TableId::CountryLeaderRoles.index()]
     else {
@@ -3059,7 +3510,12 @@ fn leader_visibility_steps_decide_as_the_roster_check() {
             (
                 leader(2, 999, 1),
                 LeaderVisibility::Unconditioned,
-                Eval::unknown(unlinked),
+                Eval::unknown(Failure::input(
+                    TableId::CountryLinks,
+                    "canonical_slot",
+                    None,
+                    unlinked,
+                )),
             ),
             (
                 leader(3, 101, 0),
@@ -3237,4 +3693,13 @@ fn claimed_by_tests_the_states_recorded_claims_by_canonical_slot() {
             .unwrap_err()
             .contains("claims is not recorded")
     );
+}
+
+#[path = "refusal_consumption_tests.rs"]
+mod refusal_consumption;
+
+#[test]
+fn shared_trigger_kit_keeps_unit_scope_and_country_ace_operands() {
+    assert!(super::RECORDED_TABLES.contains(&replay_data::rows::TableId::Divisions));
+    assert!(super::RECORDED_TABLES.contains(&replay_data::rows::TableId::CountryCommandPower));
 }

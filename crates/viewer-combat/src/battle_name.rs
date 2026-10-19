@@ -187,36 +187,62 @@ pub(super) fn title(
     let name = match picker.pick(province, candidates) {
         Err(reason) => return Ok(Err(reason)),
         Ok(None) => region_name,
-        Ok(Some(picked)) => {
-            let renames = rows::<tables::ProvinceNames>(frame)?;
-            // The sparse table proves no rename only when complete; a row
-            // present in a partial one is still the recorded rename.
-            let rename = match renames
-                .rows()
-                .iter()
-                .rev()
-                .find(|row| row.province == picked)
-            {
-                Some(row) => Ok(Some(row.name.as_slice())),
-                None => match &renames {
-                    Available::Complete(_) => Ok(None),
-                    Available::Truncated { missing, .. } => Err(format!(
-                        "the ProvinceNames table is truncated this hour ({missing} rows not reached) and holds no row for it"
-                    )),
-                    Available::Unavailable { reason } => Err(format!(
-                        "the ProvinceNames table is unavailable this hour ({reason})"
-                    )),
-                },
-            };
-            // The picked province's state from Provinces.state, its names
-            // from the States row and its definition's `name` key.
-            let states = rows::<tables::States>(frame)?;
-            let states_complete = states.is_complete();
-            let vp_tag = match provinces.get(&picked) {
-                None => Err(format!("province {picked} has no Provinces row")),
-                Some(row) => vp_tag(frame, row.state, states.rows(), states_complete)?,
-            };
-            let state = provinces.get(&picked).and_then(|row| {
+        Ok(Some(picked)) => match province_display_name(static_content, frame, picked)? {
+            Ok(name) => name,
+            Err(reason) => return Ok(Err(reason)),
+        },
+    };
+    Ok(builtin(
+        icons,
+        loc,
+        "NAVAL_BATTLE_TITLE",
+        &[("NAME", Argument::Text(&name))],
+    ))
+}
+
+/// The same province display-name chain for history and battle captions.
+pub(super) fn province_display_name(
+    static_content: &StaticContent,
+    frame: &DecodedFrame,
+    picked: u32,
+) -> io::Result<Result<String, String>> {
+    let (icons, loc) = (static_content.assets.as_ref(), &static_content.localisation);
+    let provinces = rows::<tables::Provinces>(frame)?;
+    let province = provinces
+        .rows()
+        .binary_search_by_key(&picked, |row| row.id)
+        .ok()
+        .map(|at| &provinces.rows()[at]);
+
+    let renames = rows::<tables::ProvinceNames>(frame)?;
+    // The sparse table proves no rename only when complete; a row
+    // present in a partial one is still the recorded rename.
+    let rename = match renames
+        .rows()
+        .iter()
+        .rev()
+        .find(|row| row.province == picked)
+    {
+        Some(row) => Ok(Some(row.name.as_slice())),
+        None => match &renames {
+            Available::Complete(_) => Ok(None),
+            Available::Truncated { missing, .. } => Err(format!(
+                "the ProvinceNames table is truncated this hour ({missing} rows not reached) and holds no row for it"
+            )),
+            Available::Unavailable { reason } => Err(format!(
+                "the ProvinceNames table is unavailable this hour ({reason})"
+            )),
+        },
+    };
+    // The picked province's state from Provinces.state, its names
+    // from the States row and its definition's `name` key.
+    let states = rows::<tables::States>(frame)?;
+    let states_complete = states.is_complete();
+    let vp_tag = match province {
+        None => Err(format!("province {picked} has no Provinces row")),
+        Some(row) => vp_tag(frame, row.state, states.rows(), states_complete)?,
+    };
+    let state = province.and_then(|row| {
                 (row.state != 0).then(|| {
                     let id = row.state;
                     let recorded = states.rows().iter().find(|state| state.id == id);
@@ -240,37 +266,26 @@ pub(super) fn title(
                     })
                 })
             });
-            let state = match provinces.get(&picked) {
-                Some(_) => state,
-                None => Some(Err(format!("province {picked} has no Provinces row"))),
-            };
-            let region_name_key = static_content
-                .region_of
-                .get(&picked)
-                .copied()
-                .and_then(|region| static_content.strategic_regions.get(&region))
-                .map(|region| region.name_key.as_str());
-            match province_name(
-                icons,
-                loc,
-                &Province {
-                    id: picked,
-                    rename,
-                    vp_tag: vp_tag.as_deref().map_err(Clone::clone),
-                    state,
-                    region_name_key,
-                },
-            ) {
-                Ok(name) => name,
-                Err(reason) => return Ok(Err(reason)),
-            }
-        }
+    let state = match province {
+        Some(_) => state,
+        None => Some(Err(format!("province {picked} has no Provinces row"))),
     };
-    Ok(builtin(
+    let region_name_key = static_content
+        .region_of
+        .get(&picked)
+        .copied()
+        .and_then(|region| static_content.strategic_regions.get(&region))
+        .map(|region| region.name_key.as_str());
+    Ok(province_name(
         icons,
         loc,
-        "NAVAL_BATTLE_TITLE",
-        &[("NAME", Argument::Text(&name))],
+        &Province {
+            id: picked,
+            rename,
+            vp_tag: vp_tag.as_deref().map_err(Clone::clone),
+            state,
+            region_name_key,
+        },
     ))
 }
 

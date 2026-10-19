@@ -32,5 +32,6 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+engine-occupation.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }

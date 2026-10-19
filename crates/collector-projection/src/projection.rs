@@ -25,6 +25,7 @@ struct Ordering {
     updated: u64,
     updated_rows: u64,
     sorted: u64,
+    certified: Option<(BranchId, Hour, u64)>,
 }
 
 pub struct ProjectionScratch {
@@ -100,6 +101,20 @@ pub struct Projection<'a> {
 }
 
 impl<'a> Projection<'a> {
+    /// A branch-local complete state to which an observed native change batch
+    /// applies. The caller must refuse missing or incomplete observation.
+    pub fn observed_baseline<S: TableSchema>(&self) -> Option<&'a [S::Row]> {
+        self.encoder.observed_baseline::<S>(self.branch, self.hour)
+    }
+
+    /// A complete writer certificate covers the rows the event batch omits.
+    pub fn observed_comparison_baseline<S: TableSchema>(
+        &self,
+    ) -> Option<(replay_frame::frame::BaselineToken, &'a [S::Row])> {
+        self.encoder
+            .observed_comparison_baseline::<S>(self.branch, self.hour, self.force)
+    }
+
     pub fn new(
         encoder: &'a FrameEncoder,
         branch: BranchId,
@@ -113,6 +128,111 @@ impl<'a> Projection<'a> {
             hour,
             force,
             scratch,
+        }
+    }
+
+    /// Publish only changed certified key ranges when the last capture was
+    /// committed at this projection's baseline; recovery materialises once.
+    pub fn certified<S: TableSchema>(
+        &self,
+        snapshot: &crate::certified::Snapshot<S::Row>,
+    ) -> TableInput {
+        let mut scratch = self.scratch.table(S::ID);
+        let baseline = self
+            .encoder
+            .slice_baseline(S::ID, self.branch, self.hour, self.force);
+        let previous = self.encoder.committed::<S>().map(|(hour, _)| hour);
+        let input = if let (Some((token, _)), Some((branch, hour, revision))) =
+            (baseline, scratch.certified)
+            && branch == self.branch
+            && previous == Some(hour)
+        {
+            if revision == snapshot.revision {
+                TableInput::ComparedEqual(token)
+            } else if revision == snapshot.parent {
+                TableInput::SliceUpdate {
+                    token,
+                    update: std::sync::Arc::new(replay_data::sliced::SliceUpdate {
+                        keys: Vec::new(),
+                        owners: Vec::new(),
+                        ranges: snapshot.ranges.clone(),
+                        rows: S::wrap(snapshot.changed.clone()),
+                    }),
+                }
+            } else {
+                match snapshot.complete::<S>() {
+                    Ok(rows) => TableInput::SharedComplete(std::sync::Arc::new(rows)),
+                    Err(reason) => unavailable(reason).into(),
+                }
+            }
+        } else {
+            match snapshot.complete::<S>() {
+                Ok(rows) => TableInput::SharedComplete(std::sync::Arc::new(rows)),
+                Err(reason) => unavailable(reason).into(),
+            }
+        };
+        scratch.certified = Some((self.branch, self.hour, snapshot.revision));
+        input
+    }
+
+    /// Replace only owners selected by a complete writer certificate. A full
+    /// acquisition establishes the shared baseline; missing baselines refuse
+    /// carry rather than treating a partial owner set as a complete table.
+    pub fn certified_owners(&self, rows: TableRows, owners: Vec<u32>, full: bool) -> TableInput {
+        if full {
+            return TableInput::SharedComplete(std::sync::Arc::new(rows));
+        }
+        let update = replay_data::sliced::SliceUpdate {
+            ranges: Vec::new(),
+            owners,
+            keys: Vec::new(),
+            rows,
+        };
+        self.certified_update(update)
+    }
+
+    /// Complete writer coverage selects individual holder keys. Unchanged
+    /// holders stay in the shared baseline, including their immutable pools.
+    pub fn certified_keys(&self, rows: TableRows, keys: Vec<u128>, full: bool) -> TableInput {
+        if full {
+            return TableInput::SharedComplete(std::sync::Arc::new(rows));
+        }
+        let update = replay_data::sliced::SliceUpdate::keyed(keys, rows);
+        self.certified_update(update)
+    }
+
+    fn certified_update(&self, update: replay_data::sliced::SliceUpdate) -> TableInput {
+        let table = update.rows.table();
+        let sparse = self
+            .encoder
+            .slice_baseline(table, self.branch, self.hour, self.force);
+        let Some(previous) = sparse.map(|(_, previous)| previous).or_else(|| {
+            self.encoder
+                .certified_keyframe_baseline(table, self.branch, self.hour, self.force)
+        }) else {
+            return unavailable("certified update has no continuous complete baseline").into();
+        };
+        if !update.fits(previous) {
+            return unavailable("certified update has invalid rows, owners or keys").into();
+        }
+        if let Some((token, _)) = sparse {
+            return TableInput::SliceUpdate {
+                token,
+                update: std::sync::Arc::new(update),
+            };
+        }
+        if update.owners.is_empty() && update.keys.is_empty() {
+            return TableInput::SharedComplete(std::sync::Arc::clone(previous));
+        }
+        // Keyframes serialize the complete certified state. Clone row handles,
+        // consume the selected updates, and keep carried pool payloads shared.
+        let merged = previous.try_clone().and_then(|mut rows| {
+            update.apply(&mut rows)?;
+            Ok(rows)
+        });
+        match merged {
+            Ok(rows) => TableInput::SharedComplete(std::sync::Arc::new(rows)),
+            Err(_) => unavailable("certified keyframe materialization failed").into(),
         }
     }
 
@@ -291,6 +411,10 @@ fn displayed<S: TableSchema>(mut row: S::Row) -> S::Row {
 }
 
 #[cfg(test)]
+#[path = "projection/market_tests.rs"]
+mod market_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use replay_data::{rows::StateRow, rows::TableId, rows::tables};
@@ -329,6 +453,94 @@ mod tests {
                 row.clone()
             },
         )
+    }
+
+    #[test]
+    fn certified_market_owners_require_a_baseline_and_keep_unmarked_rows() {
+        use replay_data::rows::{CountryMarketRow, LendLeaseAgreementRow, MarketContractTermsRow};
+        let families = [
+            TableRows::CountryMarket(vec![
+                CountryMarketRow {
+                    country: 1,
+                    ..Default::default()
+                },
+                CountryMarketRow {
+                    country: 5000,
+                    ..Default::default()
+                },
+            ]),
+            TableRows::MarketContractTerms(vec![
+                MarketContractTermsRow {
+                    country: 1,
+                    id: 10,
+                    ..Default::default()
+                },
+                MarketContractTermsRow {
+                    country: 5000,
+                    id: 20,
+                    ..Default::default()
+                },
+            ]),
+            TableRows::LendLeaseAgreements(vec![
+                LendLeaseAgreementRow {
+                    country: 1,
+                    id: 10,
+                    ..Default::default()
+                },
+                LendLeaseAgreementRow {
+                    country: 5000,
+                    id: 20,
+                    ..Default::default()
+                },
+            ]),
+        ];
+        for previous in families {
+            let table = previous.table();
+            let mut encoder = FrameEncoder::new();
+            let scratch = ProjectionScratch::default();
+            let missing = Projection::new(&encoder, 1, 0, false, &scratch).certified_owners(
+                TableRows::empty(table),
+                vec![5000],
+                false,
+            );
+            assert!(matches!(
+                missing,
+                TableInput::Sampled(TableView::Unavailable { .. })
+            ));
+            let full = Projection::new(&encoder, 1, 0, false, &scratch).certified_owners(
+                previous.clone(),
+                vec![1, 5000],
+                true,
+            );
+            let mut frame = input(0, unavailable("fixture table").into());
+            frame.tables[table.index()] = full;
+            let mut decoder = FrameDecoder::new();
+            decoder
+                .apply(&encoder.encode_input(frame, false).unwrap())
+                .unwrap();
+            let removed = Projection::new(&encoder, 1, 1, false, &scratch).certified_owners(
+                TableRows::empty(table),
+                vec![5000],
+                false,
+            );
+            assert!(matches!(removed, TableInput::SliceUpdate { .. }));
+            let mut frame = input(1, unavailable("fixture table").into());
+            frame.tables[table.index()] = removed;
+            let decoded = decoder
+                .apply(&encoder.encode_input(frame, false).unwrap())
+                .unwrap();
+            let expected = replay_data::sliced::merge_slice(
+                &previous,
+                TableRows::empty(table),
+                |owner| owner == 5000,
+                |_| true,
+            )
+            .unwrap();
+            assert_eq!(
+                &*decoded.tables[table.index()],
+                &TableView::Complete(expected)
+            );
+        }
     }
 
     #[test]
@@ -484,6 +696,42 @@ mod tests {
                 current,
                 TableInput::Sampled(TableView::Complete(_))
             ));
+        }
+    }
+    #[test]
+    fn observed_variant_baseline_survives_keyframes_and_refuses_branch_or_hour_gaps() {
+        let mut encoder = FrameEncoder::new();
+        let scratch = ProjectionScratch::default();
+        let mut first = input(0, unavailable("fixture table").into());
+        first.tables[TableId::VariantDefinitions.index()] =
+            TableView::Complete(TableRows::VariantDefinitions(vec![
+                replay_data::rows::VariantDefinitionRow {
+                    id: 70,
+                    ..Default::default()
+                },
+            ]))
+            .into();
+        encoder.encode_input(first, false).unwrap();
+        for hour in 1..=replay_frame::KEYFRAME_INTERVAL as i32 + 1 {
+            let projection = Projection::new(&encoder, 1, hour, true, &scratch);
+            let rows = projection
+                .observed_baseline::<tables::VariantDefinitions>()
+                .unwrap();
+            assert_eq!(rows[0].id, 70);
+            assert!(
+                Projection::new(&encoder, 2, hour, false, &scratch)
+                    .observed_baseline::<tables::VariantDefinitions>()
+                    .is_none()
+            );
+            assert!(
+                Projection::new(&encoder, 1, hour + 1, false, &scratch)
+                    .observed_baseline::<tables::VariantDefinitions>()
+                    .is_none()
+            );
+            let mut next = input(hour, unavailable("fixture table").into());
+            next.tables[TableId::VariantDefinitions.index()] =
+                TableView::Complete(TableRows::VariantDefinitions(rows.to_vec())).into();
+            encoder.encode_input(next, false).unwrap();
         }
     }
 }

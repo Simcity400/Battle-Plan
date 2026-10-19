@@ -21,7 +21,7 @@ impl World {
         let mut out = Self {
             combat: vec![0; cland_combat::DURATION + 4],
             sides: std::array::from_fn(|_| {
-                vec![0; side::STATS_OBSERVER + stats::EQUIPMENT_LOSSES + pool::ALLOW_ZERO + 1]
+                vec![0; side::STATS_OBSERVER + engine_land_inputs::combat_log_events::OBSERVER_SIZE]
             }),
             entries: std::array::from_fn(|_| {
                 variants
@@ -62,6 +62,23 @@ impl World {
                 side::STATS_OBSERVER + stats::EQUIPMENT_LOSSES,
                 pool::VTABLE_RVA as u64,
             );
+            Self::q(
+                &mut out.sides[n],
+                side::STATS_OBSERVER + engine_land_inputs::combat_log_events::OBSERVER_SIDE,
+                engine_land_inputs::combat_log_history::SIDE_VTABLE_RVA as u64,
+            );
+            for offset in [
+                engine_land_inputs::combat_log_history::SIDE_CAPTURED_BY_ENEMY,
+                engine_land_inputs::combat_log_history::SIDE_RECOVERED,
+            ] {
+                Self::q(
+                    &mut out.sides[n],
+                    side::STATS_OBSERVER
+                        + engine_land_inputs::combat_log_events::OBSERVER_SIDE
+                        + offset,
+                    pool::VTABLE_RVA as u64,
+                );
+            }
             out.set(n, n as i32 + 11, count);
         }
         out
@@ -130,7 +147,10 @@ fn read(c: &mut Captured, worlds: &[World]) {
     c.finish(Outcome::Rows { len: worlds.len() });
 }
 fn rows(c: &Captured) -> Vec<LandCombatProgressRow> {
-    let [TableView::Complete(replay_data::rows::TableRows::LandCombatProgress(rows))] = c.tables()
+    let [
+        TableView::Complete(replay_data::rows::TableRows::LandCombatProgress(rows)),
+        _,
+    ] = c.tables()
     else {
         panic!("expected complete losses")
     };
@@ -292,7 +312,10 @@ fn hourly_losses_worker_growth_captures_five_thousand_combats_without_coverage_l
     });
     let worlds = (0..5_000).map(|_| World::new(3)).collect::<Vec<_>>();
     read(&mut captured, &worlds);
-    assert_eq!(captured.outcomes(), [Outcome::Rows { len: 5_000 }]);
+    assert_eq!(
+        captured.outcomes(),
+        [Outcome::Rows { len: 5_000 }, Outcome::Rows { len: 110_000 }]
+    );
     assert_eq!(captured.equipment.required, 30_000);
     assert_eq!(captured.equipment.len, 30_000);
     assert_eq!(captured.lost_reads(), 0);
@@ -425,5 +448,40 @@ fn land_casualty_hourly_timing() {
         } else {
             "optimized"
         }
+    );
+}
+
+#[test]
+fn combat_log_complete_observer_uses_the_loss_census_and_preserves_signed_counters() {
+    let mut world = World::new(3);
+    World::q(
+        &mut world.sides[0],
+        side::STATS_OBSERVER + engine_land_inputs::combat_log_events::OBSERVER_PROGRESS,
+        987_654,
+    );
+    let counter = side::STATS_OBSERVER + engine_land_inputs::combat_log_events::OBSERVER_COUNTERS;
+    world.sides[0][counter..counter + 4].copy_from_slice(&i32::MIN.to_le_bytes());
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.begin();
+    captured.visit(&memory, 0, world.source(7 << 32 | 62));
+    captured.finish(Outcome::Rows { len: 1 });
+    assert_eq!(captured.outcomes()[1], Outcome::Rows { len: 22 });
+    let rows = &captured.observers;
+    assert!(rows.iter().any(|r| r.attacker
+        && r.kind == engine_land_inputs::combat_log_events::OBSERVER_STATE as u8
+        && r.b == 987_654));
+    assert!(rows.iter().any(|r| r.attacker
+        && r.kind == engine_land_inputs::combat_log_events::OBSERVER_MODIFIERS as u8
+        && r.a as i32 == i32::MIN));
+    assert!(
+        rows.iter()
+            .filter(|r| r.kind == engine_land_inputs::combat_log_events::SIDE as u8)
+            .all(|r| r.a == 0)
+    );
+    assert!(
+        !rows.iter().any(
+            |r| r.kind == engine_land_inputs::combat_log_events::EQUIPMENT as u8 && r.item == 0
+        )
     );
 }

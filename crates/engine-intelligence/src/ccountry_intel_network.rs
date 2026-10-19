@@ -1,5 +1,7 @@
-//! CCountryIntelNetwork topology and cached coverage inputs.
-//! Writer ownership and hourly consistency remain unverified.
+//! Network state rows and independently retained national caches. The daily
+//! network update creates/rebuilds networks; dynamic country reuse destroys
+//! them, while console growth changes state strengths without rebuilding the
+//! national caches. Loading establishes independent saved cache values.
 
 use crate::{
     Memory, ccountry, cgame_state, clocal_intel_network, cpdx_array::Array, cstrategic_operative,
@@ -27,16 +29,18 @@ pub const SUBNETWORKS_ALLOCATOR: usize = 0x88;
 pub const STATIC_SOURCE_REFERENCE: usize = 0xa8;
 /// Subnetwork-cache preparation function.
 pub const PREPARE_SUBNETWORK_CACHE_RVA: usize = 0x11b_c200;
-/// Covered core-state count, u32.
+/// Covered core-state count, signed i32 as serialized.
 pub const COVERED_CORE_STATES: usize = 0xc0;
-/// Covered controlled-state count, u32.
+/// Covered controlled-state count, signed i32 as serialized.
 pub const COVERED_CONTROLLED_STATES: usize = 0xc4;
-/// Covered state worth, u32.
+/// Covered state worth, signed i32 as serialized.
 pub const COVERED_WORTH: usize = 0xc8;
 /// Controlled-state strength sum, signed i64.
 pub const CONTROLLED_STRENGTH_SUM: usize = 0xd0;
 /// Core-state strength sum, signed i64.
 pub const CORE_STRENGTH_SUM: usize = 0xd8;
+/// Cached maximum state strength, signed i64, saved independently of the sums.
+pub const MAX_STATE_STRENGTH: usize = 0xe0;
 /// Network serializer.
 pub const SAVE_RVA: usize = 0x011c_1be0;
 /// Network loader.
@@ -64,6 +68,8 @@ pub const TOKEN_MAX_STRENGTH: u32 = 0x4c6a;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
+    /// Already-acquired graph position, shared with auxiliary capture only.
+    pub native_ordinal: u32,
     /// Raw country references, including authenticated aliases.
     pub owner_country: u32,
     pub target_country: u32,
@@ -105,6 +111,198 @@ struct Subnetwork {
     quiet: u8,
 }
 
+/// Independently retained national caches, acquired once per actual network
+/// during the existing network census, including networks with no vertices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Summary {
+    /// Worker cache identity only; never recorded.
+    pub native_pointer: usize,
+    pub owner_country: u32,
+    pub target_country: u32,
+    /// Current position in the owner's native network vector, acquired for free.
+    pub ordinal: u32,
+    pub covered_core_states: i32,
+    pub covered_controlled_states: i32,
+    pub covered_worth: i32,
+    pub controlled_strength_sum: i64,
+    pub core_strength_sum: i64,
+    pub max_state_strength: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetworkWalk {
+    pub states: Outcome,
+    pub summaries: Outcome,
+}
+
+/// Shared worker storage. The daily rebuild is the only writer of the retained
+/// aggregate values after construction/load. Outside it, a country reset can
+/// destroy networks and console growth changes state strengths alone. Reuse
+/// requires the caller's reset/growth certificate and the census's authenticated
+/// network identity; attachment/load/gap/forced refresh revokes it. The census
+/// selects current membership even when an aggregate is carried.
+#[derive(Default)]
+pub struct SummaryCache {
+    rows: Vec<Summary>,
+}
+
+impl SummaryCache {
+    pub const fn new() -> Self {
+        Self { rows: Vec::new() }
+    }
+    pub fn allocated_bytes(&self) -> usize {
+        self.rows.capacity() * std::mem::size_of::<Summary>()
+    }
+    pub fn invalidate(&mut self) {
+        self.rows.clear();
+    }
+}
+
+/// Worker acquisition shares the established roster and network authentication.
+/// Summary read failures withhold only summaries, never the existing state rows.
+pub fn walk_with_summaries_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    states: &mut Vec<Row>,
+    summaries: &mut Vec<Summary>,
+) -> NetworkWalk {
+    walk_with_cached_summaries_growing(
+        memory,
+        base,
+        game_state,
+        states,
+        summaries,
+        &mut SummaryCache::new(),
+        true,
+    )
+}
+
+pub fn walk_with_cached_summaries_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    states: &mut Vec<Row>,
+    summary_rows: &mut Vec<Summary>,
+    cache: &mut SummaryCache,
+    refresh: bool,
+) -> NetworkWalk {
+    let mut summary = SummaryCapture {
+        output: crate::walk::Buffer::Growing(summary_rows),
+        len: 0,
+        failure: None,
+        held: if refresh { &[] } else { &cache.rows },
+        fresh: false,
+    };
+    let states = walk_inner(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(states),
+        Some(&mut summary),
+    );
+    let summaries = if let Some(reason) = summary.failure {
+        Outcome::Unavailable { reason }
+    } else if matches!(states, Outcome::Rows { .. }) {
+        Outcome::Rows { len: summary.len }
+    } else {
+        Outcome::Unavailable {
+            reason: "intel network summary census incomplete",
+        }
+    };
+    let changed_cache = refresh || summary.fresh;
+    if let Outcome::Rows { len } = summaries {
+        if !changed_cache {
+            return NetworkWalk { states, summaries };
+        }
+        let captured = &summary_rows[..len];
+        if engine_native::allocation::resize_default(&mut cache.rows, len).is_err() {
+            cache.rows.clear();
+            return NetworkWalk {
+                states,
+                summaries: Outcome::Unavailable {
+                    reason: "intel network summary cache allocation failed",
+                },
+            };
+        }
+        cache.rows.copy_from_slice(captured);
+        cache.rows.sort_unstable_by_key(|row| row.native_pointer);
+    } else if refresh {
+        // A failed refresh revokes the previous day's values. An intervening
+        // membership failure publishes no new cache and cannot revoke payload
+        // certificates the caller still proves; retain those for its retry.
+        cache.rows.clear();
+    }
+    NetworkWalk { states, summaries }
+}
+
+struct SummaryCapture<'a> {
+    output: crate::walk::Buffer<'a, Summary>,
+    len: usize,
+    failure: Option<&'static str>,
+    held: &'a [Summary],
+    fresh: bool,
+}
+
+impl SummaryCapture<'_> {
+    fn visit(
+        &mut self,
+        memory: &impl Memory,
+        network: usize,
+        owner: u32,
+        target: u32,
+        ordinal: u32,
+    ) {
+        if self.failure.is_some() {
+            return;
+        }
+        let result = (|| {
+            if !self.output.ensure(
+                self.len
+                    .checked_add(1)
+                    .ok_or("intel network summary demand overflow")?,
+            )? {
+                return Err("intel network summary storage unavailable");
+            }
+            let held = self
+                .held
+                .binary_search_by_key(&network, |row| row.native_pointer)
+                .ok()
+                .map(|index| self.held[index])
+                .filter(|row| row.owner_country == owner && row.target_country == target);
+            self.output[self.len] = if let Some(held) = held {
+                Summary { ordinal, ..held }
+            } else {
+                self.fresh = true;
+                // Read only serializer operands, not the coverage padding.
+                let coverage = field::<[u8; 12]>(memory, network, COVERED_CORE_STATES)?;
+                let strengths = field::<[u8; 24]>(memory, network, CONTROLLED_STRENGTH_SUM)?;
+                let count = |index: usize| {
+                    i32::from_le_bytes(coverage[index * 4..index * 4 + 4].try_into().unwrap())
+                };
+                let strength = |index: usize| {
+                    i64::from_le_bytes(strengths[index * 8..index * 8 + 8].try_into().unwrap())
+                };
+                Summary {
+                    native_pointer: network,
+                    owner_country: owner,
+                    target_country: target,
+                    ordinal,
+                    covered_core_states: count(0),
+                    covered_controlled_states: count(1),
+                    covered_worth: count(2),
+                    controlled_strength_sum: strength(0),
+                    core_strength_sum: strength(1),
+                    max_state_strength: strength(2),
+                }
+            };
+            self.len += 1;
+            Ok(())
+        })();
+        self.failure = result.err();
+    }
+}
+
 /// Reads the country-rooted network roster and its state-to-subnetwork mapping.
 /// A network has no single stored national strength; each row retains the native
 /// strength of the subnetwork selected by that state's graph vertex.
@@ -130,7 +328,17 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
+    walk_inner(memory, base, game_state, output, None)
+}
+
+fn walk_inner(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
     mut output: crate::walk::Buffer<'_, Row>,
+    mut summaries: Option<&mut SummaryCapture<'_>>,
 ) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -182,6 +390,9 @@ pub fn walk_buffer(
                     Ok(false)
                 })? {
                     return Err("duplicate intel network target for owner");
+                }
+                if let Some(summaries) = summaries.as_deref_mut() {
+                    summaries.visit(memory, network, owner, target, network_slot);
                 }
                 let local = network
                     .checked_add(LOCAL_NETWORK)
@@ -375,6 +586,9 @@ pub fn walk_buffer(
                         };
                         let at = index * intel_network_graph_vertex::STRIDE;
                         output[len] = Row {
+                            native_ordinal: u64::from_le_bytes(
+                                vertex_bytes[at + 8..at + 16].try_into().unwrap(),
+                            ) as u32,
                             owner_country: owner,
                             target_country: target,
                             state_id: i32::from_le_bytes(
@@ -485,6 +699,127 @@ mod tests {
     const GRAPH_ROWS: usize = 0xe000;
     const SUBNETWORKS: usize = 0xf000;
     const QUIET: usize = 0x10800;
+
+    #[test]
+    fn network_summaries_keep_independent_caches_and_quiet_carries_read_no_payload() {
+        let mut bytes = fixture();
+        for (offset, value) in [
+            (COVERED_CORE_STATES, 17),
+            (COVERED_CONTROLLED_STATES, 29),
+            (COVERED_WORTH, u32::MAX),
+        ] {
+            p32(&mut bytes, NETWORK + offset, value);
+        }
+        for (offset, value) in [
+            (CONTROLLED_STRENGTH_SUM, i64::MIN),
+            (CORE_STRENGTH_SUM, -7),
+            (MAX_STATE_STRENGTH, i64::MAX),
+        ] {
+            p64(&mut bytes, NETWORK + offset, value as u64);
+        }
+        let mut states = Vec::new();
+        let mut summaries = Vec::new();
+        let mut cache = SummaryCache::new();
+        let read = walk_with_cached_summaries_growing(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            GS,
+            &mut states,
+            &mut summaries,
+            &mut cache,
+            true,
+        );
+        assert_eq!(read.summaries, Outcome::Rows { len: 1 });
+        let expected = summaries[0];
+        assert_eq!(
+            (
+                expected.covered_core_states,
+                expected.covered_controlled_states,
+                expected.covered_worth
+            ),
+            (17, 29, -1)
+        );
+        assert_eq!(
+            (
+                expected.controlled_strength_sum,
+                expected.core_strength_sum,
+                expected.max_state_strength
+            ),
+            (i64::MIN, -7, i64::MAX)
+        );
+
+        struct DenyPayload<'a>(&'a [u8]);
+        impl Memory for DenyPayload<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address < NETWORK + MAX_STATE_STRENGTH + 8
+                    && address.saturating_add(output.len()) > NETWORK + COVERED_CORE_STATES
+                {
+                    return false;
+                }
+                SliceMemory {
+                    base: 0,
+                    bytes: self.0,
+                }
+                .copy(address, output)
+            }
+        }
+        // The already-authenticated object's values carry without touching its
+        // aggregate payload. A failed forced read cannot turn into a carry.
+        let denied = DenyPayload(&bytes);
+        let read = walk_with_cached_summaries_growing(
+            &denied,
+            0,
+            GS,
+            &mut states,
+            &mut summaries,
+            &mut cache,
+            false,
+        );
+        assert_eq!(read.summaries, Outcome::Rows { len: 1 });
+        assert_eq!(summaries[0], expected);
+        let read = walk_with_cached_summaries_growing(
+            &denied,
+            0,
+            GS,
+            &mut states,
+            &mut summaries,
+            &mut cache,
+            true,
+        );
+        assert!(matches!(read.summaries, Outcome::Unavailable { .. }));
+        assert_eq!(read.states, Outcome::Rows { len: 2 });
+        assert!(cache.rows.is_empty());
+    }
+
+    #[test]
+    fn empty_network_has_a_summary_and_zero_vertices_are_not_absent_membership() {
+        let mut bytes = fixture();
+        header(&mut bytes, GRAPH + intel_network_graph::VERTICES_DATA, 0, 0);
+        p64(&mut bytes, GRAPH + intel_network_graph::ROWS_BEGIN, 0);
+        p64(&mut bytes, GRAPH + intel_network_graph::ROWS_END, 0);
+        header(&mut bytes, NETWORK + SUBNETWORKS_DATA, 0, 0);
+        let mut states = Vec::new();
+        let mut summaries = Vec::new();
+        let read = walk_with_summaries_growing(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            GS,
+            &mut states,
+            &mut summaries,
+        );
+        assert_eq!(read.states, Outcome::Rows { len: 0 });
+        assert_eq!(read.summaries, Outcome::Rows { len: 1 });
+        assert_eq!(
+            (summaries[0].owner_country, summaries[0].target_country),
+            (3, 2)
+        );
+    }
 
     fn p32(bytes: &mut [u8], at: usize, value: u32) {
         bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
@@ -626,6 +961,19 @@ mod tests {
         }
         let run = |world: &World| walk(&world.memory(), 0, gs, &mut []);
         assert_eq!(run(&world), Outcome::Rows { len: 0 });
+        let mut states = Vec::new();
+        let mut summaries = Vec::new();
+        let captured =
+            walk_with_summaries_growing(&world.memory(), 0, gs, &mut states, &mut summaries);
+        assert_eq!(captured.states, Outcome::Rows { len: 0 });
+        assert_eq!(
+            captured.summaries,
+            Outcome::Rows {
+                len: COUNT as usize - 1
+            }
+        );
+        assert_eq!(summaries[COUNT as usize - 2].target_country, COUNT);
+        assert_eq!(summaries[COUNT as usize - 2].ordinal, COUNT - 2);
         // The last network repeats the first target.
         world.u32(networks + (COUNT as usize - 2) * 0x100 + TARGET, 2);
         assert_eq!(
@@ -800,6 +1148,7 @@ mod tests {
         assert_eq!(
             output[0],
             Row {
+                native_ordinal: 0,
                 owner_country: 3,
                 target_country: 2,
                 state_id: 1,
@@ -820,6 +1169,7 @@ mod tests {
         assert_eq!(
             output[1],
             Row {
+                native_ordinal: 1,
                 owner_country: 3,
                 target_country: 2,
                 state_id: i32::MAX,

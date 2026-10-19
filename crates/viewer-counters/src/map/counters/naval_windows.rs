@@ -62,11 +62,20 @@ pub(super) fn update_naval(
     root: &native::Element,
     glyph: &NavalBaseIcon,
     scale: f32,
+    strategic: bool,
+    resources: &dyn native_gui::Resources,
 ) -> Result<(), String> {
     let c = base_controls(root)?;
-    // Political-map visibility branch.
-    for (button, shown) in [(c.background, true), (c.strategic, false)] {
-        instance.set_frame(root, button, glyph.frame.wrapping_add(1) as i32)?;
+    for (button, shown) in [(c.background, !strategic), (c.strategic, strategic)] {
+        instance.set_frame(
+            root,
+            button,
+            if glyph.highlighted {
+                11
+            } else {
+                glyph.frame.wrapping_add(1) as i32
+            },
+        )?;
         let bound = instance.control(root, button)?;
         bound.enabled = Some(glyph.enabled);
         bound.scale = Some(scale);
@@ -76,7 +85,13 @@ pub(super) fn update_naval(
             instance.hide(root, button)?;
         }
     }
-    instance.hide(root, c.capacity)
+    match glyph.capacity.filter(|_| strategic) {
+        Some(capacity) => {
+            instance.set_text(root, c.capacity, &capacity.text(), resources)?;
+            instance.show(root, c.capacity)
+        }
+        None => instance.hide(root, c.capacity),
+    }
 }
 
 /// The port items of each naval base province: each item's update, or why the province's roster
@@ -98,6 +113,8 @@ enum IconSlot {
     Base(SlotId),
     /// A retained naval result icon (`MapIconPool::CombatResults`).
     Result(SlotId),
+    /// A strategic-region mission icon, with its own three item pools.
+    Mission(SlotId),
 }
 
 /// The item pool of an icon's object a grid item comes from.
@@ -119,6 +136,14 @@ struct ItemKey {
     pool: ItemPool,
     index: usize,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CarrierKey {
+    AtSea(u64),
+    Port(ItemKey),
+}
+type CarrierViews = HashMap<CarrierKey, air_grid::View>;
+type CarrierGrid = Result<Vec<air_grid::PreparedItem>, String>;
 
 /// A combat icon's anchor and stack place, assigned by its owner's placing pass
 /// and read each frame. A placing update whose place is undecided makes it
@@ -244,6 +269,7 @@ pub(super) fn mark<K: Clone + Eq + std::hash::Hash>(
 #[derive(Debug)]
 struct Item {
     instance: Instance,
+    naval_convoy: Option<u64>,
     selectable: Option<(bool, Arc<[u64]>)>,
     /// Its task force's owner slot, for the counter filter.
     owner: Option<u32>,
@@ -304,12 +330,14 @@ pub struct Windows {
     placed: HashMap<CombatOwner, ([f32; 3], u32)>,
     /// Naval counters at sea by their source task force.
     counters: HashMap<u64, Counter>,
+    carrier_wings: CarrierViews,
     /// The previous frame's shown unit columns, including columns with only land items.
     columns: BTreeMap<land::ColumnIdentity, usize>,
     /// Last frame's counter membership; a returning item is appended again.
     held_counters: BTreeSet<u64>,
     /// The naval mission icons and their entries ([`naval_missions::MissionView`]).
     pub(super) missions: naval_missions::MissionView,
+    pub(super) air_missions: air_missions::View,
     /// The view's clock at the last presented frame.
     last: Option<f32>,
     /// Something ran at the last frame's tick ([`Instance::active`], [`Pool::active`]).
@@ -342,13 +370,15 @@ impl Windows {
         retries.extend(self.bases.as_ref().and_then(Pool::retry));
         retries.extend(self.results.as_ref().and_then(Pool::retry));
         retries.extend(self.missions.retry());
+        retries.extend(self.air_missions.retry());
         retries
     }
 
     /// Whether a window changed on its own at the last frame, cleared: the view presents another
     /// frame while one does, as the game ticks every window each frame.
     pub fn take_active(&mut self) -> bool {
-        std::mem::take(&mut self.active)
+        let air = self.air_missions.take_active();
+        std::mem::take(&mut self.active) || air
     }
 
     /// Builds the pools for `windows` in `viewport`, with `resources` (their registry's), when
@@ -434,6 +464,8 @@ pub(super) struct Plan {
     pub(super) countries: Option<Arc<Countries>>,
     /// The naval mission icons' regions ([`naval_missions::MissionPass`]).
     pub(super) missions: naval_missions::MissionPass,
+    pub(super) carrier_sea: HashMap<u64, CarrierGrid>,
+    pub(super) carrier_ports: BTreeMap<(u32, usize), CarrierGrid>,
 }
 
 /// The naval result icons' decisions for one camera.
@@ -531,6 +563,7 @@ impl CombatIcon {
 }
 
 /// One grid's appends.
+#[derive(Debug)]
 pub(super) struct GridFill {
     /// The grid's path in the combat window.
     pub(super) grid: String,
@@ -642,16 +675,100 @@ pub(super) fn present(
     if let Some(result) = native.naval_result() {
         result_frame(inputs, plan, windows, result, &schedule, report)?;
     }
+    let mut mission_view = std::mem::take(&mut windows.missions);
     let missions = naval_missions::update(
         inputs,
         &plan.missions,
-        &mut windows.missions,
+        &mut mission_view,
         &resources,
         &schedule,
         report,
     );
+    for (slot, held) in mission_view.take_grid_held() {
+        if let Err(why) = reach_items(windows, IconSlot::Mission(slot), &held) {
+            *report.naval_mission_gaps.entry(why.into()).or_default() += 1;
+        }
+    }
+    if let Some(template) = &missions {
+        for &(region, slot) in &mission_view.updated_grids {
+            if let Some(instance) = mission_view.window(naval_missions::MissionWindow::Icon(slot)) {
+                let fills = plan
+                    .missions
+                    .regional
+                    .get(&region)
+                    .map_or(&[][..], |data| data.grids.as_slice());
+                if let Err(why) = fill_grids_in(
+                    &resources,
+                    windows,
+                    instance,
+                    template.root,
+                    IconSlot::Mission(slot),
+                    fills,
+                    report,
+                ) {
+                    *report
+                        .naval_mission_gaps
+                        .entry(format!("regional naval grids: {why}").into())
+                        .or_default() += 1;
+                }
+            }
+        }
+    }
+    windows.missions = mission_view;
     drop(schedule);
     let navy = native.navy();
+    let mut carrier_wings = std::mem::take(&mut windows.carrier_wings);
+    carrier_wings.retain(|key, _| match key {
+        CarrierKey::AtSea(source) => {
+            windows.counters.contains_key(source)
+                || plan
+                    .forces
+                    .as_ref()
+                    .is_some_and(|forces| forces.recorded.contains(source))
+        }
+        CarrierKey::Port(item) => windows.items.contains_key(item),
+    });
+    for view in carrier_wings.values_mut() {
+        view.tick(time);
+    }
+    // Port wrappers are pooled with their own unit item, never with another
+    // base or with the at-sea representation of the same task force.
+    let port_owners: HashMap<_, _> = windows
+        .bases
+        .as_ref()
+        .map(|pool| {
+            pool.live()
+                .map(|(province, slot, _)| (slot, *province))
+                .collect()
+        })
+        .unwrap_or_default();
+    for (key, item) in &mut windows.items {
+        let (IconSlot::Base(slot), ItemPool::Port) = (key.icon, key.pool) else {
+            continue;
+        };
+        let offered = port_owners
+            .get(&slot)
+            .and_then(|province| plan.carrier_ports.get(&(*province, key.index)));
+        if offered.is_some() || carrier_wings.contains_key(&CarrierKey::Port(*key)) {
+            let view = carrier_wings.entry(CarrierKey::Port(*key)).or_default();
+            if let Err(why) = view.update(
+                0,
+                None,
+                &mut item.instance,
+                navy,
+                "wings_box",
+                offered,
+                inputs,
+                plan.countries.as_deref(),
+                &resources,
+            ) {
+                *report
+                    .icon_gui_notes
+                    .entry(format!("Port carrier wing grid: {why}"))
+                    .or_default() += 1;
+            }
+        }
+    }
     // Counters at sea: their source task forces' windows, destroyed with their source.
     if let Some(forces) = &plan.forces {
         settle_counters(windows, forces);
@@ -673,7 +790,31 @@ pub(super) fn present(
             &update,
             &resources,
         ) {
-            Ok(()) => placed_at_sea.push((flotilla, plate)),
+            Ok(()) => {
+                let key = CarrierKey::AtSea(flotilla.source);
+                let offered = plan.carrier_sea.get(&flotilla.source);
+                if offered.is_some() || carrier_wings.contains_key(&key) {
+                    let view = carrier_wings.entry(key).or_default();
+                    let counter = windows.counters.get_mut(&flotilla.source).unwrap();
+                    if let Err(why) = view.update(
+                        0,
+                        None,
+                        &mut counter.instance,
+                        navy,
+                        "wings_box",
+                        offered,
+                        inputs,
+                        plan.countries.as_deref(),
+                        &resources,
+                    ) {
+                        *report
+                            .icon_gui_notes
+                            .entry(format!("At-sea carrier wing grid: {why}"))
+                            .or_default() += 1;
+                    }
+                }
+                placed_at_sea.push((flotilla, plate));
+            }
             Err(reason) => {
                 skipped_counter(
                     windows,
@@ -733,6 +874,7 @@ pub(super) fn present(
             inputs,
             &plan.missions,
             &windows.missions,
+            windows,
             missions,
             &resources,
             combats,
@@ -753,7 +895,16 @@ pub(super) fn present(
     }
     if let Some(base) = native.naval_base() {
         draw_ports(
-            inputs, plan, windows, base, &resources, bases, counters, report,
+            inputs,
+            plan,
+            windows,
+            &mut carrier_wings,
+            frame,
+            base,
+            &resources,
+            bases,
+            counters,
+            report,
         )?;
     }
     // At unit-stack priority, each plate retains its column's icon order.
@@ -789,7 +940,44 @@ pub(super) fn present(
         // Move drawing; the viewport remains the logical parent.
         let local = counter.instance.position();
         let place = [0, 1].map(|axis| plate.column.grid[axis].wrapping_add(local[axis]));
-        let parts = plate.column.holder.place(place, &layout);
+        let composed =
+            if let Some(view) = carrier_wings.get_mut(&CarrierKey::AtSea(flotilla.source)) {
+                let drawn = viewer_foundation::map::icon_windows::Drawn {
+                    owner: 0,
+                    origin: plate.column.screen,
+                    layout: layout.clone(),
+                };
+                view.compose_held(
+                    0,
+                    &drawn,
+                    NAVY_WINDOW,
+                    "wings_box",
+                    inputs,
+                    &resources,
+                    frame,
+                    hovered_layer(
+                        plate.column.priority,
+                        plate.column.hovered,
+                        plate.ordinal,
+                        0,
+                    ),
+                    Some((&plate.column.holder, place)),
+                    IconFamily::Columns,
+                    report,
+                )
+                .unwrap_or_else(|why| {
+                    *report
+                        .icon_gui_notes
+                        .entry(format!("At-sea carrier wing grid: {why}"))
+                        .or_default() += 1;
+                    vec![Vec::new(); layout.holders.len()]
+                })
+            } else {
+                vec![Vec::new(); layout.holders.len()]
+            };
+        let mut composed_layout = layout.clone();
+        composed_layout.parts = layout.composed_parts(&composed).cloned().collect();
+        let parts = plate.column.holder.place(place, &composed_layout);
         let drawn = gui_windows::draw_held(
             &plate.column.holder,
             parts,
@@ -854,6 +1042,10 @@ pub(super) fn present(
             quad.anchor = plate.column.anchor;
         }
     }
+    for view in carrier_wings.values_mut() {
+        windows.active |= view.take_running();
+    }
+    windows.carrier_wings = carrier_wings;
     Ok(())
 }
 
@@ -968,6 +1160,7 @@ pub(super) fn tick(
         match registered {
             Registered::Icon(icon) => {
                 let (result, held) = match icon {
+                    IconSlot::Mission(_) => continue,
                     IconSlot::Combat(slot) => match windows.combats.as_mut() {
                         Some(pool) => {
                             (pool.tick_transitions_of(combat, slot), pool.take_held(slot))
@@ -1009,6 +1202,10 @@ pub(super) fn tick(
                 if let Some(missions) = missions {
                     let result = windows.missions.tick_transitions_of(missions, window);
                     failing(vec![registered], result);
+                    for (slot, held) in windows.missions.take_grid_held() {
+                        let result = reach_items(windows, IconSlot::Mission(slot), &held);
+                        failing(vec![registered], result);
+                    }
                 }
             }
         }
@@ -1474,6 +1671,15 @@ fn registered_window<'w, 'n>(
     registered: Registered,
 ) -> Option<(&'w Instance, &'n native::Element)> {
     match registered {
+        Registered::Icon(IconSlot::Mission(slot)) => {
+            let template = native.gui_type(naval_missions::MISSION_WINDOW.as_bytes())?;
+            Some((
+                windows
+                    .missions
+                    .window(naval_missions::MissionWindow::Icon(slot))?,
+                template,
+            ))
+        }
         Registered::Icon(IconSlot::Combat(slot)) => Some((
             windows.combats.as_ref()?.instance(slot)?,
             native.naval_combat(),
@@ -1566,6 +1772,11 @@ fn settle(windows: &mut Windows, native: &NativeWindows) {
     for (window, why) in refuse {
         let unknown = Unknown::Part(TRANSITION);
         match window {
+            Registered::Icon(IconSlot::Mission(slot)) => {
+                windows
+                    .missions
+                    .refuse(naval_missions::MissionWindow::Icon(slot), unknown, why)
+            }
             Registered::Icon(IconSlot::Combat(slot)) => {
                 if let Some(pool) = windows.combats.as_mut() {
                     pool.refuse(slot, unknown, format!("icon omitted: {why}").into());
@@ -1592,6 +1803,9 @@ fn settle(windows: &mut Windows, native: &NativeWindows) {
     }
     for window in known {
         match window {
+            Registered::Icon(IconSlot::Mission(slot)) => windows
+                .missions
+                .known(naval_missions::MissionWindow::Icon(slot), TRANSITION),
             Registered::Icon(IconSlot::Combat(slot)) => {
                 if let Some(pool) = windows.combats.as_mut() {
                     pool.known(slot, TRANSITION);
@@ -1945,6 +2159,7 @@ fn update_item(
                 selectable: None,
                 owner: None,
                 port_tooltip: None,
+                naval_convoy: None,
                 tiny,
                 unknown,
             })
@@ -1957,6 +2172,7 @@ fn update_item(
     };
     left.extend(match update {
         Ok(update) => {
+            item.naval_convoy = update.naval_convoy;
             item.selectable.clone_from(&update.selectable);
             item.owner = update.owner;
             item.port_tooltip.clone_from(&update.port_tooltip);
@@ -2029,8 +2245,27 @@ fn fill_grids(
     fills: &[GridFill],
     report: &mut CounterReport,
 ) -> Result<(), String> {
+    fill_grids_in(
+        resources,
+        windows,
+        instance,
+        window,
+        IconSlot::Combat(slot),
+        fills,
+        report,
+    )
+}
+
+fn fill_grids_in(
+    resources: &dyn native_gui::Resources,
+    windows: &mut Windows,
+    instance: &Instance,
+    window: &native::Element,
+    icon: IconSlot,
+    fills: &[GridFill],
+    report: &mut CounterReport,
+) -> Result<(), String> {
     let (native, viewport) = windows.built.clone().ok_or("the windows are not built")?;
-    let icon = IconSlot::Combat(slot);
     // The icon as it stands after its calls: which grids are shown (a hidden grid is no holder)
     // and their content.
     let (laid, unread) = read_grids(instance, window, NAVAL_COMBAT_WINDOW, resources);
@@ -2274,12 +2509,21 @@ fn base_frame(
             let instance = pool.get(slot).ok_or("an updated icon has no window")?;
             match glyphs.get(&province) {
                 Some(glyph) => {
+                    if inputs.visibility.priorities
+                        == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy
+                        && let Some(reason) = glyph.capacity_refusal
+                    {
+                        *report
+                            .icon_gui_notes
+                            .entry(format!("{NAVAL_BASE_WINDOW}: {reason}"))
+                            .or_default() += 1;
+                    }
                     if let Err(why) = update_naval(
                         instance,
                         window,
                         glyph,
-                        inputs.content.defines.naval_base_scale,
-                    ) {
+                        if glyph.highlighted { inputs.content.defines.naval_base_highlighted_scale } else { inputs.content.defines.naval_base_scale },
+                        inputs.visibility.priorities == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy, &resources) {
                         pool.refuse(slot, Unknown::Update, why.into());
                         continue;
                     }
@@ -2741,6 +2985,8 @@ fn fill_ports(
 
 /// A drawn grid item: its place in its holder's content and its layout.
 struct PlacedItem {
+    key: ItemKey,
+    naval_convoy: Option<u64>,
     place: [i32; 2],
     layout: Layout,
     selectable: Option<(bool, Arc<[u64]>)>,
@@ -2796,12 +3042,14 @@ fn held_items(
             template,
             resources,
             None,
-            item.port_tooltip.is_some(),
+            item.port_tooltip.is_some() || item.naval_convoy.is_some(),
         ) {
             Ok(Some(layout)) => {
                 count_noted(gaps, name, &layout.diagnostics);
                 let at = item.instance.position();
                 items.push(PlacedItem {
+                    key: *key,
+                    naval_convoy: item.naval_convoy,
                     place: [origin[0].wrapping_add(at[0]), origin[1].wrapping_add(at[1])],
                     layout,
                     selectable: item.selectable.clone(),
@@ -2971,6 +3219,135 @@ fn draw_combats(
     Ok(())
 }
 
+/// Compose the region's retained grid items through their authored holders.
+/// Every child uses the same item update, refusal and transition machinery as
+/// naval-base and combat grids, while its pool remains separate from both.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compose_mission_grids(
+    windows: &Windows,
+    region: u32,
+    slot: SlotId,
+    window: &native::Element,
+    layout: &Layout,
+    composed: &mut [Vec<native_gui::Part>],
+    origin: [i32; 2],
+    resources: &dyn native_gui::Resources,
+    priority: (i8, u32),
+    report: &mut CounterReport,
+) {
+    let Some((native, viewport)) = &windows.built else {
+        return;
+    };
+    for (at, holder) in layout.holders.iter().enumerate() {
+        let Some(grid) = gui_windows::find_path(window, &holder.path) else {
+            continue;
+        };
+        let items = match held_items(
+            windows,
+            IconSlot::Mission(slot),
+            grid,
+            holder,
+            resources,
+            *viewport,
+            report,
+        ) {
+            Ok(items) => items,
+            Err(why) => {
+                *report.naval_grid_gaps.entry(why.into()).or_default() += 1;
+                continue;
+            }
+        };
+        for item in items {
+            composed[at].extend(holder.place(item.place, &item.layout));
+            if let (Some(reference), Some(template)) = (item.naval_convoy, native.tiny()) {
+                let placed = Layout {
+                    size: item.layout.size,
+                    parts: holder.place(item.place, &item.layout),
+                    regions: holder.place_regions(item.place, &item.layout.regions),
+                    holders: Vec::new(),
+                    diagnostics: Vec::new(),
+                };
+                for region_hit in &placed.regions {
+                    let Some(element) = gui_windows::find_path(template, &region_hit.path) else {
+                        continue;
+                    };
+                    if let Some(hit) = gui_windows::native_hit_rectangle(
+                        element,
+                        &placed,
+                        origin,
+                        resources,
+                        &mut report.icon_gui_notes,
+                    ) {
+                        report.naval_region_hovers.push(NavalRegionalHover {
+                            region,
+                            control: NavalRegionalControl::Convoy(reference),
+                            rect: hit.rect,
+                            layer: layer(priority.0, priority.1, 0),
+                            hit: hit.geometry,
+                            supported: hit.supported,
+                            text: None,
+                        });
+                    }
+                }
+            }
+            if let Some((ours, members)) = item.selectable {
+                let corner = [
+                    origin[0] as f32 + holder.origin[0] + holder.scale * item.place[0] as f32,
+                    origin[1] as f32 + holder.origin[1] + holder.scale * item.place[1] as f32,
+                ];
+                let size = item.layout.size.map(|v| v as f32 * holder.scale);
+                let mut bounds = [
+                    corner[0],
+                    corner[1],
+                    corner[0] + size[0],
+                    corner[1] + size[1],
+                ];
+                if let Some(clip) = holder.clip {
+                    bounds[0] = bounds[0].max((origin[0] + clip[0]) as f32);
+                    bounds[1] = bounds[1].max((origin[1] + clip[1]) as f32);
+                    bounds[2] = bounds[2].min((origin[0] + clip[2]) as f32);
+                    bounds[3] = bounds[3].min((origin[1] + clip[3]) as f32);
+                }
+                if let Some(metadata) = item.port_tooltip {
+                    report
+                        .task_force_port_hovers
+                        .extend(super::naval_port_hovers::presented(
+                            native.navy(),
+                            &item.layout,
+                            holder,
+                            item.place,
+                            origin,
+                            resources,
+                            report.unit_hits.len(),
+                            &members,
+                            &metadata,
+                            &mut report.icon_gui_notes,
+                        ));
+                }
+                report
+                    .regional_naval_unit_hits
+                    .insert(report.unit_hits.len());
+                report
+                    .unit_hits
+                    .push(viewer_foundation::map::counter_hovers::unit_hits::Hit {
+                        ours,
+                        port: true,
+                        rect: [
+                            bounds[0],
+                            bounds[1],
+                            (bounds[2] - bounds[0]).max(0.0),
+                            (bounds[3] - bounds[1]).max(0.0),
+                        ],
+                        kind: viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+                        members,
+                        layer: layer(priority.0, priority.1, 0),
+                    });
+            }
+            report.naval_counters += 1;
+        }
+    }
+}
+
 /// The port items a base icon of the visible list ([`Pool::visible`]) draws in `box_ships`
 /// (`grid`): its window's `box_ships` holder and each drawn item's place in the holder's content
 /// and layout ([`held_items`]). `None` when its grid holds nothing; when a refusal stands on its
@@ -3041,6 +3418,8 @@ fn draw_ports(
     inputs: &CounterInputs<'_>,
     plan: &Plan,
     windows: &Windows,
+    carrier_wings: &mut CarrierViews,
+    tick: Tick,
     window: &native::Element,
     resources: &GuiAssets<'_>,
     glyphs: &mut Batch,
@@ -3106,6 +3485,8 @@ fn draw_ports(
         };
         let origin = base.instance.position();
         for PlacedItem {
+            key: item_key,
+            naval_convoy: _,
             place,
             layout,
             selectable,
@@ -3120,11 +3501,42 @@ fn draw_ports(
                 origin[1] as f32 + holder.origin[1] + holder.scale * place[1] as f32,
             ];
             let extent = layout.size.map(|value| value as f32 * holder.scale);
-            let parts = holder.place(place, &layout);
             let key = (
                 inputs.priority(PriorityIcon::NavalBase),
                 report.base_ordinal(),
             );
+            let composed = if let Some(view) = carrier_wings.get_mut(&CarrierKey::Port(item_key)) {
+                let drawn = viewer_foundation::map::icon_windows::Drawn {
+                    owner: 0,
+                    origin,
+                    layout: layout.clone(),
+                };
+                view.compose_held(
+                    0,
+                    &drawn,
+                    NAVY_WINDOW,
+                    "wings_box",
+                    inputs,
+                    resources,
+                    tick,
+                    layer(key.0, key.1, 0),
+                    Some((&holder, place)),
+                    IconFamily::Bases,
+                    report,
+                )
+                .unwrap_or_else(|why| {
+                    *report
+                        .icon_gui_notes
+                        .entry(format!("Port carrier wing grid: {why}"))
+                        .or_default() += 1;
+                    vec![Vec::new(); layout.holders.len()]
+                })
+            } else {
+                vec![Vec::new(); layout.holders.len()]
+            };
+            let mut composed_layout = layout.clone();
+            composed_layout.parts = layout.composed_parts(&composed).cloned().collect();
+            let parts = holder.place(place, &composed_layout);
             let first = batch.quads.len();
             let drawn = gui_windows::draw_held(&holder, parts, origin, resources, batch, key)?;
             if !inputs.display.port_item(owner) {

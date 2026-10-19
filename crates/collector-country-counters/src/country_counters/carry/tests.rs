@@ -4,6 +4,7 @@ use engine_native::{
     ccountry_characters, cdiplomacy_status as diplomacy, cgame_state, cname_group_member,
     creference_registry, crelation_status, cship, memory::SliceMemory, reference_bucket as bucket,
 };
+use replay_data::rows::Recorded;
 use replay_frame::frame::TableView;
 use std::cell::RefCell;
 
@@ -511,4 +512,190 @@ fn five_thousand_country_quiet_hour_carries_every_row() {
     assert_eq!(store.counts(), quiet());
     assert!(read_countries(&carried.reads, COUNTRIES).is_empty());
     assert_same(&carried, &hour(&world, None, 11, None));
+}
+
+#[test]
+fn manpower_expeditionary_roster_carries_quiet_and_refreshes_only_its_marked_owner() {
+    let mut world = World::new(5_000);
+    let entries = block(2) + 0x1000;
+    world.header(block(2) + 0x2f8, entries, 3);
+    for (index, value) in [u64::MAX, 0, u64::MAX].into_iter().enumerate() {
+        world.put64(entries + index * 8, value);
+    }
+    let domain = domain(5_001);
+    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    hour(&world, Some(&mut store), 10, None);
+    domain.boundary(false);
+    let carried = hour(&world, Some(&mut store), 11, None);
+    assert_same(&carried, &hour(&world, None, 11, None));
+    assert!(read_countries(&carried.reads, 5_000).is_empty());
+    world.put64(entries, 71);
+    domain.write(Table::Counters, 2);
+    domain.boundary(false);
+    let marked = hour(&world, Some(&mut store), 12, None);
+    assert_same(&marked, &hour(&world, None, 12, None));
+    assert_eq!(read_countries(&marked.reads, 5_000), [2]);
+    let views = marked.captured.tables();
+    let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) = &views[0]
+    else {
+        panic!("counter table unavailable");
+    };
+    assert_eq!(
+        rows[1].sent_expeditionaries,
+        Recorded::Value(Some(vec![71, 0, u64::MAX].into()))
+    );
+}
+
+#[test]
+fn manpower_refused_sent_roster_carries_without_an_hourly_retry() {
+    let world = World::new(5_000);
+    let domain = domain(5_001);
+    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let refused = hour(
+        &world,
+        Some(&mut store),
+        10,
+        Some(block(2) + ccountry::SENT_EXPEDITIONARIES),
+    );
+    assert_eq!(refused.captured.rows.rows[1].sent_expeditionaries, None);
+    domain.boundary(false);
+    let quiet = hour(&world, Some(&mut store), 11, None);
+    assert!(read_countries(&quiet.reads, 5_000).is_empty());
+    assert_eq!(quiet.captured.rows.rows[1].sent_expeditionaries, None);
+    store.check = Some(Check::Slice { hour: 2 });
+    domain.boundary(false);
+    let sampled = hour(&world, Some(&mut store), 12, None);
+    assert!(sampled.captured.rows.rows[1].sent_expeditionaries.is_some());
+    assert_eq!(store.counts().mismatches, 0);
+    store.check = Some(Check::Nothing);
+    domain.write(Table::Counters, 2);
+    domain.boundary(false);
+    let changed = hour(&world, Some(&mut store), 13, None);
+    assert_eq!(read_countries(&changed.reads, 5_000), [2]);
+    assert!(changed.captured.rows.rows[1].sent_expeditionaries.is_some());
+}
+
+#[test]
+fn air_modifier_packet_is_carried_and_verified_under_the_existing_country_certificate() {
+    use engine_native::{modifier_accumulator, modifier_entry};
+    use replay_data::rows::Recorded;
+    let mut world = World::new(2);
+    let data = world.pride + 0x100;
+    world.header(block(1) + ccountry::MODIFIER_ACCUMULATOR, data, 1);
+    world.put32(data + modifier_entry::KEY, ccountry::AIR_MODIFIER_KEYS[0]);
+    world.put64(data + modifier_entry::VALUE, (-12_345_i64) as u64);
+    let domain = domain(64);
+    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let first = hour(&world, Some(&mut store), 10, None);
+    let packet = |capture: &Captured| {
+        let tables = capture.tables();
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
+            &tables[0]
+        else {
+            panic!("complete counter table");
+        };
+        rows[0].air_modifiers
+    };
+    let mut expected = [None; ccountry::AIR_MODIFIER_KEYS.len()];
+    expected[0] = Some(-12_345);
+    assert_eq!(packet(&first.captured), Recorded::Value(Some(expected)));
+    domain.boundary(false);
+    let carried = hour(&world, Some(&mut store), 11, None);
+    assert_eq!(packet(&carried.captured), packet(&first.captured));
+    assert!(
+        carried
+            .reads
+            .iter()
+            .all(|&(at, _)| at != block(1) + ccountry::MODIFIER_ACCUMULATOR && at != data)
+    );
+    // The shared accumulator writer revokes the packet along with the other country terms.
+    world.put64(data + modifier_entry::VALUE, 23_456);
+    domain.write(Table::Counters, 1);
+    domain.boundary(false);
+    let changed = hour(&world, Some(&mut store), 12, None);
+    expected[0] = Some(23_456);
+    assert_eq!(packet(&changed.captured), Recorded::Value(Some(expected)));
+    assert_same(&changed, &hour(&world, None, 12, None));
+    // Daily verification names an unobserved Air-only change and poisons the certificate.
+    world.put64(data + modifier_entry::VALUE, 34_567);
+    store.check = Some(Check::Slice { hour: 1 });
+    domain.boundary(false);
+    let verified = hour(&world, Some(&mut store), 13, None);
+    assert_same(&verified, &hour(&world, None, 13, None));
+    assert_eq!(
+        domain.mismatches(Table::Counters).first.unwrap().field,
+        "air_modifiers"
+    );
+    assert!(domain.poisoned(Table::Counters));
+    // The packet shares the accumulator's failure boundary, without inventing absent values.
+    let failed = hour(
+        &world,
+        None,
+        14,
+        Some(block(1) + ccountry::MODIFIER_ACCUMULATOR + modifier_accumulator::COUNT),
+    );
+    assert_eq!(packet(&failed.captured), Recorded::Value(None));
+}
+
+#[test]
+fn combat_numeric_projection_carries_and_daily_verification_names_drift() {
+    use engine_native::{modifier_accumulator, modifier_entry};
+    let mut world = World::new(2);
+    let data = world.pride + 0x100;
+    world.header(block(1) + ccountry::MODIFIER_ACCUMULATOR, data, 1);
+    world.put32(
+        data + modifier_entry::KEY,
+        engine_executable::modifier_keys::AIR_ATTACK_FACTOR,
+    );
+    world.put64(data + modifier_entry::VALUE, (-12_345_i64) as u64);
+    let domain = domain(64);
+    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
+    let packet = |capture: &Captured| {
+        let tables = capture.tables();
+        let TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)) =
+            &tables[0]
+        else {
+            panic!("complete counters")
+        };
+        (
+            *rows[0].air_combat_modifiers_known.require("known").unwrap(),
+            *rows[0].air_attack_factor.require("attack").unwrap(),
+        )
+    };
+    assert_eq!(
+        packet(&hour(&world, Some(&mut store), 10, None).captured),
+        (true, Some(-12_345))
+    );
+    domain.boundary(false);
+    let carried = hour(&world, Some(&mut store), 11, None);
+    assert_eq!(packet(&carried.captured), (true, Some(-12_345)));
+    assert!(
+        carried
+            .reads
+            .iter()
+            .all(|&(at, _)| at != block(1) + ccountry::MODIFIER_ACCUMULATOR && at != data)
+    );
+    world.put64(data + modifier_entry::VALUE, 23_456);
+    domain.write(Table::Counters, 1);
+    domain.boundary(false);
+    assert_eq!(
+        packet(&hour(&world, Some(&mut store), 12, None).captured),
+        (true, Some(23_456))
+    );
+    world.put64(data + modifier_entry::VALUE, 34_567);
+    store.check = Some(Check::Slice { hour: 1 });
+    domain.boundary(false);
+    let verified = hour(&world, Some(&mut store), 13, None);
+    assert_same(&verified, &hour(&world, None, 13, None));
+    assert_eq!(
+        domain.mismatches(Table::Counters).first.unwrap().field,
+        "air_combat_modifiers"
+    );
+    let failed = hour(
+        &world,
+        None,
+        14,
+        Some(block(1) + ccountry::MODIFIER_ACCUMULATOR + modifier_accumulator::COUNT),
+    );
+    assert_eq!(packet(&failed.captured), (false, None));
 }

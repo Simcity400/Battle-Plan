@@ -871,12 +871,13 @@ fn market_groups_native_state_endpoints_across_country_keys_and_keeps_the_first_
         assert_eq!(uses, [vec![0, 0], vec![1, 1], vec![2, 2]]);
         assert_eq!(report.lines[layer.index()], 3);
         assert!(report.refused.is_empty());
-        routes[0].source_state = None;
-        routes[1].destination_state = None;
+        let mut missing_routes = routes.clone();
+        missing_routes[0].source_state = None;
+        missing_routes[1].destination_state = None;
         let tables = Tables {
             origins: &[],
             clients: &clients,
-            routes: &routes,
+            routes: &missing_routes,
             regional: &[],
         };
         let mut report = TradeRouteReport::default();

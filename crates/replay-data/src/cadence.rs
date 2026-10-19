@@ -59,8 +59,26 @@ pub fn slice_active(owner: u32, hour: crate::Hour, force_full: bool) -> bool {
 pub const fn cadence(table: TableId) -> Cadence {
     use Cadence::{Daily, Hourly, Sliced, Static};
     match table {
+        // Any-hour faction commands/effects and lifecycle writers certify the
+        // retained state. This availability cadence adds no hourly native scan;
+        // the existing faction worker reads only changed owner domains.
+        TableId::FactionGoalStatus | TableId::FactionGoalEntries
+        | TableId::FactionRules | TableId::FactionPrograms
+        | TableId::FactionManpower | TableId::FactionUnlocks | TableId::FactionVariables | TableId::FactionAccounts | TableId::FactionResearch | TableId::FactionMinimumUpgrades | TableId::FactionDoctrine | TableId::FactionProjection | TableId::FactionResources | TableId::FactionAdvisorModifiers => Hourly,
+        // Commands and last-mission removal write the flag. The existing
+        // mission worker carries unchanged demanded regions under writer hooks.
+        TableId::AirGroundCrews => Hourly,
+        // The existing mission worker carries direct registration order and
+        // reads progress only for incoming wings admitted by the native gate.
+        TableId::AirTransferInputs => Hourly,
+        TableId::NavalAccidentReports => Hourly,
+        TableId::NavalRegionalMines => Hourly,
+        TableId::NavalDominanceTaskForceRanges => Hourly,
+        TableId::NavalPatrolMissionInputs => Hourly,
         // Native fill/merge events drain at the next hourly boundary.
         TableId::NavalResultSources => Hourly,
+        // The military-staff selector and country lock can be commanded at any hour.
+        TableId::CountryTemplateState => Hourly,
         // Native applications run during the transition to midnight.
         TableId::CountryPowerDaily | TableId::CountryPowerDailyCosts => Daily(0),
         TableId::CountryPowerChanges | TableId::GovernmentChanges
@@ -216,7 +234,8 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::LexicalTokens | TableId::AirSortieModifierMetadata => Static,
         // Native grouping and naming can change at any hour, including faction
         // changes, goals, major flags and controlled core factory levels.
-        TableId::WarOwnedRelations | TableId::WarRelationGoals | TableId::WarOverviewCountries | TableId::WarNameRules => Cadence::Hourly,
+        TableId::WarParticipation | TableId::WarCapturedProvinces | TableId::WarLendLeaseHistories | TableId::WarOwnedRelations | TableId::WarRelationGoals | TableId::WarOverviewCountries | TableId::WarNameRules
+        | TableId::CountryWargoals | TableId::WargoalTargets | TableId::WargoalJustifications => Cadence::Hourly,
         // Modifier definitions are registered only by database loaders; the
         // collector also re-reads them whenever the table's data pointer or
         // count changes, as it does the lexer on a new maximum token.
@@ -267,7 +286,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::Projects | TableId::ProjectHistory => Sliced,
         // The panel-only facility programs and breakthrough points keep their
         // slot: their walk is separate from the pools'.
-        TableId::ProjectPrograms | TableId::ProjectBreakthroughs => Daily(4),
+        TableId::ProjectPrograms | TableId::ProjectBreakthroughs | TableId::ScientistDaily => Daily(4),
         // The 3D model's equipment inputs. The largest eligible variant can
         // change mid-day (reinforcement, upgrade deliveries, captures) and the
         // game re-selects the entity on each graphical-map update; the record
@@ -300,7 +319,6 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::StateGarrisons
         | TableId::StateAssignedManpower
         | TableId::CountryOccupationReserveManpower
-        | TableId::StateResistance
         | TableId::CountryCollaboration => Daily(3),
         TableId::AirStatistics => Daily(5),
         TableId::DecisionCounts | TableId::Decisions | TableId::DecisionRandomItems => Daily(6),
@@ -313,6 +331,8 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::ProductionLineModifiers
         | TableId::IndustrialOrganisations
         | TableId::IndustrialOrganisationHistory
+        | TableId::IndustrialOrganisationDetails
+        | TableId::IndustrialOrganisationPolicies
         | TableId::ProductionLineOutput
         | TableId::RocketProductionOutput
         | TableId::Stockpiles
@@ -359,7 +379,7 @@ pub const fn cadence(table: TableId) -> Cadence {
         // collector reads the table again at the hour after a forwarded
         // country appearance reset, which that reuse runs first, and after
         // the debug console's grow_intel_network, which sets local strengths.
-        TableId::IntelNetworks => Daily(0),
+        TableId::IntelNetworks | TableId::IntelNetworkSummaries => Daily(0),
         TableId::OperativeMemberships
         | TableId::CapturedOperativeReferences
         | TableId::WingCumulative => Daily(16),
@@ -441,9 +461,8 @@ pub const fn cadence(table: TableId) -> Cadence {
         TableId::IncomingDiplomaticActions
         | TableId::TechSharingGroups
         | TableId::TechSharingMembers
-        // Variants and the rosters that name them share a slot, so a roster
-        // never names a variant the same refresh lacks. A new variant reaches a
-        // division or ship only through days of production.
+        // Variant census and the rosters that name designs share a slot.
+        // The mutation ledger supplies accepted design edits between censuses.
         | TableId::VariantDefinitions
         | TableId::VariantModules
         | TableId::VariantStats
@@ -463,6 +482,14 @@ pub const fn cadence(table: TableId) -> Cadence {
         // The DLC mask is fixed for the session, but `human_ai` is a debug
         // toggle the console can flip at any hour; both are single reads.
         TableId::SimulationFeatures => Cadence::Hourly,
+        // Hourly publication does not schedule a census: writer occurrences
+        // drain on the existing observer worker, and shared bonus/context rows
+        // carry between demanded design or country-accumulator changes.
+        TableId::VariantChanges
+        | TableId::VariantBonusSnapshots
+        | TableId::DesignCountryModifiers
+        | TableId::DesignCountryTemplates => Cadence::Hourly,
+        TableId::DesignObserverContext | TableId::DesignOrganisationLiveness => Cadence::Hourly,
         // A tag switch or observer command can run between any two ticks, and
         // each tick's combat manager tests the viewing choice once; one eight-byte read.
         TableId::LocalPlayer => Cadence::Hourly,
@@ -616,6 +643,183 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hourly_writer_audit_covers_every_active_table_and_reconciles_its_totals() {
+        use std::collections::BTreeSet;
+        let audit = include_str!("../cadence-audit.md");
+        let (summary, detail) = audit.split_once("## Tables").unwrap();
+        let rows: Vec<_> = detail
+            .lines()
+            .filter(|line| line.starts_with("| ") && !line.starts_with("| Table |"))
+            .map(|line| {
+                let mut columns = line.split('|').skip(1).map(str::trim);
+                (
+                    columns.next().unwrap(),
+                    columns.next().unwrap().split(';').next().unwrap(),
+                )
+            })
+            .collect();
+        let recorded: BTreeSet<_> = rows.iter().map(|row| row.0.to_owned()).collect();
+        let expected: BTreeSet<_> = TableId::ALL
+            .into_iter()
+            .filter(|table| !crate::rows::compatibility::RETIRED_TABLES.contains(table))
+            .filter(|&table| cadence(table) == Cadence::Hourly)
+            .map(|table| format!("{table:?}"))
+            .collect();
+        assert_eq!(rows.len(), recorded.len(), "duplicate audited table");
+        assert!(
+            recorded == expected,
+            "missing: {:?}; extra: {:?}",
+            expected.difference(&recorded).collect::<Vec<_>>(),
+            recorded.difference(&expected).collect::<Vec<_>>()
+        );
+        let declared = |class: &str| {
+            summary
+                .lines()
+                .find_map(|line| {
+                    let columns: Vec<_> = line.split('|').map(str::trim).collect();
+                    (columns.get(1) == Some(&class)).then(|| columns[3].parse::<usize>().unwrap())
+                })
+                .unwrap()
+        };
+        let mut total = 0;
+        for class in ["hourly tick", "any hour", "hook log", "load", "recorder"] {
+            let count = rows.iter().filter(|row| row.1 == class).count();
+            assert_eq!(count, declared(class), "{class}");
+            total += count;
+        }
+        assert_eq!(total, rows.len(), "unknown writer class");
+        assert_eq!(total, declared("total"));
+    }
+
+    #[test]
+    fn doctrine_cadence_audit_covers_each_table_and_reconciles_totals() {
+        let audit = include_str!("../cadence-audit.md");
+        let (summary, detail) = audit.split_once("## Tables").unwrap();
+        let rows: Vec<_> = detail
+            .lines()
+            .filter(|line| line.starts_with("| ") && !line.starts_with("| Table |"))
+            .collect();
+        for table in [
+            TableId::FactionAdvisorModifiers,
+            TableId::FactionAccounts,
+            TableId::FactionGoalStatus,
+            TableId::FactionGoalEntries,
+            TableId::FactionProjection,
+            TableId::FactionResources,
+            TableId::DoctrineCountries,
+            TableId::DoctrineFolders,
+            TableId::DoctrineTracks,
+            TableId::DoctrineLeaderMastery,
+            TableId::DoctrineCostReductions,
+            TableId::DoctrineMasteryGrants,
+            TableId::DoctrineEquipmentBonuses,
+        ] {
+            assert_eq!(cadence(table), Cadence::Hourly);
+            let prefix = format!("| {table:?} |");
+            assert_eq!(
+                rows.iter()
+                    .filter(|line| line.starts_with(prefix.as_str()))
+                    .count(),
+                1,
+                "{table:?}"
+            );
+        }
+        let mut total = 0;
+        for class in ["hourly tick", "any hour", "hook log", "load", "recorder"] {
+            let count = rows
+                .iter()
+                .filter(|line| {
+                    line.split('|')
+                        .nth(2)
+                        .unwrap()
+                        .trim()
+                        .split(';')
+                        .next()
+                        .unwrap()
+                        == class
+                })
+                .count();
+            let prefix = format!("| {class} |");
+            let declared = summary
+                .lines()
+                .find(|line| line.starts_with(prefix.as_str()))
+                .unwrap()
+                .split('|')
+                .nth(3)
+                .unwrap()
+                .trim()
+                .parse::<usize>()
+                .unwrap();
+            assert_eq!(declared, count, "{class}");
+            total += count;
+        }
+        let declared = summary
+            .lines()
+            .find(|line| line.starts_with("| total |"))
+            .unwrap()
+            .split('|')
+            .nth(3)
+            .unwrap()
+            .trim()
+            .parse::<usize>()
+            .unwrap();
+        assert_eq!(total, rows.len());
+        assert_eq!(declared, total);
+    }
+
+    #[test]
+    fn hourly_cadence_audit_covers_active_tables_and_reconciles_totals() {
+        use std::collections::{BTreeMap, BTreeSet};
+        let audit = include_str!("../cadence-audit.md");
+        let (summary, inventory) = audit
+            .split_once("| Table | Writers | Writer evidence |")
+            .expect("hourly table inventory");
+        let expected: BTreeSet<_> = TableId::ALL
+            .iter()
+            .filter(|&&table| cadence(table) == Cadence::Hourly && should_walk(table, 0, true))
+            .map(|table| format!("{table:?}"))
+            .collect();
+        let mut listed = BTreeSet::new();
+        let mut counts = BTreeMap::new();
+        for row in inventory.lines().filter(|line| line.starts_with("| ")) {
+            let columns: Vec<_> = row.split('|').map(str::trim).collect();
+            let name = columns[1];
+            assert!(
+                expected.contains(name),
+                "non-hourly or unknown table {name}"
+            );
+            assert!(listed.insert(name.to_owned()), "duplicate table {name}");
+            assert!(!columns[3].is_empty(), "missing writer evidence for {name}");
+            let class = columns[2].split(';').next().unwrap();
+            assert!(
+                ["hourly tick", "any hour", "hook log", "load", "recorder"].contains(&class),
+                "unknown writer class for {name}: {class}"
+            );
+            *counts.entry(class).or_insert(0_usize) += 1;
+        }
+        assert_eq!(
+            listed, expected,
+            "audit must cover every active hourly table"
+        );
+        counts.insert("total", listed.len());
+        for (class, count) in counts {
+            let prefix = format!("| {class} |");
+            let row = summary
+                .lines()
+                .find(|line| line.starts_with(&prefix))
+                .unwrap();
+            let recorded = row
+                .split('|')
+                .nth(3)
+                .unwrap()
+                .trim()
+                .parse::<usize>()
+                .unwrap();
+            assert_eq!(recorded, count, "stale {class} audit total");
+        }
+    }
+
+    #[test]
     fn retired_tables_are_never_walked() {
         for table in crate::rows::compatibility::RETIRED_TABLES {
             for hour in 0..STAGGER_PERIOD {
@@ -669,6 +873,8 @@ mod tests {
             TableId::LandTheatres,
             TableId::FactionTheatres,
             TableId::RadarCoverage,
+            TableId::NavalRegionalMines,
+            TableId::NavalAccidentReports,
             TableId::RelationLinks,
             // A template edit changes its counters' icons at any hour.
             TableId::DivisionTemplateIcons,
@@ -739,7 +945,11 @@ mod tests {
         assert_eq!(cadence(TableId::HiredAdvisors), Cadence::Hourly);
         assert_eq!(refresh_slot(TableId::AirAces), Some(21));
         for family in [
-            &[TableId::ProjectPrograms, TableId::ProjectBreakthroughs][..],
+            &[
+                TableId::ProjectPrograms,
+                TableId::ProjectBreakthroughs,
+                TableId::ScientistDaily,
+            ][..],
             &[TableId::Projects, TableId::ProjectHistory][..],
             &[TableId::RelationOpinions, TableId::RelationTuples][..],
             &[
@@ -755,6 +965,8 @@ mod tests {
                 TableId::ProductionLineModifiers,
                 TableId::IndustrialOrganisations,
                 TableId::IndustrialOrganisationHistory,
+                TableId::IndustrialOrganisationDetails,
+                TableId::IndustrialOrganisationPolicies,
                 TableId::ProductionLineOutput,
                 TableId::RocketProductionOutput,
             ],
@@ -925,5 +1137,54 @@ mod tests {
             assert_eq!(refresh_slot(table), None);
             assert!((-48..48).all(|hour| should_walk(table, hour, false)));
         }
+    }
+
+    #[test]
+    fn occupation_province_hover_is_acquired_each_hour() {
+        assert_eq!(cadence(TableId::StateResistance), Cadence::Hourly);
+        assert!((-48..48).all(|hour| should_walk(TableId::StateResistance, hour, false)));
+        assert_eq!(cadence(TableId::StateGarrisons), Cadence::Daily(3));
+    }
+    #[test]
+    fn combat_log_hourly_tables_have_writer_certificate_audit_entries() {
+        let audit = include_str!("../cadence-audit.md");
+        for table in [
+            TableId::CombatLogGroups,
+            TableId::CombatLogMonths,
+            TableId::CombatLogManpower,
+            TableId::CombatLogTemplates,
+            TableId::CombatLogReferences,
+            TableId::CombatLogBattles,
+            TableId::CombatLogEnemyEquipment,
+            TableId::CombatLogBattleSides,
+            TableId::CombatLogBattleEquipment,
+            TableId::CombatLogBattleModifiers,
+            TableId::CombatLogBattleCountries,
+            TableId::CombatLogObservers,
+        ] {
+            assert_eq!(cadence(table), Cadence::Hourly);
+            assert!(
+                audit
+                    .lines()
+                    .any(|line| line.starts_with(&format!("| {table:?} |"))),
+                "{table:?} has no audit evidence"
+            );
+        }
+        let rows = audit
+            .lines()
+            .filter(|line| {
+                line.split('|').nth(2).map(str::trim).is_some_and(|writer| {
+                    ["hourly tick", "any hour", "hook log", "load", "recorder"]
+                        .iter()
+                        .any(|class| {
+                            writer == *class
+                                || writer
+                                    .strip_prefix(*class)
+                                    .is_some_and(|rest| rest.starts_with(';'))
+                        })
+                })
+            })
+            .count();
+        assert!(audit.contains(&format!("| total | | {rows} |")));
     }
 }

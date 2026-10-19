@@ -115,6 +115,10 @@ fn research_at(branch: u64, hour: i32) -> DecodedFrame {
 fn projects_at(branch: u64, hour: i32) -> DecodedFrame {
     let at = offset(branch, hour);
     let mut frame = crate::test_fixtures::source(branch, hour, Some(i64::from(hour) * 1000));
+    // A quiet complete roster carries; repeated unavailable observations are revisited.
+    for table in [TableId::Characters, TableId::CharacterPortraits] {
+        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
     if !(20..=22).contains(&at) {
         frame.metrics.table_ns[TableId::Projects.index()] = 1;
     }
@@ -122,7 +126,7 @@ fn projects_at(branch: u64, hour: i32) -> DecodedFrame {
         owner: 11,
         local_id,
         definition_id,
-        program_reference: 5,
+        program_reference: (5_u64 << 32) | 83,
         started: 1,
         state: ProjectState {
             current_offset: 0x18,
@@ -178,19 +182,28 @@ fn projects_at(branch: u64, hour: i32) -> DecodedFrame {
     frame
 }
 
-/// Occupation's daily tables are read every six hours (each read carried
-/// until the next).
-fn occupation_read(at: i32) -> i32 {
-    at - at.rem_euclid(6)
+/// Daily garrison/collaboration inputs also have synthetic six-hour reads.
+/// Their native slot is independent of the hourly resistance observation.
+fn occupation_read(branch: u64, at: i32) -> i32 {
+    let replay_data::cadence::Cadence::Daily(slot) =
+        replay_data::cadence::cadence(TableId::StateGarrisons)
+    else {
+        panic!("the garrison fixture requires its native daily cadence");
+    };
+    let hour = BASE + if branch == 2 { 200 } else { 0 } + at;
+    let daily = at
+        - (hour - i32::try_from(slot).expect("the daily slot fits the clock"))
+            .rem_euclid(replay_data::cadence::STAGGER_PERIOD);
+    (at - at.rem_euclid(6)).max(daily)
 }
 
-// Occupation: three countries each own one state (`frame`), with balances
-// changing every hour. The second country occupies the first's state from
-// +5 until +40, read from the next read: its resistance and compliance move
-// at each read, with a garrison row while occupied.
+// Occupation: three countries each own one state, with balances changing
+// every hour. The second occupies the first's state from +5 until +40.
+// Resistance/compliance observe the current hour; garrisons carry their
+// separate supplying read, including across hourly occupation changes.
 fn occupation_at(branch: u64, hour: i32) -> DecodedFrame {
     let at = offset(branch, hour);
-    let read = occupation_read(at);
+    let read = occupation_read(branch, at);
     let mut observed = frame(branch, hour, 3);
     let occupied = |at: i32| (5..40).contains(&at);
     if occupied(at)
@@ -199,22 +212,23 @@ fn occupation_at(branch: u64, hour: i32) -> DecodedFrame {
     {
         rows[0].controller = 100_001;
     }
-    let held = occupied(read);
     *observed.tables[TableId::StateResistance.index()] =
-        TableView::Complete(TableRows::StateResistance(if held {
+        TableView::Complete(TableRows::StateResistance(if occupied(at) {
             vec![StateResistanceRow {
                 state: 1,
                 country: 100_000,
                 active: 1,
-                level: i64::from(read) * 100,
-                compliance: i64::from(read) * 10,
+                level: i64::from(at) * 100,
+                compliance: i64::from(at) * 10,
+                hover: replay_data::rows::Recorded::Value(None),
+                modifier_sources: replay_data::rows::Recorded::Value(Vec::new()),
                 ..Default::default()
             }]
         } else {
             Vec::new()
         }));
     *observed.tables[TableId::StateGarrisons.index()] =
-        TableView::Complete(TableRows::StateGarrisons(if held {
+        TableView::Complete(TableRows::StateGarrisons(if occupied(read) {
             vec![StateGarrisonRow {
                 controller: 100_001,
                 occupied: 100_000,
@@ -225,10 +239,64 @@ fn occupation_at(branch: u64, hour: i32) -> DecodedFrame {
         } else {
             Vec::new()
         }));
-    if at == read {
-        observed.metrics.table_ns[TableId::StateResistance.index()] = 1;
+    observed.metrics.table_ns[TableId::StateResistance.index()] = 1;
+    for table in [TableId::StateGarrisons, TableId::CountryCollaboration] {
+        observed.metrics.table_ns[table.index()] = u64::from(at == read);
     }
     observed
+}
+
+#[test]
+fn occupation_fixture_dates_resistance_each_hour_and_carries_only_daily_inputs() {
+    assert_eq!(
+        replay_data::cadence::cadence(TableId::StateResistance),
+        replay_data::cadence::Cadence::Hourly,
+    );
+    for branch in [1, 2] {
+        let start = BASE + if branch == 2 { 200 } else { 0 };
+        for at in 5..9 {
+            let observed = occupation_at(branch, start + at);
+            assert_eq!(
+                observed.metrics.table_ns[TableId::StateResistance.index()],
+                1
+            );
+            let TableView::Complete(TableRows::StateResistance(rows)) =
+                &*observed.tables[TableId::StateResistance.index()]
+            else {
+                panic!("hourly resistance must be recorded");
+            };
+            assert_eq!(rows.len(), 1, "occupation begins at the current hour +5");
+            assert_eq!(rows[0].level, i64::from(at) * 100);
+            assert_eq!(rows[0].compliance, i64::from(at) * 10);
+            assert!(matches!(
+                rows[0].hover,
+                replay_data::rows::Recorded::Value(_)
+            ));
+            assert!(matches!(
+                rows[0].modifier_sources,
+                replay_data::rows::Recorded::Value(_)
+            ));
+        }
+        let before = occupation_at(branch, start + 7);
+        let after = occupation_at(branch, start + 8);
+        assert_ne!(
+            before.tables[TableId::StateResistance.index()],
+            after.tables[TableId::StateResistance.index()]
+        );
+        assert_eq!(
+            before.tables[TableId::StateGarrisons.index()],
+            after.tables[TableId::StateGarrisons.index()]
+        );
+        for observed in [before, after] {
+            for table in [TableId::StateGarrisons, TableId::CountryCollaboration] {
+                assert_eq!(
+                    observed.metrics.table_ns[table.index()],
+                    0,
+                    "daily inputs have no read at +7/+8"
+                );
+            }
+        }
+    }
 }
 
 const RESEARCH: Case = Case {
@@ -583,6 +651,7 @@ fn evaluated_families_prepared_on_their_own_refuse_where_hourly_preparation_does
             });
             let source = fixture.source(&revision);
             let before = sequential(case);
+            let observed_before = prepass::noted(case.observed);
             own(case, || {
                 lanes::with_test_refusals(&refusals, || {
                     prepass::with_test_prepass(2, None, || measured(&source))
@@ -592,6 +661,23 @@ fn evaluated_families_prepared_on_their_own_refuse_where_hourly_preparation_does
                     sequential(case) - before,
                     usize::from(case.family != OCCUPATION.family),
                     "{label}: pooled extracts fall back; occupation already reads hour by hour"
+                );
+                let expected_observations: usize = replay
+                    .index
+                    .iter()
+                    .map(|block| {
+                        let last = if block.branch == 1 {
+                            block.last_hour.min(hour)
+                        } else {
+                            block.last_hour
+                        };
+                        usize::try_from(last - block.first_hour + 1).unwrap_or(0)
+                    })
+                    .sum();
+                assert_eq!(
+                    prepass::noted(case.observed) - observed_before,
+                    expected_observations,
+                    "{label}: the refused branch stops at its refusal; other branches continue"
                 );
                 let own = payloads(&source, None);
                 assert_same(case, &own, &hourly, &label, true);
@@ -984,10 +1070,28 @@ fn project_content(root: &std::path::Path, name: &str) {
 /// GER's one state and province, and its `project_flag` variable, set from
 /// +4 on.
 fn with_scope_tables(mut frame: DecodedFrame) -> DecodedFrame {
-    use replay_data::{
-        rows::ProvinceRow, rows::Recorded, rows::ScriptVariableEntry, rows::ScriptVariablesRow,
-        rows::StateRow,
+    use replay_data::rows::{
+        ProvinceRow, Recorded, ScriptVariableEntry, ScriptVariablesRow, StateRow,
     };
+    // Unreached scope inventories are complete and empty, not freshly refused
+    // tables that require another conservative observation at every hour.
+    for table in crate::triggers::RECORDED_TABLES {
+        if matches!(&*frame.tables[table.index()], TableView::Unavailable { .. }) {
+            *frame.tables[table.index()] = TableView::Complete(match table {
+                TableId::LocalPlayer => TableRows::LocalPlayer(vec![Default::default()]),
+                TableId::ReservedCountryNaming => {
+                    TableRows::ReservedCountryNaming(vec![Default::default()])
+                }
+                TableId::SimulationFeatures => {
+                    TableRows::SimulationFeatures(vec![Default::default()])
+                }
+                _ => {
+                    assert_ne!(table.key_bits(), 0, "complete the new singleton explicitly");
+                    TableRows::empty(*table)
+                }
+            });
+        }
+    }
     let at = offset(frame.branch, frame.hour);
     *frame.tables[TableId::States.index()] =
         TableView::Complete(TableRows::States(vec![StateRow {
@@ -1522,6 +1626,20 @@ fn occupation_states_and_first_daily_samples_match_preparation_while_identity_hi
                 values(expected),
                 "numeric and collaboration facts at {hour}"
             );
+            let at = offset(1, hour);
+            if (5..40).contains(&at) {
+                let runs: Vec<_> = cold["series"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|series| series["runs"].as_array().unwrap())
+                    .filter(|run| run["states"] == 1)
+                    .collect();
+                assert_eq!(runs.len(), 1, "current occupied state at {hour}");
+                assert_eq!(runs[0]["readHour"], hour, "hourly supplying read");
+                assert_eq!(runs[0]["resistanceRaw"], (i64::from(at) * 100).to_string());
+                assert_eq!(runs[0]["complianceRaw"], (i64::from(at) * 10).to_string());
+            }
             assert!(
                 cold["preparing"]
                     .as_array()
@@ -1555,23 +1673,9 @@ fn occupation_states_and_first_daily_samples_match_preparation_while_identity_hi
             .iter()
             .filter(|block| block.branch == 1)
         {
-            // The native daily slot is also a supplying read, even between
-            // this fixture's explicit six-hour acquisitions.
-            let Some(hour) = source
-                .replay_ref()
-                .read_block_selected(block, &[])
-                .unwrap()
-                .iter()
-                .find(|frame| {
-                    crate::metadata::slot_read(
-                        source.replay_ref().format,
-                        &frame.metrics,
-                        TableId::StateResistance,
-                        frame.hour,
-                    )
-                })
-                .map(|frame| frame.hour)
-            else {
+            let Some(hour) = (block.first_hour..=block.last_hour).find(|&hour| {
+                occupation_at(1, hour).metrics.table_ns[TableId::StateResistance.index()] != 0
+            }) else {
                 continue;
             };
             let exact = query(&source, "series-state", state(hour)).unwrap();

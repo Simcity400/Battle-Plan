@@ -2,7 +2,7 @@
 //! at the next existing hourly boundary; its first observer interval is partial.
 use crate::hook::{Hook, Registers, Tap, TapSafety};
 use engine_mutations::world_lifetime_sites as native;
-use engine_native::{Memory, memory::read};
+use engine_native::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -191,7 +191,7 @@ impl Hooks {
             &native::STATE_RELOAD,
             &native::DELETE,
         ] {
-            if read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
                 return Err("native world lifetime sentinel differs");
             }
         }

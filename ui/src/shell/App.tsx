@@ -13,6 +13,7 @@ import type { PageEntry, PageId } from '../dashboard/pages';
 import { clearLayouts, layoutsAtDefault } from '../dashboard/storage';
 import { widgetDefinitions } from '../dashboard/definitions';
 import { stableJson } from '../dashboard/model';
+import { sameCampaignPath } from '../dashboard/campaigns';
 import AnalyticsNav from './AnalyticsNav';
 import BrandMark from '../components/BrandMark';
 import { useDesktopState, useMapSurface } from './useNativeViewer';
@@ -395,7 +396,7 @@ export default function App() {
               <MapState eyebrow="Native viewer" title="Preparing the map" busy>
                 <p>Your map and playback controls will appear here.</p>
               </MapState>
-            ) : (
+            ) : path && nativePath && sameCampaignPath(path, nativePath) && native.state?.viewer.hour != null ? null : (
               <MapState icon={path ? 'map' : 'folder-open'} eyebrow="Battle Plan" title={path ? 'Opening your recording' : 'Open a recording'} busy={!!path}>
                 <p>{path ? 'The native viewer is preparing the recorded map.' : 'Choose a campaign from your replay folder to explore it hour by hour.'}</p>
                 {!path && <button type="button" className="button primary" disabled={opening} onClick={() => void openRecording()}>

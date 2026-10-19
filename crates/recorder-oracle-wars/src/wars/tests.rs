@@ -33,10 +33,235 @@ fn two_country_fixture() -> (DecodedFrame, Save) {
 }
 
 #[test]
+fn participation_oracle_compares_every_saved_component_membership_and_binary_omission_class() {
+    let (mut frame, mut save) = two_country_fixture();
+    let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+    let mut third = countries[0].clone();
+    third.id = 104;
+    third.canonical_slot = 9;
+    third.tag = b"THREE".to_vec();
+    countries.push(third);
+    frame.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries)).into();
+    let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
+    links.push(replay_data::rows::CountryLinkRow {
+        id: 104,
+        canonical_slot: 9,
+    });
+    frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(links)).into();
+    let owned = [
+        (101, 101, 104),
+        (104, 101, 104),
+        (103, 103, 104),
+        (104, 103, 104),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(
+        |(ordinal, (owner, first_country, second_country))| WarOwnedRelationRow {
+            owner,
+            ordinal: ordinal as u32,
+            first_country,
+            second_country,
+            ..Default::default()
+        },
+    )
+    .collect();
+    frame.tables[TableId::WarOwnedRelations.index()] =
+        TableView::Complete(TableRows::WarOwnedRelations(owned)).into();
+    let ledger = installed_content_save::war_participation::Ledger {
+        first: b"GER".to_vec(),
+        second: b"THREE".to_vec(),
+        equipment_damage: 100_001,
+        province_capture: -1,
+        air_damage: 200_000,
+        strategic_bombing: 300_000,
+        sunk_ships: 400_000,
+        sunk_convoys: 500_000,
+        casualties: 600_000,
+        lend_lease_sent: 700_000,
+        lend_lease_received: -800_000,
+        captured_provinces: vec![-7, 5000],
+    };
+    save.war_relations.push(installed_content_save::WarRelation {
+        participation: [Some(ledger), None],
+        roster_owner: b"GER".to_vec(),
+        target: b"THREE".to_vec(),
+        first: b"GER".to_vec(),
+        second: b"THREE".to_vec(),
+        first_goals: Vec::new(),
+        second_goals: Vec::new(),
+        start_date: Some(save.date),
+        end_date: None,
+        cancel: false,
+        first_casualties: 123,
+        second_casualties: 456,
+        first_unknown_casualties: 77,
+        second_unknown_casualties: 88,
+        first_was_instigator: true,
+    });
+    let row = replay_data::rows::WarParticipationRow {
+        war_first: 101,
+        war_second: 104,
+        direction: 0,
+        first_country: 101,
+        second_country: 104,
+        equipment_damage: 100_001,
+        province_capture: -1,
+        air_damage: 200_000,
+        strategic_bombing: 300_000,
+        sunk_ships: 400_000,
+        sunk_convoys: 500_000,
+        casualties: 600_000,
+        unknown_casualties: 999,
+        lend_lease_sent: 700_000,
+        lend_lease_received: -800_000,
+    };
+    frame.tables[TableId::WarParticipation.index()] =
+        TableView::Complete(TableRows::WarParticipation(vec![row.clone()])).into();
+    frame.tables[TableId::WarCapturedProvinces.index()] =
+        TableView::Complete(TableRows::WarCapturedProvinces(
+            [-7, 5000]
+                .into_iter()
+                .map(|province| replay_data::rows::WarCapturedProvinceRow {
+                    war_first: 101,
+                    war_second: 104,
+                    direction: 0,
+                    province,
+                    credited: 1,
+                })
+                .collect(),
+        ))
+        .into();
+    frame.tables[TableId::WarLendLeaseHistories.index()] =
+        TableView::Complete(TableRows::WarLendLeaseHistories(vec![
+            replay_data::rows::WarLendLeaseHistoryRow {
+                country: 101,
+                target: 103,
+                industry_sent: 3,
+                ..Default::default()
+            },
+        ]))
+        .into();
+    let check = |frame: &DecodedFrame| {
+        let countries = super::super::country_context(frame).unwrap();
+        let mut report = Report::default();
+        participation::compare_participation(frame, &save, &countries, &mut report).unwrap();
+        report
+    };
+    assert!(check(&frame).difference_lines().is_empty());
+    // Retained side members need not own a reciprocal occurrence. The active
+    // pivot's complete roster still demands both delivery directions.
+    frame.tables[TableId::WarOwnedRelations.index()] =
+        TableView::Complete(TableRows::WarOwnedRelations(vec![
+            WarOwnedRelationRow {
+                owner: 104,
+                first_country: 101,
+                second_country: 104,
+                ..Default::default()
+            },
+            WarOwnedRelationRow {
+                owner: 104,
+                ordinal: 1,
+                first_country: 103,
+                second_country: 104,
+                retired: 1,
+                ..Default::default()
+            },
+        ]))
+        .into();
+    assert!(check(&frame).difference_lines().is_empty());
+    let changed = replay_data::rows::WarParticipationRow {
+        casualties: 123,
+        ..row
+    };
+    frame.tables[TableId::WarParticipation.index()] =
+        TableView::Complete(TableRows::WarParticipation(vec![changed])).into();
+    assert!(
+        check(&frame)
+            .difference_lines()
+            .iter()
+            .any(|line| line.contains("casualties"))
+    );
+    frame.tables[TableId::WarLendLeaseHistories.index()] =
+        TableView::Complete(TableRows::WarLendLeaseHistories(vec![
+            replay_data::rows::WarLendLeaseHistoryRow {
+                country: 101,
+                target: 103,
+                industry_sent: 4,
+                ..Default::default()
+            },
+        ]))
+        .into();
+    assert!(
+        check(&frame)
+            .difference_lines()
+            .iter()
+            .any(|line| line.contains("omitted binary-zero class"))
+    );
+}
+
+#[test]
+fn participation_oracle_compares_native_history_rows_outside_the_displayed_same_side() {
+    let (mut frame, mut save) = two_country_fixture();
+    for table in [TableId::WarParticipation, TableId::WarCapturedProvinces] {
+        frame.tables[table.index()] = TableView::Complete(TableRows::empty(table)).into();
+    }
+    frame.tables[TableId::WarOwnedRelations.index()] =
+        TableView::Complete(TableRows::WarOwnedRelations(vec![WarOwnedRelationRow {
+            owner: 101,
+            first_country: 101,
+            second_country: 103,
+            ..Default::default()
+        }]))
+        .into();
+    frame.tables[TableId::WarLendLeaseHistories.index()] =
+        TableView::Complete(TableRows::WarLendLeaseHistories(vec![
+            replay_data::rows::WarLendLeaseHistoryRow {
+                country: 101,
+                target: 103,
+                industry_sent: 100_000,
+                ..Default::default()
+            },
+        ]))
+        .into();
+    save.war_delivery_histories
+        .push(installed_content_save::war_participation::DeliveryHistory {
+            owner: b"GER".to_vec(),
+            target: b"TWO".to_vec(),
+            industry_sent: 100_000,
+            fuel_sent: 0,
+            industry_received: 0,
+            fuel_received: 0,
+        });
+    let countries = super::super::country_context(&frame).unwrap();
+    let mut report = Report::default();
+    participation::compare_participation(&frame, &save, &countries, &mut report).unwrap();
+    assert!(
+        report.difference_lines().is_empty(),
+        "{:?}",
+        report.difference_lines()
+    );
+    frame.tables[TableId::WarLendLeaseHistories.index()] =
+        TableView::Complete(TableRows::WarLendLeaseHistories(Vec::new())).into();
+    let countries = super::super::country_context(&frame).unwrap();
+    let mut report = Report::default();
+    participation::compare_participation(&frame, &save, &countries, &mut report).unwrap();
+    assert!(
+        report
+            .difference_lines()
+            .iter()
+            .any(|line| line.contains("certified zero"))
+    );
+}
+
+#[test]
 fn ordered_repeated_goals_aliases_and_missing_objects_compare_without_normalizing() {
     let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
     let handle = (3_u64 << 32) | 12_345;
     save.war_relations.push(installed_content_save::WarRelation {
+        participation: [None, None],
         roster_owner: b"GER".to_vec(),
         target: b"GER".to_vec(),
         first: b"GER".to_vec(),
@@ -58,6 +283,9 @@ fn ordered_repeated_goals_aliases_and_missing_objects_compare_without_normalizin
         kind: b"star_contest".to_vec(),
         states: vec![9, 7],
         countries: vec![b"GER".to_vec()],
+        puppets: vec![],
+        expires: None,
+        name: b"star_contest".to_vec(),
     };
     save.war_goals.insert(handle, goal);
     frame.tables[TableId::WarOwnedRelations.index()] =
@@ -179,6 +407,7 @@ fn ordered_repeated_goals_aliases_and_missing_objects_compare_without_normalizin
 fn redeclaration_does_not_compare_retired_goals_with_live_goals_and_checks_reverse_coverage() {
     let (mut frame, mut save) = two_country_fixture();
     save.war_relations.push(installed_content_save::WarRelation {
+        participation: [None, None],
         roster_owner: b"GER".to_vec(),
         target: b"TWO".to_vec(),
         first: b"GER".to_vec(),
@@ -310,6 +539,7 @@ fn redeclaration_does_not_compare_retired_goals_with_live_goals_and_checks_rever
 fn each_saved_relation_requires_both_live_endpoint_occurrences() {
     let (mut frame, mut save) = two_country_fixture();
     save.war_relations.push(installed_content_save::WarRelation {
+        participation: [None, None],
         roster_owner: b"GER".to_vec(),
         target: b"TWO".to_vec(),
         first: b"GER".to_vec(),

@@ -2,6 +2,12 @@
 
 The dashboard's text interpreter and the content facts it reads. It evaluates recorded triggers and scopes, renders scripted localisation and native effect descriptions, formats modifiers, and applies the game's name rules. It also holds the content catalogue and the recording metadata helpers that products and map tooltips share.
 
+Faction screens reuse the bound-localisation interpreter and `ScriptedText::expand_faction`, whose faction environment holds the explicit faction and the selected country's event scope. Native goal names and descriptions therefore share the existing faction properties, promotions and recorded-input refusals.
+
+The catalogue supplies war participation's four lend-lease factors from the complete evaluated content stack, including mod overrides.
+
+Occupation badge descriptions share effect sessions and the raw modifier formatter. Their active, non-detailed description shows the definition name, disable effects, eligible state modifiers and authored tooltip, retaining independent fragments and counted refusals. The caller supplies the recorded state or controller root and its controller/occupied-country scope links.
+
 Nothing here names a product or a source. The [dashboard](../dashboard/README.md) loads one catalogue per source and folders, and re-exports every module at its old `dashboard::` path. The map's tooltip crates (viewer-foundation, viewer-world, viewer-combat, viewer-counters, viewer-counter-products and viewer-raids) depend on this crate and [dashboard-core](../dashboard-core/README.md) instead of the whole dashboard, so editing a product doesn't rebuild them.
 
 | Module | What it does |
@@ -109,3 +115,99 @@ country deltas that keep its keys, slots and tags. Without that evidence it
 compares the full key sequence. `kept_changes` checks only the row count and
 recorded masks; a caller deferring its full comparison retains any failed proof
 until that comparison. `country_keys:changed_fields` labels the mask check.
+
+The create_wargoal effect description reads the complete recorded unused inventory and target occurrences, including direct-subject matching and claimed-state containment. A reached absent inventory, unresolved reference or ambiguous definition occurrence is refused by name.
+
+War-goal descriptions use the definition's declared name. Duplicate-type identity is refused only when a matching unused goal covers the requested targets; absent or non-covering goals remain decidable.
+The shared recorded trigger kit includes Divisions for promoted unit scopes and CountryCommandPower for country owner operands, preserving them in product-selected reads.
+`effect_description::doctrine_benefits` shares bound prose, unit-stat, modifier
+and effect descriptions with existing technology and effect consumers. Missing
+operands refuse only their fragment and produce counted reasons.
+Project scopes resolve persistent variables and seeds from Projects.runtime. Project and pending-choice outputs share one renderer for country, scientist, facility-state, unlock and equipment/unit bonus bodies. Explicit project assignments retain null or unavailable context instead of invoking completion-effect fallback selection.
+
+
+`effect_description::doctrine_benefits` shares bound prose, unit-stat, modifier
+and effect descriptions with existing technology and effect consumers. Missing
+operands refuse only their fragment and produce counted reasons.
+Project scopes resolve persistent variables and seeds from Projects.runtime. Project and pending-choice outputs share one renderer for country, scientist, facility-state, unlock and equipment/unit bonus bodies. Explicit project assignments retain null or unavailable context instead of invoking completion-effect fallback selection.
+`template_facts` shares recorded template display names and plain layout/settings/restriction, country staff/garrison and HQ sections between division hovers and the Army size breakdown. Names and definitions resolve from recorded operands and the supplied content stack. Valid sibling facts remain visible when another field is unavailable; each refused field carries its own diagnostic into the product or hover. Hover callers supply field-level text validation before names and definition spellings join their sections; unsupported text withholds only that fact. Model-read refusals keep category/country operands, and an unreadable HQ front keeps the deployment context and pools.
+Scripted map callbacks share this evaluator's calculated stability and war support,
+war, AI-control, claim, neighbor, home-area, tech-sharing and appointed-advisor/idea
+trait predicates. Country/core/state rosters retain native order and duplicates;
+scope-array loops decode elements lazily. State target filters run on the initiator
+with FROM set to the target. Root checks, array operands and target filters share
+one temporary-variable context for each selection; state selectors ignore the
+country-only state_target marker. Already accepted states skip subsequent filters,
+while rejected candidates can be retried. Built-in global country/state arrays, state roster
+arrays, owner/controller, population, resistance/compliance and state building-level
+callbacks use recorded operands, as do recorded stability modifier totals. Expression
+clamp evaluates its lower then upper bound and takes the lower comparison arm first.
+Resistance/compliance callbacks and Occupied require their table's own current-hour
+acquisition. A carried daily value has no writer certificate and is refused by name;
+the evaluation's freshness dependency is checked again even when rows stay equal.
+Other built-ins remain named refusals when their native operands are unavailable.
+An effect-driven map refresh runs inside its caller's active temporary-variable
+context, so nested callbacks do not begin with zeroed output channels. `Temps::Inherited`
+keeps unknown initial values unknown even inside checks; explicit local writes and
+seeds remain readable. Unwritten reads, including RNG, refuse the unrecorded caller
+temporary store. The viewer proves each forced callback independently, conservatively
+refusing dependencies on earlier targets instead of reconstructing transient script
+execution from an event ordinal. Standalone callbacks retain fresh-context semantics.
+Colour callbacks use a conservative rule: any reached unavailable trigger, value,
+iterator or scope input refuses that target, even when a later unconditional
+assignment would overwrite every colour output. This accepted limitation avoids
+painting a colour that uncertain control flow could change. The same rule applies
+during layer target selection: the viewer uses the evaluator's colour-input
+capture around both selectors and their root/per-target filters, refusing the
+whole layer when its selected set is uncertain. Refusals are created
+by the accessor whose own read finds an unavailable table,
+field or acquisition, with the table/field and a scope only for scoped input.
+Errors carry those identities through aliases, scope dispatch, Boolean groups,
+conditional loading, operands and temporary variables. Context changes only their
+message. No wrapper observes messages or creates a substitute input identity.
+The callback collects source identities independently of its Boolean result,
+deduplicates them before formatting, and counts each affected target once per input.
+Global inputs such as LexicalTokens remain one input across country scopes.
+Genuine unsupported evaluator/content forms have their own category. There is no
+implicit conversion from a source failure to String: only text rendering
+boundaries explicitly format it. Cached and lazy errors retain their sources; reading a cached failure replays those identities,
+while an unused lazy RNG failure does not refuse unrelated output. Deferred alias
+candidates replay failures only when visited. Invasion collections retain both
+known orders and unresolved contributors; a known matching order proves an
+existential query, while a nonmatch refuses if an unresolved contributor could
+change it, even when the known collection is nonempty. Positive-reference lookups record the failing table's typed refusal before a
+caller can filter or default a miss. State/province row views guard referenced
+keys and incomplete enumeration; character-token indexes retain lexical failures
+through warm reads. Authenticated nulls and complete-container membership absence
+remain distinct from a missing referenced object. Membership absence requires a
+complete source on every read: warmed country-tag and live-character indexes
+cannot authenticate an omitted token from a truncated or unavailable table.
+Scope loading replays every unavailable name classification before inspecting
+the parsed scope, including nested chain targets and classification that falls
+through to a keyword. Reusing loaded items and warmed name indexes preserves
+those refusals. Raw-country resolvers record a typed CountryLinks refusal when a nonnull
+reference cannot resolve, even if a caller filters the returned None. Lazy world,
+scope and resource indexes retain these failed joins separately from their values
+and replay them on every use, including warm and nested caches. Character-name
+indexes retain raw owners and resolve them at lookup. Query reuse digests include
+failed-join identities, so a known nonmatch cannot be reused after its join becomes
+unavailable. Filtering a failed entry may conservatively refuse an otherwise
+proved match; the owner accepts this over-refusal. Zero remains a valid null or
+reserved reference and does not itself create a missing-positive-link refusal.
+Evaluator consumption replays existing identities before Boolean masking; a test
+assertion runs first and fails if an accessor forgot to replay its cached error. Ordinary trigger
+evaluation retains its three-valued Boolean rules. Technology-sharing
+queries require a complete country-local roster witness even for a group name
+absent from the recorded token dictionary.
+
+State hover text resolves GetContinent through the controller's original-tag
+localisation ladder, GetCapitalVictoryPointName through the captured cached index
+and authenticated authored province order, and Occupied through the recorded
+resistance country. A missing cache or changed state membership refuses that text.
+The shared `stability` module re-exports `replay-data`'s arithmetic for triggers
+and stability products, and adds the captured CountryCommandPower lookup with
+its recorded-input refusals.
+
+Unit effect descriptions retain the selected full unit handle when a carrier lookup refuses at the presentation boundary. The unit existence witness still precedes owner/template lookup and operand evaluation; an absent template still precedes the unit-name read.
+
+An explicitly refused template settings payload reports only the settings section as unavailable. Layout, model, category, country and display-name facts retain their independent availability.

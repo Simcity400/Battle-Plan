@@ -8,6 +8,8 @@ use replay_frame::frame::TableView;
 use std::collections::BTreeSet;
 
 fn fixture() -> Fixture {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for unit name fixtures");
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
         .catalogue

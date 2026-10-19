@@ -43,7 +43,9 @@ use std::{
 use ts_rs::TS;
 
 pub struct SpecialProjects;
+mod details;
 mod history;
+pub use details::*;
 pub mod prepared;
 
 mod completions;
@@ -145,6 +147,9 @@ pub struct ProjectEpisode {
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectsReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub details: Option<SpecialProjectDetails>,
     pub branch_id: String,
     pub tag: String,
     pub identities: Vec<CountryIdentityRun>,
@@ -1519,6 +1524,7 @@ fn build_reply(
     let needs_scope = result.needs_scope;
     (
         SpecialProjectsReply {
+            details: None,
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
             identities: Vec::new(),
@@ -1617,6 +1623,21 @@ impl Product for SpecialProjects {
             SpecialProjectRun::decl(),
             ProjectEpisode::decl(),
             SpecialProjectsReply::decl(),
+            ProjectLabel::decl(),
+            ScientistSkill::decl(),
+            ScientistDetails::decl(),
+            ScientistAssignment::decl(),
+            ProgramDetails::decl(),
+            FacilityDetails::decl(),
+            FacilitySource::decl(),
+            ProjectChoice::decl(),
+            SpecializationProgress::decl(),
+            ProjectEffects::decl(),
+            ProjectRewardOption::decl(),
+            PendingProjectReward::decl(),
+            ProjectVariableValue::decl(),
+            ProjectRuntimeDetails::decl(),
+            SpecialProjectDetails::decl(),
         ]
     }
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

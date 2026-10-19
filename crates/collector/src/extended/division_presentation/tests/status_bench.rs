@@ -161,6 +161,8 @@ fn bench_division_status_naming() {
                         }
                     }
                     capture.attack.certify(
+                        &memory,
+                        base,
                         &seeds,
                         Outcome::Rows { len: divisions },
                         carried.then_some(&mut store),

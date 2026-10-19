@@ -1,16 +1,49 @@
 use super::*;
 
+/// Direct incoming registration of a relocating wing. A complete table omits
+/// known nonmembers. An absent ordinal preserves a failed destination witness
+/// or writer certificate independently of the wing census. Progress operands
+/// are read only for incoming wings admitted by the native counter/limit gate.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirTransferInputRow {
+    pub wing: u64,
+    pub base: u64,
+    pub ordinal: Option<u32>,
+    pub progress_raw: Option<i64>,
+    pub distance_raw: Option<i64>,
+}
+typed_codec!(AirTransferInputRow, 64, |row| row.wing as u128,
+ |key| Self { wing: key as u64, ..Default::default() },
+ { 0 => (base): U64, 1 => (ordinal): OptionalU32, 2 => (progress_raw): OptionalI64, 3 => (distance_raw): OptionalI64 }, |_row| Ok(()));
+
+/// Ground Crews for demanded regional Air mission icons. Country is canonical
+/// slot. A complete table omits observed inactive flags; None is an independent
+/// unavailable certificate or read, never an observed false value.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AirGroundCrewRow {
+    pub country: u32,
+    pub region: u32,
+    pub enabled: Option<u32>,
+}
+typed_codec!(AirGroundCrewRow, 64, |row| (row.country as u128) << 32 | row.region as u128,
+ |key| Self { country: (key >> 32) as u32, region: key as u32, ..Self::default() },
+ { 0 => (enabled): OptionalU32 }, |_row| Ok(()));
+
 /// AirRegionalMissions: one registered mission in its country's regional
 /// vector. `ordinal` is the wing's position there; its owner and region are
 /// the AirWings row's. Aircraft scenarios visit each region's wings in this order.
+/// `active_order` is an independently certified increasing label in the country's
+/// all-active vector, used by map arrows across regions. Gaps have no meaning;
+/// missing certification is unknown and does not invalidate regional ordinals.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirRegionalMissionRow {
     pub wing: u64,
     pub ordinal: u32,
+    pub active_order: Option<u64>,
 }
 typed_codec!(AirRegionalMissionRow, 64, |row| row.wing as u128,
  |key| Self { wing: key as u64, ..Default::default() },
- { 0 => (ordinal): U32 }, |_row| Ok(()));
+ { 0 => (ordinal): U32, 1 => (active_order): OptionalU64 }, |_row| Ok(()));
 
 /// AirCountryRelations: one position of a country's vectors used to pick
 /// whose wings fly for the viewing country: kind 0 the reciprocal
@@ -37,9 +70,9 @@ typed_codec!(AirCountryRelationRow, 66, |row| (row.country as u128) << 34 | (row
  { 0 => (other): U32 }, |_row| Ok(()));
 
 /// AirReferenceWitnesses: the base handles the flying-aircraft map resolves
-/// through the reference registry: each registered wing's pool base, the
-/// pool base of each training wing without a region, and any wing's transfer
-/// base. A base's fields are present only when AirBases lacks it or
+/// through the reference registry: every wing's pool base and transfer
+/// base, including wings with selected missions but no regional registration.
+/// A base's fields are present only when AirBases lacks it or
 /// disagrees; a probed handle missing from a complete table did not resolve.
 /// A state base's province is its cached one, else the first of the manager's
 /// state/kind list. A stateless base's `host_owner` is its host ship's
@@ -76,6 +109,24 @@ pub const AIR_MISSION_REACHED_DRAWS: u32 = (1 << 0) | (1 << 2) | (1 << 14);
 /// Missions whose reached IDs are recorded.
 pub const AIR_MISSION_REACHED_IDS: u32 = AIR_MISSION_REACHED_MEMBERSHIP | AIR_MISSION_REACHED_DRAWS;
 
+/// A native requested-key lookup can prove an entry present while its disabled
+/// feature skips the raw value. Playback admits that absence only under the
+/// recorded definition's disabled gate.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AirNormalizationEntry {
+    pub present: bool,
+    pub raw: Option<i64>,
+}
+value_struct!(AirNormalizationEntry { present: bool, raw: Option<i64> });
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AirMissionNormalization {
+    pub night_stat: Option<i64>,
+    pub modifiers: [Option<AirNormalizationEntry>; 2],
+}
+value_struct!(AirMissionNormalization { night_stat: Option<i64>, modifiers: [Option<AirNormalizationEntry>; 2] });
+opaque_value!(Option<AirMissionNormalization>);
+
 /// AirMissionInputs: each registered mission's stored operands for
 /// flying-aircraft admission and count: region coverage and reassignment
 /// penalty for sortie efficiency, the last target and the reached-province
@@ -84,8 +135,9 @@ pub const AIR_MISSION_REACHED_IDS: u32 = AIR_MISSION_REACHED_MEMBERSHIP | AIR_MI
 /// region appends its provinces in roster order, and scenario draws index
 /// into that order. The vector can be stale after a transfer.
 ///
-/// The stored efficiency and count are not recorded because the map draws
-/// values recomputed from current state every redraw. The hourly air update
+/// Flying-aircraft counts recompute efficiency from current state each redraw.
+/// Regional statistics instead read the retained current execution and count.
+/// The hourly air update
 /// writes the stored values before combat only after coverage, wing status,
 /// mission eligibility, day/night period, capacity and carrier-combat gates
 /// pass; otherwise they retain an older value. That update also requires
@@ -104,10 +156,32 @@ pub struct AirMissionInputRow {
     /// None is a guarded-read refusal, Some(0) an observed zero; older
     /// recordings retain NotRecorded.
     pub cas_ratio_raw: Recorded<Option<i64>>,
+    /// Whether the mission's retained base-to-region trace has more than one entry (0/1), the
+    /// regional interception-alert gate. None is an independent read refusal.
+    pub interception_alert_gate: Recorded<Option<u32>>,
+    /// Current simulation mask, independent of selected missions and the saved active byte.
+    pub current_type: Recorded<Option<u32>>,
+    /// Retained simulation count; present only for nonzero current execution.
+    pub effective_aircraft: Recorded<Option<i32>>,
+    /// Only executing nonzero-count missions demand these independent raw operands.
+    pub normalization: Recorded<Option<AirMissionNormalization>>,
+    /// Raw cached statistics selected by positive one-bit current execution,
+    /// only when retained aircraft is nonzero. Independent numeric deltas.
+    pub detection_stat_13: Recorded<Option<i64>>,
+    pub detection_stat_14: Recorded<Option<i64>>,
+    /// Independently delta-encoded raw disruption and its demanded combat leaves.
+    pub patrol_disruption_raw: Recorded<Option<i64>>,
+    pub patrol_attack_raw: Recorded<Option<i64>>,
+    pub patrol_defence_raw: Recorded<Option<i64>>,
+    pub patrol_speed_raw: Recorded<Option<i64>>,
+    pub patrol_wing_attack_raw: Recorded<Option<i64>>,
+    pub patrol_wing_defence_raw: Recorded<Option<i64>>,
+    /// Held sampled clock accumulator marker; Updated clocks derive it.
+    pub patrol_night_applied_raw: Recorded<Option<i64>>,
 }
 typed_codec!(AirMissionInputRow, 64, |row| row.wing as u128,
  |key| Self { wing: key as u64, ..Default::default() },
- { 0 => (coverage_raw): I64, 1 => (reassignment_penalty_raw): I64, 2 => (last_target_province): I32, 3 => (reached_count): I32, 4 => (reached_provinces): U32List, 5 => (definition_map_flags): U64, 6 => (cas_ratio_raw): OptionalI64 }, |_row| Ok(()));
+ { 0 => (coverage_raw): I64, 1 => (reassignment_penalty_raw): I64, 2 => (last_target_province): I32, 3 => (reached_count): I32, 4 => (reached_provinces): U32List, 5 => (definition_map_flags): U64, 6 => (cas_ratio_raw): OptionalI64, 7 => (interception_alert_gate): OptionalU32, 8 => (current_type): OptionalU32, 9 => (effective_aircraft): OptionalI32, 10 => (normalization): Opaque, 11 => (detection_stat_13): OptionalI64, 12 => (detection_stat_14): OptionalI64, 13 => (patrol_disruption_raw): OptionalI64, 14 => (patrol_attack_raw): OptionalI64, 15 => (patrol_defence_raw): OptionalI64, 16 => (patrol_speed_raw): OptionalI64, 17 => (patrol_wing_attack_raw): OptionalI64, 18 => (patrol_wing_defence_raw): OptionalI64, 19 => (patrol_night_applied_raw): OptionalI64 }, |_row| Ok(()));
 
 /// AirSortieBaseCountries: a registered wing's base container for one
 /// country, indexed by canonical slot: capacity and supply ratio for the
@@ -133,6 +207,8 @@ typed_codec!(AirSortieBaseCountryRow, 96, |row| (row.base as u128) << 32 | row.c
 /// country-region object. Only nonzero entries of registered missions'
 /// regions and effective countries are rows. Scope 3 is every console
 /// efficiency override (region 0), zero included; it replaces the whole law.
+/// Scope4 retains certified console detection overrides; scope5 is their
+/// singleton availability witness (raw0 unavailable, raw1 complete).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirSortieModifierRow {
     pub scope: u8,
@@ -146,8 +222,11 @@ impl AirSortieModifierRow {
     pub const COUNTRY: u8 = 1;
     pub const COUNTRY_REGION: u8 = 2;
     pub const EFFICIENCY_OVERRIDE: u8 = 3;
+    pub const DETECTION_OVERRIDE: u8 = 4;
+    /// Singleton 0/1 certificate witness; a complete zero-row vector is distinct from refusal.
+    pub const DETECTION_OVERRIDE_STATUS: u8 = 5;
 }
-typed_codec!(AirSortieModifierRow, 66, |row| (row.scope as u128) << 64 | (row.subject as u128) << 32 | row.region as u128,
+typed_codec!(AirSortieModifierRow, 67, |row| (row.scope as u128) << 64 | (row.subject as u128) << 32 | row.region as u128,
  |key| Self { scope: (key >> 64) as u8, subject: (key >> 32) as u32, region: key as u32, ..Default::default() },
  { 0 => (raw): I64 }, |_row| Ok(()));
 
@@ -534,7 +613,7 @@ pub struct AirTheatreMemberRow {
 typed_codec!(AirTheatreMemberRow, 128, |row| (row.group as u128) << 64 | row.wing as u128, |key| Self { group: (key >> 64) as u64, wing: key as u64, ordinal: Default::default() },
  { 0 => (ordinal): U32 }, |_row| Ok(()));
 
-/// AirBaseRegistrations: key base:slot (96 bits), 3 payload mask bits.
+/// AirBaseRegistrations: key base:slot (96 bits), 6 payload mask bits.
 ///
 /// One country's registered pool membership at one air base. `slot` is the
 /// container index, which the engine fills at the country's resolved ordinal.
@@ -544,7 +623,8 @@ pub struct AirBaseRegistrationRow {
     /// Full native air base handle; join it to AirBases.
     pub base: u64,
     pub slot: u32,
-    /// The container's capacity word; registration grants access only while it is positive.
+    /// The container's capacity word; pool registration requires it positive.
+    /// The indexed container's presence alone grants base access.
     pub capacity_raw: i64,
     /// Full native air wing handles in native order, repeats included.
     pub wings: Vec<u64>,
@@ -552,9 +632,13 @@ pub struct AirBaseRegistrationRow {
     pub carrier: Recorded<Option<AirBaseRegistrationCarrierInputs>>,
     /// Retired per-pool plane sums of the selected transport carrier preview.
     pub transport_planes: Recorded<Retired>,
+    /// Current state-container fuel words. Independent columns let numeric
+    /// changes carry unchanged pool metadata. Host bases use their own packet.
+    pub fuel_demand_raw: Recorded<Option<i64>>,
+    pub fuel_allocated_raw: Recorded<Option<i64>>,
 }
 typed_codec!(AirBaseRegistrationRow, 96, |row| (row.base as u128) << 32 | row.slot as u128, |key| Self { base: (key >> 32) as u64, slot: key as u32, ..Default::default() },
- { 0 => (capacity_raw): I64, 1 => (wings): U64List, 2 => (carrier): Opaque, 3 => (transport_planes): Opaque }, |_row| Ok(()));
+ { 0 => (capacity_raw): I64, 1 => (wings): U64List, 2 => (carrier): Opaque, 3 => (transport_planes): Opaque, 4 => (fuel_demand_raw): OptionalI64, 5 => (fuel_allocated_raw): OptionalI64 }, |_row| Ok(()));
 opaque_value!(Option<Vec<Option<i32>>>);
 opaque_value!(Vec<AirHistoryEntry>);
 opaque_value!(Vec<AirDamageEntry>);

@@ -319,6 +319,8 @@ mod tests {
                 river_crossing_three: 0,
                 organisation: None,
                 rail: None,
+                noncore_supply: [None; 2],
+                combat_movement: None,
             },
             rail: Ok(installed_content_core::movement::RailMovementDefines {
                 speed: [0; 4],

@@ -4,9 +4,10 @@ use std::{
 };
 
 use installed_content_save::Save;
+use recorder_oracle_support::support::equal;
 use replay_data::{
-    rows::CountryRow, rows::DivisionRow, rows::DivisionStatusRow, rows::DivisionSupplyFooter,
-    rows::Recorded, rows::TableId, rows::tables,
+    rows::CountryRow, rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow,
+    rows::DivisionSupplyFooter, rows::Recorded, rows::TableId, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
 
@@ -16,9 +17,12 @@ use super::{
 };
 
 mod air_transport;
+mod division_history;
+mod movement_operands;
 #[cfg(test)]
 mod tests;
 pub use air_transport::compare as compare_air_transport_inputs;
+pub use movement_operands::compare as compare_movement_operands;
 
 pub fn compare_land_combats(
     frame: &DecodedFrame,
@@ -322,8 +326,8 @@ pub fn compare_division_movement(
     report.limitation("base_speed is the raw signed fixed5 maximum speed of the division's stat block (the stat block's maximum-speed field), from which movement-speed calculation starts. The division writer does not save the stat block, so the save has no counterpart; saved template, equipment and traits do not certify the composed cache. Rows without a route are outside its demand; a nonempty route without it is a difference. Matched native observations remain necessary", format!("DivisionMovement.base_speed: {base_speeds} rows recorded, not compared"));
     report.limitation("the unit save writer saves withdraw only as zero/nonzero truth, not the raw nonzero byte identity", "DivisionMovement.withdrawal raw byte");
     report.limitation("effective strategic-action modifiers and per-row query failures have no text-save counterpart; the save omits the queried runtime accumulators. Saved route, target and strategic truth remain compared. Native evidence is in the engine README's strategic-action contract", "DivisionMovement.strategic_action");
-    report.limitation("remaining hours are estimated at playback, not stored: the recorded route, progress numerator and base_speed with matching-content distances and the recorded speed terms (the stat block's and commander's movement words, country and commander block modifier entries, location weather entries, supply, days out of supply, enemy air superiority, retreat, organisation and fuel). A strategic redeployment's road and rail speed, the armour term and the special-forces share derive from recorded rows and content; the location state's speed modifiers, the priority sub-unit's category terms, the noncore-supply term and a relation's river crossing factor are not recorded, so estimates can differ from the native arrival time; the save has no arrival time to compare", "DivisionMovement arrival estimates");
-    report.limitation("the movement speed's runtime operands have no save counterpart: DivisionStatus.commander_modifiers the entries of the commander block the HQ selects, OrdersGroupCounterInputs.commander_movement the commander's terrain movement, CountryCounterInputs.movement_modifiers country accumulator entries, WeatherProvinces.modifiers and WeatherRegions.combat the weather modifiers' entries and SimulationFeatures.movement_defines loaded define globals. Matched native observations remain necessary", "movement speed operands");
+    report.limitation("remaining hours are estimated at playback, not stored: the recorded route, progress numerator and base_speed with matching-content distances and the recorded speed terms (the stat block's and commander's movement words, country and commander block modifier entries, location weather entries, supply, days out of supply, enemy air superiority, retreat, organisation and fuel), with the combat movement base of a division in combat, the location state's speed modifiers and controller relation, the priority sub-unit's and its categories' terms, the noncore-supply term, a relation's river crossing factor and the transport speed of a naval transfer or a move to or from the sea. A strategic redeployment's road and rail speed, the armour term and the special-forces share derive from recorded rows and content; the save has no arrival time to compare", "DivisionMovement arrival estimates");
+    report.limitation("the movement speed's runtime operands have no save counterpart: DivisionStatus.commander_modifiers the entries of the commander block the HQ selects, DivisionStatus.combat_movement the combat's movement word, OrdersGroupCounterInputs.commander_movement the commander's terrain movement, CountryCounterInputs.movement_modifiers country accumulator entries, WeatherProvinces.modifiers and WeatherRegions.combat the weather modifiers' entries, SimulationFeatures.movement_defines loaded define globals and the runtime operand tables (MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries, RiverRelations and DivisionTransportSpeeds). Matched native observations remain necessary", "movement speed operands");
     report.limitation("retreat/transfer predicates and the first-combat role and province are not independently compared here; the viewer derives progress and the stack kind from them and content", "DivisionMovement unverified fields");
     report.limitation("map_entity records whether the map-entity pointer is set; the army and unit writers do not serialize it, so it has no save counterpart and needs a paused live-memory check (the combat wedge points from the first attacker that has one)", "DivisionMovement.map_entity");
     Ok(())
@@ -331,6 +335,47 @@ pub fn compare_division_movement(
 
 /// `camo_show_at` is the content's `NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT`,
 /// which the recorded camouflage is compared under.
+/// The save certifies roster membership; active-cache values need a matched native panel.
+pub fn compare_division_panel_stats(
+    frame: &DecodedFrame,
+    save: &Save,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::DivisionPanelStats>(frame)?;
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if row.division == 0 || !seen.insert(row.division) {
+            return Err(invalid("null or duplicate panel stats division"));
+        }
+        if !save.divisions.contains_key(&row.division) {
+            report.difference(
+                format!("DivisionPanelStats {}", row.division),
+                "present",
+                "absent from saved divisions",
+            );
+        }
+        for (index, value) in row.panel_stats.iter().enumerate() {
+            if value.is_none() {
+                report.difference(
+                    format!("DivisionPanelStats {}.panel_stats[{index}]", row.division),
+                    "unavailable",
+                    "complete deployed cache operand",
+                );
+            }
+        }
+    }
+    for id in save.divisions.keys().filter(|id| !seen.contains(id)) {
+        report.difference(
+            format!("DivisionPanelStats {id}"),
+            "absent",
+            "present in saved divisions",
+        );
+    }
+    report.compared("DivisionPanelStats", rows.len());
+    report.limitation("The 22 deployed active-stat cache values are not serialized by the division writer. Save membership and available operands do not certify their numbers; compare every column with the matched-hour native division panel, and use sampled carried-versus-fresh verification across rebuilds.", "DivisionPanelStats.panel_stats[0..22]");
+    Ok(())
+}
+
 pub fn compare_division_status(
     frame: &DecodedFrame,
     save: &Save,
@@ -340,6 +385,7 @@ pub fn compare_division_status(
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::DivisionStatus>(frame)?;
+    division_history::compare(frame, save, tokens, report)?;
     // Name member template references a name_template_witness build recorded.
     let references = super::combat_details::witnessed_name_templates(rows);
     let templates =
@@ -355,11 +401,31 @@ pub fn compare_division_status(
                 .map(|(ordinal, &division)| (division, ordinal as u32))
         })
         .collect::<BTreeMap<_, _>>();
+    // The combat movement word's branch is checked against the division's combat
+    // count and withdrawal byte.
+    let movements = frame
+        .complete::<tables::DivisionMovement>()
+        .ok()
+        .map(|rows| {
+            rows.iter()
+                .map(|row| (row.division, row))
+                .collect::<BTreeMap<_, _>>()
+        });
     let mut seen = BTreeSet::new();
     for row in rows {
         if row.division == 0 || !seen.insert(row.division) {
             return Err(invalid("null or duplicate status division"));
         }
+        report.scalar_checks += 1;
+        let unknown = row.move_flags & !DEFINED_MOVE_FLAGS;
+        if unknown != 0 {
+            report.difference(
+                format!("division status {}.move_flags", row.division),
+                format!("undefined bits {unknown:#04x}"),
+                "only the defined movement flags",
+            );
+        }
+        compare_combat_movement(row, movements.as_ref(), report);
         let Some(saved) = save.divisions.get(&row.division) else {
             report.difference(
                 format!("division status {}", row.division),
@@ -368,6 +434,121 @@ pub fn compare_division_status(
             );
             continue;
         };
+        for (name, present) in [
+            ("officer_experience", row.officer_experience().is_some()),
+            ("killed", row.career_counter().is_some()),
+        ] {
+            if !present {
+                report.difference(
+                    format!("division status {}.{name}", row.division),
+                    "unavailable",
+                    "available saved value (including omitted nonpositive values)",
+                );
+            }
+        }
+        if let Some(expected) = &saved.presentation.officer_experience {
+            report.scalar(
+                &format!("division status {}", row.division),
+                "officer_experience",
+                row.officer_experience(),
+                Some(expected),
+            );
+        } else if let Some(actual) = row.officer_experience()
+            && actual > 0
+        {
+            report.difference(
+                format!("division status {}.officer_experience", row.division),
+                actual,
+                "omitted nonpositive saved XP",
+            );
+        }
+        if let Some(expected) = saved.presentation.career_counter {
+            if row.career_counter() != Some(expected) {
+                report.difference(
+                    format!("division status {}.killed", row.division),
+                    format!("{:?}", row.career_counter()),
+                    expected,
+                );
+            }
+        } else if let Some(actual) = row.career_counter()
+            && actual > 0
+        {
+            report.difference(
+                format!("division status {}.killed", row.division),
+                actual,
+                "omitted nonpositive saved counter",
+            );
+        }
+        let transition_label = format!("division status {}.pending_template", row.division);
+        match report.recorded(
+            &row.pending_template,
+            "DivisionStatus.pending_template",
+            &transition_label,
+        ) {
+            Some(Some(value)) => equal(
+                report,
+                &transition_label,
+                (*value != 0).then_some(*value),
+                saved.presentation.pending_template,
+            ),
+            Some(None) => report.difference(
+                &transition_label,
+                "unavailable captured transition",
+                "complete saved transition",
+            ),
+            None => {}
+        }
+        let experience_label = format!("division status {}.experience", row.division);
+        match report.recorded(
+            &row.experience,
+            "DivisionStatus.experience",
+            &experience_label,
+        ) {
+            Some(Some(value)) => report.scalar(
+                &format!("division status {}", row.division),
+                "experience",
+                Some(*value),
+                saved.presentation.experience.as_ref(),
+            ),
+            Some(None) => report.difference(
+                &experience_label,
+                "unavailable captured experience",
+                "complete saved experience",
+            ),
+            None => {}
+        }
+        let label = format!("division status {}", row.division);
+        if let (Some(current), Some(maximum)) = (
+            report.recorded(
+                &row.organisation_exact,
+                "DivisionStatus.organisation_exact",
+                &label,
+            ),
+            report.recorded(
+                &row.maximum_organisation_exact,
+                "DivisionStatus.maximum_organisation_exact",
+                &label,
+            ),
+        ) {
+            let flags = row.move_flags
+                & (DivisionStatusRow::MOVE_LOW_ORGANISATION
+                    | DivisionStatusRow::MOVE_ORGANISATION_REFUSED);
+            match (flags, current, maximum) {
+                (DivisionStatusRow::MOVE_LOW_ORGANISATION, Some(current), Some(maximum)) => {
+                    report.scalar(&label, "movement_organisation.current", Some(*current), Some(&saved.organisation));
+                    report.scalar_checks += 1;
+                    let displayed = DivisionStatusRow::MAXIMUM_STEP.round(*maximum);
+                    if displayed != row.maximum_organisation {
+                        report.difference(format!("{label}.movement_organisation.maximum displayed"), displayed, row.maximum_organisation);
+                    }
+                    report.compared("DivisionStatus.organisation_exact saved current", 1);
+                }
+                (0, None, None) => { report.scalar_checks += 1; }
+                _ => report.difference(format!("{label}.movement_organisation"),
+                    format!("flags={flags}, current={current:?}, maximum={maximum:?}"),
+                    "complete exact pair only when the native low-organisation movement factor applies"),
+            }
+        }
         if let Some(ordinal) = report.recorded(
             &row.country_ordinal,
             "DivisionStatus.country_ordinal",
@@ -620,6 +801,7 @@ pub fn compare_division_status(
         report.difference(format!("division status {id}"), "absent", "present");
     }
     report.compared("DivisionStatus", rows.len());
+    report.limitation("The exact movement organisation pair compares its current value with the saved organisation. The effective maximum is an unsaved stat-block result; its rounded value is checked against the separately recorded display maximum", "DivisionStatus.movement_organisation maximum: runtime operand");
     report.limitation("invalid_orders_reason is the raw signed reason word selected after the counter's first invalid-order gate. Neither the unit writer nor the army writer serializes it; a separate same-width saved field is a different operand. A fresh save cannot certify this tooltip reason; matched counter hovers remain necessary", "DivisionStatus.invalid_orders_reason");
     report.limitation("border_combat_stats copies defense/soft/hard attack from the army stat cache for the exact active-state army union. The army writer does not save that cache; membership/location and saved HP/organisation checks do not certify these values", "DivisionStatus.border_combat_stats");
     report.limitation("the supply consumer save writer saves only positive disruption; omission certifies only the nonpositive branch. The asked/received, state/air-drop receipts, demand pairs and origin rows of the supply footer are unsaved runtime caches, stored at the footer's display step. Their displayed amounts and aggregation still require matched native hovers", "DivisionStatus.supply runtime operands");
@@ -627,10 +809,81 @@ pub fn compare_division_status(
     report.limitation("model_number is the stored army model number, which the army writer does not serialize; active-stat updates rewrite it once a day per division and on template change, deploy and unit creation, so it has no save counterpart and needs a matched-hour screenshot of the drawn model suffix", "DivisionStatus.model_number");
     report.limitation("camouflage is what the game takes from the division with the live NGraphics.ACCLIMATIZATION_CAMO_SHOW_AT; it compares with the same decision over the saved acclimatization block and the content's define. The army writer omits that block unless an entry weighs above zero, when no category can show, and the game skips zero weights, which never win. The saved block cannot show a null winning category pointer. A division whose camouflage was unreadable that hour is not compared. An older recording's acclimatization compares entry by entry instead: only the omission without a positive weight, nonzero entries in order and the maximum", "DivisionStatus.camouflage");
     report.limitation("supply_ratio is the raw fixed5 supply operand: the counter ignores it during naval transfer and applies presentation thresholds/visibility/stack selection. has_order is the order-membership predicate, false for ungrouped units", "DivisionStatus consumer contract");
-    report.limitation("DivisionStatus.move_flags combines exile truth with can_exfiltrate_from_coast, the live stat block's AND over the template's subunits. The army save writer delegates to the unit save writer, which saves exile only as zero/nonzero truth; DivisionMovement.selected compares that current byte's truth. The raw nonzero magnitude and coast-exfiltration cache remain unverified", format!("DivisionStatus.move_flags: {} rows decoded, combined flags not certified", rows.len()));
+    report.limitation("DivisionStatus.move_flags combines exile truth with can_exfiltrate_from_coast, the live stat block's AND over the template's subunits, the noncore-supply bypass byte's truth, whether the air-supply word is positive or unreadable (availability is local to reached noncore movement), and the conditional exact organisation branch and its refusal. The army save writer delegates to the unit save writer, which saves exile only as zero/nonzero truth; DivisionMovement.selected compares that current byte's truth. A bit outside the defined flags is a difference. The raw nonzero magnitude, the coast-exfiltration cache, the noncore-supply bypass and the air-supply sign remain unverified", format!("DivisionStatus.move_flags: {} rows decoded, combined flags not certified", rows.len()));
+    report.limitation("combat_movement is the movement word of the first land or border-war combat in the division's combat list whose attacker side holds it, a runtime combat value the save omits, recorded for a division in combat and not withdrawing; its branch is checked against DivisionMovement's combat count and withdrawal byte. A division in combat whose first matching combat is naval, or with no matching combat side, records none, which the game takes as a zero starting term; whether a combat matches is not certified. Compare the word against paused memory at the sampled hour", "DivisionStatus.combat_movement runtime operand");
     report.limitation("attack_stats and movement_stats are the live division stat block's attack and movement operands (the terrain adjusters' attack and movement, the night, fort, river and snow attack terms, the fort, river and snow adjusters' movement, the fuel rate and anti-air words), which the active-stat update rewrites and the division writer does not save; weather_factor is the movement-availability calculation over the acclimatization block and the active climate category, which the save omits. Neither has a save counterpart: the collector's sampled verification compares carried operands with fresh reads, and the attack_witness diagnostic with `recorder derived` compares the derived attack operands with native ones. The selected army's attack inputs the save omits likewise: OrdersGroupCounterInputs.commander_attack and commander_movement (the leader's rebuilt trait adjusters), CountryCounterInputs.attack_modifiers (accumulator entries), Provinces.fort_bunker (the state's country-specific modifier) and WeatherRegions.combat (the region weather modifier's entries)", "DivisionStatus.attack_stats, movement_stats and the attack-list inputs");
     report.limitation("the commanders' retreat bans are the cached leader modifier block the unit-leader modifier lookup selects (cannot_retreat_while_defending/attacking); the save serializes the leaders' traits, not that block, so the sliced daily DivisionRetreatBans rows are not compared", "DivisionRetreatBans");
     Ok(())
+}
+
+/// Every `DivisionStatusRow::move_flags` bit the format defines.
+const DEFINED_MOVE_FLAGS: u8 = DivisionStatusRow::MOVE_EXILED
+    | DivisionStatusRow::MOVE_CAN_EXFILTRATE_FROM_COAST
+    | DivisionStatusRow::MOVE_NONCORE_SUPPLY_BYPASS
+    | DivisionStatusRow::MOVE_NONCORE_AIR
+    | DivisionStatusRow::MOVE_LOW_ORGANISATION
+    | DivisionStatusRow::MOVE_ORGANISATION_REFUSED
+    | DivisionStatusRow::MOVE_NONCORE_AIR_REFUSED;
+
+/// A recorded combat movement word belongs to a division in combat
+/// (DivisionMovement.combat_count nonzero) that is not withdrawing (its withdrawal
+/// byte zero). Every division may record none: one outside combat or withdrawing,
+/// and one in combat whose first matching combat is naval or that has none.
+fn compare_combat_movement(
+    row: &DivisionStatusRow,
+    movements: Option<&BTreeMap<u64, &DivisionMovementRow>>,
+    report: &mut Report,
+) {
+    let label = format!("division status {}.combat_movement", row.division);
+    let Some(entry) = report.recorded(
+        &row.combat_movement,
+        "DivisionStatus.combat_movement",
+        &label,
+    ) else {
+        return;
+    };
+    let Some(entry) = entry else {
+        report.limitation(
+            "the combat movement word was unreadable at capture",
+            format!("DivisionStatus.combat_movement {}", row.division),
+        );
+        return;
+    };
+    if entry.is_none() {
+        return;
+    }
+    let Some(movements) = movements else {
+        report.limitation(
+            "DivisionMovement is unavailable, so a recorded combat movement word's combat and withdrawal branch is not checked",
+            label,
+        );
+        return;
+    };
+    let Some(movement) = movements.get(&row.division) else {
+        report.scalar_checks += 1;
+        report.difference(label, "a combat movement word", "no DivisionMovement row");
+        return;
+    };
+    if movement.combat_count == 0 {
+        report.scalar_checks += 1;
+        report.difference(label, "a combat movement word", "a division outside combat");
+        return;
+    }
+    match movement.withdrawal {
+        Recorded::Value(Some(0)) => report.scalar_checks += 1,
+        Recorded::Value(Some(withdrawal)) => {
+            report.scalar_checks += 1;
+            report.difference(
+                label,
+                "a combat movement word",
+                format!("a withdrawing division (withdrawal {withdrawal})"),
+            );
+        }
+        Recorded::Value(None) | Recorded::NotRecorded => report.limitation(
+            "the division's withdrawal byte is refused or not recorded, so a recorded combat movement word's withdrawal branch is not checked",
+            label,
+        ),
+    }
 }
 
 /// The division's camouflage choice, decided again over the saved block
@@ -800,6 +1053,119 @@ fn compare_template_text(
     }
 }
 
+pub fn compare_country_template_state(
+    frame: &DecodedFrame,
+    save: &Save,
+    countries: &CountryContext<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::CountryTemplateState>(frame)?;
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        let tag = required_country_tag(row.country, &countries.links)?;
+        if !seen.insert(tag) {
+            return Err(invalid("duplicate country template configuration"));
+        }
+        let Some(expected) = save.production.template_states.get(tag) else {
+            report.difference(
+                format!("country {}.template configuration", tag_text(Some(tag))),
+                "recorded",
+                "absent in save",
+            );
+            continue;
+        };
+        report.scalar_checks += 2;
+        if (row.lock_all != 0) != expected.lock_all {
+            report.difference(
+                format!("country {}.templates_locked", tag_text(Some(tag))),
+                row.lock_all,
+                expected.lock_all,
+            );
+        }
+        if matches!(row.garrison_priority, Recorded::NotRecorded) {
+            report.difference(
+                format!("country {}.garrison priority", tag_text(Some(tag))),
+                "unrecorded acquisition",
+                expected.garrison_priority,
+            );
+        }
+        if let Some(priority) = report.recorded(
+            &row.garrison_priority,
+            "CountryTemplateState.garrison_priority",
+            format!("country {}.garrison priority", tag_text(Some(tag))),
+        ) && (priority.is_none() || *priority != expected.garrison_priority)
+        {
+            report.difference(
+                format!("country {}.occupation_status.priority", tag_text(Some(tag))),
+                priority,
+                expected.garrison_priority,
+            );
+        }
+        // The writer emits only a resolving reference; the raw retained word
+        // remains in replay even when the selected template has been destroyed.
+        let selected = save
+            .division_templates
+            .contains_key(&row.selected_staff)
+            .then_some(row.selected_staff);
+        if Some(selected) != expected.selected_staff {
+            report.difference(
+                format!("country {}.default_hq_template", tag_text(Some(tag))),
+                Some(selected),
+                expected.selected_staff,
+            );
+        }
+        report.scalar_checks += 1;
+        let next_hq_order = (row.next_hq_order > 0).then_some(row.next_hq_order);
+        if next_hq_order != expected.next_hq_order {
+            report.difference(
+                format!("country {}.hq_next_deploy_order", tag_text(Some(tag))),
+                next_hq_order,
+                expected.next_hq_order,
+            );
+        }
+        let garrisons = match &row.garrisons {
+            Recorded::Value(Some(rows)) => {
+                let mut actual = BTreeMap::new();
+                for selection in rows.iter() {
+                    let scope = selection
+                        .occupied
+                        .map(|id| required_country_tag(id, &countries.links).map(<[u8]>::to_vec))
+                        .transpose()?;
+                    if actual
+                        .insert((scope, selection.state), selection.template)
+                        .is_some()
+                    {
+                        return Err(invalid("duplicate recorded garrison template scope"));
+                    }
+                }
+                Some(actual)
+            }
+            _ => return Err(invalid("garrison template selections unavailable")),
+        };
+        report.scalar_checks += 1;
+        if garrisons != expected.garrisons {
+            report.difference(
+                format!(
+                    "country {}.garrison template selections",
+                    tag_text(Some(tag))
+                ),
+                &garrisons,
+                &expected.garrisons,
+            );
+        }
+    }
+    for (tag, _) in report.canonical_countries(&save.production.template_states) {
+        if !seen.contains(tag.as_slice()) {
+            report.difference(
+                format!("country {}.template configuration", tag_text(Some(tag))),
+                "absent in recording",
+                "saved",
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn compare_division_templates(
     frame: &DecodedFrame,
     save: &Save,
@@ -914,7 +1280,21 @@ pub fn compare_division_template_icons(
             );
             continue;
         };
-        report.scalar_checks += 2;
+        report.scalar_checks += 3;
+        let expected_exile = saved.origin_type.as_deref() == Some(b"exile");
+        if row
+            .manpower_exile
+            .require("template manpower exile")
+            .ok()
+            .copied()
+            != Some(expected_exile)
+        {
+            report.difference(
+                format!("template {}.manpower_exile", row.template),
+                row.manpower_exile,
+                expected_exile,
+            );
+        }
         if row.custom_icon != saved.custom_icon {
             report.difference(
                 format!("template {}.custom_icon", row.template),
@@ -1005,12 +1385,226 @@ pub fn compare_division_template_icons(
                 }
             }
         }
+        macro_rules! setting {
+            ($name:literal, $actual:expr, $expected:expr) => {{
+                let actual = $actual;
+                let expected = $expected;
+                report.scalar_checks += 1;
+                if actual != expected {
+                    report.difference(
+                        format!("template {}.{}", row.template, $name),
+                        actual,
+                        expected,
+                    );
+                }
+            }};
+        }
+        if matches!(row.settings, Recorded::NotRecorded | Recorded::Value(None)) {
+            report.difference(
+                format!("template {}.settings", row.template),
+                "settings acquisition refused",
+                "saved template settings",
+            );
+        }
+        if let Some(Some(settings)) = report.recorded(
+            &row.settings,
+            "DivisionTemplateIcons.settings",
+            format!("template {}.settings", row.template),
+        ) {
+            let expected = &saved.settings;
+            let names_group = settings
+                .names_group
+                .as_deref()
+                .map(installed_content_core::parser::c_string)
+                .filter(|key| !key.is_empty());
+            setting!(
+                "division_names_group",
+                names_group,
+                saved.names_group.as_deref()
+            );
+            setting!("priority", Some(settings.priority), expected.priority);
+            let role = match settings.role {
+                None => None,
+                Some(token) => match tokens.get(&token) {
+                    Some(name) => Some(*name),
+                    None => {
+                        report.difference(
+                            format!("template {}.role token", row.template),
+                            token,
+                            "unresolved",
+                        );
+                        None
+                    }
+                },
+            };
+            setting!("role", role, expected.role.as_deref());
+            setting!("is_army_hq", settings.is_army_hq != 0, expected.is_army_hq);
+            setting!("is_locked", settings.locked != 0, expected.locked);
+            setting!("obsolete", settings.obsolete != 0, expected.obsolete);
+            let date = (settings.obsolete != 0
+                && settings.obsolete_change_date != engine_native::cgame_date::NULL_RAW_HOUR)
+                .then_some(settings.obsolete_change_date);
+            setting!("obsolete_change_date", date, expected.obsolete_change_date);
+            setting!(
+                "force_allow_recruiting",
+                settings.force_allow_recruiting != 0,
+                expected.force_allow_recruiting
+            );
+            setting!(
+                "allow_new_equipment",
+                Some(settings.allow_new_equipment != 0),
+                expected.allow_new_equipment
+            );
+            setting!(
+                "allow_foreign_equipment",
+                Some(settings.allow_foreign_equipment != 0),
+                expected.allow_foreign_equipment
+            );
+            setting!(
+                "parent",
+                (settings.parent != 0).then_some(settings.parent),
+                expected.parent
+            );
+            setting!(
+                "is_fake_intel_division",
+                settings.fake_intel != 0,
+                expected.fake_intel
+            );
+            setting!("division_cap", settings.division_cap, expected.division_cap);
+            setting!(
+                "equipment_niche",
+                (settings.equipment_niche != 0)
+                    .then_some(i32::from(settings.equipment_niche as i8)),
+                expected.equipment_niche
+            );
+            let origin = match settings.origin_type {
+                0 => Some(b"master_host".as_slice()),
+                1 => Some(b"subject".as_slice()),
+                2 => Some(b"exile".as_slice()),
+                _ => None,
+            };
+            setting!("origin_type", origin, expected.origin_type.as_deref());
+            let creator = u32::try_from(settings.creator_country)
+                .ok()
+                .map(|reference| country_tag(reference, &countries.links))
+                .transpose()?
+                .flatten();
+            setting!("original_tag", creator, expected.creator_country.as_deref());
+            setting!(
+                "forbidden_equipment_types",
+                settings.forbidden_equipment.as_ref(),
+                Some(&expected.forbidden_equipment)
+            );
+        }
+        // The movement speed keys are the nonzero modifier keys of the movement
+        // priority sub-unit and its categories, read independently of the model inputs.
+        if let Some(keys) = report.recorded(
+            &row.speed_keys,
+            "DivisionTemplateIcons.speed_keys",
+            format!("template {}.speed_keys", row.template),
+        ) {
+            match keys {
+                Some(keys) => {
+                    report.scalar_checks += 1;
+                    if keys.contains(&0) {
+                        report.difference(
+                            format!("template {}.speed_keys", row.template),
+                            keys,
+                            "only nonzero modifier keys",
+                        );
+                    }
+                }
+                None => report.limitation(
+                    "the template's movement speed keys were unreadable at capture",
+                    format!("DivisionTemplateIcons.speed_keys {}", row.template),
+                ),
+            }
+        }
         if row.model_unreadable != 0 {
-            report.limitation(
-                "the template's model inputs were unreadable at capture; that row's composition alone is not compared",
-                format!("DivisionTemplateIcons {}", row.template),
+            report.difference(
+                format!("DivisionTemplateIcons {}.model inputs", row.template),
+                "unreadable",
+                "saved composition and model choices",
             );
             continue;
+        }
+        setting!(
+            "not_allowed_equipment",
+            &row.excluded_variants,
+            &saved.excluded_variants
+        );
+        setting!(
+            "override_model_equipment_category_filter",
+            row.model_category,
+            saved.model_category
+        );
+        compare_template_text(
+            report,
+            &format!("template {}.override_model", row.template),
+            &row.model_entity,
+            &saved.model_entity,
+            saved.model_entity_present,
+        );
+        if matches!(row.layout, Recorded::NotRecorded) {
+            report.difference(
+                format!("template {}.layout", row.template),
+                "unrecorded acquisition",
+                "saved spatial composition",
+            );
+        }
+        if let Some(layout) = report.recorded(
+            &row.layout,
+            "DivisionTemplateIcons.layout",
+            format!("template {}.layout", row.template),
+        ) {
+            if let Some(layout) = layout {
+                let mut actual = BTreeMap::new();
+                for (kind, grid) in [
+                    &layout.regiments,
+                    &layout.support,
+                    &layout.regimental_support,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    for (index, cell) in grid
+                        .cells
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, cell)| cell.occupied && cell.token != 0)
+                    {
+                        let Some(name) = tokens.get(&cell.token) else {
+                            report.difference(
+                                format!("template {}.grid token", row.template),
+                                cell.token,
+                                "unresolved",
+                            );
+                            continue;
+                        };
+                        if grid.rows == 0 {
+                            report.difference(
+                                format!("template {}.grid rows", row.template),
+                                0,
+                                "nonempty grid needs rows",
+                            );
+                            continue;
+                        }
+                        let index = u32::try_from(index)
+                            .map_err(|_| invalid("template cell index overflow"))?;
+                        actual.insert(
+                            (kind as u8, index / grid.rows, index % grid.rows),
+                            name.to_vec(),
+                        );
+                    }
+                }
+                setting!("spatial composition", &actual, &saved.composition);
+            } else {
+                report.difference(
+                    format!("template {}.layout", row.template),
+                    "unreadable",
+                    "saved composition",
+                );
+            }
         }
         // The recorded grouped entries group the three grids by definition, a
         // local clone apart from its global definition; each recorded grid
@@ -1052,7 +1646,7 @@ pub fn compare_division_template_icons(
                 *expected.entry(name.clone()).or_default() += 1;
             }
             if unresolved {
-                report.limitation("template sub-units include tokens absent from the captured lexical dictionary; composition was not compared", label);
+                report.difference(label, "unresolved subunit tokens", &expected);
             } else {
                 report.scalar_checks += 1;
                 if composition != expected {
@@ -1082,8 +1676,10 @@ pub fn compare_division_template_icons(
     }
     report.compared("DivisionTemplateIcons", rows.len());
     report.limitation("priority_unit and priority_unit_name are the sub-unit the game selects, a derived engine cache absent from text saves", "DivisionTemplateIcons");
-    report.limitation("composition compares per-name counts, the grouped entries against every saved cell and each recorded grid against its saved grid: no recorded entry keeps a cell's position, and a local clone and its global definition count under one name; a real subunit with token0 is explicitly unsupported and makes the capture unavailable", "DivisionTemplateIcons composition representation");
-    report.limitation("the representative and local-clone flags are derived engine caches absent from text saves; saved model choices and excluded variants are not parsed from the save", "DivisionTemplateIcons model inputs");
+    report.limitation("grouped composition compares per-name counts alongside the independent spatial comparison; a local clone and its global definition have the same saved name. Empty cells and grid dimensions have no independent saved representation", "DivisionTemplateIcons composition representation");
+    report.limitation("the representative and local-clone flags are derived engine caches absent from text saves; model choices and excluded variants compare their saved counterparts", "DivisionTemplateIcons model inputs");
+
+    report.limitation("speed_keys are the modifier keys of the movement priority sub-unit the game selects (which can differ from priority_unit) and of its unit categories, in native order with repeats kept; that selection is a derived engine cache absent from text saves, so only their nonzero contract is checked. Compare them against paused memory at the sampled hour", "DivisionTemplateIcons.speed_keys");
     report.limitation("the division template save writer omits the composition's signed division-count word consumed by formation counting. Saved grids and formation membership cannot certify this exact runtime count or the ability late-join arithmetic; a matched-hour native comparison remains necessary",
         "DivisionTemplateIcons.formation_division_count");
     Ok(())
@@ -1268,6 +1864,19 @@ pub fn compare_naval_units(
             continue;
         };
         report.ships += 1;
+        for (field, actual, expected) in [
+            ("manpower", &actual.acquired_manpower, expected.manpower),
+            (
+                "max_manpower",
+                &actual.required_manpower,
+                expected.max_manpower,
+            ),
+        ] {
+            report.compared(&format!("Ships.{field}"), 1);
+            if actual.require(field).ok().copied().flatten() != expected {
+                report.difference(format!("{label}.{field}"), actual, expected);
+            }
+        }
         if actual.task_force != expected.task_force {
             report.difference(
                 format!("{label}.task_force"),
@@ -1570,6 +2179,64 @@ pub fn compare_air_wings(
             continue;
         };
         report.air_wings += 1;
+        report.compared("AirWings.acquired_manpower", 1);
+        report.compared("AirWings.exile_country", 1);
+        match actual
+            .exile_country
+            .require("wing exile country")
+            .ok()
+            .copied()
+            .flatten()
+        {
+            Some(raw) => {
+                let tag = if raw > 0 {
+                    Some(required_country_tag(raw as u32, links)?)
+                } else {
+                    None
+                };
+                if tag != expected.government_in_exile_tag.as_deref() {
+                    report.difference(
+                        format!("{label}.government_in_exile_tag"),
+                        tag_text(tag),
+                        tag_text(expected.government_in_exile_tag.as_deref()),
+                    );
+                }
+            }
+            None => report.difference(
+                format!("{label}.government_in_exile_tag: capture unavailable"),
+                actual.exile_country,
+                &expected.government_in_exile_tag,
+            ),
+        }
+        if actual
+            .acquired_manpower
+            .require("wing manpower")
+            .ok()
+            .copied()
+            .flatten()
+            != expected.manpower
+        {
+            report.difference(
+                format!("{label}.manpower"),
+                actual.acquired_manpower,
+                expected.manpower,
+            );
+        }
+        report.compared("AirWings.replacement_setting", 1);
+        let setting = match &actual.replacement_setting {
+            replay_data::rows::Recorded::Value(Some(value)) => Some(*value),
+            _ => None,
+        };
+        if setting.is_none()
+            || expected.reinforcement_setting.is_none()
+            || setting != expected.reinforcement_setting
+        {
+            report.difference(
+                format!("{label}.reinforcement_setting"),
+                setting,
+                expected.reinforcement_setting,
+            );
+        }
         // The game emits name unconditionally outside checksum mode. This
         // oracle consumes ordinary text saves; absence never proves empty.
         if expected.name.is_none() {
@@ -1651,6 +2318,16 @@ pub fn compare_air_wings(
                 active,
             );
         }
+        if actual.mission_mask & 0x800 != 0 {
+            report.compared("AirWings.training_stop", 1);
+            if actual.training_stop() != Some(expected.stop_training_at_max_xp) {
+                report.difference(
+                    format!("{label}.stop_training_at_max_xp"),
+                    actual.training_stop(),
+                    expected.stop_training_at_max_xp,
+                );
+            }
+        }
         if actual.mission_region != expected.mission_region {
             report.difference(
                 format!("{label}.mission_region"),
@@ -1688,6 +2365,7 @@ pub fn compare_air_wings(
     }
     report.limitation("air wing transfer override is serialized through a resolved state or carrier, not its raw airbase handle; an omitted transfer field can also be an unresolved override", "AirWings.base_override");
     report.limitation("the wing save record holds no eligibility veto, counter or limit and no attached orders-group identity; they need a same-hour live comparison", "AirWings eligibility operands / attached_orders_group");
+    report.limitation("the wing save writer omits the retained attachment-coverage byte. Compare the Air grid markers and hovers at the matched hour; training-stop and resolved raid links remain independently save-compared", "AirWings.map_flags attachment coverage");
     report.limitation(
         "the air wing save writer does not write the wing base range that the map-range calculation scales; the save has no field for it",
         "AirWings.base_range_raw",

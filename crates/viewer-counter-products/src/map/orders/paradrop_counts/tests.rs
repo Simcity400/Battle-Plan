@@ -76,6 +76,8 @@ impl Fixture {
             wings: vec![200],
             carrier: Default::default(),
             transport_planes: Default::default(),
+            fuel_demand_raw: Default::default(),
+            fuel_allocated_raw: Default::default(),
         }]);
         out.put::<tables::AirWings>(vec![AirWingRow {
             id: 200,
@@ -201,6 +203,8 @@ fn owner_group_container_preserves_repeated_signed_planes_and_ignores_capacity()
         capacity_raw: -1,
         carrier: Default::default(),
         transport_planes: Default::default(),
+        fuel_demand_raw: Default::default(),
+        fuel_allocated_raw: Default::default(),
     }]);
     fixture.wing(|wing| wing.planes = i32::MAX);
     // order.country differs deliberately. No witnesses, aces, command power,

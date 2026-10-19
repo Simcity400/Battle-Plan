@@ -2,7 +2,7 @@ use super::*;
 use replay_frame::{frame::Metrics, frame::TableView};
 use viewer_foundation::table_access::TokenKeys;
 
-fn frame() -> DecodedFrame {
+pub(super) fn frame() -> DecodedFrame {
     DecodedFrame {
         branch: 1,
         hour: 0,
@@ -11,7 +11,7 @@ fn frame() -> DecodedFrame {
             .map(Into::into),
     }
 }
-fn set(frame: &mut DecodedFrame, rows: TableRows) {
+pub(super) fn set(frame: &mut DecodedFrame, rows: TableRows) {
     let index = rows.table().index();
     *frame.tables[index] = TableView::Complete(rows);
 }
@@ -22,7 +22,7 @@ fn forces(frame: &DecodedFrame) -> HashMap<u64, &TaskForceRow> {
         .map(|row| (row.id, row))
         .collect()
 }
-fn hour<'a>(
+pub(super) fn hour<'a>(
     frame: &'a DecodedFrame,
     anchors: &'a CounterContent,
     native: &'a NativeInputs,
@@ -42,10 +42,15 @@ fn hour<'a>(
     )
     .unwrap()
 }
-fn content(terrain: &[u8]) -> Content {
+pub(super) fn content(terrain: &[u8]) -> Content {
     Content {
         terrain: installed_content_core::terrain::parse_definitions(terrain).unwrap(),
+        allegiance_group_cutoff: 500.0,
         naval_terrain: BTreeMap::new(),
+        dominance: replay_derive::naval_dominance_derive::Defines::default(),
+        spotting: Default::default(),
+        patrol_air: Default::default(),
+        convoy: Default::default(),
         efficiencies: derive::Defines {
             convoy_defense_max_convoy_to_ship_ratio: 1_000_000,
             convoy_defense_max_region_to_taskforce_ratio: 150_000,
@@ -59,9 +64,11 @@ fn content(terrain: &[u8]) -> Content {
         distances: OnceLock::new(),
     }
 }
-fn anchors() -> CounterContent {
+pub(super) fn anchors() -> CounterContent {
     CounterContent {
+        recorded_labels: None,
         terrain: Default::default(),
+        wing_types: Ok(Arc::new(Default::default())),
         mission_content: Err("unused in fixture".into()),
         port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
             &installed_content_core::defines::Defines::new().unwrap(),
@@ -70,6 +77,7 @@ fn anchors() -> CounterContent {
         stack_scales: BTreeMap::new(),
         default_anchors: Arc::new(BTreeMap::new()),
         site_icons: Default::default(),
+        air_base_first_provinces: Default::default(),
         ports: BTreeMap::new(),
         building_icons: BuildingIconContent::default(),
         kinds: Arc::new(BTreeMap::new()),
@@ -77,6 +85,9 @@ fn anchors() -> CounterContent {
         region_of: Arc::new([(1, 1), (2, 2)].into()),
         region_provinces: [(1, vec![1]), (2, vec![2])].into(),
         region_icons: BTreeMap::new(),
+        region_names: Default::default(),
+        volunteer_air_defines: Err("unused in fixture".into()),
+        ground_crew_defines: Err("unused in fixture".into()),
         missing_standstill: Vec::new(),
         map: MapSize {
             width: 10,
@@ -148,7 +159,7 @@ fn unread_commander_is_named_unknown_and_read_zero_is_explicit() {
         &mut *frame.tables[TableId::NavalMissionTaskForces.index()]
     {
         rows[0].leader = 41;
-        rows[0].headquarters = vec![51];
+        rows[0].headquarters = vec![51].into();
     }
     let native = NativeInputs::read(&frame).unwrap();
     let combined = |frame: &DecodedFrame| {
@@ -453,4 +464,218 @@ fn unlinked_mission_owner_is_named_without_losing_the_other_operands() {
         Err("naval mission country 999999 is not linked".into())
     );
     assert_eq!(hour.combined(11, keys::NAVAL_COORDINATION), Ok(0));
+}
+
+#[test]
+fn dominance_patrol_preserves_registration_repeats_and_zero_designs() {
+    let mut frame = frame();
+    set(
+        &mut frame,
+        TableRows::TaskForces(vec![TaskForceRow {
+            id: 11,
+            mission: 1,
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::Ships(vec![ShipRow {
+            id: 1,
+            task_force: 11,
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::ShipModels(vec![ShipModelRow {
+            ship: 1,
+            variant: 70,
+            naval_power: Recorded::Value(Some([123, 0, 0, 0, 0])),
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
+            task_force: 11,
+            is_in_regions: 1,
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::TaskForceMissions(vec![TaskForceMissionRow {
+            task_force: 11,
+            current_region: 2,
+            regions: vec![2],
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::NavalMissionLedgers(vec![NavalMissionLedgerRow {
+            owner: 100,
+            region: 2,
+            task_forces: vec![11, 11],
+            ..Default::default()
+        }]),
+    );
+    let mut anchors = anchors();
+    anchors.mission_content = Ok(content(b"categories={ocean={}}"));
+    let native = NativeInputs::read(&frame).unwrap();
+    let links = [(100, 1)].into();
+    let ids = [(1, 100)].into();
+    let mut hour = hour(&frame, &anchors, &native, (&links, &ids));
+    assert_eq!(
+        hour.dominance_region(2, 100, &[]).unwrap(),
+        viewer_foundation::map::naval_dominance_sources::RegionalDominanceSources {
+            patrol: 246,
+            strike_multiplier: 100_000,
+            enemy_raiding: 0
+        }
+    );
+    assert_eq!(hour.dominance_region(3, 100, &[]).unwrap().patrol, 0);
+}
+
+#[test]
+fn optional_range_rows_are_demanded_only_when_existing_inputs_are_absent() {
+    let mut frame = frame();
+    set(
+        &mut frame,
+        TableRows::NavalDominanceTaskForceRanges(vec![NavalMissionTaskForceRow {
+            task_force: 11,
+            range_base: 345,
+            ..Default::default()
+        }]),
+    );
+    let mut anchors = anchors();
+    anchors.mission_content = Ok(content(b"categories={ocean={}}"));
+    let native = NativeInputs::default();
+    let links = BTreeMap::new();
+    let ids = BTreeMap::new();
+    assert_eq!(
+        hour(&frame, &anchors, &native, (&links, &ids))
+            .input(11)
+            .unwrap()
+            .range_base,
+        345
+    );
+    set(
+        &mut frame,
+        TableRows::NavalMissionTaskForces(vec![NavalMissionTaskForceRow {
+            task_force: 11,
+            range_base: 678,
+            ..Default::default()
+        }]),
+    );
+    *frame.tables[TableId::NavalDominanceTaskForceRanges.index()] =
+        replay_frame::frame::TableView::Unavailable {
+            reason: "unneeded sibling range refusal".into(),
+        };
+    assert_eq!(
+        hour(&frame, &anchors, &native, (&links, &ids))
+            .input(11)
+            .unwrap()
+            .range_base,
+        678
+    );
+}
+
+fn hover_entry(kind: u32, total: u32, active: Option<u32>) -> naval_missions::MissionEntry {
+    naval_missions::MissionEntry {
+        kind,
+        total,
+        active: Ok(active),
+        pride: Ok(false),
+        alert: Ok(false),
+        engagement: Ok(false),
+        efficiency: None,
+    }
+}
+
+#[test]
+fn mission_status_and_button_hovers_have_distinct_native_bodies() {
+    let mut anchors = anchors();
+    anchors.mission_content = Ok(content(b"categories={ocean={}}"));
+    let frame = frame();
+    let native = NativeInputs::default();
+    let links = BTreeMap::new();
+    let ids = BTreeMap::new();
+    let mut hour = hour(&frame, &anchors, &native, (&links, &ids));
+    let mut hovers = Default::default();
+    hover::prepare(
+        &mut hour,
+        &NavalMissionLedgerRow {
+            region: 7,
+            ..Default::default()
+        },
+        &[hover_entry(7, 3, None)],
+        &mut hovers,
+    );
+    let loc = Default::default();
+    let button = hovers[&(7, 7, hover::Control::Button)].render(&loc, "english", None);
+    assert_eq!(button.title, "HEADER");
+    assert_eq!(button.body, "RMB_TO_SELECT_ALL");
+    let status = hovers[&(7, 7, hover::Control::Status)].render(&loc, "english", None);
+    assert_eq!(
+        status.title,
+        "CURRENT_ASSIGNED_TASK_FORCE_FOR_MISSIONCURRENT_ALL_ACTIVE_TASK_FORCE_FOR_MISSION"
+    );
+    assert!(status.body.is_empty());
+    assert!(status.refused.is_empty());
+}
+
+#[test]
+fn strike_status_retains_repeated_aggression_lines_in_ledger_order() {
+    let mut frame = frame();
+    set(
+        &mut frame,
+        TableRows::TaskForces(vec![TaskForceRow {
+            id: 11,
+            mission: 2,
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
+            task_force: 11,
+            engagement_rule: 0,
+            name: Some(b"Test".to_vec()).into(),
+            ..Default::default()
+        }]),
+    );
+    let mut anchors = anchors();
+    anchors.mission_content = Ok(content(b"categories={ocean={}}"));
+    let native = NativeInputs::read(&frame).unwrap();
+    let links = BTreeMap::new();
+    let ids = BTreeMap::new();
+    let mut hour = hour(&frame, &anchors, &native, (&links, &ids));
+    let mut hovers = Default::default();
+    hover::prepare(
+        &mut hour,
+        &NavalMissionLedgerRow {
+            region: 7,
+            task_forces: vec![11, 11],
+            ..Default::default()
+        },
+        &[hover_entry(2, 2, Some(1))],
+        &mut hovers,
+    );
+    let mut loc = installed_content_localisation::localisation::Localisation::default();
+    loc.language = "english".into();
+    let status = hovers[&(7, 2, hover::Control::Status)].render(&loc, "english", None);
+    assert_eq!(
+        status.title,
+        "CURRENT_ACTIVE_TASK_FORCE_FOR_DOMINANCE_WARNING\nAGRESSIVE_MISSION_WITH_NO_AGGRESSIVENESS\nAGRESSIVE_MISSION_WITH_NO_AGGRESSIVENESS\n\nCURRENT_ASSIGNED_TASK_FORCE_FOR_MISSION\nCURRENT_ACTIVE_TASK_FORCE_FOR_DOMINANCE"
+    );
+    assert!(status.refused.is_empty());
+    loc.language = "other".into();
+    let refused = hovers[&(7, 2, hover::Control::Status)].render(&loc, "english", None);
+    assert_eq!(refused.refused.values().sum::<usize>(), 2);
+    assert!(
+        refused
+            .title
+            .contains("CURRENT_ASSIGNED_TASK_FORCE_FOR_MISSION")
+    );
 }

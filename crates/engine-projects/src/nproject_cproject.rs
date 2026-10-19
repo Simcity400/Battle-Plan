@@ -42,6 +42,58 @@ pub const HISTORY_COUNT: usize = 0x74;
 pub const STARTED: usize = 0x1bc;
 /// Project completed u8 flag, restricted to zero or one.
 pub const COMPLETED: usize = 0x1bd;
+/// Embedded persistent project variable store.
+pub const VARIABLES: usize = 0x138;
+/// Nullable authored prototype reward awaiting a choice.
+pub const PENDING_REWARD: usize = 0x190;
+pub const REWARD_TOKEN: usize = 0x08;
+pub const REWARD_VTABLE_RVA: usize = 0x2705138;
+const DEFINITION_DATA: usize = 0x20;
+const TEMPLATE_DATA: usize = 0x18;
+const TEMPLATE_VTABLE_RVA: usize = 0x292_a158;
+const TEMPLATE_REWARDS: usize = 0x358;
+
+/// The pending object's occurrence in this project's retained template. The
+/// same token may name distinct inline objects, so its spelling alone is not
+/// identity. This lookup runs only when the certified pending offer changes.
+pub fn pending_reward_ordinal(
+    memory: &impl Memory,
+    base: usize,
+    project: usize,
+    pending: usize,
+) -> Result<u32, &'static str> {
+    let definition = project
+        .checked_add(DEFINITION_DATA)
+        .and_then(|at| crate::read::<u64>(memory, at))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .filter(|pointer| *pointer != 0)
+        .ok_or("pending reward template unreadable")?;
+    let template = definition
+        .checked_sub(TEMPLATE_DATA)
+        .ok_or("pending reward template address invalid")?;
+    if crate::read::<u64>(memory, template)
+        != base
+            .checked_add(TEMPLATE_VTABLE_RVA)
+            .map(|value| value as u64)
+    {
+        return Err("pending reward template identity mismatch");
+    }
+    let rewards = definition
+        .checked_add(TEMPLATE_REWARDS)
+        .and_then(|at| Array::read(memory, at, 16))
+        .ok_or("pending reward template roster invalid")?;
+    for ordinal in 0..rewards.count {
+        let address = rewards
+            .element(ordinal, 16)
+            .ok_or("pending reward template occurrence invalid")?;
+        let pointer = crate::read::<u64>(memory, address)
+            .ok_or("pending reward template occurrence unreadable")?;
+        if pointer == pending as u64 {
+            return Ok(ordinal);
+        }
+    }
+    Err("pending reward object is absent from its template")
+}
 
 /// A batch's identity gather and its state-machine gather are both checked for
 /// the whole batch before any record is decoded, so this size is part of the
@@ -70,6 +122,8 @@ const PROJECT_HEADER_LAYOUT: RecordLayout<'static> =
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
+    /// Same-pass acquisition only; never serialized or followed by decoding.
+    pub source_pointer: usize,
     pub owner: u32,
     pub local_id: u32,
     pub definition_id: u32,
@@ -349,6 +403,7 @@ fn walk_tables(
                                     }
                                     let phase = ordinal * machine::PHASE_SIZE;
                                     Ok(Row {
+                                        source_pointer: pointers[ordinal],
                                         owner,
                                         local_id: id,
                                         definition_id: u32_at(bytes, DEFINITION_HANDLE),
@@ -505,6 +560,41 @@ mod tests {
     const MANY_MACHINES: usize = 0x20000;
     const MANY_HISTORIES: usize = 0x40000;
     const MANY_COUNT: usize = BATCH * 2 + 1;
+
+    #[test]
+    fn pending_reward_identity_preserves_template_occurrence_instead_of_repeated_token() {
+        let mut bytes = vec![0; 0x8000];
+        let template = 0x1000;
+        let roster = 0x2000;
+        put64(
+            &mut bytes,
+            PROJECT + DEFINITION_DATA,
+            (template + TEMPLATE_DATA) as u64,
+        );
+        put64(&mut bytes, template, TEMPLATE_VTABLE_RVA as u64);
+        array(
+            &mut bytes,
+            template + TEMPLATE_DATA + TEMPLATE_REWARDS,
+            roster,
+            3,
+        );
+        for (ordinal, pointer) in [0x3000, 0x4000, 0x5000].into_iter().enumerate() {
+            put64(&mut bytes, roster + ordinal * 16, pointer as u64);
+            put32(&mut bytes, pointer + REWARD_TOKEN, 77);
+        }
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(pending_reward_ordinal(&memory, 0, PROJECT, 0x4000), Ok(1));
+        assert!(pending_reward_ordinal(&memory, 0, PROJECT, 0x6000).is_err());
+        put64(&mut bytes, template, 0);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert!(pending_reward_ordinal(&memory, 0, PROJECT, 0x4000).is_err());
+    }
 
     fn put32(bytes: &mut [u8], address: usize, value: u32) {
         bytes[address..address + 4].copy_from_slice(&value.to_le_bytes());

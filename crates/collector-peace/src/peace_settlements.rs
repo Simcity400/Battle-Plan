@@ -601,9 +601,16 @@ impl Hooks {
     pub unsafe fn new(memory: &impl Memory, base: usize, capacity: Capacities) -> Self {
         presize(capacity);
         install_offered();
-        let attempt = (|| {
+        let attempt: Result<Hook, String> = (|| {
             let site =
-                engine_peace::peace_finalizer_site::verify(memory, base).map_err(str::to_owned)?;
+                engine_peace::peace_finalizer_site::verify(memory, base).map_err(|cause| {
+                    crate::hook::installation::refused(
+                        crate::hook::installation::Kind::Sentinel,
+                        Some(base + engine_peace::peace_finalizer_site::RVA),
+                        cause,
+                    );
+                    cause.to_owned()
+                })?;
             if LOG.load(Ordering::Acquire).is_null() {
                 return Err("peace finalizer allocation failed".into());
             }
@@ -627,6 +634,11 @@ impl Hooks {
             hook: match attempt {
                 Ok(hook) => Some(hook),
                 Err(reason) => {
+                    crate::hook::installation::refused(
+                        crate::hook::installation::Kind::Construction,
+                        None,
+                        &reason,
+                    );
                     let _ = UNHOOKED.set(reason);
                     None
                 }

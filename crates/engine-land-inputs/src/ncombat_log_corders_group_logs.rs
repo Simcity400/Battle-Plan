@@ -7,7 +7,7 @@
 
 /// Group-log primary vtable.
 pub const VTABLE_RVA: usize = 0x0294_70a8;
-/// Enemy equipment destroyed by this group, excluded from recording.
+/// Enemy equipment destroyed by this group, recorded by retained-history events.
 pub const ENEMY_LOSSES: usize = 0x08;
 /// Recovered equipment after combat, grouped by month with reason zero.
 pub const RECOVERED: usize = 0x20;

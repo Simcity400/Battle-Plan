@@ -3,6 +3,7 @@
 use collector_memory::terminal as allocation;
 use collector_status::status;
 
+pub mod certified;
 pub mod projection;
 pub mod table_conversion;
 

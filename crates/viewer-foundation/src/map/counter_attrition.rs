@@ -73,3 +73,39 @@ impl Content {
         })
     }
 }
+
+/// Content shared by fresh division attrition and the existing border-power calculation.
+pub struct PanelContent {
+    pub terms: Content,
+    pub members: std::collections::BTreeMap<u32, Vec<u32>>,
+    pub neighbors: Result<std::collections::BTreeMap<u32, Vec<u32>>, String>,
+    pub border: Result<super::border_power::Defines, String>,
+}
+impl PanelContent {
+    pub fn read(
+        layers: &installed_content_core::ResolvedLayers,
+        map: &installed_content_core::map::MapData,
+        sub_units: Result<std::sync::Arc<installed_content_core::unit_leader::SubUnits>, String>,
+    ) -> Result<Self, String> {
+        let defines = installed_content_core::defines::read(layers).map_err(|why| why.to_string())?;
+        let terrain =
+            installed_content_core::terrain::read_definitions(layers).map_err(|why| why.to_string())?;
+        let terms = Content::read(&defines, &terrain, sub_units).map_err(|why| why.to_string())?;
+        let (states, _) = installed_content_states::states::read(layers, &defines, &map.definitions)
+            .map_err(|why| why.to_string())?;
+        let members = states
+            .definitions()
+            .iter()
+            .map(|(&id, state)| (id, state.provinces.clone()))
+            .collect();
+        let neighbors = installed_content_core::province_graph::ProvinceGraph::read(layers)
+            .and_then(|(graph, _)| graph.neighbor_states(&members))
+            .map_err(|why| why.to_string());
+        Ok(Self {
+            terms,
+            members,
+            neighbors,
+            border: super::border_power::Defines::load(&defines).map_err(|why| why.to_string()),
+        })
+    }
+}

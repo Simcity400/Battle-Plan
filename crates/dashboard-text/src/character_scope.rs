@@ -4,7 +4,7 @@
 //! leader (UnitLeaders or CharacterOperatives), its retired records
 //! (CountryRetiredCharacters) and its roles' traits (CharacterRoleTraits).
 
-use crate::state_resources::Links;
+use crate::{state_resources::Links, triggers::Failure};
 use installed_content_core::{leader_traits::LeaderTraits, unit_leader::Traits};
 use replay_data::{
     rows::CharacterOperativeRow, rows::CharacterRoleTraitRow, rows::CharacterRow,
@@ -12,7 +12,7 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 
-type Evaluation<T> = Result<T, String>;
+type Evaluation<T> = Result<T, Failure>;
 
 /// The fields of each table [`Tables`] reads, by
 /// [`replay_data::rows::TableId::field_name`]: the row keys besides, and nothing
@@ -51,12 +51,12 @@ pub const FIELDS: [(replay_data::rows::TableId, &[&str]); 6] = {
 /// The recorded character tables a character scope's `has_trait`, `skill`
 /// and `tag` read.
 pub struct Tables<'a> {
-    characters: Result<&'a [CharacterRow], String>,
-    unit_leaders: Result<&'a [UnitLeaderRow], String>,
-    unit_leader_traits: Result<&'a [UnitLeaderTraitRow], String>,
-    role_traits: Result<&'a [CharacterRoleTraitRow], String>,
-    operatives: Result<&'a [CharacterOperativeRow], String>,
-    retired: Result<&'a [CountryCharacterRow], String>,
+    characters: Result<&'a [CharacterRow], Failure>,
+    unit_leaders: Result<&'a [UnitLeaderRow], Failure>,
+    unit_leader_traits: Result<&'a [UnitLeaderTraitRow], Failure>,
+    role_traits: Result<&'a [CharacterRoleTraitRow], Failure>,
+    operatives: Result<&'a [CharacterOperativeRow], Failure>,
+    retired: Result<&'a [CountryCharacterRow], Failure>,
 }
 
 /// A character's direct unit leader (UnitLeaders), else its resolved
@@ -90,14 +90,12 @@ impl UnitLeader<'_> {
             Self::Direct(row) if row.skill_status == 0 => Err(format!(
                 "unit leader {} has no skill object (UnitLeaders skill_status 0), which the skill read requires",
                 row.id
-            )),
+            ).into()),
             Self::Direct(row) => Ok(row.skill_level),
-            Self::Referenced(row) => row.skill_level.ok_or_else(|| {
-                format!(
+            Self::Referenced(row) => row.skill_level.ok_or_else(|| Failure::input(replay_data::rows::TableId::CharacterOperatives, "skill_level", Some(crate::triggers::Store::Character(row.character)), format!(
                     "character {}'s referenced unit leader has no skill object, which the skill read requires",
                     row.character
-                )
-            }),
+                ))),
         }
     }
 }
@@ -106,23 +104,28 @@ impl UnitLeader<'_> {
 /// country-leader traits and the lexer for a scientist trait.
 pub struct TraitNames<'a> {
     pub units: &'a Traits,
-    pub country_leaders: Result<&'a LeaderTraits, String>,
+    pub country_leaders: Result<&'a LeaderTraits, Failure>,
     pub lexer: &'a dyn Links,
 }
 
 impl Default for Tables<'_> {
     /// Every table unavailable.
     fn default() -> Self {
-        fn none<T>() -> Result<T, String> {
-            Err("the table is not recorded here".to_owned())
+        fn none<T>(table: replay_data::rows::TableId) -> Result<T, Failure> {
+            Err(Failure::input(
+                table,
+                "",
+                None,
+                "the table is not recorded here",
+            ))
         }
         Self {
-            characters: none(),
-            unit_leaders: none(),
-            unit_leader_traits: none(),
-            role_traits: none(),
-            operatives: none(),
-            retired: none(),
+            characters: none(replay_data::rows::TableId::Characters),
+            unit_leaders: none(replay_data::rows::TableId::UnitLeaders),
+            unit_leader_traits: none(replay_data::rows::TableId::UnitLeaderTraits),
+            role_traits: none(replay_data::rows::TableId::CharacterRoleTraits),
+            operatives: none(replay_data::rows::TableId::CharacterOperatives),
+            retired: none(replay_data::rows::TableId::CountryRetiredCharacters),
         }
     }
 }
@@ -134,10 +137,15 @@ impl<'a> Tables<'a> {
         fn table<'f, T: replay_data::rows::TableSchema>(
             frame: &'f DecodedFrame,
             name: &str,
-        ) -> Result<&'f [T::Row], String> {
-            frame
-                .complete::<T>()
-                .map_err(|error| format!("{name} is not complete this hour: {error}"))
+        ) -> Result<&'f [T::Row], Failure> {
+            frame.complete::<T>().map_err(|error| {
+                Failure::input(
+                    T::ID,
+                    "",
+                    None,
+                    format!("{name} is not complete this hour: {error}"),
+                )
+            })
         }
         Self {
             characters: table::<tables::Characters>(frame, "Characters"),
@@ -152,30 +160,46 @@ impl<'a> Tables<'a> {
     fn character(&self, character: u32) -> Evaluation<&'a CharacterRow> {
         self.characters
             .as_ref()
-            .map_err(Clone::clone)?
+            .map_err(|failure| {
+                failure.reached();
+                failure.clone()
+            })?
             .iter()
             .find(|row| row.id == character)
-            .ok_or_else(|| format!("character {character} has no Characters row"))
+            .ok_or_else(|| {
+                Failure::input(
+                    replay_data::rows::TableId::Characters,
+                    "",
+                    Some(crate::triggers::Store::Character(character)),
+                    format!("character {character} has no Characters row"),
+                )
+            })
     }
 
     /// The direct leader recorded by UnitLeaders' `character_id`, else
     /// the referenced leader recorded by CharacterOperatives when resolved;
     /// `None` for neither.
     pub fn unit_leader(&self, character: u32) -> Evaluation<Option<UnitLeader<'a>>> {
-        let leaders = self.unit_leaders.as_ref().map_err(Clone::clone)?;
+        let leaders = self.unit_leaders.as_ref().map_err(|failure| {
+            failure.reached();
+            failure.clone()
+        })?;
         let mut found = leaders.iter().filter(|row| row.character_id == character);
         if let Some(leader) = found.next() {
             if found.next().is_some() {
                 return Err(format!(
                     "character {character} has more than one UnitLeaders row, and a character holds one direct unit leader"
-                ));
+                ).into());
             }
             return Ok(Some(UnitLeader::Direct(leader)));
         }
         Ok(self
             .operatives
             .as_ref()
-            .map_err(Clone::clone)?
+            .map_err(|failure| {
+                failure.reached();
+                failure.clone()
+            })?
             .iter()
             .find(|row| row.character == character && row.resolved)
             .map(UnitLeader::Referenced))
@@ -217,7 +241,15 @@ impl<'a> Tables<'a> {
             return Ok(true);
         }
         let country = canonical(own.country)?;
-        for row in self.retired.as_ref().map_err(Clone::clone)?.iter() {
+        for row in self
+            .retired
+            .as_ref()
+            .map_err(|failure| {
+                failure.reached();
+                failure.clone()
+            })?
+            .iter()
+        {
             if canonical(row.country)? != country {
                 continue;
             }
@@ -252,7 +284,10 @@ impl<'a> Tables<'a> {
             };
             Ok(Some(match leader {
                 UnitLeader::Direct(leader) => {
-                    let assigned = self.unit_leader_traits.as_ref().map_err(Clone::clone)?;
+                    let assigned = self.unit_leader_traits.as_ref().map_err(|failure| {
+                        failure.reached();
+                        failure.clone()
+                    })?;
                     let reference = (u64::from(leader.id) << 32) | u64::from(leader.reference_type);
                     assigned
                         .iter()
@@ -289,22 +324,26 @@ impl<'a> Tables<'a> {
             return Ok(assigned.contains(&ordinal));
         }
         let shown = String::from_utf8_lossy(operand);
-        let country_leaders = names
-            .country_leaders
-            .as_ref()
-            .map_err(|why| format!("the country-leader traits are unavailable: {why}"))?;
-        let rows = self.role_traits.as_ref().map_err(Clone::clone)?;
+        let country_leaders = names.country_leaders.as_ref().map_err(|why| {
+            why.clone()
+                .context(|why| format!("the country-leader traits are unavailable: {why}"))
+        })?;
+        let rows = self.role_traits.as_ref().map_err(|failure| {
+            failure.reached();
+            failure.clone()
+        })?;
         let own = || rows.iter().filter(move |row| row.character == character);
         let name = std::str::from_utf8(operand)
             .map_err(|_| format!("trait {shown} is not UTF-8, as a trait name is"))?;
         match country_leaders.first_ordinal(name) {
             Err(gap) => Err(format!(
                 "whether {shown} is a country-leader trait, and which definition, is unknown: {gap}"
-            )),
+            )
+            .into()),
             // The first definition of the name, by identity: its database
             // ordinal, which a later definition of the name lacks.
             Ok(Some(ordinal)) => {
-                let token = names.lexer.token_of(operand)?;
+                let token = names.lexer.token_input(operand)?;
                 holds_country_leader_trait(
                     own().filter(|row| row.kind != CharacterRoleTraitRow::SCIENTIST),
                     country_leaders,
@@ -314,7 +353,7 @@ impl<'a> Tables<'a> {
                 )
             }
             // The scientist trait database is keyed by the token.
-            Ok(None) => Ok(names.lexer.token_of(operand)?.is_some_and(|token| {
+            Ok(None) => Ok(names.lexer.token_input(operand)?.is_some_and(|token| {
                 own().any(|row| {
                     row.kind == CharacterRoleTraitRow::SCIENTIST && row.tokens.contains(&token)
                 })
@@ -344,7 +383,7 @@ pub(crate) fn holds_country_leader_trait<'a>(
                 return Err(format!(
                     "character {} holds trait {name}'s token as definition {definition}, which the content's country-leader traits do not give that name, so which definition the name lookup finds is unknown",
                     row.character
-                ));
+                ).into());
             }
         }
     }

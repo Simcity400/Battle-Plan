@@ -5,6 +5,7 @@ use crate::rows::compatibility::{EFFECT_INPUTS_FORMAT, POLITICAL_FORMAT};
 fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
     let table = TableId::WeatherProvinces;
     let row = WeatherProvinceRow {
+        daylight: Recorded::Value(None),
         id: 7,
         snow: i64::MIN,
         permanent_snow: i64::MAX,
@@ -43,6 +44,7 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
         display: Recorded::NotRecorded,
         temperature_pass: Recorded::NotRecorded,
         modifiers: Recorded::NotRecorded,
+        daylight: Recorded::NotRecorded,
         ..row.clone()
     };
     for version in [93, EFFECT_INPUTS_FORMAT] {
@@ -54,7 +56,7 @@ fn historical_weather_keeps_its_prefix_without_inventing_a_stored_clock() {
         let historical = WeatherProvinceRow::decode_fields(row.key(), &mut input).unwrap();
         input.finish().unwrap();
         assert_eq!(historical, expected);
-        assert_eq!(historical.not_recorded_fields(), 0x1ff << 6);
+        assert_eq!(historical.not_recorded_fields(), 0x3ff << 6);
         assert_eq!(
             historical.temperature.record(),
             Ok(TemperatureRecord::AtHour(-1))
@@ -304,7 +306,7 @@ fn decode_format_101_payloads<T: RowCodec + Fields + std::fmt::Debug>(
 }
 
 #[test]
-fn retired_selected_transport_and_route_previews_discard_format_101_payloads() {
+fn retired_previews_discard_supported_payloads_and_current_country_keeps_tombstone() {
     let province = decode_format_101_payloads(
         TableId::Provinces,
         &ProvinceRow {
@@ -345,17 +347,21 @@ fn retired_selected_transport_and_route_previews_discard_format_101_payloads() {
     assert_eq!(appearance.red, 1);
     assert_eq!(appearance.transport_convoys, Recorded::Value(Retired));
 
-    let counters = decode_format_101_payloads(
-        TableId::CountryCounterInputs,
-        &CountryCounterInputRow {
-            country: 7,
-            first_division: u64::MAX,
-            forward_visibility: Recorded::Value(None),
-            ..Default::default()
-        },
-        &[(13, &[1, 41, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0])],
+    let counters = CountryCounterInputRow {
+        country: 7,
+        first_division: u64::MAX,
+        air_combat_modifiers_known: true.into(),
+        air_attack_factor: Some(i64::MIN).into(),
+        ..Default::default()
+    };
+    let mut bytes = Vec::new();
+    counters.encode_fields(&mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    assert_eq!(
+        CountryCounterInputRow::decode_fields(counters.key(), &mut input).unwrap(),
+        counters
     );
-    assert_eq!(counters.first_division, u64::MAX);
+    input.finish().unwrap();
     assert_eq!(counters.movement, Recorded::Value(Retired));
 
     let gun = decode_format_101_payloads(
@@ -448,29 +454,6 @@ fn selected_routes_published_prefixes_never_invent_current_inputs_in_snapshots_o
             owner_area: Recorded::NotRecorded,
             area_node: Recorded::NotRecorded,
             ..province.clone()
-        },
-    );
-
-    let movement = DivisionMovementRow {
-        division: u64::MAX,
-        source: 7,
-        ..Default::default()
-    };
-    historical(
-        TableId::DivisionMovement,
-        15,
-        &movement,
-        &DivisionMovementRow {
-            withdrawal: Recorded::NotRecorded,
-            movement_priority: Recorded::NotRecorded,
-            order_transport: Recorded::NotRecorded,
-            fresh: Recorded::NotRecorded,
-            combat_references: Recorded::NotRecorded,
-            selected: Recorded::NotRecorded,
-            transport: Recorded::NotRecorded,
-            base_speed: Recorded::NotRecorded,
-            fuel: Recorded::NotRecorded,
-            ..movement.clone()
         },
     );
 

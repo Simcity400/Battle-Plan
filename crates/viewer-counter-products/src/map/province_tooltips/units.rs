@@ -15,6 +15,7 @@ use viewer_foundation::{map::perspective::Vision, table_access::TokenNames};
 pub struct Content {
     subunits: SubUnits,
     defines: CountDefines,
+    template_reveal: Result<viewer_foundation::map::visibility::template_reveal::Defines, String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -26,6 +27,11 @@ struct CountDefines {
 }
 
 impl Content {
+    pub(crate) fn template_reveal_defines(
+        &self,
+    ) -> Result<&viewer_foundation::map::visibility::template_reveal::Defines, String> {
+        self.template_reveal.as_ref().map_err(Clone::clone)
+    }
     pub fn load(defines: &Defines, subunits: Result<&SubUnits, &str>) -> Result<Self, String> {
         let subunits = subunits.map_err(str::to_owned)?;
         Self::from_defines(defines, subunits).map_err(|error| error.to_string())
@@ -40,6 +46,10 @@ impl Content {
             ));
         }
         Ok(Self {
+            template_reveal: viewer_foundation::map::visibility::template_reveal::Defines::load(
+                defines,
+            )
+            .map_err(|error| error.to_string()),
             subunits: subunits.clone(),
             defines: CountDefines {
                 denominator: denominators[1],

@@ -217,8 +217,12 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
         saved.air_wings.insert(
             id,
             installed_content_save::AirWing {
+                government_in_exile_tag: None,
+                manpower: None,
+
                 id,
                 owner: b"GER".to_vec(),
+                reinforcement_setting: Some(0),
                 name: expected,
                 country_override: b"---".to_vec(),
                 air_base: 0,
@@ -226,7 +230,10 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
                 mission_mask: 0,
                 mission_region: None,
                 mission_active: None,
+                stop_training_at_max_xp: false,
                 region_change_penalty: None,
+                transfer_progress: None,
+                transferring_to: None,
                 pool_ordinal: 0,
             },
         );
@@ -237,7 +244,9 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
                 id,
                 owner: 101,
                 planes: 1,
+                exile_country: Some(0).into(),
                 name,
+                replacement_setting: Recorded::Value(Some(0)),
                 ..Default::default()
             }]),
         );
@@ -260,6 +269,82 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
         );
         if differences != 0 {
             assert!(report.differences[0].contains(".name"));
+        }
+    }
+}
+
+#[test]
+fn wing_replacement_oracle_checks_raw_bytes_and_never_waives_missing_or_unavailable_values() {
+    use replay_data::rows::{AirWingRow, Recorded};
+    let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+    let id = (1 << 32) | 69;
+    let country = frame.complete::<tables::Countries>().unwrap()[0].clone();
+    let links = BTreeMap::from([(101, &country)]);
+    saved.air.wings.push(installed_content_save::air::Wing {
+        id,
+        pool_type: b"fixture_plane".to_vec(),
+        name: Some(Vec::new()),
+        accidents: None,
+        experience: zero(),
+        equipment: installed_content_save::air::EquipmentPool {
+            entries: Vec::new(),
+            allow_zero: false,
+        },
+        ace: None,
+        raid: None,
+    });
+    for (actual, expected, differences) in [
+        (Recorded::Value(Some(255)), Some(255), 0),
+        (Recorded::Value(Some(254)), Some(255), 1),
+        (Recorded::Value(None), Some(255), 1),
+        (Recorded::NotRecorded, Some(0), 1),
+        (Recorded::Value(Some(0)), None, 1),
+    ] {
+        saved.air_wings.insert(
+            id,
+            installed_content_save::AirWing {
+                government_in_exile_tag: None,
+                manpower: None,
+                stop_training_at_max_xp: false,
+                transfer_progress: None,
+                transferring_to: None,
+                id,
+                owner: b"GER".to_vec(),
+                reinforcement_setting: expected,
+                name: Some(Vec::new()),
+                country_override: b"---".to_vec(),
+                air_base: 0,
+                planes: 1,
+                mission_mask: 0,
+                mission_region: None,
+                mission_active: None,
+                region_change_penalty: None,
+                pool_ordinal: 0,
+            },
+        );
+        set(
+            &mut frame,
+            TableId::AirWings,
+            TableRows::AirWings(vec![AirWingRow {
+                id,
+                owner: 101,
+                planes: 1,
+                name: Recorded::Value(Some(Vec::new())),
+                exile_country: Some(0).into(),
+                replacement_setting: actual,
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_air_wings(&frame, &saved, &links, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
+        );
+        if differences != 0 {
+            assert!(report.differences[0].contains("reinforcement_setting"));
         }
     }
 }
@@ -295,15 +380,23 @@ fn division_country_ordinal_compares_the_full_saved_roster() {
         .insert(b"GER".to_vec(), vec![second, first]);
     let mut rows = vec![
         replay_data::rows::DivisionStatusRow {
+            officer_experience: Some(0).into(),
+            career_counter: Some(0).into(),
             out_of_supply_days: replay_data::rows::Recorded::NotRecorded,
             division: first,
+            experience: replay_data::rows::Recorded::NotRecorded,
+            pending_template: replay_data::rows::Recorded::NotRecorded,
             country_ordinal: replay_data::rows::Recorded::Value(Some(1)),
             supply: replay_data::rows::Recorded::NotRecorded,
             ..Default::default()
         },
         replay_data::rows::DivisionStatusRow {
+            officer_experience: Some(0).into(),
+            career_counter: Some(0).into(),
             out_of_supply_days: replay_data::rows::Recorded::NotRecorded,
             division: second,
+            experience: replay_data::rows::Recorded::NotRecorded,
+            pending_template: replay_data::rows::Recorded::NotRecorded,
             country_ordinal: replay_data::rows::Recorded::Value(Some(0)),
             supply: replay_data::rows::Recorded::NotRecorded,
             ..Default::default()
@@ -355,6 +448,7 @@ fn division_status_naming_takes_the_witnessed_member_template() {
     saved.division_templates.insert(
         standard,
         installed_content_save::DivisionTemplate {
+            origin_type: None,
             template: 0,
             country: b"GER".to_vec(),
             name: Vec::new(),
@@ -366,6 +460,7 @@ fn division_status_naming_takes_the_witnessed_member_template() {
             foreign_template_tag: None,
             composition: BTreeMap::new(),
             names_group: Some(b"GER_INF_01".to_vec()),
+            ..Default::default()
         },
     );
     saved.divisions.insert(
@@ -400,6 +495,8 @@ fn division_status_naming_takes_the_witnessed_member_template() {
             &mut frame,
             TableId::DivisionStatus,
             TableRows::DivisionStatus(vec![DivisionStatusRow {
+                officer_experience: Some(0).into(),
+                career_counter: Some(0).into(),
                 division: id,
                 naming: Recorded::Value(Some(NameOperands {
                     ordered: 1,
@@ -513,9 +610,13 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
             &mut frame,
             TableId::DivisionStatus,
             TableRows::DivisionStatus(vec![DivisionStatusRow {
+                officer_experience: Some(0).into(),
+                career_counter: Some(0).into(),
                 out_of_supply_days: replay_data::rows::Recorded::NotRecorded,
                 division: id,
                 supply_grace_maximum: Recorded::Value(0),
+                experience: Recorded::NotRecorded,
+                pending_template: Recorded::NotRecorded,
                 supply_grace_remaining: Recorded::Value(0),
                 supply: supply.clone(),
                 ..Default::default()
@@ -565,9 +666,13 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
         &mut frame,
         TableId::DivisionStatus,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
+            officer_experience: Some(0).into(),
+            career_counter: Some(0).into(),
             out_of_supply_days: replay_data::rows::Recorded::NotRecorded,
             division: id,
             supply_grace_remaining: Recorded::NotRecorded,
+            experience: Recorded::NotRecorded,
+            pending_template: Recorded::NotRecorded,
             supply: Recorded::Value(None),
             ..Default::default()
         }]),
@@ -600,6 +705,88 @@ fn division_disrupted_supply_oracle_checks_positive_presence_at_display_precisio
             .limitations
             .contains_key("DivisionStatus.supply_grace_remaining not recorded")
     );
+}
+
+/// A combat movement word belongs only to a division in combat and not
+/// withdrawing; none is valid for every division. A move_flags bit outside the
+/// defined flags is a difference.
+#[test]
+fn division_status_checks_the_combat_movement_branch_and_undefined_move_flags() {
+    use replay_data::rows::{DivisionMovementRow, DivisionStatusRow, Recorded};
+    let (mut frame, saved, _, _) = super::super::fixtures::fixture();
+    let id = (7_u64 << 32) | 51;
+    let all_flags = DivisionStatusRow::MOVE_EXILED
+        | DivisionStatusRow::MOVE_CAN_EXFILTRATE_FROM_COAST
+        | DivisionStatusRow::MOVE_NONCORE_SUPPLY_BYPASS
+        | DivisionStatusRow::MOVE_NONCORE_AIR;
+    let mut differences = |combat_movement: Option<i64>,
+                           move_flags: u8,
+                           combat_count: u32,
+                           withdrawal: u8|
+     -> Vec<String> {
+        set(
+            &mut frame,
+            TableId::DivisionStatus,
+            TableRows::DivisionStatus(vec![DivisionStatusRow {
+                division: id,
+                out_of_supply_days: Recorded::NotRecorded,
+                supply: Recorded::NotRecorded,
+                combat_movement: Recorded::Value(Some(combat_movement)),
+                move_flags,
+                ..Default::default()
+            }]),
+        );
+        set(
+            &mut frame,
+            TableId::DivisionMovement,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                division: id,
+                combat_count,
+                withdrawal: Recorded::Value(Some(withdrawal)),
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_division_status(
+            &frame,
+            &saved,
+            &BTreeMap::new(),
+            &Ok(50_000),
+            &Ok(72),
+            &mut report,
+        )
+        .unwrap();
+        assert!(
+            report.limitations.keys().any(|reason| {
+                reason.starts_with("combat_movement is the movement word")
+                    && reason.contains("the save omits")
+            }),
+            "{:?}",
+            report.limitations
+        );
+        report
+            .differences
+            .into_iter()
+            .filter(|line| line.contains(".combat_movement") || line.contains(".move_flags"))
+            .collect()
+    };
+    // In combat and not withdrawing: a land combat's word or none (naval or unmatched).
+    assert_eq!(
+        differences(Some(-13_000), all_flags, 2, 0),
+        Vec::<String>::new()
+    );
+    assert_eq!(differences(None, 0, 2, 0), Vec::<String>::new());
+    // Outside combat or withdrawing, only none.
+    assert_eq!(differences(None, 0, 0, 1), Vec::<String>::new());
+    for (combat_count, withdrawal) in [(0, 0), (2, 1)] {
+        let lines = differences(Some(-13_000), 0, combat_count, withdrawal);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains(".combat_movement"), "{lines:?}");
+    }
+    // A bit outside the defined flags.
+    let lines = differences(None, all_flags | 0x80, 0, 0);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains(".move_flags"), "{lines:?}");
 }
 
 #[test]
@@ -873,6 +1060,10 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
     saved.ships.insert(
         15,
         installed_content_save::Ship {
+            manpower: None,
+            max_manpower: None,
+
+            has_criticals: false,
             id: 15,
             roster_ordinal: 0,
             task_force: 14,
@@ -1085,6 +1276,10 @@ fn ship_experience_report(recorded: i64) -> Report {
     saved.ships.insert(
         15,
         installed_content_save::Ship {
+            manpower: None,
+            max_manpower: None,
+
+            has_criticals: false,
             id: 15,
             roster_ordinal: 0,
             task_force: 14,
@@ -1220,6 +1415,643 @@ fn fleet_name_is_mandatory_in_ordinary_save_even_for_historical_recordings() {
             .unwrap_err()
             .to_string()
             .contains("fleet stored name missing")
+        );
+    }
+}
+
+#[test]
+fn manpower_wing_oracle_compares_exile_tags_omission_aliases_and_unavailable_capture() {
+    use replay_data::rows::{AirWingRow, Recorded};
+    let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+    let id = (1 << 32) | 69;
+    let country = frame.complete::<tables::Countries>().unwrap()[0].clone();
+    let mut host = country.clone();
+    host.id = 201;
+    host.tag = b"HST".to_vec();
+    let links = BTreeMap::from([(101, &country), (102, &country), (201, &host)]);
+    saved.air.wings.push(installed_content_save::air::Wing {
+        id,
+        pool_type: b"fixture_plane".to_vec(),
+        name: None,
+        accidents: None,
+        experience: zero(),
+        equipment: installed_content_save::air::EquipmentPool {
+            entries: Vec::new(),
+            allow_zero: false,
+        },
+        ace: None,
+        raid: None,
+    });
+    for (raw, expected, differences) in [
+        (Some(0).into(), None, 0),
+        (Some(-1).into(), None, 0),
+        (Some(102).into(), Some(b"GER".as_slice()), 0),
+        (Some(201).into(), Some(b"HST".as_slice()), 0),
+        (Some(201).into(), None, 1),
+        (Some(0).into(), Some(b"HST".as_slice()), 1),
+        (Recorded::Value(None), None, 1),
+        (Recorded::NotRecorded, None, 1),
+    ] {
+        saved.air_wings.insert(
+            id,
+            installed_content_save::AirWing {
+                reinforcement_setting: Some(0),
+                stop_training_at_max_xp: false,
+                transfer_progress: None,
+                transferring_to: None,
+                id,
+                government_in_exile_tag: expected.map(Vec::from),
+                manpower: Some(23),
+                owner: b"GER".to_vec(),
+                name: Some(Vec::new()),
+                country_override: b"---".to_vec(),
+                air_base: 0,
+                planes: 1,
+                mission_mask: 0,
+                mission_region: None,
+                mission_active: None,
+                region_change_penalty: None,
+                pool_ordinal: 0,
+            },
+        );
+        set(
+            &mut frame,
+            TableId::AirWings,
+            TableRows::AirWings(vec![AirWingRow {
+                id,
+                owner: 101,
+                planes: 1,
+                acquired_manpower: Some(23).into(),
+                exile_country: raw,
+                replacement_setting: Some(0).into(),
+                name: Some(Vec::new()).into(),
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_air_wings(&frame, &saved, &links, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
+        );
+        assert!(
+            report
+                .differences
+                .iter()
+                .all(|line| line.contains("government_in_exile_tag"))
+        );
+    }
+}
+
+#[test]
+fn division_experience_compares_stored_value_and_rejects_refused_capture() {
+    use replay_data::rows::{DivisionStatusRow, Recorded};
+    let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+    let id = (77_u64 << 32) | 51;
+    saved.divisions.clear();
+    saved.divisions.insert(
+        id,
+        installed_content_save::Division {
+            id,
+            roster_owner: b"MOD".to_vec(),
+            logical_owner: b"MOD".to_vec(),
+            expeditionary_owner: None,
+            province: None,
+            template: None,
+            alternate_template: None,
+            separate_counter: false,
+            hit_points: zero(),
+            organisation: zero(),
+            country_intel: Vec::new(),
+            presentation: installed_content_save::DivisionPresentation {
+                experience: Some(installed_content_save::Decimal::parse(b"123.456").unwrap()),
+                pending_template: Some(555),
+                ..Default::default()
+            },
+        },
+    );
+    for (experience, pending_template, count, transition_count) in [
+        (Some(12_345_600), Some(555), 0, 0),
+        (Some(12_445_600), Some(555), 1, 0),
+        (None, Some(555), 1, 0),
+        (Some(12_345_600), Some(0), 0, 1),
+        (Some(12_345_600), None, 0, 1),
+    ] {
+        set(
+            &mut frame,
+            TableId::DivisionStatus,
+            TableRows::DivisionStatus(vec![DivisionStatusRow {
+                officer_experience: Some(0).into(),
+                career_counter: Some(0).into(),
+                division: id,
+                experience: Recorded::Value(experience),
+                pending_template: Recorded::Value(pending_template),
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_division_status(
+            &frame,
+            &saved,
+            &BTreeMap::new(),
+            &Ok(50_000),
+            &Ok(72),
+            &mut report,
+        )
+        .unwrap();
+        let differences: Vec<_> = report
+            .differences
+            .iter()
+            .filter(|text| text.contains("experience"))
+            .collect();
+        assert_eq!(differences.len(), count, "{differences:?}");
+        assert_eq!(
+            report
+                .differences
+                .iter()
+                .filter(|text| text.contains("pending_template"))
+                .count(),
+            transition_count
+        );
+    }
+}
+
+#[test]
+fn experience_history_oracle_compares_order_medals_and_refused_roots() {
+    use replay_data::rows::{DivisionHistoryRow, SharedDivisionHistoryRow};
+    use std::sync::Arc;
+    let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+    let id = (7_u64 << 32) | 51;
+    let entry = installed_content_save::DivisionHistoryEntry {
+        name: Some(b"subject".to_vec()),
+        custom_name: None,
+        kind: 11,
+        target_country: b"---".to_vec(),
+        hour: frame.hour,
+        medal: Some(b"mod_medal".to_vec()),
+        medal_count: false,
+        inherit: true,
+        multiplier: None,
+        orders: Some(-2),
+        provinces: vec![9, 3, 9],
+        sunk_ship: None,
+    };
+    saved.divisions.insert(
+        id,
+        installed_content_save::Division {
+            id,
+            roster_owner: b"GER".to_vec(),
+            logical_owner: b"GER".to_vec(),
+            expeditionary_owner: None,
+            province: None,
+            template: None,
+            alternate_template: None,
+            separate_counter: false,
+            hit_points: zero(),
+            organisation: zero(),
+            country_intel: Vec::new(),
+            presentation: installed_content_save::DivisionPresentation {
+                history: Some(installed_content_save::DivisionHistory {
+                    amount: Some(3),
+                    career: vec![entry.clone(), entry.clone()],
+                    awards: vec![entry],
+                }),
+                ..Default::default()
+            },
+        },
+    );
+    let row = DivisionHistoryRow {
+        division: id,
+        list: DivisionHistoryRow::CAREER,
+        available: 1,
+        name: b"subject".to_vec(),
+        kind: 11,
+        hour: frame.hour,
+        medal_token: Some(55),
+        medal_definition: Some(9),
+        medal_enabled: 1,
+        inherit: 1,
+        multiplier: 100_000,
+        orders: -2,
+        provinces: vec![9, 3, 9],
+        ..Default::default()
+    };
+    let rows: Vec<SharedDivisionHistoryRow> = vec![
+        Arc::new(DivisionHistoryRow {
+            division: id,
+            available: 1,
+            amount: 3,
+            ..Default::default()
+        }),
+        Arc::new(row.clone()),
+        Arc::new(DivisionHistoryRow {
+            ordinal: 1,
+            ..row.clone()
+        }),
+        Arc::new(DivisionHistoryRow {
+            list: DivisionHistoryRow::AWARDS,
+            ..row
+        }),
+    ];
+    set(
+        &mut frame,
+        TableId::DivisionHistory,
+        TableRows::DivisionHistory(rows.clone()),
+    );
+    let tokens = BTreeMap::from([(55, b"mod_medal".as_slice())]);
+    let mut report = Report::default();
+    division_history::compare(&frame, &saved, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    // The save writes both stored flag bytes as boolean values.
+    for medal_count in [0, 1, 2, u8::MAX] {
+        for inherit in [0, 1, 2, u8::MAX] {
+            let mut flags = rows.clone();
+            for actual in flags.iter_mut().skip(1) {
+                let actual = Arc::make_mut(actual);
+                actual.medal_count = medal_count;
+                actual.inherit = inherit;
+            }
+            let history = saved
+                .divisions
+                .get_mut(&id)
+                .unwrap()
+                .presentation
+                .history
+                .as_mut()
+                .unwrap();
+            for expected in history.career.iter_mut().chain(&mut history.awards) {
+                expected.medal_count = medal_count != 0;
+                expected.inherit = inherit != 0;
+            }
+            set(
+                &mut frame,
+                TableId::DivisionHistory,
+                TableRows::DivisionHistory(flags.clone()),
+            );
+            let mut report = Report::default();
+            division_history::compare(&frame, &saved, &tokens, &mut report).unwrap();
+            assert!(report.differences.is_empty(), "{:?}", report.differences);
+            for field in ["medal_count", "inherit"] {
+                let mut mismatch = flags.clone();
+                let actual = Arc::make_mut(&mut mismatch[1]);
+                if field == "medal_count" {
+                    actual.medal_count = u8::from(medal_count == 0);
+                } else {
+                    actual.inherit = u8::from(inherit == 0);
+                }
+                set(
+                    &mut frame,
+                    TableId::DivisionHistory,
+                    TableRows::DivisionHistory(mismatch),
+                );
+                let mut report = Report::default();
+                division_history::compare(&frame, &saved, &tokens, &mut report).unwrap();
+                assert_eq!(report.differences.len(), 1);
+                assert!(report.differences[0].contains(field));
+            }
+        }
+    }
+    let history = saved
+        .divisions
+        .get_mut(&id)
+        .unwrap()
+        .presentation
+        .history
+        .as_mut()
+        .unwrap();
+    for expected in history.career.iter_mut().chain(&mut history.awards) {
+        expected.medal_count = false;
+        expected.inherit = true;
+    }
+    set(
+        &mut frame,
+        TableId::DivisionHistory,
+        TableRows::DivisionHistory(rows.clone()),
+    );
+    // Ordinary text saves always emit the stored subject, even when empty.
+    saved
+        .divisions
+        .get_mut(&id)
+        .unwrap()
+        .presentation
+        .history
+        .as_mut()
+        .unwrap()
+        .career[0]
+        .name = None;
+    let mut report = Report::default();
+    division_history::compare(&frame, &saved, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("army_names"));
+    saved
+        .divisions
+        .get_mut(&id)
+        .unwrap()
+        .presentation
+        .history
+        .as_mut()
+        .unwrap()
+        .career[0]
+        .name = Some(b"subject".to_vec());
+    // A nonempty custom key is serialized only for the custom event kind.
+    saved
+        .divisions
+        .get_mut(&id)
+        .unwrap()
+        .presentation
+        .history
+        .as_mut()
+        .unwrap()
+        .career[0]
+        .kind = 16;
+    let mut custom = rows.clone();
+    Arc::make_mut(&mut custom[1]).kind = 16;
+    Arc::make_mut(&mut custom[1]).custom_name = b"mod_event".to_vec();
+    set(
+        &mut frame,
+        TableId::DivisionHistory,
+        TableRows::DivisionHistory(custom),
+    );
+    let mut report = Report::default();
+    division_history::compare(&frame, &saved, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("custom_lockey"));
+    saved
+        .divisions
+        .get_mut(&id)
+        .unwrap()
+        .presentation
+        .history
+        .as_mut()
+        .unwrap()
+        .career[0]
+        .kind = 11;
+    let mut changed = rows.clone();
+    Arc::make_mut(&mut changed[2]).provinces.swap(0, 1);
+    set(
+        &mut frame,
+        TableId::DivisionHistory,
+        TableRows::DivisionHistory(changed),
+    );
+    let mut report = Report::default();
+    division_history::compare(&frame, &saved, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("location"));
+    let mut refused = rows;
+    Arc::make_mut(&mut refused[0]).available = 0;
+    Arc::make_mut(&mut refused[0]).reason = b"history unreadable".to_vec();
+    set(
+        &mut frame,
+        TableId::DivisionHistory,
+        TableRows::DivisionHistory(refused),
+    );
+    let mut report = Report::default();
+    division_history::compare(&frame, &saved, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("history unreadable"));
+}
+
+#[test]
+fn division_panel_stats_checks_its_own_roster_and_every_operand() {
+    use replay_data::rows::DivisionPanelStatsRow;
+    let (mut frame, mut save, _, _) = super::super::fixtures::division_fixture();
+    let id = *save.divisions.keys().next().unwrap();
+    save.divisions.retain(|key, _| *key == id);
+    let mut row = DivisionPanelStatsRow {
+        division: id,
+        panel_stats: [Some(i64::MIN); 22],
+    };
+    set(
+        &mut frame,
+        TableId::DivisionPanelStats,
+        TableRows::DivisionPanelStats(vec![row.clone()]),
+    );
+    let mut report = Report::default();
+    compare_division_panel_stats(&frame, &save, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    row.panel_stats[21] = None;
+    set(
+        &mut frame,
+        TableId::DivisionPanelStats,
+        TableRows::DivisionPanelStats(vec![row]),
+    );
+    let mut report = Report::default();
+    compare_division_panel_stats(&frame, &save, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("panel_stats[21]"));
+    set(
+        &mut frame,
+        TableId::DivisionPanelStats,
+        TableRows::DivisionPanelStats(vec![]),
+    );
+    let mut report = Report::default();
+    compare_division_panel_stats(&frame, &save, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains(&id.to_string()));
+}
+
+#[test]
+fn country_template_oracle_checks_selection_and_lock_without_owned_templates() {
+    let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
+    save.production.template_states.insert(
+        b"GER".to_vec(),
+        installed_content_save::production::TemplateState {
+            garrison_priority: Some(1),
+            selected_staff: Some(None),
+            lock_all: true,
+            garrisons: Some(BTreeMap::new()),
+            ..Default::default()
+        },
+    );
+    set(
+        &mut frame,
+        TableId::CountryTemplateState,
+        TableRows::CountryTemplateState(vec![replay_data::rows::CountryTemplateStateRow {
+            garrison_priority: Recorded::Value(Some(1)),
+            country: 102,
+            selected_staff: (99_u64 << 32) | 52,
+            next_hq_order: -19,
+            lock_all: 7,
+            garrisons: Recorded::Value(Some(Vec::new().into())),
+        }]),
+    );
+    let countries = super::super::country_context(&frame).unwrap();
+    let mut report = Report::default();
+    compare_country_template_state(&frame, &save, &countries, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    // A retained reference that resolves no template is omitted by the save.
+    save.production
+        .template_states
+        .get_mut(b"GER".as_slice())
+        .unwrap()
+        .garrison_priority = Some(-3);
+    let mut priority_report = Report::default();
+    compare_country_template_state(&frame, &save, &countries, &mut priority_report).unwrap();
+    assert_eq!(priority_report.differences.len(), 1);
+    assert!(priority_report.differences[0].contains("occupation_status.priority"));
+    save.production
+        .template_states
+        .get_mut(b"GER".as_slice())
+        .unwrap()
+        .garrison_priority = Some(1);
+    // The raw word is still retained by the replay row.
+    save.production
+        .template_states
+        .get_mut(b"GER".as_slice())
+        .unwrap()
+        .selected_staff = Some(Some((1_u64 << 32) | 52));
+    save.production
+        .template_states
+        .get_mut(b"GER".as_slice())
+        .unwrap()
+        .lock_all = false;
+    let mut report = Report::default();
+    compare_country_template_state(&frame, &save, &countries, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+}
+
+#[test]
+fn division_status_exact_movement_organisation_compares_saved_subdisplay_words() {
+    let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+    let id = (7_u64 << 32) | 51;
+    saved.divisions.insert(
+        id,
+        installed_content_save::Division {
+            id,
+            roster_owner: b"GER".to_vec(),
+            logical_owner: b"GER".to_vec(),
+            expeditionary_owner: None,
+            province: None,
+            template: None,
+            alternate_template: None,
+            separate_counter: false,
+            hit_points: zero(),
+            organisation: installed_content_save::Decimal::parse(b"9.24554").unwrap(),
+            country_intel: Vec::new(),
+            presentation: Default::default(),
+        },
+    );
+    for (value, expected) in [
+        (Some(Some([924_554, 3_640_123])), 0),
+        (Some(Some([920_000, 3_640_123])), 1),
+        (Some(Some([924_554, 3_630_123])), 1),
+        (Some(None), 0),
+        (None, 1),
+    ] {
+        set(
+            &mut frame,
+            TableId::DivisionStatus,
+            TableRows::DivisionStatus(vec![DivisionStatusRow {
+                division: id,
+                maximum_organisation: 3_640_000,
+                organisation_exact: Recorded::Value(value.flatten().map(|pair| pair[0])),
+                maximum_organisation_exact: Recorded::Value(value.flatten().map(|pair| pair[1])),
+                move_flags: match value {
+                    Some(Some(_)) => DivisionStatusRow::MOVE_LOW_ORGANISATION,
+                    Some(None) => 0,
+                    None => DivisionStatusRow::MOVE_ORGANISATION_REFUSED,
+                },
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_division_status(
+            &frame,
+            &saved,
+            &BTreeMap::new(),
+            &Ok(50_000),
+            &Ok(72),
+            &mut report,
+        )
+        .unwrap();
+        let differences: Vec<_> = report
+            .differences
+            .iter()
+            .filter(|line| line.contains(".movement_organisation"))
+            .collect();
+        assert_eq!(differences.len(), expected, "{differences:?}");
+    }
+}
+
+#[test]
+fn training_stop_oracle_rejects_unknown_and_mismatched_demanded_flags() {
+    use replay_data::rows::{AirWingRow, Recorded};
+    let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+    let id = (1 << 32) | 69;
+    let country = frame.complete::<tables::Countries>().unwrap()[0].clone();
+    let links = BTreeMap::from([(101, &country)]);
+    saved.air.wings.push(installed_content_save::air::Wing {
+        id,
+        pool_type: b"fixture_plane".to_vec(),
+        name: None,
+        accidents: None,
+        experience: zero(),
+        equipment: installed_content_save::air::EquipmentPool {
+            entries: Vec::new(),
+            allow_zero: false,
+        },
+        ace: None,
+        raid: None,
+    });
+    saved.air_wings.insert(
+        id,
+        installed_content_save::AirWing {
+            government_in_exile_tag: None,
+            manpower: None,
+            reinforcement_setting: Some(0),
+            id,
+            owner: b"GER".to_vec(),
+            name: Some(Vec::new()),
+            country_override: b"---".to_vec(),
+            air_base: 0,
+            planes: 1,
+            mission_mask: 0x800,
+            mission_region: None,
+            mission_active: None,
+            stop_training_at_max_xp: true,
+            region_change_penalty: None,
+            transfer_progress: None,
+            transferring_to: None,
+            pool_ordinal: 0,
+        },
+    );
+    for (flags, differences) in [
+        (None, 1),
+        (Some(0), 1),
+        (Some(1), 1),
+        (Some(3), 0),
+        (Some(15), 0),
+    ] {
+        set(
+            &mut frame,
+            TableId::AirWings,
+            TableRows::AirWings(vec![AirWingRow {
+                id,
+                owner: 101,
+                planes: 1,
+                mission_mask: 0x800,
+                name: Recorded::Value(Some(Vec::new())),
+                map_flags: flags.into(),
+                exile_country: Some(0).into(),
+                replacement_setting: Some(0).into(),
+                ..Default::default()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_air_wings(&frame, &saved, &links, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
+        );
+        assert!(
+            report
+                .differences
+                .iter()
+                .all(|difference| difference.contains("stop_training_at_max_xp"))
         );
     }
 }

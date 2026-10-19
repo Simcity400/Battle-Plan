@@ -19,7 +19,10 @@ impl Renderer<'_, '_, '_> {
             .scalar()
             .or_else(|| field(children(item), "tag").and_then(|item| item.value.scalar()));
         let country = match operand {
-            Some(operand) => self.evaluator()?.scoped_country(operand, scopes)?,
+            Some(operand) => self
+                .evaluator()?
+                .scoped_country(operand, scopes)
+                .map_err(|why| why.to_string())?,
             None => match scopes.this {
                 Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
                     Some(country)

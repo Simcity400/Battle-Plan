@@ -31,6 +31,20 @@ pub(super) struct Country {
     len: usize,
 }
 impl Country {
+    pub(super) fn record_roster(&self, out: &mut Output<'_>) -> Result<(), &'static str> {
+        out.push(
+            Kind::SharingRoster,
+            -1,
+            0,
+            self.len as u32,
+            0,
+            Text::default(),
+        )?;
+        for group in &self.groups[..self.len] {
+            out.value(Kind::SharingRoster, i64::from(group.id))?;
+        }
+        Ok(())
+    }
     pub(super) fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -183,6 +197,30 @@ impl Country {
         }
         Ok(())
     }
+}
+
+/// Idle demanded countries need only the roster identities, with no group names,
+/// bonuses, templates, filters or member walks and no per-country scratch vector.
+pub(super) fn record_roster<M: Memory>(
+    memory: &M,
+    base: usize,
+    status: usize,
+    out: &mut Output<'_>,
+) -> Result<(), &'static str> {
+    let roster = array_at(memory, at(status, 0x118)?, 8)?;
+    out.push(Kind::SharingRoster, -1, 0, roster.count, 0, Text::default())?;
+    pointer_pages(memory, roster, |pointer| {
+        let bytes = read::<[u8; 12]>(memory, pointer)
+            .ok_or("scripted sharing group identity unreadable")?;
+        let vtable = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+        if vtable != at(base, GROUP_VTABLE)? as u64 && vtable != at(base, FACTION_VTABLE)? as u64 {
+            return Err("scripted sharing group identity unsupported");
+        }
+        out.value(
+            Kind::SharingRoster,
+            i64::from(u32::from_le_bytes(bytes[8..].try_into().unwrap())),
+        )
+    })
 }
 
 fn references(

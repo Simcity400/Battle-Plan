@@ -51,6 +51,8 @@ pub const AGGREGATE_MODIFIER_RVA: usize = 0x00da_5230;
 /// Neutral fixed5 value for modifiers 0x26e and 0x26f.
 pub const MODIFIER_NEUTRAL: i64 = 100_000;
 
+pub mod details;
+
 /// History slots copied per guarded read.
 const HISTORY_BATCH: usize = 32;
 
@@ -82,6 +84,8 @@ pub struct HistoryRow {
     pub variant: u64,
     /// `mio_history_entry::PRODUCTION_COUNT`.
     pub units: i32,
+    /// An occupied slot may have production history without ever authoring a design.
+    pub design_hour: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +131,7 @@ pub fn walk(
         Buffer::Fixed(organisations),
         Buffer::Fixed(history),
         Buffer::Fixed(bytes),
+        &mut (),
     )
     .unwrap_or_else(Outcomes::unavailable)
 }
@@ -141,6 +146,35 @@ pub fn walk_growing(
     history: &mut Vec<HistoryRow>,
     bytes: &mut Vec<u8>,
 ) -> Outcomes {
+    walk_growing_with(
+        memory,
+        base,
+        game_state,
+        organisations,
+        history,
+        bytes,
+        &mut (),
+    )
+}
+
+/// Additional operands read only while the existing census holds authenticated
+/// objects. A visitor keeps its own independent outcome; it cannot add a census.
+pub trait Visitor {
+    fn country(&mut self, _country: u32, _status: usize) {}
+    fn organisation(&mut self, _pointer: usize, _row: &Row) {}
+}
+impl Visitor for () {}
+
+#[allow(clippy::too_many_arguments)]
+pub fn walk_growing_with(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    organisations: &mut Vec<Row>,
+    history: &mut Vec<HistoryRow>,
+    bytes: &mut Vec<u8>,
+    visitor: &mut impl Visitor,
+) -> Outcomes {
     walk_inner(
         memory,
         base,
@@ -148,6 +182,7 @@ pub fn walk_growing(
         Buffer::Growing(organisations),
         Buffer::Growing(history),
         Buffer::Growing(bytes),
+        visitor,
     )
     .unwrap_or_else(Outcomes::unavailable)
 }
@@ -208,6 +243,7 @@ fn walk_inner(
     mut organisations: Buffer<'_, Row>,
     mut history: Buffer<'_, HistoryRow>,
     mut bytes: Buffer<'_, u8>,
+    visitor: &mut impl Visitor,
 ) -> Result<Outcomes, &'static str> {
     let vtable = base
         .checked_add(VTABLE_RVA)
@@ -231,6 +267,7 @@ fn walk_inner(
         };
         found_country = true;
         let status = cproduction_status::manager(memory, base, country)?;
+        visitor.country(country.id, status);
         let array = status
             .checked_add(cproduction_status::ORGANISATIONS)
             .and_then(|address| crate::cpdx_array::Array::read(memory, address, 8))
@@ -293,6 +330,7 @@ fn walk_inner(
                         .map_err(|_| "organisation icon unreadable or invalid")?,
                     ..fields.row
                 };
+                visitor.organisation(pointer, &organisations[len]);
                 len += 1;
                 if history_failure.is_some() || fields.history_count == 0 {
                     continue;
@@ -434,7 +472,9 @@ fn read_history(
     fields: &Fields,
     output: &mut [HistoryRow],
 ) -> Result<(usize, u32), &'static str> {
-    use crate::mio_history_entry::{DISTANCE, ITEM_REFERENCE, PRODUCTION_COUNT, STRIDE};
+    use crate::mio_history_entry::{
+        ACTIVE, DESIGN_HOUR, DISTANCE, ITEM_REFERENCE, PRODUCTION_COUNT, STRIDE,
+    };
     if fields.history == 0 {
         return Err("organisation history table invalid");
     }
@@ -474,6 +514,8 @@ fn read_history(
                     organisation: fields.row.reference,
                     variant,
                     units: i32::from_le_bytes(entry[PRODUCTION_COUNT..][..4].try_into().unwrap()),
+                    design_hour: (entry[ACTIVE] != 0)
+                        .then(|| i32::from_le_bytes(entry[DESIGN_HOUR..][..4].try_into().unwrap())),
                 };
                 len += 1;
             }
@@ -643,15 +685,38 @@ mod tests {
                 HistoryRow {
                     organisation: CID_FIRST,
                     variant: VARIANT_A,
-                    units: 2116
+                    units: 2116,
+                    design_hour: None,
                 },
                 HistoryRow {
                     organisation: CID_FIRST,
                     variant: VARIANT_B,
-                    units: -3
+                    units: -3,
+                    design_hour: None,
                 }
             ]
         );
+    }
+
+    #[test]
+    fn history_keeps_design_dates_separately_from_production_counts() {
+        let mut bytes = fixture();
+        put(&mut bytes, TABLE + entry::ACTIVE, &[1]);
+        put(
+            &mut bytes,
+            TABLE + entry::DESIGN_HOUR,
+            &(-123_i32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            TABLE + 2 * entry::STRIDE + entry::DESIGN_HOUR,
+            &999_i32.to_le_bytes(),
+        );
+        let (outcome, _, rows, _) = run(&bytes, 4, 4);
+        assert_eq!(outcome.history, Outcome::Rows { len: 2 });
+        assert_eq!(rows[0].design_hour, Some(-123));
+        assert_eq!(rows[1].design_hour, None);
+        assert_eq!(rows[0].units, 2116);
     }
 
     #[test]
@@ -701,6 +766,7 @@ mod tests {
                 organisation: CID_FIRST,
                 variant,
                 units: 4242,
+                design_hour: None,
             }
         );
 

@@ -10,6 +10,19 @@ const UNIT: u64 = 8 << 32 | 55;
 const MIO: u64 = 6 << 32 | 79;
 const WING: u64 = 9 << 32 | 77;
 
+fn assert_missing_reference(table: TableId, read: impl FnOnce() -> Result<String, String>) {
+    let (result, failures) = crate::triggers::refusal::capture(read);
+    assert_eq!(
+        result.unwrap_err(),
+        format!("{table:?}: referenced object is not recorded")
+    );
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(
+        failures.first().unwrap().to_string(),
+        format!("{table:?}: input unavailable or refused")
+    );
+}
+
 fn fixture() -> (Fixture, Folder) {
     let mut f = Fixture::new();
     let (catalogue, folder) = folder_catalogue(&[
@@ -147,18 +160,10 @@ fn project_and_mio_names_use_keys_and_fresh_environments() {
         );
         assert_eq!(renderer.project_name(100, 10).as_deref(), Ok("Default"));
         assert_eq!(renderer.organisation_name(MIO).as_deref(), Ok("MIOBBB"));
-        assert!(
-            renderer
-                .project_name(100, 999)
-                .unwrap_err()
-                .contains("Projects lacks")
-        );
-        assert!(
-            renderer
-                .organisation_name(999)
-                .unwrap_err()
-                .contains("IndustrialOrganisations lacks")
-        );
+        assert_missing_reference(TableId::Projects, || renderer.project_name(100, 999));
+        assert_missing_reference(TableId::IndustrialOrganisations, || {
+            renderer.organisation_name(999)
+        });
     });
     let out = f.render(
         "sp:synthetic_project={army_experience=2}",
@@ -176,7 +181,7 @@ fn raid_name_joins_instance_target_type_and_content_and_refuses_unknown_identity
     let (mut f, _folder) = fixture();
     f.with_renderer(&mut fresh(), Content::default(), |renderer| {
         assert_eq!(renderer.raid_name(RAID).as_deref(), Ok("Strike/Hit Two"));
-        assert!(renderer.raid_name(999).unwrap_err().contains("Raids lacks"));
+        assert_missing_reference(TableId::Raids, || renderer.raid_name(999));
         assert!(
             renderer
                 .unit_name(UNIT)

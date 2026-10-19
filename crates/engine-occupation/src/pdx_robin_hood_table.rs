@@ -10,6 +10,7 @@ pub const SIZE: usize = 0x08;
 pub const CAPACITY_OR_MASK: usize = 0x0c;
 /// Maximum u8 probe distance.
 pub const MAX_DISTANCE: usize = 0x10;
+const COUNTRY_KEY_HASH_MULTIPLIER: u32 = 0x045d_9f3b;
 
 use crate::{Memory, pdx_robin_hood_bucket as bucket, read};
 
@@ -17,6 +18,66 @@ use crate::{Memory, pdx_robin_hood_bucket as bucket, read};
 pub(crate) struct Entry {
     pub key: u32,
     pub value: usize,
+}
+
+/// One native key lookup. Only the probed buckets establish membership; an empty
+/// bucket's retained key or value is never followed.
+pub(crate) fn find(
+    memory: &impl Memory,
+    address: usize,
+    key: u32,
+) -> Result<Option<Entry>, &'static str> {
+    let header = read::<[u8; 17]>(memory, address).ok_or("occupation table header unreadable")?;
+    let data = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
+        .map_err(|_| "occupation table pointer overflow")?;
+    let size = u32::from_le_bytes(header[SIZE..SIZE + 4].try_into().unwrap());
+    let mask = u32::from_le_bytes(
+        header[CAPACITY_OR_MASK..CAPACITY_OR_MASK + 4]
+            .try_into()
+            .unwrap(),
+    );
+    if size > mask {
+        return Err("occupation table size exceeds capacity");
+    }
+    if data == 0 {
+        return if size == 0 {
+            Ok(None)
+        } else {
+            Err("occupation live table has null storage")
+        };
+    }
+    let mix = |value: u32| (value ^ (value >> 16)).wrapping_mul(COUNTRY_KEY_HASH_MULTIPLIER);
+    let hash = mix(mix(key));
+    let first = ((hash ^ (hash >> 16)) & mask) as usize;
+    let span = (mask as usize)
+        .checked_add(usize::from(header[MAX_DISTANCE]))
+        .and_then(|n| n.checked_add(1))
+        .ok_or("occupation table span overflow")?;
+    for (distance, index) in (1usize..).zip(first..span) {
+        let at = index
+            .checked_mul(bucket::STRIDE)
+            .and_then(|n| data.checked_add(n))
+            .ok_or("occupation bucket address overflow")?;
+        let value = read::<[u8; 24]>(memory, at).ok_or("occupation bucket unreadable")?;
+        let stored = usize::from(value[bucket::DISTANCE_PLUS_ONE]);
+        if stored == usize::from(bucket::ITERATOR_SENTINEL_DISTANCE) {
+            return Err("occupation iterator sentinel inside lookup probe");
+        }
+        if stored < distance {
+            return Ok(None);
+        }
+        if u32::from_le_bytes(value[bucket::KEY..bucket::KEY + 4].try_into().unwrap()) == key {
+            let value = usize::try_from(u64::from_le_bytes(
+                value[bucket::VALUE..].try_into().unwrap(),
+            ))
+            .map_err(|_| "occupation bucket pointer overflow")?;
+            if value == 0 {
+                return Err("occupation live bucket has null value");
+            }
+            return Ok(Some(Entry { key, value }));
+        }
+    }
+    Ok(None)
 }
 
 /// Visits the native occupied buckets once. Empty buckets may retain stale
@@ -91,6 +152,48 @@ pub(crate) fn visit(
 mod tests {
     use super::*;
     use crate::memory::SliceMemory;
+
+    #[test]
+    fn occupation_key_lookup_probes_collisions_and_never_follows_an_empty_stale_value() {
+        let mut bytes = vec![0; 0x100];
+        bytes[..8].copy_from_slice(&0x1040u64.to_le_bytes());
+        bytes[SIZE..SIZE + 4].copy_from_slice(&2u32.to_le_bytes());
+        bytes[CAPACITY_OR_MASK..CAPACITY_OR_MASK + 4].copy_from_slice(&3u32.to_le_bytes());
+        bytes[MAX_DISTANCE] = 2;
+        for (index, key, distance, value) in [
+            (0, 2u32, 1, 0x2000u64),
+            (1, 11, 2, 0x3000),
+            (2, 10, 0, u64::MAX),
+        ] {
+            let at = 0x40 + index * bucket::STRIDE;
+            bytes[at + bucket::DISTANCE_PLUS_ONE] = distance;
+            bytes[at + bucket::KEY..at + bucket::KEY + 4].copy_from_slice(&key.to_le_bytes());
+            bytes[at + bucket::VALUE..at + bucket::VALUE + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes[..0x88],
+        };
+        assert_eq!(
+            find(&memory, 0x1000, 11),
+            Ok(Some(Entry {
+                key: 11,
+                value: 0x3000
+            }))
+        );
+        assert_eq!(find(&memory, 0x1000, 10), Ok(None));
+        assert!(
+            find(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes[..0x60]
+                },
+                0x1000,
+                11
+            )
+            .is_err()
+        );
+    }
 
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 0x100];

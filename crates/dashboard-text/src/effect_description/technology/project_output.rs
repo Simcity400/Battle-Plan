@@ -25,9 +25,10 @@ impl Renderer<'_, '_, '_> {
         id: u32,
     ) -> Result<String, String> {
         let world = self.context.world()?;
-        let row = world.project(owner, id)?;
+        let row = world.project(owner, id).map_err(|why| why.to_string())?;
         let token = world
-            .token(row.definition_id)?
+            .token(row.definition_id)
+            .map_err(|why| why.to_string())?
             .ok_or("LexicalTokens lacks project definition")?;
         let token = std::str::from_utf8(token).map_err(|_| "project definition is not UTF-8")?;
         let catalogue = self
@@ -49,13 +50,37 @@ impl Renderer<'_, '_, '_> {
         }
         let output = definition.output.clone();
         let specialization = definition.specialization.clone();
+        let scientist = self.project_output_scientist(item, scopes, specialization.as_deref());
+        let facility = self.project_output_program(item, scopes, specialization.as_deref());
+        self.project_output_body(&output, item, scopes, owner, id, scientist, facility)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep project identity and independently refused assignments explicit."
+    )]
+    pub(in crate::effect_description) fn project_output_body(
+        &mut self,
+        output: &installed_content_core::special_projects::Output,
+        item: &Item,
+        scopes: Scopes,
+        owner: u32,
+        id: u32,
+        scientist: Result<Option<u32>, String>,
+        facility: Result<Option<(u32, u32)>, String>,
+    ) -> Result<String, String> {
+        let world = self.context.world()?;
         let country = world
             .slot(owner)
             .ok_or("CountryLinks lacks project owner")?;
-        let project = self.evaluator()?.fresh_country_scope(Some(0), None)?;
         let project = self
             .evaluator()?
-            .repoint_this(project, Scope::Project { owner, id })?;
+            .fresh_country_scope(Some(0), None)
+            .map_err(|why| why.to_string())?;
+        let project = self
+            .evaluator()?
+            .repoint_this(project, Scope::Project { owner, id })
+            .map_err(|why| why.to_string())?;
         let mut text =
             self.char_native_text(b"SPECIAL_PROJECT_RESEARCH_OUTPUT", &[], scopes, false)?;
         trailing(&mut text, 1);
@@ -65,18 +90,21 @@ impl Renderer<'_, '_, '_> {
         if !output.country_effects.is_empty() {
             let selected = self
                 .evaluator()?
-                .fresh_country_scope(Some(country), Some(project))?;
+                .fresh_country_scope(Some(country), Some(project))
+                .map_err(|why| why.to_string())?;
             self.project_effect_output(&mut text, &output.country_effects, selected)?;
         }
         if !output.scientist_effects.is_empty() {
-            match self.project_output_scientist(item, scopes, specialization.as_deref()) {
+            match scientist {
                 Ok(Some(character)) => {
                     let selected = self
                         .evaluator()?
-                        .fresh_country_scope(Some(0), Some(project))?;
+                        .fresh_country_scope(Some(0), Some(project))
+                        .map_err(|why| why.to_string())?;
                     let selected = self
                         .evaluator()?
-                        .repoint_this(selected, Scope::Character(character))?;
+                        .repoint_this(selected, Scope::Character(character))
+                        .map_err(|why| why.to_string())?;
                     self.project_effect_output(&mut text, &output.scientist_effects, selected)?;
                 }
                 Ok(None) => {} // omits the body for a null scientist.
@@ -84,14 +112,16 @@ impl Renderer<'_, '_, '_> {
             }
         }
         if !output.facility_state_effects.is_empty() {
-            match self.project_output_program(item, scopes, specialization.as_deref()) {
+            match facility {
                 Ok(Some((province, state))) => {
                     let selected = self
                         .evaluator()?
-                        .fresh_country_scope(Some(0), Some(project))?;
+                        .fresh_country_scope(Some(0), Some(project))
+                        .map_err(|why| why.to_string())?;
                     let selected = self
                         .evaluator()?
-                        .repoint_this(selected, Scope::State(state))?;
+                        .repoint_this(selected, Scope::State(state))
+                        .map_err(|why| why.to_string())?;
                     // stores the already-held province id in TLS,
                     // then describes the body.
                     self.evaluator()?.store_description_temp(
@@ -177,7 +207,9 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<(), String> {
         self.evaluator()?.begin_description();
         let mut output = self.group(items, scopes, 0);
-        self.evaluator()?.end_description(scopes)?;
+        self.evaluator()?
+            .end_description(scopes)
+            .map_err(|why| why.to_string())?;
         trailing(&mut output, 2);
         text.push_str(&output);
         Ok(())
@@ -212,7 +244,8 @@ impl Renderer<'_, '_, '_> {
             return Ok(None);
         };
         let token = world
-            .token_of(specialization.as_bytes())?
+            .token_of(specialization.as_bytes())
+            .map_err(|why| why.to_string())?
             .ok_or("LexicalTokens lacks project specialization")?;
         let scientists = self
             .context
@@ -268,7 +301,8 @@ impl Renderer<'_, '_, '_> {
             .find(|field| field.keyword_is("state"))
             .and_then(|field| field.value.scalar())
             .map(|operand| self.evaluator()?.scoped_state(operand, scopes))
-            .transpose()?;
+            .transpose()
+            .map_err(|why| why.to_string())?;
         if programs.is_empty() || (state.is_none() && specialization.is_none()) {
             return Ok(None);
         }

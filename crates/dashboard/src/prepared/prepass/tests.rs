@@ -445,18 +445,32 @@ fn extracts_report_what_their_facts_hold() {
         measure(
             &crate::products::country_history::prepared::FAMILY,
             (100..=105)
-                .map(|hour| crate::test_fixtures::scale_frame(1, hour, count))
+                .map(|hour| {
+                    let mut frame = crate::test_fixtures::scale_frame(1, hour, count);
+                    // Identity history carries balance-only changes. Exercise
+                    // the identity payload this growth test intends to measure.
+                    let mut countries = frame
+                        .complete::<replay_data::rows::tables::Countries>()
+                        .unwrap()
+                        .to_vec();
+                    for country in &mut countries {
+                        country.tag = format!("C{}H{hour}", country.id).into_bytes();
+                    }
+                    *frame.tables[TableId::Countries.index()] =
+                        TableView::Complete(replay_data::rows::TableRows::Countries(countries));
+                    frame
+                })
                 .collect(),
         )
     };
     for (family, small, large) in [
-        ("wars", wars(3), wars(300)),
-        ("identities", identities(3), identities(300)),
+        ("wars", wars(3), wars(5_000)),
+        ("identities", identities(3), identities(5_000)),
     ] {
         assert!(small > 0, "{family} reports its facts");
         assert!(
             large > small * 10,
-            "{family}'s facts grow with the countries: {small} for 3, {large} for 300"
+            "{family}'s facts grow with the countries: {small} for 3, {large} for 5,000"
         );
     }
 }
@@ -995,7 +1009,7 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
     let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/test.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30} NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
         ),
         (
             "common/unit_leader/test.txt",
@@ -1047,6 +1061,10 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
                 ));
             *frame.tables[TableId::WarRelations.index()] =
                 TableView::Complete(TableRows::WarRelations(Vec::new()));
+            // Country triggers require complete core tables; tag existence
+            // reads the owned-state counts above, not province rows.
+            *frame.tables[TableId::Provinces.index()] =
+                TableView::Complete(TableRows::Provinces(Vec::new()));
             if let TableView::Complete(TableRows::UnitLeaders(rows)) =
                 &mut *frame.tables[TableId::UnitLeaders.index()]
             {
@@ -1114,8 +1132,28 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
         );
     }
 
+    let mut missing_provinces = frames[0].clone();
+    *missing_provinces.tables[TableId::Provinces.index()] = TableView::Unavailable {
+        reason: "missing test provinces".into(),
+    };
+    let world = scripted.recorded_world(&missing_provinces).unwrap();
+    let row = &missing_provinces
+        .complete::<replay_data::rows::tables::UnitLeaders>()
+        .unwrap()[0];
+    let unknown = Evaluator::new(&world, None).decide_leader_visibility(
+        row,
+        world.decoded_leader_visibility(row),
+        true,
+    );
+    assert!(
+        matches!(&unknown, Eval::Unknown(reasons) if reasons.iter().any(|why|
+            why.contains("Provinces is unavailable: missing test provinces"))),
+        "{unknown:?}"
+    );
+
     let replay = source.replay_ref();
     let bound = unit_leaders::block::bound(true);
+    assert!(bound.tables.contains(&TableId::Provinces));
     let readings = [
         Reading {
             family: &unit_leaders::block::FAMILY,

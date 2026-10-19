@@ -1,8 +1,43 @@
 use super::*;
 
 #[test]
+fn air_region_hover_rebuilds_for_each_views_ordered_wing_selection() {
+    let replay = air_region::tests::recording(80, &[]);
+    let mut holder = Holder::<ModeHover>::default();
+    let mut built = 0;
+    let mut ask = |holder: &mut Holder<ModeHover>, selected: &[u64]| {
+        holder.get(
+            ModeHover::StrategicAir(Arc::new(selected.to_vec())),
+            true,
+            &replay,
+            || {},
+            |_| {
+                built += 1;
+                Tooltip {
+                    title: built.to_string(),
+                    ..Default::default()
+                }
+            },
+        )
+    };
+    let first = ask(&mut holder, &[10, 20]);
+    let same = ask(&mut holder, &[10, 20]);
+    assert!(Arc::ptr_eq(&first, &same));
+    let reordered = ask(&mut holder, &[20, 10]);
+    assert_eq!(reordered.title, "2");
+    let cleared = ask(&mut holder, &[]);
+    assert_eq!(cleared.title, "3");
+    assert!(!Arc::ptr_eq(&first, &cleared));
+}
+
+#[test]
 fn thermal_identifier_notes_reach_province_content_warnings() {
     let content = Content {
+        labels: Arc::new(
+            viewer_foundation::recorded_labels::RecordedLabels::from_localisation(
+                &Default::default(),
+            ),
+        ),
         members: Default::default(),
         impassable: Default::default(),
         neighbors: Ok(Default::default()),
@@ -15,6 +50,10 @@ fn thermal_identifier_notes_reach_province_content_warnings() {
         units: Err("unused".into()),
         border: Err("unused".into()),
         air_log_timeout: Err("unused".into()),
+        air_detection: Err("unused".into()),
+        air_range: Err("unused".into()),
+        air_fuel: Err("unused".into()),
+        navy: super::strategic_navy::Defines::default(),
         occupation: Err("unused".into()),
         network_base_target: Err("unused".into()),
         resources: Err("unused".into()),
@@ -100,4 +139,36 @@ fn a_tooltip_built_with_a_pending_history_rebuilds_once_answered() {
     assert!(Arc::ptr_eq(&held, &answered));
     assert_eq!(built.load(std::sync::atomic::Ordering::Relaxed), 2);
     holder.wait();
+}
+
+#[test]
+fn navy_hover_rebuilds_when_prepared_source_coverage_finishes_without_an_hour_change() {
+    let replay = air_region::tests::recording(80, &[]);
+    let mut holder = Holder::<ModeHover>::default();
+    let mut built = 0;
+    let mut ask = |holder: &mut Holder<ModeHover>, sources| {
+        holder.get(
+            ModeHover::StrategicNavy(Arc::new(sources)),
+            true,
+            &replay,
+            || {},
+            |_| {
+                built += 1;
+                Tooltip {
+                    title: built.to_string(),
+                    ..Default::default()
+                }
+            },
+        )
+    };
+    let first = ask(&mut holder, Err("pending sources".into()));
+    let same = ask(&mut holder, Err("pending sources".into()));
+    assert!(Arc::ptr_eq(&first, &same));
+    let ready = ask(&mut holder, Ok(Default::default()));
+    assert_eq!(ready.title, "2");
+    let changed = ask(
+        &mut holder,
+        Ok([(17, Err("selected ship design refused".into()))].into()),
+    );
+    assert_eq!(changed.title, "3");
 }

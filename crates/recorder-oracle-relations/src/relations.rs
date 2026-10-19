@@ -19,6 +19,10 @@ mod reverse_visibility;
 #[path = "relations/reserved_intel.rs"]
 mod reserved_intel;
 
+#[path = "relations/faction_goals.rs"]
+mod faction_goals;
+pub use faction_goals::compare as compare_faction_goals;
+
 pub fn compare_reserved_reverse_visibility(
     frame: &DecodedFrame,
     report: &mut Report,
@@ -847,3 +851,14 @@ pub fn saved_colour(components: [u32; 4]) -> Vec<i64> {
 #[cfg(test)]
 #[path = "relations/zero_member_tests.rs"]
 mod zero_member_tests;
+
+#[path = "relations/faction_companions.rs"]
+pub mod faction_companions;
+
+#[path = "relations/faction_accounts.rs"]
+pub mod faction_accounts;
+#[path = "relations/faction_pools.rs"]
+pub mod faction_pools;
+
+#[path = "relations/faction_advisors.rs"]
+pub mod faction_advisors;

@@ -12,6 +12,87 @@ fn temp_effects(text: &str) -> installed_content_core::parser::native::Read {
 }
 
 #[test]
+fn temp_colour_lifetime_depends_on_the_outer_variable_context() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    with_world(&variables_frame(), "", Err("none"), |world| {
+        let scopes = Scopes::of(Scope::Country(0));
+        let evaluator = Evaluator::new(world, None);
+        // Synthetic callback branches: red, explicit blue override, green,
+        // then red. Nested checks retain channels the later branch omits.
+        let scripts = [
+            "set_temp_variable={alpha=1} set_temp_variable={red=1}",
+            "set_temp_variable={alpha=1} set_temp_variable={red=0} set_temp_variable={green=0} set_temp_variable={blue=1}",
+            "set_temp_variable={alpha=1} set_temp_variable={green=1}",
+            "set_temp_variable={alpha=1} set_temp_variable={red=1}",
+        ].map(items);
+        let run = || {
+            scripts
+                .iter()
+                .map(|script| {
+                    assert_eq!(evaluator.evaluate_colour(script, scopes, &[]), Eval::True);
+                    [b"red".as_slice(), b"green", b"blue"]
+                        .map(|key| evaluator.temp_value(key).unwrap_or(Ok(0)).unwrap())
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(run(), [[ONE, 0, 0], [0, 0, ONE], [0, ONE, 0], [ONE, 0, 0]]);
+        assert_eq!(
+            evaluator.with_variable_context(scopes, run),
+            [[ONE, 0, 0], [0, 0, ONE], [0, ONE, ONE], [ONE, ONE, ONE]]
+        );
+        assert_eq!(
+            run()[0],
+            [ONE, 0, 0],
+            "the next standalone check clears TLS"
+        );
+    });
+}
+
+#[test]
+fn temp_inherited_context_requires_proved_reads_even_inside_nested_checks() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    with_world(&variables_frame(), "", Err("none"), |world| {
+        let scopes = Scopes::of(Scope::Country(0));
+        let evaluator = Evaluator::new(world, None).with_temps(Temps::Inherited);
+        for _ in 0..2 {
+            assert_eq!(
+                evaluator.evaluate_colour(&items("set_temp_variable={red=1}"), scopes, &[]),
+                Eval::True
+            );
+            assert_eq!(evaluator.temp_value(b"red"), Some(Ok(ONE)));
+            assert!(
+                evaluator
+                    .temp_value(b"blue")
+                    .unwrap()
+                    .unwrap_err()
+                    .contains("caller temporary")
+            );
+            for script in [
+                "set_temp_variable={red=missing?0}",
+                "OR={check_variable={missing=0} always=yes}",
+                "set_temp_variable_to_random={var=red min=0 max=1}",
+                "divide_temp_variable={var=red?1 value=0} check_variable={red=0}",
+                "modulo_temp_variable={var=red?1 value=0} check_variable={red=0}",
+                "add_to_temp_variable={red=1}",
+            ] {
+                let Eval::Unknown(failures) =
+                    evaluator.evaluate_colour(&items(script), scopes, &[])
+                else {
+                    panic!("inherited input must refuse: {script}");
+                };
+                assert_eq!(failures.len(), 1, "{failures:?}");
+                assert!(
+                    failures.iter().next().unwrap().contains("caller temporary"),
+                    "{failures:?}"
+                );
+            }
+            assert_eq!(evaluator.evaluate_colour(&items("set_temp_variable={red=0.25} set_temp_variable={green=0.5} set_temp_variable={blue=0.75} set_temp_variable={alpha=1} set_temp_variable={highlighted=0}"), scopes, &[]), Eval::True);
+            assert_eq!(evaluator.temp_value(b"blue"), Some(Ok(75_000)));
+        }
+    });
+}
+
+#[test]
 fn temp_modulo_uses_integer_operands_and_guards() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

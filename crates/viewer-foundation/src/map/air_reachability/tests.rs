@@ -1,8 +1,8 @@
 use super::*;
-use replay_data::{
-    rows::AIR_MISSION_MAP_FLAGS, rows::AIR_MISSION_ZERO_PLANE_FLAGS, rows::CountryRow,
-    rows::FactionMemberRow, rows::NavalCombatShipRow, rows::RelationLinkRow, rows::TableId,
-    rows::TableRows, rows::VolunteerHostRow, rows::WarRelationRow,
+use replay_data::rows::{
+    AIR_MISSION_MAP_FLAGS, AIR_MISSION_ZERO_PLANE_FLAGS, CountryRow, FactionMemberRow,
+    NavalCombatShipRow, NavalRegionalMineRow, RelationLinkRow, TableId, TableRows,
+    VolunteerHostRow, WarRelationRow,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 
@@ -886,32 +886,48 @@ fn naval_combat_primary_countries_and_volunteer_mission_country_are_distinct() {
 }
 
 #[test]
-fn mine_laying_reads_the_targeted_effective_country_region_level() {
+fn mine_laying_uses_the_complete_country_vector_and_witnessed_omitted_zeros() {
     let mut frame = empty_frame();
     let links = BTreeMap::from([(1, 1), (2, 2), (12, 2)]);
     let mut wing = AirWingRow {
         owner: 1,
         ..Default::default()
     };
-    let admit = |frame: &DecodedFrame, wing: &AirWingRow, region: u32| {
-        let sources = MineTargetSources::read(frame, &links).unwrap();
-        sources.admit(wing, region, 100_000_000)
+    let admit = |frame: &DecodedFrame, wing: &AirWingRow, region| {
+        MineTargetSources::read(frame, &links)
+            .unwrap()
+            .admit(wing, region, 100_000_000)
     };
-    // A pair the collector did not record is unknown, not zero.
     assert_eq!(admit(&frame, &wing, 7), None);
-    let level = |country, raw_mines| NavalMineLevelRow {
+    let witness = |country| NavalRegionalMineRow {
         country,
-        region: 7,
-        raw_mines,
+        kind: 0,
+        region: 9,
+        amount: 0,
     };
-    set::<tables::NavalMineLevels>(&mut frame, vec![level(1, 0), level(2, 100_000_000)]);
+    set::<tables::NavalRegionalMines>(
+        &mut frame,
+        vec![
+            witness(1),
+            witness(2),
+            NavalRegionalMineRow {
+                country: 2,
+                kind: 1,
+                region: 7,
+                amount: 100_000_000,
+            },
+        ],
+    );
     assert_eq!(admit(&frame, &wing, 7), Some(true));
-    wing.country_override = 12; // Alias of country 2 is the effective owner.
+    wing.country_override = 12;
     assert_eq!(admit(&frame, &wing, 7), Some(false));
-    assert_eq!(admit(&frame, &wing, 8), None);
-    table::<tables::NavalMineLevels>(&mut frame)[1].raw_mines -= 1;
+    assert_eq!(admit(&frame, &wing, 8), Some(true));
+    assert_eq!(admit(&frame, &wing, 9), None);
+    table::<tables::NavalRegionalMines>(&mut frame)[2].amount -= 1;
     assert_eq!(admit(&frame, &wing, 7), Some(true));
-    truncate::<tables::NavalMineLevels>(&mut frame);
+    table::<tables::NavalRegionalMines>(&mut frame).remove(1);
+    assert_eq!(admit(&frame, &wing, 8), None);
+    truncate::<tables::NavalRegionalMines>(&mut frame);
     assert_eq!(admit(&frame, &wing, 7), None);
 }
 

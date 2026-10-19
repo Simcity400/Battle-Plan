@@ -29,17 +29,37 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 static SCIENTIST_ACTIVE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static SCIENTIST_VISIBILITY_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static SCIENTIST_INJURY_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static PROGRAM_FACILITY_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static PROGRAM_ASSIGNMENT_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static PROJECT_VARIABLE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static PROJECT_REWARD_REFUSALS: AtomicU64 = AtomicU64::new(0);
 
 pub fn scientist_active_data() -> impl serde::Serialize {
     let refused = SCIENTIST_ACTIVE_REFUSALS.load(Relaxed);
+    let injury = SCIENTIST_INJURY_REFUSALS.load(Relaxed);
+    let visibility = SCIENTIST_VISIBILITY_REFUSALS.load(Relaxed);
+    let assignment = PROGRAM_ASSIGNMENT_REFUSALS.load(Relaxed);
+    let facility = PROGRAM_FACILITY_REFUSALS.load(Relaxed);
+    let variables = PROJECT_VARIABLE_REFUSALS.load(Relaxed);
+    let rewards = PROJECT_REWARD_REFUSALS.load(Relaxed);
     crate::status::status!({
-        "refused": refused,
-        "refusals": crate::status::map(std::iter::once(("scientist active byte unreadable or address overflow", refused)).filter(|(_, count)| *count != 0)),
-        "scope": "cumulative appended scientist activity read failures; membership and skills remain available",
+        "refused": refused + injury + assignment + variables + rewards + facility + visibility,
+        "refusals": crate::status::map([
+            ("scientist active byte unreadable or address overflow", refused),
+            ("scientist injury timer unreadable or address overflow", injury),
+            ("scientist retained visibility template unreadable", visibility),
+            ("program scientist assignments unreadable or capacity insufficient", assignment),
+            ("facility speed and specialization operands unavailable", facility),
+            ("project variable store unavailable", variables),
+            ("pending project reward unavailable", rewards),
+        ].into_iter().filter(|(_, count)| *count != 0)),
+        "scope": "cumulative unavailable scientist/project detail observations; membership and skills remain available",
     })
 }
 
-pub const N: usize = 19;
+pub const N: usize = 20;
 pub const TABLES: [TableId; N] = [
     TableId::ProjectPrograms,
     TableId::Projects,
@@ -60,6 +80,7 @@ pub const TABLES: [TableId; N] = [
     TableId::RaidFacilities,
     TableId::RaidIntelInputs,
     TableId::RaidTooltipOperands,
+    TableId::ScientistDaily,
 ];
 
 /// Indices of the `projects` sliced family's tables in `TABLES`.
@@ -75,7 +96,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     // RaidTargets is the raid instance walk's second projection: the same rows
     // carry the map icon's operands, so it joins that walk's cost group.
     ("raid countries and instances", 5, &[5, 6, 10, 11]),
-    ("scientist rosters and specializations", 8, &[8, 9]),
+    ("scientist rosters and specializations", 8, &[8, 9, 19]),
 ];
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +192,7 @@ pub struct Captured {
     peace: CaptureRows<peace_conference::Row>,
     scientists: CaptureRows<scientist_roster::Row>,
     scientist_skills: CaptureRows<scientist_roster::SkillRow>,
+    scientist_names: Vec<u8>,
     raid_cooldowns: CaptureRows<craid_system::CooldownRow>,
     raid_paths: CaptureRows<raid_path_memo::Row>,
     /// The player raid cache; its tokens follow the parents' in the arena.
@@ -213,6 +235,8 @@ pub struct Captured {
     /// grouped by country: the country's own id first, then its other raw
     /// ids ascending.
     project_read: Vec<(u32, u32)>,
+    project_runtime: runtime::Runtime,
+    scientist_injury_read: bool,
 }
 
 impl Captured {
@@ -232,6 +256,8 @@ impl Captured {
         self.peace.fail(outcomes[7]);
         self.scientists.fail(outcomes[8]);
         self.scientist_skills.fail(outcomes[9]);
+        self.scientist_injury_read =
+            replay_data::cadence::should_walk(TableId::ScientistDaily, hour, force_full);
         self.raid_cooldowns.fail(outcomes[11]);
         self.raid_paths.fail(outcomes[12]);
         self.raid_player.fail(outcomes[13]);
@@ -274,6 +300,7 @@ impl Captured {
             peace: CaptureRows::new(capacity.rows[7]),
             scientists: CaptureRows::new(capacity.rows[8]),
             scientist_skills: CaptureRows::new(capacity.rows[9]),
+            scientist_names: Vec::new(),
             raid_cooldowns: CaptureRows::new(capacity.rows[11]),
             raid_paths: CaptureRows::new(capacity.rows[12]),
             raid_player: CaptureRows::new(capacity.rows[13]),
@@ -298,6 +325,8 @@ impl Captured {
             project_links: Vec::new(),
             project_owners: Vec::new(),
             project_read: Vec::new(),
+            project_runtime: runtime::Runtime::default(),
+            scientist_injury_read: false,
         }
     }
 
@@ -344,7 +373,8 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.facilities.allocated_bytes()
+        self.project_runtime.allocated_bytes()
+            + self.facilities.allocated_bytes()
             + self.raid_intel.allocated_bytes()
             + self.tooltip_operands.allocated_bytes()
             + self.counteroperatives.allocated_bytes()
@@ -358,6 +388,7 @@ impl Captured {
             + self.peace.allocated_bytes()
             + self.scientists.allocated_bytes()
             + self.scientist_skills.allocated_bytes()
+            + self.scientist_names.capacity()
             + self.raid_cooldowns.allocated_bytes()
             + self.raid_paths.allocated_bytes()
             + self.raid_player.allocated_bytes()
@@ -690,18 +721,25 @@ impl Captured {
                 reason: replay_data::cadence::SKIPPED_REASON,
             };
         }
+        self.scientist_injury_read = false;
         if active[8] {
             let begin = qpc();
+            let names = &mut self.scientist_names;
             capture_pair(
                 &mut self.scientists,
                 &mut self.scientist_skills,
                 |scientists, skills| {
                     let _reads = read_accounting::table(TABLES[8]);
-                    let walk = scientist_roster::walk_growing(
+                    let walk = scientist_roster::walk_growing_with_injury(
                         memory,
                         base,
                         game_state,
-                        &mut scientist_roster::GrowingBuffers { scientists, skills },
+                        &mut scientist_roster::GrowingBuffers {
+                            scientists,
+                            skills,
+                            names,
+                        },
+                        active[19],
                     );
                     (walk.scientists, walk.skills)
                 },
@@ -713,6 +751,27 @@ impl Captured {
                     .count() as u64,
                 Relaxed,
             );
+            self.scientist_injury_read = active[19];
+            if active[19] {
+                SCIENTIST_VISIBILITY_REFUSALS.fetch_add(
+                    self.scientists.rows[..self.scientists.outcome.len()]
+                        .iter()
+                        .filter(|row| {
+                            row.template_visibility.is_none()
+                                || row.template_visibility == Some(1)
+                                    && row.template_origin.is_none()
+                        })
+                        .count() as u64,
+                    Relaxed,
+                );
+                SCIENTIST_INJURY_REFUSALS.fetch_add(
+                    self.scientists.rows[..self.scientists.outcome.len()]
+                        .iter()
+                        .filter(|row| row.injury_days.is_none())
+                        .count() as u64,
+                    Relaxed,
+                );
+            }
             ticks[8] = elapsed(begin);
         } else {
             self.scientists.outcome = Outcome::Unavailable {
@@ -763,6 +822,13 @@ impl Captured {
             self.facilities.outcome,
             self.raid_intel.outcome,
             self.tooltip_operands.outcome,
+            if self.scientist_injury_read {
+                self.scientists.outcome
+            } else {
+                Outcome::Unavailable {
+                    reason: replay_data::cadence::SKIPPED_REASON,
+                }
+            },
         ]
     }
 
@@ -786,6 +852,7 @@ impl Captured {
                     prototype_progress: r.state.prototype_progress,
                     iterations: r.state.iterations,
                 },
+                runtime: self.project_runtime.value(r),
             }),
             table::<tables::ProjectHistory, _>(outcomes[2], &self.history.rows, |r| {
                 rows::ProjectHistoryRow {
@@ -919,6 +986,25 @@ impl Captured {
                     raw: r.raw,
                 },
             ),
+            table::<tables::ScientistDaily, _>(outcomes[19], &self.scientists.rows, |r| {
+                rows::ScientistDailyRow {
+                    character: r.character,
+                    country: r.country,
+                    injury_days: rows::Recorded::Value(r.injury_days),
+                    template_visibility: rows::Recorded::Value(r.template_visibility),
+                    template_origin: rows::Recorded::Value(r.template_origin.and_then(
+                        |(start, len, line)| {
+                            Some(rows::ScientistTemplateOrigin {
+                                file: self
+                                    .scientist_names
+                                    .get(start..start.checked_add(len)?)?
+                                    .to_vec(),
+                                line,
+                            })
+                        },
+                    )),
+                }
+            }),
         ]
     }
 
@@ -1094,6 +1180,20 @@ impl Captured {
     }
 
     fn program_table(&self, outcome: Outcome) -> TableView {
+        PROGRAM_FACILITY_REFUSALS.fetch_add(
+            self.programs.rows[..outcome.len().min(self.programs.rows.len())]
+                .iter()
+                .filter(|row| !row.details_known)
+                .count() as u64,
+            Relaxed,
+        );
+        PROGRAM_ASSIGNMENT_REFUSALS.fetch_add(
+            self.programs.rows[..outcome.len().min(self.programs.rows.len())]
+                .iter()
+                .filter(|row| !row.assignments_known)
+                .count() as u64,
+            Relaxed,
+        );
         if self.names.required < self.names.len
             || !valid_names(
                 outcome,
@@ -1115,6 +1215,39 @@ impl Captured {
                 building: owned_vec(copy_vec(
                     &self.names.first[r.building_start..r.building_start + r.building_len],
                 )),
+                facility: rows::Recorded::Value(r.details_known.then(|| {
+                    self.names.first[r.details_start
+                        ..r.details_start
+                            + r.details_count as usize * engine_projects::program_details::BYTES]
+                        .chunks_exact(engine_projects::program_details::BYTES)
+                        .map(|bytes| {
+                            let value = engine_projects::program_details::Operand::decode(bytes);
+                            rows::ProjectFacilityOperand {
+                                kind: value.kind,
+                                scientist: value.scientist,
+                                token: value.token,
+                                key: value.key,
+                                ordinal: value.ordinal,
+                                assignment: value.assignment,
+                                raw: value.raw,
+                            }
+                        })
+                        .collect()
+                })),
+                assignments: rows::Recorded::Value(r.assignments_known.then(|| {
+                    let start = r.assignments_start;
+                    let end =
+                        start + r.assignments_count as usize * nproject_cprogram::ASSIGNMENT_BYTES;
+                    self.names.first[start..end]
+                        .chunks_exact(nproject_cprogram::ASSIGNMENT_BYTES)
+                        .map(|bytes| rows::ProjectScientistAssignment {
+                            scientist: u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                            target: i32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+                            current: i32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+                            timed: bytes[16],
+                        })
+                        .collect()
+                })),
             }
         })
     }
@@ -1179,6 +1312,17 @@ impl Captured {
                 );
                 self.projects.outcome = bounded(projects, self.projects.rows.len());
                 self.history.outcome = bounded(histories, self.history.rows.len());
+                self.project_runtime.read(
+                    memory,
+                    base,
+                    &self.projects.rows[..self.projects.outcome.len()],
+                    force_full,
+                    census
+                        && matches!(self.projects.outcome, Outcome::Rows { .. })
+                        && (force_full
+                            || hour.rem_euclid(replay_data::cadence::STAGGER_PERIOD) == 0),
+                    Some(&self.project_selection),
+                );
                 self.compare_project_owners(store, changes);
             }
         }
@@ -1343,6 +1487,7 @@ impl Captured {
 }
 
 mod owned;
+mod runtime;
 #[cfg(test)]
 use owned::{CensusEntry, M_PROGRAMS, ProjectCensus, copy_program_row, span};
 pub use owned::{ProjectsCopyContext, ProjectsCopyReport, ProjectsJob, copy_projects_refresh};
@@ -1368,7 +1513,11 @@ fn program_outcome(
 ) -> Outcome {
     let outcome = bounded(result.outcome, rows.len());
     if result.required_bytes < result.bytes_len
-        || (matches!(outcome, Outcome::Rows { .. }) && result.required_bytes != result.bytes_len)
+        || (matches!(outcome, Outcome::Rows { .. })
+            && result.required_bytes != result.bytes_len
+            && rows[..outcome.len()]
+                .iter()
+                .all(|row| row.assignments_known && row.details_known))
         || !valid_names(outcome, rows, bytes, result.bytes_len)
     {
         Outcome::Unavailable {
@@ -1391,6 +1540,16 @@ fn valid_names(
                 r.building_start
                     .checked_add(r.building_len)
                     .is_some_and(|end| end <= len)
+                    && (!r.assignments_known
+                        || (r.assignments_count as usize)
+                            .checked_mul(nproject_cprogram::ASSIGNMENT_BYTES)
+                            .and_then(|count| r.assignments_start.checked_add(count))
+                            .is_some_and(|end| end <= len))
+                    && (!r.details_known
+                        || (r.details_count as usize)
+                            .checked_mul(engine_projects::program_details::BYTES)
+                            .and_then(|count| r.details_start.checked_add(count))
+                            .is_some_and(|end| end <= len))
             })
         })
 }
@@ -1408,3 +1567,29 @@ mod tests;
 #[cfg(test)]
 #[path = "projects_scale_tests.rs"]
 mod scale_tests;
+
+/// Actual converter output for spool integration regressions.
+#[cfg(any(test, feature = "test-support"))]
+pub fn scientist_spool_fixture(daily: bool, ordinal: u32) -> [TableView; N] {
+    let mut captured = Captured::with_capacities(&Capacities {
+        rows: [1; N],
+        ..Default::default()
+    });
+    captured.scientists.rows[0] = scientist_roster::Row {
+        character: 7,
+        country: 5000,
+        ordinal,
+        active: Some(1),
+        injury_days: daily.then_some(8),
+        template_visibility: daily.then_some(1),
+        template_origin: daily.then_some((0, 22, 17)),
+        ..Default::default()
+    };
+    captured
+        .scientist_names
+        .extend_from_slice(b"events/replacement.txt");
+    captured.scientists.outcome = Outcome::Rows { len: 1 };
+    captured.scientist_skills.outcome = Outcome::Rows { len: 0 };
+    captured.scientist_injury_read = daily;
+    captured.tables()
+}

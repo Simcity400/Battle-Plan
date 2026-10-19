@@ -291,6 +291,8 @@ fn frame(hour: i32, log: Vec<CombatLogEquipmentRow>, read: &[u32]) -> DecodedFra
             instant_decisions: replay_data::rows::Recorded::Value(Some(0)),
             runtime_scalars: Default::default(),
             movement_defines: Default::default(),
+
+            state_array_len: Default::default(),
         }]),
     );
     put(
@@ -1345,6 +1347,7 @@ fn a_disabled_writer_feature_is_not_logged_without_excluding_recorded_totals() {
                 // Other runtime features do not enable this writer.
                 dlc_mask: !engine_dlc::dlc_feature_state::EQUIPMENT_LOSSES_MASK,
                 human_ai: 0,
+                state_array_len: Default::default(),
                 weather_suspend: replay_data::rows::Recorded::Value(None),
                 instant_decisions: replay_data::rows::Recorded::Value(Some(0)),
                 runtime_scalars: Default::default(),
@@ -1533,6 +1536,8 @@ fn closed_feature_gate_stays_not_logged_with_an_unread_census() {
                 instant_decisions: replay_data::rows::Recorded::Value(Some(0)),
                 runtime_scalars: Default::default(),
                 movement_defines: Default::default(),
+
+                state_array_len: Default::default(),
             },
         ]));
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();

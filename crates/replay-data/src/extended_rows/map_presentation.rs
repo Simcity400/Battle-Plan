@@ -120,6 +120,8 @@ value_struct!(HullVariantInputs {
 });
 opaque_value!(Option<HullVariantInputs>);
 
+opaque_value!(Option<[i64; 5]>);
+
 /// Hourly entity-model and counter operands, keyed by the full Ships handle.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ShipModelRow {
@@ -140,9 +142,16 @@ pub struct ShipModelRow {
     /// Fresh current tuple for the already selected variant; a null variant
     /// demands none. Individual later failures never erase an earlier field.
     pub hull_variant: Recorded<Option<HullVariantInputs>>,
+    /// Nonempty native critical-damage array, from the held organisation operands.
+    pub has_criticals: Recorded<Option<u32>>,
+    /// Carrier Air-base capacity subtype, under an independent refit certificate.
+    /// None is an unavailable observation or a host without a carrier base.
+    pub air_capacity_kind: Recorded<Option<u32>>,
+    /// Current selected-design dominance operands: weight, range, speed, classification-selected classification-selected carrier size, heavy attack.
+    pub naval_power: Recorded<Option<[i64; 5]>>,
 }
 typed_codec!(ShipModelRow, 64, |row| row.ship as u128, |key| Self { ship: key as u64, ..Default::default() },
- { 0 => (variant): U64, 1 => (hull_sprite): Bytes, 2 => (fallback_sprite): Bytes, 3 => (model_number): I32, 4 => (formation_flags): U64, 5 => (counter): Opaque, 6 => (subunit_index): OptionalI32, 7 => (strike): Opaque, 8 => (hull_variant): Opaque }, |_row| Ok(()));
+ { 0 => (variant): U64, 1 => (hull_sprite): Bytes, 2 => (fallback_sprite): Bytes, 3 => (model_number): I32, 4 => (formation_flags): U64, 5 => (counter): Opaque, 6 => (subunit_index): OptionalI32, 7 => (strike): Opaque, 8 => (hull_variant): Opaque, 9 => (has_criticals): OptionalU32, 10 => (air_capacity_kind): OptionalU32, 11 => (naval_power): Opaque }, |_row| Ok(()));
 
 /// Complete hourly province census, including empty ordered occupant arrays.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -453,6 +462,7 @@ mod fresh_railway_eta_tests {
             fresh: None.into(),
             combat_count: 1,
             combat_references: Some(UnitCombatReferences {
+                speed_witness: Default::default(),
                 sample_hour: PacketHour::Host,
                 entries: vec![UnitCombatReference {
                     combat: u64::MAX,
@@ -507,10 +517,13 @@ pub struct FleetCounterInputRow {
     pub blue: u32,
     pub alpha: u32,
     pub mission_region_count: i32,
+    /// Stored fleet-region membership as a sorted multiset, including repeats. First/change
+    /// acquisition shares the immutable payload between quiet hourly rows.
+    pub mission_regions: Recorded<Option<std::sync::Arc<Vec<u32>>>>,
     pub task_forces: Vec<u64>,
 }
 typed_codec!(FleetCounterInputRow, 64, |r| r.fleet as u128, |k| Self { fleet: k as u64, ..Default::default() },
- { 0 => (red): U32, 1 => (green): U32, 2 => (blue): U32, 3 => (alpha): U32, 4 => (mission_region_count): I32, 5 => (task_forces): U64List }, |_r| Ok(()));
+ { 0 => (red): U32, 1 => (green): U32, 2 => (blue): U32, 3 => (alpha): U32, 4 => (mission_region_count): I32, 5 => (task_forces): U64List, 6 => (mission_regions): Opaque }, |_r| Ok(()));
 
 /// Slot-zero subject pointer/type/parties for diplomacy access.
 /// `relation_type: None` is an observed null pointer. A non-subject type has
@@ -526,6 +539,65 @@ pub struct ZeroSubjectInputs {
 value_struct!(ZeroSubjectInputs { relation_type: Option<u32>, parties: Option<[Option<u32>; 2]> });
 opaque_value!(Option<ZeroSubjectInputs>);
 
+/// Immutable ordered full references. Cloning a replay row shares its payload;
+/// the collector replaces it only when the certified roster changes.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ManpowerReferences(Option<std::sync::Arc<Vec<u64>>>);
+
+impl ManpowerReferences {
+    pub fn allocated_bytes(&self) -> usize {
+        <Self as Value>::heap_bytes(self)
+    }
+}
+impl From<Vec<u64>> for ManpowerReferences {
+    fn from(values: Vec<u64>) -> Self {
+        Self((!values.is_empty()).then(|| std::sync::Arc::new(values)))
+    }
+}
+impl std::ops::Deref for ManpowerReferences {
+    type Target = [u64];
+    fn deref(&self) -> &[u64] {
+        self.0.as_deref().map_or(&[], Vec::as_slice)
+    }
+}
+impl<'a> IntoIterator for &'a ManpowerReferences {
+    type Item = &'a u64;
+    type IntoIter = std::slice::Iter<'a, u64>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+impl Value for ManpowerReferences {
+    const MINIMUM_ENCODED_BYTES: usize = 4;
+    fn heap_bytes(&self) -> usize {
+        self.0.as_ref().map_or(0, |values| {
+            size_of::<Vec<u64>>() + 2 * size_of::<usize>() + values.capacity() * size_of::<u64>()
+        })
+    }
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        engine_allocation::add(
+            4,
+            self.len()
+                .checked_mul(8)
+                .ok_or_else(|| invalid("reference list size overflow"))?,
+        )
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(self.clone())
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        let count =
+            u32::try_from(self.len()).map_err(|_| invalid("reference count exceeds u32"))?;
+        output.extend_from_slice(&count.to_le_bytes());
+        <u64 as Value>::encode_many(self, output)
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        <Vec<u64> as Value>::decode(input).map(Self::from)
+    }
+}
+crate::checkpoint::values::wire_value!(ManpowerReferences);
+opaque_value!(Option<ManpowerReferences>);
+
 /// Country counter and serializer operands keyed by raw country link id.
 /// `pride_of_the_fleet` is the full ship reference (zero for the null
 /// sentinel's zero bits, otherwise raw); `owned_state_count` is the
@@ -539,7 +611,9 @@ opaque_value!(Option<ZeroSubjectInputs>);
 /// the roster order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CountryCounterInputRow {
+    pub sent_expeditionaries: Recorded<Option<ManpowerReferences>>,
     pub country: u32,
+    pub recruitment_modifiers: Recorded<Option<[Option<i64>; 4]>>,
     pub pride_of_the_fleet: u64,
     pub owned_state_count: i32,
     pub controlled_state_count: i32,
@@ -566,6 +640,10 @@ pub struct CountryCounterInputRow {
     /// no active-war veto or faction reconstruction is applied. None is a
     /// counted independent read/arena refusal, not an empty set.
     pub co_belligerents: Recorded<Option<Vec<u32>>>,
+    /// Raw mine-penalty reduction from the certified country accumulator.
+    pub mines_effect_reduction: Recorded<Option<Option<i64>>>,
+    /// Raw country entry projected from the existing complete accumulator census.
+    pub naval_detection: Recorded<Option<Option<i64>>>,
     /// Slot-zero war-pointer presence (0/1), then the pointed relation's exact retired byte (zero
     /// for a null pointer). Independent of the cache set; these native runtime operands have no
     /// text-save counterpart.
@@ -609,11 +687,65 @@ pub struct CountryCounterInputRow {
     /// ([`CountryMovementModifiers`]), read and carried with the row. None is a counted
     /// read refusal; older formats use NotRecorded.
     pub movement_modifiers: Recorded<Option<CountryMovementModifiers>>,
+    /// Raw entries in engine_native::ccountry::AIR_MODIFIER_KEYS order. Nested
+    /// absence is an observed missing key; outer absence is a failed census.
+    pub air_modifiers: Recorded<Option<[Option<i64>; 10]>>,
+    /// Whether the complete accumulator supplied the independent combat columns.
+    /// A nullable column under a known census is an observed missing key.
+    pub air_combat_modifiers_known: Recorded<bool>,
+    pub air_superiority_efficiency: Recorded<Option<i64>>,
+    pub air_intercept_efficiency: Recorded<Option<i64>>,
+    pub air_cas_efficiency: Recorded<Option<i64>>,
+    pub air_nav_efficiency: Recorded<Option<i64>>,
+    pub air_attack_factor: Recorded<Option<i64>>,
+    pub air_defence_factor: Recorded<Option<i64>>,
+    pub air_strategic_bomber_defence_factor: Recorded<Option<i64>>,
+    /// Width entry from that same certified country accumulator. The movement
+    /// packet distinguishes read refusal from native absence.
+    pub combat_width_factor: Recorded<Option<i64>>,
 }
 typed_codec!(CountryCounterInputRow, 32, |r| r.country as u128, |k| Self { country: k as u32, ..Default::default() },
- { 0 => (pride_of_the_fleet): U64, 1 => (owned_state_count): I32, 2 => (controlled_state_count): I32, 3 => (first_division): U64, 4 => (owned_states): Opaque, 5 => (controlled_states): Opaque, 6 => (core_states): Opaque, 7 => (army_leaders): Opaque, 8 => (navy_leaders): Opaque, 9 => (mio_policies): Opaque, 10 => (neighbors): Opaque, 11 => (co_belligerents): Opaque, 12 => (zero_war): Opaque, 13 => (movement): Opaque, 14 => (zero_subject): Opaque, 15 => (pride_name): Opaque, 16 => (forward_visibility): Opaque, 17 => (attack): Opaque, 18 => (directed_wars): Opaque, 19 => (attack_modifiers): Opaque, 20 => (movement_modifiers): Opaque }, |_row| {
+ { 0 => (pride_of_the_fleet): U64, 1 => (owned_state_count): I32, 2 => (controlled_state_count): I32, 3 => (first_division): U64, 4 => (owned_states): Opaque, 5 => (controlled_states): Opaque, 6 => (core_states): Opaque, 7 => (army_leaders): Opaque, 8 => (navy_leaders): Opaque, 9 => (mio_policies): Opaque, 10 => (neighbors): Opaque, 11 => (co_belligerents): Opaque, 12 => (zero_war): Opaque, 13 => (movement): Opaque, 14 => (zero_subject): Opaque, 15 => (pride_name): Opaque, 16 => (forward_visibility): Opaque, 17 => (attack): Opaque, 18 => (directed_wars): Opaque, 19 => (attack_modifiers): Opaque, 20 => (movement_modifiers): Opaque, 21 => (recruitment_modifiers): Opaque, 22 => (sent_expeditionaries): Opaque, 23 => (air_modifiers): Opaque, 24 => (mines_effect_reduction): Opaque, 25 => (naval_detection): Opaque, 26 => (air_superiority_efficiency): OptionalI64, 27 => (air_intercept_efficiency): OptionalI64, 28 => (air_cas_efficiency): OptionalI64, 29 => (air_nav_efficiency): OptionalI64, 30 => (air_attack_factor): OptionalI64, 31 => (air_defence_factor): OptionalI64, 32 => (air_strategic_bomber_defence_factor): OptionalI64, 33 => (air_combat_modifiers_known): Bool, 34 => (combat_width_factor): OptionalI64 }, |_row| {
     Ok(())
 });
+opaque_value!(Option<[Option<i64>; 10]>);
+
+impl CountryCounterInputRow {
+    /// Raw combat operand, before content metadata or feature eligibility.
+    pub fn air_combat_modifier(&self, key: u32) -> Result<Option<i64>, &'static str> {
+        use engine_executable::modifier_keys as keys;
+        if matches!(
+            key,
+            keys::AIR_HOME_DEFENCE_FACTOR | keys::AIR_POWER_PROJECTION_FACTOR
+        ) {
+            let Recorded::Value(Some(values)) = &self.air_modifiers else {
+                return Err("country Air modifier census is unavailable");
+            };
+            return Ok(values[if key == keys::AIR_HOME_DEFENCE_FACTOR {
+                2
+            } else {
+                3
+            }]);
+        }
+        if self.air_combat_modifiers_known != Recorded::Value(true) {
+            return Err("country Air combat modifier census is unavailable");
+        }
+        let value = match key {
+            keys::AIR_SUPERIORITY_EFFICIENCY => self.air_superiority_efficiency,
+            keys::AIR_INTERCEPT_EFFICIENCY => self.air_intercept_efficiency,
+            keys::AIR_CAS_EFFICIENCY => self.air_cas_efficiency,
+            keys::AIR_NAV_EFFICIENCY => self.air_nav_efficiency,
+            keys::AIR_ATTACK_FACTOR => self.air_attack_factor,
+            keys::AIR_DEFENCE_FACTOR => self.air_defence_factor,
+            keys::AIR_STRATEGIC_BOMBER_DEFENCE_FACTOR => self.air_strategic_bomber_defence_factor,
+            _ => return Err("country Air combat modifier key is not recorded"),
+        };
+        value
+            .require("country Air combat modifier")
+            .copied()
+            .map_err(|_| "country Air combat modifier not recorded")
+    }
+}
 
 /// Ordered naval launch occurrence from actual Country0's strategic navy.
 /// `base_province` is the base's exact province word, interpreted as signed.
@@ -885,6 +1017,10 @@ pub struct OrdersGroupCounterInputRow {
     /// Stored signed value used by the invasion communications branch. Distinct from the HQ
     /// distance; None is a counted independent refusal.
     pub invasion_source_distance: Recorded<Option<i32>>,
+    /// Stored province paired with hq_distance. Negative values remain exact.
+    pub hq_nearest_front: Recorded<Option<i32>>,
+    /// None is a counted acquisition/certificate refusal.
+    pub template_context: Recorded<Option<std::sync::Arc<TemplateHqContext>>>,
     /// The commander operands recordings through format 101 captured
     /// ([`OrdersGroupAttackInputs`]); current writers leave it empty
     /// ([`Witnessed`]) unless the collector's `attack_witness` diagnostic
@@ -902,7 +1038,8 @@ typed_codec!(OrdersGroupCounterInputRow, 64, |r| r.group as u128, |k| Self { gro
  { 0 => (withdrawing): U8, 1 => (hq_distance): OptionalI32,
    2 => (leader_enroute_days): OptionalI32, 3 => (border_war_presence): Opaque,
    4 => (invasion_source_distance): OptionalI32, 5 => (attack): Opaque,
-   6 => (commander_attack): Opaque, 7 => (commander_movement): Opaque }, |_row| Ok(()));
+     6 => (commander_attack): Opaque, 7 => (commander_movement): Opaque,
+     8 => (hq_nearest_front): OptionalI32, 9 => (template_context): Opaque }, |_row| Ok(()));
 
 /// Picture-directory inputs for the same HQ scope as LeaderPortraits,
 /// keyed by leader handle. `country` is the raw leader-country reference.
@@ -963,6 +1100,8 @@ pub struct SimulationFeatureRow {
     pub dlc_mask: u32,
     /// The `human_ai` debug byte, ORed into every country's AI-control status.
     pub human_ai: u8,
+    /// Native state-array extent, including its reserved first slot and any empty slots.
+    pub state_array_len: Recorded<Option<u32>>,
     /// Weather and day-night suspension bytes, in that order; None is a failed
     /// weather read and does not discard the unrelated feature mask/debug byte.
     pub weather_suspend: Recorded<Option<[u8; 2]>>,
@@ -976,7 +1115,7 @@ pub struct SimulationFeatureRow {
     pub movement_defines: Recorded<MovementDefines>,
 }
 typed_codec!(SimulationFeatureRow, 0, |_row| 0, |_key| Self::default(),
- { 0 => (dlc_mask): U32, 1 => (human_ai): U8, 2 => (weather_suspend): Opaque, 3 => (instant_decisions): Opaque, 4 => (runtime_scalars): Opaque, 5 => (movement_defines): Opaque }, |_row| Ok(()));
+ { 0 => (dlc_mask): U32, 1 => (human_ai): U8, 2 => (weather_suspend): Opaque, 3 => (instant_decisions): Opaque, 4 => (runtime_scalars): Opaque, 5 => (movement_defines): Opaque, 6 => (state_array_len): OptionalU32 }, |_row| Ok(()));
 
 /// Loaded defines, raw (fixed5, or a signed 32-bit global sign-extended), each `None`
 /// when its own read was refused: the out-of-supply speed penalty at full severity;
@@ -1056,7 +1195,11 @@ typed_codec!(StateVisibilityRow, 32, |row| row.state as u128,
 /// `custom_icon_nato` are the template's stored icon choice.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DivisionTemplateIconRow {
+    /// The composition origin selects the exile manpower channel.
+    pub manpower_exile: Recorded<bool>,
     pub template: u64,
+    /// Ordered native count*effective-width sum, before contextual country/leader factors.
+    pub base_width: Recorded<Option<i64>>,
     pub priority_unit: u32,
     pub priority_unit_name: Vec<u8>,
     pub custom_icon: i32,
@@ -1093,10 +1236,23 @@ pub struct DivisionTemplateIconRow {
     /// Each composition grid's (definition, cell count) entries, from the
     /// same read as `subunits`.
     pub grids: Recorded<TemplateGrids>,
+    /// Full spatial composition from the same grid read. None is a writer
+    /// certificate or acquisition refusal, independently of the settings.
+    pub layout: Recorded<Option<std::sync::Arc<TemplateLayout>>>,
+    /// None is a writer-certificate or acquisition refusal, not default settings.
+    pub settings: Recorded<Option<std::sync::Arc<TemplateSettings>>>,
+    /// The modifier keys the land movement speed reads for the template's movement
+    /// priority sub-unit, in native order with repeats kept: the sub-unit
+    /// definition's own key when nonzero, then each nonzero key of its categories.
+    /// Each is a country accumulator entry (CountryUnitSpeedEntries) the movement
+    /// speed adds. This movement priority sub-unit can differ from
+    /// `priority_unit`. None is a counted read refusal; older formats use
+    /// NotRecorded.
+    pub speed_keys: Recorded<Option<Vec<u32>>>,
 }
 typed_codec!(DivisionTemplateIconRow, 64, |row| row.template as u128,
  |key| Self { template: key as u64, ..Default::default() },
- { 0 => (priority_unit): U32, 1 => (priority_unit_name): Bytes, 2 => (custom_icon): I32, 3 => (custom_icon_nato): U8, 4 => (representative): U32, 5 => (representative_local): U8, 6 => (subunits): Opaque, 7 => (country): I32, 8 => (foreign_country): I32, 9 => (model_category): OptionalU64, 10 => (model_entity): Bytes, 11 => (excluded_variants): U64List, 12 => (model_unreadable): U8, 13 => (formation_division_count): OptionalI32, 14 => (display_name): Opaque, 15 => (grids): Opaque }, |_row| Ok(()));
+ { 0 => (priority_unit): U32, 1 => (priority_unit_name): Bytes, 2 => (custom_icon): I32, 3 => (custom_icon_nato): U8, 4 => (representative): U32, 5 => (representative_local): U8, 6 => (subunits): Opaque, 7 => (country): I32, 8 => (foreign_country): I32, 9 => (model_category): OptionalU64, 10 => (model_entity): Bytes, 11 => (excluded_variants): U64List, 12 => (model_unreadable): U8, 13 => (formation_division_count): OptionalI32, 14 => (display_name): Opaque, 15 => (grids): Opaque, 16 => (manpower_exile): Bool, 17 => (base_width): OptionalI64, 18 => (layout): Opaque, 19 => (settings): Opaque, 20 => (speed_keys): Opaque }, |_row| Ok(()));
 
 /// Sparse native province overrides. Absence from a complete current table means no
 /// override; bytes can be a localization key, not rendered text.
@@ -1203,9 +1359,13 @@ pub struct RadarCoverageRow {
     pub state: Option<u32>,
     /// Covered province ids in native array order, repeats included.
     pub provinces: Vec<u32>,
+    /// Writer-certified fixed5 range, absent on a read/certificate refusal.
+    pub radius: Option<i64>,
 }
-typed_codec!(RadarCoverageRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128, |key| Self { country: (key >> 32) as u32, ordinal: key as u32, state: Default::default(), provinces: Default::default() },
- { 0 => (state): OptionalU32, 1 => (provinces): U32List }, |_row| Ok(()));
+typed_codec!(RadarCoverageRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128, |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
+ { 0 => (state): OptionalU32, 1 => (provinces): U32List, 2 => (radius): OptionalI64 }, |_row| Ok(()));
 
 opaque_value!(Option<ShipCounterInputs>);
 opaque_value!(Vec<CharacterPortrait>);
+
+opaque_value!(Option<[Option<i64>; 4]>);

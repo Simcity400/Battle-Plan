@@ -199,12 +199,12 @@ fn character_rosters_keep_identity_order_names_and_optional_country() {
 }
 
 #[test]
-fn leader_precision_and_independent_trait_order_are_lossless() {
+fn experience_precision_and_independent_trait_order_are_lossless() {
     let pack = fixture(br#"countries={} character_manager={historical={character={
             id={id=8 type=73} token=x
             navy_leader={id={id=4294967295 type=4713} skill=-2147483648 experience=-90071992547.40993
                 attack_skill=2147483647 coordination_skill=-1
-                traits={b a b} in_progress={a=0.00001 b=-90071992547.40993 a=0}
+                traits={b a b} in_progress={a=0.00001 b=-90071992547.40993 a=0} trait_xp_factor={b=-0.00001 b=90071992547.40993 a=0}
                 traits_to_remove={sick=-2147483648 b=89 sick=0}}
             advisors={advisor={slot=x idea_token=y dynamic_template={slot=ignored}} advisor={}}
         }}}"#).unwrap();
@@ -218,6 +218,14 @@ fn leader_precision_and_independent_trait_order_are_lossless() {
         -9_007_199_254_740_993
     );
     assert_eq!(leader.trait_experience.len(), 3);
+    assert_eq!(leader.trait_factors.len(), 3);
+    assert_eq!(leader.trait_factors[0].token, b"b");
+    assert_eq!(leader.trait_factors[1].token, b"b");
+    assert_eq!(leader.trait_factors[0].experience.raw, -1);
+    assert_eq!(
+        leader.trait_factors[1].experience.raw,
+        9_007_199_254_740_993
+    );
     assert_eq!(
         leader
             .timed_traits

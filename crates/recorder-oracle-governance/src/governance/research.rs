@@ -105,6 +105,9 @@ pub(super) fn compare_research(
     let slots_current =
         report.refresh_is_current(replay_data::rows::TableId::ResearchSlots, frame.hour);
     let mut complete = true;
+    complete &= report.attempt("governance research grant inventory", |report| {
+        compare_grants(frame, pack, links, names, report)
+    });
     if slots_current || report.read_hours.is_some() {
         complete &= report.attempt("governance ResearchSlots", |report| {
             compare_research_slots(frame, pack, links, &dictionary, report)
@@ -154,6 +157,151 @@ pub(super) fn compare_research(
             "research comparisons incomplete; independent results retained",
         ))
     }
+}
+
+fn compare_grants(
+    frame: &DecodedFrame,
+    pack: &saved::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    names: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    use replay_data::rows::ResearchModifierRow as R;
+    let rows = complete::<tables::ResearchModifiers>(frame)?;
+    let current_owners = if report.read_hours.is_some() && !report.full_refresh() {
+        let reads = complete::<tables::SliceReads>(frame)?;
+        let reads = reads.iter().filter(|read| {
+            read.table == replay_data::rows::TableId::ResearchModifiers.index() as u32
+        });
+        let mut current = BTreeSet::new();
+        let mut tags = BTreeSet::new();
+        let mut oldest = None;
+        for read in reads {
+            if read.sample_hour == frame.hour {
+                current.insert(read.owner);
+                tags.insert(country(pack, links, read.owner)?.0.to_vec());
+            } else {
+                oldest =
+                    Some(oldest.map_or(read.sample_hour, |old: i32| old.min(read.sample_hour)));
+            }
+        }
+        if oldest.is_some() || current.is_empty() {
+            report.carried_owners(replay_data::rows::TableId::ResearchModifiers, oldest);
+        }
+        Some((current, tags))
+    } else {
+        None
+    };
+    let mut captured = BTreeMap::<Vec<u8>, (Option<i32>, Vec<saved::ResearchGrant>)>::new();
+    let mut owner_rows = BTreeMap::<u32, Vec<&R>>::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.index == engine_research::research_modifiers::grants::INVENTORY_INDEX)
+    {
+        owner_rows.entry(row.country).or_default().push(row);
+    }
+    let spelling = |id: i64| -> io::Result<Vec<u8>> {
+        let id =
+            u32::try_from(id).map_err(|_| invalid("research restriction token width invalid"))?;
+        names
+            .get(&id)
+            .map(|text| text.to_vec())
+            .ok_or_else(|| invalid(format!("research restriction token {id} missing")))
+    };
+    for (owner, mut rows) in owner_rows {
+        if current_owners
+            .as_ref()
+            .is_some_and(|(owners, _)| !owners.contains(&owner))
+        {
+            continue;
+        }
+        let (tag, _) = country(pack, links, owner)?;
+        rows.sort_by_key(|row| row.ordinal);
+        let mut next = None;
+        let mut grants: Vec<saved::ResearchGrant> = Vec::new();
+        for row in rows {
+            match row.kind {
+                R::GRANT_COUNTER => {
+                    if next
+                        .replace(
+                            i32::try_from(row.raw)
+                                .map_err(|_| invalid("grant counter width invalid"))?,
+                        )
+                        .is_some()
+                    {
+                        return Err(invalid("duplicate research grant counter"));
+                    }
+                }
+                R::SPEED_GRANT | R::COST_GRANT => {
+                    grants.push(saved::ResearchGrant {
+                        cost: row.kind == R::COST_GRANT,
+                        id: row.source_id as i32,
+                        name: literal(report, "Research grant name", &row.name).to_vec(),
+                        speed_raw: if row.kind == R::SPEED_GRANT {
+                            row.raw
+                        } else {
+                            0
+                        },
+                        ahead_raw: row.auxiliary,
+                        cost_raw: if row.kind == R::COST_GRANT {
+                            row.raw
+                        } else {
+                            0
+                        },
+                        ..Default::default()
+                    });
+                }
+                R::GRANT_USES | R::GRANT_TECHNOLOGY | R::GRANT_CATEGORY => {
+                    let grant = grants
+                        .last_mut()
+                        .filter(|grant| {
+                            grant.id == row.source_id as i32 && u32::from(grant.cost) == row.count
+                        })
+                        .ok_or_else(|| invalid("grant child lacks its ordered parent"))?;
+                    match row.kind {
+                        R::GRANT_USES => {
+                            grant.uses = i32::try_from(row.raw)
+                                .map_err(|_| invalid("grant uses width invalid"))?;
+                            grant.claims = i32::try_from(row.auxiliary)
+                                .map_err(|_| invalid("grant claims width invalid"))?;
+                        }
+                        R::GRANT_TECHNOLOGY => grant.technologies.push(spelling(row.raw)?),
+                        _ => grant.categories.push(spelling(row.raw)?),
+                    }
+                }
+                _ => return Err(invalid("unknown grant inventory row kind")),
+            }
+        }
+        if captured.insert(tag.to_vec(), (next, grants)).is_some() {
+            return Err(invalid("multiple grant inventories resolve to one country"));
+        }
+    }
+    let mut count = 0;
+    for (tag, saved_country) in report.canonical_countries(&pack.countries) {
+        if current_owners
+            .as_ref()
+            .is_some_and(|(_, tags)| !tags.contains(tag.as_slice()))
+        {
+            continue;
+        }
+        let Some(research) = &saved_country.research else {
+            continue;
+        };
+        let actual = captured.remove(tag.as_slice());
+        let expected = (research.next_bonus_id, research.grants.clone());
+        equal(
+            report,
+            label(tag, "research grant inventory"),
+            actual,
+            Some(expected),
+        );
+        count += research.grants.len() + 1;
+    }
+    for tag in captured.keys() {
+        report.difference(label(tag, "research grant inventory"), "present", "absent");
+    }
+    report.compared("Research grant inventory", count);
+    Ok(())
 }
 
 pub(super) fn compare_research_slots(

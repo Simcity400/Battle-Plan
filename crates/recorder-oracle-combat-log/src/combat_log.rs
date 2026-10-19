@@ -224,10 +224,6 @@ pub fn compare(
         );
     }
     report.limitation(
-        "the Combat Log's enemy losses, manpower, template statistics and combat references, and month entries with no amounts, are not recorded",
-        "CombatLogEquipment",
-    );
-    report.limitation(
         "combat log country tags compare resolved identity and cannot certify equivalent raw country-link aliases",
         "CombatLogEquipment",
     );

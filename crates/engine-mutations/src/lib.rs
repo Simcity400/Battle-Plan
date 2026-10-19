@@ -32,6 +32,10 @@ pub mod census_mutations;
 pub mod character_role_mutations;
 pub mod character_roster_mutations;
 pub mod country_input_mutations;
+pub mod division_panel_mutations;
+pub mod doctrine_mutations;
+pub mod faction_companion_mutations;
+pub mod faction_goal_mutations;
 pub mod local_subunit_mutations;
 pub mod naval_tree_mutations;
 pub mod opinion_mutations;
@@ -53,3 +57,5 @@ pub mod world_lifetime_sites;
 
 #[cfg(test)]
 use engine_native::memory;
+
+pub mod war_participation_sites;

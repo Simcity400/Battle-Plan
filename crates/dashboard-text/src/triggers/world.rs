@@ -1,6 +1,8 @@
 //! The recorded facts triggers read over one hour, each index built on
 //! first use from the table the game itself reads, joined through
 //! `CountryLinks`.
+use crate::triggers::Failure;
+use crate::triggers::refusal::refused;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -19,14 +21,14 @@ use replay_data::{
 };
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 
-use super::{Eval, Scope, ongoing, refused, variables::Store};
+use super::{Eval, Scope, ongoing, variables::Store};
 use crate::{
     character_scope,
     scope::RecordedScopes,
     state_resources::{Links, ONE, StateResources},
 };
 
-type Index<T> = OnceLock<Result<T, String>>;
+type Index<T> = OnceLock<super::refusal::Resolved<Result<T, Failure>>>;
 
 type OperandLoader<'a, T> = (
     &'a dyn PreparedContent,
@@ -75,6 +77,7 @@ pub(crate) type AuthoredStates<'a> = (
     Result<(), &'a str>,
 );
 pub(crate) trait PreparedContent: Send + Sync {
+    fn ideas(&self) -> Result<&installed_content_core::ideas::IdeaContent, &str>;
     fn authored_states(&self) -> AuthoredStates<'_>;
     fn continents(&self) -> Result<&[String], &str>;
     fn ideologies(&self) -> Result<&installed_content_core::ideologies::Ideologies, &str>;
@@ -88,7 +91,7 @@ pub(crate) trait PreparedContent: Send + Sync {
 }
 /// Lexer tokens by their literal under the lexer's fold; `Err` for a fold two
 /// recorded literals share.
-type Folds = BTreeMap<Vec<u8>, Result<u32, String>>;
+type Folds = BTreeMap<Vec<u8>, Result<u32, Failure>>;
 /// The latest folds by the LexicalTokens allocation they were read from. The
 /// table is static, so every hour's World shares one until it is read again;
 /// an identity matches no other allocation.
@@ -96,7 +99,96 @@ static FOLDS: Mutex<Vec<(ViewIdentity, Arc<Folds>)>> = Mutex::new(Vec::new());
 /// An index of rows joined through `CountryLinks`, and why some row's link
 /// did not resolve: an answer the index does not hold is then unknown, since
 /// the unresolved row may be the one asked about.
-type Linked<T> = (T, Option<String>);
+type Linked<T> = (T, Option<Failure>);
+/// Known contributors plus a retained failure that may hide more entries.
+/// Consumers cannot treat a nonempty known subset as a complete collection.
+#[derive(Debug)]
+pub(super) struct PartialCollection<'a, T> {
+    known: &'a [T],
+    unresolved: Option<&'a Failure>,
+}
+
+impl<T> PartialCollection<'_, T> {
+    /// A known match proves an existential predicate. Otherwise an unresolved
+    /// contributor may change the answer, even when the known subset is nonempty.
+    pub(super) fn any(&self, mut predicate: impl FnMut(&T) -> super::Eval) -> super::Eval {
+        let mut result = super::Eval::False;
+        for entry in self.known {
+            result = result.or(|| predicate(entry));
+            if result == super::Eval::True {
+                return result;
+            }
+        }
+        if let Some(reason) = self.unresolved {
+            reason.reached();
+            result = result.or(|| super::Eval::unknown(reason.clone()));
+        }
+        result
+    }
+}
+/// Core rows whose referenced-key reads retain acquisition and missing-row
+/// failures. Enumeration still visits only recorded rows.
+#[derive(Debug)]
+pub struct ReferencedRows<'a, T> {
+    rows: BTreeMap<u32, &'a T>,
+    table: replay_data::rows::TableId,
+    unavailable: Option<Failure>,
+}
+impl<'a, T> ReferencedRows<'a, T> {
+    fn enumerate(&self) {
+        if let Some(failure) = &self.unavailable {
+            failure.resolution_failed();
+        }
+    }
+    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, u32, &'a T> {
+        self.enumerate();
+        self.rows.iter()
+    }
+    pub fn values(&self) -> std::collections::btree_map::Values<'_, u32, &'a T> {
+        self.enumerate();
+        self.rows.values()
+    }
+    pub fn keys(&self) -> std::collections::btree_map::Keys<'_, u32, &'a T> {
+        self.enumerate();
+        self.rows.keys()
+    }
+    pub fn len(&self) -> usize {
+        self.enumerate();
+        self.rows.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.enumerate();
+        self.rows.is_empty()
+    }
+    pub fn get(&self, id: &u32) -> Option<&&'a T> {
+        super::refusal::reference(self.rows.get(id), *id != 0, || {
+            self.unavailable.clone().unwrap_or_else(|| {
+                super::refusal::missing_reference(
+                    self.table,
+                    (self.table == tables::States::ID).then_some(Store::State(*id)),
+                )
+            })
+        })
+    }
+    pub fn contains_key(&self, id: &u32) -> bool {
+        self.get(id).is_some()
+    }
+}
+impl<'a, T> std::ops::Deref for ReferencedRows<'a, T> {
+    type Target = BTreeMap<u32, &'a T>;
+    fn deref(&self) -> &Self::Target {
+        &self.rows
+    }
+}
+impl<'m, 'a, T> IntoIterator for &'m ReferencedRows<'a, T> {
+    type Item = (&'m u32, &'m &'a T);
+    type IntoIter = std::collections::btree_map::Iter<'m, u32, &'a T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.enumerate();
+        self.rows.iter()
+    }
+}
+
 /// Each canonical country's regular roster groups and lazily reached orders.
 type Invasions<'a> = BTreeMap<u32, CountryInvasions<'a>>;
 
@@ -118,10 +210,13 @@ pub(super) struct Invasion<'a> {
 type CountryNames<'a> = BTreeSet<(u32, &'a [u8])>;
 
 /// `found`, else `Err` when an unresolved row may hold the answer.
-fn linked<T>(found: Option<T>, unresolved: &Option<String>) -> Result<Option<T>, String> {
+fn linked<T>(found: Option<T>, unresolved: &Option<Failure>) -> Result<Option<T>, Failure> {
     match (found, unresolved) {
         (Some(value), _) => Ok(Some(value)),
-        (None, Some(reason)) => Err(reason.clone()),
+        (None, Some(reason)) => {
+            reason.reached();
+            Err(reason.clone())
+        }
         (None, None) => Ok(None),
     }
 }
@@ -183,7 +278,7 @@ type Modifiers<'a> = BTreeMap<(u32, &'a [u8]), Vec<(u32, i32)>>;
 /// Native ideology IDs/tokens and each country's party membership.
 struct PoliticalParties<'a> {
     ruling: BTreeMap<u32, u32>,
-    unresolved: Option<String>,
+    unresolved: Option<Failure>,
     ids: BTreeMap<u32, &'a [u8]>,
     tokens: BTreeMap<Vec<u8>, u32>,
     members: BTreeSet<(u32, u32)>,
@@ -199,23 +294,31 @@ type CoreRows<'f> = (
 
 /// The core tables' rows and why each, in their order, is not complete this
 /// hour: a truncated table's rows are exact; a row it lacks is unknown.
-fn core_tables(frame: &DecodedFrame) -> (CoreRows<'_>, Vec<(&'static str, String)>) {
+fn core_tables(frame: &DecodedFrame) -> (CoreRows<'_>, Vec<(&'static str, Failure)>) {
     fn rows<'f, T: TableSchema>(
         frame: &'f DecodedFrame,
         name: &'static str,
-        gaps: &mut Vec<(&'static str, String)>,
+        gaps: &mut Vec<(&'static str, Failure)>,
     ) -> &'f [T::Row] {
         match &*frame.tables[T::ID.index()] {
             TableView::Complete(rows) => rows.rows::<T>().unwrap_or_default(),
             TableView::Truncated { rows, missing } => {
                 gaps.push((
                     name,
-                    format!("{name} is truncated ({missing} rows missing)"),
+                    Failure::input(
+                        T::ID,
+                        "",
+                        None,
+                        format!("{name} is truncated ({missing} rows missing)"),
+                    ),
                 ));
                 rows.rows::<T>().unwrap_or_default()
             }
             TableView::Unavailable { reason } => {
-                gaps.push((name, format!("{name} is unavailable: {reason}")));
+                gaps.push((
+                    name,
+                    Failure::input(T::ID, "", None, format!("{name} is unavailable: {reason}")),
+                ));
                 &[]
             }
         }
@@ -232,7 +335,14 @@ fn core_tables(frame: &DecodedFrame) -> (CoreRows<'_>, Vec<(&'static str, String
 
 /// [`World::core_gap`] of the hour, without building its indexes.
 pub fn core_gap(frame: &DecodedFrame) -> Option<String> {
-    core_tables(frame).1.into_iter().next().map(|(_, why)| why)
+    let first = super::refusal::deferred(|| core_tables(frame))
+        .1
+        .into_iter()
+        .next();
+    first.map(|(_, why)| {
+        why.reached();
+        why.to_string()
+    })
 }
 
 /// The localisation, content stack and language division template names are read with.
@@ -291,7 +401,7 @@ pub struct World<'a> {
     /// Which of the tables the indexes below are built from is not complete
     /// this hour, and why ([`World::read`]); the triggers that read them are
     /// then unknown.
-    core_gaps: Vec<(&'static str, String)>,
+    core_gaps: Vec<(&'static str, Failure)>,
     /// Raw country reference to canonical slot.
     links: BTreeMap<u32, u32>,
     tags: BTreeMap<u32, &'a [u8]>,
@@ -301,8 +411,8 @@ pub struct World<'a> {
     /// first read.
     province_rows: &'a [ProvinceRow],
     state_rows: &'a [StateRow],
-    provinces: OnceLock<BTreeMap<u32, &'a ProvinceRow>>,
-    states: OnceLock<BTreeMap<u32, &'a StateRow>>,
+    provinces: OnceLock<ReferencedRows<'a, ProvinceRow>>,
+    states: OnceLock<ReferencedRows<'a, StateRow>>,
     /// Content: every state's provinces in its own order, and impassability.
     state_provinces: PreparedOperand<'a, &'a BTreeMap<u32, Vec<u32>>>,
     /// Why authored state templates are unread, if they are.
@@ -327,6 +437,7 @@ pub struct World<'a> {
     pub(super) character_traits:
         PreparedOperand<'a, Result<(&'a Traits, &'a LeaderTraits), &'a str>>,
     /// A character scope's recorded operands (`crate::character_scope`).
+    pub(super) ideas: PreparedOperand<'a, Result<&'a installed_content_core::ideas::IdeaContent, &'a str>>,
     character_tables: OnceLock<character_scope::Tables<'a>>,
     /// Content: the tag alias database, which the hour's scopes consult.
     aliases: &'a Arc<TagAliases>,
@@ -358,6 +469,8 @@ pub struct World<'a> {
     state_modifiers: Index<Modifiers<'a>>,
     /// Each state's recorded provinces, ascending.
     state_members: Index<BTreeMap<u32, Vec<u32>>>,
+    /// Controller-area membership totals, built once for the recorded hour.
+    controller_area_sizes: Index<BTreeMap<u32, i32>>,
     /// Each raw country's stored counts and native ordered rosters.
     counter_inputs: Index<BTreeMap<u32, &'a CountryCounterInputRow>>,
     /// Nonempty owned states whose controller is their owner, by canonical slot.
@@ -587,14 +700,39 @@ pub struct PartyLeader {
     pub id: i32,
 }
 
-pub(super) fn table<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], String> {
-    frame.complete::<T>().map_err(|error| error.to_string())
+pub(super) fn table<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], Failure> {
+    frame.complete::<T>().map_err(|error| {
+        let failure = Failure::input(T::ID, "", None, error.to_string());
+        failure.resolution_failed();
+        failure
+    })
+}
+
+/// A present row in a truncated view remains exact. Only the lookup that
+/// cannot find its required row creates a refusal, retaining native last-row order.
+fn required_row<T: TableSchema>(
+    frame: &DecodedFrame,
+    scope: Option<Store>,
+    matches: impl Fn(&T::Row) -> bool,
+    message: String,
+) -> Result<&T::Row, Failure> {
+    let view = &*frame.tables[T::ID.index()];
+    let (rows, complete) = match view {
+        TableView::Complete(rows) => (rows.rows::<T>().unwrap_or_default(), true),
+        TableView::Truncated { rows, .. } => (rows.rows::<T>().unwrap_or_default(), false),
+        TableView::Unavailable { .. } => (&[][..], false),
+    };
+    rows.iter()
+        .rev()
+        .find(|row| matches(row))
+        .ok_or_else(|| Failure::input(T::ID, "", if complete { scope } else { None }, message))
 }
 
 /// A recorded query of the hour's world ([`super::inputs`]): its method and arguments.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Query {
     TableStatus(replay_data::rows::TableId),
+    TableFresh(replay_data::rows::TableId),
     CountrySlots,
     StateIds,
     StateContinentToken(u32),
@@ -671,7 +809,8 @@ pub enum Query {
 impl World<'_> {
     /// The digest `query` reads in this hour's world.
     pub fn reread(&self, query: &Query) -> u64 {
-        match query {
+        super::inputs::resolved_digest(|| match query {
+            Query::TableFresh(table) => super::inputs::digest(&self.table_fresh_unrecorded(*table)),
             Query::TableStatus(table) => {
                 super::inputs::digest(&self.table_status_unrecorded(*table))
             }
@@ -842,20 +981,42 @@ impl World<'_> {
             }
             Query::RawCountry(slot) => super::inputs::digest(&self.raw_country_unrecorded(*slot)),
             Query::Nukes(slot) => super::inputs::digest(&self.nukes_unrecorded(*slot)),
-        }
+        })
     }
 }
 
 impl<'a> World<'a> {
+    pub(crate) fn table_fresh(&self, table: replay_data::rows::TableId) -> Result<(), Failure> {
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::TableFresh(table)),
+            || self.table_fresh_unrecorded(table),
+        )
+    }
+
+    fn table_fresh_unrecorded(&self, table: replay_data::rows::TableId) -> Result<(), Failure> {
+        if self.frame.tables[table.index()].sampled_at() == Some(self.frame.hour) {
+            Ok(())
+        } else {
+            Err(Failure::input(
+                table,
+                "acquisition",
+                None,
+                format!(
+                    "{table:?}: no current-hour read or writer certificate; its carried values cannot answer this scripted callback exactly"
+                ),
+            ))
+        }
+    }
+
     /// Whether `table` is complete this hour, as reading it would report.
-    pub(crate) fn table_status(&self, table: replay_data::rows::TableId) -> Result<(), String> {
-        super::inputs::query(
+    pub(crate) fn table_status(&self, table: replay_data::rows::TableId) -> Result<(), Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::TableStatus(table)),
             || self.table_status_unrecorded(table),
         )
     }
 
-    fn table_status_unrecorded(&self, id: replay_data::rows::TableId) -> Result<(), String> {
+    fn table_status_unrecorded(&self, id: replay_data::rows::TableId) -> Result<(), Failure> {
         use replay_data::rows::TableId;
         match id {
             TableId::Countries => table::<tables::Countries>(self.frame).map(drop),
@@ -867,14 +1028,14 @@ impl<'a> World<'a> {
 
     /// Every recorded country's canonical slot, ascending: the physical
     /// country-array order.
-    pub(crate) fn country_slots(&self) -> Result<Vec<u32>, String> {
-        super::inputs::query(
+    pub(crate) fn country_slots(&self) -> Result<Vec<u32>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CountrySlots),
             || self.country_slots_unrecorded(),
         )
     }
 
-    fn country_slots_unrecorded(&self) -> Result<Vec<u32>, String> {
+    fn country_slots_unrecorded(&self) -> Result<Vec<u32>, Failure> {
         let mut slots: Vec<u32> = table::<tables::Countries>(self.frame)?
             .iter()
             .map(|row| row.canonical_slot)
@@ -884,14 +1045,14 @@ impl<'a> World<'a> {
     }
 
     /// Every recorded state's id, ascending: the state-array order.
-    pub(crate) fn state_ids(&self) -> Result<Vec<u32>, String> {
-        super::inputs::query(
+    pub(crate) fn state_ids(&self) -> Result<Vec<u32>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::StateIds),
             || self.state_ids_unrecorded(),
         )
     }
 
-    fn state_ids_unrecorded(&self) -> Result<Vec<u32>, String> {
+    fn state_ids_unrecorded(&self) -> Result<Vec<u32>, Failure> {
         let mut ids: Vec<u32> = table::<tables::States>(self.frame)?
             .iter()
             .map(|row| row.id)
@@ -901,69 +1062,97 @@ impl<'a> World<'a> {
     }
 
     /// A recorded state's native continent token.
-    pub(crate) fn state_continent_token(&self, state: u32) -> Result<u32, String> {
-        super::inputs::query(
+    pub(crate) fn state_continent_token(&self, state: u32) -> Result<u32, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::StateContinentToken(state)),
             || self.state_continent_token_unrecorded(state),
         )
     }
 
-    fn state_continent_token_unrecorded(&self, state: u32) -> Result<u32, String> {
+    fn state_continent_token_unrecorded(&self, state: u32) -> Result<u32, Failure> {
         table::<tables::States>(self.frame)?;
         let row = self
             .state_map()
             .get(&state)
-            .ok_or_else(|| format!("state {state} is not recorded"))?;
-        Ok(row
-            .continent
-            .require("States.continent")?
-            .ok_or("the native state-template continent capture failed")?)
+            .ok_or_else(|| -> Failure { format!("state {state} is not recorded").into() })?;
+        row.continent
+            .require("States.continent")
+            .map_err(|why| {
+                Failure::input(
+                    replay_data::rows::TableId::States,
+                    "continent",
+                    Some(Store::State(state)),
+                    why,
+                )
+            })?
+            .ok_or_else(|| {
+                Failure::input(
+                    replay_data::rows::TableId::States,
+                    "continent",
+                    Some(Store::State(state)),
+                    "the native state-template continent capture failed",
+                )
+            })
     }
 
     /// Whether States is complete and records a state `id`.
-    pub(crate) fn state_exists(&self, id: u32) -> Result<bool, String> {
-        super::inputs::query(
+    pub(crate) fn state_exists(&self, id: u32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::StateExists(id)),
             || self.state_exists_unrecorded(id),
         )
     }
 
-    fn state_exists_unrecorded(&self, id: u32) -> Result<bool, String> {
+    fn state_exists_unrecorded(&self, id: u32) -> Result<bool, Failure> {
         table::<tables::States>(self.frame)?;
         Ok(self.state_map().contains_key(&id))
     }
 
     /// A raw country's recorded focus tree id.
-    pub(crate) fn focus_tree(&self, raw: u32) -> Result<Option<Vec<u8>>, String> {
-        super::inputs::query(
+    pub(crate) fn focus_tree(&self, raw: u32) -> Result<Option<Vec<u8>>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::FocusTree(raw)),
             || self.focus_tree_unrecorded(raw),
         )
     }
 
-    fn focus_tree_unrecorded(&self, raw: u32) -> Result<Option<Vec<u8>>, String> {
+    fn focus_tree_unrecorded(&self, raw: u32) -> Result<Option<Vec<u8>>, Failure> {
         let row = table::<tables::Focus>(self.frame)?
             .iter()
             .find(|row| row.country == raw)
-            .ok_or_else(|| format!("country {raw} has no Focus row"))?;
+            .ok_or_else(|| -> Failure { format!("country {raw} has no Focus row").into() })?;
         Ok(row.tree.clone())
     }
 
     /// Every recorded state by id, read whole: an evaluation depends on the
     /// whole States table ([`super::inputs::table`]).
-    pub fn states(&self) -> &BTreeMap<u32, &'a StateRow> {
+    pub fn states(&self) -> &ReferencedRows<'a, StateRow> {
         super::inputs::table(self.frame, replay_data::rows::TableId::States);
         self.state_map()
     }
 
-    fn state_map(&self) -> &BTreeMap<u32, &'a StateRow> {
-        self.states
-            .get_or_init(|| self.state_rows.iter().map(|row| (row.id, row)).collect())
+    fn state_map(&self) -> &ReferencedRows<'a, StateRow> {
+        self.states.get_or_init(|| ReferencedRows {
+            rows: self.state_rows.iter().map(|row| (row.id, row)).collect(),
+            table: tables::States::ID,
+            unavailable: self
+                .core_gaps
+                .iter()
+                .find(|(name, _)| *name == "States")
+                .map(|(_, why)| why.clone()),
+        })
     }
 
-    fn province_map(&self) -> &BTreeMap<u32, &'a ProvinceRow> {
-        self.provinces
-            .get_or_init(|| self.province_rows.iter().map(|row| (row.id, row)).collect())
+    fn province_map(&self) -> &ReferencedRows<'a, ProvinceRow> {
+        self.provinces.get_or_init(|| ReferencedRows {
+            rows: self.province_rows.iter().map(|row| (row.id, row)).collect(),
+            table: tables::Provinces::ID,
+            unavailable: self
+                .core_gaps
+                .iter()
+                .find(|(name, _)| *name == "Provinces")
+                .map(|(_, why)| why.clone()),
+        })
     }
 
     /// The hour this world was read at.
@@ -978,9 +1167,42 @@ impl<'a> World<'a> {
     }
 
     /// Every recorded province by id, read whole ([`Self::states`]).
-    pub fn provinces(&self) -> &BTreeMap<u32, &'a ProvinceRow> {
+    pub fn provinces(&self) -> &ReferencedRows<'a, ProvinceRow> {
         super::inputs::table(self.frame, replay_data::rows::TableId::Provinces);
         self.province_map()
+    }
+
+    pub(super) fn controller_area_sizes(&self) -> Result<&BTreeMap<u32, i32>, Failure> {
+        super::inputs::table(self.frame, tables::Provinces::ID);
+        get(&self.controller_area_sizes, || {
+            let mut counts = BTreeMap::<u32, i32>::new();
+            for province in table::<tables::Provinces>(self.frame)? {
+                let area = province
+                    .controller_area
+                    .require("Provinces.controller_area")
+                    .map_err(|why| {
+                        Failure::input(
+                            replay_data::rows::TableId::Provinces,
+                            "controller_area",
+                            None,
+                            why,
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        Failure::input(
+                            replay_data::rows::TableId::Provinces,
+                            "controller_area",
+                            None,
+                            "controller-area capture unavailable",
+                        )
+                    })?;
+                if area != 0 {
+                    let count = counts.entry(area).or_default();
+                    *count = count.wrapping_add(1);
+                }
+            }
+            Ok(counts)
+        })
     }
 
     /// Content: every state's provinces in its own order.
@@ -994,8 +1216,11 @@ impl<'a> World<'a> {
         for (table, fields) in character_scope::FIELDS {
             super::inputs::fields(self.frame, table, fields);
         }
-        self.character_tables
-            .get_or_init(|| super::inputs::unrecorded(|| character_scope::Tables::read(self.frame)))
+        self.character_tables.get_or_init(|| {
+            super::inputs::unrecorded(|| {
+                super::refusal::deferred(|| character_scope::Tables::read(self.frame))
+            })
+        })
     }
 }
 
@@ -1032,7 +1257,7 @@ impl<'a> World<'a> {
     /// which the content map decides: a land
     /// province next to sea or an authored-coastal lake, an authored-coastal
     /// lake. A province the map does not know is not coastal.
-    pub fn coastal(&self, province: u32) -> Result<bool, String> {
+    pub fn coastal(&self, province: u32) -> Result<bool, Failure> {
         let terrain = self.terrain().ok_or(
             "the content movement map is unavailable, so a province's coastal flag is unknown",
         )?;
@@ -1067,7 +1292,7 @@ impl<'a> World<'a> {
 
     /// The hour's inputs, strictly: a raid or scripted text needs the
     /// country links, countries, provinces and states complete.
-    pub fn new(frame: &'a DecodedFrame, content: ContentFacts<'a>) -> Result<Self, String> {
+    pub fn new(frame: &'a DecodedFrame, content: ContentFacts<'a>) -> Result<Self, Failure> {
         let world = Self::read(frame, content);
         match world.core_gap() {
             Some(gap) => Err(gap),
@@ -1079,7 +1304,8 @@ impl<'a> World<'a> {
     /// that read the country links, countries, provinces or states are then
     /// unknown, the others still decided.
     pub fn read(frame: &'a DecodedFrame, content: ContentFacts<'a>) -> Self {
-        let ((links, countries, provinces, states), core_gaps) = core_tables(frame);
+        let ((links, countries, provinces, states), core_gaps) =
+            super::refusal::deferred(|| core_tables(frame));
         Self {
             frame,
             prepared_content: None,
@@ -1113,6 +1339,7 @@ impl<'a> World<'a> {
             triggers: content.triggers.into(),
             character_traits: content.character_traits.into(),
             character_tables: OnceLock::new(),
+            ideas: Err("idea definitions are not supplied").into(),
             aliases: content.tag_aliases,
             recorded: OnceLock::new(),
             names: OnceLock::new(),
@@ -1135,6 +1362,7 @@ impl<'a> World<'a> {
             country_modifiers: OnceLock::new(),
             state_modifiers: OnceLock::new(),
             state_members: OnceLock::new(),
+            controller_area_sizes: OnceLock::new(),
             counter_inputs: OnceLock::new(),
             owned_controlled_states: OnceLock::new(),
             opinions: OnceLock::new(),
@@ -1180,6 +1408,7 @@ impl<'a> World<'a> {
         self.ideologies =
             PreparedOperand::lazy(content, self.frame, |content, _| content.ideologies());
         self.triggers = PreparedOperand::lazy(content, self.frame, |content, _| content.triggers());
+        self.ideas = PreparedOperand::lazy(content, self.frame, |content, _| content.ideas());
         self.character_traits =
             PreparedOperand::lazy(content, self.frame, |content, _| content.character_traits());
         self.leader_roles =
@@ -1202,31 +1431,37 @@ impl<'a> World<'a> {
     }
 
     /// Why the core tables are not complete this hour, if they are not.
-    pub fn core_gap(&self) -> Option<String> {
-        super::inputs::query(
+    pub fn core_gap(&self) -> Option<Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CoreGap),
             || self.core_gap_unrecorded(),
         )
     }
 
-    fn core_gap_unrecorded(&self) -> Option<String> {
-        self.core_gaps.first().map(|(_, why)| why.clone())
+    fn core_gap_unrecorded(&self) -> Option<Failure> {
+        self.core_gaps.first().map(|(_, why)| {
+            why.reached();
+            why.clone()
+        })
     }
 
     /// Why one core table (`CountryLinks`, `Countries`, `Provinces` or
     /// `States`) is not complete this hour, if it is not.
-    pub(super) fn table_gap(&self, table: &str) -> Option<String> {
-        super::inputs::query(
+    pub(super) fn table_gap(&self, table: &str) -> Option<Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::TableGap(table.to_owned())),
             || self.table_gap_unrecorded(table),
         )
     }
 
-    fn table_gap_unrecorded(&self, table: &str) -> Option<String> {
+    fn table_gap_unrecorded(&self, table: &str) -> Option<Failure> {
         self.core_gaps
             .iter()
             .find(|(name, _)| *name == table)
-            .map(|(_, why)| why.clone())
+            .map(|(_, why)| {
+                why.reached();
+                why.clone()
+            })
     }
 
     /// The hour's scope facts ([`RecordedScopes`]), read on first use.
@@ -1245,8 +1480,8 @@ impl<'a> World<'a> {
     pub(crate) fn unit_status(
         &self,
         reference: u64,
-    ) -> Result<&'a replay_data::rows::DivisionStatusRow, String> {
-        super::inputs::query_debug(
+    ) -> Result<&'a replay_data::rows::DivisionStatusRow, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::UnitStatus(reference)),
             || self.unit_status_unrecorded(reference),
         )
@@ -1255,34 +1490,36 @@ impl<'a> World<'a> {
     fn unit_status_unrecorded(
         &self,
         reference: u64,
-    ) -> Result<&'a replay_data::rows::DivisionStatusRow, String> {
+    ) -> Result<&'a replay_data::rows::DivisionStatusRow, Failure> {
         self.unit(reference)?;
         table::<tables::DivisionStatus>(self.frame)?
             .iter()
             .find(|row| row.division == reference)
             // Retain the existing carrier diagnostic when no status row was captured.
-            .ok_or_else(|| format!("UNIT {reference:#x} name: cached army name is not recorded"))
+            .ok_or_else(|| -> Failure {
+                format!("UNIT {reference:#x} name: cached army name is not recorded").into()
+            })
     }
 
     /// Selected active-raid wing bytes, at RaidTooltipOperands freshness.
     /// Raid naming takes a resolving army before the wing; the wing
     /// retains no naming provenance, so the caller must use stored_text.
-    pub(crate) fn raid_wing_name(&self, reference: u64) -> Result<Vec<u8>, String> {
-        super::inputs::query(
+    pub(crate) fn raid_wing_name(&self, reference: u64) -> Result<Vec<u8>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::RaidWingName(reference)),
             || self.raid_wing_name_unrecorded(reference),
         )
     }
 
-    fn raid_wing_name_unrecorded(&self, reference: u64) -> Result<Vec<u8>, String> {
-        crate::air_wing_names::raid_name(self.frame, reference)
+    fn raid_wing_name_unrecorded(&self, reference: u64) -> Result<Vec<u8>, Failure> {
+        crate::air_wing_names::raid_name(self.frame, reference).map_err(Into::into)
     }
 
     pub(crate) fn industrial_organisation(
         &self,
         reference: u64,
-    ) -> Result<&'a replay_data::rows::IndustrialOrganisationRow, String> {
-        super::inputs::query_debug(
+    ) -> Result<&'a replay_data::rows::IndustrialOrganisationRow, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::IndustrialOrganisation(reference)),
             || self.industrial_organisation_unrecorded(reference),
         )
@@ -1291,38 +1528,51 @@ impl<'a> World<'a> {
     fn industrial_organisation_unrecorded(
         &self,
         reference: u64,
-    ) -> Result<&'a replay_data::rows::IndustrialOrganisationRow, String> {
+    ) -> Result<&'a replay_data::rows::IndustrialOrganisationRow, Failure> {
         table::<tables::IndustrialOrganisations>(self.frame)?
             .iter()
             .find(|row| row.organisation == reference)
-            .ok_or_else(|| format!("IndustrialOrganisations lacks organisation {reference:#x}"))
+            .ok_or_else(|| -> Failure {
+                super::refusal::missing_reference(tables::IndustrialOrganisations::ID, None)
+            })
     }
 
     pub fn slot(&self, raw: u32) -> Option<u32> {
-        super::inputs::query(
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Slot(raw)),
             || self.slot_unrecorded(raw),
         )
     }
 
     fn slot_unrecorded(&self, raw: u32) -> Option<u32> {
-        self.links.get(&raw).copied()
+        let slot = self.links.get(&raw).copied();
+        if slot.is_none() && raw != 0 {
+            let failure = self
+                .table_gap("CountryLinks")
+                .unwrap_or_else(|| self.unlinked_unrecorded("country reference", raw));
+            failure.resolution_failed();
+        }
+        slot
     }
 
     pub fn tag(&self, slot: u32) -> Option<&'a [u8]> {
-        super::inputs::query(
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Tag(slot)),
             || self.tag_unrecorded(slot),
         )
     }
 
     fn tag_unrecorded(&self, slot: u32) -> Option<&'a [u8]> {
-        self.tags.get(&slot).copied()
+        super::refusal::reference(self.tags.get(&slot).copied(), slot != 0, || {
+            self.table_gap("Countries").unwrap_or_else(|| {
+                super::refusal::missing_reference(tables::Countries::ID, Some(Store::Country(slot)))
+            })
+        })
     }
 
     /// A recorded state's raw owner and controller.
     pub fn state_row(&self, state: u32) -> Option<(u32, u32)> {
-        super::inputs::query(
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::StateRow(state)),
             || self.state_row_unrecorded(state),
         )
@@ -1338,7 +1588,7 @@ impl<'a> World<'a> {
 
     /// A recorded province's raw owner and controller.
     pub fn province_row(&self, province: u32) -> Option<(u32, u32)> {
-        super::inputs::query(
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::ProvinceRow(province)),
             || self.province_row_unrecorded(province),
         )
@@ -1353,7 +1603,7 @@ impl<'a> World<'a> {
     }
 
     pub fn state_controller(&self, state: u32) -> Option<u32> {
-        super::inputs::query(
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::StateController(state)),
             || self.state_controller_unrecorded(state),
         )
@@ -1364,7 +1614,7 @@ impl<'a> World<'a> {
     }
 
     pub fn province_controller(&self, province: u32) -> Option<u32> {
-        super::inputs::query(
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::ProvinceController(province)),
             || self.province_controller_unrecorded(province),
         )
@@ -1375,14 +1625,14 @@ impl<'a> World<'a> {
     }
 
     /// A lexer token's literal.
-    pub fn token(&self, token: u32) -> Result<Option<&'a [u8]>, String> {
-        super::inputs::query(
+    pub fn token(&self, token: u32) -> Result<Option<&'a [u8]>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Token(token)),
             || self.token_unrecorded(token),
         )
     }
 
-    fn token_unrecorded(&self, token: u32) -> Result<Option<&'a [u8]>, String> {
+    fn token_unrecorded(&self, token: u32) -> Result<Option<&'a [u8]>, Failure> {
         {
             let literals = get(&self.literals, || {
                 Ok(table::<tables::LexicalTokens>(self.frame)?
@@ -1390,29 +1640,36 @@ impl<'a> World<'a> {
                     .map(|row| (row.token, row.literal.as_slice()))
                     .collect())
             })?;
-            Ok(literals.get(&token).copied())
+            Ok(super::refusal::reference(
+                literals.get(&token).copied(),
+                token != 0,
+                || super::refusal::missing_reference(tables::LexicalTokens::ID, None),
+            ))
         }
     }
 
     /// The lexer token of a name: the one whose literal equals it under the
     /// lexer's fold (ASCII A-Z only), as the
     /// game finds a token for a key.
-    pub fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String> {
-        super::inputs::query(
+    pub fn token_of(&self, name: &[u8]) -> Result<Option<u32>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::TokenOf(name.to_vec())),
             || self.token_of_unrecorded(name),
         )
     }
 
-    fn token_of_unrecorded(&self, name: &[u8]) -> Result<Option<u32>, String> {
+    fn token_of_unrecorded(&self, name: &[u8]) -> Result<Option<u32>, Failure> {
         match self.names()?.get(&name.to_ascii_lowercase()) {
             None => Ok(None),
             Some(Ok(token)) => Ok(Some(*token)),
-            Some(Err(reason)) => Err(reason.clone()),
+            Some(Err(reason)) => {
+                reason.reached();
+                Err(reason.clone())
+            }
         }
     }
 
-    pub(super) fn names(&self) -> Result<&Folds, String> {
+    pub(super) fn names(&self) -> Result<&Folds, Failure> {
         super::inputs::table(self.frame, replay_data::rows::TableId::LexicalTokens);
         get(&self.names, || {
             let view = &self.frame.tables[replay_data::rows::TableId::LexicalTokens.index()];
@@ -1453,26 +1710,31 @@ impl<'a> World<'a> {
     }
 
     /// Why a raw country reference of `table` does not resolve.
-    pub(super) fn unlinked(&self, table: &str, raw: u32) -> String {
-        super::inputs::query(
+    pub(super) fn unlinked(&self, table: &str, raw: u32) -> Failure {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Unlinked(table.to_owned(), raw)),
             || self.unlinked_unrecorded(table, raw),
         )
     }
 
-    fn unlinked_unrecorded(&self, table: &str, raw: u32) -> String {
-        format!("a {table} row's country {raw} has no CountryLinks row")
+    fn unlinked_unrecorded(&self, table: &str, raw: u32) -> Failure {
+        Failure::input(
+            replay_data::rows::TableId::CountryLinks,
+            "canonical_slot",
+            None,
+            format!("a {table} row's country {raw} has no CountryLinks row"),
+        )
     }
 
     /// The country's faction, if any.
-    pub fn faction(&self, slot: u32) -> Result<Option<u64>, String> {
-        super::inputs::query(
+    pub fn faction(&self, slot: u32) -> Result<Option<u64>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Faction(slot)),
             || self.faction_unrecorded(slot),
         )
     }
 
-    fn faction_unrecorded(&self, slot: u32) -> Result<Option<u64>, String> {
+    fn faction_unrecorded(&self, slot: u32) -> Result<Option<u64>, Failure> {
         if slot == 0 {
             let [reserved] = table::<tables::ReservedCountryNaming>(self.frame)? else {
                 return Err("ReservedCountryNaming does not hold one reserved country".into());
@@ -1481,8 +1743,23 @@ impl<'a> World<'a> {
             // absence. Its authenticated faction getter does, including null.
             return reserved
                 .faction
-                .require("ReservedCountryNaming.faction")?
-                .ok_or_else(|| "ReservedCountryNaming.faction capture unavailable".into())
+                .require("ReservedCountryNaming.faction")
+                .map_err(|why| {
+                    Failure::input(
+                        replay_data::rows::TableId::ReservedCountryNaming,
+                        "faction",
+                        None,
+                        why,
+                    )
+                })?
+                .ok_or_else(|| {
+                    Failure::input(
+                        replay_data::rows::TableId::ReservedCountryNaming,
+                        "faction",
+                        None,
+                        "ReservedCountryNaming.faction capture unavailable",
+                    )
+                })
                 .map(|faction| (faction != 0).then_some(faction));
         }
         let (factions, unresolved) = get(&self.factions, || {
@@ -1506,25 +1783,25 @@ impl<'a> World<'a> {
         linked(factions.get(&slot).copied(), unresolved)
     }
 
-    pub fn same_faction(&self, a: u32, b: u32) -> Result<bool, String> {
-        super::inputs::query(
+    pub fn same_faction(&self, a: u32, b: u32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::SameFaction(a, b)),
             || self.same_faction_unrecorded(a, b),
         )
     }
 
-    fn same_faction_unrecorded(&self, a: u32, b: u32) -> Result<bool, String> {
+    fn same_faction_unrecorded(&self, a: u32, b: u32) -> Result<bool, Failure> {
         Ok(matches!((self.faction(a)?, self.faction(b)?), (Some(x), Some(y)) if x == y))
     }
 
-    pub fn at_war(&self, a: u32, b: u32) -> Result<bool, String> {
-        super::inputs::query(
+    pub fn at_war(&self, a: u32, b: u32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::AtWar(a, b)),
             || self.at_war_unrecorded(a, b),
         )
     }
 
-    fn at_war_unrecorded(&self, a: u32, b: u32) -> Result<bool, String> {
+    fn at_war_unrecorded(&self, a: u32, b: u32) -> Result<bool, Failure> {
         let (wars, unresolved) = get(&self.wars, || {
             let mut out = BTreeSet::new();
             let mut unresolved = None;
@@ -1553,14 +1830,14 @@ impl<'a> World<'a> {
         .is_some())
     }
 
-    pub fn overlord(&self, subject: u32) -> Result<Option<u32>, String> {
-        super::inputs::query(
+    pub fn overlord(&self, subject: u32) -> Result<Option<u32>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Overlord(subject)),
             || self.overlord_unrecorded(subject),
         )
     }
 
-    fn overlord_unrecorded(&self, subject: u32) -> Result<Option<u32>, String> {
+    fn overlord_unrecorded(&self, subject: u32) -> Result<Option<u32>, Failure> {
         let (overlords, unresolved) = get(&self.overlords, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
@@ -1582,27 +1859,61 @@ impl<'a> World<'a> {
     }
 
     /// Numeric original-tag reference, independent of tag text.
-    pub(crate) fn original_reference(&self, slot: u32) -> Result<i32, String> {
-        super::inputs::query(
+    pub(crate) fn original_reference(&self, slot: u32) -> Result<i32, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::OriginalReference(slot)),
             || self.original_reference_unrecorded(slot),
         )
     }
 
-    fn original_reference_unrecorded(&self, slot: u32) -> Result<i32, String> {
-        installed_content_country_names::country_names::original_or_own_reference(self.frame, slot)
+    fn original_reference_unrecorded(&self, slot: u32) -> Result<i32, Failure> {
+        if slot == 0 {
+            return self.recorded().original_tags().original_reference();
+        }
+        let country = required_row::<tables::Countries>(
+            self.frame,
+            Some(Store::Country(slot)),
+            |row| row.canonical_slot == slot,
+            format!("country slot {slot} has no Countries row"),
+        )?;
+        let row = required_row::<tables::CountryAppearance>(
+            self.frame,
+            Some(Store::Country(slot)),
+            |row| row.country == country.id,
+            format!("country slot {slot} has no CountryAppearance row"),
+        )?;
+        let raw = row
+            .original_tag_reference
+            .require("CountryAppearance.original_tag_reference")
+            .map_err(|why| {
+                Failure::input(
+                    replay_data::rows::TableId::CountryAppearance,
+                    "original_tag_reference",
+                    Some(Store::Country(slot)),
+                    why,
+                )
+            })?
+            .ok_or_else(|| {
+                Failure::input(
+                    replay_data::rows::TableId::CountryAppearance,
+                    "original_tag_reference",
+                    Some(Store::Country(slot)),
+                    "CountryAppearance.original_tag_reference capture refused",
+                )
+            })?;
+        Ok(if raw > 0 { raw } else { country.id as i32 })
     }
 
     /// Country-tag equality compares raw words first, then their canonical
     /// indices when both differ and neither is zero. Missing mappings refuse.
-    pub(crate) fn same_tag(&self, a: i32, b: i32) -> Result<bool, String> {
-        super::inputs::query(
+    pub(crate) fn same_tag(&self, a: i32, b: i32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::SameTag(a, b)),
             || self.same_tag_unrecorded(a, b),
         )
     }
 
-    fn same_tag_unrecorded(&self, a: i32, b: i32) -> Result<bool, String> {
+    fn same_tag_unrecorded(&self, a: i32, b: i32) -> Result<bool, Failure> {
         if a == b {
             return Ok(true);
         }
@@ -1612,14 +1923,14 @@ impl<'a> World<'a> {
         Ok(self.recorded().raw_slot(a as u32)? == self.recorded().raw_slot(b as u32)?)
     }
 
-    pub(super) fn has_focus(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn has_focus(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::HasFocus(slot, name.to_vec())),
             || self.has_focus_unrecorded(slot, name),
         )
     }
 
-    fn has_focus_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
+    fn has_focus_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
         let rows = table::<tables::CompletedFocuses>(self.frame)?;
         let Some(countries) = self.country_rows(&self.focus_rows, rows, |row| row.country) else {
             return self.has_focus_indexed(slot, name);
@@ -1636,7 +1947,7 @@ impl<'a> World<'a> {
 
     /// [`Self::has_focus_unrecorded`] over an index of every row, for rows
     /// that do not ascend by country.
-    fn has_focus_indexed(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
+    fn has_focus_indexed(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
         let (focuses, unresolved) = get(&self.focuses, || {
             let mut out = BTreeSet::new();
             let mut unresolved = None;
@@ -1653,14 +1964,14 @@ impl<'a> World<'a> {
         Ok(linked(focuses.contains(&(slot, name)).then_some(()), unresolved)?.is_some())
     }
 
-    pub(super) fn has_tech(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn has_tech(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::HasTech(slot, name.to_vec())),
             || self.has_tech_unrecorded(slot, name),
         )
     }
 
-    fn has_tech_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
+    fn has_tech_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
         let techs = get(&self.techs, || {
             let definitions = table::<tables::TechnologyDefinitions>(self.frame)?;
             let names: BTreeMap<i32, Vec<u8>> = definitions
@@ -1685,7 +1996,19 @@ impl<'a> World<'a> {
                 if row.classifier != engine_research::ctechnology::CLASSIFIER_COMPLETED {
                     continue;
                 }
-                match (self.slot(row.country), names.get(&row.database_index)) {
+                match (
+                    self.slot(row.country),
+                    super::refusal::reference(
+                        names.get(&row.database_index),
+                        row.database_index >= 0,
+                        || {
+                            super::refusal::missing_reference(
+                                tables::TechnologyDefinitions::ID,
+                                None,
+                            )
+                        },
+                    ),
+                ) {
                     (Some(slot), Some(name)) => {
                         if first.get(name) == Some(&row.database_index) {
                             techs.researched.insert((slot, name.clone()));
@@ -1711,19 +2034,20 @@ impl<'a> World<'a> {
             return Err(format!(
                 "has_tech {}: a completed technology has no recorded definition or country",
                 String::from_utf8_lossy(name)
-            ));
+            )
+            .into());
         }
         Ok(false)
     }
 
-    pub(super) fn completed_project(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn completed_project(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CompletedProject(slot, name.to_vec())),
             || self.completed_project_unrecorded(slot, name),
         )
     }
 
-    fn completed_project_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
+    fn completed_project_unrecorded(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
         let Some(token) = self.token_of(name)? else {
             return Ok(false);
         };
@@ -1769,11 +2093,16 @@ impl<'a> World<'a> {
         rows: &[R],
         country: impl Fn(&R) -> u32,
     ) -> Option<&'s CountryRows> {
-        cell.get_or_init(|| CountryRows::new(rows, country, |raw| self.links.contains_key(&raw)))
-            .as_ref()
+        let found = cell
+            .get_or_init(|| CountryRows::new(rows, country, |raw| self.links.contains_key(&raw)))
+            .as_ref();
+        if let Some((_, raw)) = found.and_then(CountryRows::first_unlinked) {
+            self.slot(raw);
+        }
+        found
     }
 
-    fn political_parties(&self) -> Result<&PoliticalParties<'a>, String> {
+    fn political_parties(&self) -> Result<&PoliticalParties<'a>, Failure> {
         get(&self.political_parties, || {
             let mut out = PoliticalParties {
                 ruling: BTreeMap::new(),
@@ -1789,7 +2118,8 @@ impl<'a> World<'a> {
                     return Err(format!(
                         "PoliticalParties ideology ID {} has conflicting tokens",
                         row.id
-                    ));
+                    )
+                    .into());
                 }
                 if let Some(previous) = out.tokens.insert(row.token.to_ascii_lowercase(), row.id)
                     && previous != row.id
@@ -1797,7 +2127,8 @@ impl<'a> World<'a> {
                     return Err(format!(
                         "PoliticalParties ideology {} has conflicting native IDs",
                         String::from_utf8_lossy(&row.token)
-                    ));
+                    )
+                    .into());
                 }
                 match self.slot(row.country) {
                     Some(slot) => {
@@ -1813,59 +2144,64 @@ impl<'a> World<'a> {
         })
     }
 
-    pub(super) fn government(&self, slot: u32) -> Result<Option<u32>, String> {
-        super::inputs::query(
+    pub(super) fn government(&self, slot: u32) -> Result<Option<u32>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Government(slot)),
             || self.government_unrecorded(slot),
         )
     }
 
-    fn government_unrecorded(&self, slot: u32) -> Result<Option<u32>, String> {
+    fn government_unrecorded(&self, slot: u32) -> Result<Option<u32>, Failure> {
         let parties = self.political_parties()?;
         linked(parties.ruling.get(&slot).copied(), &parties.unresolved)
     }
 
-    pub(crate) fn named_ideology(&self, token: &[u8]) -> Result<(u32, &'a [u8]), String> {
-        super::inputs::query(
+    pub(crate) fn named_ideology(&self, token: &[u8]) -> Result<(u32, &'a [u8]), Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::NamedIdeology(token.to_vec())),
             || self.named_ideology_unrecorded(token),
         )
     }
 
-    fn named_ideology_unrecorded(&self, token: &[u8]) -> Result<(u32, &'a [u8]), String> {
+    fn named_ideology_unrecorded(&self, token: &[u8]) -> Result<(u32, &'a [u8]), Failure> {
         let parties = self.political_parties()?;
         let id = parties
             .tokens
             .get(&token.to_ascii_lowercase())
             .copied()
-            .ok_or_else(|| {
+            .ok_or_else(|| -> Failure {
                 format!(
                     "ideology {} has no recorded native ID/token",
                     String::from_utf8_lossy(token)
                 )
+                .into()
             })?;
         Ok((id, parties.ids[&id]))
     }
 
-    pub(super) fn ideology_token(&self, id: u32) -> Result<Option<&'a [u8]>, String> {
-        super::inputs::query(
+    pub(super) fn ideology_token(&self, id: u32) -> Result<Option<&'a [u8]>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::IdeologyToken(id)),
             || self.ideology_token_unrecorded(id),
         )
     }
 
-    fn ideology_token_unrecorded(&self, id: u32) -> Result<Option<&'a [u8]>, String> {
-        Ok(self.political_parties()?.ids.get(&id).copied())
+    fn ideology_token_unrecorded(&self, id: u32) -> Result<Option<&'a [u8]>, Failure> {
+        Ok(super::refusal::reference(
+            self.political_parties()?.ids.get(&id).copied(),
+            id != 0,
+            || super::refusal::missing_reference(tables::PoliticalParties::ID, None),
+        ))
     }
 
-    pub(super) fn scoped_ruling_ideology(&self, slot: u32) -> Result<(u32, &'a [u8]), String> {
-        super::inputs::query(
+    pub(super) fn scoped_ruling_ideology(&self, slot: u32) -> Result<(u32, &'a [u8]), Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::ScopedRulingIdeology(slot)),
             || self.scoped_ruling_ideology_unrecorded(slot),
         )
     }
 
-    fn scoped_ruling_ideology_unrecorded(&self, slot: u32) -> Result<(u32, &'a [u8]), String> {
+    fn scoped_ruling_ideology_unrecorded(&self, slot: u32) -> Result<(u32, &'a [u8]), Failure> {
         let (ruling, unresolved) = get(&self.politics_ruling, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
@@ -1891,14 +2227,14 @@ impl<'a> World<'a> {
 
     /// The elections trigger tests the
     /// country's political status (`Politics.has_elections`).
-    pub(super) fn has_elections(&self, slot: u32) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn has_elections(&self, slot: u32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::HasElections(slot)),
             || self.has_elections_unrecorded(slot),
         )
     }
 
-    fn has_elections_unrecorded(&self, slot: u32) -> Result<bool, String> {
+    fn has_elections_unrecorded(&self, slot: u32) -> Result<bool, Failure> {
         let (elections, unresolved) = get(&self.politics_elections, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
@@ -1913,20 +2249,28 @@ impl<'a> World<'a> {
             Ok((out, unresolved))
         })?;
         linked(elections.get(&slot).copied(), unresolved)?
-            .ok_or_else(|| format!("Politics lacks country slot {slot}"))?
+            .ok_or_else(|| -> Failure { format!("Politics lacks country slot {slot}").into() })?
             .require("Politics.has_elections")
+            .map_err(|why| {
+                Failure::input(
+                    replay_data::rows::TableId::Politics,
+                    "has_elections",
+                    Some(Store::Country(slot)),
+                    why,
+                )
+            })
             .copied()
     }
 
     /// A script flag's value, or `None` when it is not set.
-    pub(super) fn flag(&self, kind: u8, id: u32, name: &[u8]) -> Result<Option<i16>, String> {
-        super::inputs::query(
+    pub(super) fn flag(&self, kind: u8, id: u32, name: &[u8]) -> Result<Option<i16>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Flag(kind, id, name.to_vec())),
             || self.flag_unrecorded(kind, id, name),
         )
     }
 
-    fn flag_unrecorded(&self, kind: u8, id: u32, name: &[u8]) -> Result<Option<i16>, String> {
+    fn flag_unrecorded(&self, kind: u8, id: u32, name: &[u8]) -> Result<Option<i16>, Failure> {
         let Some(token) = self.token_of(name)? else {
             return Ok(None);
         };
@@ -1947,8 +2291,8 @@ impl<'a> World<'a> {
         slot: u32,
         name: &[u8],
         target: Option<Scope>,
-    ) -> Result<bool, String> {
-        super::inputs::query(
+    ) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::HasCountryModifier(slot, name.to_vec(), target)),
             || self.has_country_modifier_unrecorded(slot, name, target),
         )
@@ -1959,7 +2303,7 @@ impl<'a> World<'a> {
         slot: u32,
         name: &[u8],
         target: Option<Scope>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Failure> {
         let (modifiers, unlinked) = get(&self.country_modifiers, || {
             let mut modifiers: Modifiers<'a> = BTreeMap::new();
             let mut unlinked = BTreeMap::new();
@@ -2003,8 +2347,8 @@ impl<'a> World<'a> {
         state: u32,
         name: &[u8],
         target: Option<Scope>,
-    ) -> Result<bool, String> {
-        super::inputs::query(
+    ) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::HasStateModifier(state, name.to_vec(), target)),
             || self.has_state_modifier_unrecorded(state, name, target),
         )
@@ -2015,7 +2359,7 @@ impl<'a> World<'a> {
         state: u32,
         name: &[u8],
         target: Option<Scope>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Failure> {
         let modifiers = get(&self.state_modifiers, || {
             let mut modifiers: Modifiers<'a> = BTreeMap::new();
             let mut rows: Vec<_> = table::<tables::StateDynamicModifiers>(self.frame)?
@@ -2047,11 +2391,12 @@ impl<'a> World<'a> {
         entries: &[(u32, i32)],
         target: Option<Scope>,
         table: &str,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Failure> {
         let country = match target {
             Some(Scope::Country(slot) | Scope::CountryLeader { country: slot, .. }) => {
-                let raw = self.raw_country(slot).ok_or_else(|| {
+                let raw = self.raw_country(slot).ok_or_else(|| -> Failure {
                     format!("has_dynamic_modifier target country slot {slot} has no Countries row")
+                        .into()
                 })?;
                 ((raw as i32) > 0).then_some((raw, slot))
             }
@@ -2089,22 +2434,23 @@ impl<'a> World<'a> {
     }
 
     /// The state resource operands, or why the content lacks what they read.
-    fn resource_amounts(&self) -> Result<&StateResources<'a>, String> {
-        self.resource_amounts
-            .as_ref()
-            .map_err(|why| format!("the state resource amounts are unavailable: {why}"))
+    fn resource_amounts(&self) -> Result<&StateResources<'a>, Failure> {
+        self.resource_amounts.as_ref().map_err(|why| {
+            Failure::from(*why)
+                .context(|why| format!("the state resource amounts are unavailable: {why}"))
+        })
     }
 
     /// The resource count amount, fixed5
     /// (`crate::state_resources`), with the state's controller's overrides.
-    pub fn state_resource(&self, state: u32, resource: u32) -> Result<i64, String> {
-        super::inputs::query(
+    pub fn state_resource(&self, state: u32, resource: u32) -> Result<i64, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::StateResource(state, resource)),
             || self.state_resource_unrecorded(state, resource),
         )
     }
 
-    fn state_resource_unrecorded(&self, state: u32, resource: u32) -> Result<i64, String> {
+    fn state_resource_unrecorded(&self, state: u32, resource: u32) -> Result<i64, Failure> {
         self.state_resource_amount(state, resource, self.state_controller(state))
     }
 
@@ -2114,8 +2460,8 @@ impl<'a> World<'a> {
         state: u32,
         resource: u32,
         controller: Option<u32>,
-    ) -> Result<i64, String> {
-        super::inputs::query(
+    ) -> Result<i64, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::StateResourceAmount(state, resource, controller)),
             || self.state_resource_amount_unrecorded(state, resource, controller),
         )
@@ -2126,7 +2472,7 @@ impl<'a> World<'a> {
         state: u32,
         resource: u32,
         controller: Option<u32>,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, Failure> {
         self.resource_amounts()?
             .amount(state, resource, controller, self)
     }
@@ -2138,8 +2484,8 @@ impl<'a> World<'a> {
         province: bool,
         location: u32,
         building_type: u32,
-    ) -> Result<Option<i16>, String> {
-        super::inputs::query(
+    ) -> Result<Option<i16>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::BuildingLevel(province, location, building_type)),
             || self.building_level_unrecorded(province, location, building_type),
         )
@@ -2150,7 +2496,7 @@ impl<'a> World<'a> {
         province: bool,
         location: u32,
         building_type: u32,
-    ) -> Result<Option<i16>, String> {
+    ) -> Result<Option<i16>, Failure> {
         let levels = get(&self.building_levels[usize::from(province)], || {
             let rows = if province {
                 table::<tables::ProvinceBuildings>(self.frame)?
@@ -2170,14 +2516,14 @@ impl<'a> World<'a> {
 
     /// Each state's recorded provinces, ascending: the runtime membership
     /// which can differ from the content's.
-    pub(super) fn state_members(&self) -> Result<&BTreeMap<u32, Vec<u32>>, String> {
-        super::inputs::query_debug(
+    pub(super) fn state_members(&self) -> Result<&BTreeMap<u32, Vec<u32>>, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::StateMembers),
             || self.state_members_unrecorded(),
         )
     }
 
-    fn state_members_unrecorded(&self) -> Result<&BTreeMap<u32, Vec<u32>>, String> {
+    fn state_members_unrecorded(&self) -> Result<&BTreeMap<u32, Vec<u32>>, Failure> {
         get(&self.state_members, || {
             let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
             for (&id, row) in self.province_map() {
@@ -2189,19 +2535,19 @@ impl<'a> World<'a> {
 
     /// A state's provinces in their native order: the content's, which the
     /// runtime list keeps while its membership equals the content's.
-    pub fn state_order(&self, state: u32) -> Result<&'a [u32], String> {
-        super::inputs::query(
+    pub fn state_order(&self, state: u32) -> Result<&'a [u32], Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::StateOrder(state)),
             || self.state_order_unrecorded(state),
         )
     }
 
-    fn state_order_unrecorded(&self, state: u32) -> Result<&'a [u32], String> {
-        self.state_content.map_err(str::to_owned)?;
+    fn state_order_unrecorded(&self, state: u32) -> Result<&'a [u32], Failure> {
+        self.state_content.map_err(Failure::from)?;
         let content = self
             .state_provinces
             .get(&state)
-            .ok_or_else(|| format!("state {state} is not in the content"))?;
+            .ok_or_else(|| -> Failure { format!("state {state} is not in the content").into() })?;
         let recorded = self
             .state_members()?
             .get(&state)
@@ -2211,7 +2557,7 @@ impl<'a> World<'a> {
         {
             return Err(format!(
                 "state {state}'s provinces differ from the content, so their native order is unknown"
-            ));
+            ).into());
         }
         Ok(content)
     }
@@ -2219,26 +2565,26 @@ impl<'a> World<'a> {
     /// A country exists if it owns a state;
     /// the country database holds every tag with a
     /// country file, existing or not.
-    pub(crate) fn exists(&self, slot: u32) -> Result<bool, String> {
-        super::inputs::query(
+    pub(crate) fn exists(&self, slot: u32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Exists(slot)),
             || self.exists_unrecorded(slot),
         )
     }
 
-    fn exists_unrecorded(&self, slot: u32) -> Result<bool, String> {
+    fn exists_unrecorded(&self, slot: u32) -> Result<bool, Failure> {
         self.owned_state_count(slot).map(|count| count > 0)
     }
 
     /// Stored signed count, used by the owned-state builtin.
-    pub(crate) fn owned_state_count(&self, slot: u32) -> Result<i32, String> {
-        super::inputs::query(
+    pub(crate) fn owned_state_count(&self, slot: u32) -> Result<i32, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::OwnedStateCount(slot)),
             || self.owned_state_count_unrecorded(slot),
         )
     }
 
-    fn owned_state_count_unrecorded(&self, slot: u32) -> Result<i32, String> {
+    fn owned_state_count_unrecorded(&self, slot: u32) -> Result<i32, Failure> {
         if slot == 0 {
             return self.recorded().owned_states(0);
         }
@@ -2249,8 +2595,8 @@ impl<'a> World<'a> {
     pub(crate) fn country_counter_inputs(
         &self,
         slot: u32,
-    ) -> Result<&'a CountryCounterInputRow, String> {
-        super::inputs::query_debug(
+    ) -> Result<&'a CountryCounterInputRow, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::CountryCounterInputs(slot)),
             || self.country_counter_inputs_unrecorded(slot),
         )
@@ -2259,19 +2605,59 @@ impl<'a> World<'a> {
     fn country_counter_inputs_unrecorded(
         &self,
         slot: u32,
-    ) -> Result<&'a CountryCounterInputRow, String> {
+    ) -> Result<&'a CountryCounterInputRow, Failure> {
         let rows = get(&self.counter_inputs, || {
             Ok(table::<tables::CountryCounterInputs>(self.frame)?
                 .iter()
                 .map(|row| (row.country, row))
                 .collect())
         })?;
-        let raw = self
-            .raw_country(slot)
-            .ok_or_else(|| format!("country slot {slot} has no Countries row"))?;
-        rows.get(&raw)
-            .copied()
-            .ok_or_else(|| format!("country {raw} has no CountryCounterInputs row"))
+        let raw = self.raw_country(slot).ok_or_else(|| -> Failure {
+            format!("country slot {slot} has no Countries row").into()
+        })?;
+        rows.get(&raw).copied().ok_or_else(|| {
+            Failure::input(
+                replay_data::rows::TableId::CountryCounterInputs,
+                "",
+                Some(Store::Country(slot)),
+                format!("country {raw} has no CountryCounterInputs row"),
+            )
+        })
+    }
+
+    /// The exact ordered vector, when an iterator or built-in needs its order.
+    /// Optional membership derivation does not turn an unavailable order into an
+    /// evaluator Unsupported; the field read owns the refusal in either path.
+    pub(super) fn ordered_country_states(
+        &self,
+        slot: u32,
+        controlled: bool,
+    ) -> Result<&'a [u32], Failure> {
+        let inputs = self.country_counter_inputs(slot)?;
+        let (value, field) = if controlled {
+            (&inputs.controlled_states, "controlled_states")
+        } else {
+            (&inputs.owned_states, "owned_states")
+        };
+        value
+            .require(&format!("CountryCounterInputs.{field}"))
+            .map_err(|why| {
+                Failure::input(
+                    replay_data::rows::TableId::CountryCounterInputs,
+                    field,
+                    Some(Store::Country(slot)),
+                    why,
+                )
+            })?
+            .as_deref()
+            .ok_or_else(|| {
+                Failure::input(
+                    replay_data::rows::TableId::CountryCounterInputs,
+                    field,
+                    Some(Store::Country(slot)),
+                    format!("CountryCounterInputs.{field} capture unavailable"),
+                )
+            })
     }
 
     /// Stored country state-vector order.
@@ -2280,8 +2666,8 @@ impl<'a> World<'a> {
         &self,
         slot: u32,
         controlled: bool,
-    ) -> Result<Option<&'a [u32]>, String> {
-        super::inputs::query(
+    ) -> Result<Option<&'a [u32]>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CountryStateRoster(slot, controlled)),
             || self.country_state_roster_unrecorded(slot, controlled),
         )
@@ -2291,7 +2677,7 @@ impl<'a> World<'a> {
         &self,
         slot: u32,
         controlled: bool,
-    ) -> Result<Option<&'a [u32]>, String> {
+    ) -> Result<Option<&'a [u32]>, Failure> {
         let inputs = self.country_counter_inputs(slot)?;
         let (recorded, name) = if controlled {
             (
@@ -2304,9 +2690,16 @@ impl<'a> World<'a> {
         match recorded {
             replay_data::rows::Recorded::NotRecorded => Ok(None),
             replay_data::rows::Recorded::Value(Some(states)) => Ok(Some(states.as_slice())),
-            replay_data::rows::Recorded::Value(None) => {
-                Err(refused(format!("{name} capture unavailable")))
-            }
+            replay_data::rows::Recorded::Value(None) => Err(Failure::input(
+                replay_data::rows::TableId::CountryCounterInputs,
+                if controlled {
+                    "controlled_states"
+                } else {
+                    "owned_states"
+                },
+                Some(Store::Country(slot)),
+                format!("{name} capture unavailable"),
+            )),
         }
     }
 
@@ -2317,22 +2710,43 @@ impl<'a> World<'a> {
     /// followed by every ordinary successor
     /// recursively, whatever its own type. Only whether one matches is asked,
     /// so traversal order and the native duplicate check do not matter.
-    pub(super) fn invasion_orders(&self, slot: u32) -> Result<&[Invasion<'a>], String> {
-        super::inputs::query_debug(
+    pub(super) fn invasion_orders(
+        &self,
+        slot: u32,
+    ) -> Result<PartialCollection<'_, Invasion<'a>>, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::InvasionOrders(slot)),
             || self.invasion_orders_unrecorded(slot),
         )
     }
 
-    fn invasion_orders_unrecorded(&self, slot: u32) -> Result<&[Invasion<'a>], String> {
+    fn invasion_orders_unrecorded(
+        &self,
+        slot: u32,
+    ) -> Result<PartialCollection<'_, Invasion<'a>>, Failure> {
         if slot == 0 {
             let [reserved] = table::<tables::ReservedCountryNaming>(self.frame)? else {
                 return Err("ReservedCountryNaming does not hold one reserved country".into());
             };
             let count = reserved
                 .land_theatre_count
-                .require("ReservedCountryNaming.land_theatre_count")?
-                .ok_or("ReservedCountryNaming.land_theatre_count capture unavailable")?;
+                .require("ReservedCountryNaming.land_theatre_count")
+                .map_err(|why| {
+                    Failure::input(
+                        replay_data::rows::TableId::ReservedCountryNaming,
+                        "land_theatre_count",
+                        None,
+                        why,
+                    )
+                })?
+                .ok_or_else(|| {
+                    Failure::input(
+                        replay_data::rows::TableId::ReservedCountryNaming,
+                        "land_theatre_count",
+                        None,
+                        "ReservedCountryNaming.land_theatre_count capture unavailable",
+                    )
+                })?;
             if count == 0 {
                 // The fresh reserved root certifies an empty native vector.
                 // Unrelated positive theatre/OOB refusals cannot change it.
@@ -2341,7 +2755,10 @@ impl<'a> World<'a> {
                 {
                     return Err("reserved-country LandTheatres contradict their certificate".into());
                 }
-                return Ok(&[]);
+                return Ok(PartialCollection {
+                    known: &[],
+                    unresolved: None,
+                });
             }
             let mut ids = BTreeSet::new();
             let mut ordinals = BTreeSet::new();
@@ -2402,8 +2819,8 @@ impl<'a> World<'a> {
                             .map(|row| (row.group, row.primary_orders.as_slice()))
                             .collect())
                     })?;
-                    let first = roots.get(&handle).ok_or_else(|| {
-                        format!("orders group {handle:#x} has no OrdersGroupPlans row")
+                    let first = roots.get(&handle).ok_or_else(|| -> Failure {
+                        format!("orders group {handle:#x} has no OrdersGroupPlans row").into()
                     })?;
                     let mut pending: Vec<u32> = first.iter().rev().copied().collect();
                     let mut seen = BTreeSet::new();
@@ -2420,8 +2837,9 @@ impl<'a> World<'a> {
                                 .collect())
                         })?;
                         let key = (handle, instance);
-                        let order = instances.get(&key).ok_or_else(|| {
+                        let order = instances.get(&key).ok_or_else(|| -> Failure {
                             format!("order {instance} of group {handle:#x} has no ArmyOrders row")
+                                .into()
                         })?;
                         if order.order_type == 3 {
                             collected.push(Invasion {
@@ -2436,10 +2854,11 @@ impl<'a> World<'a> {
                                 .map(|row| ((row.owner_group, row.instance), row))
                                 .collect())
                         })?;
-                        let plan = plans.get(&key).ok_or_else(|| {
+                        let plan = plans.get(&key).ok_or_else(|| -> Failure {
                             format!(
                                 "order {instance} of group {handle:#x} has no ArmyOrderPlans row"
                             )
+                            .into()
                         })?;
                         pending.extend(plan.successors.iter().rev());
                     }
@@ -2450,15 +2869,23 @@ impl<'a> World<'a> {
         } else {
             &[]
         };
-        // Preserve the positive-owner absence refusal: an unlinked theatre
-        // may hold an invasion that an otherwise empty traversal cannot see.
-        if slot != 0
-            && orders.is_empty()
-            && let Some(reason) = unresolved
-        {
+        // An unlinked positive theatre may contribute more orders regardless
+        // of how many known orders this country already has. The reserved
+        // country's literal owner and certified roster are independent.
+        Ok(PartialCollection {
+            known: orders,
+            unresolved: if slot == 0 { None } else { unresolved.as_ref() },
+        })
+    }
+
+    #[cfg(test)]
+    fn complete_invasion_orders(&self, slot: u32) -> Result<&[Invasion<'a>], Failure> {
+        let orders = self.invasion_orders(slot)?;
+        if let Some(reason) = orders.unresolved {
+            reason.reached();
             return Err(reason.clone());
         }
-        Ok(orders)
+        Ok(orders.known)
     }
 
     /// An invasion order's preparation, fixed5 (1e5 is fully prepared), as
@@ -2466,7 +2893,7 @@ impl<'a> World<'a> {
     /// it: `trunc(progress / 1e5)` whole hours (an `i32`), times 1e10, over
     /// the required hours ([`required_invasion_hours`]) times 1e5; zero when
     /// the required hours are.
-    pub(super) fn invasion_preparation(&self, key: (u64, u32)) -> Result<i64, String> {
+    pub(super) fn invasion_preparation(&self, key: (u64, u32)) -> Result<i64, Failure> {
         // The index below is built once per world; every evaluation reads the table.
         super::inputs::table(self.frame, replay_data::rows::TableId::InvasionPreparations);
         let rows = get(&self.invasion_preparations, || {
@@ -2475,13 +2902,14 @@ impl<'a> World<'a> {
                 .map(|row| ((row.owner_group, row.instance), row))
                 .collect())
         })?;
-        let row = rows.get(&key).ok_or_else(|| {
+        let row = rows.get(&key).ok_or_else(|| -> Failure {
             format!(
                 "invasion order {} of group {:#x} has no InvasionPreparations row",
                 key.1, key.0
             )
+            .into()
         })?;
-        let days = self.invasion_prepare_days.map_err(str::to_owned)?;
+        let days = self.invasion_prepare_days.map_err(Failure::from)?;
         let scale = i64::from(required_invasion_hours(row, days)).wrapping_mul(ONE);
         let whole = i64::from((row.progress / ONE) as i32);
         Ok(if scale == 0 {
@@ -2498,14 +2926,14 @@ impl<'a> World<'a> {
     /// the same country, else
     /// an active war vetoes, then a shared faction or a direct subject relation
     /// either way.
-    pub(super) fn is_ally_with(&self, slot: u32, other: Option<u32>) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn is_ally_with(&self, slot: u32, other: Option<u32>) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::IsAllyWith(slot, other)),
             || self.is_ally_with_unrecorded(slot, other),
         )
     }
 
-    fn is_ally_with_unrecorded(&self, slot: u32, other: Option<u32>) -> Result<bool, String> {
+    fn is_ally_with_unrecorded(&self, slot: u32, other: Option<u32>) -> Result<bool, Failure> {
         let Some(other) = other else {
             return Ok(false);
         };
@@ -2525,14 +2953,29 @@ impl<'a> World<'a> {
     /// roster character), empty stores included, so a scope without a row
     /// is refused rather than read as empty. Effects write variables at any
     /// hour; the table is read every hour.
-    pub(super) fn variable(&self, store: Store, key: &[u8]) -> Result<Option<i64>, String> {
-        super::inputs::query(
+    pub(super) fn variable(&self, store: Store, key: &[u8]) -> Result<Option<i64>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Variable(store, key.to_vec())),
             || self.variable_unrecorded(store, key),
         )
     }
 
-    fn variable_unrecorded(&self, store: Store, key: &[u8]) -> Result<Option<i64>, String> {
+    fn variable_unrecorded(&self, store: Store, key: &[u8]) -> Result<Option<i64>, Failure> {
+        if let Store::Project { owner, id } = store {
+            let runtime = self
+                .project(owner, id)?
+                .runtime
+                .require("Projects.runtime")?;
+            let variables = runtime.variables.as_ref().ok_or_else(|| {
+                format!("project {owner}:{id} variable store capture unavailable")
+            })?;
+            return Ok(variables
+                .entries
+                .iter()
+                .rev()
+                .find(|entry| entry.name == key)
+                .map(|entry| entry.value_raw));
+        }
         // A name stored twice reads its last value.
         Ok(self
             .variable_store(store)?
@@ -2544,38 +2987,88 @@ impl<'a> World<'a> {
     }
 
     /// Variable-random initialisation reads only the store's seed.
-    pub(super) fn variable_seed(&self, store: Store) -> Result<u32, String> {
-        super::inputs::query(
+    pub(super) fn variable_seed(&self, store: Store) -> Result<u32, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::VariableSeed(store)),
             || self.variable_seed_unrecorded(store),
         )
     }
 
-    fn variable_seed_unrecorded(&self, store: Store) -> Result<u32, String> {
+    fn variable_seed_unrecorded(&self, store: Store) -> Result<u32, Failure> {
+        if let Store::Project { owner, id } = store {
+            let runtime = self
+                .project(owner, id)?
+                .runtime
+                .require("Projects.runtime")
+                .map_err(|why| {
+                    Failure::input(
+                        replay_data::rows::TableId::Projects,
+                        "runtime",
+                        Some(store),
+                        why,
+                    )
+                })?;
+            return runtime
+                .variables
+                .as_ref()
+                .map(|variables| variables.seed)
+                .ok_or_else(|| {
+                    Failure::input(
+                        replay_data::rows::TableId::Projects,
+                        "runtime.variables",
+                        Some(store),
+                        format!("project {owner}:{id} variable store capture unavailable"),
+                    )
+                });
+        }
         self.variable_store(store)?
             .seed
-            .require("ScriptVariables.seed")?
-            .ok_or_else(|| "ScriptVariables.seed capture unavailable".into())
+            .require("ScriptVariables.seed")
+            .map_err(|why| {
+                Failure::input(
+                    replay_data::rows::TableId::ScriptVariables,
+                    "seed",
+                    Some(store),
+                    why,
+                )
+            })?
+            .ok_or_else(|| -> Failure {
+                Failure::input(
+                    replay_data::rows::TableId::ScriptVariables,
+                    "seed",
+                    Some(store),
+                    "ScriptVariables.seed capture unavailable",
+                )
+            })
     }
 
     /// The store's row: rows are in key order, scope kind then id.
-    fn variable_store(&self, store: Store) -> Result<&'a ScriptVariablesRow, String> {
+    fn variable_store(&self, store: Store) -> Result<&'a ScriptVariablesRow, Failure> {
         let rows = table::<tables::ScriptVariables>(self.frame)?;
         // The scope kinds `collector::extended::intel` records.
         let (kind, id) = match store {
             Store::Global => (0, 0),
             Store::Country(slot) => (
                 1,
-                self.raw_country(slot)
-                    .ok_or_else(|| format!("country slot {slot} has no Countries row"))?,
+                self.raw_country(slot).ok_or_else(|| -> Failure {
+                    format!("country slot {slot} has no Countries row").into()
+                })?,
             ),
             Store::State(id) => (2, id),
             Store::Character(id) => (3, id),
+            Store::Project { .. } => unreachable!("project stores are carried by Projects.runtime"),
         };
         rows.binary_search_by_key(&(kind, id), |row| (row.scope_kind, row.scope_id))
             .map(|at| &rows[at])
             .map_err(|_| {
-                format!("the script variable store of scope {kind}:{id} has no ScriptVariables row")
+                Failure::input(
+                    replay_data::rows::TableId::ScriptVariables,
+                    "",
+                    Some(store),
+                    format!(
+                        "the script variable store of scope {kind}:{id} has no ScriptVariables row"
+                    ),
+                )
             })
     }
 
@@ -2585,14 +3078,14 @@ impl<'a> World<'a> {
     }
 
     /// Whether a character with this id is recorded as a live reference.
-    pub(super) fn character_exists(&self, id: u32) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn character_exists(&self, id: u32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CharacterExists(id)),
             || self.character_exists_unrecorded(id),
         )
     }
 
-    fn character_exists_unrecorded(&self, id: u32) -> Result<bool, String> {
+    fn character_exists_unrecorded(&self, id: u32) -> Result<bool, Failure> {
         Ok(self.character(id)?.is_some())
     }
 
@@ -2605,14 +3098,14 @@ impl<'a> World<'a> {
     /// holds every state (`World::new` refuses an incomplete one), so an id it
     /// lacks is a null entry, unless the content has that state: then the
     /// recording lacks it and the entry is unknown.
-    pub(super) fn state_of_value(&self, raw: i64) -> Result<u32, String> {
-        super::inputs::query(
+    pub(super) fn state_of_value(&self, raw: i64) -> Result<u32, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::StateOfValue(raw)),
             || self.state_of_value_unrecorded(raw),
         )
     }
 
-    fn state_of_value_unrecorded(&self, raw: i64) -> Result<u32, String> {
+    fn state_of_value_unrecorded(&self, raw: i64) -> Result<u32, Failure> {
         let bits = raw as u64;
         let id = if bits & 0xffff_ffff_f000_0000 == 0xffff_ffff_c000_0000 {
             (bits & 0x0fff_ffff) as i64
@@ -2622,10 +3115,10 @@ impl<'a> World<'a> {
         match u32::try_from(id) {
             Ok(id) if id > 0 && self.state_map().contains_key(&id) => Ok(id),
             Ok(id) if id > 0 && self.state_provinces.contains_key(&id) => {
-                Err(format!("state {id} is in the content but not recorded"))
+                Err(format!("state {id} is in the content but not recorded").into())
             }
             Ok(id) if id > 0 => match self.table_gap("States") {
-                Some(why) => Err(format!("state {id} is not recorded: {why}")),
+                Some(why) => Err(why.context(|why| format!("state {id} is not recorded: {why}"))),
                 None => Ok(NULL_STATE),
             },
             _ => Ok(NULL_STATE),
@@ -2633,14 +3126,14 @@ impl<'a> World<'a> {
     }
 
     /// A recorded unit leader by its reference handle.
-    pub(crate) fn unit_leader(&self, reference: u64) -> Result<Option<&'a UnitLeaderRow>, String> {
-        super::inputs::query_debug(
+    pub(crate) fn unit_leader(&self, reference: u64) -> Result<Option<&'a UnitLeaderRow>, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::UnitLeader(reference)),
             || self.unit_leader_unrecorded(reference),
         )
     }
 
-    fn unit_leader_unrecorded(&self, reference: u64) -> Result<Option<&'a UnitLeaderRow>, String> {
+    fn unit_leader_unrecorded(&self, reference: u64) -> Result<Option<&'a UnitLeaderRow>, Failure> {
         let leaders = get(&self.leaders, || {
             Ok(table::<tables::UnitLeaders>(self.frame)?
                 .iter()
@@ -2652,7 +3145,11 @@ impl<'a> World<'a> {
                 })
                 .collect())
         })?;
-        Ok(leaders.get(&reference).copied())
+        Ok(super::refusal::reference(
+            leaders.get(&reference).copied(),
+            reference != 0,
+            || super::refusal::missing_reference(tables::UnitLeaders::ID, None),
+        ))
     }
 
     /// A leader's [`LeaderVisibility`], its character and tag spelling read
@@ -2669,17 +3166,28 @@ impl<'a> World<'a> {
             row,
             |id| {
                 let rows = table::<tables::Characters>(self.frame)?;
-                Ok(rows
-                    .binary_search_by_key(&id, |row| row.id)
-                    .ok()
-                    .map(|at| &rows[at]))
+                Ok(super::refusal::reference(
+                    rows.binary_search_by_key(&id, |row| row.id)
+                        .ok()
+                        .map(|at| &rows[at]),
+                    id != 0,
+                    || {
+                        super::refusal::missing_reference(
+                            tables::Characters::ID,
+                            Some(Store::Character(id)),
+                        )
+                    },
+                ))
             },
             |token| {
                 let rows = table::<tables::LexicalTokens>(self.frame)?;
-                Ok(rows
-                    .binary_search_by_key(&token, |row| row.token)
-                    .ok()
-                    .map(|at| rows[at].literal.as_slice()))
+                Ok(super::refusal::reference(
+                    rows.binary_search_by_key(&token, |row| row.token)
+                        .ok()
+                        .map(|at| rows[at].literal.as_slice()),
+                    token != 0,
+                    || super::refusal::missing_reference(tables::LexicalTokens::ID, None),
+                ))
             },
         )
     }
@@ -2689,8 +3197,8 @@ impl<'a> World<'a> {
     fn leader_visibility_from(
         &self,
         row: &UnitLeaderRow,
-        character: impl FnOnce(u32) -> Result<Option<&'a CharacterRow>, String>,
-        literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, String>,
+        character: impl FnOnce(u32) -> Result<Option<&'a CharacterRow>, Failure>,
+        literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, Failure>,
     ) -> LeaderVisibility {
         if row.visibility_choice == 0 && row.template_visibility == 0 {
             return LeaderVisibility::Decided(Eval::True);
@@ -2700,7 +3208,8 @@ impl<'a> World<'a> {
             None => Err(format!(
                 "unit leader {}'s character {} is not recorded",
                 row.id, row.character_id
-            )),
+            )
+            .into()),
         });
         self.template_visibility(row, template, literal)
     }
@@ -2710,8 +3219,8 @@ impl<'a> World<'a> {
     pub(super) fn template_visibility(
         &self,
         row: &UnitLeaderRow,
-        template: Result<Option<RecordedTemplate>, String>,
-        literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, String>,
+        template: Result<Option<RecordedTemplate>, Failure>,
+        literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, Failure>,
     ) -> LeaderVisibility {
         match template.and_then(|template| self.template_role(row, template, literal)) {
             Ok(Some((_, visible))) if visible.is_empty() => LeaderVisibility::Unconditioned,
@@ -2734,28 +3243,30 @@ impl<'a> World<'a> {
         &self,
         row: &UnitLeaderRow,
         template: Option<RecordedTemplate>,
-        literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, String>,
-    ) -> Result<Option<(usize, &'a installed_content_core::triggers::Triggers)>, String> {
-        let template = template.ok_or_else(|| {
+        literal: impl FnOnce(u32) -> Result<Option<&'a [u8]>, Failure>,
+    ) -> Result<Option<(usize, &'a installed_content_core::triggers::Triggers)>, Failure> {
+        let template = template.ok_or_else(|| -> Failure {
             format!(
                 "unit leader {} has a visibility input, but its character has no template",
                 row.id
             )
+            .into()
         })?;
         if template.generated {
             return Err(format!(
                 "unit leader {}'s character template was made by generate_character, which is not read",
                 row.id
-            ));
+            ).into());
         }
-        let roles = self.leader_roles.map_err(str::to_owned)?;
+        let roles = self.leader_roles.map_err(Failure::from)?;
         let tag = literal(template.tag)?
             .and_then(|literal| std::str::from_utf8(literal).ok())
-            .ok_or_else(|| {
+            .ok_or_else(|| -> Failure {
                 format!(
                     "character template tag token {} has no recorded text",
                     template.tag
                 )
+                .into()
             })?;
         // The lexer fold (`fold_token`), compared without allocating.
         let mut candidates = u32::try_from(template.line)
@@ -2777,12 +3288,15 @@ impl<'a> World<'a> {
                 .role
                 .as_ref()
                 .map(|role| role.as_ref().map(|visible| (index, visible)))
-                .map_err(|reason| format!("character template {} is refused: {reason}", where_())),
-            (None, _) => Err(format!("no content character template is {}", where_())),
-            (Some(_), Some(_)) => Err(format!(
-                "several content character templates are {}",
-                where_()
-            )),
+                .map_err(|reason| {
+                    Failure::from(reason.clone()).context(|reason| {
+                        format!("character template {} is refused: {reason}", where_())
+                    })
+                }),
+            (None, _) => Err(format!("no content character template is {}", where_()).into()),
+            (Some(_), Some(_)) => {
+                Err(format!("several content character templates are {}", where_()).into())
+            }
         }
     }
 
@@ -2798,14 +3312,14 @@ impl<'a> World<'a> {
     /// The country's parties (PoliticalParties, by ideology ID) and their
     /// leaders (PartyLeaders, each party's leaders in native order); a party
     /// without leaders is listed with none.
-    pub(crate) fn party_leaders(&self, slot: u32) -> Result<Vec<PartyLeaders>, String> {
-        super::inputs::query_debug(
+    pub(crate) fn party_leaders(&self, slot: u32) -> Result<Vec<PartyLeaders>, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::PartyLeaders(slot)),
             || self.party_leaders_unrecorded(slot),
         )
     }
 
-    fn party_leaders_unrecorded(&self, slot: u32) -> Result<Vec<PartyLeaders>, String> {
+    fn party_leaders_unrecorded(&self, slot: u32) -> Result<Vec<PartyLeaders>, Failure> {
         let party_rows = table::<tables::PoliticalParties>(self.frame)?;
         let Some(by_party) = self.country_rows(&self.party_rows, party_rows, |row| row.country)
         else {
@@ -2845,11 +3359,12 @@ impl<'a> World<'a> {
                 }
                 parties
                     .get_mut(&row.party)
-                    .ok_or_else(|| {
+                    .ok_or_else(|| -> Failure {
                         format!(
                             "PartyLeaders party {} has no PoliticalParties row",
                             row.party
                         )
+                        .into()
                     })?
                     .leaders
                     .push(PartyLeader {
@@ -2868,7 +3383,7 @@ impl<'a> World<'a> {
 
     /// [`Self::party_leaders_unrecorded`] scanning every row, for rows that
     /// do not ascend by country.
-    fn party_leaders_scanned(&self, slot: u32) -> Result<Vec<PartyLeaders>, String> {
+    fn party_leaders_scanned(&self, slot: u32) -> Result<Vec<PartyLeaders>, Failure> {
         let mut parties = BTreeMap::new();
         for row in table::<tables::PoliticalParties>(self.frame)? {
             match self.slot(row.country) {
@@ -2889,11 +3404,12 @@ impl<'a> World<'a> {
             match self.slot(row.country) {
                 Some(country) if country == slot => parties
                     .get_mut(&row.party)
-                    .ok_or_else(|| {
+                    .ok_or_else(|| -> Failure {
                         format!(
                             "PartyLeaders party {} has no PoliticalParties row",
                             row.party
                         )
+                        .into()
                     })?
                     .leaders
                     .push(PartyLeader {
@@ -2913,14 +3429,14 @@ impl<'a> World<'a> {
     /// sorted by their
     /// character's token), by character id in native order (CountryCharacters,
     /// keyed by the raw country; `None` for a null record).
-    pub(crate) fn country_characters(&self, slot: u32) -> Result<Vec<Option<u32>>, String> {
-        super::inputs::query(
+    pub(crate) fn country_characters(&self, slot: u32) -> Result<Vec<Option<u32>>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CountryCharacters(slot)),
             || self.country_characters_unrecorded(slot),
         )
     }
 
-    fn country_characters_unrecorded(&self, slot: u32) -> Result<Vec<Option<u32>>, String> {
+    fn country_characters_unrecorded(&self, slot: u32) -> Result<Vec<Option<u32>>, Failure> {
         let rows = table::<tables::CountryCharacters>(self.frame)?;
         let Some(countries) = self.country_rows(&self.character_rows, rows, |row| row.country)
         else {
@@ -2938,7 +3454,7 @@ impl<'a> World<'a> {
 
     /// [`Self::country_characters_unrecorded`] scanning every row, for rows
     /// that do not ascend by country.
-    fn country_characters_scanned(&self, slot: u32) -> Result<Vec<Option<u32>>, String> {
+    fn country_characters_scanned(&self, slot: u32) -> Result<Vec<Option<u32>>, Failure> {
         let mut out = Vec::new();
         for row in table::<tables::CountryCharacters>(self.frame)? {
             match self.slot(row.country) {
@@ -2952,17 +3468,18 @@ impl<'a> World<'a> {
 
     /// Search the ruling party's first leader's trait pointers.
     /// PartyLeaders carries its role-map key even after the current ideology changes.
-    pub(super) fn leader_has_trait(&self, slot: u32, name: &str) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn leader_has_trait(&self, slot: u32, name: &str) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::LeaderHasTrait(slot, name.to_owned())),
             || self.leader_has_trait_unrecorded(slot, name),
         )
     }
 
-    fn leader_has_trait_unrecorded(&self, slot: u32, name: &str) -> Result<bool, String> {
-        let (_, traits) = self
-            .character_traits
-            .map_err(|why| format!("the country-leader traits are unavailable: {why}"))?;
+    fn leader_has_trait_unrecorded(&self, slot: u32, name: &str) -> Result<bool, Failure> {
+        let (_, traits) = self.character_traits.map_err(|why| {
+            Failure::from(why)
+                .context(|why| format!("the country-leader traits are unavailable: {why}"))
+        })?;
         let Some(ordinal) = traits.first_ordinal(name).map_err(|gap| {
             format!(
                 "which country-leader trait definition the lookup finds for {name} is unknown: {gap}"
@@ -2977,20 +3494,18 @@ impl<'a> World<'a> {
             return Ok(false);
         };
         if ruling.next().is_some() {
-            return Err(format!("country {slot} has multiple ruling parties"));
+            return Err(format!("country {slot} has multiple ruling parties").into());
         }
         let Some(leader) = party.leaders.first() else {
             return Ok(false);
         };
         if leader.ordinal != 0 {
-            return Err(format!(
-                "country {slot}'s party leaders do not start at zero"
-            ));
+            return Err(format!("country {slot}'s party leaders do not start at zero").into());
         }
         let (Some(character), Some(role)) = (leader.character, leader.role) else {
-            return Err(format!(
-                "country {slot}'s first leader has no character role identity"
-            ));
+            return Err(
+                format!("country {slot}'s first leader has no character role identity").into(),
+            );
         };
         // Empty arrays have no CharacterRoleTraits row; the complete role census
         // distinguishes that from a missing leader role.
@@ -2998,9 +3513,9 @@ impl<'a> World<'a> {
             .iter()
             .any(|row| row.character == character && row.ideology == role)
         {
-            return Err(format!(
-                "party leader {character}/{role} has no CountryLeaderRoles row"
-            ));
+            return Err(
+                format!("party leader {character}/{role} has no CountryLeaderRoles row").into(),
+            );
         }
         character_scope::holds_country_leader_trait(
             table::<tables::CharacterRoleTraits>(self.frame)?
@@ -3019,14 +3534,14 @@ impl<'a> World<'a> {
 
     /// The country's civil-war countries (raw tag
     /// references; CountryCivilWars, keyed by the raw country).
-    pub(super) fn civil_war_countries(&self, raw: u32) -> Result<Vec<u32>, String> {
-        super::inputs::query(
+    pub(super) fn civil_war_countries(&self, raw: u32) -> Result<Vec<u32>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CivilWarCountries(raw)),
             || self.civil_war_countries_unrecorded(raw),
         )
     }
 
-    fn civil_war_countries_unrecorded(&self, raw: u32) -> Result<Vec<u32>, String> {
+    fn civil_war_countries_unrecorded(&self, raw: u32) -> Result<Vec<u32>, Failure> {
         Ok(table::<tables::CountryCivilWars>(self.frame)?
             .iter()
             .filter(|row| row.country == raw)
@@ -3036,14 +3551,14 @@ impl<'a> World<'a> {
 
     /// Whether an idea token is a registered advisor token
     /// (AdvisorTokens).
-    pub(super) fn advisor_token(&self, name: &[u8]) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn advisor_token(&self, name: &[u8]) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::AdvisorToken(name.to_vec())),
             || self.advisor_token_unrecorded(name),
         )
     }
 
-    fn advisor_token_unrecorded(&self, name: &[u8]) -> Result<bool, String> {
+    fn advisor_token_unrecorded(&self, name: &[u8]) -> Result<bool, Failure> {
         Ok(table::<tables::AdvisorTokens>(self.frame)?
             .iter()
             .any(|row| row.token == name))
@@ -3051,14 +3566,14 @@ impl<'a> World<'a> {
 
     /// The idea tokens of a faction's advisors (FactionAdvisors, keyed
     /// by the faction's full reference).
-    pub(super) fn faction_advisors(&self, faction: u64) -> Result<Vec<Vec<u8>>, String> {
-        super::inputs::query(
+    pub(super) fn faction_advisors(&self, faction: u64) -> Result<Vec<Vec<u8>>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::FactionAdvisors(faction)),
             || self.faction_advisors_unrecorded(faction),
         )
     }
 
-    fn faction_advisors_unrecorded(&self, faction: u64) -> Result<Vec<Vec<u8>>, String> {
+    fn faction_advisors_unrecorded(&self, faction: u64) -> Result<Vec<Vec<u8>>, Failure> {
         Ok(table::<tables::FactionAdvisors>(self.frame)?
             .iter()
             .filter(|row| row.faction == faction)
@@ -3068,21 +3583,21 @@ impl<'a> World<'a> {
 
     /// A country of its own civil-war list exists, or an
     /// existing enemy holds it in its own list.
-    pub(super) fn has_civil_war(&self, slot: u32) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn has_civil_war(&self, slot: u32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::HasCivilWar(slot)),
             || self.has_civil_war_unrecorded(slot),
         )
     }
 
-    fn has_civil_war_unrecorded(&self, slot: u32) -> Result<bool, String> {
-        let raw = self
-            .raw_country(slot)
-            .ok_or_else(|| format!("country slot {slot} has no Countries row"))?;
+    fn has_civil_war_unrecorded(&self, slot: u32) -> Result<bool, Failure> {
+        let raw = self.raw_country(slot).ok_or_else(|| -> Failure {
+            format!("country slot {slot} has no Countries row").into()
+        })?;
         for other in self.civil_war_countries(raw)? {
             let other = self
                 .slot(other)
-                .ok_or_else(|| self.unlinked("civil war", other))?;
+                .ok_or_else(|| -> Failure { self.unlinked("civil war", other) })?;
             if self.exists(other)? {
                 return Ok(true);
             }
@@ -3091,9 +3606,9 @@ impl<'a> World<'a> {
             if !self.exists(enemy)? {
                 continue;
             }
-            let enemy_raw = self
-                .raw_country(enemy)
-                .ok_or_else(|| format!("country slot {enemy} has no Countries row"))?;
+            let enemy_raw = self.raw_country(enemy).ok_or_else(|| -> Failure {
+                format!("country slot {enemy} has no Countries row").into()
+            })?;
             for listed in self.civil_war_countries(enemy_raw)? {
                 if self.slot(listed) == Some(slot) {
                     return Ok(true);
@@ -3106,14 +3621,14 @@ impl<'a> World<'a> {
     /// The country's enemy vector: as read where
     /// `CountryWars` read it, else the other endpoint of each active war
     /// relation, which wartime-allies rebuilding keeps it to.
-    pub(super) fn enemies(&self, slot: u32) -> Result<Vec<u32>, String> {
-        super::inputs::query(
+    pub(super) fn enemies(&self, slot: u32) -> Result<Vec<u32>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Enemies(slot)),
             || self.enemies_unrecorded(slot),
         )
     }
 
-    fn enemies_unrecorded(&self, slot: u32) -> Result<Vec<u32>, String> {
+    fn enemies_unrecorded(&self, slot: u32) -> Result<Vec<u32>, Failure> {
         for row in table::<tables::CountryWars>(self.frame)? {
             if self.slot(row.country) == Some(slot) && row.enemies_read != 0 {
                 return row
@@ -3121,7 +3636,7 @@ impl<'a> World<'a> {
                     .iter()
                     .map(|&raw| {
                         self.slot(raw)
-                            .ok_or_else(|| self.unlinked("CountryWars", raw))
+                            .ok_or_else(|| -> Failure { self.unlinked("CountryWars", raw) })
                     })
                     .collect();
             }
@@ -3146,14 +3661,14 @@ impl<'a> World<'a> {
     /// (the HiredAdvisors rows) or its faction lists it; any other
     /// name holds when the country's active ideas
     /// (ActiveIdeas) hold the idea it names.
-    pub(super) fn has_idea(&self, slot: u32, name: &str) -> Result<bool, String> {
-        super::inputs::query(
+    pub(super) fn has_idea(&self, slot: u32, name: &str) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::HasIdea(slot, name.to_owned())),
             || self.has_idea_unrecorded(slot, name),
         )
     }
 
-    fn has_idea_unrecorded(&self, slot: u32, name: &str) -> Result<bool, String> {
+    fn has_idea_unrecorded(&self, slot: u32, name: &str) -> Result<bool, Failure> {
         let name = name.as_bytes();
         if self.advisor_token(name)? {
             for row in table::<tables::HiredAdvisors>(self.frame)? {
@@ -3175,7 +3690,7 @@ impl<'a> World<'a> {
     /// Whether the country's active ideas hold `name`: the first of its
     /// matching rows and the rows whose country does not resolve, in table
     /// order, decides.
-    fn active_idea(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
+    fn active_idea(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
         let rows = table::<tables::ActiveIdeas>(self.frame)?;
         let Some(countries) = self.country_rows(&self.idea_rows, rows, |row| row.country) else {
             return self.active_idea_scanned(slot, name);
@@ -3202,7 +3717,7 @@ impl<'a> World<'a> {
 
     /// [`Self::active_idea`] scanning every row, for rows that do not
     /// ascend by country.
-    fn active_idea_scanned(&self, slot: u32, name: &[u8]) -> Result<bool, String> {
+    fn active_idea_scanned(&self, slot: u32, name: &[u8]) -> Result<bool, Failure> {
         for row in table::<tables::ActiveIdeas>(self.frame)? {
             match self.slot(row.country) {
                 Some(country) if country == slot && row.token == name => return Ok(true),
@@ -3215,41 +3730,44 @@ impl<'a> World<'a> {
 
     /// The country's controlled-state count
     /// (CountryCounterInputs.controlled_state_count).
-    pub(super) fn controlled_state_count(&self, slot: u32) -> Result<i64, String> {
-        super::inputs::query(
+    pub(super) fn controlled_state_count(&self, slot: u32) -> Result<i64, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::ControlledStateCount(slot)),
             || self.controlled_state_count_unrecorded(slot),
         )
     }
 
-    fn controlled_state_count_unrecorded(&self, slot: u32) -> Result<i64, String> {
-        let raw = self
-            .raw_country(slot)
-            .ok_or_else(|| format!("country slot {slot} has no Countries row"))?;
+    fn controlled_state_count_unrecorded(&self, slot: u32) -> Result<i64, Failure> {
+        let raw = self.raw_country(slot).ok_or_else(|| -> Failure {
+            format!("country slot {slot} has no Countries row").into()
+        })?;
         table::<tables::CountryCounterInputs>(self.frame)?
             .iter()
             .find(|row| row.country == raw)
             .map(|row| i64::from(row.controlled_state_count))
-            .ok_or_else(|| format!("country {raw} has no CountryCounterInputs row"))
+            .ok_or_else(|| -> Failure {
+                format!("country {raw} has no CountryCounterInputs row").into()
+            })
     }
 
     /// The recorded opinion's signed dword times fixed5.
-    pub(super) fn opinion(&self, owner: u32, target: Option<u32>) -> Result<i64, String> {
-        super::inputs::query(
+    pub(super) fn opinion(&self, owner: u32, target: Option<u32>) -> Result<i64, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Opinion(owner, target)),
             || self.opinion_unrecorded(owner, target),
         )
     }
 
-    fn opinion_unrecorded(&self, owner: u32, target: Option<u32>) -> Result<i64, String> {
+    fn opinion_unrecorded(&self, owner: u32, target: Option<u32>) -> Result<i64, Failure> {
         let Some(target) = target.filter(|&slot| slot != 0) else {
             return Err(refused(
-                "opinion: country zero reads reserved relation slot zero, which RelationOpinions does not record".into(),
+                "opinion: country zero reads reserved relation slot zero, which RelationOpinions does not record",
             ));
         };
         for slot in [owner, target] {
-            self.raw_country(slot)
-                .ok_or_else(|| format!("country slot {slot} has no Countries row"))?;
+            self.raw_country(slot).ok_or_else(|| -> Failure {
+                format!("country slot {slot} has no Countries row").into()
+            })?;
         }
         let (opinions, unresolved) = get(&self.opinions, || {
             table::<tables::CountryLinks>(self.frame)?;
@@ -3280,9 +3798,10 @@ impl<'a> World<'a> {
     /// Scan the country's owned states and compare their controller.
     /// Ownership changes maintain that roster;
     /// its insertion rule excludes states without provinces.
-    fn owned_controlled_state_count(&self, slot: u32) -> Result<i64, String> {
-        self.raw_country(slot)
-            .ok_or_else(|| format!("country slot {slot} has no Countries row"))?;
+    fn owned_controlled_state_count(&self, slot: u32) -> Result<i64, Failure> {
+        self.raw_country(slot).ok_or_else(|| -> Failure {
+            format!("country slot {slot} has no Countries row").into()
+        })?;
         let counts = get(&self.owned_controlled_states, || {
             table::<tables::CountryLinks>(self.frame)?;
             table::<tables::Provinces>(self.frame)?;
@@ -3294,13 +3813,13 @@ impl<'a> World<'a> {
                 }
                 let owner = self
                     .slot(row.owner)
-                    .ok_or_else(|| self.unlinked("States", row.owner))?;
+                    .ok_or_else(|| -> Failure { self.unlinked("States", row.owner) })?;
                 if row.controller == 0 {
                     continue;
                 }
                 let controller = self
                     .slot(row.controller)
-                    .ok_or_else(|| self.unlinked("States", row.controller))?;
+                    .ok_or_else(|| -> Failure { self.unlinked("States", row.controller) })?;
                 if owner == controller {
                     let count = out.entry(owner).or_default();
                     *count = count.wrapping_add(1);
@@ -3316,8 +3835,8 @@ impl<'a> World<'a> {
         &self,
         store: Store,
         name: &[u8],
-    ) -> Result<Option<i64>, String> {
-        super::inputs::query(
+    ) -> Result<Option<i64>, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::BuiltinVariable(store, name.to_vec())),
             || self.builtin_variable_unrecorded(store, name),
         )
@@ -3327,7 +3846,7 @@ impl<'a> World<'a> {
         &self,
         store: Store,
         name: &[u8],
-    ) -> Result<Option<i64>, String> {
+    ) -> Result<Option<i64>, Failure> {
         match (store, name) {
             (Store::Country(slot), b"num_owned_states") => Ok(Some(
                 i64::from(self.owned_state_count(slot)?).wrapping_mul(ONE),
@@ -3336,16 +3855,17 @@ impl<'a> World<'a> {
                 Ok(Some(self.owned_controlled_state_count(slot)? * ONE))
             }
             (Store::Country(slot), b"num_of_controlled_factories") => {
-                let raw = self
-                    .raw_country(slot)
-                    .ok_or_else(|| format!("country slot {slot} has no Countries row"))?;
+                let raw = self.raw_country(slot).ok_or_else(|| -> Failure {
+                    format!("country slot {slot} has no Countries row").into()
+                })?;
                 let row = table::<tables::CountryFactories>(self.frame)?
                     .iter()
                     .find(|row| row.country == raw)
-                    .ok_or_else(|| {
+                    .ok_or_else(|| -> Failure {
                         format!(
                             "num_of_controlled_factories: country {raw} has no CountryFactories row"
                         )
+                        .into()
                     })?;
                 // The value wraps in i32; its builtin callback
                 // sign-extends the result, then multiplies by 100000.
@@ -3371,14 +3891,14 @@ impl<'a> World<'a> {
 
     /// Division template name lookup compares display-name
     /// bytes exactly.
-    pub(crate) fn has_template(&self, slot: u32, wanted: &[u8]) -> Result<bool, String> {
-        super::inputs::query(
+    pub(crate) fn has_template(&self, slot: u32, wanted: &[u8]) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::HasTemplate(slot, wanted.to_vec())),
             || self.has_template_unrecorded(slot, wanted),
         )
     }
 
-    fn has_template_unrecorded(&self, slot: u32, wanted: &[u8]) -> Result<bool, String> {
+    fn has_template_unrecorded(&self, slot: u32, wanted: &[u8]) -> Result<bool, Failure> {
         let rows = table::<tables::DivisionTemplates>(self.frame)?;
         let mut unknown = None;
         for row in rows {
@@ -3395,8 +3915,18 @@ impl<'a> World<'a> {
                 }
                 continue;
             }
-            let name = (|| {
-                let name_key = row.name_key.require("DivisionTemplates.name_key")?;
+            let name = (|| -> Result<String, Failure> {
+                let name_key =
+                    row.name_key
+                        .require("DivisionTemplates.name_key")
+                        .map_err(|why| {
+                            Failure::input(
+                                replay_data::rows::TableId::DivisionTemplates,
+                                "name_key",
+                                Some(Store::Country(slot)),
+                                why,
+                            )
+                        })?;
                 if name_key.is_empty() {
                     return Ok(String::new());
                 }
@@ -3414,19 +3944,19 @@ impl<'a> World<'a> {
                 let icon = icons
                     .iter()
                     .find(|icon| icon.template == row.template)
-                    .ok_or_else(|| {
+                    .ok_or_else(|| -> Failure {
                         format!(
                             "template {} has no DivisionTemplateIcons country",
                             row.template
                         )
+                        .into()
                     })?;
                 let key =
                     std::str::from_utf8(name_key).map_err(|_| "template name_key is not UTF-8")?;
                 let country = match u32::try_from(icon.country).ok().filter(|raw| *raw > 0) {
-                    Some(raw) => Some(
-                        self.slot(raw)
-                            .ok_or_else(|| self.unlinked("DivisionTemplateIcons", raw))?,
-                    ),
+                    Some(raw) => Some(self.slot(raw).ok_or_else(|| -> Failure {
+                        self.unlinked("DivisionTemplateIcons", raw)
+                    })?),
                     None => None,
                 };
                 let tag = country
@@ -3437,7 +3967,9 @@ impl<'a> World<'a> {
                     .as_deref()
                     .filter(|key| names.get(key).is_some())
                     .unwrap_or(key);
-                names.localise(key.as_bytes()).map_err(|e| e.to_string())
+                names
+                    .localise(key.as_bytes())
+                    .map_err(|e| Failure::from(e.to_string()))
             })();
             match name {
                 Ok(name) if name.as_bytes() == wanted => return Ok(true),
@@ -3449,32 +3981,41 @@ impl<'a> World<'a> {
     }
 
     /// A recorded character by its id.
-    pub(crate) fn character(&self, id: u32) -> Result<Option<&'a CharacterRow>, String> {
-        super::inputs::query_debug(
+    pub(crate) fn character(&self, id: u32) -> Result<Option<&'a CharacterRow>, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::Character(id)),
             || self.character_unrecorded(id),
         )
     }
 
-    fn character_unrecorded(&self, id: u32) -> Result<Option<&'a CharacterRow>, String> {
+    fn character_unrecorded(&self, id: u32) -> Result<Option<&'a CharacterRow>, Failure> {
         let characters = get(&self.characters, || {
             Ok(table::<tables::Characters>(self.frame)?
                 .iter()
                 .map(|character| (character.id, character))
                 .collect())
         })?;
-        Ok(characters.get(&id).copied())
+        Ok(super::refusal::reference(
+            characters.get(&id).copied(),
+            id != 0,
+            || {
+                super::refusal::missing_reference(
+                    tables::Characters::ID,
+                    Some(Store::Character(id)),
+                )
+            },
+        ))
     }
 
     /// A canonical country's `CountryAppearance` row.
-    pub(crate) fn appearance(&self, slot: u32) -> Result<&'a CountryAppearanceRow, String> {
-        super::inputs::query_debug(
+    pub(crate) fn appearance(&self, slot: u32) -> Result<&'a CountryAppearanceRow, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::Appearance(slot)),
             || self.appearance_unrecorded(slot),
         )
     }
 
-    fn appearance_unrecorded(&self, slot: u32) -> Result<&'a CountryAppearanceRow, String> {
+    fn appearance_unrecorded(&self, slot: u32) -> Result<&'a CountryAppearanceRow, Failure> {
         let (rows, unresolved) = get(&self.appearance, || {
             let mut out = BTreeMap::new();
             let mut unresolved = None;
@@ -3488,21 +4029,22 @@ impl<'a> World<'a> {
             }
             Ok((out, unresolved))
         })?;
-        linked(rows.get(&slot).copied(), unresolved)?
-            .ok_or_else(|| format!("country slot {slot} has no CountryAppearance row"))
+        linked(rows.get(&slot).copied(), unresolved)?.ok_or_else(|| -> Failure {
+            format!("country slot {slot} has no CountryAppearance row").into()
+        })
     }
 
     /// The core-owner trigger tests one of the state's cores (its core vector), by raw id or
     /// canonical slot. `StateCores` equals the game's at every hour (its writers are hooked;
     /// unmarked states are read once a day).
-    pub(super) fn is_core_of(&self, state: u32, country: Option<u32>) -> Result<Eval, String> {
-        super::inputs::query_debug(
+    pub(super) fn is_core_of(&self, state: u32, country: Option<u32>) -> Result<Eval, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::IsCoreOf(state, country)),
             || self.is_core_of_unrecorded(state, country),
         )
     }
 
-    fn is_core_of_unrecorded(&self, state: u32, country: Option<u32>) -> Result<Eval, String> {
+    fn is_core_of_unrecorded(&self, state: u32, country: Option<u32>) -> Result<Eval, Failure> {
         let cores = get(&self.cores, || {
             Ok(table::<tables::StateCores>(self.frame)?
                 .iter()
@@ -3511,21 +4053,21 @@ impl<'a> World<'a> {
         })?;
         let cores = cores
             .get(&state)
-            .ok_or_else(|| format!("state {state} has no StateCores row"))?;
+            .ok_or_else(|| -> Failure { format!("state {state} has no StateCores row").into() })?;
         Ok(self.lists(cores, country, "StateCores"))
     }
 
     /// The claimant trigger tests one of the state's claims (its claim vector) as the core-owner
     /// trigger tests cores: by raw id or canonical slot. Claims are hooked as cores are
     /// (`StateCores.claims`).
-    pub(super) fn is_claimed_by(&self, state: u32, country: Option<u32>) -> Result<Eval, String> {
-        super::inputs::query_debug(
+    pub(super) fn is_claimed_by(&self, state: u32, country: Option<u32>) -> Result<Eval, Failure> {
+        super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::IsClaimedBy(state, country)),
             || self.is_claimed_by_unrecorded(state, country),
         )
     }
 
-    fn is_claimed_by_unrecorded(&self, state: u32, country: Option<u32>) -> Result<Eval, String> {
+    fn is_claimed_by_unrecorded(&self, state: u32, country: Option<u32>) -> Result<Eval, Failure> {
         let claims = get(&self.claims, || {
             Ok(table::<tables::StateCores>(self.frame)?
                 .iter()
@@ -3537,7 +4079,7 @@ impl<'a> World<'a> {
         })?;
         let claims = claims
             .get(&state)
-            .ok_or_else(|| format!("state {state} has no StateCores row"))?;
+            .ok_or_else(|| -> Failure { format!("state {state} has no StateCores row").into() })?;
         let Some(claims) = claims else {
             return Ok(Eval::unknown(
                 "StateCores.claims is not recorded".to_owned(),
@@ -3564,29 +4106,33 @@ impl<'a> World<'a> {
 
     /// The canonical country's own raw reference (`Countries.id`).
     pub fn raw_country(&self, slot: u32) -> Option<u32> {
-        super::inputs::query(
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::RawCountry(slot)),
             || self.raw_country_unrecorded(slot),
         )
     }
 
     fn raw_country_unrecorded(&self, slot: u32) -> Option<u32> {
-        self.raw_ids.get(&slot).copied()
+        super::refusal::reference(self.raw_ids.get(&slot).copied(), slot != 0, || {
+            self.table_gap("Countries").unwrap_or_else(|| {
+                super::refusal::missing_reference(tables::Countries::ID, Some(Store::Country(slot)))
+            })
+        })
     }
 
-    pub(super) fn nukes(&self, slot: u32) -> Result<i64, String> {
-        super::inputs::query(
+    pub(super) fn nukes(&self, slot: u32) -> Result<i64, Failure> {
+        super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Nukes(slot)),
             || self.nukes_unrecorded(slot),
         )
     }
 
-    fn nukes_unrecorded(&self, slot: u32) -> Result<i64, String> {
+    fn nukes_unrecorded(&self, slot: u32) -> Result<i64, Failure> {
         // Every country has one row per nuke type.
         let row = table::<tables::Nukes>(self.frame)?
             .iter()
             .find(|row| row.nuke_type == 0 && self.slot(row.country) == Some(slot))
-            .ok_or_else(|| format!("country slot {slot} has no Nukes row"))?;
+            .ok_or_else(|| -> Failure { format!("country slot {slot} has no Nukes row").into() })?;
         let raw = row.amount_raw;
         Ok(
             if (raw as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd {
@@ -3647,12 +4193,21 @@ impl Links for World<'_> {
     }
 
     fn token_of(&self, name: &[u8]) -> Result<Option<u32>, String> {
+        World::token_of(self, name).map_err(|why| why.to_string())
+    }
+    fn token_input(&self, name: &[u8]) -> Result<Option<u32>, Failure> {
         World::token_of(self, name)
     }
 }
 
-fn get<T>(cell: &Index<T>, build: impl FnOnce() -> Result<T, String>) -> Result<&T, String> {
-    cell.get_or_init(build).as_ref().map_err(Clone::clone)
+fn get<T>(cell: &Index<T>, build: impl FnOnce() -> Result<T, Failure>) -> Result<&T, Failure> {
+    cell.get_or_init(|| super::refusal::Resolved::new(|| super::refusal::deferred(build)))
+        .value()
+        .as_ref()
+        .map_err(|failure| {
+            failure.reached();
+            failure.clone()
+        })
 }
 
 #[path = "world/dependence.rs"]

@@ -37,7 +37,10 @@ pub fn of(mode: &MapMode) -> Visibility {
         MapMode::Stock(stock) => *stock,
         MapMode::Scripted(_) => return other(PriorityTable::States),
     };
-    let base = Visibility::POLITICAL;
+    let base = Visibility {
+        political_mode: stock == Stock::Default,
+        ..Visibility::POLITICAL
+    };
     match stock {
         Stock::Default => base,
         Stock::StrategicAir => Visibility {
@@ -116,6 +119,7 @@ pub fn of(mode: &MapMode) -> Visibility {
 fn other(priorities: PriorityTable) -> Visibility {
     Visibility {
         priorities,
+        political_mode: false,
         raid_icons: None,
         faction_pins: false,
         fog_of_war: false,

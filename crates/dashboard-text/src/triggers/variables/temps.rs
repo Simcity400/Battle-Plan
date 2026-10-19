@@ -1,4 +1,5 @@
 //! Temp triggers execute over the shared TLS store, not persistent variables.
+use crate::triggers::{Failure, refusal::FrameInputs};
 
 use super::*;
 use installed_content_core::parser::Value as ParsedValue;
@@ -18,11 +19,11 @@ struct Operands<'v> {
 
 // Scoped-variable reading parses into the existing
 // operand. Empty text changes nothing; a repeated nonliteral can keep fields.
-pub(super) fn assign(
+pub(in crate::triggers) fn assign(
     evaluator: &Evaluator,
     operand: &mut ScopedVariable,
     text: &[u8],
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     if text.is_empty() {
         return Ok(());
     }
@@ -34,7 +35,7 @@ pub(super) fn assign(
             operand.literal = next.literal;
             return Ok(());
         }
-        return Err(super::super::refused(format!(
+        return Err(crate::triggers::refusal::refused(format!(
             "repeated variable operand {} keeps fields from its earlier read, which is not reproduced",
             String::from_utf8_lossy(text)
         )));
@@ -43,7 +44,7 @@ pub(super) fn assign(
     Ok(())
 }
 
-pub(super) fn zero() -> ScopedVariable {
+pub(in crate::triggers) fn zero() -> ScopedVariable {
     // Initially literal zero, but the parsed flag is clear.
     ScopedVariable {
         literal: Some(0),
@@ -58,7 +59,7 @@ impl Evaluator<'_, '_> {
         item: &Item,
         scopes: Scopes,
         uncertain: bool,
-    ) -> Option<Result<(), String>> {
+    ) -> Option<Result<(), Failure>> {
         if !matches!(
             name,
             "set_temp_variable"
@@ -73,8 +74,8 @@ impl Evaluator<'_, '_> {
         ) {
             return None;
         }
-        if uncertain {
-            let why = super::super::refused(format!(
+        if uncertain && !self.in_colour_callback() {
+            let why = crate::triggers::refusal::refused(format!(
                 "{name}: its execution depends on an unknown earlier condition"
             ));
             self.taint_temps(why);
@@ -87,9 +88,12 @@ impl Evaluator<'_, '_> {
             self.variable_operands(name, item, false)
                 .and_then(|operands| self.set_temp(name, &operands, scopes, false))
         };
-        // A failed key read may name any destination. Do not retain old temps.
-        if let Err(why) = &result {
-            self.taint_temps(format!("trigger {name}: {why}"));
+        // Ordinary triggers keep their existing TLS refusal. Colour callbacks
+        // already retain the raw input error for the whole target.
+        if !self.in_colour_callback()
+            && let Err(why) = &result
+        {
+            self.taint_temps(why.clone().context(|why| format!("trigger {name}: {why}")));
         }
         Some(result)
     }
@@ -99,7 +103,7 @@ impl Evaluator<'_, '_> {
         name: &str,
         item: &'v Item,
         effect: bool,
-    ) -> Result<Operands<'v>, String> {
+    ) -> Result<Operands<'v>, Failure> {
         let mut var = zero();
         let mut right = Right::Scalar(Box::new(zero()));
         let mut min = zero();
@@ -147,9 +151,8 @@ impl Evaluator<'_, '_> {
                     match &mut right {
                         Right::Scalar(operand) => assign(self, operand, scalar)?,
                         Right::Expression(_) => {
-                            return Err(super::super::refused(
-                                "scalar RHS after an expression has an incompatible value form"
-                                    .into(),
+                            return Err(crate::triggers::refusal::refused(
+                                "scalar RHS after an expression has an incompatible value form",
                             ));
                         }
                     }
@@ -170,12 +173,12 @@ impl Evaluator<'_, '_> {
         var: &ScopedVariable,
         scopes: Scopes,
         index: Option<&ScopedVariable>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, Failure> {
         // Mutable lookup receives TLS explicitly: scope prefixes
         // never select a persistent destination. It inserts BEFORE the RHS.
         if var.literal.is_some() || var.token.is_some() || var.random || var.ai_random {
-            return Err(super::super::refused(
-                "temp destination is read-only; mutable lookup asserts".into(),
+            return Err(crate::triggers::refusal::refused(
+                "temp destination is read-only; mutable lookup asserts",
             ));
         }
         let key = self.key(var, scopes, index)?;
@@ -186,9 +189,14 @@ impl Evaluator<'_, '_> {
                 .and_then(|v| self.raw(v))?,
             None => 0,
         };
-        let current = self.temp(&key, scopes).and_then(|v| match v {
-            Some(v) => self.raw(v),
-            None => Ok(initial),
+        // Obtaining a mutable destination does not consume its old value.
+        // Retain an unknown initial value for arithmetic/no-store paths, but
+        // a plain assignment can overwrite it without ever reading it.
+        let current = crate::triggers::refusal::deferred(|| {
+            self.temp(&key, scopes).and_then(|v| match v {
+                Some(v) => self.raw(v),
+                None => Ok(initial),
+            })
         });
         if !self.local_temps.borrow().contains_key(&key) {
             self.note_variable_effect();
@@ -205,7 +213,7 @@ impl Evaluator<'_, '_> {
         operands: &Operands<'_>,
         scopes: Scopes,
         effect: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), Failure> {
         let Operands {
             var,
             right,
@@ -300,7 +308,7 @@ impl Evaluator<'_, '_> {
         Ok(())
     }
 
-    fn variable_right(&self, right: &Right<'_>, scopes: Scopes) -> Result<i64, String> {
+    fn variable_right(&self, right: &Right<'_>, scopes: Scopes) -> Result<i64, Failure> {
         match right {
             Right::Scalar(operand) if !operand.parsed => Ok(0),
             Right::Scalar(operand) => self
@@ -310,7 +318,7 @@ impl Evaluator<'_, '_> {
         }
     }
 
-    fn temp_fallback(&self, operand: &ScopedVariable, scopes: Scopes) -> Result<i64, String> {
+    fn temp_fallback(&self, operand: &ScopedVariable, scopes: Scopes) -> Result<i64, Failure> {
         // Build the key and evaluate the default, then look up
         // only the supplied TLS store. Do not evaluate a scalar literal.
         let key = self.key(operand, scopes, None)?;
@@ -336,15 +344,16 @@ impl Evaluator<'_, '_> {
         scopes: Scopes,
         temporary: bool,
         tooltip: bool,
-    ) -> Result<Option<(i64, i64)>, String> {
-        let operands = self.variable_operands(name, item, true).map_err(|why| {
-            if temporary {
-                self.taint_temps(format!("effect {name}: {why}"));
-            }
-            why
-        })?;
+    ) -> Result<Option<(i64, i64)>, Failure> {
+        let operands = self
+            .variable_operands(name, item, true)
+            .inspect_err(|why| {
+                if temporary {
+                    self.taint_temps(why.clone().context(|why| format!("effect {name}: {why}")));
+                }
+            })?;
         if temporary && let Err(why) = self.set_temp(name, &operands, scopes, true) {
-            self.taint_temps(format!("effect {name}: {why}"));
+            self.taint_temps(why.clone().context(|why| format!("effect {name}: {why}")));
             return Err(why);
         }
         if !tooltip {
@@ -368,7 +377,7 @@ impl Evaluator<'_, '_> {
         default: &[u8],
         scopes: Scopes,
         index: Option<&ScopedVariable>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, Failure> {
         let mut operand = zero();
         for field in fields.iter().filter(|field| field.keyword_is(name)) {
             assign(self, &mut operand, field.value.scalar().unwrap_or_default())?;
@@ -386,13 +395,13 @@ impl Evaluator<'_, '_> {
             .insert(key, Ok(Value::Raw(value)));
     }
 
-    pub(crate) fn encode_description_scope(&self, scope: Scope) -> Result<i64, String> {
+    pub(crate) fn encode_description_scope(&self, scope: Scope) -> Result<i64, Failure> {
         self.encode(scope)
     }
 
     /// A failed mutating description must not fabricate later temp values.
     pub(crate) fn refuse_description_writer(&self, reason: String) {
-        self.taint_temps(reason);
+        self.taint_temps(reason.into());
     }
 
     /// Evaluate min then max and return before
@@ -401,7 +410,7 @@ impl Evaluator<'_, '_> {
         &self,
         item: &Item,
         scopes: Scopes,
-    ) -> Result<(), String> {
+    ) -> Result<(), Failure> {
         let mut min = ScopedVariable::literal(0);
         let mut max = ScopedVariable::literal(ONE);
         let mut var = zero();
@@ -455,8 +464,8 @@ impl Evaluator<'_, '_> {
         &self,
         item: &Item,
         scopes: Scopes,
-        minimum_trains: impl FnOnce() -> Result<i64, String>,
-    ) -> Result<(), String> {
+        minimum_trains: impl FnOnce() -> Result<i64, Failure>,
+    ) -> Result<(), Failure> {
         let mut var = zero();
         let mut kind = None;
         for field in item.value.items().unwrap_or_default() {
@@ -493,23 +502,27 @@ impl Evaluator<'_, '_> {
         let row = self
             .world()
             .frame()
-            .complete::<replay_data::rows::tables::TrainInventory>()
-            .map_err(|why| why.to_string())?
+            .trigger_table::<replay_data::rows::tables::TrainInventory>()?
             .iter()
             .find(|row| row.country == raw)
-            .ok_or_else(|| format!("TrainInventory lacks supply-temp country {raw}"))?;
+            .ok_or_else(|| -> Failure {
+                format!("TrainInventory lacks supply-temp country {raw}").into()
+            })?;
         let value = match (kind.as_deref(), need) {
-            (Some("truck"), false) => i64::from(
-                row.allocated_trucks
-                    .require("TrainInventory.allocated_trucks")?
-                    .ok_or("TrainInventory.allocated_trucks capture unavailable")?,
-            )
+            (Some("truck"), false) => i64::from(*super::super::refusal::optional(
+                &row.allocated_trucks,
+                replay_data::rows::TableId::TrainInventory,
+                "allocated_trucks",
+                Some(Store::Country(country)),
+            )?)
             .wrapping_mul(ONE),
             (Some("truck"), true) => {
-                let raw = row
-                    .required_trucks_raw
-                    .require("TrainInventory.required_trucks_raw")?
-                    .ok_or("TrainInventory.required_trucks_raw capture unavailable")?;
+                let raw = *super::super::refusal::optional(
+                    &row.required_trucks_raw,
+                    replay_data::rows::TableId::TrainInventory,
+                    "required_trucks_raw",
+                    Some(Store::Country(country)),
+                )?;
                 // Ceiling fixed5 with a wrapping product; the vehicle total
                 // narrows the resulting whole count to i32 before scaling it.
                 let rounded = if raw % ONE == 0 {
@@ -520,10 +533,12 @@ impl Evaluator<'_, '_> {
                 i64::from((rounded / ONE) as i32).wrapping_mul(ONE)
             }
             (Some("train"), true) => {
-                let count = row
-                    .required_trains
-                    .require("TrainInventory.required_trains")?
-                    .ok_or("TrainInventory.required_trains capture unavailable")?;
+                let count = *super::super::refusal::optional(
+                    &row.required_trains,
+                    replay_data::rows::TableId::TrainInventory,
+                    "required_trains",
+                    Some(Store::Country(country)),
+                )?;
                 let raw = i64::from(count).wrapping_mul(ONE);
                 // Strictly greater than the content define, else zero.
                 if raw > minimum_trains()? { raw } else { 0 }
@@ -536,20 +551,20 @@ impl Evaluator<'_, '_> {
 
     /// Core expression instructions from the shared math reader.
     /// Unsupported operators are refused where reached, including lazy operators.
-    fn temp_expression(&self, expression: &ParsedValue, scopes: Scopes) -> Result<i64, String> {
+    fn temp_expression(&self, expression: &ParsedValue, scopes: Scopes) -> Result<i64, Failure> {
         let Some(fields) = expression.items() else {
             return self.scoped_value(expression.scalar().unwrap_or_default(), scopes);
         };
         let Some(first) = fields.first().filter(|field| field.keyword_is("value")) else {
-            return Err(super::super::refused(
-                "expression without its initial value".into(),
+            return Err(crate::triggers::refusal::refused(
+                "expression without its initial value",
             ));
         };
         let mut value = self.temp_expression(&first.value, scopes)?;
         for field in &fields[1..] {
             let key = field.keyword().map(|key| key.folded()).unwrap_or_default();
             if matches!(key.as_slice(), b"round" | b"not") && field.value.scalar() != Some(b"yes") {
-                return Err(super::super::refused(format!(
+                return Err(crate::triggers::refusal::refused(format!(
                     "expression unary {} requires yes",
                     String::from_utf8_lossy(&key)
                 )));
@@ -560,6 +575,29 @@ impl Evaluator<'_, '_> {
             }
             if key == b"not" {
                 value = if value == 0 { ONE } else { 0 };
+                continue;
+            }
+            if key == b"clamp" {
+                let bounds = field.value.items().ok_or("expression clamp needs bounds")?;
+                let bound = |name: &str| {
+                    let field = bounds
+                        .iter()
+                        .find(|field| field.keyword_is(name))
+                        .ok_or_else(|| -> Failure {
+                            format!("expression clamp lacks {name}").into()
+                        })?;
+                    self.temp_expression(&field.value, scopes)
+                };
+                // Both operands run, min first. The lower arm wins for inverted bounds.
+                let minimum = bound("min")?;
+                let maximum = bound("max")?;
+                value = if value < minimum {
+                    minimum
+                } else if value > maximum {
+                    maximum
+                } else {
+                    value
+                };
                 continue;
             }
             if !matches!(
@@ -577,7 +615,7 @@ impl Evaluator<'_, '_> {
                     | b"equals"
                     | b"not_equals"
             ) {
-                return Err(super::super::refused(format!(
+                return Err(crate::triggers::refusal::refused(format!(
                     "expression operator {} is not reproduced",
                     String::from_utf8_lossy(&key)
                 )));
@@ -625,12 +663,15 @@ fn modulo_integer(value: i64) -> i32 {
     (floored / ONE) as i32
 }
 
-fn quotient(value: i64, rhs: i64) -> Result<i64, String> {
+fn quotient(value: i64, rhs: i64) -> Result<i64, Failure> {
     // Shared division and expression sentinel guard.
     if matches!(value, i64::MIN | i64::MAX) || value == i64::MIN + 1 {
         return Ok(0xffff_ffff);
     }
-    value.wrapping_mul(ONE).checked_div(rhs).ok_or_else(|| {
-        super::super::refused("fixed5 divide faults on signed quotient overflow".into())
-    })
+    value
+        .wrapping_mul(ONE)
+        .checked_div(rhs)
+        .ok_or_else(|| -> Failure {
+            crate::triggers::refusal::refused("fixed5 divide faults on signed quotient overflow")
+        })
 }

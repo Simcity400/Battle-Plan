@@ -62,6 +62,62 @@ pub const ADVISOR_SLOTS: usize = UPGRADE_STATUS + 0x98;
 /// Advisor slot stride.
 pub const ADVISOR_SLOT_STRIDE: usize = 0x1a8;
 
+/// Independent effect accumulator included in the faction's power projection.
+pub const POWER_PROJECTION_FROM_EFFECTS: usize = 0x828;
+/// Retained totals used by the faction screen, refreshed by their own writers.
+pub const POWER_PROJECTION_TOTAL: usize = 0x818;
+pub const INFLUENCE_TOTAL: usize = 0x820;
+pub const EXTRACTED_RESOURCES: usize = 0x910;
+pub const VARIABLES: usize = 0xa40;
+/// Shared manpower contribution array, with raw country tags and signed values.
+pub const MANPOWER_POOL: usize = 0x8f0;
+/// Faction research and manpower feature unlock bytes.
+pub const RESEARCH_UNLOCKED: usize = 0xa38;
+pub const MANPOWER_UNLOCKED: usize = 0xa39;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ManpowerContribution {
+    pub country: u32,
+    pub value: i32,
+}
+
+/// Retain every native contribution, including nonpositive values and repeated
+/// tags. The save's positive-value filter belongs to comparison, not capture.
+pub fn manpower_into(
+    memory: &impl Memory,
+    base: usize,
+    faction: usize,
+    output: &mut Vec<ManpowerContribution>,
+) -> Result<(), &'static str> {
+    let pool = faction
+        .checked_add(MANPOWER_POOL)
+        .ok_or("faction manpower pool address overflow")?;
+    let expected = base
+        .checked_add(crate::carmy_manpower_values::VTABLE_RVA)
+        .ok_or("faction manpower vtable address overflow")? as u64;
+    if read::<u64>(memory, pool) != Some(expected) {
+        return Err("faction manpower pool vtable mismatch");
+    }
+    let source = pool
+        .checked_add(crate::carmy_manpower_values::DATA)
+        .and_then(|address| crate::cpdx_array::Array::read(memory, address, 8))
+        .ok_or("faction manpower contribution array unreadable or invalid")?;
+    crate::allocation::resize_default(output, source.count as usize)
+        .map_err(|_| "faction manpower contribution allocation failed")?;
+    for (ordinal, contribution) in output.iter_mut().enumerate() {
+        let address = source
+            .element(ordinal as u32, 8)
+            .ok_or("faction manpower contribution address overflow")?;
+        let bytes =
+            read::<[u8; 8]>(memory, address).ok_or("faction manpower contribution unreadable")?;
+        *contribution = ManpowerContribution {
+            country: u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+            value: i32::from_le_bytes(bytes[4..].try_into().unwrap()),
+        };
+    }
+    Ok(())
+}
+
 /// One occupied advisor slot of a faction, in native slot order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AdvisorRow {
@@ -264,9 +320,42 @@ fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    output: crate::walk::Buffer<'_, Row>,
+    names: crate::walk::Buffer<'_, u8>,
+) -> NameWalk {
+    walk_buffer_with(memory, base, game_state, output, names, |_, _| {}).0
+}
+
+/// Worker acquisition sharing each faction's authenticated pointer and full
+/// handle with demanded companions. The boolean certifies the complete identity
+/// roster independently of names. No companion must repeat this native census.
+pub fn walk_growing_with(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+    names: &mut Vec<u8>,
+    visit: impl FnMut(usize, u64),
+) -> (NameWalk, bool) {
+    walk_buffer_with(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(names),
+        visit,
+    )
+}
+
+fn walk_buffer_with(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
     mut output: crate::walk::Buffer<'_, Row>,
     mut names: crate::walk::Buffer<'_, u8>,
-) -> NameWalk {
+    mut visit: impl FnMut(usize, u64),
+) -> (NameWalk, bool) {
+    let mut roster_complete = false;
     let result = (|| {
         let roster = cfaction_system::roster(memory, base, game_state)?;
         // Faction creation grows the autonomous roster from its live count.
@@ -275,35 +364,58 @@ fn walk_buffer(
         let mut bytes_len = 0_usize;
         let mut required_bytes = 0_usize;
         let mut unread_rows = 0_u32;
+        let mut name_failure = None;
         for index in 0..roster.count {
-            let (pointer, id) = cfaction_system::faction(memory, base, roster, index)?;
-            let string = pointer
-                .checked_add(NAME)
-                .ok_or("faction address overflow")?;
-            let (source, name_len) = literal(memory, string)?;
-            required_bytes = required_bytes
-                .checked_add(name_len)
-                .ok_or("faction name byte count overflow")?;
-            names.ensure(required_bytes)?;
-            if len == output.len() || name_len > names.len() - bytes_len {
-                unread_rows += 1;
+            let (pointer, id) = match cfaction_system::faction(memory, base, roster, index) {
+                Ok(value) => value,
+                Err(reason) => return Err(name_failure.unwrap_or(reason)),
+            };
+            visit(pointer, id);
+            // A failed name/presentation does not hide independently readable
+            // companions of this or later authenticated factions. Preserve the
+            // first name failure and finish only the identity census.
+            if name_failure.is_some() {
                 continue;
             }
-            if !read_slice(memory, source, &mut names[bytes_len..bytes_len + name_len]) {
-                return Err("faction name bytes unreadable");
+            let named = (|| -> Result<(), &'static str> {
+                let string = pointer
+                    .checked_add(NAME)
+                    .ok_or("faction address overflow")?;
+                let (source, name_len) = literal(memory, string)?;
+                required_bytes = required_bytes
+                    .checked_add(name_len)
+                    .ok_or("faction name byte count overflow")?;
+                names.ensure(required_bytes)?;
+                if len == output.len() || name_len > names.len() - bytes_len {
+                    unread_rows += 1;
+                    return Ok(());
+                }
+                if !read_slice(memory, source, &mut names[bytes_len..bytes_len + name_len]) {
+                    return Err("faction name bytes unreadable");
+                }
+                let (template_token, color, color_overridden) =
+                    presentation(memory, base, pointer)?;
+                output[len] = Row {
+                    id,
+                    name_start: bytes_len,
+                    name_len,
+                    template_token,
+                    color,
+                    color_overridden,
+                };
+                bytes_len += name_len;
+                len += 1;
+                Ok(())
+            })();
+            if let Err(reason) = named {
+                name_failure = Some(reason);
             }
-            let (template_token, color, color_overridden) = presentation(memory, base, pointer)?;
-            output[len] = Row {
-                id,
-                name_start: bytes_len,
-                name_len,
-                template_token,
-                color,
-                color_overridden,
-            };
-            bytes_len += name_len;
-            len += 1;
         }
+        roster_complete = true;
+        if let Some(reason) = name_failure {
+            return Err(reason);
+        }
+
         Ok(NameWalk {
             outcome: if unread_rows == 0 {
                 Outcome::Rows { len }
@@ -314,11 +426,14 @@ fn walk_buffer(
             required_bytes,
         })
     })();
-    result.unwrap_or_else(|reason| NameWalk {
-        outcome: Outcome::Unavailable { reason },
-        bytes_len: 0,
-        required_bytes: 0,
-    })
+    (
+        result.unwrap_or_else(|reason| NameWalk {
+            outcome: Outcome::Unavailable { reason },
+            bytes_len: 0,
+            required_bytes: 0,
+        }),
+        roster_complete,
+    )
 }
 
 pub(crate) fn identity(

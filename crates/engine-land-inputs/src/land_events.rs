@@ -206,6 +206,7 @@ impl CombatHeader {
 /// sides remain alive. Removal deletes those sides afterward.
 pub struct LossesPlan {
     combat: u64,
+    pointers: [usize; 2],
     sides: [crate::cstats_observer::LossPlan; 2],
     pub words: usize,
 }
@@ -237,9 +238,14 @@ impl LossesPlan {
             .ok_or("land loss event words overflow")?;
         Ok(Self {
             combat: header.handle(),
+            pointers,
             sides,
             words,
         })
+    }
+    /// Authenticated by this plan while both terminal sides are still alive.
+    pub fn observer_sources(&self) -> (u64, [usize; 2]) {
+        (self.combat, self.pointers)
     }
     pub fn copy(
         &self,

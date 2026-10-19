@@ -43,7 +43,8 @@ impl Renderer<'_, '_, '_> {
                 for name in catalog.specializations_in_order()? {
                     tokens.push(
                         world
-                            .token_of(name.as_bytes())?
+                            .token_of(name.as_bytes())
+                            .map_err(|why| why.to_string())?
                             .ok_or("LexicalTokens lacks breakthrough specialization")?,
                     );
                 }
@@ -57,7 +58,8 @@ impl Renderer<'_, '_, '_> {
                 continue;
             }
             let token = world
-                .token_of(operand)?
+                .token_of(operand)
+                .map_err(|why| why.to_string())?
                 .ok_or("LexicalTokens lacks breakthrough specialization")?;
             tokens.push(token);
         }
@@ -74,7 +76,8 @@ impl Renderer<'_, '_, '_> {
         let mut rows = String::new();
         for token in installed_content_core::special_projects::specialization_order(&tokens) {
             let operand = world
-                .token(token)?
+                .token(token)
+                .map_err(|why| why.to_string())?
                 .ok_or("LexicalTokens lacks specialization text")?;
             let Some(name) = self.char_specialization_name(operand, raw_country, scopes)? else {
                 continue;
@@ -139,9 +142,11 @@ impl Renderer<'_, '_, '_> {
         // reads the scope's country, not its state owner or
         // carried faction. Clearing state/character setters leave it zero.
         let faction = match scopes.this {
-            Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => {
-                self.context.world()?.faction(country)?
-            }
+            Scope::Country(country) | Scope::CountryLeader { country, .. } if country > 0 => self
+                .context
+                .world()?
+                .faction(country)
+                .map_err(|why| why.to_string())?,
             _ => None,
         };
         let name = faction
@@ -207,7 +212,10 @@ impl Renderer<'_, '_, '_> {
                     .and_then(|field| field.value.read_string())
             })
             .unwrap_or_default();
-        let selected = self.evaluator()?.scoped_scope(operand, scopes)?;
+        let selected = self
+            .evaluator()?
+            .scoped_scope(operand, scopes)
+            .map_err(|why| why.to_string())?;
         let project = match selected {
             Some(Scope::Project { owner, id }) => Some((owner, id)),
             _ => None,
@@ -259,7 +267,8 @@ impl Renderer<'_, '_, '_> {
         };
         let world = self.context.world()?;
         let token = world
-            .token(project.definition_id)?
+            .token(project.definition_id)
+            .map_err(|why| why.to_string())?
             .ok_or("LexicalTokens lacks raid target project definition")?;
         let token = std::str::from_utf8(token)
             .map_err(|_| "raid target project definition is not UTF-8")?;
@@ -337,8 +346,8 @@ impl Renderer<'_, '_, '_> {
             return Err("raid_reduce_project_progress_ratio requires ROOT RAID".into());
         };
         let world = self.context.world()?;
-        let raid = world.raid(reference)?;
-        let provinces = world.state_order(state)?;
+        let raid = world.raid(reference).map_err(|why| why.to_string())?;
+        let provinces = world.state_order(state).map_err(|why| why.to_string())?;
         let buildings = self
             .context
             .content
@@ -369,12 +378,15 @@ impl Renderer<'_, '_, '_> {
                     .slot(province.owner)
                     .ok_or("CountryLinks lacks raid victim province owner")?
             };
-            let enemy = world.at_war(raid.parent_slot, owner)?; // owner getter.
+            let enemy = world
+                .at_war(raid.parent_slot, owner)
+                .map_err(|why| why.to_string())?; // owner getter.
             // checks only the first specialization-bearing building.
             let mut facility = false;
             for row in active.get(&province.id).into_iter().flatten() {
                 let token = world
-                    .token(row.building_type)?
+                    .token(row.building_type)
+                    .map_err(|why| why.to_string())?
                     .ok_or("LexicalTokens lacks raid facility building type")?;
                 let token = std::str::from_utf8(token)
                     .map_err(|_| "raid facility building type is not UTF-8")?;
@@ -409,7 +421,10 @@ impl Renderer<'_, '_, '_> {
             else {
                 return Ok(None); // never fall through to another province/program.
             };
-            return world.project(project.0, project.1).map(Some);
+            return world
+                .project(project.0, project.1)
+                .map(Some)
+                .map_err(|why| why.to_string());
         }
         Ok(None)
     }

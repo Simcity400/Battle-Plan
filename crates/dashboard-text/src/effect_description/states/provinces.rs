@@ -14,7 +14,8 @@ impl Renderer<'_, '_, '_> {
         let operand = scalar_operand(item)?;
         Ok((self
             .evaluator()?
-            .required(operand, item.quoted(), false, scopes)?
+            .required(operand, item.quoted(), false, scopes)
+            .map_err(|why| why.to_string())?
             / 100_000) as i32)
     }
 

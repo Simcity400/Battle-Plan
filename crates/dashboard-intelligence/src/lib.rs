@@ -11,6 +11,9 @@ pub mod products {
     mod country_name_cache;
     pub mod decryption;
     pub mod espionage_log;
+    pub mod intel_details;
+    mod intel_explanations;
+    mod intel_ranges;
     pub mod intelligence_capture;
     pub mod intelligence_content;
     pub mod intelligence_prepared;
@@ -22,6 +25,7 @@ pub mod products {
 
     dashboard_base::reply_warnings!(
         agency_comparison::AgencyComparisonReply,
+        intel_details::IntelDetailsReply,
         decryption::DecryptionReply,
         espionage_log::EspionageLogReply,
         operation_description::OperationDescriptionReply,

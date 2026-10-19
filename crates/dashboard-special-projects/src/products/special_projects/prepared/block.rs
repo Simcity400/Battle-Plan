@@ -368,7 +368,10 @@ enum Held {
 }
 
 /// One hour of a block's facts, in hour order.
-#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Block facts retain observed frames inline without a per-hour allocation."
+)]
 enum Hour {
     /// An hour the block reader observed, with its frame and change facts,
     /// and how the frame holds the hour's rows.

@@ -4,6 +4,7 @@
 //! by the engine's own classifiers. Products about equipment (stockpile,
 //! production lines, production) read them here, never a copy.
 
+pub mod designs;
 pub mod production;
 
 use crate::{Source, catalogue::Catalogue, metadata::slot_read};
@@ -201,6 +202,7 @@ pub(crate) struct VariantReads {
     keys: Option<crate::metadata::CountryKeys>,
     links: Option<SharedView>,
     appearance: Option<SharedView>,
+    // The view identity and optional spellings form one invalidation witness.
     lexical: Option<LexicalSpellings>,
     definitions: Option<SharedView>,
     modules: Option<SharedView>,
@@ -261,6 +263,21 @@ thread_local! {
 /// Whether `now` holds the rows of the view held: the same allocation, or equal.
 fn same_view(held: Option<&SharedView>, now: &SharedView) -> bool {
     held.is_some_and(|held| SharedView::ptr_eq(held, now) || held == now)
+}
+
+/// A repeated refused operand has no rows to compare. Complete tables retain
+/// their identity proof; their recorded deltas select any changed designs.
+fn same_design_view(held: Option<&SharedView>, now: &SharedView) -> bool {
+    held.is_some_and(|held| {
+        SharedView::ptr_eq(held, now)
+            || matches!(
+                (&**held, &**now),
+                (
+                    replay_frame::frame::TableView::Unavailable { .. },
+                    replay_frame::frame::TableView::Unavailable { .. }
+                )
+            ) && held == now
+    })
 }
 
 fn complete_rows<T: replay_data::rows::TableSchema>(view: &SharedView) -> Option<&[T::Row]> {
@@ -473,14 +490,8 @@ impl VariantReads {
                                 .map(|row| (row.country, &row.name_tag)))
                     })
                 }));
-        let designs = self
-            .modules
-            .as_ref()
-            .is_some_and(|held| SharedView::ptr_eq(held, view(TableId::VariantModules)))
-            && self
-                .upgrades
-                .as_ref()
-                .is_some_and(|held| SharedView::ptr_eq(held, view(TableId::VariantUpgrades)));
+        let designs = same_design_view(self.modules.as_ref(), view(TableId::VariantModules))
+            && same_design_view(self.upgrades.as_ref(), view(TableId::VariantUpgrades));
         if context
             && same_lexical
             && designs
@@ -579,6 +590,14 @@ impl VariantReads {
                         .collect()
                 };
                 for index in 1..3 {
+                    let (held, table) = if index == 1 {
+                        (self.modules.as_ref(), TableId::VariantModules)
+                    } else {
+                        (self.upgrades.as_ref(), TableId::VariantUpgrades)
+                    };
+                    if same_design_view(held, view(table)) {
+                        continue;
+                    }
                     let pending = self.pending[index]
                         .as_ref()
                         .filter(|_| tracked)
@@ -960,7 +979,7 @@ impl VariantCatalogue {
         }
     }
     /// The frames' tables it reads: select them with the product's own.
-    pub const TABLES: [TableId; 7] = [
+    pub const TABLES: [TableId; 8] = [
         TableId::Countries,
         TableId::CountryLinks,
         TableId::CountryAppearance,
@@ -968,6 +987,7 @@ impl VariantCatalogue {
         TableId::VariantDefinitions,
         TableId::VariantModules,
         TableId::VariantUpgrades,
+        TableId::VariantChanges,
     ];
 
     /// One decoded frame, in hour order.
@@ -1008,17 +1028,19 @@ impl VariantCatalogue {
             changed.extend(self.forget_versions(last.saturating_add(1)));
         }
         self.last_hour = Some(hour);
-        if !changes.map_or_else(
-            || {
-                slot_read(
-                    format,
-                    &frame.metrics,
-                    TableId::VariantDefinitions,
-                    frame.hour,
-                )
-            },
-            |changes| changes.slot_read[TableId::VariantDefinitions.index()],
-        ) {
+        if !design_changed(frame)
+            && !changes.map_or_else(
+                || {
+                    slot_read(
+                        format,
+                        &frame.metrics,
+                        TableId::VariantDefinitions,
+                        frame.hour,
+                    )
+                },
+                |changes| changes.slot_read[TableId::VariantDefinitions.index()],
+            )
+        {
             // Carried only while the table stays complete.
             if frame.complete::<tables::VariantDefinitions>().is_err() {
                 changed.extend(self.forget_versions(hour));
@@ -1158,7 +1180,7 @@ impl VariantCatalogue {
     }
 
     pub(crate) fn hour_read(frame: &DecodedFrame, read: bool) -> VariantHour {
-        if !read {
+        if !design_changed(frame) && !read {
             VariantHour::Carried {
                 complete: frame.complete::<tables::VariantDefinitions>().is_ok(),
             }
@@ -1392,3 +1414,10 @@ pub fn unit_loads(catalogue: &Catalogue) -> usize {
 
 #[cfg(test)]
 mod tests;
+
+/// A writer-observed state update is current even between native census slots.
+pub fn design_changed(frame: &DecodedFrame) -> bool {
+    frame
+        .complete::<tables::VariantChanges>()
+        .is_ok_and(|rows| !rows.is_empty())
+}

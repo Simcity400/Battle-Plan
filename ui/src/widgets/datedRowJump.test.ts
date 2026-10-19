@@ -60,7 +60,18 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
       runtime: { client: {}, tracks: [track], clock: { getHour: () => hour - track.axisOffset }, requestSeek: (id: string, at: number) => seeks.push([id, at]) },
       active: true, onDiagnostics() {} } as unknown as WidgetProps;
     let renderer = focusRenderer;
-    function Probe() { tree = renderer === focusRenderer ? focusOracle(props) : renderer.render(props); return tree; }
+    function Probe() {
+      if (renderer === focusRenderer) tree = focusOracle(props);
+      else {
+        // The registered research view composes its body with the doctrine
+        // panel. Probe row behavior inside that body; panel composition has
+        // its own render test.
+        const view = renderer.render(props) as Node;
+        assert.equal(typeof view.props.body, 'function');
+        tree = (view.props.body as (props: WidgetProps) => ReactNode)(props);
+      }
+      return tree;
+    }
     const render = () => renderToStaticMarkup(createElement(Probe));
     const activate = (row: Node, expected: number) => {
       const pointer = row.props.onContextMenu as (event: unknown) => void;

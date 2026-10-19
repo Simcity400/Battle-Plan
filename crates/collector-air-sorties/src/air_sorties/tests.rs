@@ -17,6 +17,91 @@ const REACHED: u32 = 16;
 /// `map_air_sortie_inputs`'s console override vector.
 const EFFICIENCY_OVERRIDES_RVA: usize = 0x0331_7208;
 
+#[test]
+fn held_patrol_night_reads_each_demanded_region_once_and_reuses_manager() {
+    const APPLIED_NIGHT_FACTOR: usize = 0x268;
+    let mut world = World { bytes: Vec::new() };
+    let game = world.alloc(0x800);
+    let manager = world.alloc(0x500);
+    let region = world.alloc(0x180);
+    let list = world.alloc(8);
+    let province = world.alloc(0x200);
+    let clocks = world.alloc(2 * engine_native::sweather_per_province::CLOCK_STRIDE);
+    world.d(game + cgame_state::CURRENT_HOUR, 43_800_000);
+    world.put(manager + cweather_manager::SUSPEND_FLAGS, &[1, 0]);
+    world.array(manager + cweather_manager::PROVINCE_CLOCKS, clocks, 2);
+    world.vtable(region, cstrategic_region::VTABLE_RVA);
+    world.d(region + cstrategic_region::ID, 7);
+    world.array(region + cstrategic_region::PROVINCES, list, 1);
+    world.q(list, province as u64);
+    world.vtable(province, engine_native::cprovince::VTABLE_RVA);
+    world.d(province + engine_native::cprovince::ID, 1);
+    let marker = clocks + engine_native::sweather_per_province::CLOCK_STRIDE + APPLIED_NIGHT_FACTOR;
+    world.q(marker, 50_001);
+    struct Trace<'a> {
+        memory: SliceMemory<'a>,
+        marker: usize,
+        reads: Cell<usize>,
+    }
+    impl Memory for Trace<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            if at == self.marker {
+                self.reads.set(self.reads.get() + 1);
+            }
+            self.memory.copy(at, out)
+        }
+    }
+    let memory = Trace {
+        memory: SliceMemory {
+            base: START,
+            bytes: &world.bytes,
+        },
+        marker,
+        reads: Cell::new(0),
+    };
+    let mut sorties = Sorties::with_capacities(&Capacities {
+        missions: 3,
+        ..Default::default()
+    });
+    for (wing, count) in [(11, 7), (22, 9), (33, 0)] {
+        sorties
+            .missions
+            .push(Mission {
+                wing,
+                region: Some(7),
+                operands: native::Mission {
+                    region_pointer: region,
+                    current_type: Some(8),
+                    effective_aircraft: Some(count),
+                    normalization: Some(native::Normalization {
+                        patrol: native::patrol::Inputs {
+                            disruption: Some(1),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let mut cached = Cached {
+        weather_manager: Some(Ok(manager)),
+        ..Default::default()
+    };
+    sorties.patrol_night(&memory, MODULE, game, &mut cached);
+    assert_eq!(memory.reads.get(), 1);
+    assert_eq!(
+        sorties.missions.rows[..3]
+            .iter()
+            .map(|mission| mission.operands.normalization.unwrap().patrol.night_applied)
+            .collect::<Vec<_>>(),
+        [Some(50_001), Some(50_001), None]
+    );
+    assert_eq!(cached.weather_manager, Some(Ok(manager)));
+}
+
 /// A flat address space; every vtable is `MODULE + rva`.
 struct World {
     bytes: Vec<u8>,
@@ -275,6 +360,7 @@ fn fixture(missions: usize, countries: u32) -> Fixture {
                 country_override: 0,
                 ace: 0,
                 planes: 0,
+                ..Default::default()
             }
         })
         .collect();
@@ -514,6 +600,60 @@ fn growing_sortie_arenas_publish_cold_and_later_mod_demand_for_5000_countries() 
         assert_eq!(
             &fixed.reached.rows[..fixed.reached.len],
             &growing.reached.rows[..growing.reached.len]
+        );
+    }
+}
+
+#[test]
+fn detection_override_failure_drops_partial_values_and_preserves_other_modifiers() {
+    struct Observer {
+        fail: bool,
+    }
+    impl RegionObserver for Observer {
+        fn observed(
+            &mut self,
+            _: usize,
+            _: usize,
+            _: Option<map_air_country_region_modifier::Region>,
+        ) {
+        }
+        fn detection_overrides(
+            &mut self,
+            emit: &mut dyn FnMut(u32, i64) -> Result<(), &'static str>,
+        ) -> Result<(), &'static str> {
+            emit(7, 0)?;
+            if self.fail {
+                Err("synthetic changed certificate")
+            } else {
+                emit(8, -123_456)
+            }
+        }
+    }
+    let mut capture = Sorties::with_capacities(&capacities());
+    for fail in [true, false] {
+        capture.modifiers.reset();
+        capture
+            .modifiers
+            .push(AirSortieModifierRow {
+                scope: AirSortieModifierRow::WEATHER,
+                region: 1,
+                raw: -7,
+                ..Default::default()
+            })
+            .unwrap();
+        capture.detection_overrides(&mut Observer { fail }).unwrap();
+        let rows = &capture.modifiers.rows[..capture.modifiers.len];
+        assert_eq!(rows[0].raw, -7);
+        let status = rows
+            .iter()
+            .find(|row| row.scope == AirSortieModifierRow::DETECTION_OVERRIDE_STATUS)
+            .unwrap();
+        assert_eq!(status.raw, i64::from(!fail));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.scope == AirSortieModifierRow::DETECTION_OVERRIDE)
+                .count(),
+            if fail { 0 } else { 2 }
         );
     }
 }

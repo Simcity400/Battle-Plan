@@ -31,6 +31,32 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[test]
+fn attach_outcome_retains_typed_rollback_before_reference_rebuilding() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (site, hook) = hook_at(&code, 0, original as *const () as usize);
+    let mut hooks = [hook];
+    let mut round = Round::collect_attach().unwrap();
+    publication::select_family(Some("experience_gains"));
+    assert_eq!(
+        Hook::set_enabled_batch_attach(&mut [&mut hooks[0]], true),
+        Ok(false)
+    );
+    fail_flushes(2);
+    round.publish();
+    // Experience/fuel/politics consume this route before building references.
+    let (outcome, report) = installation::capture(attach_outcome);
+    assert!(outcome.unwrap().is_err());
+    let failure = report.failure.unwrap();
+    assert_eq!(failure.kind, installation::Kind::Rollback);
+    assert_eq!(failure.site, Some(site));
+    drop(round);
+    assert_eq!(Hook::set_family_enabled(&mut hooks, false), Ok(true));
+    assert!(!hooks[0].is_enabled());
+    assert!(failure.cause.contains("restored bytes remain unflushed"));
+}
+
 /// A worker held inside `site`, a stub that jumps to itself, until its target
 /// is rewritten to `original`.
 struct Held {
@@ -517,6 +543,15 @@ fn attach_many_families_and_taps_share_one_measured_suspension() {
 
 #[test]
 fn attach_busy_middle_publishes_only_the_prefix_and_retries_from_it() {
+    assert_busy_prefix_publication(true);
+}
+
+#[test]
+fn untracked_shared_family_keeps_markers_untouched_and_never_rescans() {
+    assert_busy_prefix_publication(false);
+}
+
+fn assert_busy_prefix_publication(track_busy: bool) {
     let _guard = lock();
     let code = TestCode::new();
     let (first_site, first_hook) = hook_at(&code, 0, original as *const () as usize);
@@ -526,6 +561,9 @@ fn attach_busy_middle_publishes_only_the_prefix_and_retries_from_it() {
     let mut first = vec![first_hook];
     let mut middle = vec![held_hook];
     let mut later = vec![later_hook];
+    first[0]
+        .publication_busy
+        .store(!track_busy, Ordering::Relaxed);
     let later_bytes = later[0].original;
     let middle_bytes = middle[0].original;
     let held = Held::new(held_site);
@@ -536,11 +574,21 @@ fn attach_busy_middle_publishes_only_the_prefix_and_retries_from_it() {
             Group::new(&mut middle, true),
             Group::new(&mut later, true),
         ];
+        groups[1].track_busy = track_busy;
+        IP_SCANS.with(|count| count.set(0));
         prefix(&mut groups, real_flush);
         assert_eq!(groups[0].outcome(), Some(&Ok(true)));
         assert_eq!(groups[1].outcome(), Some(&Ok(false)));
         assert_eq!(groups[2].outcome(), Some(&Ok(false)));
     }
+    assert_eq!(
+        IP_SCANS.with(std::cell::Cell::get),
+        2,
+        "one scan per reached family"
+    );
+    assert_eq!(first[0].publication_busy(), !track_busy);
+    assert_eq!(middle[0].publication_busy(), track_busy);
+    assert!(!later[0].publication_busy());
     assert_eq!(suspensions() - before, 1);
     assert_eq!(unsafe { invoke(first_site) }, 19);
     assert_eq!(
@@ -559,6 +607,7 @@ fn attach_busy_middle_publishes_only_the_prefix_and_retries_from_it() {
             Group::new(&mut middle, true),
             Group::new(&mut later, true),
         ];
+        groups[1].track_busy = track_busy;
         prefix(&mut groups, real_flush);
         assert!(
             groups
@@ -567,6 +616,15 @@ fn attach_busy_middle_publishes_only_the_prefix_and_retries_from_it() {
         );
     }
     assert_eq!(suspensions() - before, 1);
+    assert!(
+        !middle[0].publication_busy(),
+        "a recovered publication clears its prior busy site"
+    );
+    assert_eq!(
+        first[0].publication_busy(),
+        !track_busy,
+        "untracked markers never reset"
+    );
     assert_eq!(unsafe { invoke(later_site) }, 19);
     for family in [&mut first, &mut middle, &mut later] {
         assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
@@ -967,4 +1025,95 @@ fn attach_first_preparation_refusal_never_suspends_or_writes_the_suffix() {
     for family in [&mut first, &mut later] {
         assert_eq!(Hook::set_family_enabled(family, false), Ok(true));
     }
+}
+
+#[test]
+fn named_publication_reports_failing_site_and_cause_after_shared_resume() {
+    let _guard = lock();
+    for shared in [false, true] {
+        let code = TestCode::new();
+        let (_, first) = hook_at(&code, 0, original as *const () as usize);
+        let (failed_site, second) = hook_at(&code, 64, original as *const () as usize);
+        let mut hooks = vec![first, second];
+        unsafe { ptr::write((failed_site + 15) as *mut u8, 0xcc) };
+        let mut round = shared.then(Round::collect_attach).flatten();
+        if let Some(round) = &mut round {
+            assert_eq!(
+                Hook::set_family_enabled_shared_named(
+                    &mut hooks,
+                    true,
+                    "occupation_changes",
+                    &["healthy", "failed_writer"]
+                ),
+                Ok(false)
+            );
+            round.publish();
+        }
+        let error = Hook::set_family_enabled_shared_named(
+            &mut hooks,
+            true,
+            "occupation_changes",
+            &["healthy", "failed_writer"],
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "occupation_changes hook sites [failed_writer] state change failed: {BYTE_VERIFICATION_FAILURE}"
+            )
+        );
+        assert!(hooks.iter().all(|hook| !hook.is_enabled()));
+        drop(round);
+        unsafe { ptr::write((failed_site + 15) as *mut u8, hooks[1].original[15]) };
+        assert_eq!(
+            Hook::set_family_enabled_shared_named(
+                &mut hooks,
+                true,
+                "occupation_changes",
+                &["healthy", "failed_writer"]
+            ),
+            Ok(true)
+        );
+        assert!(hooks.iter().all(|hook| !hook.diagnostic_failure));
+        assert_eq!(
+            Hook::set_family_enabled_shared_named(
+                &mut hooks,
+                false,
+                "occupation_changes",
+                &["healthy", "failed_writer"]
+            ),
+            Ok(true)
+        );
+    }
+}
+
+#[test]
+fn named_publication_reports_preparation_site_without_reading_refused_memory() {
+    let _guard = lock();
+    let code = TestCode::new();
+    let (_, first) = hook_at(&code, 0, original as *const () as usize);
+    let (site, mut second) = hook_at(&code, 64, original as *const () as usize);
+    second.site = 0;
+    let mut hooks = vec![first, second];
+    let mut round = Round::collect_attach().unwrap();
+    assert_eq!(
+        Hook::set_family_enabled_shared_named(
+            &mut hooks,
+            true,
+            "naval_tree_changes",
+            &["healthy", "unwritable"]
+        ),
+        Ok(false)
+    );
+    round.publish();
+    let error = Hook::set_family_enabled_shared_named(
+        &mut hooks,
+        true,
+        "naval_tree_changes",
+        &["healthy", "unwritable"],
+    )
+    .unwrap_err();
+    assert!(error.starts_with("naval_tree_changes hook sites [unwritable] state change failed: "));
+    assert!(!error.ends_with("failed: "));
+    hooks[1].site = site;
 }

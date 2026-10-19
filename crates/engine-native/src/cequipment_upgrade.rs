@@ -6,3 +6,5 @@ pub const VTABLE_RVA: usize = 0x029b_e228;
 pub const TOKEN: usize = 0x08;
 /// CEquipmentUpgrade MSVC name.
 pub const NAME: usize = 0x18;
+/// Immutable authored XP currency: land, naval or air.
+pub const COST_CURRENCY: usize = 0xe0;

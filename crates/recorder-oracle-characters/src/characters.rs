@@ -128,6 +128,9 @@ pub fn compare(
         complete &= report.attempt("UnitLeaderTraits", |report| {
             compare_traits(frame, manager, tokens, unrepresented.as_ref(), report)
         });
+        complete &= report.attempt("UnitLeaderTraitExperience", |report| {
+            compare_trait_progress(frame, manager, tokens, report)
+        });
         complete &= report.attempt("CharacterRoleTraits", |report| {
             compare_role_traits(frame, manager, tokens, country_leader_traits, report)
         });
@@ -1020,6 +1023,12 @@ fn compare_leaders(
             row.components,
             expected.components,
         );
+        report.scalar(
+            &label,
+            "experience",
+            Some(row.experience),
+            Some(&expected.experience),
+        );
         // The army-leader writer writes `captured=yes` only for a set army leader byte.
         if row.kind == engine_native::cunit_leader::KIND_ARMY {
             equal(
@@ -1148,6 +1157,64 @@ fn compare_traits(
             "assigned traits use fixed15 formatter token 0x167, not a directly serialized lexical spelling: {formatted_tokens:?}"
         )))
     }
+}
+
+fn compare_trait_progress(
+    frame: &DecodedFrame,
+    manager: &saved::Manager,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut seen = BTreeSet::new();
+    let rows = complete::<tables::UnitLeaderTraitExperience>(frame)?;
+    for row in rows {
+        let key = (row.leader_reference, row.list, row.ordinal);
+        if !seen.insert(key) {
+            return Err(invalid("duplicate training position"));
+        }
+        let Some(expected) = manager
+            .unit_leaders
+            .get(&row.leader_reference)
+            .and_then(|leader| {
+                match row.list {
+                    0 => &leader.trait_experience,
+                    1 => &leader.trait_factors,
+                    _ => return None,
+                }
+                .get(row.ordinal as usize)
+            })
+        else {
+            membership(report, "leader training", key, true);
+            continue;
+        };
+        trait_token_value(
+            report,
+            &format!("leader training {key:?}.token"),
+            tokens,
+            row.token_id,
+            &expected.token,
+        );
+        report.scalar(
+            &format!("leader training {key:?}"),
+            "experience",
+            Some(row.experience),
+            Some(&expected.experience),
+        );
+    }
+    for (&id, leader) in &manager.unit_leaders {
+        for (list, entries) in [(0, &leader.trait_experience), (1, &leader.trait_factors)] {
+            for ordinal in 0..entries.len() {
+                let ordinal =
+                    u32::try_from(ordinal).map_err(|_| invalid("training ordinal exceeds u32"))?;
+                if !seen.contains(&(id, list, ordinal)) {
+                    membership(report, "leader training", (id, list, ordinal), false);
+                }
+            }
+        }
+    }
+
+    report.compared("UnitLeaderTraitExperience", rows.len());
+    Ok(())
 }
 
 fn trait_owner_comparable(

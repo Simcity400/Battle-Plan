@@ -465,6 +465,8 @@ fn routes_mark_which_stack_kinds_are_native() {
             .map(|&(id, province)| DivisionRow {
                 id,
                 province,
+                roster_owner: 1,
+                logical_owner: 1,
                 ..Default::default()
             })
             .collect(),
@@ -474,6 +476,7 @@ fn routes_mark_which_stack_kinds_are_native() {
         combat_role: 1,
         combat_count: 1,
         combat_province: 2,
+        withdrawal: replay_data::rows::Recorded::Value(Some(0)),
         path_total: path.len() as u32,
         path,
         ..Default::default()
@@ -510,7 +513,10 @@ fn routes_mark_which_stack_kinds_are_native() {
             maximum_level: 0,
         }),
         task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
-        land: Err("unrelated land movement terrain is unavailable".into()),
+        land: Ok(crate::movement_timing::LandSpeedContent {
+            terrain_movement: vec![0],
+            ..Default::default()
+        }),
     };
     // Stateless provinces: no infrastructure term.
     *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
@@ -521,6 +527,11 @@ fn routes_mark_which_stack_kinds_are_native() {
             })
             .into(),
     ));
+    *frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(vec![
+            crate::movement_timing::test_support::neutral_status(3, 1),
+        ]));
+    crate::movement_timing::test_support::neutral_world(&mut frame, 1);
     let etas = Etas::read(&frame, Some(&timing)).unwrap();
     // Only 3 moves with a base speed: one hour at 1 km/h. 1 and 2 have no
     // route and 4 has no location.

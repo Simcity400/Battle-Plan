@@ -350,6 +350,7 @@ pub(super) fn event_facts(
             icon: std::str::from_utf8(&organisation.icon).ok()?.to_owned(),
             owner_unknown: (organisation.owner as i32) > 0 && owner_tag.is_none(),
             owner_tag,
+            state: None,
         };
         Some((reference, raw))
     });

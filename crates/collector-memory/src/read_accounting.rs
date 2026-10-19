@@ -17,6 +17,10 @@ use replay_data::rows::TableId;
 use std::{cell::RefCell, marker::PhantomData, mem::MaybeUninit, rc::Rc};
 
 pub type TableCounts = [ReadCounts; TABLE_COUNT];
+#[allow(
+    clippy::large_const_arrays,
+    reason = "The zero counts also initialize thread-local state in a const context."
+)]
 pub const ZERO: TableCounts = [ReadCounts::ZERO; TABLE_COUNT];
 
 struct State {

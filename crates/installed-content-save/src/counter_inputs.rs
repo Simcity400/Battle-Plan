@@ -34,6 +34,7 @@ pub struct Pack {
     pub prides: BTreeMap<Vec<u8>, Option<u64>>,
     /// Sent-volunteer references, including raw null references and native order.
     pub sent_volunteers: BTreeMap<Vec<u8>, Vec<u64>>,
+    pub sent_expeditionaries: BTreeMap<Vec<u8>, Vec<u64>>,
     /// The first saved `division` of each country with one: roster slot 0.
     pub first_divisions: BTreeMap<Vec<u8>, u64>,
     /// The country writer saves every division in roster order.
@@ -60,8 +61,8 @@ pub struct Fleet {
     pub owner: Vec<u8>,
     /// The literal `color` list; omission stays distinct from an empty list.
     pub color: Option<Vec<i64>>,
-    /// Saved `strategic_region` id count, when the list was written.
-    pub strategic_regions: Option<usize>,
+    /// Saved `strategic_region` identities in writer order, when the list was written.
+    pub strategic_regions: Option<Vec<u32>>,
     /// Saved `task_force` ids in writer order.
     pub task_forces: Vec<u64>,
 }
@@ -122,6 +123,22 @@ pub(super) fn parse_with_countries(
             .transpose()?
             .unwrap_or_default();
         pack.sent_volunteers.insert(tag.to_vec(), sent);
+        let expeditionaries = field(fields, b"expeditionaries_sent")?
+            .map(|value| {
+                block(value)?
+                    .iter()
+                    .map(|entry| {
+                        if entry.key.is_some() {
+                            return Err(invalid("keyed expeditionaries_sent entry"));
+                        }
+                        super::null_permitted_handle(&entry.value)
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        pack.sent_expeditionaries
+            .insert(tag.to_vec(), expeditionaries);
         let pride = field(fields, b"pride_of_the_fleet")?
             .map(typed_handle)
             .transpose()?;
@@ -203,7 +220,7 @@ pub(super) fn parse_with_countries(
                     .transpose()?,
                 strategic_regions: field(fleet_fields, b"strategic_region")?
                     .is_some()
-                    .then(|| integer_list(fleet_fields, b"strategic_region").map(|v| v.len()))
+                    .then(|| integer_list(fleet_fields, b"strategic_region"))
                     .transpose()?,
                 task_forces: Vec::new(),
             };
@@ -365,7 +382,7 @@ mod tests {
         assert!(!saved.first_divisions.contains_key(b"ENG".as_slice()));
         let fleet = &saved.fleets[&((1 << 32) | 61)];
         assert_eq!(fleet.color, Some(vec![219, 219, 10]));
-        assert_eq!(fleet.strategic_regions, Some(3));
+        assert_eq!(fleet.strategic_regions, Some(vec![16, 18, 43]));
         assert_eq!(fleet.task_forces, [(43 << 32) | 51, (44 << 32) | 51]);
         let first = &saved.task_forces[&((43 << 32) | 51)];
         assert_eq!(
@@ -458,5 +475,22 @@ mod tests {
                     .unwrap();
             assert!(parse(&doc.items).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod manpower_tests {
+    use super::*;
+    #[test]
+    fn manpower_expeditionary_save_refs_keep_nulls_duplicates_and_native_order() {
+        let doc = installed_content_core::parser::parse(
+            b"countries={MOD={expeditionaries_sent={{id=0 type=0}{id=7 type=51}{id=7 type=51}}}}",
+        )
+        .unwrap();
+        let pack = parse(&doc.items).unwrap();
+        assert_eq!(
+            pack.sent_expeditionaries[b"MOD".as_slice()],
+            vec![0, (7_u64 << 32) | 51, (7_u64 << 32) | 51]
+        );
     }
 }

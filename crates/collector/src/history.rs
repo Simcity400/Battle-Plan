@@ -24,7 +24,7 @@ struct Prepared {
     politics_epoch: u64,
     completion_sequence: u64,
     naval_result_sequence: u64,
-    event_ledger_sequences: [Option<u64>; 3],
+    event_ledger_sequences: [Option<u64>; 4],
     event_feed_sequence: Option<u64>,
     event_feed_generation: Option<u64>,
     event_feed_counts: replay_data::event_feed_rows::EventFeedCounts,
@@ -38,7 +38,7 @@ pub struct PreparedCampaigns {
     entries: BTreeMap<String, Result<Prepared, String>>,
     completion_sequence: u64,
     naval_result_sequence: u64,
-    event_ledger_sequences: [Option<u64>; 3],
+    event_ledger_sequences: [Option<u64>; 4],
     event_feed_sequence: Option<u64>,
     event_feed_generation: Option<u64>,
     event_feed_counts: replay_data::event_feed_rows::EventFeedCounts,
@@ -75,7 +75,7 @@ impl PreparedCampaigns {
         let mut entries = BTreeMap::new();
         let mut completion_sequence = 0;
         let mut naval_result_sequence = 0;
-        let mut event_ledger_sequences = [None; 3];
+        let mut event_ledger_sequences = [None; 4];
         let mut event_feed_sequence = None;
         let mut event_feed_generation = None;
         let mut event_feed_counts = replay_data::event_feed_rows::EventFeedCounts::default();
@@ -219,7 +219,7 @@ impl PreparedCampaigns {
     }
 
     /// Air loss and building damage maxima, including retained partial prefixes.
-    pub fn event_ledger_sequences(&self) -> [Option<u64>; 3] {
+    pub fn event_ledger_sequences(&self) -> [Option<u64>; 4] {
         self.event_ledger_sequences
     }
 
@@ -383,15 +383,16 @@ fn naval_result_sequence(replay: &Replay) -> io::Result<u64> {
     Ok(maximum)
 }
 
-fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 3]> {
+fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 4]> {
     use replay_data::{rows::TableId, rows::tables};
     use replay_frame::{frame::FrameDecoder, frame::TableView};
     let selected = [
         TableId::AirLossEvents,
         TableId::BuildingBombingDamage,
         TableId::NuclearStrikes,
+        TableId::MarketEvents,
     ];
-    let mut maximum = [None; 3];
+    let mut maximum = [None; 4];
     for block in &replay.index {
         let mut decoder = FrameDecoder::for_tables(&selected);
         for frame in replay.read_block_selected(block, &selected)? {
@@ -417,6 +418,12 @@ fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 3]> {
                     TableId::NuclearStrikes => rows
                         .rows::<tables::NuclearStrikes>()
                         .ok_or_else(|| invalid("nuclear strike history contains another table"))?
+                        .iter()
+                        .map(|row| row.id)
+                        .max(),
+                    TableId::MarketEvents => rows
+                        .rows::<tables::MarketEvents>()
+                        .ok_or_else(|| invalid("market event history contains another table"))?
                         .iter()
                         .map(|row| row.id)
                         .max(),

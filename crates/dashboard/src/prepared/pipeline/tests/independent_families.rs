@@ -831,6 +831,15 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
     clear(source);
 }
 
+// These folds have separate keys from the parity test, which can run beside
+// this one and clears its own observed folds between runs.
+static GROUPED_ALPHA: Hours = hours(
+    &ALPHA,
+    "independent.alpha",
+    &["alpha-product"],
+    "grouped-alpha",
+);
+static GROUPED_BETA: Hours = hours(&BETA, "independent.beta", &["beta-product"], "grouped-beta");
 static GROUPED_READER: Hours = hours(&READER, "independent.reader", &[], "grouped-reader");
 /// Both write `synthetic-shared` at every commit: adopted into one group,
 /// the second is refused.
@@ -886,7 +895,7 @@ fn group_commits_publish_what_each_family_committing_alone_publishes() {
         .unwrap_or_else(|error| error.into_inner());
     let first = recording(2, false);
     let grown = recording(3, true);
-    let families = registered(&[&PARITY_ALPHA, &PARITY_BETA, &GROUPED_READER]);
+    let families = registered(&[&GROUPED_ALPHA, &GROUPED_BETA, &GROUPED_READER]);
     let mut fixture = Fixture::new(&first);
     for workers in [1, 3] {
         for resume in [false, true] {

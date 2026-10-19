@@ -11,7 +11,7 @@
 - Race and drill values read exact hours. Unprepared lines and mixes draw approximate keyframe spans immediately; zooms touching at most thirteen unprepared blocks read exact frames. Native class/role projection resolves recorded content once per query. Dense views use width summaries; exact short views retain native runs and their drawing. Top countries use prepared rank positions in the accepted prefix and the native ranking sweep over transient tail values.
 
 - Current HP uses exact recorded fixed-point amounts. Maximum HP is independently known or unknown; it never replaces current HP. Axis entries in HP convert to raw units. Missing/overflowing HP affects that measure while ship counts remain available.
-- Count fleets for selects the country whose roster holds the fleet or the fleet’s assigned country. The separate expeditionary sender field is not either choice. Ships outside the recorded roster, including other convoy/stockpile inventory, are excluded.
+- Count fleets for selects the country whose roster holds the fleet or the fleetâ€™s assigned country. The separate expeditionary sender field is not either choice. Ships outside the recorded roster, including other convoy/stockpile inventory, are excluded.
 - Classes and roles resolve dated authored sub-unit definitions through recorded content. Unresolved classes stay visible parts; names use content localisation or unavailable wording. Internal keys remain in diagnostics. No vanilla class list is assumed.
 - Complete present empty rosters prove zero; absent countries/missing inputs stay unknown and gaps break history. Shared easing creates no new measurements.
 - The shared drill keeps the selected native holder's full history after it leaves top N or renames. Pins save that holder and its origin hour; reused tags, missing identities and conflicting aliases cannot replace it. Current and maximum HP retain independent availability.
@@ -20,3 +20,5 @@
 **Files:** [NavySizeWidget.tsx](NavySizeWidget.tsx) configures [PartsRaceView](../../charts/race/PartsRaceView.tsx); [navyData.ts](navyData.ts) shapes requests and validates replies, with adjacent tests. `definition.ts` and `index.ts` declare settings and registration.
 
 Shared framework conventions: [widgets](../README.md).
+
+The country drill contains a collapsed Repairs, refits and reinforcement panel. Opening it requests `naval-management` only for that country and hour. Playback/source/content changes cancel the old request and mask its reply. It shows standing settings, intended composition, ordered detachments, repair ports/queues and independent refit progress; missing data stays explicit. Production line target/cost/allocation are labelled as their last recorded observation. Repair ETA remains unavailable because its exact native rate is not recorded.

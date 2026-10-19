@@ -1,7 +1,8 @@
 # replay-derive
 
 Playback calculations over recorded rows: air regions, attack, directed wars,
-movement and arrival times, naval missions, power balances and subject access.
+movement and arrival times, naval missions and dominance, power balances, subject
+access and shared visibility branches.
 `fixed_layout` and `modifier_registry` bind the executable metadata those
 calculations require. Content facts remain supplied by the recorded stack's
 readers; this crate introduces no content defaults.

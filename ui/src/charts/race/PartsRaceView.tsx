@@ -1,3 +1,4 @@
+import type { ComponentType } from 'react';
 import FollowControl from '../drill/FollowControl';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -47,7 +48,10 @@ import type { TimeChartProps } from '../TimeChart';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 
+export interface PartsRaceDetailProps { client: DashboardClient; track: BoundTrack; tag: string; hour: number; active: boolean }
+
 export interface PartsRaceViewConfig {
+  details?: ComponentType<PartsRaceDetailProps>;
   product: string; title: string; subject: string; icon: IconName;
   options: readonly OptionField[];
   request: (branchId: string, countries: { tags: readonly string[]; top?: number }, options: Readonly<Record<string, OptionValue>>) => unknown;
@@ -67,6 +71,7 @@ const NO_WARNINGS: string[] = [];
 
 /** Shared parts-race playback and group handling; CountryRaceView owns presentation. */
 export default function PartsRaceView({ widget, runtime, active, countrySlot = null, onDiagnostics, config }: WidgetProps & { config: PartsRaceViewConfig }) {
+  const Details = config.details;
   const options = useMemo(() => resolveOptions(config.options, widget.options), [config.options, widget.options]);
   const chartOptions = useMemo(() => config.chartOptions?.(options) ?? options, [config.chartOptions, options]);
   const view = options.view as RaceView;
@@ -350,6 +355,7 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
         onClick={() => { if (currentDetail()) setPickedPart(null); }}>All parts</button></p>}
       {referenceLabel && <p className="drill-empty">{referenceLabel}: {drillValue?.run.referenceTotal == null
         ? 'Not known' : formatValue(drillValue.run.referenceTotal)}.</p>}
+      {Details && track && drillTag && <Details client={runtime.client} track={track} tag={drillTag} hour={drillAt} active={active} />}
     </div>}
     onPick={originTag ? hour => { if (currentDetail()) dispatchDrill({ type: 'open', breakdown: originTag, hour, playing: false,
       playhead: null, selection: selection ?? undefined, owner: contextOwner }); } : undefined} />;

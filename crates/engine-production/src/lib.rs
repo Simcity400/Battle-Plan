@@ -24,6 +24,8 @@ pub mod crailway_production_line;
 pub mod industrial_organisation_line_entry;
 pub mod line_output_sites;
 pub mod market_contract_manager;
+pub mod market_ledger;
+pub mod market_mutations;
 pub mod mio_history_entry;
 pub mod nindustrial_organisation_corganisation;
 pub mod production_modifiers;

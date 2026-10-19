@@ -519,3 +519,150 @@ fn a_base_without_a_reported_segment_is_walked() {
     assert_eq!(reuse.counts(), decoded(0, 2));
     assert_same(&walked, &direct(&bytes));
 }
+
+#[test]
+fn state_summary_countries_use_the_held_order_without_quiet_native_reads() {
+    const DENSE: usize = 0x68000;
+    let mut bytes = fixture();
+    kit::put64(
+        &mut bytes,
+        kit::B0 + cair_base::REGISTERED_CONTAINERS,
+        DENSE as u64,
+    );
+    kit::put32(
+        &mut bytes,
+        kit::B0 + cair_base::REGISTERED_CONTAINERS + 8,
+        2,
+    );
+    kit::put32(
+        &mut bytes,
+        kit::B0 + cair_base::REGISTERED_CONTAINERS + 12,
+        2,
+    );
+    kit::put64(&mut bytes, DENSE, kit::CONT1 as u64);
+    kit::put64(&mut bytes, DENSE + 8, kit::CONT1 as u64);
+    let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
+    let mut job = job(watches);
+    // The complete-slot fallback retains dense repeats, which cannot use the
+    // fast path's proof of distinct occupied slots.
+    job.slot_run.dense = false;
+    let source = kit::direct(&kit::memory(&bytes)).bases;
+    let decode = |job: &AirBasesJob| {
+        let mut output = carrier::Bases::new(8);
+        output.prepare_states(job);
+        output.decode_states(job, kit::BASE, &source, &mut [None; 16]);
+        output.packet(B0_HANDLE)
+    };
+    let acquire = |job: &mut AirBasesJob| {
+        let memory = Reads {
+            inner: kit::memory(&bytes),
+            reads: RefCell::default(),
+        };
+        let report = copy_air_bases_refresh_growing(
+            &memory,
+            AirBasesCopyContext {
+                hour: 0,
+                force_full: false,
+                base: kit::BASE,
+                game_state: kit::GAME_STATE,
+            },
+            job,
+        );
+        assert!(report.raw_ok);
+        memory.reads.into_inner()
+    };
+    acquire(&mut job);
+    let first = decode(&job);
+    assert_eq!(
+        first
+            .require("summary")
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .registered_countries
+            .as_ref()
+            .unwrap()
+            .len(),
+        2
+    );
+    let reads = acquire(&mut job);
+    assert_eq!(job.registration_store.as_ref().unwrap().counts().carried, 2);
+    assert!(!reads.contains(&DENSE));
+    assert!(!reads.contains(&(kit::B0 + cair_base::REGISTERED_CONTAINERS)));
+    assert_eq!(decode(&job), first);
+}
+
+#[test]
+fn failed_optional_state_order_stays_unknown_under_the_registration_certificate() {
+    const DENSE: usize = 0x68000;
+    struct Failed<'a> {
+        memory: kit::SyntheticMemory<'a>,
+    }
+    impl Memory for Failed<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            address != DENSE && self.memory.copy(address, output)
+        }
+    }
+    let mut bytes = fixture();
+    kit::put64(
+        &mut bytes,
+        kit::B0 + cair_base::REGISTERED_CONTAINERS,
+        DENSE as u64,
+    );
+    kit::put32(
+        &mut bytes,
+        kit::B0 + cair_base::REGISTERED_CONTAINERS + 8,
+        1,
+    );
+    kit::put32(
+        &mut bytes,
+        kit::B0 + cair_base::REGISTERED_CONTAINERS + 12,
+        1,
+    );
+    kit::put64(&mut bytes, DENSE, kit::CONT1 as u64);
+    let watches: &'static Watches = Box::leak(Box::new(Watches::enabled(16)));
+    let mut job = job(watches);
+    job.slot_run.dense = false;
+    let ctx = || AirBasesCopyContext {
+        hour: 0,
+        force_full: false,
+        base: kit::BASE,
+        game_state: kit::GAME_STATE,
+    };
+    assert!(
+        copy_air_bases_refresh_growing(
+            &Failed {
+                memory: kit::memory(&bytes)
+            },
+            ctx(),
+            &mut job
+        )
+        .raw_ok
+    );
+    assert!(
+        job.segments
+            .iter()
+            .any(|segment| segment.handle == B0_HANDLE)
+    );
+    let memory = Reads {
+        inner: kit::memory(&bytes),
+        reads: RefCell::default(),
+    };
+    assert!(copy_air_bases_refresh_growing(&memory, ctx(), &mut job).raw_ok);
+    assert_eq!(job.registration_store.as_ref().unwrap().counts().carried, 2);
+    assert!(!memory.reads.borrow().contains(&DENSE));
+    let source = kit::direct(&kit::memory(&bytes)).bases;
+    let mut output = carrier::Bases::new(8);
+    output.prepare_states(&job);
+    output.decode_states(&job, kit::BASE, &source, &mut [None; 16]);
+    assert!(
+        output
+            .packet(B0_HANDLE)
+            .require("summary")
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .registered_countries
+            .is_none()
+    );
+}

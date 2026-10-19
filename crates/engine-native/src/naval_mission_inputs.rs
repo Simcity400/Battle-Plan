@@ -17,22 +17,37 @@ use crate::{
     modifier_keys as keys, read, sweather_per_region,
 };
 
+mod convoy_targets;
+pub mod targeted_spotting;
+pub use convoy_targets::{
+    ConvoyDesign, ConvoyDesigns, SourceSpeed, TargetOperands, read_source_speed,
+};
+
 /// Combined-modifier keys used by range and efficiency calculations.
-pub const TASK_FORCE_KEYS: [u32; 4] = [
+pub const TASK_FORCE_KEYS: [u32; 9] = [
     keys::NAVAL_COORDINATION,
+    keys::NAVAL_SPEED_FACTOR,
+    keys::NAVAL_DETECTION,
+    keys::SPOTTING_CHANCE,
     keys::NAVAL_RANGE,
     keys::NAVAL_RANGE_FACTOR,
     keys::CONVOY_RAIDING_EFFICIENCY_FACTOR,
+    keys::NIGHT_SPOTTING_CHANCE,
+    keys::NAVY_VISIBILITY,
 ];
-/// [`TASK_FORCE_KEYS`] plus mission-owner escort efficiency, roster-owner
-/// weather reduction and underway range from the positive expeditionary owner
-/// or roster owner.
-pub const COUNTRY_KEYS: [u32; 7] = [
+/// Task-force keys plus mission-owner escort efficiency, weather reduction
+/// and underway range, projected from the same complete accumulator copy.
+pub const COUNTRY_KEYS: [u32; 12] = [
     keys::NAVAL_COORDINATION,
+    keys::NAVAL_SPEED_FACTOR,
+    keys::NAVAL_DETECTION,
+    keys::SPOTTING_CHANCE,
     keys::NAVAL_RANGE,
     keys::NAVAL_RANGE_FACTOR,
     keys::CONVOY_RAIDING_EFFICIENCY_FACTOR,
+    keys::NIGHT_SPOTTING_CHANCE,
     keys::CONVOY_ESCORT_EFFICIENCY,
+    keys::NAVY_VISIBILITY,
     keys::NAVY_WEATHER_PENALTY,
     keys::UNDERWAY_REPLENISHMENT_RANGE_FACTOR,
 ];
@@ -99,6 +114,10 @@ pub const PRESENCE_WINDOW: usize = 0x2d0;
 /// One strike/invasion or convoy task force's operands.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Operands {
+    /// Acquisition-only original stat selector, never serialized.
+    pub stat_block: usize,
+    /// Acquisition-only original location selector, never serialized.
+    pub location: usize,
     pub id: u64,
     /// The task force's mission kind (`ctask_force::MISSION`), one of [`MISSION_KINDS`].
     pub kind: u32,
@@ -114,7 +133,7 @@ pub struct Operands {
     /// Positive expeditionary owner selects the range country; otherwise use roster owner.
     pub expeditionary_owner: i32,
     /// [`TASK_FORCE_KEYS`] in the local accumulator; absent without a location.
-    pub local: [Value; 4],
+    pub local: [Value; 9],
     /// Fleet leader reference, zero for none or no fleet.
     pub leader: u64,
     /// Attached headquarters entries; each entry's commander character (zero without one) is
@@ -124,6 +143,82 @@ pub struct Operands {
     pub range_fleet: u64,
     pub range: [i32; 2],
     pub convoys: i32,
+}
+
+/// Independently observed kind-three regional convoy-grid operands.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RaidingGrid {
+    pub active: u8,
+    pub region: Option<u32>,
+    pub spotting: Option<i64>,
+    pub targets: Option<[Option<bool>; 2]>,
+    pub target: TargetOperands,
+    pub design: ConvoyDesign,
+    pub source_speed: SourceSpeed,
+}
+
+/// Stored convoy spotting amount, independently of requested mission convoys.
+const RAID_SPOTTING: usize = 0x80;
+/// Stored raiding targets and retained detection region.
+const RAID_TARGETS: usize = 0x90;
+const RAID_REGION: usize = 0xe8;
+
+/// Built-in serializer keys for retained raiding spotting and its region.
+pub const RAID_SPOTTING_SAVE_TOKEN: u32 = 0x3bb0;
+pub const RAID_REGION_SAVE_TOKEN: u32 = 0x3c83;
+
+/// Read the raider's independently optional grid packet during its existing
+/// authenticated census visit. Inactive missions demand no target or spotting read.
+pub fn read_raiding_grid(
+    memory: &impl Memory,
+    base: usize,
+    visit: cfleet::TaskForceVisit,
+    resolver: &mut crate::creference_registry::ScopedResolver,
+) -> Option<RaidingGrid> {
+    if visit.kind != RAIDING {
+        return None;
+    }
+    let mission = visit.task.checked_add(MISSION)?;
+    let active: u8 = read(memory, mission.checked_add(cnaval_mission::IS_IN_REGIONS)?)?;
+    if active == 0 {
+        return Some(RaidingGrid::default());
+    }
+    let region = mission
+        .checked_add(RAID_REGION)
+        .and_then(|at| read::<u64>(memory, at))
+        .and_then(|pointer| {
+            if pointer == 0 {
+                Some(0)
+            } else {
+                crate::cstrategic_region::id(memory, base, pointer as usize)
+                    .ok()
+                    .flatten()
+            }
+        });
+    let spotting = mission
+        .checked_add(RAID_SPOTTING)
+        .and_then(|at| read::<i64>(memory, at));
+    let resolved = mission
+        .checked_add(RAID_TARGETS)
+        .and_then(|at| read::<[u8; 16]>(memory, at))
+        .map(|bytes| {
+            [u64_at(&bytes, 0), u64_at(&bytes, 8)]
+                .map(|reference| resolver.resolve(memory, reference))
+        });
+    let targets =
+        resolved.map(|values| values.map(|value| value.ok().map(|pointer| pointer.is_some())));
+    let target = resolved
+        .map(|values| convoy_targets::target(memory, values))
+        .unwrap_or_default();
+    Some(RaidingGrid {
+        active,
+        region,
+        spotting,
+        targets,
+        target,
+        design: ConvoyDesign::default(),
+        source_speed: SourceSpeed::default(),
+    })
 }
 
 /// One region's convoy-escort presence: ring entries at least zero and above zero within
@@ -280,9 +375,37 @@ pub fn read_task_force_transport_observed_buffer(
     memory: &impl Memory,
     base: usize,
     visit: cfleet::TaskForceVisit,
+    headquarters: crate::walk::Buffer<'_, u64>,
+    original_header: &mut Option<Result<[u8; 16], &'static str>>,
+    original_owner: &mut Option<Result<u32, &'static str>>,
+) -> Result<Operands, &'static str> {
+    read_task_force_transport_observed_buffer_with_stats(
+        memory,
+        base,
+        visit,
+        headquarters,
+        original_header,
+        original_owner,
+        &mut OriginalSelectors::default(),
+    )
+}
+
+/// Original fixed-gather selectors, including failed leaves. These loans stay
+/// within the same frozen acquisition and never authorize a later native read.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OriginalSelectors {
+    pub stats: Option<Result<usize, &'static str>>,
+    pub location: Option<Result<usize, &'static str>>,
+}
+
+pub fn read_task_force_transport_observed_buffer_with_stats(
+    memory: &impl Memory,
+    base: usize,
+    visit: cfleet::TaskForceVisit,
     mut headquarters: crate::walk::Buffer<'_, u64>,
     original_header: &mut Option<Result<[u8; 16], &'static str>>,
     original_owner: &mut Option<Result<u32, &'static str>>,
+    original_selectors: &mut OriginalSelectors,
 ) -> Result<Operands, &'static str> {
     let task = visit.task;
     let mut bytes = [0; 128];
@@ -292,6 +415,20 @@ pub fn read_task_force_transport_observed_buffer(
     } else {
         Ok(bytes[112..128].try_into().expect("original mission header"))
     });
+    original_selectors.stats = if copied >= 3 {
+        Some(Ok(u64_at(&bytes, 8) as usize))
+    } else if copied == 2 {
+        Some(Err("original task-force stat selector unreadable"))
+    } else {
+        None
+    };
+    original_selectors.location = if copied >= 4 {
+        Some(Ok(u64_at(&bytes, 16) as usize))
+    } else if copied == 3 {
+        Some(Err("original task-force location selector unreadable"))
+    } else {
+        None
+    };
     *original_owner = if copied >= 8 {
         Some(Ok(u32_at(&bytes, 72)))
     } else if copied == 7 {
@@ -333,9 +470,11 @@ pub fn read_task_force_transport_observed_buffer(
     {
         return Err("task-force range or raiding stat unreadable");
     }
+    row.stat_block = stats;
     row.range_base = i64::from_le_bytes(range);
     row.raiding_factor = i64::from_le_bytes(raiding);
     let location = u64_at(&bytes, 16) as usize;
+    row.location = location;
     if location != 0 {
         identity(
             memory,
@@ -550,7 +689,7 @@ pub fn leader_modifiers(
     base: usize,
     leader: u64,
     resolve: Resolve<'_>,
-    out: &mut [Value; 4],
+    out: &mut [Value; 9],
 ) -> Result<(), &'static str> {
     let Some(pointer) = fleet_leader(memory, base, leader, resolve)? else {
         return Ok(());
@@ -636,7 +775,7 @@ pub fn headquarters_modifiers(
     base: usize,
     character: u64,
     resolve: Resolve<'_>,
-    out: &mut [[Value; 4]; 4],
+    out: &mut [[Value; 9]; 4],
 ) -> Result<(), &'static str> {
     let Some((_, sources)) = headquarters_sources(memory, base, character, resolve)? else {
         return Ok(());
@@ -790,12 +929,12 @@ pub fn region_weather<M: Memory>(
     memory: &M,
     weather: &cweather_manager::Reader<'_, M>,
     region: u32,
-    out: &mut [Value; 4],
+    out: &mut [Value; 9],
 ) -> Result<(), &'static str> {
     let id = i32::try_from(region).map_err(|_| "weather region id out of range")?;
     let record = weather.movement_record(id, true)?;
     if record == 0 {
-        *out = [Value::default(); 4];
+        *out = [Value::default(); 9];
         return Ok(());
     }
     accumulator::lookup_many_at(

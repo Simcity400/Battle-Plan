@@ -28,7 +28,11 @@ fn idle_pool_witnesses_match_capture_with_retained_regions_and_registration() {
             set(
                 &mut frame,
                 TableRows::AirRegionalMissions(if registered {
-                    vec![AirRegionalMissionRow { wing, ordinal: 0 }]
+                    vec![AirRegionalMissionRow {
+                        wing,
+                        ordinal: 0,
+                        ..Default::default()
+                    }]
                 } else {
                     vec![]
                 }),
@@ -49,6 +53,7 @@ fn idle_pool_witnesses_match_capture_with_retained_regions_and_registration() {
                 host: None,
                 capacity: 0,
                 kind: 1,
+                containers: Vec::new(),
             }];
             let mut report = Report::default();
             witnesses(&frame, &saved, &mut report).unwrap();

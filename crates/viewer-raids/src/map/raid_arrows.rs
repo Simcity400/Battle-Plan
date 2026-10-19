@@ -170,7 +170,7 @@ fn build_into(
         .map(|row| ((row.id, row.reference_type), row))
         .collect();
     if let Some(gap) = world.core_gap() {
-        return Err(gap);
+        return Err(gap.to_string());
     }
     let mut ships: Option<Result<BTreeMap<u64, &TaskForceRow>, String>> = None;
     for raid in ours {

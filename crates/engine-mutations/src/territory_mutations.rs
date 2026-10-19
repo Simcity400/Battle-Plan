@@ -88,7 +88,7 @@ const BOTH: StateRows = StateRows {
 /// Every site with its receiver. Each takes at most four integer or pointer
 /// arguments and returns RAX unchanged from its original, so a detour
 /// forwards RCX..R9 and returns the original's value.
-pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
+pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     // Province controller change (province, tag, bool, bool): the R9B
     // spill to its home slot occupies five relocated bytes.
     (
@@ -251,6 +251,34 @@ pub const MUTATIONS: [(MutationSite, Receiver); 12] = [
             ],
         },
         Receiver::EveryState,
+    ),
+    (
+        MutationSite {
+            name: "recount_controller_groups",
+            rva: 0x009d_28c0,
+            sentinel: [
+                0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
+                0x56, 0x41,
+            ],
+        },
+        Receiver::State(StateRows {
+            state: true,
+            provinces: false,
+        }),
+    ),
+    (
+        MutationSite {
+            name: "refresh_cached_victory_point",
+            rva: 0x009d_2660,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x7c, 0x24, 0x10, 0x8b, 0x79, 0x24, 0x33,
+                0xd2, 0xbb,
+            ],
+        },
+        Receiver::State(StateRows {
+            state: true,
+            provinces: false,
+        }),
     ),
 ];
 

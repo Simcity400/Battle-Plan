@@ -1482,7 +1482,7 @@ impl ResultTables {
 }
 
 /// The retained results by province, with their facts for the viewer.
-fn result_tables(frame: &DecodedFrame, viewer: Viewer<'_>) -> io::Result<ResultTables> {
+pub(super) fn result_tables(frame: &DecodedFrame, viewer: Viewer<'_>) -> io::Result<ResultTables> {
     let results = rows::<tables::NavalResults>(frame)?;
     let members = rows::<tables::NavalResultMembers>(frame)?;
     let country_rows = rows::<tables::NavalResultCountries>(frame)?;

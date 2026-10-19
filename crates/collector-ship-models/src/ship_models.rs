@@ -386,7 +386,7 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ShipModels];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-const OPTIONAL_REFUSAL_REASONS: [&str; 13] = [
+const OPTIONAL_REFUSAL_REASONS: [&str; 15] = [
     "ship subunit address overflow",
     "ship subunit identity unreadable",
     "ship subunit module overflow",
@@ -400,6 +400,8 @@ const OPTIONAL_REFUSAL_REASONS: [&str; 13] = [
     "ship current hull module priority sum unreadable",
     "ship current hull version unreadable",
     "ship current hull organisation marker unreadable",
+    "carrier capacity predicate uncertified or unreadable",
+    "ship naval dominance selected design uncertified or unreadable",
 ];
 static OPTIONAL_REFUSALS: [std::sync::atomic::AtomicU64; OPTIONAL_REFUSAL_REASONS.len()] =
     [const { std::sync::atomic::AtomicU64::new(0) }; OPTIONAL_REFUSAL_REASONS.len()];
@@ -501,6 +503,7 @@ fn model_observations_differ(kept: &cship::ModelRow, fresh: &cship::ModelRow) ->
         || kept.maximum_strength != fresh.maximum_strength
         || kept.anti_air_base != fresh.anti_air_base
         || kept.positive_equipment_flags != fresh.positive_equipment_flags
+        || observed_differs(kept.naval_power, fresh.naval_power)
         || observed_differs(kept.subunit_index, fresh.subunit_index)
         || kept
             .hull_variant
@@ -967,6 +970,8 @@ pub struct Captured {
     extra: Vec<Captured>,
     /// This range's held reads; kept across hours, unlike everything else.
     store: ShipStore,
+    air_capacity: crate::air_capacity::Store,
+    naval_power: cship::NavalPowerCache,
 }
 
 impl Captured {
@@ -1014,12 +1019,14 @@ impl Captured {
             terminal_failure: None,
             doctrine: cship::OrganisationMemo::default(),
             model: cship::ModelMemo::default(),
+            naval_power: cship::NavalPowerCache::default(),
             detail_len: 0,
             split: 1,
             part_len: 0,
             oversized: false,
             extra: Vec::new(),
             store: ShipStore::default(),
+            air_capacity: crate::air_capacity::Store::default(),
         }
     }
     pub fn reset(&mut self) {
@@ -1058,6 +1065,8 @@ impl Captured {
             + self.modifiers.borrow().allocated_bytes()
             + self.model.allocated_bytes()
             + self.store.allocated_bytes()
+            + self.air_capacity.allocated_bytes()
+            + self.naval_power.allocated_bytes()
             + self
                 .extra
                 .iter()
@@ -1253,6 +1262,7 @@ impl Captured {
 
     fn forget_stores(&mut self) {
         self.store.forget();
+        self.air_capacity.clear();
         for part in &mut self.extra {
             part.forget_stores();
         }
@@ -2135,6 +2145,9 @@ impl Captured {
                 };
                 row.maximum_organisation =
                     cship::read_maximum_organisation_memo(&memory, base, pointer, doctrine)?;
+                row.has_criticals = doctrine
+                    .organisation_operands(pointer)
+                    .map(|own| u32::from(own.has_criticals()));
                 (row, selected)
             };
             if kept.is_none() {
@@ -2146,6 +2159,15 @@ impl Captured {
                     selected.as_ref(),
                     &mut row,
                 );
+            }
+            row.air_capacity_kind =
+                this.air_capacity
+                    .capture(suffix_memory, base, pointer, &row, carrying.changes);
+            if row.carrier_air_base != 0
+                && row.formation_flags & 0x80 == 0
+                && row.air_capacity_kind.is_none()
+            {
+                this.optional_refusals[13] += 1;
             }
             Ok(row)
         });
@@ -2172,6 +2194,16 @@ impl Captured {
                 None
             }
         };
+        row.naval_power = if self.worker_growth {
+            selected.and_then(|source| {
+                cship::read_naval_power(memory, base, source, &mut self.naval_power)
+            })
+        } else {
+            None
+        };
+        if self.worker_growth && selected.is_some() && row.naval_power.is_none() {
+            self.optional_refusals[14] += 1;
+        }
         row.hull_variant = selected.and_then(|selected| {
             let packet = cship::read_hull_variant(memory, base, selected, &mut self.model);
             match packet {
@@ -2294,8 +2326,16 @@ impl Captured {
         check: Check,
     ) -> CaptureReport {
         self.context = Some(context);
+        let power_certificate = self.worker_growth.then(naval_power_certificate).flatten();
+        if self.naval_power.prepare(power_certificate) {
+            self.store.forget();
+        }
+        self.air_capacity.begin(self.detail_len, self.worker_growth);
         // One range's gathered objects; nothing outlives this capture.
         let mut fields = cship::ShipFields::new(context.base);
+        if power_certificate.is_some() {
+            fields.enable_naval_power();
+        }
         // Taken before the first registration/read, so an unchanged token
         // proves every previously held receiver's certificate without probing.
         let quiet = changes.quiet();
@@ -2371,10 +2411,18 @@ impl Captured {
                 }
             },
         );
+        if self.worker_growth && naval_power_certificate() != power_certificate {
+            for row in &mut self.rows.rows[..self.len] {
+                self.optional_refusals[14] += u64::from(row.naval_power.take().is_some());
+            }
+            self.naval_power.prepare(None);
+            self.store.forget();
+        }
         let mut carrying = carrying.into_inner();
         let complete =
             self.terminal_failure.is_none() && matches!(self.rows.outcome, Outcome::Rows { .. });
         if complete {
+            self.air_capacity.finish();
             if self.store.hold() {
                 self.store.quiet = quiet;
             }
@@ -2385,7 +2433,10 @@ impl Captured {
             // Every census ship's receivers: itself, its medal store, its
             // carrier base and its task force. The family capture's census is
             // the whole one.
-            carrying.counts.receivers = self.seed_len.saturating_mul(4);
+            carrying.counts.receivers = self
+                .seed_len
+                .saturating_mul(4)
+                .saturating_add(self.air_capacity.len());
             ship_model_changes::record(&carrying.counts, complete);
             if complete {
                 // Ships of a task force are consecutive in the census.
@@ -2497,8 +2548,13 @@ impl Captured {
                     && row.fallback_sprite.as_bytes() == previous.fallback_sprite
                     && row.model_number == previous.model_number
                     && row.formation_flags == previous.formation_flags
+                    && replay_data::rows::Recorded::Value(row.has_criticals)
+                        == previous.has_criticals
+                    && replay_data::rows::Recorded::Value(row.air_capacity_kind)
+                        == previous.air_capacity_kind
                     && previous.subunit_index
                         == replay_data::rows::Recorded::Value(row.subunit_index)
+                    && previous.naval_power == replay_data::rows::Recorded::Value(row.naval_power)
                     && previous.hull_variant
                         == replay_data::rows::Recorded::Value(
                             row.hull_variant.map(hull_variant_inputs),
@@ -2520,8 +2576,11 @@ impl Captured {
                 fallback_sprite: owned_vec(copy_vec(r.fallback_sprite.as_bytes())),
                 model_number: r.model_number,
                 formation_flags: r.formation_flags,
+                has_criticals: r.has_criticals.into(),
+                air_capacity_kind: r.air_capacity_kind.into(),
                 subunit_index: replay_data::rows::Recorded::Value(r.subunit_index),
                 strike: replay_data::rows::Recorded::Value(replay_data::rows::Retired),
+                naval_power: replay_data::rows::Recorded::Value(r.naval_power),
                 hull_variant: replay_data::rows::Recorded::Value(
                     r.hull_variant.map(hull_variant_inputs),
                 ),
@@ -2601,3 +2660,11 @@ mod tests;
 
 #[cfg(test)]
 mod acquisition_tests;
+
+/// Complete equipment-reload and world certificate; no native reads.
+fn naval_power_certificate() -> Option<(u64, u64, u64)> {
+    use collector_model_inputs::local_subunit_changes::Changes;
+    let world = collector_lifetime::world_lifetime::token()?;
+    let (epoch, sequence) = collector_model_inputs::local_subunit_changes::Observer.quiet()?;
+    Some((world, epoch, sequence))
+}

@@ -61,9 +61,11 @@ struct Recorded {
     family: Option<&'static str>,
     enabled: bool,
     outcome: Option<Result<bool, String>>,
+    failure: Option<installation::Failure>,
     ticks: i64,
     prepare: Option<fn()>,
     allocation_failed: bool,
+    track_busy: bool,
 }
 
 enum RecordedHooks {
@@ -163,6 +165,26 @@ impl Round {
         MODE.set(Some(Mode::Report));
         shared
     }
+
+    /// Visit every retained attach rollback failure after native resume and
+    /// before ordered reporting can return an earlier family's error.
+    pub fn for_each_attach_rollback_failure(
+        &self,
+        mut visit: impl FnMut(Option<&'static str>, &installation::Failure),
+    ) {
+        if !attach_reporting() {
+            return;
+        }
+        RECORDED.with_borrow(|recorded| {
+            for entry in recorded {
+                if let Some(failure) = &entry.failure
+                    && failure.kind == installation::Kind::Rollback
+                {
+                    visit(entry.family, failure);
+                }
+            }
+        });
+    }
 }
 
 impl Drop for Round {
@@ -255,10 +277,20 @@ fn answer(key: *const Hook, len: usize, enabled: bool) -> Option<Result<bool, St
                 }) && entry.enabled == enabled
                     && entry.outcome.is_some()
             })
-            .and_then(|entry| Some((entry.outcome.take()?, entry.ticks, entry.allocation_failed)))
+            .and_then(|entry| {
+                Some((
+                    entry.outcome.take()?,
+                    entry.failure.take(),
+                    entry.ticks,
+                    entry.allocation_failed,
+                ))
+            })
     });
-    if let Some((outcome, ticks, allocation_failed)) = found {
+    if let Some((outcome, failure, ticks, allocation_failed)) = found {
         REPORTED_TICKS.set(Some(ticks));
+        if let Some(failure) = failure {
+            installation::refused(failure.kind, failure.site, &failure.cause);
+        }
         if allocation_failed {
             let _ = engine_allocation::oom();
         }
@@ -272,6 +304,7 @@ fn answer(key: *const Hook, len: usize, enabled: bool) -> Option<Result<bool, St
 fn collect(
     enabled: bool,
     prepare: Option<fn()>,
+    track_busy: bool,
     hooks: impl FnOnce() -> Result<RecordedHooks, ()>,
 ) -> Result<bool, String> {
     if COLLECT_STOPPED.get() {
@@ -304,9 +337,11 @@ fn collect(
             family: publication::current_family(),
             enabled,
             outcome: None,
+            failure: None,
             ticks: 0,
             prepare: prepare.or(pending),
             allocation_failed: false,
+            track_busy,
         });
     });
     Ok(false)
@@ -338,6 +373,29 @@ pub fn take_reported_ticks() -> Option<i64> {
 }
 
 impl Hook {
+    /// Preserve publication's cause and symbolic patch owners after threads resume.
+    /// Site-specific checks retain only a flag while suspended. Failures shared by
+    /// the whole publication (for example thread resume) name all participating sites.
+    pub fn set_family_enabled_shared_named(
+        hooks: &mut [Self],
+        enabled: bool,
+        family: &str,
+        names: &[&str],
+    ) -> Result<bool, String> {
+        debug_assert!(hooks.len() <= names.len());
+        Self::set_family_enabled_shared(hooks, enabled).map_err(|cause| {
+            let failed = hooks.iter().any(|hook| hook.diagnostic_failure);
+            let sites = hooks
+                .iter()
+                .zip(names)
+                .filter(|(hook, _)| !failed || hook.diagnostic_failure)
+                .map(|(_, name)| *name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{family} hook sites [{sites}] state change failed: {cause}")
+        })
+    }
+
     /// [`Hook::set_family_enabled`] that takes part in a shared [`Round`]:
     /// recorded in its collect pass (not ready), answered from the recording
     /// in its report pass, and published on its own otherwise.
@@ -374,7 +432,7 @@ impl Hook {
                     // publication would let it.
                     return Ok(true);
                 }
-                collect(enabled, prepare, || {
+                collect(enabled, prepare, false, || {
                     Ok(RecordedHooks::Slice(hooks.as_mut_ptr(), hooks.len()))
                 })
             }
@@ -403,19 +461,40 @@ impl Hook {
         hooks: &mut [&mut Self],
         enabled: bool,
     ) -> Result<bool, String> {
+        Self::set_enabled_batch_attach_tracking::<false>(hooks, enabled)
+    }
+
+    /// Attach publication with busy-site diagnostics explicitly requested.
+    pub fn set_enabled_batch_attach_tracking_busy(
+        hooks: &mut [&mut Self],
+        enabled: bool,
+    ) -> Result<bool, String> {
+        Self::set_enabled_batch_attach_tracking::<true>(hooks, enabled)
+    }
+
+    fn set_enabled_batch_attach_tracking<const TRACK_BUSY: bool>(
+        hooks: &mut [&mut Self],
+        enabled: bool,
+    ) -> Result<bool, String> {
+        let publish = |hooks: &mut [&mut Self]| {
+            if TRACK_BUSY {
+                Self::set_enabled_batch_tracking_busy(hooks, enabled)
+            } else {
+                Self::set_enabled_batch(hooks, enabled)
+            }
+        };
         if !PREFIX.get() {
-            return Self::set_enabled_batch(hooks, enabled);
+            return publish(hooks);
         }
         match MODE.get() {
-            Some(Mode::Collect) => collect(enabled, None, || {
+            Some(Mode::Collect) => collect(enabled, None, TRACK_BUSY, || {
                 let mut pointers = Vec::new();
                 pointers.try_reserve_exact(hooks.len()).map_err(|_| ())?;
                 pointers.extend(hooks.iter_mut().map(|hook| &mut **hook as *mut Self));
                 Ok(RecordedHooks::Pointers(pointers))
             }),
-            Some(Mode::Report) => answer(ptr::null(), 0, enabled)
-                .unwrap_or_else(|| Self::set_enabled_batch(hooks, enabled)),
-            None => Self::set_enabled_batch(hooks, enabled),
+            Some(Mode::Report) => answer(ptr::null(), 0, enabled).unwrap_or_else(|| publish(hooks)),
+            None => publish(hooks),
         }
     }
 
@@ -454,13 +533,16 @@ fn publish() -> Shared {
                 };
                 let mut group = Group::from_hooks(hooks, entry.enabled);
                 group.prepare_callback = entry.prepare;
+                group.track_busy = entry.track_busy;
                 groups.push(group);
             }
             publish_groups_with_order(&mut groups, real_flush, PREFIX.get());
-            for (entry, group) in recorded.iter_mut().zip(groups) {
+            for (entry, mut group) in recorded.iter_mut().zip(groups) {
                 entry.ticks = group.ticks;
                 entry.allocation_failed = group.prepare_allocation_failed;
-                entry.outcome = Some(group.outcome.unwrap_or(Ok(false)));
+                let outcome = group.outcome.take().unwrap_or(Ok(false));
+                entry.failure = Hook::installation_failure(group.hooks.iter(), &outcome);
+                entry.outcome = Some(outcome);
             }
         }
         // Without the groups' storage nothing recorded is answered: each
@@ -484,6 +566,10 @@ thread_local! {
 pub(super) fn fail_restores(skip: usize, count: usize) {
     FAIL_RESTORES.set((skip, count));
 }
+#[cfg(any(test, feature = "test-support"))]
+pub fn fail_reopens(skip: usize, count: usize) {
+    FAIL_REOPENS.set((skip, count));
+}
 /// Whether a test refuses this page-protection restore.
 #[cfg(any(test, feature = "test-support"))]
 fn restore_refused() -> bool {
@@ -500,7 +586,7 @@ fn restore_refused() -> bool {
     false
 }
 
-fn real_flush() -> Result<(), u32> {
+pub(super) fn real_flush() -> Result<(), u32> {
     #[cfg(any(test, feature = "test-support"))]
     if FAIL_FLUSHES.with(|remaining| {
         let value = remaining.get();
@@ -594,6 +680,7 @@ pub(super) struct Group<'a> {
     protection_error: Option<u32>,
     prepare_callback: Option<fn()>,
     prepare_allocation_failed: bool,
+    track_busy: bool,
 }
 
 impl<'a> Group<'a> {
@@ -602,7 +689,10 @@ impl<'a> Group<'a> {
         Self::from_hooks(Hooks::Slice(hooks), enabled)
     }
 
-    fn from_hooks(hooks: Hooks<'a>, enabled: bool) -> Self {
+    fn from_hooks(mut hooks: Hooks<'a>, enabled: bool) -> Self {
+        for hook in hooks.iter_mut() {
+            hook.diagnostic_failure = false;
+        }
         Self {
             hooks,
             enabled,
@@ -619,6 +709,7 @@ impl<'a> Group<'a> {
             protection_error: None,
             prepare_callback: None,
             prepare_allocation_failed: false,
+            track_busy: false,
         }
     }
 
@@ -636,6 +727,11 @@ impl<'a> Group<'a> {
     /// Before the suspension: prior states, ranges and page protections,
     /// in a family's own publication's order.
     fn prepare(&mut self, prefix: bool) {
+        if self.track_busy {
+            for hook in self.hooks.iter() {
+                hook.publication_busy.store(false, Ordering::Relaxed);
+            }
+        }
         let len = self.hooks.len();
         let Ok(mut previous) = publication_storage(len, self.enabled && !prefix) else {
             self.prepare_allocation_failed = prefix;
@@ -658,7 +754,10 @@ impl<'a> Group<'a> {
         );
         self.previous = previous;
         self.ranges = ranges;
-        for hook in selected(&self.hooks, &self.previous, self.enabled) {
+        for (hook, &(_, owned)) in self.hooks.iter_mut().zip(&self.previous) {
+            if !(self.enabled || owned) {
+                continue;
+            }
             let mut prior = 0;
             if unsafe {
                 VirtualProtect(
@@ -669,6 +768,7 @@ impl<'a> Group<'a> {
                 )
             } == 0
             {
+                hook.diagnostic_failure = true;
                 self.prepare_error = Some(io::Error::last_os_error().to_string());
                 return;
             }
@@ -680,15 +780,45 @@ impl<'a> Group<'a> {
     /// site or tap is `Ok(false)` and a changed snapshot `Err(0)`, before any
     /// write; then every selected hook that changes state is written.
     fn check_and_write(&mut self, threads: &mut Threads) -> Result<bool, u32> {
-        if threads.contains_ip(&self.ranges)? {
+        if self.track_busy {
+            self.check_and_write_tracking::<true>(threads)
+        } else {
+            self.check_and_write_tracking::<false>(threads)
+        }
+    }
+
+    fn check_and_write_tracking<const TRACK_BUSY: bool>(
+        &mut self,
+        threads: &mut Threads,
+    ) -> Result<bool, u32> {
+        if TRACK_BUSY {
+            if let Some(index) = threads.colliding_range(&self.ranges)? {
+                selected(&self.hooks, &self.previous, self.enabled)
+                    .nth(index)
+                    .expect("range belongs to selected hook")
+                    .publication_busy
+                    .store(true, Ordering::Relaxed);
+                return Ok(false);
+            }
+        } else if threads.contains_ip(&self.ranges)? {
             return Ok(false);
         }
         let enabled = self.enabled;
-        for hook in selected(&self.hooks, &self.previous, enabled) {
-            if hook.tap_busy_with(enabled, |ranges| threads.contains_ip(ranges))? {
+        for (hook, &(_, owned)) in self.hooks.iter_mut().zip(&self.previous) {
+            if !(enabled || owned) {
+                continue;
+            }
+            if hook
+                .tap_busy_with(enabled, |ranges| threads.contains_ip(ranges))
+                .inspect_err(|_| hook.diagnostic_failure = true)?
+            {
+                if TRACK_BUSY {
+                    hook.publication_busy.store(true, Ordering::Relaxed);
+                }
                 return Ok(false);
             }
             if !hook.bytes_match(hook.enabled) {
+                hook.diagnostic_failure = true;
                 self.snapshot_refusal = enabled && self.previous.iter().all(|(_, owned)| !*owned);
                 return Err(0);
             }
@@ -734,13 +864,20 @@ impl<'a> Group<'a> {
     /// Still suspended: restore the page protections this group changed.
     fn restore_protection(&mut self) {
         let mut ok = true;
-        for hook in selected(&self.hooks, &self.previous, self.enabled).take(self.protected) {
+        for (hook, _) in self
+            .hooks
+            .iter_mut()
+            .zip(&self.previous)
+            .filter(|(_, previous)| self.enabled || previous.1)
+            .take(self.protected)
+        {
             if restore_refused() {
+                hook.diagnostic_failure = true;
                 ok = false;
                 continue;
             }
             let mut ignored = 0;
-            ok &= unsafe {
+            let restored = unsafe {
                 VirtualProtect(
                     hook.site as *const c_void,
                     hook.sentinel_len,
@@ -748,6 +885,8 @@ impl<'a> Group<'a> {
                     &mut ignored,
                 )
             } != 0;
+            hook.diagnostic_failure |= !restored;
+            ok &= restored;
         }
         self.protection_ok &= ok;
         self.protected = 0;
@@ -758,7 +897,10 @@ impl<'a> Group<'a> {
     /// later restore; do not save the temporary writable protection.
     fn reopen(&mut self) -> Result<(), u32> {
         let mut protected = 0;
-        for hook in selected(&self.hooks, &self.previous, self.enabled) {
+        for (hook, &(_, owned)) in self.hooks.iter_mut().zip(&self.previous) {
+            if !(self.enabled || owned) {
+                continue;
+            }
             #[cfg(any(test, feature = "test-support"))]
             if FAIL_REOPENS.with(|failures| {
                 let (skip, count) = failures.get();
@@ -769,6 +911,7 @@ impl<'a> Group<'a> {
                 });
                 skip == 0 && count != 0
             }) {
+                hook.diagnostic_failure = true;
                 return Err(31);
             }
             let mut ignored = 0;
@@ -781,6 +924,7 @@ impl<'a> Group<'a> {
                 )
             } == 0
             {
+                hook.diagnostic_failure = true;
                 return Err(unsafe { GetLastError() });
             }
             protected += 1;
@@ -1002,8 +1146,14 @@ fn settle(groups: &mut [Group<'_>], flush: &mut impl FnMut() -> Result<(), u32>)
 }
 
 fn verify(group: &mut Group<'_>) {
-    let verified = selected(&group.hooks, &group.previous, group.enabled)
-        .all(|hook| hook.bytes_match(group.enabled));
+    let mut verified = true;
+    for (hook, &(_, owned)) in group.hooks.iter_mut().zip(&group.previous) {
+        if (group.enabled || owned) && !hook.bytes_match(group.enabled) {
+            hook.diagnostic_failure = true;
+            verified = false;
+            break;
+        }
+    }
     if verified {
         for hook in group.hooks.iter_mut() {
             hook.needs_flush = false;

@@ -9,6 +9,9 @@ pub const VTABLE_RVA: usize = 0x0295_e4c0;
 pub const NAME: usize = 0x30;
 pub const ID: usize = 0x50;
 pub const REDUCTION: usize = 0x08;
+pub const TECHNOLOGIES: usize = 0x10;
+pub const USES: usize = 0x28;
+pub const CATEGORIES: usize = 0x58;
 
 pub(crate) fn value(
     memory: &impl Memory,

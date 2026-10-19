@@ -60,7 +60,10 @@ impl Renderer<'_, '_, '_> {
         // and tests before describing. Caller links do not leak in.
         if !template.on_research_complete.is_empty() {
             let selected = (|| {
-                let selected = self.evaluator()?.fresh_country_scope(Some(country), None)?;
+                let selected = self
+                    .evaluator()?
+                    .fresh_country_scope(Some(country), None)
+                    .map_err(|why| why.to_string())?;
                 self.technology_condition(&template.on_research_complete_limit, selected)
                     .map(|allowed| allowed.then_some(selected))
             })();
@@ -444,7 +447,10 @@ impl Renderer<'_, '_, '_> {
         let conditions = equipment
             .module_conditions(token)
             .ok_or("module admission projection is unavailable")?;
-        let selected = self.evaluator()?.fresh_country_scope(Some(country), None)?;
+        let selected = self
+            .evaluator()?
+            .fresh_country_scope(Some(country), None)
+            .map_err(|why| why.to_string())?;
         if let Some(limit) = &conditions.limit
             && !self.technology_condition(limit, selected)?
         {

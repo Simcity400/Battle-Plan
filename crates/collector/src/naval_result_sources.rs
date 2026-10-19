@@ -606,10 +606,16 @@ impl Hooks {
         ];
         let install = || -> Result<Vec<Hook>, &'static str> {
             for site in native::SITES {
+                crate::hook::installation::site(base + site.rva);
                 let mut sentinel = [0u8; 16];
                 if !memory.copy(base + site.rva, &mut sentinel[..site.sentinel_len])
                     || sentinel[..site.sentinel_len] != site.sentinel[..site.sentinel_len]
                 {
+                    crate::hook::installation::refused(
+                        crate::hook::installation::Kind::Sentinel,
+                        Some(base + site.rva),
+                        "naval result sources sentinel differs or unreadable",
+                    );
                     return Err("naval result sources sentinel differs or unreadable");
                 }
             }
@@ -648,6 +654,11 @@ impl Hooks {
                 Self { hooks }
             }
             Err(reason) => {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Construction,
+                    None,
+                    reason,
+                );
                 let _ = UNHOOKED.set(reason);
                 Self { hooks: Vec::new() }
             }

@@ -1,3 +1,4 @@
+import CombatLogDetails from '../land-battles/CombatLogDetails';
 import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { ButterflyChart } from '../../charts/butterfly';
@@ -29,7 +30,7 @@ const NO_WARNINGS: string[] = [];
 type CasualtyItem = ButterflyItem & { data: CountryCasualties };
 
 /** Current cumulative losses from the requested prepared hour. */
-export default function CasualtiesWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
   const tokens = useChartTokens();
@@ -124,3 +125,5 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
     {notes}
   </div>;
 }
+
+export default function CasualtiesWidget(props: WidgetProps) { return <><OriginalCasualtiesWidget {...props} /><CombatLogDetails {...props} view="manpower" /></>; }

@@ -521,6 +521,9 @@ pub fn query(
     cancelled: &AtomicBool,
 ) -> io::Result<Option<ArmySizeReply>> {
     ArmySize::validate(params).map_err(dashboard_core::invalid)?;
+    if params.template_at.is_some() {
+        return super::template_roster::query(source, params, context, cancelled).map(Some);
+    }
     let branch = params
         .branch_id
         .parse()

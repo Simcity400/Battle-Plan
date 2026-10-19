@@ -272,7 +272,7 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
         let mut job = CharactersJob {
             log: crate::raw::RawLog::new(16, 256),
             game_state: ADDRESS,
-            active: [true; 5],
+            active: [true; N],
             ..CharactersJob::default()
         };
         let copied = copy_view(&mut job, &memory, IMAGE, pointer);
@@ -351,8 +351,8 @@ fn character_fresh_view_hints_observe_no_targets_and_ignore_failed_fields() {
     // Zero-length inactive scatter slots may have the same raw offset as
     // the next successful field. They must never publish that offset.
     for active in [
-        [true, false, false, true, true],
-        [false, true, false, false, false],
+        [true, false, false, true, true, true],
+        [false, true, false, false, false, false],
     ] {
         let memory = engine_native::memory::SliceMemory {
             base: ADDRESS,

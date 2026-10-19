@@ -12,7 +12,11 @@ fn wing(id: u64, owner: u32, region: u32) -> AirWingRow {
 }
 
 fn registration(wing: u64, ordinal: u32) -> replay_data::rows::AirRegionalMissionRow {
-    replay_data::rows::AirRegionalMissionRow { wing, ordinal }
+    replay_data::rows::AirRegionalMissionRow {
+        wing,
+        ordinal,
+        ..Default::default()
+    }
 }
 
 #[test]

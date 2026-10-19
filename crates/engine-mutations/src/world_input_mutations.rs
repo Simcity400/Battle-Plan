@@ -39,6 +39,12 @@
 //! Every site takes at most four integer or pointer arguments and returns
 //! RAX unchanged from its original.
 
+// MIO configuration, trait ownership and queue writers certify rare state.
+// Construction and load are observed through the full census and world epoch.
+// Policy reload is forwarded by country inputs; the policy score callback also
+// invalidates that domain. Both observations are required before carrying it.
+// Design author/bonus setters, copy, consuming move and load certify frozen
+// payloads; receiver pointers and full references guard their lifetimes.
 pub use crate::advisor_mutations::MutationSite;
 
 /// Which held table a site's call may change.
@@ -49,9 +55,17 @@ pub enum Domain {
     Tension,
     /// Names its receiver: the container's owning country.
     DynamicModifiers,
+    /// Rare MIO trait, queue and allowed-policy rosters, keyed by full object lifetime.
+    IndustrialOrganisationRosters,
+    /// The country input family forwards the policy database reload writer.
+    IndustrialOrganisationPolicies,
+    /// Frozen MIO author, source marker and bonuses of a design.
+    DesignIndustrialOrganisation,
+    /// The process-wide game fog switch, with nudge entry forwarded by buildings.
+    GameFog,
 }
 
-pub const DOMAINS: usize = 4;
+pub const DOMAINS: usize = 8;
 
 /// Offset of a dynamic modifier container's owning country, null for a state's.
 pub const CONTAINER_COUNTRY: usize = crate::cdynamic_modifier_container::COUNTRY;
@@ -60,7 +74,7 @@ const CONTAINER_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,
 ];
 
-pub const MUTATIONS: [(MutationSite, Domain); 9] = [
+pub const MUTATIONS: [(MutationSite, Domain); 27] = [
     // Province rename effect (effect): save RDI and reserve 0x30 stack bytes.
     (
         MutationSite {
@@ -162,6 +176,204 @@ pub const MUTATIONS: [(MutationSite, Domain); 9] = [
         },
         Domain::DynamicModifiers,
     ),
+    (
+        MutationSite {
+            name: "mio_queue_append",
+            rva: 0xda02d0,
+            sentinel: [
+                0x40, 0x53, 0x55, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x38, 0x48, 0x8d, 0xb9, 0x50,
+                0x01, 0x00,
+            ],
+        },
+        Domain::IndustrialOrganisationRosters,
+    ),
+    (
+        MutationSite {
+            name: "mio_state_copy",
+            rva: 0xda06b0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24,
+                0x18, 0x4c,
+            ],
+        },
+        Domain::IndustrialOrganisationRosters,
+    ),
+    (
+        MutationSite {
+            name: "mio_allowed_policies",
+            rva: 0xda2e10,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
+                0x20, 0x57,
+            ],
+        },
+        Domain::IndustrialOrganisationRosters,
+    ),
+    (
+        MutationSite {
+            name: "mio_queue_move",
+            rva: 0xda6a00,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+                0x18, 0x57,
+            ],
+        },
+        Domain::IndustrialOrganisationRosters,
+    ),
+    (
+        MutationSite {
+            name: "mio_read_state",
+            rva: 0xda6b40,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+                0x41, 0x57,
+            ],
+        },
+        Domain::IndustrialOrganisationRosters,
+    ),
+    (
+        MutationSite {
+            name: "mio_queue_remove",
+            rva: 0xda7090,
+            sentinel: [
+                0x40, 0x57, 0x48, 0x83, 0xec, 0x40, 0x48, 0x89, 0x5c, 0x24, 0x50, 0x48, 0x8b, 0xf9,
+                0x48, 0x89,
+            ],
+        },
+        Domain::IndustrialOrganisationRosters,
+    ),
+    (
+        MutationSite {
+            name: "mio_queue_replace",
+            rva: 0xda7210,
+            sentinel: [
+                0x40, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x38, 0x48, 0x8d, 0xb9, 0x50, 0x01, 0x00,
+                0x00, 0x4c,
+            ],
+        },
+        Domain::IndustrialOrganisationRosters,
+    ),
+    (
+        MutationSite {
+            name: "mio_unlock_trait",
+            rva: 0xda8050,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x50, 0x48, 0x8d, 0x05, 0x07,
+                0x73, 0x98,
+            ],
+        },
+        Domain::IndustrialOrganisationRosters,
+    ),
+    (
+        MutationSite {
+            name: "design_mio_bonuses",
+            rva: 0xbc4660,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+                0x18, 0x57,
+            ],
+        },
+        Domain::DesignIndustrialOrganisation,
+    ),
+    (
+        MutationSite {
+            name: "design_mio_link",
+            rva: 0xbd2f40,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+                0x18, 0x48,
+            ],
+        },
+        Domain::DesignIndustrialOrganisation,
+    ),
+    (
+        MutationSite {
+            name: "design_mio_move",
+            rva: 0x620220,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xfa, 0x48,
+                0x8b, 0xd9,
+            ],
+        },
+        Domain::DesignIndustrialOrganisation,
+    ),
+    (
+        MutationSite {
+            name: "design_mio_clone",
+            rva: 0xbc82b0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
+                0x20, 0x48,
+            ],
+        },
+        Domain::DesignIndustrialOrganisation,
+    ),
+    (
+        MutationSite {
+            name: "design_mio_read",
+            rva: 0xbcefb0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+                0x41, 0x57,
+            ],
+        },
+        Domain::DesignIndustrialOrganisation,
+    ),
+    (
+        MutationSite {
+            name: "mio_policy_score_refresh",
+            rva: 0xa3d1f0,
+            sentinel: [
+                0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0x19, 0x48, 0x8d, 0x54, 0x24, 0x30,
+                0x48, 0x8b,
+            ],
+        },
+        Domain::IndustrialOrganisationPolicies,
+    ),
+    (
+        MutationSite {
+            name: "fog_enter_game",
+            rva: 0x00dad320,
+            sentinel: [
+                0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x10, 0x48, 0x89, 0x70, 0x18, 0x48, 0x89, 0x78,
+                0x20, 0x48,
+            ],
+        },
+        Domain::GameFog,
+    ),
+    (
+        MutationSite {
+            name: "fog_enter_frontend",
+            rva: 0x00b2c160,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24,
+                0x08, 0x55,
+            ],
+        },
+        Domain::GameFog,
+    ),
+    (
+        MutationSite {
+            name: "fog_leave_nudge",
+            rva: 0x012bf2f0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+                0x18, 0x57,
+            ],
+        },
+        Domain::GameFog,
+    ),
+    (
+        MutationSite {
+            name: "fog_toggle",
+            rva: 0x002585d0,
+            sentinel: [
+                0x48, 0x89, 0x4c, 0x24, 0x08, 0x53, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xd9, 0x33,
+                0xc0, 0x89,
+            ],
+        },
+        Domain::GameFog,
+    ),
 ];
 
 #[cfg(test)]
@@ -182,6 +394,10 @@ mod tests {
             Domain::RegionAccess,
             Domain::Tension,
             Domain::DynamicModifiers,
+            Domain::IndustrialOrganisationRosters,
+            Domain::IndustrialOrganisationPolicies,
+            Domain::DesignIndustrialOrganisation,
+            Domain::GameFog,
         ] {
             assert!(MUTATIONS.iter().any(|(_, of)| *of == domain));
             assert!((domain as usize) < DOMAINS);

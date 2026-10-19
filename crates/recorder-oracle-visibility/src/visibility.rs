@@ -646,9 +646,109 @@ fn compare_local_player(
     Ok(())
 }
 
+/// Uncapped volunteer stockpile aircraft use all saved variants, independently of raid essentials.
+/// Group variant amounts by their captured archetype before native whole-plane conversion.
+pub fn compare_volunteer_stockpile(
+    frame: &DecodedFrame,
+    save: &Save,
+    countries: &CountryContext<'_>,
+    is_plane: &dyn Fn(u32) -> io::Result<bool>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = complete::<tables::RaidCountryInputs>(frame)?;
+    for row in rows {
+        row.volunteer_stockpile_planes
+            .require("volunteer stockpile aircraft")
+            .map_err(invalid)?;
+    }
+    if !rows.iter().any(|row| {
+        matches!(
+            row.volunteer_stockpile_planes,
+            replay_data::rows::Recorded::Value(Some(_))
+        )
+    }) {
+        report.compared("RaidCountryInputs.volunteer_stockpile_planes", 0);
+        return Ok(());
+    }
+    let variants: BTreeMap<_, _> = complete::<tables::VariantDefinitions>(frame)?
+        .iter()
+        .map(|row| (row.id, row.archetype_token))
+        .collect();
+    let tags: BTreeMap<_, _> = countries
+        .by_tag
+        .iter()
+        .map(|(&tag, country)| (country.canonical_slot, tag))
+        .collect();
+    let saved = save
+        .production
+        .countries
+        .as_ref()
+        .ok_or_else(|| invalid("save lacks production countries"))?;
+    let mut compared = 0;
+    const AMOUNT_LIMIT: i128 = 0x53e2_d620_fb40;
+    for row in rows {
+        let Some(actual) = *row
+            .volunteer_stockpile_planes
+            .require("volunteer stockpile aircraft")
+            .map_err(invalid)?
+        else {
+            continue;
+        };
+        let tag = *tags
+            .get(&row.canonical_slot)
+            .ok_or_else(|| invalid("volunteer stockpile country is unresolved"))?;
+        let stockpile = saved
+            .get(tag)
+            .and_then(|country| country.production.as_ref())
+            .and_then(|production| production.stockpile.as_ref())
+            .ok_or_else(|| invalid("volunteer sender has no serialized stockpile"))?;
+        let mut archetypes = BTreeMap::<u32, i128>::new();
+        for entry in &stockpile.equipment {
+            let token = *variants
+                .get(&entry.variant)
+                .ok_or_else(|| invalid("volunteer stockpile variant definition is missing"))?;
+            *archetypes.entry(token).or_default() += i128::from(entry.amount.raw);
+        }
+        let mut expected = 0_i32;
+        for (token, amount) in archetypes {
+            if is_plane(token)? {
+                let amount = amount.clamp(-AMOUNT_LIMIT, AMOUNT_LIMIT);
+                expected = expected.wrapping_add((amount / 100_000) as i32);
+            }
+        }
+        if actual != expected {
+            report.difference(
+                format!(
+                    "RaidCountryInputs {} volunteer_stockpile_planes",
+                    String::from_utf8_lossy(tag)
+                ),
+                actual,
+                expected,
+            );
+        }
+        compared += 1;
+    }
+    report.compared("RaidCountryInputs.volunteer_stockpile_planes", compared);
+    Ok(())
+}
+
 /// Inputs the text save does not carry: they decode, but nothing certifies them.
 fn record_inputs(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
     for row in complete::<tables::SimulationFeatures>(frame)? {
+        if let Some(extent) = report.recorded(
+            &row.state_array_len,
+            "SimulationFeatures.state_array_len",
+            "global state-array extent",
+        ) {
+            report.limitation(
+                if extent.is_some() {
+                    "text saves omit the physical state-array extent and its null slots; membership cannot certify global.states length"
+                } else {
+                    "the native state-array header was unavailable; global.states remains refused"
+                },
+                "SimulationFeatures.state_array_len",
+            );
+        }
         if let Some(instant) = report.recorded(
             &row.instant_decisions,
             "SimulationFeatures.instant_decisions",

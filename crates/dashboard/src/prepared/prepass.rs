@@ -1369,6 +1369,7 @@ fn visit(
         if let (Some(hook), At::Hour(frame)) = (&knobs.hook, &at) {
             match hook(family.name, frame) {
                 Fault::Continue => {}
+                Fault::Skip => return Ok(()),
                 Fault::Error => return Err(io::Error::other("Injected extract error")),
                 Fault::Panic => panic!("Injected extract panic"),
             }
@@ -1670,6 +1671,7 @@ fn extract_bound(
 #[derive(Clone, Copy)]
 pub(crate) enum Fault {
     Continue,
+    Skip,
     Error,
     Panic,
 }
@@ -1681,6 +1683,44 @@ thread_local! {
     static TEST_WORKERS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static TEST_HOOK: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) };
     static TEST_ALONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test controls inherited by an independently scheduled preparation worker.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct TestContext {
+    knobs: Knobs,
+    workers: Option<usize>,
+    sequential: bool,
+}
+
+#[cfg(test)]
+impl TestContext {
+    pub(crate) fn capture() -> Self {
+        Self {
+            knobs: Knobs::current(),
+            workers: TEST_WORKERS.with(std::cell::Cell::get),
+            sequential: TEST_SEQUENTIAL.with(std::cell::Cell::get),
+        }
+    }
+
+    pub(crate) fn install(self) -> impl Drop {
+        struct Reset(TestContext);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TEST_HOOK.with(|v| *v.borrow_mut() = self.0.knobs.hook.take());
+                TEST_ALONE.with(|v| v.set(self.0.knobs.alone));
+                TEST_WORKERS.with(|v| v.set(self.0.workers));
+                TEST_SEQUENTIAL.with(|v| v.set(self.0.sequential));
+            }
+        }
+        let reset = Reset(Self::capture());
+        TEST_HOOK.with(|v| *v.borrow_mut() = self.knobs.hook);
+        TEST_ALONE.with(|v| v.set(self.knobs.alone));
+        TEST_WORKERS.with(|v| v.set(self.workers));
+        TEST_SEQUENTIAL.with(|v| v.set(self.sequential));
+        reset
+    }
 }
 
 // Fold counts are dashboard-base's (`dashboard_base::prepared::prepass::note`),

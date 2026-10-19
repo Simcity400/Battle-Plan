@@ -342,6 +342,125 @@ fn quiet_hours_read_no_regional_vector_and_publish_a_fresh_walks_rows() {
     }
 }
 
+/// The sidecar never changes strict walk rows or their native observations.
+#[test]
+fn all_active_order_is_read_only_on_certified_changes_and_failures_are_carried() {
+    fn active(world: &mut World, slot: u32, reverse: bool) {
+        let mut indices: Vec<_> = world.countries[slot as usize]
+            .iter()
+            .flat_map(|(_, wings)| wings.iter().copied())
+            .collect();
+        if reverse {
+            indices.reverse();
+        }
+        let data = window(slot) + 0x900;
+        for (at, index) in indices.iter().enumerate() {
+            let wing = &mut world.census[*index];
+            wing.owner_slot = slot;
+            let pointer = wing.mission_pointer;
+            world.u64(data + at * 8, pointer as u64);
+        }
+        world.array(
+            air(slot) + cstrategic_air::ALL_ACTIVE_MISSIONS,
+            data,
+            indices.len() as u32,
+            64,
+        );
+    }
+    fn ordered(
+        world: &World,
+        store: &mut MissionStore,
+        watches: &Watches,
+        check: Check,
+    ) -> (Vec<mission_store::OrderLabel>, [usize; SLOTS + 1]) {
+        let memory = Traced {
+            bytes: &world.bytes,
+            regional: Default::default(),
+        };
+        let census = world.sorted_census();
+        let mut reuse = MissionReuse::begin(store, watches, check);
+        let mut rows = Vec::new();
+        let result = walk_carried(
+            &memory,
+            0,
+            GS,
+            &census,
+            engine_native::walk::Buffer::Growing(&mut rows),
+            &mut Default::default(),
+            &mut reuse,
+        );
+        assert!(matches!(result, Outcome::Rows { .. }));
+        rows.truncate(result.len());
+        assert_eq!(rows, world.rows());
+        let mut labels = Vec::new();
+        reuse.finish_with_order(true, &memory, &census, &mut labels);
+        (labels, memory.regional.into_inner())
+    }
+    let mut world = World::new();
+    for slot in 1..=SLOTS as u32 {
+        active(&mut world, slot, true);
+    }
+    let watches = Watches::enabled(16);
+    let mut store = MissionStore::new();
+    let (first, _) = ordered(&world, &mut store, &watches, Check::Nothing);
+    for slot in 1..=SLOTS as u32 {
+        let mut expected: Vec<_> = world.countries[slot as usize]
+            .iter()
+            .flat_map(|(_, indices)| indices.iter().map(|&index| world.census[index].wing))
+            .collect();
+        expected.reverse();
+        let mut observed: Vec<_> = first
+            .iter()
+            .filter(|row| expected.contains(&row.wing))
+            .copied()
+            .collect();
+        observed.sort_unstable_by_key(|row| row.label);
+        assert_eq!(
+            observed.iter().map(|row| row.wing).collect::<Vec<_>>(),
+            expected
+        );
+    }
+    watches.boundary(false);
+    let (quiet, reads) = ordered(&world, &mut store, &watches, Check::Nothing);
+    assert_eq!(quiet, first);
+    assert_eq!(reads, [0; SLOTS + 1]);
+    // A certification-preserving sampled regional check must not poll all-active pointers.
+    let bad = window(1) + 0x900;
+    world.u64(bad, 0);
+    // Carrier combat can list an empty ordinary region and change that
+    // header, without changing the ordinary all-active vector or writer.
+    let ordinary = world.countries[1]
+        .iter()
+        .map(|(_, rows)| rows.len())
+        .sum::<usize>();
+    world.countries[1].push((7, Vec::new()));
+    world.layout(1);
+    world.array(
+        air(1) + cstrategic_air::ALL_ACTIVE_MISSIONS,
+        bad,
+        ordinary as u32,
+        64,
+    );
+    let (verified, _) = ordered(&world, &mut store, &watches, Check::Every);
+    assert_eq!(verified, first);
+    // Notification revokes that order. The independently failed read stays unknown.
+    drop(watches.notify(air(1), 0));
+    watches.boundary(false);
+    let (failed, _) = ordered(&world, &mut store, &watches, Check::Nothing);
+    assert!(failed.len() < first.len());
+    active(&mut world, 1, false);
+    watches.boundary(false);
+    let (still_unknown, reads) = ordered(&world, &mut store, &watches, Check::Nothing);
+    assert_eq!(still_unknown, failed);
+    assert_eq!(reads, [0; SLOTS + 1]);
+    drop(watches.notify(air(1), 0));
+    watches.boundary(false);
+    let (restored, reads) = ordered(&world, &mut store, &watches, Check::Nothing);
+    assert_eq!(restored.len(), first.len());
+    assert!(reads[1] > 0);
+    assert!(reads[2..].iter().all(|&n| n == 0));
+}
+
 #[test]
 fn a_hooked_registration_rereads_only_its_country() {
     let mut world = World::new();

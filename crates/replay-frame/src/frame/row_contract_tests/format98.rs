@@ -30,7 +30,8 @@ fn check97<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(table: TableId, r
     let fields = format97().fields(table);
     let bytes = fields97(table, &row);
     let mut input = decoder97(&bytes, fields);
-    let snapshot = T::decode_fields(row.key(), &mut input).unwrap();
+    let snapshot = T::decode_fields(row.key(), &mut input)
+        .unwrap_or_else(|error| panic!("{table:?}: {error}"));
     input.finish().unwrap();
     let mask = table
         .last_change()
@@ -60,7 +61,7 @@ fn check97<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(table: TableId, r
 }
 
 #[test]
-fn format97_appended_fields_are_absent_in_snapshots_and_inserted_deltas() {
+fn format97_supported_prefixes_keep_appended_fields_absent() {
     check97(
         TableId::ScriptVariables,
         ScriptVariablesRow {
@@ -96,16 +97,6 @@ fn format97_appended_fields_are_absent_in_snapshots_and_inserted_deltas() {
         },
     );
     check97(
-        TableId::UnitLeaders,
-        UnitLeaderRow {
-            id: 9,
-            reference_type: 4713,
-            category: 3,
-            inherited_text_b: vec![0xff, 0],
-            ..Default::default()
-        },
-    );
-    check97(
         TableId::CharacterOperatives,
         CharacterOperativeRow {
             character: 7,
@@ -129,17 +120,6 @@ fn format97_appended_fields_are_absent_in_snapshots_and_inserted_deltas() {
         },
     );
     check97(
-        TableId::CountryCounterInputs,
-        CountryCounterInputRow {
-            forward_visibility: crate::rows::Recorded::Value(None),
-            country: 5000,
-            owned_state_count: 3,
-            controlled_state_count: 2,
-            first_division: u64::MAX,
-            ..Default::default()
-        },
-    );
-    check97(
         TableId::VariantDefinitions,
         VariantDefinitionRow {
             id: u64::MAX,
@@ -147,85 +127,48 @@ fn format97_appended_fields_are_absent_in_snapshots_and_inserted_deltas() {
             ..Default::default()
         },
     );
-    check97(
-        TableId::DivisionStatus,
-        DivisionStatusRow {
-            division: u64::MAX,
-            supply_ratio: i64::MIN,
-            border_combat_stats: Recorded::Value(Some([i64::MIN, 0, i64::MAX])),
-            ..Default::default()
-        },
-    );
 }
 
 #[test]
-fn format97_baseline_updates_use_original_mask_width_and_keep_appended_fields_absent() {
+fn current_country_baseline_updates_keep_five_byte_masks_and_unchanged_combat_fields() {
     let previous = CountryCounterInputRow {
-        forward_visibility: crate::rows::Recorded::Value(None),
         country: 5000,
         pride_of_the_fleet: u64::MAX,
         owned_state_count: 3,
         controlled_state_count: 2,
         first_division: 9,
+        owned_states: Some(vec![2, 1, 2]).into(),
+        air_combat_modifiers_known: true.into(),
+        air_superiority_efficiency: Some(i64::MIN).into(),
         ..Default::default()
     };
-    let fields = fields97(TableId::CountryCounterInputs, &previous);
-    let previous = CountryCounterInputRow::decode_fields(
-        previous.key(),
-        &mut decoder97(&fields, format97().fields(TableId::CountryCounterInputs)),
-    )
-    .unwrap();
     let next = CountryCounterInputRow {
         owned_state_count: 4,
         first_division: 10,
         ..previous.clone()
     };
-    let mut values = Vec::new();
-    Change::Number(1).encode(&mut values).unwrap();
-    Change::Number(1).encode(&mut values).unwrap();
-    let delta = DeltaRow {
-        format: 97,
-        key: next.key(),
-        mask: 0b1010,
-        recorded_fields: 4,
-        values,
-    };
-    assert!(next.delta(Some(&previous)).is_err());
+    let table = TableId::CountryCounterInputs;
+    let delta = next.delta(Some(&previous)).unwrap().unwrap();
     assert_eq!(delta.mask, 0b1010);
-    assert_eq!(
-        TableId::CountryCounterInputs.mask_width(),
-        CountryCounterInputRow::SCHEMA.len().div_ceil(8)
-    );
+    assert_eq!(table.mask_width(), 5);
     let mut bytes = Vec::new();
-    TableId::CountryCounterInputs
-        .encode_key(delta.key, 0, &mut bytes)
-        .unwrap();
-    // The four legacy fields require one mask byte; the next update must stay aligned.
-    bytes.push(delta.mask as u8);
-    bytes.extend_from_slice(&delta.values);
-    TableId::CountryCounterInputs
-        .encode_key(delta.key, delta.key, &mut bytes)
-        .unwrap();
-    bytes.push(delta.mask as u8);
-    bytes.extend_from_slice(&delta.values);
-    let mut input = decoder97(&bytes, usize::MAX);
-    let decoded = decode_delta(TableId::CountryCounterInputs, 0, &mut input).unwrap();
-    let row = decoded.apply(Some(previous)).unwrap();
+    encode_delta(table, &delta, 0, &mut bytes).unwrap();
+    encode_delta(table, &delta, delta.key, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    let first = decode_delta(table, 0, &mut input).unwrap();
+    assert_eq!(first.format, crate::FORMAT_VERSION);
+    assert_eq!(first.recorded_fields, CountryCounterInputRow::SCHEMA.len());
+    let row = first.apply(Some(previous)).unwrap();
     assert_eq!(row, next);
-    assert_eq!(row.pride_of_the_fleet, u64::MAX);
-    assert_eq!(row.controlled_state_count, 2);
-    assert_eq!(row.owned_states, Recorded::NotRecorded);
-    assert_eq!(row.army_leaders, Recorded::NotRecorded);
-    let decoded = decode_delta(TableId::CountryCounterInputs, delta.key, &mut input).unwrap();
+    let second = decode_delta(table, delta.key, &mut input).unwrap();
     let twice = CountryCounterInputRow {
         owned_state_count: 5,
         first_division: 11,
         ..row.clone()
     };
-    assert_eq!(decoded.apply(Some(row)).unwrap(), twice);
+    assert_eq!(second.apply(Some(row)).unwrap(), twice);
     input.finish().unwrap();
 }
-
 #[test]
 fn format98_operands_preserve_bytes_order_and_independent_changed_fields() {
     let naming = NameOperands {

@@ -16,6 +16,8 @@ fn fixture() -> (DecodedFrame, Save) {
     save.factions.insert(
         FACTION,
         installed_content_save::Faction {
+            goals: Default::default(),
+            companions: Default::default(),
             id: FACTION,
             name: None,
             members: vec![b"GER".to_vec(), vec![b'R', 0, 0xff]],

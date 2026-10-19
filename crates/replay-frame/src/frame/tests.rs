@@ -1371,6 +1371,26 @@ fn row_replacements_match_full_frames_and_keep_untouched_allocations() {
 
 #[test]
 fn row_replacements_reject_bad_positions_tokens_and_later_errors_atomically() {
+    // Construct and consume each clone here so the caller does not reserve
+    // stack storage for every case's complete FrameInput and its temporaries.
+    fn encode_edited(
+        encoder: &mut FrameEncoder,
+        valid: &FrameInput,
+        force: bool,
+        edit: impl FnOnce(&mut FrameInput),
+    ) -> std::io::Result<Frame> {
+        let mut input = valid.clone();
+        edit(&mut input);
+        encoder.encode_input(input, force)
+    }
+
+    enum Invalid {
+        Replacement(Vec<usize>, TableRows),
+        LaterTable(TableId),
+        Branch,
+        Hour,
+    }
+
     let mut encoder = FrameEncoder::new();
     encoder.encode(source(1, 0), false).unwrap();
     let (token, old) = encoder
@@ -1379,28 +1399,12 @@ fn row_replacements_reject_bad_positions_tokens_and_later_errors_atomically() {
     let original = old.to_vec();
     let mut changed = original[0].clone();
     changed.controller = u32::MAX;
-    let patch = |indices, rows| {
-        let mut input: FrameInput = source(1, 1).into();
-        input.tables[TableId::Provinces.index()] = TableInput::ComparedChanges {
-            token,
-            indices,
-            rows,
-        };
-        input
+    let mut valid: FrameInput = source(1, 1).into();
+    valid.tables[TableId::Provinces.index()] = TableInput::ComparedChanges {
+        token,
+        indices: vec![0],
+        rows: TableRows::Provinces(vec![changed.clone()]),
     };
-    let valid = patch(vec![0], TableRows::Provinces(vec![changed.clone()]));
-    let mut cases = vec![
-        patch(vec![], TableRows::Provinces(vec![changed.clone()])),
-        patch(vec![0, 0], TableRows::Provinces(vec![changed.clone(); 2])),
-        patch(
-            vec![1, 0],
-            TableRows::Provinces(vec![original[1].clone(), changed.clone()]),
-        ),
-        patch(vec![2], TableRows::Provinces(vec![changed.clone()])),
-        patch(vec![1], TableRows::Provinces(vec![changed.clone()])),
-        patch(vec![0], TableRows::States(vec![])),
-    ];
-    let mut later_error = valid.clone();
     // The last table the current format records: a retired table is never
     // encoded, so it cannot fail the frame.
     let later = TableId::ALL
@@ -1412,35 +1416,56 @@ fn row_replacements_reject_bad_positions_tokens_and_later_errors_atomically() {
         })
         .unwrap();
     assert!(later.index() > TableId::Provinces.index());
-    later_error.tables[later.index()] = TableView::Complete(TableRows::Clock(Vec::new())).into();
-    cases.push(later_error);
-    let mut wrong_branch = valid.clone();
-    wrong_branch.branch += 1;
-    cases.push(wrong_branch);
-    let mut wrong_hour = valid.clone();
-    wrong_hour.hour += 1;
-    cases.push(wrong_hour);
-    for invalid in cases {
-        assert!(encoder.encode_input(invalid, false).is_err());
+    let cases = [
+        Invalid::Replacement(vec![], TableRows::Provinces(vec![changed.clone()])),
+        Invalid::Replacement(vec![0, 0], TableRows::Provinces(vec![changed.clone(); 2])),
+        Invalid::Replacement(
+            vec![1, 0],
+            TableRows::Provinces(vec![original[1].clone(), changed.clone()]),
+        ),
+        Invalid::Replacement(vec![2], TableRows::Provinces(vec![changed.clone()])),
+        Invalid::Replacement(vec![1], TableRows::Provinces(vec![changed.clone()])),
+        Invalid::Replacement(vec![0], TableRows::States(vec![])),
+        Invalid::LaterTable(later),
+        Invalid::Branch,
+        Invalid::Hour,
+    ];
+    for case in cases {
+        assert!(
+            encode_edited(&mut encoder, &valid, false, |input| match case {
+                Invalid::Replacement(indices, rows) => {
+                    input.tables[TableId::Provinces.index()] = TableInput::ComparedChanges {
+                        token,
+                        indices,
+                        rows,
+                    };
+                }
+                Invalid::LaterTable(table) => {
+                    input.tables[table.index()] =
+                        TableView::Complete(TableRows::Clock(Vec::new())).into();
+                }
+                Invalid::Branch => input.branch += 1,
+                Invalid::Hour => input.hour += 1,
+            })
+            .is_err()
+        );
         let (current, retained) = encoder
             .comparison_baseline::<tables::Provinces>(1, 1, false)
             .unwrap();
         assert_eq!(current, token);
         assert_eq!(retained, original);
     }
-    assert!(encoder.encode_input(valid.clone(), true).is_err());
+    assert!(encode_edited(&mut encoder, &valid, true, |_| {}).is_err());
     let mut other = FrameEncoder::new();
     other.encode(source(1, 0), false).unwrap();
-    assert!(other.encode_input(valid.clone(), false).is_err());
+    assert!(encode_edited(&mut other, &valid, false, |_| {}).is_err());
     let mut expected = source(1, 1);
     *expected.tables[TableId::Provinces.index()] =
         TableView::Complete(TableRows::Provinces(vec![changed, original[1].clone()]));
-    let actual = encoder.encode_input(valid.clone(), false).unwrap();
+    let actual = encode_edited(&mut encoder, &valid, false, |_| {}).unwrap();
     let expected = other.encode(expected, false).unwrap();
     assert_eq!(actual, expected);
-    let mut stale = valid;
-    stale.hour = 2;
-    assert!(encoder.encode_input(stale, false).is_err());
+    assert!(encode_edited(&mut encoder, &valid, false, |input| input.hour = 2).is_err());
 }
 
 #[test]
@@ -3249,4 +3274,101 @@ fn an_update_of_present_rows_applies_in_place() {
     };
     assert_eq!(updated.as_ptr(), table, "the table is not rebuilt");
     assert_eq!(updated[1], changed);
+}
+
+#[test]
+fn contained_validation_keeps_good_segments_and_rebaselines_refused_table() {
+    let _details = crate::codec::error_details_scope();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let baseline = encoder.encode(source(1, 0), false).unwrap();
+    decoder.apply(&baseline).unwrap();
+    let mut input: FrameInput = source(1, 1).into();
+    input.tables[TableId::States.index()] =
+        TableView::Complete(TableRows::States(vec![StateRow {
+            id: 64,
+            continent: crate::rows::Recorded::NotRecorded,
+            ..Default::default()
+        }]))
+        .into();
+    let context = encoder.frame_context(1, 1, false);
+    let mut segments = std::array::from_fn(|_| None);
+    segments[TableId::Countries.index()] = Some(
+        encoder
+            .encode_segment(
+                &context,
+                TableId::Countries,
+                &input.tables[TableId::Countries.index()],
+            )
+            .unwrap(),
+    );
+    let mut refused = Vec::new();
+    let mut prepared = encoder
+        .prepare_contained(input, false, &mut segments, |table, error| {
+            refused.push(table);
+            Ok(format!("spool validation failed: {error}"))
+        })
+        .unwrap();
+    let frame = prepared.take_frame().decode().unwrap();
+    encoder.commit(prepared).unwrap();
+    let decoded = decoder.apply(&frame).unwrap();
+    assert_eq!(refused, [TableId::States]);
+    assert!(
+        matches!(&*decoded.tables[TableId::States.index()], TableView::Unavailable { reason } if reason.contains("row 64 column continent"))
+    );
+    assert_eq!(
+        decoded.tables[TableId::Countries.index()],
+        FrameDecoder::new()
+            .apply(&FrameEncoder::new().encode(source(1, 1), true).unwrap())
+            .unwrap()
+            .tables[TableId::Countries.index()]
+    );
+    let recovered = encoder.encode(source(1, 2), false).unwrap();
+    assert!(!recovered.keyframe);
+    assert!(matches!(
+        recovered.tables[TableId::States.index()],
+        TableUpdate::Snapshot(_)
+    ));
+    decoder.apply(&recovered).unwrap();
+}
+
+#[test]
+fn containment_cannot_hide_clock_or_encoder_context_failures() {
+    let mut encoder = FrameEncoder::new();
+    let mut bad_clock: FrameInput = source(1, 0).into();
+    bad_clock.tables[TableId::Clock.index()] =
+        TableView::Complete(TableRows::Clock(Vec::new())).into();
+    let mut segments = std::array::from_fn(|_| None);
+    assert!(
+        encoder
+            .prepare_contained(bad_clock, false, &mut segments, |_, _| panic!(
+                "clock failure contained"
+            ))
+            .is_err()
+    );
+    encoder.encode(source(1, 0), false).unwrap();
+    assert!(
+        encoder
+            .prepare_contained(source(1, 0).into(), false, &mut segments, |_, _| panic!(
+                "frame failure contained"
+            ))
+            .is_err()
+    );
+    let (token, previous) = encoder
+        .comparison_baseline::<tables::Countries>(1, 1, false)
+        .unwrap();
+    let rows = TableRows::Countries(previous.to_vec());
+    let mut bad_indices: FrameInput = source(1, 1).into();
+    bad_indices.tables[TableId::Countries.index()] = TableInput::ComparedChanges {
+        token,
+        indices: Vec::new(),
+        rows,
+    };
+    assert!(
+        encoder
+            .prepare_contained(bad_indices, false, &mut segments, |_, _| panic!(
+                "encoder replacement indices were contained"
+            ))
+            .is_err()
+    );
 }

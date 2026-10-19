@@ -109,6 +109,7 @@ pub struct Captured {
     hashes: Vec<(u32, u64)>,
     /// Modifier metadata, read once per walk; its storage is kept.
     memo: engine_native::modifier_definition::DefinitionMemo,
+    volunteer_air: native::VolunteerAir,
 }
 
 /// The family's owner store and the site list writers' marks.
@@ -147,6 +148,7 @@ impl Captured {
             hashes: Vec::new(),
             essentials: Vec::new(),
             memo: Default::default(),
+            volunteer_air: Default::default(),
         }
     }
     pub fn reset(&mut self) {
@@ -158,7 +160,8 @@ impl Captured {
         self.command_power.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.countries.allocated_bytes()
+        self.volunteer_air.allocated_bytes()
+            + self.countries.allocated_bytes()
             + self.archetypes.allocated_bytes()
             + self.sites.allocated_bytes()
             + self.aces.allocated_bytes()
@@ -280,7 +283,14 @@ impl Captured {
         // contract, which withholds these tables on a mismatch.
         let keys = native::Keys::FIXED;
         let selection = &self.selection;
-        let walk = native::walk(
+        use collector_model_inputs::local_subunit_changes::{Changes as _, Observer};
+        let certificate = collector_lifetime::world_lifetime::token().and_then(|world| {
+            Observer
+                .quiet()
+                .map(|(epoch, revision)| (world, epoch, revision))
+        });
+        self.volunteer_air.prepare(certificate);
+        let walk = native::walk_with_volunteer_air(
             memory,
             base,
             game_state,
@@ -296,7 +306,19 @@ impl Captured {
                 aces: engine_native::walk::Buffer::Growing(&mut self.aces.rows),
             },
             &|slot| selection.contains(slot),
+            Some(&mut self.volunteer_air),
         );
+        let after = collector_lifetime::world_lifetime::token().and_then(|world| {
+            Observer
+                .quiet()
+                .map(|(epoch, revision)| (world, epoch, revision))
+        });
+        if certificate.is_none() || certificate != after {
+            for row in &mut self.countries.rows[..walk.countries.len()] {
+                row.volunteer_stockpile_planes = None;
+            }
+            self.volunteer_air.prepare(None);
+        }
         self.countries.outcome = walk.countries;
         self.command_power.outcome = walk.command_power;
         self.archetypes.outcome = walk.archetypes;
@@ -402,6 +424,15 @@ impl Captured {
                     alive: row.alive,
                     range: row.range,
                     type_range: row.type_range,
+                    normalization: row.normalization.into(),
+                    fuel_modifier: row.fuel_modifier.into(),
+                    combat_modifiers_known: (row.combat_modifiers.is_some()).into(),
+                    speed_modifier_raw: (row.combat_modifiers.and_then(|values| values[0])).into(),
+                    attack_modifier_raw: (row.combat_modifiers.and_then(|values| values[1])).into(),
+                    defence_modifier_raw: (row.combat_modifiers.and_then(|values| values[2]))
+                        .into(),
+                    type_speed_modifier_raw: (row.type_speed_modifier_raw).into(),
+                    type_combat_flags: (row.type_combat_flags).into(),
                 }
             }),
             table::<tables::CountryCommandPower, _>(
@@ -437,6 +468,7 @@ impl Captured {
         table::<tables::RaidCountryInputs, _>(self.countries.outcome, rows, |row| {
             RaidCountryInputRow {
                 canonical_slot: row.canonical_slot,
+                volunteer_stockpile_planes: (row.volunteer_stockpile_planes).into(),
                 air_range_factor: row.modifiers[0],
                 naval_commando_range_factor: row.modifiers[1],
                 autonomous: row.autonomous,
@@ -465,6 +497,7 @@ mod tests {
             canonical_slot: 3,
             modifiers: [Some(1), Some(2), Some(3), None, Some(5), Some(6)],
             autonomous: Some(1),
+            volunteer_stockpile_planes: None,
             reservations_start: 0,
             reservations_len: 2,
         };
@@ -491,6 +524,7 @@ mod tests {
                 naval_commando_range_factor: Some(2),
                 autonomous: Some(1),
                 convoy_reservations: vec![5, 6],
+                volunteer_stockpile_planes: (None).into(),
             }])
         );
         let [.., TableView::Complete(power)] = captured.tables() else {

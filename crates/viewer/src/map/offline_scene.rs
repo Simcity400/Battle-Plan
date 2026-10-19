@@ -167,6 +167,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         intel: Arc::new(viewer_raids::map::intel_icons::IntelAssets::load(
             layers, &defines,
         )),
+        occupation: Err("unused".into()),
         images,
         fonts,
         counters: Arc::new(counters),

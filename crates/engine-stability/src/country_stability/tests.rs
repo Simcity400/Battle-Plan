@@ -319,6 +319,11 @@ fn world() -> World {
         w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA);
         w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+        w.i64(
+            country + ccountry::MANPOWER + crate::ccountry_manpower::MOBILIZATION,
+            250_000,
+        );
+        w.u32(diplomacy + crate::ccountry_manpower::HOST, 0);
     }
     w.u32(D2 + DIPLOMACY_HOSTING, 0);
     w.array(D1 + cdiplomacy_status::OWNED_RELATIONS, RELATIONS, 1);
@@ -1481,14 +1486,15 @@ fn stability_failed_source_preparation_acquires_no_missing_scalars() {
 #[test]
 fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
     // Guarded calls in Phase order, excluding Context and roster setup.
+    // Totals includes the independent recruitment-ratio and non-exile-host reads.
     let expected = [
         (
-            [1, 17, 2, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
-            [1, 17, 2, 5, 6, 3, 1, 5, 6, 0, 7, 2, 6, 0, 0, 5],
+            [1, 17, 4, 5, 6, 10, 1, 11, 8, 3, 9, 3, 12, 0, 36, 7],
+            [1, 17, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 6, 0, 0, 5],
         ),
         (
-            [1, 17, 2, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9],
-            [1, 17, 2, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6],
+            [1, 17, 4, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9],
+            [1, 17, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6],
         ),
     ];
     for (w, (before, after)) in [world(), scaled_world()].into_iter().zip(expected) {
@@ -1497,6 +1503,14 @@ fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
         let old = observed_walk(&old_copies, true, &mut Memo::default(), 16, None);
         let new = observed_walk(&new_copies, false, &mut Memo::default(), 16, None);
         assert_same_walk(&old, &new);
+        assert_eq!(
+            new.input.manpower,
+            crate::ccountry_manpower::Row {
+                ratio: Some(250_000),
+                host: Some(0),
+                ..Default::default()
+            }
+        );
         assert_eq!(operand_spans(&new_copies), operand_spans(&old_copies));
         assert_eq!(new.fallbacks, 0);
         assert_eq!(old_copies.counts(), before);
@@ -1506,6 +1520,42 @@ fn stability_copy_census_keeps_first_observations_and_cuts_repeated_copies() {
             old_copies.counts(),
             new_copies.counts()
         );
+    }
+}
+
+#[test]
+fn manpower_refusals_preserve_stability_and_the_other_scalar() {
+    let w = world();
+    for (address, expected) in [
+        (
+            C1 + ccountry::MANPOWER + crate::ccountry_manpower::MOBILIZATION,
+            crate::ccountry_manpower::Row {
+                host: Some(0),
+                ..Default::default()
+            },
+        ),
+        (
+            D1 + crate::ccountry_manpower::HOST,
+            crate::ccountry_manpower::Row {
+                ratio: Some(250_000),
+                ..Default::default()
+            },
+        ),
+    ] {
+        let serial = Copies {
+            persistent: true,
+            ..Copies::new(&w)
+        };
+        let batched = Copies {
+            persistent: true,
+            ..Copies::new(&w)
+        };
+        let old = observed_walk(&serial, true, &mut Memo::default(), 16, Some(address));
+        let new = observed_walk(&batched, false, &mut Memo::default(), 16, Some(address));
+        assert_same_walk(&old, &new);
+        assert!(new.result.is_ok());
+        assert_eq!(new.input.manpower, expected);
+        assert_eq!(new.input.stability_raw, 50_000);
     }
 }
 
@@ -1692,6 +1742,7 @@ fn scaled_countries(count: u32) -> World {
         w.vtable(diplomacy, cdiplomacy_status::VTABLE_RVA);
         w.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
         w.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, 0, 0);
+        w.u32(diplomacy + crate::ccountry_manpower::HOST, 0);
         w.u64(country + ccountry::CHARACTERS, characters as u64);
         w.vtable(characters, ccountry_characters::VTABLE_RVA);
         w.u64(characters + ccountry_characters::OWNER, country as u64);
@@ -1738,7 +1789,7 @@ fn stability_batched_copies_match_serial_at_five_thousand_countries() {
         );
         assert_eq!(
             copies.counts(),
-            [1, 2, 2, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9]
+            [1, 2, 4, 5, 6, 12, 1, 11, 8, 3, 9, 3, 13, 3, 50, 9]
         );
         before += copies.calls.borrow().len();
         copies.calls.borrow_mut().clear();
@@ -1764,16 +1815,16 @@ fn stability_batched_copies_match_serial_at_five_thousand_countries() {
         assert_eq!(
             copies.counts(),
             if slot == 1 {
-                [1, 2, 2, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6]
+                [1, 2, 4, 5, 6, 3, 1, 5, 6, 0, 7, 2, 7, 2, 0, 6]
             } else {
-                [1, 2, 2, 5, 6, 3, 1, 5, 6, 0, 7, 0, 7, 0, 0, 2]
+                [1, 2, 4, 5, 6, 3, 1, 5, 6, 0, 7, 0, 7, 0, 0, 2]
             }
         );
         assert_eq!(new_scratch.batch_fallbacks(), 0);
         after += copies.calls.borrow().len();
     }
-    assert_eq!(before, COUNT as usize * 138);
-    assert_eq!(after, 55 + (COUNT as usize - 1) * 47);
+    assert_eq!(before, COUNT as usize * 140);
+    assert_eq!(after, 57 + (COUNT as usize - 1) * 49);
 }
 
 #[test]
@@ -2106,4 +2157,45 @@ fn stability_denied_candidate_preparation_matches_serial_acquisitions() {
         assert_eq!(counted.calls.get(), serial.calls.get());
         assert_eq!(new_scratch.batch_fallbacks(), 0);
     });
+}
+
+#[test]
+fn manpower_without_certificate_preserves_stability_and_reads_no_new_words() {
+    let mut world = world();
+    let country = ccountry::Reader::new(&world, BASE, GS)
+        .unwrap()
+        .at(1)
+        .unwrap()
+        .unwrap();
+    let ratio = country.pointer + ccountry::MANPOWER + crate::ccountry_manpower::MOBILIZATION;
+    world.i64(ratio, 250_000);
+    let mut context = Context::read(&world, BASE, GS, keys()).unwrap();
+    context.manpower_enabled = false;
+    struct NoManpower<'a> {
+        world: &'a World,
+        ratio: usize,
+    }
+    impl Memory for NoManpower<'_> {
+        fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
+            assert_ne!(address, self.ratio, "uncertified recruitment read");
+            self.world.copy(address, bytes)
+        }
+    }
+    let guarded = NoManpower {
+        world: &world,
+        ratio,
+    };
+    let countries = ccountry::Reader::new(&guarded, BASE, GS).unwrap();
+    let input = inputs(&guarded, BASE, &countries, country, &context).unwrap();
+    assert_eq!(input.manpower, Default::default());
+    assert_eq!(input.stability_raw, 50_000);
+    context.manpower_enabled = true;
+    let countries = ccountry::Reader::new(&world, BASE, GS).unwrap();
+    assert_eq!(
+        inputs(&world, BASE, &countries, country, &context)
+            .unwrap()
+            .manpower
+            .ratio,
+        Some(250_000)
+    );
 }

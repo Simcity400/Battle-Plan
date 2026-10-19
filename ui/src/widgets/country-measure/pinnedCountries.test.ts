@@ -43,7 +43,7 @@ function button(node: ReactNode, label: string): ReactElement<{ onClick: () => v
   return node.type === 'button' && node.props.children === label ? node as ReactElement<{ onClick: () => void }> : button(node.props.children, label);
 }
 
-test('registered politics and losses pins retain legacy native-holder fixtures through local picks, Follow and remount', async () => {
+test('registered politics and losses pins retain native holders through local picks, Follow and remount', async () => {
   type Cell = { value?: unknown; deps?: readonly unknown[] };
   const state = { cells: [] as Cell[], cursor: 0, effects: [] as (() => unknown)[], clock: 9,
     header: undefined as { hour: number | null; reason: string | null; label: { name: string; flag?: string } | null } | undefined,
@@ -72,11 +72,9 @@ test('registered politics and losses pins retain legacy native-holder fixtures t
       : typeof next === 'function' ? (next as (before: unknown) => unknown)(cell.value) : next; }];
   };
   const leaves: Record<string, string> = {
-    // This probe preserves the original complete numeric fixture while testing
-    // the real registration/body's native holder binding and dated headers.
+    // Complete numeric fixtures probe the registered body's native holder
+    // binding and dated headers.
     // Prepared query transport and bounded geometry have separate real-hook fixtures.
-    '/widgets/stability/usePreparedPolitics.ts': `const data = ${JSON.stringify(values)};
-      export const usePreparedPolitics = () => ({data,summaryByTag:new Map(),retry(){},onSummaryView(){},onNavigateHour(){},hourLoaded:()=>true});`,
     '/dashboard/products.ts': `const values = ${JSON.stringify(values)}, balance = ${JSON.stringify(balance)}, parts = ${JSON.stringify(parts)},
       ledgers = ${JSON.stringify(ledgers)}, losses = ${JSON.stringify(losses)};
       export const useProduct = (_client, request, active, validate) => {
@@ -118,6 +116,13 @@ test('registered politics and losses pins retain legacy native-holder fixtures t
     plugins: [{ name: 'pinned-native-country', enforce: 'pre', transform(source, id) {
       const path = id.replaceAll('\\', '/'), leaf = Object.entries(leaves).find(([suffix]) => path.endsWith(suffix));
       if (leaf) return leaf[1];
+      if (path.endsWith('/EquipmentLossesWidget.tsx')) {
+        // The registered wrapper renders the loss body beside retained Combat Log
+        // details. Capture the body's JSX so its real Follow control stays reachable.
+        const bodyReturn = 'return <div ref={anchor} className="equipment-losses">';
+        assert.equal(source.split(bodyReturn).length - 1, 1, 'equipment-loss body capture target occurs exactly once');
+        source = source.replace(bodyReturn, bodyReturn.replace('return ', 'return globalThis.__pinnedCountries.node = '));
+      }
       if (['MeasureWidget', 'StabilityWidget', 'EquipmentLossesWidget'].some(name => path.endsWith('/' + name + '.tsx'))) return source
         .replace("import { createPortal } from 'react-dom';", 'const createPortal = child => child;')
         .replace(/\b(useMemo|useCallback|useState|useReducer|useRef|useEffect|useLayoutEffect)(?:<[\s\S]*?>)?\(/g,
@@ -142,8 +147,7 @@ test('registered politics and losses pins retain legacy native-holder fixtures t
       const body = kind === 'political-power' || kind === 'command-power' ? Widget(props) as ReactElement<{ config: unknown }> : null;
       const renderBody = () => {
         state.cursor = 0; state.effects = []; state.charts = []; state.detail = undefined; state.header = undefined;
-        // The fixture retains the original products and local pin state, while
-        // genuinely rendering the registered body gives every shared hook its
+        // Rendering the registered body gives every shared hook its
         // React dispatcher, including inactive prepared-query hooks.
         const Probe = () => {
           state.node = body ? (body.type as (props: unknown) => ReactNode)({...props, config: body.props.config}) : Widget(props);
@@ -161,7 +165,9 @@ test('registered politics and losses pins retain legacy native-holder fixtures t
       pick(5); await new Promise(resolve => setImmediate(resolve)); renderBody();
       assert.equal(state.header!.hour, 5);
       assert.equal(state.header!.label!.name, 'X@5');
-      button(state.node, 'Follow playback')!.props.onClick(); state.clock = 14; renderBody();
+      const follow = button(state.node, 'Follow playback');
+      assert.ok(follow, kind + ' renders Follow after a local pick');
+      follow.props.onClick(); state.clock = 14; renderBody();
       assert.equal(state.header!.hour, 17, 'Follow aligns the body to its source');
       assert.equal(state.header!.label!.name, 'Y@17', 'a reused X never replaces the selected actor');
       if (kind === 'stability') assert.deepEqual(state.detail!.reply!.stability.parts[0].runs.map(run => run.valueRaw), ['10000', '20000', '20000']);

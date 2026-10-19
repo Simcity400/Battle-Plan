@@ -236,12 +236,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .operand
                 .as_deref()
                 .map(|operand| self.evaluator()?.scoped_country(operand, Scopes::empty()))
-                .transpose()?
+                .transpose()
+                .map_err(|why| why.to_string())?
                 .flatten();
             let (selected, prefix) = if let Some(country) = country.filter(|country| *country > 0) {
                 let selected = self
                     .evaluator()?
-                    .enter_scope(&Parsed::Country(self.tag(country)?.to_owned()), scopes)?
+                    .enter_scope(&Parsed::Country(self.tag(country)?.to_owned()), scopes)
+                    .map_err(|why| why.to_string())?
                     .ok_or_else(|| format!("idea {} target names no country", idea.token))?;
                 let definite = crt_case_text(&self.country_name(country, true)?, true, true);
                 let prefix = self.char_native_text(
@@ -674,7 +676,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         }
         let countries: std::collections::BTreeSet<_> = std::iter::once(0)
-            .chain(self.context.world()?.country_slots()?)
+            .chain(
+                self.context
+                    .world()?
+                    .country_slots()
+                    .map_err(|why| why.to_string())?,
+            )
             .collect();
         let empty = Modifiers::default();
         let mut text = String::new();
@@ -688,7 +695,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         .operand
                         .as_deref()
                         .map(|operand| self.evaluator()?.scoped_country(operand, Scopes::empty()))
-                        .transpose()?
+                        .transpose()
+                        .map_err(|why| why.to_string())?
                         .flatten()
                         .unwrap_or(0);
                     if candidate == country {
@@ -1020,7 +1028,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         };
         let selected = if let Some(operand) = field(fields, "scope") {
             self.evaluator()?
-                .scoped_scope(scalar_operand(operand)?, scopes)?
+                .scoped_scope(scalar_operand(operand)?, scopes)
+                .map_err(|why| why.to_string())?
         } else {
             None
         };

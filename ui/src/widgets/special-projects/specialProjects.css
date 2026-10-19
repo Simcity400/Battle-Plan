@@ -44,3 +44,12 @@
   .special-project-now .blueprint-tile img { width:44px; height:27px; }
   .special-project-earlier-grid { padding-left:8px; }
 }
+
+.project-details { display: grid; gap: 14px; margin-top: 16px; }
+.project-details summary { cursor: pointer; padding: 8px 0; }
+.project-detail { border-top: 1px solid var(--border); padding: 0 8px; }
+.project-detail p, .project-detail li { color: var(--text-secondary); }
+.project-detail-portrait { width: 48px; float: right; }
+.project-effect-text { white-space: pre-wrap; font: inherit; }
+.project-detail dl > div { display: flex; gap: 12px; }
+.project-detail dd { margin: 0; }

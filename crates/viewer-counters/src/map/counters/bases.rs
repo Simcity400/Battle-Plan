@@ -26,6 +26,35 @@ pub fn naval_base_frame(known: bool, foreign: bool, disclosed: bool, ships: bool
     arm + u32::from(ships) + if foreign { 4 } else { 0 }
 }
 
+/// Country-list membership accepts raw equality (including zero) and nonzero
+/// aliases of the same canonical country. Missing alias evidence stays unknown.
+pub(super) fn country_list_contains(
+    list: &[u32],
+    raw: u32,
+    links: &BTreeMap<u32, u32>,
+) -> Result<bool, &'static str> {
+    if list.contains(&raw) {
+        return Ok(true);
+    }
+    if raw == 0 || list.iter().all(|&tag| tag == 0) {
+        return Ok(false);
+    }
+    let target = links.get(&raw).ok_or("country-list target is unresolved")?;
+    let mut unknown = false;
+    for tag in list.iter().filter(|&&tag| tag != 0) {
+        match links.get(tag) {
+            Some(slot) if slot == target => return Ok(true),
+            Some(_) => {}
+            None => unknown = true,
+        }
+    }
+    if unknown {
+        Err("country-list alias is unresolved")
+    } else {
+        Ok(false)
+    }
+}
+
 /// The ships glyph: a port occupant of any owner the viewer sees above 0x95, or any
 /// occupant when the viewer's port detail on the base's country is at least 2.
 /// `None` when an input it needs is unknown.
@@ -397,10 +426,13 @@ fn unattributable(buildings: &Buildings, keys: &TokenKeys, name: &str) -> Option
 pub(super) struct NavalBaseIcon {
     pub(super) province: u32,
     pub(super) frame: u32,
+    pub(super) highlighted: bool,
     /// Enable the button when the base belongs to the viewer, or the viewer has
     /// province access and is not at war with its owner. Disabled buttons draw grey
     /// through `buttonstate.shader`.
     pub(super) enabled: bool,
+    pub(super) capacity: Option<naval_repairs::Capacity>,
+    pub(super) capacity_refusal: Option<&'static str>,
 }
 
 /// Naval-base, naval-HQ and facility icons this hour did not draw because an input was
@@ -510,6 +542,7 @@ impl BaseIcons {
             .map(|force| (force.id, force.roster_owner))
             .collect();
         let ours = vision.ours();
+        let repairs = naval_repairs::Sources::new(frame, links, *relations);
         for base in rows::<tables::NavalBases>(frame)?.rows() {
             if content.port(base.province).is_none() {
                 refuse(
@@ -552,11 +585,13 @@ impl BaseIcons {
                     if base.countries_unreadable {
                         return Err("the base's recorded country list is unreadable");
                     }
-                    base.countries.contains(
-                        country_ids
+                    country_list_contains(
+                        &base.countries,
+                        *country_ids
                             .get(&ours)
                             .ok_or("the viewing country has no Countries id")?,
-                    )
+                        links,
+                    )?
                 };
                 let ships = naval_base_ships(
                     order
@@ -581,11 +616,23 @@ impl BaseIcons {
                 Ok((naval_base_frame(known, foreign, disclosed, ships), enabled))
             };
             match decided() {
-                Ok((frame, enabled)) => self.naval.push(NavalBaseIcon {
-                    province: base.province,
-                    frame,
-                    enabled,
-                }),
+                Ok((frame, enabled)) => {
+                    let capacity = match vision.naval_port_detail(links[&base.country]) {
+                        Some(level) if level < 4 => Ok(None),
+                        Some(_) => repairs.capacity(base).map(Some),
+                        None => {
+                            Err("txt_capacity is withheld: the naval port intel level is unknown")
+                        }
+                    };
+                    self.naval.push(NavalBaseIcon {
+                        province: base.province,
+                        frame,
+                        highlighted: false,
+                        enabled,
+                        capacity: capacity.as_ref().ok().copied().flatten(),
+                        capacity_refusal: capacity.err(),
+                    });
+                }
                 Err(reason) => refuse(&mut self.unknown.naval_bases, reason),
             }
         }
@@ -1014,6 +1061,30 @@ pub(super) fn bases(
     // headquarters and facilities stay.
     if inputs.visibility.province_icons && inputs.shows(defines.air_base_cutoff) {
         let wings = wings_per_site(frame, vision)?;
+        let grid_census = (inputs.visibility.priorities
+            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir)
+            .then(|| air_grid::Census::new(frame));
+        let base_rows = rows::<tables::AirBases>(frame)?;
+        let selected_sites: BTreeSet<_> = inputs
+            .selected_air_bases
+            .iter()
+            .filter_map(|handle| {
+                let at = base_rows
+                    .rows()
+                    .binary_search_by_key(handle, |row| row.id)
+                    .ok()?;
+                let base = &base_rows.rows()[at];
+                Some((base.state?, site_kind(base.kind)))
+            })
+            .collect();
+        let aircraft_complete = rows::<tables::AirWings>(frame)?.is_complete();
+        let volunteers = grid_census.as_ref().map(|_| {
+            air_volunteers::Allowances::read(
+                frame,
+                vision.ours(),
+                &inputs.content.volunteer_air_defines,
+            )
+        });
         let (states, complete) = site_icon_states(frame)?;
         let families = [
             (base_windows::Family::AirBase, AIR_BASE_WINDOW),
@@ -1065,14 +1136,72 @@ pub(super) fn bases(
                     out.report.hidden_air_bases += 1;
                     continue;
                 }
-                let count = wings.get(&(state, kind)).copied().unwrap_or_default();
+                let mut count = wings.get(&(state, kind)).copied().unwrap_or_default();
+                count.selected = selected_sites.contains(&(state, kind));
                 let (frame, enabled) = if kind == building_facts::AIR_BASE {
                     let detail = vision
                         .province_controller(province)
                         .and_then(|c| vision.sees_air_port_detail(c));
-                    (air_base_frame(&count, detail).wrapping_add(1) as i32, true)
+                    (
+                        air_base_frame(&count, detail).wrapping_add(1) as i32,
+                        count.shown,
+                    )
                 } else {
                     (site_frame(&count), count.shown)
+                };
+                let air = if inputs.visibility.priorities
+                    == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
+                {
+                    let mut display = count;
+                    display.shown &=
+                        kind == building_facts::AIR_BASE && !inputs.selected_air.is_empty();
+                    if kind == building_facts::AIR_BASE && (!aircraft_complete || !complete) {
+                        display.shown = false;
+                        *out.report.icon_gui_notes.entry("air_base_mapicon wings_count is withheld: the AirWings or AirBases census is incomplete".into()).or_default() += 1;
+                    }
+                    if display.shown {
+                        let allowance = (|| {
+                            let controller = vision
+                                .province_controller(province)
+                                .ok_or("Air volunteer base controller unavailable")?;
+                            volunteers
+                                .as_ref()
+                                .ok_or("Air volunteer preparation unavailable")?
+                                .as_ref()
+                                .map_err(Clone::clone)?
+                                .host(controller)
+                        })();
+                        match allowance {
+                            Ok(value) => display.volunteers = value,
+                            Err(reason) => {
+                                *out.report.icon_gui_notes.entry(format!(
+                                    "air_base_mapicon permission_wings_count is withheld: {reason}"
+                                )).or_default() += 1;
+                            }
+                        }
+                    }
+                    if count.shown
+                        && let Some((grid_index, _)) = family.wing_grid()
+                    {
+                        let matching: Vec<_> = base_rows
+                            .rows()
+                            .iter()
+                            .filter(|base| base.state == Some(state) && base.kind == kind as i32)
+                            .collect();
+                        let grid = match (matching.as_slice(), grid_census.as_ref()) {
+                            ([base], Some(Ok(census))) => {
+                                census.base(inputs, base.id, vision.ours())
+                            }
+                            (_, Some(Err(reason))) => Err(reason.clone()),
+                            _ => Err("state's air-base identity is not unique".into()),
+                        };
+                        out.native_bases
+                            .air_grids
+                            .insert((grid_index, province), grid);
+                    }
+                    Some(display)
+                } else {
+                    None
                 };
                 out.native_bases.offer(
                     inputs,
@@ -1081,6 +1210,7 @@ pub(super) fn bases(
                     province,
                     anchor,
                     base_windows::State {
+                        air,
                         frame,
                         enabled,
                         sprite: None,
@@ -1108,6 +1238,7 @@ pub(super) fn bases(
             province,
             anchor,
             base_windows::State {
+                air: None,
                 frame: 1,
                 enabled: true,
                 sprite: None,
@@ -1122,6 +1253,7 @@ pub(super) fn bases(
             *province,
             *anchor,
             base_windows::State {
+                air: None,
                 frame: 0,
                 enabled: true,
                 sprite: Some(sprite.clone()),
@@ -1175,6 +1307,7 @@ pub(super) fn strategic_location_icons(
                 province,
                 anchor,
                 base_windows::State {
+                    air: None,
                     frame: 0,
                     enabled: true,
                     sprite: Some(format!("{STRATEGIC_LOCATION_SPRITE_PREFIX}{first}")),
@@ -1222,6 +1355,7 @@ pub(super) fn radars(
                 province,
                 anchor,
                 base_windows::State {
+                    air: None,
                     frame: 0,
                     enabled: true,
                     sprite: None,
@@ -1289,6 +1423,9 @@ pub(super) fn building_tokens(
 /// What one state base's icon shows: its `wings_count` box, and its frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct AirBaseCount {
+    /// Used/allowed air volunteer wings for the base controller.
+    pub(super) volunteers: Option<(i32, i32)>,
+    pub(super) selected: bool,
     /// Planes based here, summed over every wing at the base.
     pub(super) planes: i64,
     /// `AirBases.capacity`, the denominator.
@@ -1307,8 +1444,7 @@ pub(super) struct AirBaseCount {
 }
 
 /// The zero-based frame of `GFX_mapicon_air_base`; each one-based game frame is
-/// reduced by one here. Frames six and seven need current map selection, which
-/// no recording carries.
+/// reduced by one here. Frames six and seven use the view's selected base references.
 ///
 /// An hour without complete registrations cannot decide `stationed`, `occupied` or
 /// `foreign`; it keeps the legacy reading, a badge for any recorded plane. Access
@@ -1323,7 +1459,14 @@ pub(super) fn air_base_frame(count: &AirBaseCount, detail: Option<bool>) -> u32 
         _ => count.planes > 0,
     };
     let foreign = count.shown && count.foreign == Some(true);
-    u32::from(badge) + if foreign { 3 } else { 0 }
+    u32::from(badge)
+        + if count.shown && count.selected {
+            5
+        } else if foreign {
+            3
+        } else {
+            0
+        }
 }
 
 /// Whether a province has a controller (a positive raw controller link), as
@@ -1482,6 +1625,8 @@ pub(super) fn wings_per_site(
             (
                 (state, site_kind(base.kind)),
                 AirBaseCount {
+                    volunteers: None,
+                    selected: false,
                     planes: 0,
                     capacity: base.capacity,
                     shown: (flags_complete || flagged.contains(&state))

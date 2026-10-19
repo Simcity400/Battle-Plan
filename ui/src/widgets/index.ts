@@ -4,6 +4,7 @@ import { widgetMetas } from './definitions';
 import { lazyWidget } from './lazyWidget';
 import { useIdeaTimelinePresets } from './idea-timeline/ideaTimelinePresets';
 const renderers = {
+  'war-goals': lazyWidget('war-goals', ['render']),
   'map': lazyWidget('map', ['render', 'headerControls']),
   'national-focus': lazyWidget('national-focus', ['render']),
   'research': lazyWidget('research', ['render']),

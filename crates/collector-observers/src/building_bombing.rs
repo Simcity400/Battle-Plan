@@ -374,9 +374,11 @@ impl Hooks {
             FREQUENCY.store(frequency as u64, Ordering::Relaxed);
         }
         let install = || -> Result<Hook, &'static str> {
-            if engine_native::read::<[u8; 16]>(memory, base + native::APPLY_DAMAGE_RVA)
-                != Some(native::APPLY_DAMAGE_SENTINEL)
-            {
+            if !crate::hook::installation::sentinel(
+                memory,
+                base + native::APPLY_DAMAGE_RVA,
+                native::APPLY_DAMAGE_SENTINEL,
+            ) {
                 return Err("building bombing sentinel differs or unreadable");
             }
             let hook = unsafe {
@@ -396,6 +398,11 @@ impl Hooks {
                 Self { hook: Some(hook) }
             }
             Err(reason) => {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Construction,
+                    None,
+                    reason,
+                );
                 let _ = UNHOOKED.set(reason);
                 Self { hook: None }
             }

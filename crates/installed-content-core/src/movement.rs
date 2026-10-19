@@ -82,6 +82,13 @@ pub struct MovementDefines {
     /// organisation share below which a hostile move slows and the speed term at zero
     /// organisation. Refusing them leaves the other movement terms available.
     pub organisation: Result<(i64, i64), String>,
+    /// `NMilitary.NON_CORE_SUPPLY_SPEED` and `NMilitary.NON_CORE_SUPPLY_AIR_SPEED`: the
+    /// noncore-supply term of a ground-supplied and of an air-supplied division.
+    /// Each remains available independently of the other form.
+    pub noncore_supply: [Result<i64, String>; 2],
+    /// `NMilitary.COMBAT_MOVEMENT_SPEED`: the land combat movement base's define.
+    /// Refusing it leaves the other movement terms available.
+    pub combat_movement: Result<i64, String>,
     /// Refusing railway content leaves unrelated movement timing available.
     pub rail: Result<RailMovementDefines, String>,
     /// Task-force range policy is independent of army and railway defines.
@@ -147,6 +154,14 @@ impl MovementDefines {
                         defines.fixed5("NMilitary", "ZERO_ORG_MOVEMENT_MODIFIER")?,
                     ))
                 })
+                .map_err(|error| error.to_string()),
+            noncore_supply: ["NON_CORE_SUPPLY_SPEED", "NON_CORE_SUPPLY_AIR_SPEED"].map(|name| {
+                defines
+                    .fixed5("NMilitary", name)
+                    .map_err(|error| error.to_string())
+            }),
+            combat_movement: defines
+                .fixed5("NMilitary", "COMBAT_MOVEMENT_SPEED")
                 .map_err(|error| error.to_string()),
             rail: RailMovementDefines::read(defines).map_err(|error| error.to_string()),
             naval: NavalMovementDefines::read(defines).map_err(|error| error.to_string()),
@@ -714,6 +729,50 @@ mod tests {
             MovementDefines::read(&defines).unwrap().organisation,
             Ok((30_000, -80_000))
         );
+    }
+
+    /// The noncore-supply and combat movement defines load by name as fixed5; refusing
+    /// them leaves the other movement defines available.
+    #[test]
+    fn noncore_supply_and_combat_movement_defines_load_by_name() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let defines = Defines::new().unwrap();
+        defines.load("fixture.lua", b"NDefines = { NMilitary = { AMPHIBIOUS_INVADE_MOVEMENT_COST = 4, LAND_SPEED_MODIFIER = 1, RIVER_CROSSING_SPEED_PENALTY = -0.1, RIVER_CROSSING_SPEED_PENALTY_LARGE = -0.2, NON_CORE_SUPPLY_SPEED = -0.5 }, NNavy = { NAVAL_SPEED_MODIFIER = 1, AMPHIBIOUS_INVADE_SPEED_BASE = 2 } }").unwrap();
+        let movement = MovementDefines::read(&defines).unwrap();
+        assert_eq!(movement.outer_scale, 100_000);
+        assert_eq!(movement.noncore_supply[0], Ok(-50_000));
+        assert!(
+            movement.noncore_supply[1]
+                .as_ref()
+                .unwrap_err()
+                .contains("NON_CORE_SUPPLY_AIR_SPEED")
+        );
+        assert!(
+            movement
+                .combat_movement
+                .unwrap_err()
+                .contains("COMBAT_MOVEMENT_SPEED")
+        );
+        defines
+            .load(
+                "noncore.lua",
+                b"NDefines.NMilitary.NON_CORE_SUPPLY_AIR_SPEED = -0.25 NDefines.NMilitary.COMBAT_MOVEMENT_SPEED = 0.33",
+            )
+            .unwrap();
+        let movement = MovementDefines::read(&defines).unwrap();
+        assert_eq!(movement.noncore_supply, [Ok(-50_000), Ok(-25_000)]);
+        assert_eq!(movement.combat_movement, Ok(33_000));
+        let air_only = Defines::new().unwrap();
+        air_only.load("air-only.lua", b"NDefines = { NMilitary = { AMPHIBIOUS_INVADE_MOVEMENT_COST = 4, LAND_SPEED_MODIFIER = 1, RIVER_CROSSING_SPEED_PENALTY = -0.1, RIVER_CROSSING_SPEED_PENALTY_LARGE = -0.2, NON_CORE_SUPPLY_AIR_SPEED = -0.25 }, NNavy = { NAVAL_SPEED_MODIFIER = 1, AMPHIBIOUS_INVADE_SPEED_BASE = 2 } }").unwrap();
+        let movement = MovementDefines::read(&air_only).unwrap();
+        assert!(
+            movement.noncore_supply[0]
+                .as_ref()
+                .unwrap_err()
+                .contains("NON_CORE_SUPPLY_SPEED")
+        );
+        assert_eq!(movement.noncore_supply[1], Ok(-25_000));
     }
 
     #[test]

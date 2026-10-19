@@ -56,6 +56,7 @@ pub(crate) fn table_inputs(
             &captured.air_wings,
             &captured.air_wing_names,
             captured.air_wing_names_len,
+            captured.orders.roots(),
             projection.as_deref_mut(),
         ),
         army_orders(
@@ -288,6 +289,7 @@ fn ships(
         &captured.rows,
         |row| u128::from(row.id),
         |row| ShipRow {
+            required_manpower: row.required_manpower.into(),
             id: row.id,
             task_force: row.task_force,
             strength: row.strength,
@@ -296,6 +298,7 @@ fn ships(
             category: row.category,
             sunk_convoys: row.sunk_convoys,
             class_id: row.class_id,
+            acquired_manpower: row.acquired_manpower.into(),
         },
     )
 }
@@ -359,6 +362,7 @@ fn air_wings(
     captured: &CaptureRows<cair_wing::Row>,
     names: &[u8],
     names_len: usize,
+    groups: &[engine_native::corders_group::Root],
     projection: Option<&mut Projection<'_>>,
 ) -> TableInput {
     let rows = match source(captured, captured.outcome) {
@@ -370,13 +374,31 @@ fn air_wings(
     let name = |row: &cair_wing::Row| {
         names.and_then(|bytes| row.name.and_then(|(start, len)| range(bytes, start, len)))
     };
+    // The wing gather already copied every attachment pointer. The group's
+    // same-pass registry census supplies its authenticated handle without
+    // another native lookup. One contiguous index serves the whole table.
+    let demanded = rows
+        .iter()
+        .any(|row| row.attached_orders_group.is_none() && row.attached_group_pointer != 0);
+    let mut group_index: Vec<_> = groups
+        .iter()
+        .filter(|_| demanded)
+        .map(|group| (group.pointer() as u64, group.handle))
+        .collect();
+    group_index.sort_unstable();
+    let attachment = |row: &cair_wing::Row| {
+        row.attached_orders_group
+            .or_else(|| attached_group(&group_index, row.attached_group_pointer))
+    };
     let scalar = |row: &cair_wing::Row| AirWingRow {
+        exile_country: row.exile_country.into(),
         id: row.id,
         owner: row.owner,
         country_override: row.country_override,
         air_base: row.air_base,
         base_override: row.base_override,
         planes: row.planes,
+        acquired_manpower: row.acquired_manpower.into(),
         mission_mask: row.mission_mask,
         mission_region: row.mission_region,
         base_range_raw: row.base_range_raw,
@@ -385,10 +407,26 @@ fn air_wings(
         eligibility_veto: row.eligibility_veto,
         eligibility_counter: row.eligibility_counter,
         eligibility_limit: row.eligibility_limit,
-        attached_orders_group: row.attached_orders_group,
+        attached_orders_group: attachment(row),
         pool_ordinal: row.pool_ordinal,
         name: replay_data::rows::Recorded::Value(None),
         strategic_bombing_raw: row.strategic_bombing_raw.into(),
+        replacement_setting: row.replacement_setting.into(),
+        map_flags: row.map_flags.into(),
+        fuel_base_raw: row.fuel_inputs.and_then(|v| v.base_fuel).into(),
+        fuel_current_type: row.fuel_inputs.and_then(|v| v.current_type).into(),
+        fuel_effective_aircraft: row.fuel_inputs.and_then(|v| v.effective_aircraft).into(),
+        fuel_context_mode: row
+            .fuel_inputs
+            .and_then(|v| v.context_mode)
+            .map(u32::from)
+            .into(),
+        fuel_capacity_class: row.fuel_inputs.and_then(|v| v.capacity_class).into(),
+        fuel_override_resolved: row
+            .fuel_inputs
+            .and_then(|v| v.override_resolved)
+            .map(u32::from)
+            .into(),
         pool_subunit: row.pool_subunit.into(),
         raid_reference: replay_data::rows::Recorded::Value(row.raid_reference.map(|value| {
             replay_data::rows::AirWingRaidReference {
@@ -409,6 +447,9 @@ fn air_wings(
                 && row.air_base == previous.air_base
                 && row.base_override == previous.base_override
                 && row.planes == previous.planes
+                && replay_data::rows::Recorded::Value(row.acquired_manpower)
+                    == previous.acquired_manpower
+                && replay_data::rows::Recorded::Value(row.exile_country) == previous.exile_country
                 && row.mission_mask == previous.mission_mask
                 && row.mission_region == previous.mission_region
                 && row.base_range_raw == previous.base_range_raw
@@ -417,8 +458,29 @@ fn air_wings(
                 && row.eligibility_veto == previous.eligibility_veto
                 && row.eligibility_counter == previous.eligibility_counter
                 && row.eligibility_limit == previous.eligibility_limit
-                && row.attached_orders_group == previous.attached_orders_group
+                && replay_data::rows::Recorded::Value(row.map_flags) == previous.map_flags
+                && replay_data::rows::Recorded::Value(row.fuel_inputs.and_then(|v| v.base_fuel))
+                    == previous.fuel_base_raw
+                && replay_data::rows::Recorded::Value(row.fuel_inputs.and_then(|v| v.current_type))
+                    == previous.fuel_current_type
+                && replay_data::rows::Recorded::Value(
+                    row.fuel_inputs.and_then(|v| v.effective_aircraft),
+                ) == previous.fuel_effective_aircraft
+                && replay_data::rows::Recorded::Value(
+                    row.fuel_inputs.and_then(|v| v.context_mode).map(u32::from),
+                ) == previous.fuel_context_mode
+                && replay_data::rows::Recorded::Value(
+                    row.fuel_inputs.and_then(|v| v.capacity_class),
+                ) == previous.fuel_capacity_class
+                && replay_data::rows::Recorded::Value(
+                    row.fuel_inputs
+                        .and_then(|v| v.override_resolved)
+                        .map(u32::from),
+                ) == previous.fuel_override_resolved
+                && attachment(row) == previous.attached_orders_group
                 && row.pool_ordinal == previous.pool_ordinal
+                && previous.replacement_setting
+                    == replay_data::rows::Recorded::Value(row.replacement_setting)
                 && previous.strategic_bombing_raw
                     == replay_data::rows::Recorded::Value(row.strategic_bombing_raw)
                 && previous.pool_subunit == replay_data::rows::Recorded::Value(row.pool_subunit)
@@ -439,6 +501,25 @@ fn air_wings(
             ..scalar(row)
         },
     )
+}
+
+/// Null is detached. Only a unique, same-pass authenticated identity can
+/// turn a nonnull pointer into a replay handle; partial censuses prove matches
+/// but never prove an unmatched pointer absent.
+fn attached_group(index: &[(u64, u64)], pointer: u64) -> Option<u64> {
+    if pointer == 0 {
+        return Some(0);
+    }
+    let first = index.partition_point(|&(held, _)| held < pointer);
+    let &(held, handle) = index.get(first)?;
+    if held != pointer || handle == 0 {
+        return None;
+    }
+    index[first..]
+        .iter()
+        .take_while(|&&(held, _)| held == pointer)
+        .all(|&(_, other)| other == handle)
+        .then_some(handle)
 }
 
 fn army_orders(
@@ -510,6 +591,17 @@ fn tables(captured: &MapCaptured) -> [TableView; 10] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn air_grid_attachments_use_only_unique_authenticated_group_matches() {
+        let index = [(10, 53), (20, 54), (20, 54), (30, 55), (30, 56)];
+        assert_eq!(attached_group(&index, 0), Some(0));
+        assert_eq!(attached_group(&index, 10), Some(53));
+        assert_eq!(attached_group(&index, 20), Some(54));
+        assert_eq!(attached_group(&index, 30), None);
+        assert_eq!(attached_group(&index, 40), None);
+        assert_eq!(attached_group(&[], 10), None);
+    }
     use replay_data::rows::TableRows;
 
     #[test]
@@ -528,6 +620,7 @@ mod tests {
                 &captured.air_wings,
                 &captured.air_wing_names,
                 captured.air_wing_names_len,
+                &[],
                 None,
             )) else {
                 panic!("complete wing census")
@@ -688,6 +781,8 @@ mod tests {
         set(
             &mut captured.naval.ships,
             vec![cship::Row {
+                acquired_manpower: None,
+                required_manpower: None,
                 roster_ordinal: 0,
                 id: u64::MAX,
                 task_force: u64::MAX - 1,
@@ -725,8 +820,12 @@ mod tests {
         set(
             &mut captured.air_wings,
             vec![cair_wing::Row {
+                acquired_manpower: None,
+                exile_country: None,
                 id: u64::MAX,
                 owner: u32::MAX,
+                owner_pointer: 0,
+                owner_slot: 0,
                 pool_ordinal: u32::MAX - 3,
                 country_override: i32::MIN,
                 air_base: u64::MAX - 1,
@@ -734,6 +833,7 @@ mod tests {
                 planes: i32::MIN,
                 mission_mask: u32::MAX,
                 mission_region: Some(0),
+                region_pointer: 0,
                 base_range_raw: i64::MIN,
                 ace: u64::MAX,
                 mission_active: 1,
@@ -741,8 +841,19 @@ mod tests {
                 eligibility_counter: i32::MIN,
                 eligibility_limit: i32::MAX,
                 attached_orders_group: Some(u64::MAX),
+                attached_group_pointer: 0,
                 name: None,
+                map_flags: None,
+                fuel_inputs: Some(cair_wing::fuel_inputs::Inputs {
+                    base_fuel: Some(i64::MIN),
+                    current_type: Some(4),
+                    effective_aircraft: None,
+                    context_mode: Some(2),
+                    capacity_class: None,
+                    override_resolved: Some(false),
+                }),
                 strategic_bombing_raw: Some(i64::MIN),
+                replacement_setting: Some(u8::MAX),
                 pool_subunit: Some(u32::MAX),
                 raid_reference: Some(cair_wing::transport_operands::RaidReference {
                     raw: u64::MAX,
@@ -813,6 +924,9 @@ mod tests {
                 combat_references: i32::MIN,
             }]),
             TableRows::Ships(vec![ShipRow {
+                acquired_manpower: Default::default(),
+                required_manpower: Default::default(),
+
                 id: u64::MAX,
                 task_force: u64::MAX - 1,
                 strength: i64::MIN,
@@ -842,6 +956,9 @@ mod tests {
                 state: u32::MAX - 1,
             }]),
             TableRows::AirWings(vec![AirWingRow {
+                acquired_manpower: Default::default(),
+                exile_country: Default::default(),
+
                 id: u64::MAX,
                 owner: u32::MAX,
                 pool_ordinal: u32::MAX - 3,
@@ -860,6 +977,14 @@ mod tests {
                 attached_orders_group: Some(u64::MAX),
                 name: replay_data::rows::Recorded::Value(None),
                 strategic_bombing_raw: replay_data::rows::Recorded::Value(Some(i64::MIN)),
+                replacement_setting: replay_data::rows::Recorded::Value(Some(u8::MAX)),
+                map_flags: replay_data::rows::Recorded::Value(None),
+                fuel_base_raw: Some(i64::MIN).into(),
+                fuel_current_type: Some(4).into(),
+                fuel_effective_aircraft: None.into(),
+                fuel_context_mode: Some(2).into(),
+                fuel_capacity_class: None.into(),
+                fuel_override_resolved: Some(0).into(),
                 pool_subunit: replay_data::rows::Recorded::Value(Some(u32::MAX)),
                 raid_reference: replay_data::rows::Recorded::Value(Some(
                     replay_data::rows::AirWingRaidReference {

@@ -20,7 +20,7 @@ fn tooltip_projection_retains_effects_modifiers_and_real_balance_category_bindin
     std::fs::create_dir_all(root.join("common/bop")).unwrap();
     std::fs::write(
         root.join("common/decisions/categories/a.txt"),
-        b"SYN_CATEGORY={name=IGNORED power_balance=IGNORED} SYN_OTHER={}",
+        b"SYN_CATEGORY={name=IGNORED power_balance=IGNORED allowed={always=yes} visible={always=no} available={always=yes}} SYN_OTHER={}",
     )
     .unwrap();
     std::fs::write(
@@ -28,7 +28,7 @@ fn tooltip_projection_retains_effects_modifiers_and_real_balance_category_bindin
         b"SYN_BALANCE={decision_category=SYN_CATEGORY}",
     )
     .unwrap();
-    std::fs::write(root.join("common/decisions/a.txt"), b"SYN_CATEGORY={SYN_DECISION={name=SYN_NAME complete_effect={custom_effect_tooltip=SELECT} remove_effect={custom_effect_tooltip=REMOVE} days_remove=var:duration modifier={political_power_gain=1}}} SYN_OTHER={OTHER={}}").unwrap();
+    std::fs::write(root.join("common/decisions/a.txt"), b"SYN_CATEGORY={SYN_DECISION={name=SYN_NAME allowed={always=yes} visible={always=no} available={always=yes} activation={always=yes} remove_trigger={always=no} cancel_trigger={always=no} custom_cost_trigger={always=yes} cost=var:cost complete_effect={custom_effect_tooltip=SELECT} remove_effect={custom_effect_tooltip=REMOVE} cancel_effect={custom_effect_tooltip=CANCEL} timeout_effect={custom_effect_tooltip=TIMEOUT} days_remove=var:duration modifier={political_power_gain=1}}} SYN_OTHER={OTHER={}}").unwrap();
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     let database = read(&layers).unwrap();
     assert_eq!(
@@ -37,6 +37,26 @@ fn tooltip_projection_retains_effects_modifiers_and_real_balance_category_bindin
     );
     let decision = database.decision(b"SYN_DECISION").unwrap().unwrap();
     assert!(decision.power_balance);
+    assert_eq!(decision.category, b"syn_category");
+    for body in [
+        &decision.allowed,
+        &decision.visible,
+        &decision.available,
+        &decision.activation,
+        &decision.remove_trigger,
+        &decision.cancel_trigger,
+        &decision.custom_cost_trigger,
+    ] {
+        assert_eq!(body.len(), 1);
+        assert!(body[0].keyword_is("always"));
+    }
+    assert_eq!(decision.cost, b"var:cost");
+    assert_eq!(
+        database.category_conditions[b"syn_category".as_slice()]
+            .visible
+            .len(),
+        1
+    );
     assert_eq!(
         decision.complete_effect[0].value.scalar(),
         Some(b"SELECT".as_slice())
@@ -44,6 +64,14 @@ fn tooltip_projection_retains_effects_modifiers_and_real_balance_category_bindin
     assert_eq!(
         decision.remove_effect[0].value.scalar(),
         Some(b"REMOVE".as_slice())
+    );
+    assert_eq!(
+        decision.cancel_effect[0].value.scalar(),
+        Some(b"CANCEL".as_slice())
+    );
+    assert_eq!(
+        decision.timeout_effect[0].value.scalar(),
+        Some(b"TIMEOUT".as_slice())
     );
     assert_eq!(decision.days_remove, b"var:duration");
     assert!(decision.modifier[0].keyword_is("political_power_gain"));
@@ -273,4 +301,32 @@ fn decision_icons_use_triggered_text_occurrence_and_unknown_rules() {
             "GFX_decision_unknown"
         ]
     );
+}
+
+#[test]
+fn unread_content_never_certifies_a_complete_decision_roster() {
+    let database = Database {
+        unread: Some("synthetic unread decision suffix".into()),
+        ..Default::default()
+    };
+    assert!(
+        database
+            .roster()
+            .err()
+            .unwrap()
+            .contains("unread decision suffix")
+    );
+    assert_eq!(Database::default().roster().unwrap().count(), 0);
+}
+
+#[test]
+fn roster_target_markers_use_native_case_insensitive_keyword_comparison() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    let mut database = Database::default();
+    append(&mut database,br#"category={plain={cost=0} country={TaRgEt_TrIgGeR={always=yes}} state={StAtE_TaRgEt=yes}}"#,
+        "synthetic/target-markers.txt",&[b"category".to_vec()].into(),&KeyNames::default());
+    assert!(!database.decision(b"plain").unwrap().unwrap().targeted);
+    assert!(database.decision(b"country").unwrap().unwrap().targeted);
+    assert!(database.decision(b"state").unwrap().unwrap().targeted);
 }

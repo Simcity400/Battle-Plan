@@ -18,25 +18,34 @@ pub mod building_bombing;
 pub mod census_changes;
 pub mod character_changes;
 pub mod country_input_changes;
+pub mod doctrine_changes;
+pub mod crew_changes;
 pub mod event_feed_history;
 pub mod event_feed_observer;
 pub mod event_ledger;
+pub mod market_changes;
+pub mod fleet_region_changes;
 pub mod naval_tree_changes;
 pub mod nuclear_strikes;
 pub mod opinion_changes;
+pub mod occupation_changes;
 pub mod output_log;
 pub mod political_status_changes;
+pub mod project_variable_changes;
 pub mod province_changes;
 pub mod raid_changes;
 pub mod rail_changes;
 pub mod retreat_ban_changes;
 pub mod roster_changes;
+pub mod script_event_observer;
 pub mod territory_changes;
+pub mod unit_history_changes;
 pub mod unit_leader_changes;
 pub mod unit_leader_trait_changes;
 pub mod war_changes;
 pub mod war_provenance;
 pub mod wing_changes;
+pub mod wing_preferences;
 pub mod world_input_changes;
 
 #[cfg(all(test, feature = "tap-foreign-probe"))]
@@ -52,3 +61,6 @@ static TEST_ALLOCATOR: collector_test_support::FailingAllocator =
 #[used]
 #[unsafe(link_section = ".CRT$XCU")]
 static TEST_THREAD_STACK: unsafe extern "C" fn() = collector_test_support::reserve_test_stack;
+
+pub mod wargoal_changes;
+pub mod division_panel_changes;

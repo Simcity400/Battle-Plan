@@ -116,7 +116,7 @@ pub struct RaidFacilityRow {
 typed_codec!(RaidFacilityRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128, |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
  { 0 => (id): U32, 1 => (owner): U32, 2 => (province): U32, 3 => (active_project): OptionalU32, 4 => (project_definition): OptionalU32 }, |_row| Ok(()));
 
-/// ProjectPrograms: key id (32 bits), 6 payload mask bits.
+/// ProjectPrograms: key id (32 bits), 8 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ProjectProgramRow {
     pub id: u32,
@@ -126,11 +126,52 @@ pub struct ProjectProgramRow {
     pub scientist: u64,
     pub unread_rewards: i32,
     pub building: Vec<u8>,
+    /// Primary assignment followed by all supports, preserving empty references
+    /// and inactive timers. None is an independently refused acquisition.
+    pub assignments: Recorded<Option<Vec<ProjectScientistAssignment>>>,
+    /// Dated daily scalar speed sources and specialization contributions.
+    pub facility: Recorded<Option<Vec<ProjectFacilityOperand>>>,
 }
-typed_codec!(ProjectProgramRow, 32, |row| row.id as u128, |key| Self { id: key as u32, owner: Default::default(), province: Default::default(), active_project: Default::default(), scientist: Default::default(), unread_rewards: Default::default(), building: Default::default() },
- { 0 => (owner): U32, 1 => (province): U32, 2 => (active_project): OptionalU32, 3 => (scientist): U64, 4 => (unread_rewards): I32, 5 => (building): Bytes }, |_row| Ok(()));
 
-/// Projects: key owner:local_id (64 bits), 14 payload mask bits.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ProjectFacilityOperand {
+    pub kind: u32,
+    pub scientist: u64,
+    pub token: u32,
+    pub key: u32,
+    pub ordinal: u32,
+    pub assignment: u32,
+    pub raw: i64,
+}
+value_struct!(ProjectFacilityOperand {
+    kind: u32,
+    scientist: u64,
+    token: u32,
+    key: u32,
+    ordinal: u32,
+    assignment: u32,
+    raw: i64
+});
+opaque_value!(Option<Vec<ProjectFacilityOperand>>);
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ProjectScientistAssignment {
+    pub scientist: u64,
+    pub target: i32,
+    pub current: i32,
+    pub timed: u8,
+}
+value_struct!(ProjectScientistAssignment {
+    scientist: u64,
+    target: i32,
+    current: i32,
+    timed: u8
+});
+opaque_value!(Option<Vec<ProjectScientistAssignment>>);
+typed_codec!(ProjectProgramRow, 32, |row| row.id as u128, |key| Self { id: key as u32, ..Default::default() },
+ { 0 => (owner): U32, 1 => (province): U32, 2 => (active_project): OptionalU32, 3 => (scientist): U64, 4 => (unread_rewards): I32, 5 => (building): Bytes, 6 => (assignments): Opaque, 7 => (facility): Opaque }, |_row| Ok(()));
+
+/// Projects: key owner:local_id (64 bits), 15 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ProjectRow {
     pub owner: u32,
@@ -140,9 +181,34 @@ pub struct ProjectRow {
     pub started: u8,
     pub completed: u8,
     pub state: ProjectState,
+    pub runtime: Recorded<ProjectRuntime>,
 }
-typed_codec!(ProjectRow, 64, |row| (row.owner as u128) << 32 | row.local_id as u128, |key| Self { owner: (key >> 32) as u32, local_id: key as u32, definition_id: Default::default(), program_reference: Default::default(), started: Default::default(), completed: Default::default(), state: Default::default() },
- { 0 => (definition_id): U32, 1 => (program_reference): U64, 2 => (started): U8, 3 => (completed): U8, 4 => (state.current_offset): U32, 5 => (state.state_enums[0]): U32, 6 => (state.state_enums[1]): U32, 7 => (state.state_enums[2]): U32, 8 => (state.state_enums[3]): U32, 9 => (state.not_completed): U8, 10 => (state.phase_progress): I64, 11 => (state.phase_target): I32, 12 => (state.prototype_progress): I32, 13 => (state.iterations): I32 }, |_row| Ok(()));
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ProjectVariable {
+    pub name: Vec<u8>,
+    pub value_raw: i64,
+}
+value_struct!(ProjectVariable { name: Vec<u8>, value_raw: i64 });
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ProjectVariableStore {
+    pub seed: u32,
+    pub entries: Vec<ProjectVariable>,
+}
+value_struct!(ProjectVariableStore { seed: u32, entries: Vec<ProjectVariable> });
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ProjectRuntime {
+    pub pending_known: bool,
+    pub pending_reward: Option<u32>,
+    pub pending_ordinal: Option<u32>,
+    pub variables: Option<std::sync::Arc<ProjectVariableStore>>,
+}
+value_struct!(ProjectRuntime { pending_known: bool, pending_reward: Option<u32>, pending_ordinal: Option<u32>, variables: Option<std::sync::Arc<ProjectVariableStore>> });
+opaque_value!(ProjectRuntime);
+typed_codec!(ProjectRow, 64, |row| (row.owner as u128) << 32 | row.local_id as u128, |key| Self { owner: (key >> 32) as u32, local_id: key as u32, ..Default::default() },
+ { 0 => (definition_id): U32, 1 => (program_reference): U64, 2 => (started): U8, 3 => (completed): U8, 4 => (state.current_offset): U32, 5 => (state.state_enums[0]): U32, 6 => (state.state_enums[1]): U32, 7 => (state.state_enums[2]): U32, 8 => (state.state_enums[3]): U32, 9 => (state.not_completed): U8, 10 => (state.phase_progress): I64, 11 => (state.phase_target): I32, 12 => (state.prototype_progress): I32, 13 => (state.iterations): I32, 14 => (runtime): Opaque }, |_row| Ok(()));
 
 /// ProjectHistory: key owner:project:ordinal (96 bits), 12 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -408,6 +474,8 @@ typed_codec!(RaidEquipmentRow, 64, |row| (row.id as u128) << 32 | row.reference_
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RaidCountryInputRow {
     pub canonical_slot: u32,
+    /// Uncapped signed whole-plane stockpile total for volunteer senders.
+    pub volunteer_stockpile_planes: Recorded<Option<i32>>,
     /// `air_range_factor`. Each modifier here is the getter value of the key
     /// resolved by its script name, `None` when the running game registers no
     /// key under that name.
@@ -418,7 +486,7 @@ pub struct RaidCountryInputRow {
     pub convoy_reservations: Vec<u32>,
 }
 typed_codec!(RaidCountryInputRow, 32, |row| row.canonical_slot as u128, |key| Self { canonical_slot: key as u32, ..Default::default() },
- { 0 => (air_range_factor): OptionalI64, 1 => (naval_commando_range_factor): OptionalI64, 2 => (autonomous): OptionalU32, 3 => (convoy_reservations): U32List }, |_row| Ok(()));
+ { 0 => (air_range_factor): OptionalI64, 1 => (naval_commando_range_factor): OptionalI64, 2 => (autonomous): OptionalU32, 3 => (convoy_reservations): U32List, 4 => (volunteer_stockpile_planes): OptionalI32 }, |_row| Ok(()));
 
 /// RaidAirSites: key canonical slot:ordinal. A country's air then missile
 /// sites, tried as raid sources, with the country's container capacity at
@@ -453,14 +521,55 @@ pub struct AceRangeInputRow {
     pub alive: u8,
     pub range: i64,
     pub type_range: i64,
+    /// Raw night/weather entries for living aces; absent outside that demand.
+    pub normalization: Recorded<Option<[Option<i64>; 2]>>,
+    /// Living ace's raw fuel entry from that same complete accumulator copy.
+    pub fuel_modifier: Recorded<Option<[Option<i64>; 1]>>,
+    /// Raw living-ace operands, independently delta encoded. Known plus None
+    /// proves an absent accumulator key rather than a failed read.
+    pub combat_modifiers_known: Recorded<bool>,
+    pub speed_modifier_raw: Recorded<Option<i64>>,
+    pub attack_modifier_raw: Recorded<Option<i64>>,
+    pub defence_modifier_raw: Recorded<Option<i64>>,
+    pub type_speed_modifier_raw: Recorded<Option<i64>>,
+    /// Bit zero is known; bits one and two are positive type attack/defence.
+    /// Type speed uses its raw entry and recorded modifier metadata in playback.
+    pub type_combat_flags: Recorded<u8>,
 }
 typed_codec!(AceRangeInputRow, 96, |row| (row.canonical_slot as u128) << 64 | row.ace as u128, |key| Self { canonical_slot: (key >> 64) as u32, ace: key as u64, ..Default::default() },
- { 0 => (wing): U64, 1 => (alive): U8, 2 => (range): I64, 3 => (type_range): I64 }, |_row| Ok(()));
+ { 0 => (wing): U64, 1 => (alive): U8, 2 => (range): I64, 3 => (type_range): I64, 4 => (normalization): Opaque, 5 => (fuel_modifier): Opaque, 6 => (combat_modifiers_known): Bool, 7 => (speed_modifier_raw): OptionalI64, 8 => (attack_modifier_raw): OptionalI64, 9 => (defence_modifier_raw): OptionalI64, 10 => (type_speed_modifier_raw): OptionalI64, 11 => (type_combat_flags): U8 }, |_row| Ok(()));
+
+impl AceRangeInputRow {
+    fn known_type_combat_flags(&self) -> Result<u8, &'static str> {
+        let Recorded::Value(flags) = self.type_combat_flags else {
+            return Err("ace type combat flags not recorded");
+        };
+        (flags & 1 != 0)
+            .then_some(flags)
+            .ok_or("ace type combat modifiers are unavailable")
+    }
+    pub fn type_attack_positive(&self) -> Result<bool, &'static str> {
+        Ok(self.known_type_combat_flags()? & 2 != 0)
+    }
+    pub fn type_defence_positive(&self) -> Result<bool, &'static str> {
+        Ok(self.known_type_combat_flags()? & 4 != 0)
+    }
+    pub fn type_speed_modifier(&self) -> Result<Option<i64>, &'static str> {
+        self.known_type_combat_flags()?;
+        self.type_speed_modifier_raw
+            .require("ace type speed modifier")
+            .copied()
+            .map_err(|_| "ace type speed modifier not recorded")
+    }
+}
 
 /// Stored per-country regional air-superiority scores (fixed5), used by
-/// raid target intel and success. Every nonzero pair and the final region
+/// raid target intel, success and the Air map mode. Every pair with a nonzero
+/// weight, active-mission counter, nonzero spotting scale or unknown spotting
+/// scale, and the final region
 /// of every owner is present. In a complete table, an absent pair for a
-/// present owner is zero; an absent owner has no strategic-air object.
+/// present owner has zero weights/counters and observed zero spotting scale;
+/// an absent owner has no strategic-air object.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RaidAirScoreRow {
     pub country: u32,
@@ -471,10 +580,17 @@ pub struct RaidAirScoreRow {
     /// adds it times the enemy's share of the pair and the air speed define. Older
     /// formats use NotRecorded.
     pub impact: Recorded<i64>,
+    /// The regional active-mission counters, rewritten with the weights. Air map colours
+    /// consult these when both weights are zero.
+    pub friendly_missions: u16,
+    pub enemy_missions: u16,
+    /// Raw regional fixed5 spotting normalization, acquired independently of
+    /// the score prefix and carried at the same native phase cadence.
+    pub air_spotting_scale: Option<i64>,
 }
 typed_codec!(RaidAirScoreRow, 64, |r| (r.country as u128) << 32 | r.region as u128,
  |key| Self { country: (key >> 32) as u32, region: key as u32, ..Self::default() },
- { 0 => (friendly): I64, 1 => (enemy): I64, 2 => (impact): I64 }, |_row| Ok(()));
+ { 0 => (friendly): I64, 1 => (enemy): I64, 2 => (impact): I64, 3 => (friendly_missions): U16, 4 => (enemy_missions): U16, 5 => (air_spotting_scale): OptionalI64 }, |_row| Ok(()));
 
 /// Hourly raid target-intel operands for live counterintelligence rating
 /// and decryption threshold. Modifier totals preserve getter feature and
@@ -504,3 +620,6 @@ typed_codec!(RaidIntelInputRow, 32, |r| r.country as u128,
  |key| Self { country: key as u32, ..Self::default() },
  { 0 => (strategic_present): U8, 1 => (country_defense): I64, 2 => (crypto_strength): OptionalI64, 3 => (operatives): Opaque },
  |_r| Ok(()));
+
+opaque_value!(Option<[Option<i64>; 2]>);
+opaque_value!(Option<[Option<i64>; 1]>);

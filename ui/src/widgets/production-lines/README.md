@@ -30,3 +30,17 @@ Campaign/follow/pin/range; order/columns in follow and pin, ended lines in campa
 | [ProductionLinesWidget.tsx](ProductionLinesWidget.tsx), [useProductionLines.ts](useProductionLines.ts) | Table/history, window requests and choices. |
 | [productionData.ts](productionData.ts), [ProductionDrill.tsx](ProductionDrill.tsx) | Validation, exact rows/factors and drills; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [productionLines.css](productionLines.css) | Options, registration and layout. |
+
+Line tooltips include the assigned MIO's daily size, funds, unspent points, planned/completed counts, queue cursor, task capacity and policy cooldown. Unknown state and supplying dates stay explicit. The design author and its frozen trait/bonus counts follow VariantStats observations independently of the production assignment: a slot-22 design read appears before the next slot-08 line census. Their supplying design date and unavailable intervals remain explicit. Detail projection sends only design versions overlapping the requested month.
+
+## Equipment designs
+
+The Equipment designs section loads only while opened. It lists every saved
+design, including unused and obsolete ones, and shows the selected design's
+full stat sheet, contributors, ancestry, designer, mission terms, country
+modifiers and available XP contributions. Mission contributors reconcile against
+the native mission cache and preserve its result when attribution is refused. A second design supplies comparison
+inputs. A selected ship or wing supplies its own XP and ace context. The reveal
+query takes an observer, target country and fog mode; blank countries use the
+recorded viewer and design creator respectively. The recorded game fog switch supplies the default; explicit fog choices are conditional queries. Missing discount, validity, unlock, replacement or change inputs
+remain explicit refusals beside the readable data.

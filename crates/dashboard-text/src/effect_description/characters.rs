@@ -97,7 +97,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         scopes: Scopes,
     ) -> Result<Option<&'f CharacterRow>, String> {
         if let Some(operand) = operand {
-            if let Some(selected) = self.evaluator()?.scoped_scope(operand, scopes)?
+            if let Some(selected) = self
+                .evaluator()?
+                .scoped_scope(operand, scopes)
+                .map_err(|why| why.to_string())?
                 && let Some(character) = self.effect_character(selected)?
             {
                 return Ok(Some(character));
@@ -132,7 +135,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             };
             if let Some(country) = named_country {
                 let world = self.context.world()?;
-                if let Some(token) = world.token_of(operand)? {
+                if let Some(token) = world.token_of(operand).map_err(|why| why.to_string())? {
                     let characters = self.character_table::<tables::Characters>()?;
                     let active = self.character_table::<tables::CountryCharacters>()?;
                     for roster in [Some(active), None] {
@@ -194,7 +197,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character(scopes.this)? else {
             return Ok(None);
         };
-        Tables::read(self.context.text.frame()).unit_leader(character.id)
+        Tables::read(self.context.text.frame())
+            .unit_leader(character.id)
+            .map_err(|why| why.to_string())
     }
 
     pub(super) fn effect_leader_name(&self, row: &UnitLeaderRow) -> Result<String, String> {
@@ -264,7 +269,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         });
         let Some(country) = country
             .map(|operand| self.evaluator()?.scoped_country(operand, scopes))
-            .transpose()?
+            .transpose()
+            .map_err(|why| why.to_string())?
             .flatten()
         else {
             return Ok(String::new());

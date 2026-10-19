@@ -76,6 +76,7 @@ pub fn walk_country_buffer(
                 }
                 let index = slot.index;
                 let mut row = Row {
+                    status_pointer: status,
                     slot,
                     cost_scale_raw: context.cost_scale_raw,
                     cost_debug: context.cost_debug,
@@ -106,7 +107,6 @@ pub fn walk_country_buffer(
                     row.classifier = instance.row.classifier;
                     row.technology_pointer = technology;
                     row.template_pointer = instance.template;
-                    row.status_pointer = status;
                     row.template_year = template.year;
                     row.template_index = template.database_index;
                     row.slot.database_index = template.database_index;

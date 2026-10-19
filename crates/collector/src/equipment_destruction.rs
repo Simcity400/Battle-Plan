@@ -1332,6 +1332,8 @@ unsafe extern "system-unwind" fn land(
     caller: usize,
 ) {
     let _call = Call::enter(SiteId::Land);
+    // The native XP clamp also runs on zero-damage calls.
+    let _experience = crate::army_stat_changes::experience_damage(a);
     // Zero damage changes no pool (land damage writer scales only a
     // nonzero amount), so only a damaging call must be observed.
     let _strike = (b != 0)
@@ -1373,6 +1375,7 @@ unsafe extern "system-unwind" fn air(a: usize, b: usize, c: usize, caller: usize
     // This site's one patch also serves the wing equipment watch: on every
     // path, before the original, and dropped after it returns.
     let _wing = crate::wing_changes::kill_airplanes(a);
+    let _crew = collector_observers::crew_changes::notify(a);
     let _strike = (b as u32 != 0)
         .then(|| crate::nuclear_strikes::equipment_call(Some(a)))
         .flatten();
@@ -2857,7 +2860,7 @@ fn verify_sites(
         .into_iter()
         .filter(|site| site.id.is_supplemental() == supplemental)
     {
-        if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+        if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
             use std::fmt::Write;
             let mut reason = String::new();
             engine_allocation::reserve_string(&mut reason, site.name.len() + 96)
@@ -2963,6 +2966,11 @@ impl Hooks {
             Ok(hooks)
         };
         let original = install(false).unwrap_or_else(|reason| {
+            crate::hook::installation::refused(
+                crate::hook::installation::Kind::Construction,
+                None,
+                &reason,
+            );
             let _ = UNHOOKED.set(reason);
             Vec::new()
         });
@@ -2972,6 +2980,11 @@ impl Hooks {
             Vec::new()
         } else {
             install(true).unwrap_or_else(|reason| {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Construction,
+                    None,
+                    &reason,
+                );
                 let _ = SUPPLEMENTAL_UNHOOKED.set(reason);
                 Vec::new()
             })
@@ -2985,6 +2998,7 @@ impl Hooks {
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         self.publication_attempted |= enabled;
         if !enabled {
+            crate::army_stat_changes::experience_forwarder(false);
             crate::wing_changes::observe_kills(false);
             crate::nuclear_strikes::forwarder(
                 replay_data::rows::NuclearStrikePart::Equipment,
@@ -3002,6 +3016,9 @@ impl Hooks {
         if !set_sites_enabled(&mut self.original, enabled)? {
             return Ok(false);
         }
+        crate::army_stat_changes::experience_forwarder(
+            self.original.iter().any(|(id, _)| *id == SiteId::Land),
+        );
         // The aircraft loss writer detour is live exactly when its site installed.
         crate::wing_changes::observe_kills(
             self.original
@@ -3026,11 +3043,22 @@ impl Hooks {
         match set_sites_enabled(&mut self.supplemental, supplemental_enabled) {
             Ok(false) => return Ok(false),
             Err(reason) if supplemental_enabled => {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Publication,
+                    None,
+                    &reason,
+                );
                 SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
                 let _ = SUPPLEMENTAL_UNHOOKED.set(Cow::Owned(reason));
                 // Preserve hook storage until detach. A safe rollback is
                 // necessary before the original group can run independently.
-                if !set_sites_enabled(&mut self.supplemental, false)? {
+                if !set_sites_enabled(&mut self.supplemental, false).inspect_err(|reason| {
+                    crate::hook::installation::refused(
+                        crate::hook::installation::Kind::Rollback,
+                        None,
+                        reason,
+                    );
+                })? {
                     return Ok(false);
                 }
             }

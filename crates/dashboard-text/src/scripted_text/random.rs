@@ -100,7 +100,9 @@ impl<'a> ScriptedText<'a> {
             list.members.len(),
             // An evaluator exists whenever a member has modifiers.
             |i| match evaluator {
-                Some(evaluator) => evaluator.localisation_weight(&list.members[i], scopes),
+                Some(evaluator) => evaluator
+                    .localisation_weight(&list.members[i], scopes)
+                    .map_err(|why| why.to_string()),
                 None => Ok(crate::triggers::scripted_localisation::constant_weight(
                     &list.members[i],
                 )),
@@ -121,7 +123,10 @@ impl<'a> ScriptedText<'a> {
                 };
                 // An explicit seed does not read the scope seed;
                 // the default is read only without that operand.
-                match evaluator.localisation_seed(list, scopes)? {
+                match evaluator
+                    .localisation_seed(list, scopes)
+                    .map_err(|why| why.to_string())?
+                {
                     Some(seed) => Ok(seed),
                     None => bound.scope(at).require_random_seed(),
                 }

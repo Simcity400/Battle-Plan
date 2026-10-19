@@ -4,6 +4,13 @@ Passive CLI to verify HOI4, inject/monitor/detach the collector and finalize `.b
 
 Attachment prepares the process-wide executable tables from the verified process executable before injection. Offline save and movement comparisons prepare the same tables from their selected installation. Inspection and finalization use recording metadata without loading an installation.
 
+Before attachment, scripted-map demand resolves from the recorded content stack:
+state-controller targets, map hover localisation/defined-text paths that reach
+the cached victory-point name, and reachable sharing-group predicates. The collector
+reads the state operands on its carried States worker and sharing identities under
+the existing Research certificate. An empty state-controller targets block demands
+all potential states, as an absent selector does. Forced refreshes are event observations.
+
 ## Code boundaries
 
 | File | Responsibility |
@@ -206,7 +213,7 @@ Every hour must occur exactly once. Gaps, undated loss, partial/recovered files,
 
 ### Derivation check
 
-[derived.rs](../recorder-derived/src/derived.rs) resolves the recording's verified content stack and compares playback derivations with the recorded values, row by row and hour by hour. It checks held day/night clocks whose hour proves the update ran, [province temperature checksums and proven anchors](../recorder-derived/src/derived/temperature.rs), the [selected army's attack operands](../recorder-derived/src/derived/attack.rs) against `attack_witness` diagnostic samples, [power-balance description trees](../recorder-derived/src/derived/power_balance.rs) against `breakdown_witness` samples, and [naval source tree identities and values](../recorder-derived/src/derived/naval_trees.rs) against `naval_tree_oracle` samples. It also compares [playback's division movement speed](../recorder-derived/src/derived/movement.rs) with the game's own: a division that keeps its location, first route province and route across two consecutive hours advanced its progress numerator by the speed the game computed for that edge, so each such step is a native observation of the speed; that witness lists its equal steps, those equal only under the next hour's terms (the next hour's update can rewrite an operand such as supply, organisation or fuel before its movement step), and its differing, stalled and refused steps by reason, without failing the command. Every mismatch is counted; the first 40 per family are listed. Any mismatch or incomplete comparison fails the command. A production recording's absent diagnostic samples are reported without claiming those checks passed. The first temperature anchor needs no preceding frame; subsequent anchors compare whenever that frame proves their pass. `--census` also counts each table's changed rows and fields per hour.
+[derived.rs](../recorder-derived/src/derived.rs) resolves the recording's verified content stack and compares playback derivations with the recorded values, row by row and hour by hour. It checks held day/night clocks whose hour proves the update ran, [province temperature checksums and proven anchors](../recorder-derived/src/derived/temperature.rs), the [selected army's attack operands](../recorder-derived/src/derived/attack.rs) against `attack_witness` diagnostic samples, [power-balance description trees](../recorder-derived/src/derived/power_balance.rs) against `breakdown_witness` samples, and [naval source tree identities and values](../recorder-derived/src/derived/naval_trees.rs) against `naval_tree_oracle` samples. It also compares [playback's division movement speed](../recorder-derived/src/derived/movement.rs) with the game's own: a division that keeps its location, first route province and route across two consecutive hours advanced its progress numerator by the speed the game computed for that edge, so each such step is a native observation of the speed; that witness lists its equal steps, those equal only under the next hour's terms (the next hour's update can rewrite an operand such as supply, organisation or fuel before its movement step), and its differing, stalled and refused steps by reason. The cross-hour progress comparison reports these categories without failing the command, because operands change inside the hourly update. The opt-in same-boundary native witness is the strict, exact movement-speed gate. Every mismatch is counted; the first 40 per family are listed. Other mismatches or incomplete comparisons fail the command. A production recording's absent diagnostic samples are reported without claiming those checks passed. The first temperature anchor needs no preceding frame; subsequent anchors compare whenever that frame proves their pass. `--census` also counts each table's changed rows and fields per hour.
 
 ```powershell
 & $recorder derived $replayFile --game-dir $gameDirectory --user-dir $userDirectory
@@ -246,3 +253,17 @@ $env:BATTLE_PLAN_LAND_SAVE = $saveFile
 $env:BATTLE_PLAN_LAND_EXPECTATIONS = Join-Path $capture 'land-expectations.json'
 cargo test -p recorder-oracle-land land::tests::installed_save_divisions_and_history_match_expectations -- --ignored --exact
 ```
+
+For a collector built with the off-by-default `movement_witness` feature,
+`recorder derived <replay> --movement-witness --game-dir <game> --user-dir <user>`
+compares every mover's playback first-edge speed exactly with the native getter
+at the same held hourly boundary. Every mover needs a sample; absence, native or
+playback refusal, a mismatch or no equal observations fails. Ordinary recordings
+have no samples and pay no bytes or game-thread work for them. The default
+`derived` command keeps the independent cross-hour progress comparison as
+report-only diagnostics: operand changes inside an hourly update can differ from
+both endpoint snapshots. The opt-in same-boundary witness is the strict, exact
+movement-speed gate.
+`inspect` includes the final reduced pending, fired-once and delayed script-event state for each branch, with scopes and named coverage refusals. The fresh-save oracle compares the retained registries independently of the unsaved occurrence feed.
+
+A spool row-validation failure can refuse one table while the hour's other tables remain recorded. Its `Unavailable` reason retains the full validation diagnostic. `status.json` lists distinct `validation_refusals` (table, column, reason, detail, first/last hour and count) and `failed_hook_families` (family, site set, stage, cause and refusal); the session's `recorder.log` lists each distinct contained failure once. Optional hook failures also refuse forwarder-dependent families for the session. The essential `hourly` and `world_lifetime` families still abort attach because every frame needs their boundary and load invalidation. Failed rollback, clock, framing, allocation and I/O errors remain session/hour failures. `oracle` treats contained refusals as incomplete even when publication was deferred, and `sizes` prints refusals beside its size report in text and JSON.

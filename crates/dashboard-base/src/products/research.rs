@@ -49,6 +49,7 @@ use replay_frame::frame::FrameDecoder;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
+pub mod grants;
 mod modifiers;
 pub mod prepared;
 
@@ -119,7 +120,12 @@ fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
 }
 
 fn history_bytes(history: &ResearchHistory) -> usize {
-    128 + history.coverage.capacity() * size_of::<ResearchCoverage>()
+    128 + retained_history_bytes(history)
+}
+
+/// Heap allocations retained by the history, excluding its fixed header.
+fn retained_history_bytes(history: &ResearchHistory) -> usize {
+    history.coverage.capacity() * size_of::<ResearchCoverage>()
         + history.slots.capacity() * size_of::<ResearchSlotHistory>()
         + history
             .slots
@@ -1351,6 +1357,7 @@ pub(crate) struct IndexChanges {
     countries: Option<(Arc<HashMap<u32, u32>>, CountryRows)>,
     owners: Option<BTreeMap<u32, Vec<u32>>>,
     dates: Option<BTreeMap<u32, Vec<(u32, i32)>>>,
+    // Keep changed slots paired with their optional owner/date lists in this index update.
     slot_dates: SlotDates,
 }
 
@@ -2222,13 +2229,26 @@ fn present(
     unjoined: usize,
     cancelled: &AtomicBool,
 ) -> io::Result<ResearchReply> {
-    let content = context.content()?;
-    let art = artwork::ensure(
-        &mut state.artwork,
-        source,
-        content,
-        artwork::Kind::Technology,
-    )?;
+    let art = match context.content().and_then(|content| {
+        artwork::ensure(
+            &mut state.artwork,
+            source,
+            content,
+            artwork::Kind::Technology,
+        )
+    }) {
+        Ok(art) => art,
+        Err(error) => {
+            state.artwork = None;
+            return Ok(ResearchReply {
+                history,
+                artwork: Vec::new(),
+                folders: Vec::new(),
+                technology_folders: Vec::new(),
+                warnings: vec![format!("Research content unavailable: {error}")],
+            });
+        }
+    };
     let tokens: BTreeSet<&str> = history
         .slots
         .iter()

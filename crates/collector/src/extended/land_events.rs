@@ -179,7 +179,7 @@ fn counts(words: &[u64]) -> Result<[usize; 2], &'static str> {
         match words[at + 1] {
             0 => counts[0] += 1,
             1 | 7 => counts[1] += 1,
-            2..=6 | 8 => {}
+            2..=6 | 8 | 9 => {}
             _ => return Err("land event kind unsupported"),
         };
         at = end;
@@ -286,6 +286,10 @@ fn decode(
     let mut commanders = std::collections::HashMap::new();
     let mut histories = std::collections::HashMap::new();
     let mut losses = std::collections::HashMap::new();
+    let mut observers: std::collections::HashMap<
+        u64,
+        Vec<replay_data::rows::LandTerminalObserver>,
+    > = std::collections::HashMap::new();
     let mut destructions = std::collections::HashMap::new();
     while at < words.len() {
         let size = usize::try_from(words[at]).map_err(|_| "land event length overflow")?;
@@ -340,6 +344,7 @@ fn decode(
                     history_tags: Default::default(),
                     sides,
                     losses: Default::default(),
+                    observers: Default::default(),
                 };
                 if kind == 3 {
                     if insert(&mut participants, combat, row.sides)? {
@@ -471,6 +476,35 @@ fn decode(
                     return Err("duplicate terminal land losses");
                 }
             }
+            9 => {
+                let combat = reader.word()?;
+                let side = reader.word()?;
+                let kind = reader.word()?;
+                if side > 1 || kind > u8::MAX as u64 {
+                    return Err("terminal observer identity invalid");
+                }
+                let item = reader.word()?;
+                let values = [
+                    reader.word()?,
+                    reader.word()?,
+                    reader.word()?,
+                    reader.word()?,
+                    reader.word()?,
+                ];
+                if !observers.contains_key(&combat) {
+                    allocation::reserve_map(&mut observers, 1)
+                        .map_err(|_| "collector allocation failed")?;
+                }
+                let rows = observers.entry(combat).or_default();
+                allocation::reserve_push_batch(rows, 1)
+                    .map_err(|_| "collector allocation failed")?;
+                rows.push(replay_data::rows::LandTerminalObserver {
+                    attacker: side == 0,
+                    kind: kind as u8,
+                    item,
+                    values,
+                });
+            }
             _ => return Err("land event kind unsupported"),
         }
         if reader.at != reader.words.len() {
@@ -503,6 +537,23 @@ fn decode(
         result.losses = losses
             .remove(&result.combat)
             .ok_or("terminal land losses missing")?;
+        result.observers = observers
+            .remove(&result.combat)
+            .ok_or("terminal observers missing")?;
+        for attacker in [true, false] {
+            if result
+                .observers
+                .iter()
+                .filter(|r| {
+                    r.attacker == attacker
+                        && r.kind == engine_land_inputs::combat_log_events::OBSERVER_STATE as u8
+                })
+                .count()
+                != 1
+            {
+                return Err("terminal observer side state missing or repeated");
+            }
+        }
         if let Some(sides) = participants.remove(&result.combat) {
             let (leaders, winner) = commanders
                 .remove(&result.combat)
@@ -523,6 +574,9 @@ fn decode(
     }
     if !losses.is_empty() {
         return Err("terminal land losses have no final result");
+    }
+    if !observers.is_empty() {
+        return Err("terminal observers have no final result");
     }
     if !histories.is_empty() {
         return Err("history projection has no final result");
@@ -762,18 +816,27 @@ mod tests {
         assert!(decode(&trailing, 77).is_err());
     }
     #[test]
-    fn terminal_casualties_survive_an_end_between_reads_and_require_complete_pairing() {
+    fn combat_log_terminal_casualties_survive_an_end_between_reads_and_require_complete_pairing() {
         let mut words = result(0, false, false);
         let start = words.len();
         let mut history = history(41, [0, 0]);
         history.truncate(9); // Supply our explicit terminal amounts below.
         words.extend(history);
         words.extend([9, 8, 41, 83, 1, 7 << 32 | 70, 125_001, 91, 0]);
+        words.extend(terminal_observers(41));
         let (ended, _) = decode(&words, 0).unwrap();
         assert_eq!(ended[0].losses[0].manpower, 83);
         assert_eq!(ended[0].losses[0].equipment[0].amount_raw, 125_001);
         assert_eq!(ended[0].losses[1].manpower, 91);
         assert!(ended[0].losses[1].equipment.is_empty());
+        assert_eq!(ended[0].observers.len(), 2);
+        assert_eq!(ended[0].observers[0].values[0..2], [123, 456]);
+        assert!(ended[0].observers[0].attacker);
+        assert!(!ended[0].observers[1].attacker);
+        assert!(
+            decode(&words[..words.len() - 11], 0).is_err(),
+            "a missing terminal side must refuse"
+        );
         // No hourly presence is required: even a combat born and ended in
         // one interval retains both final counters, never the last hourly read.
         assert!(
@@ -857,7 +920,28 @@ mod tests {
             u64::from_le_bytes([b'?', b'!', b'~', 0, 0, 0, 0, 0]),
         ];
         out.extend([7, 8, combat, 0, 0, 0, 0]);
+        out.extend(terminal_observers(combat));
         out
+    }
+    fn terminal_observers(combat: u64) -> Vec<u64> {
+        [0, 1]
+            .into_iter()
+            .flat_map(|side| {
+                [
+                    11,
+                    9,
+                    combat,
+                    side,
+                    engine_land_inputs::combat_log_events::OBSERVER_STATE,
+                    0,
+                    123,
+                    456,
+                    0,
+                    0,
+                    0,
+                ]
+            })
+            .collect()
     }
     #[test]
     fn border_draw_and_pre_retreat_participants_pair_with_actual_commanders_and_final_inputs() {

@@ -7,3 +7,5 @@ Resolve every authored input through the recorded `ResolvedLayers` content stack
 ## Tests
 
 Synthetic tests live beside the reader. Integration tests of independent readers live in `installed-content`; layer fixtures come from the core through dev-dependencies. `test-support` forwards the existing core test constructors and retains reader test gating. Runtime metadata tests initialize `BATTLE_PLAN_GAME_DIR`; ignored installation tests remain read-only. See the [installed-content contracts](../installed-content/README.md) and [project rules](../../AGENTS.md).
+
+Event metadata retains description candidates, the selected authored picture key, ordered option names and each option admission trigger separately from option effects. Sole title/body keys can be resolved without replaying presentation-time selection; conditional candidates and option admission require exact historical operands.

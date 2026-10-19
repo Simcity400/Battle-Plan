@@ -433,6 +433,7 @@ pub fn job() -> ProjectsJob {
     job.census.reserve_exact(16);
     job.statuses.reserve_exact(16);
     job.pointers.reserve_exact(256);
+    job.assignment_references.reserve_exact(1);
     job.update_capacity_charge();
     job
 }

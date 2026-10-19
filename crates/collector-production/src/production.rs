@@ -25,7 +25,7 @@ use engine_native::{
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::{frame::TableInput, frame::TableView};
 
-pub const N: usize = 17;
+pub const N: usize = 23;
 pub const TABLES: [TableId; N] = [
     TableId::ProductionLines,
     TableId::Stockpiles,
@@ -44,11 +44,18 @@ pub const TABLES: [TableId; N] = [
     TableId::DeploymentManpower,
     TableId::DeploymentEquipment,
     TableId::ProductionLicenseRecords,
+    TableId::VariantChanges,
+    TableId::VariantBonusSnapshots,
+    TableId::DesignCountryModifiers,
+    TableId::DesignCountryTemplates,
+    TableId::DesignObserverContext,
+    TableId::DesignOrganisationLiveness,
 ];
 
 /// Name, local cost slot, and local member indices. Zero cost in a non-anchor
 /// slot means the work is accounted for by this group, not that reads are free.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
+    ("variant definitions and author liveness", 3, &[3, 22]),
     ("variant modules, stats and upgrades", 4, &[4, 5, 6]),
     (
         "army upgrade groups, requests, deliveries and produced equipment",
@@ -203,40 +210,80 @@ impl Capacities {
 
 /// Variant leaves loaned to the worker-only acquisition job.
 pub struct Variants {
-    definitions: CaptureRows<cequipment_variant::DefinitionRow>,
+    baseline_admitted: bool,
+    nested_bytes: usize,
+    definitions:
+        CaptureRows<cequipment_variant::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>>,
     modules: CaptureRows<equipment_module_container::Row>,
     stats: CaptureRows<cequipment_variant::StatsRow>,
     upgrades: CaptureRows<cequipment_upgrades_instance::Row>,
     definition_bytes: Arena<u8>,
+    organisation_holds: Vec<DesignHeld>,
+    organisations_complete: bool,
+    organisation_bytes: usize,
+    dictionary: bonus_snapshots::Snapshot,
+    context: design_context::Snapshot,
+    templates: design_context::Snapshot,
+    fog: design_fog::Observation,
+    liveness: design_changes::liveness::Observation,
 }
 
 impl Variants {
     fn with_capacities(capacities: &Capacities) -> Self {
         Self {
+            baseline_admitted: false,
+            nested_bytes: 0,
+            dictionary: None,
+            context: None,
+            templates: None,
+            fog: design_fog::Observation::default(),
+            liveness: design_changes::liveness::Observation::default(),
             definitions: CaptureRows::new(capacities.rows[3]),
             modules: CaptureRows::new(capacities.rows[4]),
             stats: CaptureRows::new(capacities.rows[5]),
             upgrades: CaptureRows::new(capacities.rows[6]),
             definition_bytes: Arena::new(capacities.definition_bytes),
+            organisation_holds: Vec::new(),
+            organisations_complete: false,
+            organisation_bytes: 0,
         }
     }
 
     pub fn vacant() -> Self {
         Self {
+            baseline_admitted: false,
+            nested_bytes: 0,
+            dictionary: None,
+            context: None,
+            templates: None,
+            fog: design_fog::Observation::default(),
+            liveness: design_changes::liveness::Observation::default(),
             definitions: CaptureRows::new(0),
             modules: CaptureRows::new(0),
             stats: CaptureRows::new(0),
             upgrades: CaptureRows::new(0),
             definition_bytes: Arena::new(0),
+            organisation_holds: Vec::new(),
+            organisations_complete: false,
+            organisation_bytes: 0,
         }
     }
 
     fn reset(&mut self) {
+        self.baseline_admitted = false;
         self.definitions.reset();
         self.modules.reset();
         self.stats.reset();
         self.upgrades.reset();
         self.definition_bytes.reset();
+    }
+
+    fn dictionary(&self) -> &bonus_snapshots::Snapshot {
+        if matches!(self.definitions.outcome, Outcome::Unavailable { .. }) {
+            &None
+        } else {
+            &self.dictionary
+        }
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -245,6 +292,9 @@ impl Variants {
             + self.stats.allocated_bytes()
             + self.upgrades.allocated_bytes()
             + self.definition_bytes.allocated_bytes()
+            + self.organisation_holds.capacity() * std::mem::size_of::<DesignHeld>()
+            + self.organisation_bytes
+            + self.nested_bytes
     }
 
     fn grow(&mut self, capacities: &mut Capacities) {
@@ -262,6 +312,10 @@ impl Variants {
 
     pub fn fail(&mut self, reason: &'static str, hour: i32, force_full: bool) {
         self.reset();
+        if replay_data::cadence::should_walk(TABLES[5], hour, force_full) {
+            self.organisations_complete = false;
+            self.liveness.refuse();
+        }
         for (outcome, table) in [
             (&mut self.definitions.outcome, TABLES[3]),
             (&mut self.modules.outcome, TABLES[4]),
@@ -278,8 +332,87 @@ impl Variants {
         }
     }
 
-    /// Read variant fields from the current complete registry census.
     pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        variants: Sources<'_, cequipment_variant::RegistryRow>,
+        hour: i32,
+        full: bool,
+    ) -> [u64; N] {
+        self.baseline_admitted = false;
+        if !full && !replay_data::cadence::should_walk(TableId::VariantDefinitions, hour, false) {
+            self.fail(replay_data::cadence::SKIPPED_REASON, hour, false);
+            return [0; N];
+        }
+        self.liveness = design_changes::liveness::Observation::refused();
+        // A failed recovery consumes its immediate read request. The next
+        // ordinary daily visit still rebuilds its missing proof, while an
+        // admitted daily visit preserves every certified dependency.
+        let full = full || (design_changes::enabled() && design_changes::needs_baseline());
+        design_changes::begin_read();
+        if full {
+            design_changes::begin_full();
+        }
+        self.fog = design_fog::capture(memory, base);
+        let registry = variants.rows;
+        let outcome = variants.outcome;
+        let ticks = self.capture_state(memory, base, variants, hour, full);
+        match bonus_snapshots::snapshot() {
+            Ok(snapshot) => self.dictionary = snapshot,
+            Err(reason) => {
+                self.dictionary = None;
+                self.fail(reason, hour, true);
+            }
+        }
+        self.nested_bytes = self
+            .definitions
+            .rows
+            .iter()
+            .map(|r| {
+                rows::NativeValue::heap_bytes(r.design.as_ref())
+                    + r.source_links.as_ref().map_or(0, |links| {
+                        links.direct.capacity() * std::mem::size_of::<usize>()
+                    })
+            })
+            .sum();
+        if let Outcome::Rows { len } = outcome
+            && [
+                self.definitions.outcome,
+                self.modules.outcome,
+                self.stats.outcome,
+                self.upgrades.outcome,
+            ]
+            .iter()
+            .all(|o| matches!(o, Outcome::Rows { .. }))
+        {
+            (self.context, self.templates) =
+                design_context::seed(memory, base, self, full).unwrap_or_default();
+            if design_changes::enabled() {
+                design_changes::prepare(&registry[..len], self);
+                self.baseline_admitted = full && design_changes::baseline_admitted();
+                self.liveness = design_changes::liveness::observation()
+                    .unwrap_or_else(|_| design_changes::liveness::Observation::refused());
+            }
+        }
+        self.canonicalize_definitions();
+        ticks
+    }
+
+    /// Acquisition and coupled module/context visits retain native order.
+    /// Only after those visits finish, normalize the owned definition rows
+    /// for replay comparison; their text spans and authenticated values move
+    /// together. Sorting needs no extra storage.
+    fn canonicalize_definitions(&mut self) {
+        if let Outcome::Rows { len } = self.definitions.outcome
+            && let Some(rows) = self.definitions.rows.get_mut(..len)
+        {
+            rows.sort_unstable_by_key(|row| row.identity.id);
+        }
+    }
+
+    /// Read variant fields from the current complete registry census.
+    fn capture_state(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -291,12 +424,28 @@ impl Variants {
         let mut reads = read_accounting::table(TABLES[3]);
         let begin = qpc();
         let source = complete_source(variants.rows, variants.outcome);
+        let held = (!force_full)
+            .then(design_changes::held::certified)
+            .flatten();
         capture_text(
             &mut self.definitions,
             &mut self.definition_bytes,
             source,
             |source, rows, arena| {
-                cequipment_variant::walk_definitions(memory, base, source, rows, arena)
+                cequipment_variant::walk_definitions_carried(
+                    memory,
+                    base,
+                    source,
+                    rows,
+                    arena,
+                    |source| {
+                        let Some(state) = held.as_ref().and_then(|held| held.get(source)) else {
+                            return Ok(None);
+                        };
+                        Ok(Some(state))
+                    },
+                    |state| bonus_snapshots::intern(state).map(std::sync::Arc::new),
+                )
             },
         );
         ticks[3] = elapsed(begin);
@@ -314,9 +463,29 @@ impl Variants {
         capture_source(&mut self.modules, source, |source, rows| {
             equipment_module_container::walk(memory, base, source, rows)
         });
+        collector_observers::world_input_changes::prepare_design_mios(
+            source.map_or(0, <[_]>::len),
+            force_full,
+        );
+        let mut organisation_carry = DesignCarry {
+            held: &mut self.organisation_holds,
+            fresh: force_full || !self.organisations_complete,
+            day: hour.div_euclid(24),
+        };
         capture_source(&mut self.stats, source, |source, rows| {
-            cequipment_variant::walk_stats(memory, source, rows)
+            cequipment_variant::walk_stats_carried(memory, source, rows, &mut organisation_carry)
         });
+        self.organisations_complete = matches!(self.stats.outcome, Outcome::Rows { .. });
+        // Heap accounting is cached by the daily worker, never scanned hourly.
+        self.organisation_bytes = self
+            .stats
+            .rows
+            .iter()
+            .map(|row| {
+                row.organisation.bonuses.capacity()
+                    * std::mem::size_of::<cequipment_variant::OrganisationBonus>()
+            })
+            .sum();
         capture_source(&mut self.upgrades, source, |source, rows| {
             cequipment_upgrades_instance::walk(memory, base, source, rows)
         });
@@ -325,8 +494,79 @@ impl Variants {
     }
 }
 
+#[derive(Default)]
+struct DesignHeld {
+    reference: u64,
+    pointer: usize,
+    token: Option<(u64, u64)>,
+    observed: Option<(u64, u64)>,
+    verify: Option<u64>,
+    did_read: bool,
+}
+struct DesignCarry<'a> {
+    held: &'a mut Vec<DesignHeld>,
+    fresh: bool,
+    day: i32,
+}
+fn design_digest(row: &cequipment_variant::Organisation) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    row.hash(&mut hash);
+    hash.finish()
+}
+impl cequipment_variant::OrganisationCarry for DesignCarry<'_> {
+    fn fresh(
+        &mut self,
+        index: usize,
+        source: &cequipment_variant::RegistryRow,
+        old: &cequipment_variant::Organisation,
+    ) -> Result<bool, &'static str> {
+        if self.held.len() <= index {
+            engine_allocation::resize_default(self.held, index + 1)
+                .map_err(|_| "design MIO certificate allocation failed")?;
+        }
+        let held = &mut self.held[index];
+        let token = collector_observers::world_input_changes::design_mio(source.pointer());
+        let carry = !self.fresh
+            && held.reference == source.id
+            && held.pointer == source.pointer()
+            && token.is_some()
+            && token == held.token;
+        let sample = (source.id >> 32) % 24 == self.day.rem_euclid(24) as u64;
+        held.observed = token;
+        held.verify = (carry && sample).then(|| design_digest(old));
+        held.did_read = !carry || sample;
+        Ok(held.did_read)
+    }
+    fn read(
+        &mut self,
+        index: usize,
+        source: &cequipment_variant::RegistryRow,
+        row: &cequipment_variant::Organisation,
+    ) {
+        let held = &mut self.held[index];
+        let mismatch = held.verify.is_some_and(|old| old != design_digest(row));
+        if mismatch {
+            collector_observers::world_input_changes::design_mio_mismatch();
+        }
+        collector_observers::world_input_changes::record_daily(
+            collector_observers::world_input_changes::Domain::DesignIndustrialOrganisation,
+            !held.did_read,
+            held.did_read,
+            held.verify.is_some(),
+            mismatch,
+        );
+        held.reference = source.id;
+        held.pointer = source.pointer();
+        held.token = held.observed.filter(|token| {
+            Some(*token) == collector_observers::world_input_changes::design_mio(source.pointer())
+        });
+    }
+}
+
 pub struct Captured {
     variants: Variants,
+    changes: design_changes::Captured,
     pub lines: CaptureRows<cequipment_production_line::Row>,
     pub stockpiles: CaptureRows<cequipment_variant_pool::StockpileRow>,
     pub division_equipment: CaptureRows<cequipment_variant_pool::DivisionRow>,
@@ -362,6 +602,15 @@ pub struct Captured {
 }
 
 impl Captured {
+    fn design_changes_outcome(&self) -> Outcome {
+        if self.variants.baseline_admitted
+            && matches!(self.changes.outcome, Outcome::Unavailable { .. })
+        {
+            Outcome::Rows { len: 0 }
+        } else {
+            self.changes.outcome
+        }
+    }
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities {
             rows: [0; N],
@@ -386,6 +635,13 @@ impl Captured {
         }
     }
 
+    pub fn take_design_changes(&mut self) -> design_changes::Captured {
+        std::mem::replace(&mut self.changes, design_changes::Captured::vacant())
+    }
+    pub fn restore_design_changes(&mut self, changes: design_changes::Captured) {
+        self.changes = changes;
+    }
+
     pub fn take_variants(&mut self) -> Variants {
         std::mem::replace(&mut self.variants, Variants::vacant())
     }
@@ -397,6 +653,7 @@ impl Captured {
     pub fn with_capacities(capacities: &Capacities) -> Self {
         Self {
             variants: Variants::with_capacities(capacities),
+            changes: design_changes::Captured::vacant(),
             lines: CaptureRows::new(capacities.rows[0]),
             stockpiles: CaptureRows::new(capacities.rows[1]),
             division_equipment: CaptureRows::new(capacities.rows[2]),
@@ -421,6 +678,7 @@ impl Captured {
 
     pub fn reset(&mut self) {
         self.variants.reset();
+        self.changes.reset();
         self.lines.reset();
         self.stockpiles.reset();
         self.division_equipment.reset();
@@ -440,7 +698,8 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.variants.allocated_bytes()
+        self.changes.allocated_bytes()
+            + self.variants.allocated_bytes()
             + self.lines.allocated_bytes()
             + self.stockpiles.allocated_bytes()
             + self.division_equipment.allocated_bytes()
@@ -790,6 +1049,11 @@ impl Captured {
     }
 }
 
+mod bonus_snapshots;
+pub mod design_changes;
+mod design_context;
+mod design_fog;
+mod design_template_changes;
 pub mod registry;
 mod rest;
 #[cfg(any(test, feature = "test-support"))]
@@ -800,6 +1064,60 @@ pub use rest::{
 };
 
 impl Captured {
+    fn design_context(&self) -> &design_context::Snapshot {
+        if matches!(self.variants.definitions.outcome, Outcome::Rows { .. }) {
+            &self.variants.context
+        } else if matches!(
+            self.variants.definitions.outcome,
+            Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON
+            }
+        ) {
+            self.changes.context()
+        } else {
+            &None
+        }
+    }
+    fn design_templates(&self) -> &design_context::Snapshot {
+        if matches!(self.variants.definitions.outcome, Outcome::Rows { .. }) {
+            &self.variants.templates
+        } else if matches!(
+            self.variants.definitions.outcome,
+            Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON
+            }
+        ) {
+            self.changes.templates()
+        } else {
+            &None
+        }
+    }
+    fn design_liveness(&self) -> &design_context::Snapshot {
+        let daily = &self.variants.liveness;
+        let event = &self.changes.liveness;
+        if event.order > daily.order {
+            event.snapshot()
+        } else {
+            daily.snapshot()
+        }
+    }
+    fn design_fog(&self) -> &design_context::Snapshot {
+        let daily = matches!(self.variants.definitions.outcome, Outcome::Rows { .. })
+            .then_some(&self.variants.fog);
+        let event = self.changes.fog();
+        match (daily, event) {
+            (Some(daily), Some(event)) => {
+                if daily.order > event.order {
+                    &daily.snapshot
+                } else {
+                    &event.snapshot
+                }
+            }
+            (Some(daily), None) => &daily.snapshot,
+            (None, Some(event)) => &event.snapshot,
+            _ => &None,
+        }
+    }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.lines.outcome,
@@ -819,6 +1137,50 @@ impl Captured {
             self.deployment_manpower.outcome,
             self.deployment_equipment.outcome,
             self.license_records.outcome,
+            self.design_changes_outcome(),
+            if self.variants.dictionary().is_some() || self.changes.dictionary().is_some() {
+                Outcome::Rows {
+                    len: self
+                        .variants
+                        .dictionary()
+                        .as_ref()
+                        .map_or(0, |rows| rows.len())
+                        .max(
+                            self.changes
+                                .dictionary()
+                                .as_ref()
+                                .map_or(0, |rows| rows.len()),
+                        ),
+                }
+            } else {
+                Outcome::Unavailable {
+                    reason: "design bonus snapshots not acquired",
+                }
+            },
+            match self.design_context() {
+                Some(rows) => Outcome::Rows { len: rows.len() },
+                None => Outcome::Unavailable {
+                    reason: "design country context unavailable",
+                },
+            },
+            match self.design_templates() {
+                Some(rows) => Outcome::Rows { len: rows.len() },
+                None => Outcome::Unavailable {
+                    reason: "design production-template writer certificate unavailable",
+                },
+            },
+            match self.design_fog() {
+                Some(rows) => Outcome::Rows { len: rows.len() },
+                None => Outcome::Unavailable {
+                    reason: "game fog writer certificate or singleton read unavailable",
+                },
+            },
+            match self.design_liveness() {
+                Some(rows) => Outcome::Rows { len: rows.len() },
+                None => Outcome::Unavailable {
+                    reason: "design organisation liveness certificate unavailable",
+                },
+            },
         ]
     }
 
@@ -826,6 +1188,7 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         self.table_inputs(None).map(|input| match input {
             TableInput::Sampled(view) => view,
+            TableInput::SharedComplete(rows) => TableView::Complete((*rows).clone()),
             _ => unreachable!("projection without a baseline always samples rows"),
         })
     }
@@ -834,7 +1197,23 @@ impl Captured {
     /// complete baseline before allocating replay rows. Other production tables
     /// retain their existing arena validation and conversion paths.
     pub fn table_inputs(&self, mut projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
-        [
+        let observed = matches!(
+            self.variants.definitions.outcome,
+            Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON
+            }
+        )
+        .then(|| design_changes::project(&self.changes, projection.as_deref()));
+        let history_input = if self.variants.baseline_admitted
+            && matches!(self.changes.outcome, Outcome::Unavailable { .. })
+        {
+            TableView::Complete(rows::TableRows::VariantChanges(Vec::new())).into()
+        } else {
+            self.changes.table_input(projection.as_deref())
+        };
+        let dictionary =
+            bonus_snapshots::latest(self.variants.dictionary(), self.changes.dictionary());
+        let mut inputs = [
             table::<tables::ProductionLines, _>(self.lines.outcome, &self.lines.rows, |r| {
                 rows::ProductionLineRow {
                     handle: r.handle,
@@ -877,7 +1256,11 @@ impl Captured {
                     amount_raw: r.amount_raw,
                 },
             ),
-            definitions(&self.variants.definitions, &self.variants.definition_bytes).into(),
+            definitions_input(
+                projection.as_deref(),
+                &self.variants.definitions,
+                &self.variants.definition_bytes,
+            ),
             table::<tables::VariantModules, _>(
                 self.variants.modules.outcome,
                 &self.variants.modules.rows,
@@ -896,6 +1279,11 @@ impl Captured {
                 |r| rows::VariantStatsRow {
                     variant: r.variant,
                     values: r.values,
+                    organisation: r.organisation.author,
+                    organisation_trait_count: r.organisation.trait_count,
+                    organisation_bonuses: owned_vec(replay_data::rows::NativeValue::try_clone(
+                        &r.organisation.bonuses,
+                    )),
                 },
             )
             .into(),
@@ -1000,7 +1388,22 @@ impl Captured {
             )
             .into(),
             license_records(&self.license_records, &self.license_handles).into(),
-        ]
+            history_input,
+            bonus_snapshots::input(&dictionary),
+            design_context::input(self.design_context()),
+            design_context::template_input(self.design_templates()),
+            design_fog::input(self.design_fog()),
+            match self.design_liveness() {
+                Some(rows) => TableInput::SharedComplete(std::sync::Arc::clone(rows)),
+                None => unavailable("design organisation liveness certificate unavailable").into(),
+            },
+        ];
+        if let Some(views) = observed {
+            for (index, view) in (3..7).zip(views) {
+                inputs[index] = view;
+            }
+        }
+        inputs
     }
 }
 
@@ -1212,7 +1615,7 @@ fn checked_text<'a, T, const N: usize>(
 }
 
 fn definitions(
-    rows: &CaptureRows<cequipment_variant::DefinitionRow>,
+    rows: &CaptureRows<cequipment_variant::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>>,
     arena: &Arena<u8>,
 ) -> TableView {
     let bytes = match checked_text(rows, arena, |r| {
@@ -1221,26 +1624,149 @@ fn definitions(
         Ok(bytes) => bytes,
         Err(failure) => return failure,
     };
-    table::<tables::VariantDefinitions, _>(rows.outcome, &rows.rows, |r| {
-        rows::VariantDefinitionRow {
-            id: r.identity.id,
-            equipment_token: r.identity.equipment_token,
-            archetype_token: r.identity.archetype_token,
-            creator_link: r.identity.creator_link,
-            origin_link: r.identity.origin_link,
-            append_variant_name: r.identity.append_variant_name,
-            obsolete: r.identity.obsolete,
-            classifier_flags: r.identity.classifier_flags,
-            mission_mask: r.identity.mission_mask,
-            display_name: owned_vec(copy_vec(text(bytes, r.display_name).unwrap())),
-            variant_name: owned_vec(copy_vec(text(bytes, r.variant_name).unwrap())),
-            explicit_entity: owned_vec(copy_vec(text(bytes, r.explicit_entity).unwrap())),
-            icon_active: r.icon_active,
-            icon_kind: r.icon_kind,
-            icon: owned_vec(copy_vec(text(bytes, r.icon).unwrap())),
-            version: rows::Recorded::Value(r.version),
-        }
+    definitions_owned(rows, bytes)
+}
+
+type DefinitionCapture =
+    CaptureRows<cequipment_variant::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>>;
+
+fn definition_owned(
+    r: &cequipment_variant::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
+    bytes: &[u8],
+) -> std::io::Result<rows::VariantDefinitionRow> {
+    Ok(rows::VariantDefinitionRow {
+        id: r.identity.id,
+        equipment_token: r.identity.equipment_token,
+        archetype_token: r.identity.archetype_token,
+        creator_link: r.identity.creator_link,
+        origin_link: r.identity.origin_link,
+        append_variant_name: r.identity.append_variant_name,
+        obsolete: r.identity.obsolete,
+        classifier_flags: r.identity.classifier_flags,
+        mission_mask: r.identity.mission_mask,
+        display_name: copy_vec(text(bytes, r.display_name).unwrap())?,
+        variant_name: copy_vec(text(bytes, r.variant_name).unwrap())?,
+        explicit_entity: copy_vec(text(bytes, r.explicit_entity).unwrap())?,
+        icon_active: r.icon_active,
+        icon_kind: r.icon_kind,
+        icon: copy_vec(text(bytes, r.icon).unwrap())?,
+        version: rows::Recorded::Value(r.version),
+        design: rows::Recorded::Value(rows::NativeValue::try_clone(r.design.as_ref())?),
     })
+}
+
+fn definition_equal(
+    current: &cequipment_variant::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
+    previous: &rows::VariantDefinitionRow,
+    bytes: &[u8],
+) -> bool {
+    current.identity.id == previous.id
+        && current.identity.equipment_token == previous.equipment_token
+        && current.identity.archetype_token == previous.archetype_token
+        && current.identity.creator_link == previous.creator_link
+        && current.identity.origin_link == previous.origin_link
+        && current.identity.append_variant_name == previous.append_variant_name
+        && current.identity.obsolete == previous.obsolete
+        && current.identity.classifier_flags == previous.classifier_flags
+        && current.identity.mission_mask == previous.mission_mask
+        && text(bytes, current.display_name) == Some(previous.display_name.as_slice())
+        && text(bytes, current.variant_name) == Some(previous.variant_name.as_slice())
+        && text(bytes, current.explicit_entity) == Some(previous.explicit_entity.as_slice())
+        && current.icon_active == previous.icon_active
+        && current.icon_kind == previous.icon_kind
+        && text(bytes, current.icon) == Some(previous.icon.as_slice())
+        && previous.version == rows::Recorded::Value(current.version)
+        && matches!(&previous.design, rows::Recorded::Value(state) if current.design.as_ref() == state)
+}
+
+fn definitions_owned(source: &DefinitionCapture, bytes: &[u8]) -> TableView {
+    if matches!(source.outcome, Outcome::Truncated { unread_rows: 0, .. }) {
+        return unavailable("walker marked truncation without a missing count");
+    }
+    let result = (|| {
+        let mut output = engine_allocation::vec(source.outcome.len())?;
+        for row in &source.rows[..source.outcome.len()] {
+            output.push(definition_owned(row, bytes)?);
+        }
+        Ok::<_, std::io::Error>(output)
+    })();
+    let Ok(mut output) = result else {
+        return unavailable("variant definition allocation failed");
+    };
+    output.sort_unstable_by_key(|row| row.id);
+    if output.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return unavailable("walker produced duplicate engine ids");
+    }
+    let rows = rows::TableRows::VariantDefinitions(output);
+    match source.outcome {
+        Outcome::Rows { .. } => TableView::Complete(rows),
+        Outcome::Truncated { unread_rows, .. } => TableView::Truncated {
+            rows,
+            missing: unread_rows,
+        },
+        Outcome::Unavailable { reason } => unavailable(reason),
+    }
+}
+
+/// Complete current census rows may reuse the exact observed baseline too.
+/// Compare borrowed deep values before allocating; never turn a skipped or
+/// partial source into an equality certificate. Changed membership/order uses
+/// the ordinary checked full conversion.
+fn definitions_input(
+    projection: Option<&Projection<'_>>,
+    source: &DefinitionCapture,
+    arena: &Arena<u8>,
+) -> TableInput {
+    let bytes = match checked_text(source, arena, |r| {
+        [r.display_name, r.variant_name, r.explicit_entity, r.icon]
+    }) {
+        Ok(bytes) => bytes,
+        Err(failure) => return failure.into(),
+    };
+    if matches!(source.outcome, Outcome::Rows { .. })
+        && let Some((token, baseline)) = projection
+            .and_then(Projection::observed_comparison_baseline::<tables::VariantDefinitions>)
+        && source.outcome.len() == baseline.len()
+        && source.rows[..source.outcome.len()]
+            .iter()
+            .zip(baseline)
+            .all(|(current, previous)| current.identity.id == previous.id)
+    {
+        let mut indices = Vec::new();
+        let mut output = Vec::new();
+        for (index, (current, previous)) in source.rows[..source.outcome.len()]
+            .iter()
+            .zip(baseline)
+            .enumerate()
+        {
+            if definition_equal(current, previous, bytes) {
+                continue;
+            }
+            if !token.allows_row_updates() {
+                return definitions_owned(source, bytes).into();
+            }
+            if engine_allocation::reserve(&mut indices, 1).is_err()
+                || engine_allocation::reserve(&mut output, 1).is_err()
+            {
+                return unavailable("variant definition allocation failed").into();
+            }
+            let Ok(row) = definition_owned(current, bytes) else {
+                return unavailable("variant definition allocation failed").into();
+            };
+            indices.push(index);
+            output.push(row);
+        }
+        return if indices.is_empty() {
+            TableInput::ComparedEqual(token)
+        } else {
+            TableInput::ComparedChanges {
+                token,
+                indices,
+                rows: rows::TableRows::VariantDefinitions(output),
+            }
+        };
+    }
+    definitions_owned(source, bytes).into()
 }
 
 /// Shared synthetic address space for the scheduled production-rest

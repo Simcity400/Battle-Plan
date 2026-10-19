@@ -1,4 +1,6 @@
-//! War overview capture: owned war relations, relation goals, overview countries and war name rules. The host owns the WarOverview job's dispatch, loans and table assembly.
+//! War overview capture: owned relations, goals, overview countries, name rules,
+//! directional participation, captured provinces and same-side delivery history.
+//! The host owns the WarOverview job's dispatch, loans and table assembly.
 
 use collector_extended_support::outcomes::failed_capture;
 use collector_memory::read_accounting;
@@ -20,3 +22,6 @@ static TEST_ALLOCATOR: collector_test_support::FailingAllocator =
 #[used]
 #[unsafe(link_section = ".CRT$XCU")]
 static TEST_THREAD_STACK: unsafe extern "C" fn() = collector_test_support::reserve_test_stack;
+
+mod wargoals;
+pub mod participation;

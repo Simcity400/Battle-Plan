@@ -1,4 +1,4 @@
-//! CEvent definition fields; no event hook or hourly walk is enabled here.
+//! CEvent definition identity and presentation fields.
 //!
 //! Function sites describe operations consuming events. Common dispatch
 //! receives a separate owner whose class remains unknown; its location here
@@ -6,6 +6,12 @@
 
 /// CEvent combined id, u32.
 pub const COMBINED_ID: usize = 0x0c;
+/// Packed native reference type and combined identifier words.
+pub const REFERENCE: usize = 0x08;
+/// Primary event-definition vtable.
+pub const VTABLE_RVA: usize = 0x0298_2fb8;
+/// Authored event identity, MSVC string; an empty name saves the numeric ID.
+pub const TOKEN: usize = 0x20;
 /// CEvent option pointer vector.
 pub const OPTIONS: usize = 0x368;
 /// CEvent option count, u32.

@@ -361,6 +361,19 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         research::Research::KEY | technology_artwork::TechnologyArtwork::KEY => {
             artwork_check(content, artwork::Kind::Technology, findings)
         }
+        doctrines::Doctrines::KEY => {
+            let database = installed_content_core::doctrines::read(&content.resolved.layers).map_err(|error| error.to_string())?;
+            let catalogue = content.catalogue()?;
+            for folder in database.entries.values() {
+                if let Err(why) = crate::catalogue::localised_bytes(&catalogue.localisation, &folder.name, crate::catalogue::View::Plain) { findings.push(Finding::new(Kind::Refused, "doctrine folder name", why)); }
+            }
+            for name in database.grand.values().chain(database.sub.values()).chain(database.tracks.values()) {
+                if let Err(why) = crate::catalogue::localised_bytes(&catalogue.localisation, &name.value, crate::catalogue::View::Plain) { findings.push(Finding::new(Kind::Refused, "doctrine name", why)); }
+            }
+            findings.extend(database.notes.into_iter().map(|note| Finding::new(Kind::Refused, "doctrine content", note)));
+            findings.extend(catalogue.take_findings());
+            Ok("Doctrine names, authored costs, rewards, unit-stat and modifier forms checked through the recorded content stack; selections, completions, mastery, commander contributions and effective costs require recorded doctrine state and modifier inputs.".into())
+        }
         country_flags::CountryFlags::KEY => {
             flags_check(content, findings)?;
             Ok("Authored static-country flags, ideology-group candidates and shield checked; selected flags and shield colours require recorded country appearance, ruling parties and country identities.".into())
@@ -370,6 +383,12 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             country_factories::content_groups(catalogue);
             findings.extend(catalogue.take_findings());
             Ok("Every authored factory building and group name checked; country totals require recorded factory rows.".into())
+        }
+        country_people::CountryPeople::KEY => {
+            if let Err(why) = country_people::content_defines(&content.resolved.layers) {
+                findings.push(Finding::new(Kind::Refused, "country recruitment defines", why));
+            }
+            Ok("Recruitment and mobilisation defines checked through the runtime product's shared content cache; manpower pools and deployed branch totals require recorded country, state and unit rows, recruitment requires CountryCounterInputs, CountryStabilityInputs, StateResourceInputs and StateCores, and exile resources and elections require recorded politics and country identities. Country and state identities are displayed as recorded tags and IDs; this product displays no authored localisation names. Recording-dependent values are unavailable offline.".into())
         }
         party_history::PartyHistory::KEY => {
             parties_check(content, findings)?;
@@ -426,7 +445,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             }
             Ok("Authored occupation-law names and icons checked; occupied state names and law assignments require recorded state identities.".into())
         }
-        equipment_stockpile::EquipmentStockpile::KEY => {
+        equipment_stockpile::EquipmentStockpile::KEY | market_lendlease::MarketLendLease::KEY => {
             let catalogue = content.catalogue()?;
             let equipment = content.equipment()?;
             for archetype in equipment.equipment.iter().filter(|kind| kind.is_archetype) {
@@ -440,6 +459,10 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         | production_spending::ProductionSpending::KEY => {
             equipment_production_check(content, key, findings)?;
             Ok("Authored equipment types, archetypes, domains and type names checked through shared equipment production preparation; produced/spent totals, costs and variant names require recorded lines, outputs, costs, variants and country identities.".into())
+        }
+        equipment::designs::detail::EquipmentDesignDetail::KEY => {
+            content.equipment()?;
+            Ok("Complete equipment types, modules and upgrades loaded through the shared equipment database. Names use recorded text and token spellings. Saved designs, stat contributors, source-specific XP and industrial costs, validity, wing settings and reveal require recorded VariantDefinitions, VariantChanges and their country, organisation and unit operands. Selected rules are evaluated only with that recorded context.".into())
         }
         special_projects::SpecialProjects::KEY => {
             findings.extend(
@@ -525,6 +548,15 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.extend(content.agency()?.check_agency());
             Ok("Uncreated agency name and defense-label template checked through shared intelligence preparation; created names, defense values, signed acquired upgrade inventory, agency/operative rosters, country identities and dates require recorded IntelligenceAgencies, AgencyUpgradeLevels, LexicalTokens, OperativeMemberships, Countries, CountryLinks and Campaign rows.".into())
         }
+        intel_details::IntelDetails::KEY => {
+            installed_content_core::defines::read(&content.resolved.layers)
+                .map_err(|error| error.to_string())?;
+            installed_content_core::unit_leader::sub_units(&content.resolved.layers)
+                .map_err(|error| error.to_string())?;
+            findings.push(Finding::new(Kind::Offline, key,
+                "source caps/decay and viewer/target estimate ranges need recorded source pools, quantities, intel, unlock context and supplying reads; unavailable offline"));
+            Ok("Intel define stack and sub-unit categories checked through the same readers as intel-details. Reached caps, decay and thresholds depend on recorded IntelContributions and CountryIntel; ranges also need country identities, quantities, diplomacy, Clock seed/month and the actual supplying hour. IntelSources, IntelNetworks, IntelNetworkSummaries, IntelNetworkAuxiliaries and PropagandaEfforts require their recorded holders. No viewer/target pair or current value is invented offline.".into())
+        }
         production_lines::ProductionLines::KEY
         | production_lines::ProductionLineDetail::KEY
         | production_lines::ProductionLineBreakdown::KEY
@@ -549,6 +581,17 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         country_groups::CountryGroups::KEY => {
             Ok("Faction names use recorded keys localised through the content stack; their inventory requires a recording.".into())
+        }
+        faction_details::FactionDetails::KEY => {
+            let layers = &content.resolved.layers;
+            let goals = installed_content_core::faction_goals::cached(layers)?;
+            let upgrades = installed_content_core::faction_upgrades::cached(layers)?;
+            for warning in goals.warnings.iter().chain(&upgrades.warnings) {
+                findings.push(Finding::new(Kind::Warning, key, warning));
+            }
+            findings.push(Finding::new(Kind::Offline, key,
+                "selected goal, upgrade, advisor and programme identities, progress, permissions and supplying contribution inputs require recorded faction/member rows"));
+            Ok("Faction goal/template and member-upgrade/group content loaded through the production readers; scoped conditions, rewards and selected definitions require their recorded simulation inputs.".into())
         }
         peace_deals::PeaceDeals::KEY => {
             Ok("Peace action names use captured native cached type names in the recording client's language; their inventory requires recorded PeaceSettlements, PeaceBids, PeaceConferences and LexicalTokens. Exact event and publication dates, ordered actions, signed state-transfer values and country identities require recorded rows.".into())
@@ -593,6 +636,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, "native war naming content", findings);
             Ok("Native war naming content loaded through the shared Wars catalogue; viewpoint groups, first-goal tokens, naming operands, episode continuity and signed casualty lifetimes require recorded rows. Domain and unknown-attacker attribution are not invented.".into())
         }
+        wargoals::Wargoals::KEY => wargoals_check(content, findings),
         war_casualties::pairs::CasualtyPairs::KEY => {
             Ok("No content dependency: signed country-pair totals use the shared recorded identity and casualty-lifetime scan.".into())
         }
@@ -635,6 +679,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         | land_battles::LandBattlesRanking::KEY => {
             Ok("No content dependency: battle census, observation bounds, participant counts and rankings use recorded Campaign, LandCombats, LandCombatSides and Countries/CountryLinks rows. Place names are resolved by the separate place-names product; casualties and winners remain unavailable without their recorded operands.".into())
         }
+        products::combat_log::CombatLog::KEY => Ok("Retained log identities and dates come from recorded rows; equipment and template labels resolve through recorded naming operands and the recorded content stack.".into()),
         land_battles::LandBattleCourses::KEY => {
             Ok("Equipment design names resolve through the shared recorded variant catalogue only when a battle's loss reads name the design; runs, losses and verdicts require recorded LandCombats, LandCombatSides, LandCombatProgress and LandCombatResults rows.".into())
         }
@@ -695,7 +740,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
                 "ace and wing identity, stored names, aircraft variants and selected/cached portrait-pool operands need recorded AirAces and companion rows; unavailable offline"));
             Ok("No authored ace roster or selected portrait inventory exists offline; supplying recorded operands select content names and sprites.".into())
         }
-        air_force::AirForceSize::KEY | navy::NavySize::KEY => {
+        air_force::AirForceSize::KEY | navy::NavySize::KEY | naval_management::NavalManagement::KEY => {
             let catalogue = content.catalogue()?;
             if key == air_force::AirForceSize::KEY {
                 content.equipment()?;
@@ -752,6 +797,62 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         _ => Err("No content preparation check is registered for this product.".into()),
     }
+}
+
+fn wargoals_check(content: &Content, findings: &mut Vec<Finding>) -> Result<String, String> {
+    let catalogue = content.catalogue()?;
+    let held = catalogue
+        .content
+        .layers
+        .derived::<OnceLock<Result<installed_content_wargoals::wargoals::Database, String>>>();
+    let definitions = held
+        .get_or_init(|| {
+            installed_content_wargoals::wargoals::read(&catalogue.content.layers)
+                .map_err(|why| why.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
+    findings.extend(
+        definitions
+            .notes
+            .iter()
+            .map(|note| Finding::new(Kind::Warning, "war-goal definitions", note)),
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    for name in &definitions.names {
+        if !seen.insert(installed_content_core::tokens::Token::c_str(name)) {
+            continue;
+        }
+        let key = String::from_utf8_lossy(name);
+        let subject = format!("war-goal type {key}");
+        if let Err(why) = definitions.terms(name) {
+            findings.push(Finding::new(Kind::Refused, &subject, why));
+        }
+        if std::str::from_utf8(name).is_err() {
+            findings.push(Finding::new(
+                Kind::Refused,
+                subject,
+                "War-goal definition name is not UTF-8",
+            ));
+            continue;
+        }
+        // Country arguments remain unavailable offline, including through
+        // nested localisation references. Other text uses the runtime renderer.
+        if !name.is_empty() && catalogue.localisation.get(&key).is_none() {
+            findings.push(Finding::new(
+                Kind::Fallback,
+                subject,
+                format!("localisation {key} is missing; the key is shown"),
+            ));
+        } else if !catalogue
+            .localisation
+            .requires_arguments(name, &["ACTOR", "TARGET"])
+        {
+            catalogue.localised(&key, crate::catalogue::View::Plain);
+            take(catalogue, &subject, findings);
+        }
+    }
+    Ok("Authored war-goal definitions, term operands and scope-independent name rendering checked through the runtime product's shared content cache; ACTOR/TARGET names, allowed/available descriptions, conditional peace terms and justify/declare eligibility require recorded country scope and inventory operands.".into())
 }
 
 fn place_names_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(), String> {
@@ -1258,6 +1359,94 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wargoal_preparation_uses_runtime_cache_and_keeps_scoped_text_offline() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/wargoals/mod.txt",
+                "wargoal_types={ModGoal={expire=37 allowed={always=yes} available={always=no}} EmptyGoal={} MissingGoal={} AmbiguousGoal={annex=yes} AMBIGUOUSGOAL={annex=no}}",
+            ),
+            (
+                "localisation/mod_l_english.yml",
+                "\u{feff}l_english:\n ModGoal:0 \"$ACTOR$ claims $TARGET$ [Root.GetName]\"\n EmptyGoal:0 \"\"\n AmbiguousGoal:0 \"Ambiguous\"\n",
+            ),
+        ]);
+        let held = catalogue
+            .content
+            .layers
+            .derived::<OnceLock<Result<installed_content_wargoals::wargoals::Database, String>>>();
+        assert!(held.get().is_none());
+        let content = Content::new(Arc::clone(&catalogue.content), "english");
+        let mut findings = Vec::new();
+        let note = run("wargoals", &content, &mut findings).unwrap();
+        assert!(note.contains("ACTOR/TARGET"));
+        assert!(note.contains("recorded country scope"));
+        assert_eq!(
+            held.get()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .terms(b"ModGoal")
+                .unwrap()
+                .expiry_days,
+            37
+        );
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        assert!(findings.iter().any(|finding| {
+            finding.kind == Kind::Fallback
+                && finding.subject == "war-goal type MissingGoal"
+                && finding
+                    .message
+                    .contains("localisation MissingGoal is missing")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.kind == Kind::Refused
+                && finding.subject == "war-goal type AmbiguousGoal"
+                && finding.message.contains("differing terms")
+        }));
+        let mut repeated = Vec::new();
+        assert_eq!(run("wargoals", &content, &mut repeated).unwrap(), note);
+        assert_eq!(repeated, findings);
+    }
+
+    #[test]
+    fn wargoal_preparation_reports_scope_independent_rendering_refusals() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/wargoals/mod.txt",
+                "wargoal_types={ModGoal={} AliasGoal={}}",
+            ),
+            (
+                "localisation/mod_l_english.yml",
+                "\u{feff}l_english:\n ModGoal:0 \"a¤b\"\n AliasGoal:0 \"$ModGoal$\"\n",
+            ),
+        ]);
+        let content = Content::new(Arc::clone(&catalogue.content), "english");
+        let mut findings = Vec::new();
+        run("wargoals", &content, &mut findings).unwrap();
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        for key in ["ModGoal", "AliasGoal"] {
+            let runtime_refusal = crate::catalogue::localised_with(
+                &catalogue.localisation,
+                key,
+                &[],
+                crate::catalogue::View::Plain,
+            )
+            .unwrap_err();
+            assert!(runtime_refusal.contains("authored `¤`"));
+            assert!(
+                findings.iter().any(|finding| {
+                    finding.kind == Kind::Unsupported
+                        && finding.subject == format!("war-goal type {key}")
+                        && finding.message == runtime_refusal
+                }),
+                "{findings:?}"
+            );
+        }
+    }
+
+    #[test]
     fn refused_construction_state_read_is_omitted_offline() {
         let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
             "common/buildings/test.txt",
@@ -1380,7 +1569,52 @@ mod tests {
     }
 
     #[test]
+    fn intel_details_preparation_reads_content_and_keeps_pair_operands_offline() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/defines/fixture.lua",
+                "NDefines={NIntel={COUNTRY_LEVEL_INTEL_MAXIMUMS={200,40,60,80}}}",
+            ),
+            (
+                "common/units/fixture.txt",
+                "sub_units={fixture_unit={type={infantry} special_forces=yes}}",
+            ),
+        ]);
+        let content = Content::new(Arc::clone(&catalogue.content), "english");
+        let mut findings = Vec::new();
+        let note = run("intel-details", &content, &mut findings).unwrap();
+        for input in [
+            "sub-unit categories",
+            "IntelContributions",
+            "CountryIntel",
+            "supplying hour",
+            "IntelNetworkAuxiliaries",
+            "PropagandaEfforts",
+        ] {
+            assert!(note.contains(input), "{note}");
+        }
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].kind, Kind::Offline);
+        assert!(
+            findings[0]
+                .message
+                .contains("viewer/target estimate ranges")
+        );
+
+        let (invalid, _invalid_folder) = crate::catalogue::tests::folder_catalogue(&[(
+            "common/defines/invalid.lua",
+            "NDefines={NIntel=",
+        )]);
+        let invalid_content = Content::new(Arc::clone(&invalid.content), "english");
+        let error = run("intel-details", &invalid_content, &mut Vec::new()).unwrap_err();
+        assert!(error.contains("common/defines/invalid.lua"), "{error}");
+    }
+
+    #[test]
     fn equipment_and_autonomy_preparation_reuse_the_same_loaded_objects() {
+        use crate::products::Product;
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let content = Content::new(
@@ -1394,6 +1628,20 @@ mod tests {
             content.equipment().unwrap(),
             content.equipment().unwrap(),
         ));
+        let equipment = Arc::clone(content.equipment().unwrap());
+        let mut findings = Vec::new();
+        let note = run(
+            products::equipment::designs::detail::EquipmentDesignDetail::KEY,
+            &content,
+            &mut findings,
+        )
+        .unwrap();
+        assert!(note.contains("VariantDefinitions"));
+        assert!(note.contains("recorded context"));
+        assert!(note.contains("recorded text and token spellings"));
+        assert!(findings.is_empty(), "{findings:?}");
+        assert!(content.catalogue.get().is_none());
+        assert!(Arc::ptr_eq(&equipment, content.equipment().unwrap()));
         assert!(std::ptr::eq(
             content.autonomy().unwrap(),
             content.autonomy().unwrap(),
@@ -1491,5 +1739,129 @@ mod tests {
                 "idea second: advisor second's template missing",
             ]
         );
+    }
+    #[test]
+    fn country_people_preparation_uses_runtime_cache_and_keeps_recorded_facts_offline() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/defines/mod.lua",
+                "NDefines={NCountry={BASE_MOBILIZATION_SPEED=.03125,LOCAL_MANPOWER_ACCESSIBLE_NON_CORE_FACTOR=.125,MAX_NON_CORE_MANPOWER_FACTOR=.75}}",
+            ),
+            (
+                "localisation/mod_l_english.yml",
+                "\u{feff}l_english:\n MOD:0 \"¤\"\n HST:0 \"¤\"\n",
+            ),
+        ]);
+        let catalogue =
+            Catalogue::of_layers_for_check(catalogue.content.layers.clone(), "english").unwrap();
+        // These authored country names refuse the shared renderer. Country-people
+        // shows recorded tags instead, so it must not inventory or substitute them.
+        for key in ["MOD", "HST"] {
+            assert!(catalogue.localisation.get(key).is_some());
+            assert!(
+                catalogue
+                    .localised(key, crate::catalogue::View::Plain)
+                    .is_none()
+            );
+            let refused = catalogue.take_findings();
+            assert!(
+                refused
+                    .iter()
+                    .any(|finding| finding.kind == Kind::Unsupported
+                        && finding.subject == key
+                        && finding.message.contains("control byte 0x14")),
+                "{refused:?}"
+            );
+        }
+        let held = catalogue
+            .content
+            .layers
+            .derived::<OnceLock<Result<products::country_people::RecruitmentDefines, String>>>();
+        assert!(held.get().is_none());
+        let runtime = products::country_people::content_defines(&catalogue.content.layers).unwrap();
+        assert_eq!(
+            (runtime.speed, runtime.noncore_base, runtime.noncore_max),
+            (3_125, 12_500, 75_000)
+        );
+        let cached = held.get().unwrap().as_ref().unwrap();
+        assert_eq!(
+            (cached.speed, cached.noncore_base, cached.noncore_max),
+            (runtime.speed, runtime.noncore_base, runtime.noncore_max)
+        );
+        let content = Content::new(Arc::clone(&catalogue.content), "english");
+        let mut findings = Vec::new();
+        let note = run("country-people", &content, &mut findings).unwrap();
+        assert!(findings.is_empty(), "{findings:?}");
+        for dependency in [
+            "CountryCounterInputs",
+            "CountryStabilityInputs",
+            "StateResourceInputs",
+            "StateCores",
+            "exile",
+            "elections",
+            "unavailable offline",
+            "no authored localisation names",
+        ] {
+            assert!(note.contains(dependency), "{note}");
+        }
+        assert!(content.catalogue.get().is_none());
+        assert_eq!(
+            run("country-people", &content, &mut findings).unwrap(),
+            note
+        );
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn country_people_preparation_names_each_missing_or_malformed_define() {
+        let keys = [
+            "BASE_MOBILIZATION_SPEED",
+            "LOCAL_MANPOWER_ACCESSIBLE_NON_CORE_FACTOR",
+            "MAX_NON_CORE_MANPOWER_FACTOR",
+        ];
+        for missing in keys {
+            for malformed in [false, true] {
+                let fields = keys
+                    .into_iter()
+                    .filter_map(|key| {
+                        if key != missing {
+                            Some(format!("{key}=.25"))
+                        } else if malformed {
+                            Some(format!("{key}='invalid'"))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let script = format!("NDefines={{NCountry={{{fields}}}}}");
+                let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+                    "common/defines/mod.lua",
+                    &script,
+                )]);
+                let content = Content::new(Arc::clone(&catalogue.content), "english");
+                let mut findings = Vec::new();
+                run("country-people", &content, &mut findings).unwrap();
+                assert_eq!(findings.len(), 1, "{findings:?}");
+                assert_eq!(findings[0].kind, Kind::Refused);
+                assert_eq!(findings[0].subject, "country recruitment defines");
+                assert!(
+                    findings[0]
+                        .message
+                        .contains(&format!("NDefines.NCountry.{missing}")),
+                    "{findings:?}"
+                );
+                assert_eq!(
+                    products::country_people::content_defines(&catalogue.content.layers)
+                        .err()
+                        .unwrap(),
+                    findings[0].message
+                );
+                let mut repeated = Vec::new();
+                run("country-people", &content, &mut repeated).unwrap();
+                assert_eq!(repeated, findings);
+            }
+        }
     }
 }

@@ -45,6 +45,7 @@ use replay_data::{
 /// A stat block's scalars.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Scalars {
+    panel: [Option<i64>; 23],
     river: [i64; 2],
     fort: [i64; 2],
     snow: i64,
@@ -57,6 +58,7 @@ pub struct Scalars {
 impl Scalars {
     fn of(stats: &stats::AttackStats) -> Self {
         Self {
+            panel: stats.panel,
             river: stats.river,
             fort: stats.fort,
             snow: stats.snow,
@@ -76,6 +78,10 @@ struct Row {
     start: usize,
     len: usize,
     scalars: Option<Scalars>,
+    experience: Option<i64>,
+    officer_experience: Option<i64>,
+    career_counter: Option<i32>,
+    pending_template: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -149,6 +155,12 @@ impl Locator {
 /// hour. Entries are kept in census order. Every held army and name member
 /// was registered in the marks' `epoch` of the capture that holds it.
 pub struct ArmyStatStore {
+    experience: crate::division_experience::Store,
+    progression: crate::division_experience::Store<u64>,
+    officer: crate::division_experience::Store<i64>,
+    career: crate::division_experience::Store<i32>,
+    pub history: crate::division_history::Store,
+    pub sources: crate::panel_sources::Store,
     /// The marks' epoch the held entries were certified in; `None` holds
     /// nothing.
     epoch: Option<u64>,
@@ -181,6 +193,12 @@ impl Default for ArmyStatStore {
 impl ArmyStatStore {
     pub fn new() -> Self {
         Self {
+            experience: crate::division_experience::Store::default(),
+            progression: Default::default(),
+            officer: Default::default(),
+            career: Default::default(),
+            history: Default::default(),
+            sources: Default::default(),
             epoch: None,
             held: Vec::new(),
             divisions: Vec::new(),
@@ -204,6 +222,12 @@ impl ArmyStatStore {
     /// A failed job: nothing it read certifies a carry, and its take
     /// consumed the marks.
     pub fn forget(&mut self) {
+        self.experience.forget();
+        self.progression.forget();
+        self.officer.forget();
+        self.career.forget();
+        self.history.forget();
+        self.sources.forget();
         self.epoch = None;
         self.divisions.clear();
         self.name_divisions.clear();
@@ -222,7 +246,13 @@ impl ArmyStatStore {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        (self.held.capacity() + self.next.capacity()) * std::mem::size_of::<Held>()
+        self.experience.allocated_bytes()
+            + self.progression.allocated_bytes()
+            + self.officer.allocated_bytes()
+            + self.career.allocated_bytes()
+            + self.history.allocated_bytes()
+            + self.sources.allocated_bytes()
+            + (self.held.capacity() + self.next.capacity()) * std::mem::size_of::<Held>()
             + (self.divisions.capacity() + self.name_divisions.capacity()) * 8
             + (self.locator.order.capacity() + self.name_locator.order.capacity()) * 16
             + (self.terrain.capacity() + self.next_terrain.capacity()) * 8
@@ -327,6 +357,15 @@ impl ArmyStatStore {
 /// The hour's operands, sorted by division, and the witnessed packets.
 #[derive(Default)]
 pub struct Captured {
+    /// Certified XP in the existing seed order, shared with the status predicate.
+    pub experience: Vec<Option<i64>>,
+    pending_templates: Vec<Option<u64>>,
+    officer: Vec<Option<i64>>,
+    career: Vec<Option<i32>>,
+    pub sources: Option<Result<std::sync::Arc<crate::panel_sources::SourceSnapshot>, &'static str>>,
+    pub selected_sources: Vec<(u64, Option<[u64; 3]>)>,
+    pub history:
+        Option<Result<std::sync::Arc<crate::division_history::HistorySnapshot>, &'static str>>,
     rows: Vec<Row>,
     terrain: Vec<i64>,
     /// Movement words parallel to `terrain`.
@@ -374,7 +413,12 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.capacity() * std::mem::size_of::<Row>()
+        self.selected_sources.capacity() * std::mem::size_of::<(u64, Option<[u64; 3]>)>()
+            + self.experience.capacity() * std::mem::size_of::<Option<i64>>()
+            + self.pending_templates.capacity() * std::mem::size_of::<Option<u64>>()
+            + self.officer.capacity() * std::mem::size_of::<Option<i64>>()
+            + self.career.capacity() * std::mem::size_of::<Option<i32>>()
+            + self.rows.capacity() * std::mem::size_of::<Row>()
             + (self.terrain.capacity() + self.scratch.capacity()) * 8
             + (self.movement.capacity() + self.movement_scratch.capacity()) * 8
             + self.held_index.capacity() * 8
@@ -406,11 +450,18 @@ impl Captured {
     /// the pass's read by [`Self::verify_maxima`].
     pub fn certify(
         &mut self,
+        memory: &impl Memory,
+        base: usize,
         seeds: &[DivisionSeed],
         outcome: Outcome,
         store: Option<&mut ArmyStatStore>,
         changes: &dyn Changes,
     ) {
+        self.experience.clear();
+        self.pending_templates.clear();
+        self.officer.clear();
+        self.career.clear();
+        self.history = None;
         self.held_index.clear();
         self.registered.clear();
         self.touched.clear();
@@ -435,8 +486,100 @@ impl Captured {
         self.carryable = kept && self.epoch.is_some() && store.epoch == self.epoch;
         // The take consumed the marks: only this hour's capture holds again.
         store.epoch = None;
+        let seeds = &seeds[..outcome.len().min(seeds.len())];
+        let experience_ready = store
+            .experience
+            .begin(seeds.len())
+            .map_err(army_stat_changes::experience_refused)
+            .is_ok()
+            && engine_allocation::reserve(&mut self.experience, seeds.len())
+                .map_err(|_| {
+                    army_stat_changes::experience_refused(
+                        "division experience cache allocation failed",
+                    )
+                })
+                .is_ok();
+        let progression_ready = store
+            .progression
+            .begin(seeds.len())
+            .map_err(army_stat_changes::progression_refused)
+            .is_ok()
+            && engine_allocation::reserve(&mut self.pending_templates, seeds.len())
+                .map_err(|_| {
+                    army_stat_changes::progression_refused(
+                        "division experience cache allocation failed",
+                    )
+                })
+                .is_ok();
+        let officer_ready = store.officer.begin(seeds.len()).is_ok()
+            && engine_allocation::reserve(&mut self.officer, seeds.len()).is_ok();
+        let career_ready = store.career.begin(seeds.len()).is_ok()
+            && engine_allocation::reserve(&mut self.career, seeds.len()).is_ok();
+        let mut history_result = store.history.begin(seeds.len());
         let check = crate::sampled_verify::current_burned_in(army_stat_changes::VERIFY);
-        for (index, seed) in seeds[..outcome.len().min(seeds.len())].iter().enumerate() {
+        for (index, seed) in seeds.iter().enumerate() {
+            use collector_observers::unit_history_changes as history_changes;
+            if officer_ready {
+                let receiver = seed
+                    .pointer
+                    .checked_add(engine_native::unit_history::OFFICER);
+                let certificate = receiver.and_then(history_changes::sequence);
+                self.officer.push(
+                    store
+                        .officer
+                        .observe_with(base, seed, certificate, || {
+                            engine_native::unit_history::officer_experience(
+                                memory,
+                                base,
+                                seed.pointer,
+                            )
+                        })
+                        .map_err(|_| history_changes::refused())
+                        .ok(),
+                );
+            }
+            if career_ready {
+                let certificate = changes
+                    .experience_sequence(seed.pointer)
+                    .and_then(|_| history_changes::sequence(seed.pointer));
+                self.career.push(
+                    store
+                        .career
+                        .observe_with(base, seed, certificate, || {
+                            engine_native::unit_history::career_counter(memory, seed.pointer)
+                        })
+                        .map_err(|_| history_changes::refused())
+                        .ok(),
+                );
+            }
+            if progression_ready {
+                let certificate = changes.progression_sequence(seed.pointer);
+                self.pending_templates.push(
+                    store
+                        .progression
+                        .observe_with(base, seed, certificate, || {
+                            engine_native::carmy::pending_template(memory, base, seed.pointer)
+                        })
+                        .map_err(army_stat_changes::progression_refused)
+                        .ok(),
+                );
+            }
+            if history_result.is_ok() {
+                let _reads = collector_memory::read_accounting::table(
+                    replay_data::rows::TableId::DivisionHistory,
+                );
+                history_result = store.history.observe(memory, base, seed);
+            }
+            if experience_ready {
+                let certificate = changes.experience_sequence(seed.pointer);
+                self.experience.push(
+                    store
+                        .experience
+                        .observe(memory, base, seed, certificate)
+                        .map_err(army_stat_changes::experience_refused)
+                        .ok(),
+                );
+            }
             let held = self
                 .carryable
                 .then(|| store.locate(index, seed.division))
@@ -456,6 +599,26 @@ impl Captured {
                 self.sampled_maxima.push((index, held));
             }
             self.held_maxima.push(maxima.filter(|_| !sampled));
+        }
+        store
+            .experience
+            .finish(matches!(outcome, Outcome::Rows { .. }) && experience_ready);
+        store
+            .progression
+            .finish(matches!(outcome, Outcome::Rows { .. }) && progression_ready);
+        store
+            .officer
+            .finish(matches!(outcome, Outcome::Rows { .. }) && officer_ready);
+        store
+            .career
+            .finish(matches!(outcome, Outcome::Rows { .. }) && career_ready);
+        self.history = Some(if matches!(outcome, Outcome::Rows { .. }) {
+            history_result.and_then(|()| store.history.finish())
+        } else {
+            Err("complete division history census unavailable")
+        });
+        if !matches!(self.history, Some(Ok(_))) {
+            store.history.forget();
         }
         self.status_counts.maxima_reused = self.held_maxima.iter().flatten().count() as u64;
     }
@@ -518,9 +681,17 @@ impl Captured {
             }
         }
         for (index, seed) in seeds.iter().enumerate() {
+            let experience = self.experience.get(index).copied().flatten();
+            let pending_template = self.pending_templates.get(index).copied().flatten();
+            let officer_experience = self.officer.get(index).copied().flatten();
+            let career_counter = self.career.get(index).copied().flatten();
             let id = seed.division >> 32;
             let refused = Row {
                 division: seed.division,
+                experience,
+                officer_experience,
+                career_counter,
+                pending_template,
                 ..Default::default()
             };
             let Some(stat_block) = seed.stat_block.filter(|_| seed.division != 0) else {
@@ -547,6 +718,10 @@ impl Captured {
                     start,
                     len: held.len,
                     scalars: Some(held.scalars),
+                    experience,
+                    officer_experience,
+                    career_counter,
+                    pending_template,
                 });
                 let next = store.next_terrain.len();
                 let span = held.start..held.start + held.len;
@@ -562,12 +737,13 @@ impl Captured {
                 continue;
             }
             counts.read += 1;
-            let fresh = stats::capture_attack_stats(
+            let fresh = stats::capture_attack_stats_holding(
                 memory,
                 base,
                 stat_block,
                 &mut self.scratch,
                 &mut self.movement_scratch,
+                maxima(index),
             );
             if let (Some(held), Some(store)) = (held, store.as_deref())
                 && let Ok(fresh) = &fresh
@@ -584,6 +760,9 @@ impl Captured {
             }
             match fresh {
                 Ok(fresh) => {
+                    if fresh.panel.iter().any(Option::is_none) {
+                        counts.refused += 1;
+                    }
                     let start = self.terrain.len();
                     self.terrain.extend_from_slice(&fresh.terrain);
                     self.movement.extend_from_slice(&fresh.movement_terrain);
@@ -593,6 +772,10 @@ impl Captured {
                         start,
                         len: fresh.terrain.len(),
                         scalars: Some(scalars),
+                        experience,
+                        officer_experience,
+                        career_counter,
+                        pending_template,
                     });
                     if witnessed(hour, id) && !self.terrains.is_empty() {
                         counts.witnessed += 1;
@@ -638,6 +821,36 @@ impl Captured {
             }
         }
         army_stat_changes::record(&counts, complete.then_some(seeds.len()));
+    }
+
+    pub fn pending_template(&self, division: u64) -> Option<u64> {
+        self.row(division)?.pending_template
+    }
+
+    pub fn officer(&self, division: u64) -> Option<i64> {
+        self.row(division)?.officer_experience
+    }
+    pub fn career(&self, division: u64) -> Option<i32> {
+        self.row(division)?.career_counter
+    }
+
+    pub fn panel_source(&self, division: u64) -> Option<[u64; 3]> {
+        self.selected_sources
+            .binary_search_by_key(&division, |row| row.0)
+            .ok()
+            .and_then(|at| self.selected_sources[at].1)
+    }
+    pub fn panel(&self, division: u64) -> [Option<i64>; 22] {
+        self.row(division)
+            .and_then(|row| row.scalars)
+            .map_or([None; 22], |scalars| {
+                // Anti-air is already recorded in movement_stats; keep one stored operand.
+                std::array::from_fn(|index| scalars.panel[index + usize::from(index >= 11)])
+            })
+    }
+
+    pub fn experience(&self, division: u64) -> Option<i64> {
+        self.row(division)?.experience
     }
 
     fn row(&self, division: u64) -> Option<&Row> {
@@ -843,6 +1056,8 @@ mod tests {
                 division: 3,
                 start: 0,
                 len: 2,
+                experience: None,
+                pending_template: None,
                 scalars: Some(Scalars {
                     river: [1, 2],
                     fort: [3, 4],
@@ -851,7 +1066,9 @@ mod tests {
                     movement: Some([-1, -2, -3]),
                     fuel_rate: 40,
                     air_defense: 50,
+                    ..Default::default()
                 }),
+                ..Default::default()
             },
             Row {
                 division: 9,

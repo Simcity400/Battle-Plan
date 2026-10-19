@@ -168,6 +168,7 @@ pub fn emit(
     }
     field.native_vertices.extend(vertices);
     field.draws.push(OrderDraw {
+        air_mode: false,
         arrow_type: arrow.name.clone(),
         texture_choice: 0,
         color,

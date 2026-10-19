@@ -563,10 +563,10 @@ pub struct TriggerNames {
     pub scripted: ScriptedTriggers,
     pub counts: Option<CountTriggerNames>,
 }
-pub enum ScopeStep {
+pub enum ScopeStep<E = String> {
     Scope(Scope),
     NotScope,
-    Unknown(String),
+    Unknown(E),
 }
 pub enum Dispatch<C, T> {
     Coded,
@@ -575,9 +575,9 @@ pub enum Dispatch<C, T> {
     Scripted(T),
     Absent,
 }
-pub struct Dispatched<C, T> {
+pub struct Dispatched<C, T, E = String> {
     pub dispatch: Dispatch<C, T>,
-    pub unless_scope: Option<String>,
+    pub unless_scope: Option<E>,
 }
 pub struct Key<'a> {
     pub keyword: Option<&'a [u8]>,
@@ -591,6 +591,16 @@ pub fn dispatch<C, T>(
     count: impl FnOnce(&[u8]) -> Result<Option<C>, String>,
     scripted: impl FnOnce(&[u8]) -> Option<T>,
 ) -> Result<Dispatched<C, T>, String> {
+    dispatch_with_error(key, scope, count, scripted)
+}
+
+/// Runtime consumers carry their source errors through dispatch unchanged.
+pub fn dispatch_with_error<C, T, E>(
+    key: Key<'_>,
+    scope: impl FnOnce(&[u8], bool) -> ScopeStep<E>,
+    count: impl FnOnce(&[u8]) -> Result<Option<C>, E>,
+    scripted: impl FnOnce(&[u8]) -> Option<T>,
+) -> Result<Dispatched<C, T, E>, E> {
     let dispatched = |dispatch, unless_scope| Dispatched {
         dispatch,
         unless_scope,

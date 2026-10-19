@@ -17,6 +17,10 @@ use collector_timing::hook_timing;
 
 pub mod combat_log;
 pub mod combat_log_prune;
+pub mod history_capture;
+pub mod history_events;
+pub mod history_reducer;
+mod history_projection;
 
 #[cfg(test)]
 #[global_allocator]

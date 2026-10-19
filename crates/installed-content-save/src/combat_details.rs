@@ -15,6 +15,7 @@ pub struct LandDetails {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LandSide {
+    pub log: Option<crate::combat_log::Observer>,
     pub committed: Vec<u64>,
     pub reserves: Vec<u64>,
     pub tactic: Option<i32>,
@@ -79,6 +80,9 @@ fn land_side(items: &[Item], border_war: bool) -> io::Result<LandSide> {
         *value = decimal(items, key)?;
     }
     Ok(LandSide {
+        log: field(items, b"log")?
+            .map(|v| crate::combat_log::parse_observer(block(v)?))
+            .transpose()?,
         committed: handles(items, b"front")?,
         reserves: handles(items, b"reserves")?,
         tactic: optional_integer(items, b"tactic")?,

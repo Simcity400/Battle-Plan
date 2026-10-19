@@ -53,6 +53,7 @@ fn database() -> Database {
             tracks_requested: true,
             milestones: vec![vec![b"Target".to_vec()], vec![b"Other".to_vec()]],
             rewards: Vec::new(),
+            ..Default::default()
         },
     );
     sources.sub.insert(
@@ -64,10 +65,12 @@ fn database() -> Database {
                 RewardSource {
                     tactics: vec![b"Other".to_vec()],
                     mastery: 200_000,
+                    ..Default::default()
                 },
                 RewardSource {
                     tactics: vec![b"Target".to_vec(), b"Target".to_vec()],
                     mastery: 0,
+                    ..Default::default()
                 },
             ],
             ..Default::default()

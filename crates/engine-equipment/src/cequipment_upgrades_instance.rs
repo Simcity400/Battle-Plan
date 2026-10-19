@@ -24,6 +24,8 @@ pub struct Row {
     pub variant: u64,
     pub source_ordinal: u32,
     pub definition_token: i32,
+    /// Authenticated current-visit definition, never a replay identity.
+    pub definition_pointer: usize,
     pub level: u8,
 }
 
@@ -151,6 +153,7 @@ pub fn walk(
                             variant,
                             source_ordinal: first + slot as u32,
                             definition_token: i32::from_le_bytes(field[8..12].try_into().unwrap()),
+                            definition_pointer: definitions[slot],
                             level: entries[slot * 9 + 8],
                         };
                         len += 1;

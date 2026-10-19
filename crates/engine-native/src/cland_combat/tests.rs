@@ -2356,3 +2356,64 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
         .is_err()
     );
 }
+
+/// The movement speed reads a land or border-war combat's movement word and a
+/// naval combat's none, each with its attacking side's units in native order;
+/// an unknown combat or a side that does not point back refuses, appending
+/// nothing.
+#[test]
+fn movement_combat_reads_the_movement_word_and_attacking_units_by_combat_kind() {
+    const BASE: usize = 0x1000;
+    const COMBAT: usize = 0x2000;
+    const SIDE: usize = 0x2400;
+    const UNITS: usize = 0x2800;
+    let mut bytes = vec![0_u8; 0x4000];
+    let put = |bytes: &mut [u8], at: usize, value: u64| {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    };
+    put(&mut bytes, COMBAT + ATTACKER, SIDE as u64);
+    put(&mut bytes, COMBAT + MOVEMENT_MODIFIER, (-12_345_i64) as u64);
+    put(
+        &mut bytes,
+        SIDE,
+        (BASE + cland_combatant::VTABLE_RVA) as u64,
+    );
+    put(&mut bytes, SIDE + cland_combatant::COMBAT, COMBAT as u64);
+    put(&mut bytes, SIDE + cland_combatant::UNITS, UNITS as u64);
+    bytes[SIDE + cland_combatant::UNITS + 8..SIDE + cland_combatant::UNITS + 12]
+        .copy_from_slice(&2_u32.to_le_bytes());
+    bytes[SIDE + cland_combatant::UNITS + 12..SIDE + cland_combatant::UNITS + 16]
+        .copy_from_slice(&2_u32.to_le_bytes());
+    put(&mut bytes, UNITS, 0xa100);
+    put(&mut bytes, UNITS + 8, 0xa200);
+    let read = |bytes: &[u8], vtable: usize| {
+        let mut bytes = bytes.to_vec();
+        put(&mut bytes, COMBAT, (BASE + vtable) as u64);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut attackers = vec![1];
+        let movement = movement_combat(&memory, BASE, COMBAT, &mut attackers);
+        (movement, attackers)
+    };
+    for vtable in [VTABLE_RVA, cland_border_war_combat::VTABLE_RVA] {
+        assert_eq!(
+            read(&bytes, vtable),
+            (Ok(Some(-12_345)), vec![1, 0xa100, 0xa200])
+        );
+    }
+    assert_eq!(
+        read(&bytes, cnaval_combat::VTABLE_RVA),
+        (Ok(None), vec![1, 0xa100, 0xa200])
+    );
+    assert_eq!(
+        read(&bytes, 0x10),
+        (Err("movement combat identity mismatch"), vec![1])
+    );
+    put(&mut bytes, SIDE + cland_combatant::COMBAT, 0);
+    assert_eq!(
+        read(&bytes, VTABLE_RVA),
+        (Err("movement combat side identity mismatch"), vec![1])
+    );
+}

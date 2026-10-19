@@ -336,13 +336,14 @@ states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }
 fn stored_manpower_operands_preserve_signed_values_and_pool_omission() {
     let save = parse(br#"HOI4txt date="1936.1.1.1" game_unique_id=x version=b game_unique_seed=1 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
         countries={AAA={manpower={current=-2147483648}} BBB={}}
-        states={1={owner=AAA manpower_pool={available=2147483647 locked=0 total=1}} 2={owner=BBB}} provinces={}"#).unwrap();
+        states={1={owner=AAA manpower_pool={available=2147483647 locked=-17 total=1}} 2={owner=BBB}} provinces={}"#).unwrap();
     assert_eq!(
         save.countries[b"AAA".as_slice()].manpower_residual,
         i32::MIN
     );
     assert_eq!(save.countries[b"BBB".as_slice()].manpower_residual, 0);
     assert_eq!(save.states[&1].manpower_available, Some(i32::MAX));
+    assert_eq!(save.states[&1].manpower_locked, Some(-17));
     assert_eq!(save.states[&2].manpower_available, None);
     // The pool's total is the state's population; an omitted pool leaves it absent.
     assert_eq!(save.states[&1].population, Some(Some(1)));
@@ -625,6 +626,7 @@ countries={ GER={} } states={1={owner=GER}} provinces={}
             demilitarized: None,
             name: None,
             manpower_available: None,
+            manpower_locked: None,
             population: None,
             category: None,
             strategic_locations: Vec::new(),
@@ -1830,7 +1832,7 @@ fn relation_blocks_without_endpoints_are_not_relations() {
     let save = relations_save(
         r#"SOV={
             rule_overrides={ override={ can_send_volunteers=yes desc="" } }
-            lend_lease_to_allies_history={ ic_given=375.2 fuel_given=0 }
+            lend_lease_to_allies_history={ ic_given=375.2 fuel_given=0 ic_received=0 fuel_received=0 }
             guarantee={ first="GER" second="SOV" start_date="1936.1.1.2" }
         }"#,
         "",
@@ -1838,6 +1840,8 @@ fn relation_blocks_without_endpoints_are_not_relations() {
     .unwrap();
     assert_eq!(save.relation_tuples.len(), 1);
     assert_eq!(save.relation_tuples[0].ordinal, 0);
+    assert_eq!(save.war_delivery_histories.len(), 1);
+    assert_eq!(save.war_delivery_histories[0].industry_sent, 37_520_000);
 }
 
 #[test]
@@ -1903,5 +1907,43 @@ fn malformed_country_intel_lists_are_refused_rather_than_normalized() {
     ] {
         let error = relations_save("", body).unwrap_err().to_string();
         assert!(error.contains(needle), "{body}: {error}");
+    }
+}
+
+#[test]
+fn manpower_recruitment_exile_and_ship_crews_preserve_saved_signed_words() {
+    let doc = installed_content_core::parser::parse(
+        b"manpower={ratio=-312500 exile_manpower=-9 max_exile_manpower=8123}",
+    )
+    .unwrap();
+    let country = parse_country(b"MOD", &doc.items).unwrap();
+    assert_eq!(country.recruitment_ratio.unwrap(), -312_500);
+    assert_eq!(country.exile_manpower, Some(-9));
+    assert_eq!(country.exile_manpower_cap, Some(8123));
+    let doc = installed_content_core::parser::parse(
+        b"id={id=1 type=51} strength=1 organisation=1 manpower=-17 max_manpower=512",
+    )
+    .unwrap();
+    let ship = parse_ship(9, &doc.items).unwrap();
+    assert_eq!((ship.manpower, ship.max_manpower), (Some(-17), Some(512)));
+}
+
+#[test]
+fn manpower_wing_exile_tag_keeps_saved_presence() {
+    for (field, expected) in [
+        ("", None),
+        ("government_in_exile_tag=EXL", Some(b"EXL".as_slice())),
+        ("government_in_exile_tag=OTHER", Some(b"OTHER".as_slice())),
+    ] {
+        let body = format!(
+            "strategic_air={{HST={{air_wing_pool={{id={{id=1 type=70}} definition=fixture_plane air_base={{id=2 type=63}} air_wings={{id={{id=3 type=54}} count=1 tag=HST experience=0 equipment={{allow_zero_entries=no}} mission={{type=0}} {field}}}}}}}}}"
+        );
+        let saved = diplomacy_save("", &body).unwrap();
+        assert_eq!(
+            saved.air_wings[&((3_u64 << 32) | 54)]
+                .government_in_exile_tag
+                .as_deref(),
+            expected
+        );
     }
 }

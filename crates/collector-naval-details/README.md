@@ -5,3 +5,5 @@ Naval combat capture for the ordinary naval part: live naval combat details, Nav
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-naval-details` and `cargo clippy -p collector-naval-details --all-targets -- -D warnings` for its synthetic checks.
+
+The shared source-tree projection also accepts a narrow demanded key set; escort hovers reuse its pruning without adding escort to every combat tree.

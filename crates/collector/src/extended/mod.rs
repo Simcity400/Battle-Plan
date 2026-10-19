@@ -41,7 +41,7 @@ pub(crate) use packs::{
 };
 pub(crate) use production::registry::Registry;
 
-const DIVISION_SOURCE_TABLES: [TableId; 10] = [
+const DIVISION_SOURCE_TABLES: [TableId; 11] = [
     TableId::DivisionLandInputs,
     TableId::DivisionCensus,
     TableId::DivisionEquipment,
@@ -51,6 +51,7 @@ const DIVISION_SOURCE_TABLES: [TableId; 10] = [
     TableId::ArmyUpgradeProduced,
     TableId::DivisionMovement,
     TableId::DivisionStatus,
+    TableId::DivisionPanelStats,
     TableId::ArmyIconInputs,
 ];
 const DIVISION_GROUP_MEMBERS: [TableId; DIVISION_SOURCE_TABLES.len() + 1] = {
@@ -61,6 +62,25 @@ const DIVISION_GROUP_MEMBERS: [TableId; DIVISION_SOURCE_TABLES.len() + 1] = {
         index += 1;
     }
     members
+};
+/// Outputs supplied after pack conversion by the existing faction census.
+const FACTION_PROVIDER_TABLES: [TableId; 14] = {
+    let mut tables = [TableId::LexicalTokens; 14];
+    let mut next = 0;
+    let mut index = 0;
+    while index < crate::faction_companions::TABLES.len() {
+        tables[next] = crate::faction_companions::TABLES[index];
+        next += 1;
+        index += 1;
+    }
+    index = 0;
+    while index < crate::faction_goals::TABLES.len() {
+        tables[next] = crate::faction_goals::TABLES[index];
+        next += 1;
+        index += 1;
+    }
+    assert!(next == tables.len());
+    tables
 };
 pub type ReadGroup = (&'static str, TableId, &'static [TableId]);
 #[derive(Clone, Copy)]
@@ -73,6 +93,9 @@ struct ReadGroupData {
 
 // Native conversion reuse stays within its pack's existing timing scope.
 macro_rules! spool_inputs {
+    (combat_log, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs()
+    };
     (group_counters, $captured:expr, $conversion:expr, $owner:expr, $hour:expr) => {
         $captured.tables().map(TableInput::Sampled)
     };
@@ -114,10 +137,16 @@ macro_rules! spool_inputs {
     (governance, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
+    (country_tactic_unlocks, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs()
+    };
     (production, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };
     (economy, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
+    (air, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };
     (fog, $captured:expr, $conversion:expr) => {
@@ -126,7 +155,16 @@ macro_rules! spool_inputs {
     (supply_trains, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
+    (market, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
+    (war_overview, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs()
+    };
     (air_records, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs()
+    };
+    (naval_bases, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
     ($pack:ident, $captured:expr, $conversion:expr) => {
@@ -283,7 +321,8 @@ macro_rules! packs {
         #[cfg(test)]
         pub(crate) const HELPER_LANES: [Option<u8>; PACK_NAMES.len()] =
             [$(helper_lane!($($helper)?)),+];
-        pub const N: usize = 0 $(+ $pack::N)+;
+        pub const PACK_N: usize = 0 $(+ $pack::N)+;
+        pub const N: usize = PACK_N + FACTION_PROVIDER_TABLES.len() + collector_naval_management::forces::TABLES.len();
         pub const TABLES: [TableId; N] = {
             let mut tables = [TableId::LexicalTokens; N];
             let mut next = 0;
@@ -291,7 +330,23 @@ macro_rules! packs {
             while index < $pack::N {
                 tables[next] = $pack::TABLES[index]; next += 1; index += 1;
             })+
+            let mut index = 0;
+            while index < FACTION_PROVIDER_TABLES.len() {
+                tables[next] = FACTION_PROVIDER_TABLES[index]; next += 1; index += 1;
+            }
+            let mut index = 0;
+            while index < collector_naval_management::forces::TABLES.len() {
+                tables[next] = collector_naval_management::forces::TABLES[index];
+                next += 1; index += 1;
+            }
             assert!(next == N);
+            tables
+        };
+        /// Only pack-owned tables use the pack acquisition tick array.
+        pub const PACK_TABLES: [TableId; PACK_N] = {
+            let mut tables = [TableId::LexicalTokens; PACK_N];
+            let mut index = 0;
+            while index < PACK_N { tables[index] = TABLES[index]; index += 1; }
             tables
         };
         #[derive(Clone, Copy, PartialEq, Eq)]
@@ -571,7 +626,7 @@ impl Captured {
             }
         }
         const READ_GROUP_COUNT: usize = {
-            let mut count = 5;
+            let mut count = 9;
             $(let mut group = 0;
             while group < $pack::READ_GROUPS.len() {
                 if $pack::TABLES[$pack::READ_GROUPS[group].1].index() != TableId::ArmyUpgradeGroups.index() { count += 1; }
@@ -603,12 +658,19 @@ impl Captured {
                 }
                 group += 1;
             })+
-            let extra: [(&str, TableId, &[TableId]); 5] = [
+            let extra: [(&str, TableId, &[TableId]); 9] = [
+                ("faction lists, member accounting and sharing", TableId::FactionRules, &crate::faction_companions::TABLES),
+                ("faction goals and held progress", TableId::FactionGoalEntries, &crate::faction_goals::TABLES),
                 ("divisions, coverage counts, equipment, upgrades, movement and counter status", TableId::Divisions,
                     &DIVISION_GROUP_MEMBERS),
                 ("country census, appearance and supply trains", TableId::Countries,
                     &[TableId::Countries, TableId::CountryAppearance, TableId::SupplyNodes, TableId::TrainInventory]),
-                ("ship census and model operands", TableId::Ships, &[TableId::Ships, TableId::ShipModels]),
+                ("navy country and fleet census with changed repair policy", TableId::Fleets,
+                    &[TableId::Fleets, TableId::NavalRepairCountries, TableId::NavalRepairFleets]),
+                ("task-force census and changed repair and composition policy", TableId::TaskForces,
+                    &[TableId::TaskForces, TableId::NavalRepairTaskForces, TableId::NavalTaskForceComposition, TableId::NavalRepairChildren]),
+                ("ship census, model operands and changed refit work", TableId::Ships,
+                    &[TableId::Ships, TableId::ShipModels, TableId::NavalRefitShips, TableId::NavalRefitProgress]),
                 ("states and hourly state flags", TableId::States, &[TableId::States, TableId::StateFlags]),
                 ("army order census, plan operands, group plans, front sections and invasion preparations", TableId::ArmyOrders,
                     &[TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupPlans, TableId::Fronts, TableId::InvasionPreparations]),
@@ -695,10 +757,12 @@ pub use collector_output::line_tables as line_output;
 pub use collector_session::map_names;
 pub use collector_slow_tables::logistics;
 pub use collector_slow_tables::modifier_definitions;
+pub(crate) mod naval_escort_trees;
 pub mod naval_history;
 pub mod naval_mission_inputs;
 pub use collector_naval_details::naval_result_details;
 pub mod naval_result_sources;
+pub use collector_ledger_tables::market;
 pub use collector_ledger_tables::nuclear_strikes;
 pub use collector_new_divisions::new_divisions;
 pub mod map_events;
@@ -748,6 +812,7 @@ packs!(
     air_records,
     building_bombing,
     nuclear_strikes,
+    market,
     leader_paths,
     country_appearance @helper_appearance,
     ship_models,
@@ -1161,6 +1226,7 @@ impl Captured {
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         // The hour's sampled verification slice, for every job it dispatches.
         crate::sampled_verify::begin_hour(hour);
+        self.group_counters.prepare_hour(force_full);
         // A frame whose sliced job never runs must not report an older read.
         self.governance.reset_slice_selections(hour, force_full);
         self.air_relations.prepare_hour(hour, force_full);
@@ -1594,10 +1660,13 @@ impl Captured {
             hour,
             force_full,
         };
-        if !replay_data::cadence::should_walk(TableId::VariantDefinitions, hour, force_full) {
+        if !force_full
+            && !production::design_changes::needs_full()
+            && !replay_data::cadence::should_walk(TableId::VariantDefinitions, hour, false)
+        {
             self.registry.mark_skipped();
             let mut variants = self.production.take_variants();
-            variants.fail(replay_data::cadence::SKIPPED_REASON, hour, force_full);
+            variants.fail(replay_data::cadence::SKIPPED_REASON, hour, false);
             self.production.restore_variants(variants);
             self.variants_ticks = Some([0; production::N]);
             return None;
@@ -3233,6 +3302,7 @@ impl Captured {
             scatter(&air_records::TABLES, report.air_records, ticks);
             scatter(&building_bombing::TABLES, report.bombing, ticks);
             scatter(&nuclear_strikes::TABLES, report.nuclear, ticks);
+            scatter(&market::TABLES, report.market, ticks);
             for (table, cost) in intel::TABLES.into_iter().zip(report.intel_delegated) {
                 ticks[table.index()] += cost;
             }

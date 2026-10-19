@@ -986,7 +986,7 @@ mod fleet {
     const EXPERIENCE: usize = LOW + 0x4100;
     pub(super) const DATABASE: usize = LOW + 0x5000;
     const DEFINITIONS: usize = LOW + 0x5100;
-    const VARIANT: usize = LOW + 0x6000;
+    pub(super) const VARIANT: usize = LOW + 0x6000;
     pub(super) const DEFINITION: usize = LOW + 0x7000;
     pub(super) const SHIPS: usize = 12;
     const CLASS: i32 = 7;
@@ -1279,6 +1279,10 @@ fn ship_model_details_equal_the_direct_readers_in_under_half_their_guarded_calls
                 &mut direct.doctrine,
             )
             .unwrap();
+            row.has_criticals = direct
+                .doctrine
+                .organisation_operands(ship)
+                .map(|own| u32::from(own.has_criticals()));
             (row, selected)
         };
         direct.capture_model_suffixes(
@@ -1536,6 +1540,57 @@ fn a_task_forces_first_ship_carries_its_row() {
     let rows = hour(&mut capture);
     assert_eq!((rows[0].model_number, rows[8].model_number), (MARK, MARK));
     assert_eq!(rows[1..8], fresh[1..8]);
+}
+
+#[test]
+fn unavailable_power_certificate_preserves_core_carry_without_suffix_polling() {
+    use crate::ship_model_changes::Watches;
+    // Unit fixtures install no native content/world observer. Unknown power
+    // must remain independent of the authenticated core model observations.
+    assert!(naval_power_certificate().is_none());
+    let watches = Watches::enabled(64);
+    let world = Fleet::new();
+    const POWER_ATTACK: usize = 0x1d8;
+    world.watched.set(fleet::VARIANT + POWER_ATTACK);
+    let mut capture = Captured::with_capacities(&Capacities {
+        rows: fleet::SHIPS,
+        modifiers: SnapshotCapacity {
+            nodes: 64,
+            entries: 64,
+        },
+    });
+    let hour = |capture: &mut Captured| {
+        capture.begin_sources();
+        for index in 0..fleet::SHIPS {
+            capture.visit_source_growing(fleet::ship(index), &fleet::census(index));
+        }
+        capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
+        capture.capture_carrying(
+            &world,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Nothing,
+        );
+        assert_eq!(capture.outcomes(), [Outcome::Rows { len: fleet::SHIPS }]);
+        assert!(
+            capture.rows.rows[..fleet::SHIPS]
+                .iter()
+                .all(|row| row.naval_power.is_none())
+        );
+    };
+    hour(&mut capture);
+    const MARK: i32 = 0x5eed;
+    capture.rows.rows[0].model_number = MARK;
+    hour(&mut capture);
+    assert_eq!(
+        capture.rows.rows[0].model_number, MARK,
+        "unknown power cannot invalidate unrelated held model fields"
+    );
+    assert_eq!(
+        world.hits.get(),
+        0,
+        "an uncertified suffix never polls mutable variant words"
+    );
 }
 
 /// A task force's country terms (its modifier tree) are served from the held hour while the
@@ -2396,7 +2451,10 @@ mod carry_cost_bench {
             let mut world = critical_world();
             let watches = Watches::enabled(4 * world.census.len());
             let mut held = capture(world.census.len());
-            hour(&world, &mut held, &watches, Check::Nothing);
+            let seeded = hour(&world, &mut held, &watches, Check::Nothing);
+            assert!(seeded.iter().all(|row| row.has_criticals == Some(1)));
+            let quiet = hour(&world, &mut held, &watches, Check::Nothing);
+            assert_eq!(seeded, quiet);
             world.move_tasks(1);
             let memory = CriticalMemory {
                 inner: &world.memory,

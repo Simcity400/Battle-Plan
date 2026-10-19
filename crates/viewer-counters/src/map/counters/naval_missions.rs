@@ -88,28 +88,6 @@ const LIST_PLACE: &str = "its missions list's place";
 /// `content`'s containers.
 const NAVAL_UI_MODE: i32 = 2;
 
-/// The grids bound in `content`, their UI modes and their item sources. Fill
-/// them only in those modes while the camera admits detail. Every update clears
-/// each grid but never hides it, so other modes draw its authored background
-/// without items.
-const GRIDS: [(&str, &[i32], &str); 3] = [
-    (
-        "unit_grid",
-        &[NAVAL_UI_MODE, 5],
-        "the region's own task forces",
-    ),
-    (
-        "enemy_unit_grid",
-        &[NAVAL_UI_MODE],
-        "the region's visible enemy task forces",
-    ),
-    (
-        "enemy_convoy_grid",
-        &[NAVAL_UI_MODE],
-        "the region's visible enemy convoys",
-    ),
-];
-
 /// Counted mission containers reset their counts on update. Own and enemy
 /// mine values are counted only in naval UI mode and at the detailed camera.
 const COUNTED_CONTAINERS: [(&str, &str); 4] = [
@@ -199,7 +177,7 @@ pub(super) struct MissionEntry {
     /// unknown.
     pub(super) active: Result<Option<u32>, &'static str>,
     /// Whether this kind carries the pride marker; why not, when unknown.
-    pride: Result<bool, &'static str>,
+    pub(super) pride: Result<bool, &'static str>,
     /// The input it waits for when unknown.
     pub(super) alert: Result<bool, &'static str>,
     pub(super) engagement: Result<bool, &'static str>,
@@ -213,6 +191,10 @@ type Registration = (u64, u32, u32, Result<bool, &'static str>);
 /// One hour's mission icons for the viewing country, by strategic region.
 #[derive(Clone, Debug, Default)]
 pub struct MissionIcons {
+    pub(super) hovers: Arc<super::naval_mission_inputs::hover::Hovers>,
+    pub(super) convoy_hovers: Arc<BTreeMap<u64, super::naval_mission_inputs::hover::Prepared>>,
+    pub(super) naval_dominance_sources:
+        Option<Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>>,
     pub(super) regions: BTreeMap<u32, Vec<MissionEntry>>,
     pub(super) input_gaps: BTreeMap<String, usize>,
     /// Why no icon is decided this hour, when none is.
@@ -558,8 +540,8 @@ fn undecided(kind: u32, sprite: &str, record: &Record<'_>) -> Vec<String> {
     .collect()
 }
 
-/// Showing a child clears its hide bit before `Show`; hiding calls `Hide`
-/// before setting that bit.
+/// Showing a child clears its hide bit before GUI Show, reaching a container's
+/// descendants; hiding calls Hide before setting that bit.
 fn set_shown(
     instance: &mut Instance,
     window: &native::Element,
@@ -568,7 +550,7 @@ fn set_shown(
 ) -> Result<(), String> {
     if shown {
         instance.set_hide_flag(window, element, false)?;
-        instance.show(window, element)
+        instance.gui_show(window, element)
     } else {
         instance.hide(window, element)?;
         instance.set_hide_flag(window, element, true)
@@ -604,6 +586,8 @@ pub(super) fn mission_assets(
 /// The mission icons' part of a prepared hour: what the code decides, made without any window.
 #[derive(Debug, Default)]
 pub(super) struct MissionPass {
+    pub(super) hovers: Arc<super::naval_mission_inputs::hover::Hovers>,
+    pub(super) convoy_hovers: Arc<BTreeMap<u64, super::naval_mission_inputs::hover::Prepared>>,
     /// The regions whose ledger is not empty, with their shown entries;
     /// `None` at or above the cutoff, where the game passes
     /// the gate 0 and every icon is erased.
@@ -611,6 +595,8 @@ pub(super) struct MissionPass {
     /// Why the pass runs below the cutoff but cannot be planned (an incomplete census): every
     /// icon is erased, which the game does not do ([`MissionView::diverged`]).
     pub(super) undecided: Option<&'static str>,
+    pub(super) mode: i32,
+    pub(super) regional: BTreeMap<u32, naval_regional::Region>,
 }
 
 /// The hour's mission pass: the regions the game admits below the cutoff, or none at or
@@ -633,8 +619,11 @@ pub(super) fn naval_missions(
     let runs = inputs.visibility.naval_missions
         && inputs.passes(|height| mission_pass(height, &inputs.content.defines));
     out.naval.missions = MissionPass {
+        hovers: Arc::clone(&icons.hovers),
+        convoy_hovers: Arc::clone(&icons.convoy_hovers),
         regions: runs.then(|| icons.regions.clone()),
         undecided: icons.unavailable.filter(|_| runs),
+        ..Default::default()
     };
     Ok(())
 }
@@ -653,6 +642,7 @@ struct PooledIcon {
     /// entries, so retained hidden entries still participate in lifecycle calls.
     attached: Vec<usize>,
     count_unknown: Vec<Option<&'static str>>,
+    held_grids: Vec<Held>,
 }
 
 /// The mission icons' windows of one map view: the type-12 pool keyed by strategic region
@@ -682,6 +672,10 @@ pub(super) struct MissionView {
     /// presentation-dirty bit keeps them in the update list: the view presents frames until the
     /// schedule's phase clears them.
     kept_off_screen: bool,
+    pub(super) updated_grids: Vec<(u32, SlotId)>,
+    pub(super) mode: i32,
+    pub(super) badge_counts: BTreeMap<u32, [Result<usize, String>; 2]>,
+    badge_data: BTreeMap<u32, naval_mine_badges::Packet>,
 }
 
 /// A mission-view window in the GUI transition list: a pooled icon's root,
@@ -707,9 +701,11 @@ type Laid = Result<Option<LaidIcon>, native_gui::Refusals>;
 /// One region's icon as the frame lays it out: the root's layout, the entries each holder of it
 /// holds, placed, and how many entries were laid out.
 struct LaidIcon {
+    slot: SlotId,
     layout: native_gui::Layout,
     items: Vec<Vec<native_gui::Part>>,
     entries: usize,
+    hits: Vec<(u32, super::naval_mission_inputs::hover::Control, [f32; 4])>,
 }
 
 /// Construct one retained entry window per mission record, assigning the
@@ -744,6 +740,7 @@ fn rebuild(
         listed: Vec::new(),
         attached: Vec::new(),
         count_unknown: vec![None; MISSION_SPRITES.len()],
+        held_grids: Vec::new(),
     })
 }
 
@@ -754,6 +751,11 @@ fn reach_entries(
     windows: &MissionWindows<'_>,
     held: &[Held],
 ) -> Result<(), String> {
+    icon.held_grids.extend(
+        held.iter()
+            .filter(|held| held.path != windows.list.path)
+            .cloned(),
+    );
     for reached in held.iter().filter(|held| held.path == windows.list.path) {
         for &index in &icon.listed {
             let window = &mut icon.entries[index];
@@ -799,35 +801,17 @@ fn content_calls(
     mode: i32,
     root: &mut Instance,
 ) -> Result<(), native_gui::Refusals> {
-    for (name, modes, items) in GRIDS {
-        if let Some(grid) = windows.content.find(native::Kind::Grid, name)
-            && modes.contains(&mode)
-        {
-            return Err(vec![refusal(
-                &grid.path,
-                native_gui::RefusalKind::MissingInput,
-                format!("holds {items} in UI mode {mode}, which the replay does not record"),
-            )]);
-        }
-    }
-    for (name, counted) in COUNTED_CONTAINERS {
+    // Grid membership is supplied independently by the regional preparation.
+    // These controls keep their authored backgrounds while every update clears items.
+    for (name, _) in COUNTED_CONTAINERS {
         if let Some(container) = windows.content.find(native::Kind::Container, name) {
-            if mode == NAVAL_UI_MODE {
-                return Err(vec![refusal(
-                    &container.path,
-                    native_gui::RefusalKind::MissingInput,
-                    format!(
-                        "is shown in UI mode {mode} from {counted}, which the replay does not \
-                         record"
-                    ),
-                )]);
-            }
             root.hide(windows.root, container)
                 .map_err(refused(container))?;
             root.set_hide_flag(windows.root, container, true)
                 .map_err(refused(container))?;
         }
     }
+    let _ = mode;
     Ok(())
 }
 
@@ -1155,6 +1139,15 @@ impl MissionView {
         }
     }
 
+    pub(super) fn take_grid_held(&mut self) -> Vec<(SlotId, Vec<Held>)> {
+        self.icons
+            .iter_mut()
+            .filter_map(|(&slot, icon)| {
+                (!icon.held_grids.is_empty()).then(|| (slot, std::mem::take(&mut icon.held_grids)))
+            })
+            .collect()
+    }
+
     /// The windows whose fade and movement this frame's update left unknown, taken.
     pub(super) fn take_unsettled(&mut self) -> Vec<(MissionWindow, String)> {
         std::mem::take(&mut self.unsettled)
@@ -1212,6 +1205,7 @@ impl MissionView {
         report: &mut CounterReport,
     ) -> Result<(), String> {
         let root = windows.root;
+        self.updated_grids.clear();
         let mut erased: Vec<(SlotId, Vec<Held>)> = Vec::new();
         for owner in reached {
             if owner.entries.is_some() {
@@ -1279,6 +1273,75 @@ impl MissionView {
                 // calls, bar the operand-dependent parts it left unknown; a structural refusal
                 // it does not lift.
                 Ok(updated) => {
+                    self.updated_grids.push((region, slot));
+                    if self.mode == NAVAL_UI_MODE
+                        && let Some(counts) = self.badge_counts.get(&region)
+                    {
+                        for (name, count) in
+                            ["ongoing_combat_container", "combat_results_container"]
+                                .into_iter()
+                                .zip(counts)
+                        {
+                            if let Some(container) =
+                                windows.content.find(native::Kind::Container, name)
+                            {
+                                match count {
+                                    Ok(count) if *count > 0 => {
+                                        set_shown(instance, windows.root, container, true)?;
+                                        if let Some(text) =
+                                            container.find(native::Kind::TextBox, "count")
+                                        {
+                                            instance.set_text(
+                                                windows.root,
+                                                text,
+                                                &count.to_string(),
+                                                resources,
+                                            )?;
+                                        }
+                                    }
+                                    Err(why) => {
+                                        *report
+                                            .naval_mission_gaps
+                                            .entry(format!("{name}: {why}").into())
+                                            .or_default() += 1;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    if self.mode == NAVAL_UI_MODE
+                        && let Some(packet) = self.badge_data.get(&region)
+                    {
+                        if let Err(why) = naval_mine_badges::apply(
+                            instance,
+                            windows.root,
+                            resources,
+                            packet,
+                            report,
+                        ) {
+                            *report
+                                .naval_mission_gaps
+                                .entry(format!("regional status: {why}").into())
+                                .or_default() += 1;
+                        }
+                        let empty = [Ok(0), Ok(0)];
+                        let counts = self.badge_counts.get(&region).unwrap_or(&empty);
+                        if let Err(why) = naval_mine_badges::relayout(
+                            instance,
+                            windows.root,
+                            windows.entry,
+                            packet,
+                            counts,
+                            icon.listed.len(),
+                            viewport,
+                        ) {
+                            *report
+                                .naval_mission_gaps
+                                .entry(format!("regional status layout: {why}").into())
+                                .or_default() += 1;
+                        }
+                    }
                     pool.rewrote(slot, Rewrote::Update);
                     if updated.list_placed {
                         pool.rewrote(slot, Rewrote::Part(LIST_PLACE));
@@ -1474,11 +1537,12 @@ impl MissionView {
                 continue;
             }
             let laid = instance
-                .layout(windows.root, resources, None)
+                .layout_with_regions(windows.root, resources, None, true)
                 .map(|layout| {
                     layout.map(|layout| {
                         let mut items = vec![Vec::new(); layout.holders.len()];
                         let mut drawn = 0;
+                        let mut hits = Vec::new();
                         let holder = layout
                             .holders
                             .iter()
@@ -1498,7 +1562,7 @@ impl MissionView {
                                     continue;
                                 }
                                 match window.layout(windows.entry, resources, None) {
-                                    Ok(Some(entry)) => {
+                                    Ok(Some(mut entry)) => {
                                         count_noted(
                                             &mut report.naval_mission_gaps,
                                             MISSION_ENTRY_WINDOW,
@@ -1509,6 +1573,22 @@ impl MissionView {
                                         );
                                         drawn += 1;
                                         let (kind, sprite) = MISSION_SPRITES[index];
+                                        entry.parts = layout.holders[at].place(window.position(), &entry);
+                                        entry.regions = layout.holders[at].place_regions(window.position(), &entry.regions);
+                                        use super::naval_mission_inputs::hover::Control;
+                                        for (element_kind, name, control) in [
+                                            (native::Kind::Button,"button",Control::Button),
+                                            (native::Kind::TextBox,"count",Control::Status),
+                                            (native::Kind::Icon,"alert",Control::Status),
+                                            (native::Kind::TextBox,"efficiency",Control::Status),
+                                            (native::Kind::Icon,"pride",Control::Pride),
+                                        ] {
+                                            let Some(button)=windows.entry.find(element_kind,name) else {continue;};
+                                            if let Some(hit) = viewer_foundation::map::gui_resources::hit_rectangle(
+                                                button, &entry, instance.position(), resources, &mut report.icon_gui_notes,
+                                            )
+                                                && !hit.disabled { hits.push((kind, control, hit.rect)); }
+                                        }
                                         for child in
                                             undecided(kind, sprite, &record(kind, &entries))
                                         {
@@ -1532,9 +1612,11 @@ impl MissionView {
                             }
                         }
                         LaidIcon {
+                            slot,
                             layout,
                             items,
                             entries: drawn,
+                            hits,
                         }
                     })
                 });
@@ -1641,6 +1723,38 @@ pub(super) fn update<'n>(
     if let Some(why) = pass.undecided {
         view.diverged = Some(format!("the pass runs but cannot be planned: {why}").into());
     }
+    view.mode = pass.mode;
+    view.badge_counts = pass
+        .regional
+        .iter()
+        .map(|(&region, data)| {
+            (
+                region,
+                [
+                    data.combats.as_ref().map(Vec::len).map_err(Clone::clone),
+                    data.results.as_ref().map(Vec::len).map_err(Clone::clone),
+                ],
+            )
+        })
+        .collect();
+    view.badge_data = pass
+        .regional
+        .iter()
+        .map(|(&region, data)| {
+            let mut packet = data.badges.clone();
+            for fill in &data.grids {
+                let at = if fill.grid.ends_with("enemy_convoy_grid") {
+                    2
+                } else if fill.grid.ends_with("enemy_unit_grid") {
+                    1
+                } else {
+                    0
+                };
+                packet.grid_counts[at] = fill.items.len();
+            }
+            (region, packet)
+        })
+        .collect();
     if let Err(why) = view.frame(&windows, resources, &reached, viewport, report) {
         *report
             .naval_mission_gaps
@@ -1681,10 +1795,13 @@ fn reach<'c>(
 
 /// Each icon of the manager's visible list drawn at its window's place under the mission
 /// priority, one ordinal per icon in the live list's order, after the frame's tick.
+// Keep the pass, retained windows and output sinks borrowed from their existing owners.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw(
     inputs: &CounterInputs<'_>,
     pass: &MissionPass,
     view: &MissionView,
+    state: &naval_windows::Windows,
     windows: &MissionWindows<'_>,
     resources: &GuiAssets<'_>,
     batch: &mut Batch,
@@ -1709,7 +1826,7 @@ pub(super) fn draw(
                 inputs.content.defines.naval_mission_cutoff,
             )
         }));
-        let icon = match laid {
+        let mut icon = match laid {
             Ok(Some(icon)) => icon,
             Ok(None) => continue,
             Err(refusals) => {
@@ -1722,6 +1839,24 @@ pub(super) fn draw(
             MISSION_WINDOW,
             &icon.layout.diagnostics,
         );
+        let grid_marks = (
+            report.unit_hits.len(),
+            report.task_force_port_hovers.len(),
+            report.naval_region_hovers.len(),
+            report.naval_counters,
+        );
+        naval_windows::compose_mission_grids(
+            state,
+            region,
+            icon.slot,
+            windows.root,
+            &icon.layout,
+            &mut icon.items,
+            origin,
+            resources,
+            (priority, ordinal as u32),
+            report,
+        );
         let drawn = gui_windows::draw_window(
             &icon.layout,
             &icon.items,
@@ -1731,12 +1866,64 @@ pub(super) fn draw(
             (priority, ordinal as u32),
         )?;
         match drawn {
-            Ok(()) => report.naval_mission_entries += icon.entries,
-            Err(refusal) => count_refused(
-                &mut report.naval_mission_gaps,
-                MISSION_WINDOW,
-                std::slice::from_ref(&refusal),
-            ),
+            Ok(()) => {
+                for hit in &mut report.naval_region_hovers[grid_marks.2..] {
+                    if let NavalRegionalControl::Convoy(handle) = hit.control {
+                        hit.text = pass.convoy_hovers.get(&handle).map(|hover| {
+                            Arc::new(hover.render(
+                                inputs.localisation,
+                                inputs.recorded_language,
+                                inputs.content.recorded_labels.as_deref(),
+                            ))
+                        });
+                    }
+                }
+                naval_regional::control_hovers(
+                    region,
+                    pass.regional.get(&region),
+                    windows.root,
+                    &icon.layout,
+                    origin,
+                    resources,
+                    layer(priority, ordinal as u32, 0),
+                    report,
+                );
+                report.naval_mission_entries += icon.entries;
+                let key = layer(priority, ordinal as u32, 0);
+                report.naval_mission_hits.extend(icon.hits.into_iter().map(
+                    |(mission, control, rect)| NavalMissionHit {
+                        region,
+                        mission: if control == super::naval_mission_inputs::hover::Control::Button {
+                            mission
+                        } else {
+                            0
+                        },
+                        rect,
+                        layer: key,
+                        text: pass.hovers.get(&(region, mission, control)).map(|hover| {
+                            Arc::new(hover.render(
+                                inputs.localisation,
+                                inputs.recorded_language,
+                                inputs.content.recorded_labels.as_deref(),
+                            ))
+                        }),
+                    },
+                ));
+            }
+            Err(refusal) => {
+                report.unit_hits.truncate(grid_marks.0);
+                report.task_force_port_hovers.truncate(grid_marks.1);
+                report.naval_region_hovers.truncate(grid_marks.2);
+                report
+                    .regional_naval_unit_hits
+                    .retain(|&index| index < grid_marks.0);
+                report.naval_counters = grid_marks.3;
+                count_refused(
+                    &mut report.naval_mission_gaps,
+                    MISSION_WINDOW,
+                    std::slice::from_ref(&refusal),
+                );
+            }
         }
     }
     batch.at_anchor(None);

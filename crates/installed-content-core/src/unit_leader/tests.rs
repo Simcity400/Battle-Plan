@@ -956,6 +956,42 @@ fn sub_units(files: &[&[u8]]) -> SubUnits {
     indices
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn air_wing_sizes_follow_signed_content_and_equipment_carrier_defaults() {
+    let (equipment, _) = crate::equipment::fixture::load(&[(
+        "common/units/equipment/mod_air.txt",
+        "equipments={land={is_archetype=yes carrier_capable=no} deck={is_archetype=yes carrier_capable=yes}}",
+    )]);
+    let units = sub_units(&[br#"sub_units={
+        land={type=fighter need={land=1} carrier_air_wing_size=9
+            submarine_carrier_air_wing_size=-3 mega_carrier_air_wing_size=12}
+        deck={type=fighter need={deck=1}}
+        explicit={type=fighter need={deck=1} land_air_wing_size=-40 carrier_air_wing_size=23}
+        empty={type=fighter}
+        foot={type=infantry land_air_wing_size=45}
+    }"#]);
+    assert_eq!(
+        units.air_wing_sizes(b"land", &equipment).unwrap(),
+        [100, 0, -3, 12]
+    );
+    assert_eq!(
+        units.air_wing_sizes(b"deck", &equipment).unwrap(),
+        [100, 10, 0, 0]
+    );
+    assert_eq!(
+        units.air_wing_sizes(b"explicit", &equipment).unwrap(),
+        [-40, 23, 0, 0]
+    );
+    assert_eq!(units.air_wing_sizes(b"empty", &equipment).unwrap(), [0; 4]);
+    assert_eq!(units.air_wing_sizes(b"foot", &equipment).unwrap(), [0; 4]);
+    assert!(!units.air_carrier_capable(b"land", &equipment).unwrap());
+    assert!(units.air_carrier_capable(b"deck", &equipment).unwrap());
+    assert!(units.air_carrier_capable(b"explicit", &equipment).unwrap());
+    assert!(!units.air_carrier_capable(b"empty", &equipment).unwrap());
+    assert!(units.air_carrier_capable(b"absent", &equipment).is_err());
+}
+
 #[test]
 fn sub_unit_groups_follow_resolved_tokens_and_repeated_body_retention() {
     let units = sub_units(&[
@@ -1087,7 +1123,7 @@ fn an_unread_tail_leaves_every_artillery_brigade_unknown_until_defined_again() {
     let stops: Vec<_> = units
         .warnings()
         .iter()
-        .filter(|warning| warning.contains("is_artillery_brigade is unknown"))
+        .filter(|warning| warning.contains("is_artillery_brigade and special_forces are unknown"))
         .collect();
     assert_eq!(stops.len(), 2, "{:?}", units.warnings());
     assert!(stops[0].contains(&first) && stops[0].contains("unknown index"));
@@ -1590,5 +1626,29 @@ fn special_forces_follows_the_last_appearance() {
             .special_forces(b"absent")
             .unwrap_err()
             .contains("absent")
+    );
+}
+
+#[test]
+fn trait_training_cost_keeps_native_default_and_integer_scan_rules() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let leaders = Leaders::<crate::Diagnostic>::read_files(vec![("traits.txt".into(),
+        b"leader_traits={ default={} custom={ cost=50 cost=invalid } signed={ cost=-7 } wrapped={ cost=4294967297 } }".to_vec())],
+        &|_| None, &|_| None, Arc::default());
+    assert_eq!(
+        leaders.traits.get("default").unwrap().required_experience(),
+        1000
+    );
+    assert_eq!(
+        leaders.traits.get("custom").unwrap().required_experience(),
+        50
+    );
+    assert_eq!(
+        leaders.traits.get("signed").unwrap().required_experience(),
+        -7
+    );
+    assert_eq!(
+        leaders.traits.get("wrapped").unwrap().required_experience(),
+        1
     );
 }

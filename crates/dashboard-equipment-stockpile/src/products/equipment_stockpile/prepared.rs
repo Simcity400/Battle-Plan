@@ -161,10 +161,11 @@ pub struct Prepared {
     active: BTreeSet<String>,
     frontier: Option<i32>,
     naming_ready: bool,
+    /// Source keys survive restore; rebuilding the runtime join does not
+    /// invalidate naming when these operands still match.
+    country_keys: Option<Vec<(u32, u32, Vec<u8>)>>,
     #[serde(skip)]
     country_reads: Option<dashboard_base::products::territory::CountryReads>,
-    #[serde(skip)]
-    country_rows: Option<usize>,
     #[serde(skip)]
     repeated: BTreeMap<String, RepeatedReads>,
     /// Built by each whole-table hour; none after restore.
@@ -216,50 +217,58 @@ impl Prepared {
         let previous = self.frontier;
         let continuous = previous.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
         self.frontier = Some(frame.hour);
-        let countries_changed = if changes.rows_changed[TableId::Countries.index()]
-            || changes.rows_changed[TableId::CountryLinks.index()]
-            || !continuous
-        {
-            let rows = frame.complete::<tables::Countries>().ok();
-            // Recorded changes that delete no country and touch no holder
-            // field keep the previous hour's holders.
-            let kept = continuous
-                && !changes.rows_changed[TableId::CountryLinks.index()]
-                && changes
+        let rows = frame.complete::<tables::Countries>().ok();
+        // Recorded changes that delete no country and touch no holder
+        // field keep the previous hour's keys; snapshots compare them whole.
+        let kept = continuous
+            && (!changes.rows_changed[TableId::Countries.index()]
+                || changes
                     .rows(TableId::Countries)
                     .is_some_and(|(changed, deleted)| {
                         deleted.is_empty()
                             && changed.iter().all(|row| row.mask & *HOLDER_FIELDS == 0)
-                    });
-            #[cfg(test)]
-            let kept = kept && !self.whole_tables;
-            let same = rows.is_some_and(|rows| {
-                self.country_reads.as_ref().is_some_and(|seen| {
-                    (kept && self.country_rows == Some(rows.len())) || seen.matches(frame, rows)
-                })
+                    }));
+        #[cfg(test)]
+        let kept = kept && !self.whole_tables;
+        let same_keys = rows.is_some_and(|rows| {
+            self.country_keys.as_ref().is_some_and(|keys| {
+                keys.len() == rows.len()
+                    && (kept
+                        || keys.iter().zip(rows).all(|((id, slot, tag), row)| {
+                            *id == row.id && *slot == row.canonical_slot && *tag == row.tag
+                        }))
+            })
+        });
+        if !same_keys {
+            self.country_keys = rows.map(|rows| {
+                rows.iter()
+                    .map(|row| (row.id, row.canonical_slot, row.tag.clone()))
+                    .collect()
             });
-            if !same {
-                self.country_rows = rows.map(<[_]>::len);
-                self.country_reads = rows.map(|rows| {
-                    if !changes.rows_changed[TableId::CountryLinks.index()]
-                        && let Some(reads) = &self.country_reads
-                    {
-                        dashboard_base::products::territory::CountryReads::from_slots(
-                            frame,
-                            rows,
-                            Arc::clone(reads.slots()),
-                        )
-                    } else {
-                        dashboard_base::products::territory::CountryReads::new(frame, rows)
-                    }
-                });
-            }
-            !same
-        } else {
-            false
-        };
+        }
+        let countries_changed = !continuous
+            || !same_keys
+            || changes.rows_changed[TableId::CountryLinks.index()]
+            || self.country_reads.is_none();
+        if countries_changed {
+            self.country_reads = rows.map(|rows| {
+                if continuous
+                    && !changes.rows_changed[TableId::CountryLinks.index()]
+                    && let Some(reads) = &self.country_reads
+                {
+                    dashboard_base::products::territory::CountryReads::from_slots(
+                        frame,
+                        rows,
+                        Arc::clone(reads.slots()),
+                    )
+                } else {
+                    dashboard_base::products::territory::CountryReads::new(frame, rows)
+                }
+            });
+        }
         let naming_changed = !continuous
-            || countries_changed
+            || !same_keys
+            || changes.rows_changed[TableId::CountryLinks.index()]
             || VariantCatalogue::TABLES
                 .iter()
                 .filter(|&&table| !matches!(table, TableId::Countries | TableId::CountryLinks))
@@ -588,6 +597,11 @@ impl Prepared {
         }
         let before = read_counts(&state.result);
         state.observe(format, input, identity);
+        // Apply breaks before authenticating this holder's accepted hour,
+        // including the frontiers of its closed run sets.
+        if identity.is_some() {
+            state.advance(hour);
+        }
         if !self.repeated.contains_key(tag) {
             self.repeated
                 .insert(tag.to_owned(), RepeatedReads::default());

@@ -4,6 +4,9 @@
 pub struct WorldName {
     /// The country tag, for reporting.
     pub key: String,
+    /// Sorted provinces of this strategic name's connected area, shared by its font pages.
+    /// Absent for other name layers.
+    pub strategic_provinces: Option<std::sync::Arc<[u32]>>,
     /// The resolved, un-upper-cased display string.
     pub text: String,
     /// Font page texture id each glyph samples.
@@ -53,6 +56,7 @@ impl WorldName {
         }
         (!uvs.is_empty()).then_some(Self {
             key,
+            strategic_provinces: None,
             text,
             pages,
             corners,

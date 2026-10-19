@@ -9,6 +9,7 @@
 pub mod products {
     pub mod air_force;
     pub mod army_size;
+    pub mod naval_management;
     pub mod navy;
     pub mod parts_race_prepared;
     pub mod supply_health;
@@ -18,5 +19,6 @@ pub mod products {
         supply_health::SupplyHealthReply,
         air_force::AirForceReply,
         navy::NavyReply,
+        naval_management::NavalManagementReply,
     );
 }

@@ -351,6 +351,8 @@ enum Event {
     Sprite(Vec<u8>, SpriteSetter),
     /// Frame assignment ([`Instance::set_frame`]).
     Frame(i32),
+    /// A normalized progress setter writes its rounded raw state.
+    ProgressFloat(i32),
     /// The code starts the drawable's animation ([`Instance::play`]).
     #[cfg(any(test, feature = "test-support"))]
     Play,
@@ -364,6 +366,7 @@ struct Retained {
     count: u32,
     /// The frame the code set on the current drawable (`None`: its own).
     frame: Option<i32>,
+    progress_float: Option<i32>,
     /// A frame assignment reached the current drawable since the last tick; it holds that frame.
     framed: bool,
     /// An animation start reached the current drawable since the last tick; it is playing.
@@ -1840,7 +1843,23 @@ impl Instance {
     ) -> Result<(), String> {
         let index = self.index(root, element)?;
         self.flush(index);
+        self.nodes[index].control.progress_float = None;
         self.nodes[index].events.push(Event::Frame(frame));
+        Ok(())
+    }
+
+    /// Stores the normalized progress setter's rounded state, without the
+    /// integer setter's additional upper clamp. Sprite replacements and later
+    /// integer assignments supersede it in native call order.
+    pub fn set_progress_float_value(
+        &mut self,
+        root: &Element,
+        element: &Element,
+        value: i32,
+    ) -> Result<(), String> {
+        let index = self.index(root, element)?;
+        self.flush(index);
+        self.nodes[index].events.push(Event::ProgressFloat(value));
         Ok(())
     }
 
@@ -1999,6 +2018,7 @@ impl Instance {
             made: node.made.clone(),
             count: node.made_count,
             frame: node.control.frame,
+            progress_float: node.control.progress_float,
             framed: false,
             played: false,
         };
@@ -2023,13 +2043,18 @@ impl Instance {
                             made: kept.count,
                         });
                         kept.frame = None;
+                        kept.progress_float = None;
                         kept.framed = false;
                         // The new drawable starts stopped. A `Play` before replacement reached
                         // the previous drawable.
                         kept.played = false;
                     }
                 }
+                Event::ProgressFloat(value) => {
+                    kept.progress_float = Some(*value);
+                }
                 Event::Frame(frame) => {
+                    kept.progress_float = None;
                     kept.frame = Some(*frame);
                     kept.framed = true;
                 }
@@ -2579,6 +2604,7 @@ impl Instance {
             node.made = kept.made;
             node.made_count = kept.count;
             node.control.frame = kept.frame;
+            node.control.progress_float = kept.progress_float;
             node.control.sprite = None;
             node.events.clear();
             if kept.framed
@@ -2933,6 +2959,7 @@ impl Instance {
                     made: None,
                     count: 0,
                     frame: None,
+                    progress_float: None,
                     framed: false,
                     played: false,
                 }
@@ -2945,6 +2972,7 @@ impl Instance {
                     .map(|made| (made.sprite.clone(), made.setter)),
             );
             bound.frame = kept.frame;
+            bound.progress_float = kept.progress_float;
             bound.shown = Some(node.shown);
             if let Some(window) = node.window {
                 bound.opacity = Some(window.opacity);
@@ -3144,6 +3172,8 @@ struct Slot {
 pub enum MapIconPool {
     /// Type 5, the air base icon: 0xC0.
     AirBase,
+    /// Type 13, the regional air mission icon: 0xC0.
+    AirMission,
     /// Type 6, the rocket site icon: 0x80.
     RocketSite,
     /// Type 7, the gun emplacement icon: 0x80.
@@ -3179,6 +3209,8 @@ pub enum MapIconPool {
     AdjacencyRule,
     /// Type 3, a state's resource icon: 0xC0.
     Resource,
+    /// Type 20, a resistance/compliance state marker: 0x60.
+    Occupation,
 }
 
 impl MapIconPool {
@@ -3186,7 +3218,8 @@ impl MapIconPool {
     pub fn initial(self) -> usize {
         match self {
             Self::Label => 0xA0,
-            Self::AirBase | Self::Base | Self::Capital | Self::Resource => 0xC0,
+            Self::Occupation => 0x60,
+            Self::AirBase | Self::AirMission | Self::Base | Self::Capital | Self::Resource => 0xC0,
             Self::Combat | Self::AdjacencyRule => 0x20,
             Self::CombatResults
             | Self::Mission
@@ -3807,6 +3840,7 @@ impl<K: Clone + Eq + std::hash::Hash> Calls<K> {
                         resolved_flags,
                         color,
                         progress,
+                        progress_float,
                         texture,
                         stretch,
                         offset,
@@ -3822,6 +3856,7 @@ impl<K: Clone + Eq + std::hash::Hash> Calls<K> {
                     control.resolved_flags = resolved_flags;
                     control.color = color;
                     control.progress = progress;
+                    control.progress_float = None;
                     control.texture = texture;
                     control.stretch = stretch;
                     control.offset = offset;
@@ -3830,6 +3865,9 @@ impl<K: Clone + Eq + std::hash::Hash> Calls<K> {
                     control.shield = shield;
                     control.checked = checked;
                     control.enabled = enabled;
+                    if let Some(value) = progress_float {
+                        instance.set_progress_float_value(root, element, value)?;
+                    }
                     if let Some(text) = text {
                         instance.set_text(root, element, &text, resources)?;
                     }

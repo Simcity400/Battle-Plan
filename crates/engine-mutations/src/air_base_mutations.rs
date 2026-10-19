@@ -36,6 +36,10 @@
 //!   pool's virtual deleting destructor destroys its wings before erasing the
 //!   pool from its base. It runs during the hourly empty-pool purge,
 //!   withdrawal, and base and country teardown.
+//! - Pool-definition rebind replaces a pool's subtype with its owner's current
+//!   local definition clone; this invalidates the independent metadata carried
+//!   with the registration segment. Construction and loading establish the
+//!   initial subtype; other pool members and scalar fuel remain separate.
 //! - Base destruction inlines container pool erases and retires both vectors.
 //!   A later base can reuse its address with a different handle. This site
 //!   belongs to [`crate::ship_model_mutations`], whose detour forwards here.
@@ -75,7 +79,7 @@ const DESTROY_POOL_RVA: usize = 0xf4_5860;
 
 /// Every site with its receiver; each takes at most four integer or pointer
 /// arguments and returns RAX unchanged from its original.
-pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
+pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     // Country-container creation (base, tag).
     (
         MutationSite {
@@ -185,4 +189,27 @@ pub const MUTATIONS: [(MutationSite, Receiver); 9] = [
         },
         Receiver::Pool,
     ),
+    // Rebind the pool's subtype to its owner's current definition clone.
+    (
+        MutationSite {
+            name: "rebind_pool_definition",
+            rva: 0xf5_1020,
+            sentinel: [
+                0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x8b, 0x49, 0x40, 0x48,
+                0x81, 0xc1,
+            ],
+        },
+        Receiver::Pool,
+    ),
 ];
+
+/// Container demand refresh. Its first argument is the container and the
+/// second is its base; observing this writer certifies only dynamic scalars.
+pub const FUEL_DEMAND: MutationSite = MutationSite {
+    name: "air_container_fuel_demand",
+    rva: 0xc4_8430,
+    sentinel: [
+        0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xaf,
+        0x07,
+    ],
+};

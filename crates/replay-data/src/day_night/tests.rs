@@ -9,6 +9,34 @@ fn defines() -> Defines {
     }
 }
 
+#[test]
+fn whole_day_forecast_matches_each_native_slot_with_a_held_season() {
+    let defines = defines();
+    let clock = ProvinceClock::new([31, 17], [80, 40], &defines);
+    let day = EPOCH + 172 * 24;
+    let factors = clock.forecast(
+        seasonal_direction(day),
+        forecast_feather(defines.day_night_feather),
+    );
+    for (slot, expected) in factors.into_iter().enumerate() {
+        assert_eq!(
+            clock
+                .update(&HourOperands::new(day + slot as i32, &defines).unwrap())
+                .night_factor,
+            expected
+        );
+    }
+    assert_ne!(
+        factors,
+        clock.forecast(
+            seasonal_direction(EPOCH),
+            forecast_feather(defines.day_night_feather)
+        )
+    );
+    let zeros = clock.forecast([0; 3], forecast_feather(defines.day_night_feather));
+    assert!(zeros.iter().all(|&value| value == 50_000));
+}
+
 fn clock(hour: i32, centroid: [i32; 2]) -> Clock {
     let defines = defines();
     ProvinceClock::new(centroid, [80, 40], &defines)

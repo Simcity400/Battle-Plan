@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createServer } from 'vite';
 import { gameScoreModel, gameScoreRace, gameScoreRows, SCORE_PARTS, FALLBACK_LABELS } from './gameScoreData.ts';
 import type { GameScoreReply, GameScoreSeries } from '../../generated/dashboard';
-import type { DashboardClient } from '../../dashboard/client';
+import type { DashboardClient, PreparedQueryOptions } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 
 const series = (): GameScoreSeries => Object.fromEntries(SCORE_PARTS.map(part => [part,
@@ -88,9 +88,13 @@ test('score draws 5000 tail countries immediately and refreshes once accepted co
     assert.equal(Object.keys(render().data!.stretches).length, 5000);
     assert.deepEqual({ queries, statuses }, { queries: 2, statuses: 2 });
 
-    // An idle preparation job cannot erase the values already drawn for this hour.
+    // An idle job makes one final refresh, then retains the values already drawn for this hour.
     let idleQueries = 0, idleStatuses = 0;
-    const idleClient = { preparedQuery: async () => { assert.ok(++idleQueries <= 1); return { ...partial, coverage: { firstHour: 0, lastHour: -1, complete: false } }; },
+    const idleClient = { preparedQuery: async (_source: unknown, _product: string, _params: unknown, options: PreparedQueryOptions) => {
+      assert.ok(++idleQueries <= 2, 'idle preparation permits only one final refresh');
+      assert.equal(options.refresh, idleQueries === 2);
+      return { ...partial, coverage: { firstHour: 0, lastHour: -1, complete: false } };
+    },
       preparationStatus: async (request: object) => { assert.ok(++idleStatuses <= 1); return { ...request, state: 'idle', sections: [], bytes: '0',
         error: null, backgroundEnabled: false, coverage: {} }; } } as unknown as DashboardClient;
     render(track, idleClient);
@@ -99,7 +103,7 @@ test('score draws 5000 tail countries immediately and refreshes once accepted co
     assert.equal(idle.data?.reply.countries.length, 5000);
     assert.equal(idle.data?.approximate, true);
     assert.match(idle.error!, /Background preparation is off/);
-    assert.deepEqual({ idleQueries, idleStatuses }, { idleQueries: 1, idleStatuses: 1 });
+    assert.deepEqual({ idleQueries, idleStatuses }, { idleQueries: 2, idleStatuses: 1 });
     assert.throws(() => validatePreparedScore({ ...partial, approximate: 'true' }), /malformed/);
     const cold = { ...partial, coverage: { ...partial.coverage, lastHour: 99 } };
     assert.deepEqual(validatePreparedScore(cold), cold);

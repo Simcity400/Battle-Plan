@@ -2,7 +2,8 @@
 //! ([`super::super::inputs::Key::dependence`]): the tables, fields and rows
 //! its implementation reads, nested queries and lazily built indexes
 //! included. Every world query also needs the hour's world, which the
-//! caller adds. Every query is declared.
+//! caller adds. Acquisition freshness is checked again independently of row changes;
+//! the other queries declare their table reads.
 //!
 //! A query that reads one country's rows of a table keyed by raw country,
 //! and refuses when a row's country does not resolve, declares those rows
@@ -116,6 +117,10 @@ fn store(store: Store, field: &str) -> Vec<TableRead> {
         Store::Country(_) => vec![read, raw_ids()],
         Store::State(id) => vec![row(2, id)],
         Store::Character(id) => vec![row(3, id)],
+        Store::Project { owner, id } => vec![
+            TableRead::fields(TableId::Projects, &["runtime"])
+                .row((u128::from(owner) << 32) | u128::from(id)),
+        ],
     }
 }
 
@@ -142,6 +147,8 @@ impl Query {
     pub(crate) fn dependence(&self) -> Option<Vec<TableRead>> {
         use TableId as T;
         Some(match self {
+            // Freshness reads acquisition metadata and the enclosing hour, not row values.
+            Query::TableFresh(_) => return None,
             Query::TableStatus(_)
             | Query::CoreGap
             | Query::TableGap(_)

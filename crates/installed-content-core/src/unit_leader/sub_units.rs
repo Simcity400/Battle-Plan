@@ -76,13 +76,103 @@ pub struct SubUnits {
     groups: BTreeMap<Vec<u8>, Result<Option<Vec<u8>>, String>>,
     /// Full type mask, including the inline icon prefix categories.
     categories_by_unit: BTreeMap<Vec<u8>, Result<u64, String>>,
+    /// Authored wing capacities and the first required equipment. Finalization
+    /// needs the equipment database, so it runs when these values are requested.
+    air_wings: BTreeMap<Vec<u8>, Result<AirWing, String>>,
     /// A file whose reading the port cannot follow, and why: any key not
     /// registered by then may or may not be.
     uncertain: Option<String>,
     warnings: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AirWing {
+    sizes: [i32; 4],
+    first_requirement: Option<Vec<u8>>,
+}
+
 impl SubUnits {
+    /// Finalized carrier admission uses the first authored equipment
+    /// requirement. A positive carrier wing size alone does not prove it.
+    pub fn air_carrier_capable(
+        &self,
+        name: &[u8],
+        equipment: &equipment::Database,
+    ) -> Result<bool, String> {
+        let wing = self
+            .air_wings
+            .get(&identity(name))
+            .ok_or_else(|| {
+                self.uncertain.clone().unwrap_or_else(|| {
+                    format!(
+                        "sub-unit {} is not in the content's sub_units",
+                        String::from_utf8_lossy(name)
+                    )
+                })
+            })?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        match &wing.first_requirement {
+            None => Ok(false),
+            Some(required) => equipment
+                .named(required)
+                .map(|item| item.carrier_capable)
+                .ok_or_else(|| {
+                    format!(
+                        "sub-unit {} requires unknown equipment {}",
+                        String::from_utf8_lossy(name),
+                        String::from_utf8_lossy(required)
+                    )
+                }),
+        }
+    }
+    /// The finalized land, carrier, submarine-carrier and mega-carrier wing
+    /// sizes. Signed authored values survive; only native zero defaults and
+    /// invalid non-carrier combinations are replaced.
+    pub fn air_wing_sizes(
+        &self,
+        name: &[u8],
+        equipment: &equipment::Database,
+    ) -> Result<[i32; 4], String> {
+        let wing = self
+            .air_wings
+            .get(&identity(name))
+            .ok_or_else(|| {
+                self.uncertain.clone().unwrap_or_else(|| {
+                    format!(
+                        "sub-unit {} is not in the content's sub_units",
+                        String::from_utf8_lossy(name)
+                    )
+                })
+            })?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let categories = self.category(name)?;
+        if categories & 0x1f_0037_fc00 == 0 {
+            return Ok([0; 4]);
+        }
+        let mut sizes = wing.sizes;
+        if let Some(required) = &wing.first_requirement {
+            let required = equipment.named(required).ok_or_else(|| {
+                format!(
+                    "sub-unit {} requires unknown equipment {}",
+                    String::from_utf8_lossy(name),
+                    String::from_utf8_lossy(required)
+                )
+            })?;
+            if sizes[0] == 0 {
+                sizes[0] = 100;
+            }
+            if required.carrier_capable {
+                if sizes[1] == 0 {
+                    sizes[1] = 10;
+                }
+            } else if categories & 0x1c_0001_0000 == 0 {
+                sizes[1] = 0;
+            }
+        }
+        Ok(sizes)
+    }
     /// Every registered sub-unit spelling, for token-based reader lookups
     /// against the same database.
     pub fn registered(&self) -> impl Iterator<Item = &[u8]> {
@@ -378,6 +468,7 @@ impl SubUnits {
             let mut artillery = false;
             let mut special_forces = false;
             let mut categories = scalar_categories[index];
+            let mut air_wing = AirWing::default();
             let unit = identity(entry.key.as_deref().unwrap_or_default());
             let mut group = self.groups.get(&unit).cloned().unwrap_or_else(|| {
                 self.uncertain
@@ -385,6 +476,28 @@ impl SubUnits {
                     .map_or(Ok(None), |why| Err(why.clone()))
             });
             for field in entry.value.items().unwrap_or_default() {
+                let wing_size = [
+                    "land_air_wing_size",
+                    "carrier_air_wing_size",
+                    "submarine_carrier_air_wing_size",
+                    "mega_carrier_air_wing_size",
+                ]
+                .iter()
+                .position(|name| field.keyword_is(name));
+                if let Some(index) = wing_size {
+                    if let Some(bytes) = field.value.scalar()
+                        && let crate::crt::Scanned::Stored(value) = crate::crt::scan_i32(bytes)
+                    {
+                        air_wing.sizes[index] = value;
+                    }
+                } else if field.keyword_is("need") && air_wing.first_requirement.is_none() {
+                    air_wing.first_requirement = field
+                        .value
+                        .items()
+                        .unwrap_or_default()
+                        .first()
+                        .and_then(|entry| entry.key.clone());
+                }
                 if field.keyword_is("is_artillery_brigade") {
                     // The artillery boolean field leaves its byte unchanged on a
                     // failed scan.
@@ -415,6 +528,10 @@ impl SubUnits {
                 }
             }
             self.groups.insert(unit, group);
+            self.air_wings.insert(
+                identity(entry.key.as_deref().unwrap_or_default()),
+                Ok(air_wing),
+            );
             self.artillery.insert(
                 identity(entry.key.as_deref().unwrap_or_default()),
                 Ok(artillery),
@@ -473,6 +590,9 @@ impl SubUnits {
             for value in self.groups.values_mut() {
                 *value = Err(reason.clone());
             }
+            for value in self.air_wings.values_mut() {
+                *value = Err(reason.clone());
+            }
             if let Some(key) = keys.last() {
                 self.artillery.insert(identity(key), Err(reason.clone()));
                 self.special_forces
@@ -481,6 +601,7 @@ impl SubUnits {
                 self.categories_by_unit
                     .insert(identity(key), Err(reason.clone()));
                 self.groups.insert(identity(key), Err(reason.clone()));
+                self.air_wings.insert(identity(key), Err(reason.clone()));
             }
             self.uncertain.get_or_insert(reason);
         }

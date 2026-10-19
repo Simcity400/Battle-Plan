@@ -65,7 +65,10 @@ impl World {
         let mut sides = (0..combats)
             .map(|_| {
                 std::array::from_fn(|_| {
-                    vec![0; side::STATS_OBSERVER + stats::EQUIPMENT_LOSSES + pool::ITEMS + 16]
+                    vec![
+                        0;
+                        side::STATS_OBSERVER + engine_land_inputs::combat_log_events::OBSERVER_SIZE
+                    ]
                 })
             })
             .collect::<Vec<[Vec<u8>; 2]>>();
@@ -98,6 +101,23 @@ impl World {
                     side::STATS_OBSERVER + stats::EQUIPMENT_LOSSES,
                     pool::VTABLE_RVA as u64,
                 );
+                q(
+                    side,
+                    side::STATS_OBSERVER + engine_land_inputs::combat_log_events::OBSERVER_SIDE,
+                    engine_land_inputs::combat_log_history::SIDE_VTABLE_RVA as u64,
+                );
+                for offset in [
+                    engine_land_inputs::combat_log_history::SIDE_CAPTURED_BY_ENEMY,
+                    engine_land_inputs::combat_log_history::SIDE_RECOVERED,
+                ] {
+                    q(
+                        side,
+                        side::STATS_OBSERVER
+                            + engine_land_inputs::combat_log_events::OBSERVER_SIDE
+                            + offset,
+                        pool::VTABLE_RVA as u64,
+                    );
+                }
             }
         }
         let registry = battle_objects
@@ -175,7 +195,7 @@ impl Memory for NoReads {
 }
 
 #[test]
-fn first_and_later_worker_combats_keep_five_thousand_country_and_mod_sized_populations() {
+fn combat_log_first_and_later_census_keep_five_thousand_country_and_mod_sized_populations() {
     let mut map = empty_map();
     let mut progress = progress();
     for (combats, members) in [(5000, 0), (7000, 0), (1, 5000), (1, 12_000)] {
@@ -186,7 +206,13 @@ fn first_and_later_worker_combats_keep_five_thousand_country_and_mod_sized_popul
         progress = map.restore_combat_request(request, report, None);
         assert_eq!(map.land_combats.outcome, Outcome::Rows { len: combats });
         assert_eq!(map.land_participants_len, combats * members * 2);
-        assert_eq!(progress.outcomes(), [Outcome::Rows { len: combats }]);
+        assert_eq!(
+            progress.outcomes(),
+            [
+                Outcome::Rows { len: combats },
+                Outcome::Rows { len: combats * 22 }
+            ]
+        );
         assert_eq!(map.naval_combats.outcome, Outcome::Rows { len: 0 });
         assert_eq!(
             map.naval_combat_participants.outcome,
@@ -209,7 +235,7 @@ fn first_and_later_worker_combats_keep_five_thousand_country_and_mod_sized_popul
 }
 
 #[test]
-fn rejected_combat_request_is_terminal_and_finished_land_survives_later_failure() {
+fn combat_log_rejected_request_is_terminal_and_finished_land_survives_later_failure() {
     let mut map = empty_map();
     let request = map.take_combat_request(0, 0, progress());
     let unavailable = Outcome::Unavailable {
@@ -223,7 +249,7 @@ fn rejected_combat_request_is_terminal_and_finished_land_survives_later_failure(
     assert_eq!(map.land_combats.outcome, unavailable);
     assert_eq!(map.naval_combats.outcome, unavailable);
     assert_eq!(map.naval_combat_participants.outcome, unavailable);
-    assert_eq!(returned.outcomes(), [unavailable]);
+    assert_eq!(returned.outcomes(), [unavailable; combat_progress::N]);
     map.players_raw_mode = true;
     map.owned_air_captured = true;
     map.sample(&NoReads, 0, 0, &mut NoSources);
@@ -235,7 +261,10 @@ fn rejected_combat_request_is_terminal_and_finished_land_survives_later_failure(
     request.naval_finished = false;
     let returned = map.restore_combat_request(request, report, Some("naval worker panicked"));
     assert_eq!(map.land_combats.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(returned.outcomes(), [Outcome::Rows { len: 1 }]);
+    assert_eq!(
+        returned.outcomes(),
+        [Outcome::Rows { len: 1 }, Outcome::Rows { len: 22 }]
+    );
     assert_eq!(
         map.naval_combats.outcome,
         Outcome::Unavailable {
@@ -245,7 +274,7 @@ fn rejected_combat_request_is_terminal_and_finished_land_survives_later_failure(
 }
 
 #[test]
-fn combat_take_restore_moves_owned_storage_without_callback_allocation() {
+fn combat_log_take_restore_moves_owned_storage_without_callback_allocation() {
     let world = World::new(1, 2);
     let mut map = empty_map();
     let mut request = map.take_combat_request(0, world.state(), progress());

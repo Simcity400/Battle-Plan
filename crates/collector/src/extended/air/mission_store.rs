@@ -36,6 +36,8 @@ use engine_native::{
     cair_regional_mission::Carry, cair_regional_mission::Registration, cair_regional_mission::Root,
 };
 use std::ops::Range;
+mod order;
+pub(crate) use order::OrderLabel;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Certificate {
@@ -130,6 +132,8 @@ pub(crate) struct MissionStore {
     bytes: usize,
     /// Set on the game thread; the next walk drops every held registration.
     forgotten: bool,
+    orders: order::Orders,
+    pub(crate) transfers: super::transfers::Store,
 }
 
 impl MissionStore {
@@ -159,6 +163,8 @@ impl MissionStore {
         if std::mem::take(&mut self.forgotten) {
             self.current.clear();
             self.previous.clear();
+            self.orders.clear();
+            self.transfers.clear();
         }
         std::mem::swap(&mut self.current, &mut self.previous);
         self.current.clear();
@@ -196,10 +202,16 @@ impl MissionStore {
         }
         self.previous.clear();
         self.plans.clear();
+        self.measure_transfers();
+        crate::mission_changes::record(&self.counts, complete.then_some(countries));
+    }
+
+    pub(crate) fn measure_transfers(&mut self) {
         self.bytes = self.current.measure()
             + self.previous.measure()
-            + self.plans.capacity() * size_of::<Plan>();
-        crate::mission_changes::record(&self.counts, complete.then_some(countries));
+            + self.plans.capacity() * size_of::<Plan>()
+            + self.orders.allocated_bytes()
+            + self.transfers.allocated_bytes();
     }
 }
 
@@ -235,8 +247,35 @@ impl<'a> MissionReuse<'a> {
     }
 
     /// Ends the walk: `complete` when every object was read or carried whole.
+    #[cfg(test)]
     pub(crate) fn finish(self, complete: bool) {
         self.store.finish(complete);
+    }
+
+    /// The strict registration walk keeps its independent observation contract.
+    /// Only this asynchronous caller also demands the all-active paint order.
+    pub(crate) fn finish_with_order(
+        self,
+        complete: bool,
+        memory: &impl engine_native::Memory,
+        wings: &[engine_native::cair_regional_mission::WingIdentity],
+        output: &mut Vec<OrderLabel>,
+    ) {
+        self.store.finish(complete);
+        let store = self.store;
+        output.clear();
+        if !complete || store.counts.mismatches != 0 {
+            store.orders.clear();
+        } else {
+            store.orders.capture(
+                memory,
+                wings,
+                &store.current.entries,
+                &store.current.registrations,
+                output,
+            );
+        }
+        store.measure_transfers();
     }
 
     /// This hour's certificate for `root`: the held one while the domain is

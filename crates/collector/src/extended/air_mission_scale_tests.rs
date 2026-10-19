@@ -1,4 +1,4 @@
-//! AirRegionalMissions, AirReferenceWitnesses and NavalMineLevels at 5,000
+//! AirRegionalMissions and AirReferenceWitnesses at 5,000
 //! countries, with thousands of registered wings.
 //!
 //! Slot `s` holds country id `s` (links resolve every id to its own slot),
@@ -32,7 +32,9 @@ use super::*;
 use engine_map_air::{map_air_base_reference::BaseReference, map_air_base_reference::Host};
 use engine_native::{
     cgame_state as gs, creference_registry as registry, cship, cstrategic_air, cstrategic_navy,
-    ctask_force, cunit, memory::RecordLayout, memory::RecordSources, reference_bucket as bucket,
+    cstrategic_navy_manager, ctask_force, cunit,
+    memory::{RecordLayout, RecordSources},
+    reference_bucket as bucket,
 };
 use replay_data::{rows::AirReferenceWitnessRow, rows::TableSchema};
 use std::{
@@ -249,7 +251,8 @@ struct Scale {
     /// The AirWings census in visit order.
     census: Vec<cair_wing::Source>,
     registered: Vec<Registered>,
-    empty: u32,
+    /// The absent country slot in this fixture's world definition.
+    _empty: u32,
 }
 
 impl Scale {
@@ -552,7 +555,7 @@ impl Scale {
             world,
             census,
             registered,
-            empty,
+            _empty: empty,
         }
     }
 
@@ -581,24 +584,15 @@ impl Scale {
             .flat_map(|(_, wings)| wings.iter().map(|&wing| &self.census[wing].row))
     }
 
-    /// Every registered pool base, every unregistered training wing's pool
-    /// base and every transfer base, each once in handle order, with the
+    /// Every wing's pool base and every transfer base, each once in handle
+    /// order, with the
     /// fields of those the registry resolves.
     fn witnesses(&self) -> Vec<Witness> {
         let probes: BTreeSet<u64> = self
-            .registered_wings()
-            .map(|wing| wing.air_base)
-            .chain(
-                self.census
-                    .iter()
-                    .map(|source| &source.row)
-                    .filter(|wing| {
-                        wing.mission_region.is_none()
-                            && wing.mission_mask == rows::AIR_MISSION_TRAINING
-                            && wing.air_base != 0
-                    })
-                    .map(|wing| wing.air_base),
-            )
+            .census
+            .iter()
+            .map(|source| source.row.air_base)
+            .filter(|&handle| handle != 0)
             .chain(
                 self.census
                     .iter()
@@ -625,31 +619,6 @@ impl Scale {
                     _ => None,
                 };
                 (handle, Some(base), owner, host == Host::NoTaskForce)
-            })
-            .collect()
-    }
-
-    /// One row per (effective country, region) of the registered mine
-    /// layers, in key order.
-    fn mines(&self) -> Vec<rows::NavalMineLevelRow> {
-        let pairs: BTreeSet<(u32, u32)> = self
-            .registered_wings()
-            .filter(|wing| wing.mission_mask == rows::AIR_MISSION_LAY_MINES)
-            .map(|wing| {
-                let country = if wing.country_override > 0 {
-                    wing.country_override as u32
-                } else {
-                    wing.owner
-                };
-                (country, wing.mission_region.unwrap())
-            })
-            .collect();
-        pairs
-            .into_iter()
-            .map(|(country, region)| rows::NavalMineLevelRow {
-                country,
-                region,
-                raw_mines: mines(country, region),
             })
             .collect()
     }
@@ -950,14 +919,13 @@ fn registrations_at_5000_countries_are_complete_and_gathered_64_air_objects_at_a
     }
 }
 
-/// Cold worker storage captures every mission, witness and mine pair on its
+/// Cold worker storage captures every mission and witness on its
 /// first 5,000-country hour. Larger later content needs no unpublished retry.
 #[test]
 fn mission_tables_grow_before_the_first_5000_country_publication() {
     let scale = Scale::new();
     let registrations = scale.registrations();
     let witnesses = scale.witnesses();
-    let mines = scale.mines();
     let mut capacity = Capacities::default();
     capacity.rows[5..].fill(0);
     capacity.wings = 0;
@@ -969,7 +937,7 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
     // AirBases is complete and empty, so every witness keeps its fields.
     assert_eq!(outcomes[1], Outcome::Rows { len: 0 });
     assert_eq!(
-        outcomes[5..8],
+        outcomes[5..7],
         [
             Outcome::Rows {
                 len: registrations.len()
@@ -977,7 +945,6 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
             Outcome::Rows {
                 len: witnesses.len()
             },
-            Outcome::Rows { len: mines.len() }
         ]
     );
     assert_eq!(air.registrations.rows[..registrations.len()], registrations);
@@ -987,6 +954,7 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
         .map(|row| rows::AirRegionalMissionRow {
             wing: row.wing,
             ordinal: row.ordinal,
+            ..Default::default()
         })
         .collect();
     by_wing.sort_unstable_by_key(|row| row.wing);
@@ -995,16 +963,15 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
         complete::<tables::AirReferenceWitnesses>(&tables[6]),
         witness_rows(&witnesses)
     );
-    assert_eq!(complete::<tables::NavalMineLevels>(&tables[7]), mines);
+    assert_eq!(TABLES[7], TableId::AirMissionInputs);
 
     // Content can grow without a population change. Discard only output
     // preparation and prove that a later hour publishes the complete demand.
     air.registrations.rows.clear();
     air.references.rows.clear();
-    air.mines.rows.clear();
     air.handles.clear();
     let later = scale.hour(&scale.census, &mut air);
-    assert_eq!(later[5..8], outcomes[5..8]);
+    assert_eq!(later[5..7], outcomes[5..7]);
 
     // A registered wing missing from the census fails the registrations,
     // and the joins with them.
@@ -1012,13 +979,12 @@ fn mission_tables_grow_before_the_first_5000_country_publication() {
     census.remove(scale.registered[0].regions[0].1[0]);
     let outcomes = scale.hour(&census, &mut air);
     assert_eq!(
-        outcomes[5..8],
+        outcomes[5..7],
         [
             Outcome::Unavailable {
                 reason: "registered mission missing from AirWings"
             },
             joins,
-            joins
         ]
     );
 }
@@ -1132,8 +1098,8 @@ fn without_the_mission_job_late_meets_shared_reads_in_their_old_order() {
     let (outcomes, expected) = (faulted.outcomes(), clean.outcomes());
     assert!(matches!(outcomes[1], Outcome::Unavailable { .. }));
     assert_ne!(outcomes[1], expected[1]);
-    assert_eq!(outcomes[6..13], expected[6..13]);
-    assert_eq!(faulted.tables()[6..13], clean.tables()[6..13]);
+    assert_eq!(outcomes[6..12], expected[6..12]);
+    assert_eq!(faulted.tables()[6..12], clean.tables()[6..12]);
 }
 
 /// The joins resolve their countries from the hour's snapshot bytes: the
@@ -1154,18 +1120,18 @@ fn the_mission_joins_take_country_bytes_from_the_hours_snapshot() {
     .unwrap();
     let mut native = mission_pack(&scale, &scale.world);
     let counted = Counted::new(&scale.world);
-    native.join_missions(&counted, BASE, game_state);
+    native.join_missions(&counted, BASE, game_state, None);
     let native_copies = counted.copies.get();
     let mut loaned = mission_pack(&scale, &scale.world);
     let counted = Counted::new(&scale.world);
-    loaned.join_missions(&snapshot.bytes_view(&counted), BASE, game_state);
+    loaned.join_missions(&snapshot.bytes_view(&counted), BASE, game_state, None);
     assert!(
         counted.copies.get() < native_copies,
         "{} {native_copies}",
         counted.copies.get()
     );
     assert_eq!(loaned.outcomes(), native.outcomes());
-    assert_eq!(loaned.tables()[6..13], native.tables()[6..13]);
+    assert_eq!(loaned.tables()[6..12], native.tables()[6..12]);
 }
 
 /// The AirMissions job joins the registered missions itself: once it
@@ -1179,7 +1145,7 @@ fn the_mission_job_leaves_the_joins_complete_for_the_late_capture() {
     let missions = |join: bool| {
         let mut air = mission_pack(&scale, &scale.world);
         if join {
-            air.join_missions(&scale.world, BASE, scale.world.game_state);
+            air.join_missions(&scale.world, BASE, scale.world.game_state, None);
         }
         air
     };
@@ -1197,16 +1163,23 @@ fn the_mission_job_leaves_the_joins_complete_for_the_late_capture() {
         memory.roots.get()
     };
     let mut joined = missions(true);
-    for table in [6, 7, 8] {
+    for table in [6, 7] {
         assert_eq!(joined.outcomes()[table], expected[table], "table {table}");
     }
     // Without the mission job's joins the Late capture reads the base
     // registry's header itself.
     let mut unjoined = missions(false);
     assert_eq!(late(&mut unjoined), late(&mut joined) + 1);
-    assert_eq!(joined.outcomes(), expected);
-    assert_eq!(joined.tables()[6..13], reference.tables()[6..13]);
-    assert_eq!(unjoined.tables()[6..13], reference.tables()[6..13]);
+    // This fixture has no transfer writer store; all other joins are identical.
+    assert_eq!(joined.outcomes()[..15], expected[..15]);
+    assert_eq!(
+        joined.outcomes()[15],
+        Outcome::Unavailable {
+            reason: "Air transfer writer store unavailable"
+        }
+    );
+    assert_eq!(joined.tables()[6..12], reference.tables()[6..12]);
+    assert_eq!(unjoined.tables()[6..12], reference.tables()[6..12]);
 }
 
 /// AirReferenceWitnesses over thousands of wings: each distinct probed
@@ -1309,11 +1282,7 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
         + scale
             .census
             .iter()
-            .filter(|source| {
-                source.row.mission_region.is_none()
-                    && source.row.mission_mask == rows::AIR_MISSION_TRAINING
-                    && source.row.air_base != 0
-            })
+            .filter(|source| source.row.air_base != 0)
             .count()
         + scale
             .census
@@ -1416,151 +1385,30 @@ fn base_witnesses_at_scale_read_each_distinct_handle_once() {
             reason: reason.into()
         }
     );
-    // The registrations and mines stand.
+    // The registrations stand independently of the failed witness.
     assert_eq!(
         outcomes[5],
         Outcome::Rows {
             len: registrations.len()
         }
     );
-    assert_eq!(
-        outcomes[7],
-        Outcome::Rows {
-            len: scale.mines().len()
-        }
-    );
 }
 
-/// NavalMineLevels over thousands of mine layers: one row per distinct
-/// (effective country, region) in key order with the raw level, zero
-/// included; truncation reads no pair past the output; a region outside the
-/// navy's vector or an override naming an empty slot fails the table.
+/// The Air family no longer touches navy mines, including forced full hours.
 #[test]
-fn mine_levels_at_scale_are_one_row_per_pair_in_key_order() {
-    let mut scale = Scale::new();
-    let expected = scale.mines();
-    let layers = scale
-        .registered_wings()
-        .filter(|wing| wing.mission_mask == rows::AIR_MISSION_LAY_MINES)
-        .count();
-    assert!(layers > 1_500 && expected.len() < layers, "{layers}");
-    assert!(expected.iter().any(|row| row.raw_mines == 0));
-    // Overrides fly for country 3 outside its own regions.
-    let own: BTreeSet<u32> = scale.registered[0]
-        .regions
-        .iter()
-        .map(|&(r, _)| r)
-        .collect();
-    assert_eq!(scale.registered[0].slot, 3);
-    assert!(
-        expected
-            .iter()
-            .any(|row| row.country == 3 && !own.contains(&row.region))
-    );
+fn retired_air_mine_table_has_no_producer_metadata_or_output() {
+    let scale = Scale::new();
     let mut air = Captured::with_capacities(&ample());
     let outcomes = scale.hour(&scale.census, &mut air);
-    assert_eq!(
-        outcomes[7],
-        Outcome::Rows {
-            len: expected.len()
+    assert_eq!(outcomes.len(), TABLES.len());
+    assert!(!TABLES.contains(&TableId::NavalMineLevels));
+    assert_eq!(TABLES[7], TableId::AirMissionInputs);
+    for view in air.tables() {
+        if let TableView::Complete(rows) = view {
+            assert_ne!(rows.table(), TableId::NavalMineLevels);
         }
-    );
-    assert_eq!(
-        complete::<tables::NavalMineLevels>(&air.tables()[7]),
-        expected
-    );
-    let (wings, registrations) = joined(&air);
-
-    let mut pairs = vec![0; registrations.len()];
-    let mut output = vec![rows::NavalMineLevelRow::default(); expected.len()];
-    let short = expected.len() / 2;
-    let capture = |memory: &World, pairs: &mut [u64], output: &mut [rows::NavalMineLevelRow]| {
-        capture_mines(
-            memory,
-            BASE,
-            memory.game_state,
-            &wings,
-            Some(&registrations),
-            pairs,
-            output,
-        )
-    };
-    assert_eq!(
-        capture(&scale.world, &mut pairs, &mut output),
-        Ok(Outcome::Rows {
-            len: expected.len()
-        })
-    );
-    assert_eq!(output, expected);
-    assert_eq!(
-        capture(&scale.world, &mut pairs, &mut output[..short]),
-        Ok(Outcome::Truncated {
-            len: short,
-            unread_rows: (expected.len() - short) as u32
-        })
-    );
-    assert_eq!(output[..short], expected[..short]);
-    assert_eq!(
-        capture(&scale.world, &mut pairs[..layers - 1], &mut output).err(),
-        Some("mine pair scratch smaller than the registrations")
-    );
-
-    // The last pair's region outside its navy's vector.
-    let last = expected.last().unwrap();
-    let navy = scale.world.navies[&last.country];
-    let count = navy + cstrategic_navy::REGIONAL_OPERANDS + 12;
-    scale.world.u32(count, last.region);
-    let reason = "navy regional operand outside array";
-    assert_eq!(
-        capture(&scale.world, &mut pairs, &mut output).err(),
-        Some(reason)
-    );
-    // Past a short output's end the pair is not read.
-    assert_eq!(
-        capture(&scale.world, &mut pairs, &mut output[..short]),
-        Ok(Outcome::Truncated {
-            len: short,
-            unread_rows: (expected.len() - short) as u32
-        })
-    );
-    let outcomes = scale.hour(&scale.census, &mut air);
-    assert_eq!(outcomes[7], Outcome::Unavailable { reason });
-    assert_eq!(
-        air.tables()[7],
-        TableView::Unavailable {
-            reason: reason.into()
-        }
-    );
-    scale.world.u32(count, REGIONS);
-
-    // A mine layer flying for the empty slot.
-    let mut census = scale.census.clone();
-    let layer = census
-        .iter_mut()
-        .find(|source| {
-            source.row.mission_region.is_some()
-                && source.row.mission_mask == rows::AIR_MISSION_LAY_MINES
-                && source.row.country_override == 0
-        })
-        .unwrap();
-    layer.row.country_override = scale.empty as i32;
-    let outcomes = scale.hour(&census, &mut air);
-    assert_eq!(
-        outcomes[5..8],
-        [
-            Outcome::Rows {
-                len: registrations.len()
-            },
-            Outcome::Rows {
-                len: scale.witnesses().len()
-            },
-            Outcome::Unavailable {
-                reason: "country link resolves to null country"
-            }
-        ]
-    );
+    }
 }
-
 /// One AirMissions hour with held registrations: the owned census
 /// installed, then the registrations captured through `store`. Returns the
 /// outcome and the reads of active-region ids, regional vectors and mission

@@ -330,6 +330,7 @@ fn every_family_keeps_native_order_widths_and_absent_values() {
             ordinal: 0,
             state: Some(33),
             provinces: vec![11, 12],
+            radius: None,
         }]
     );
     assert_eq!(
@@ -339,6 +340,7 @@ fn every_family_keeps_native_order_widths_and_absent_values() {
             position: 0,
             host: 9,
             deployed_divisions: -3,
+            air_capacity_modifier: None.into(),
         }]
     );
     assert_eq!(
@@ -393,6 +395,8 @@ fn every_family_keeps_native_order_widths_and_absent_values() {
             wings: vec![(77 << 32) | u64::from(engine_native::cair_wing::TYPE)],
             carrier: rows::Recorded::Value(None),
             transport_planes: rows::Recorded::Value(rows::Retired),
+            fuel_demand_raw: rows::Recorded::Value(None),
+            fuel_allocated_raw: rows::Recorded::Value(None),
         }]
     );
 }

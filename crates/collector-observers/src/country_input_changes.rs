@@ -5,7 +5,7 @@
 //! its writes reach, counts its site and calls the original; it never
 //! changes game behaviour.
 //!
-//! Eight sets of native country ids (`ccountry::ID`, the census key), each
+//! Nine sets of native country ids (`ccountry::ID`, the census key), each
 //! with one consumer, the family that reads it:
 //! - [`Table::Stability`]: CountryStabilityInputs and CountryStabilityLines,
 //!   read in the Stability job ([`crate::extended::country_stability`]).
@@ -41,6 +41,15 @@
 //!   raw accumulator entry is rebuilt by country modifier recalculation
 //!   (site 0) and cleared by the forwarded country appearance reset.
 //!   Effective definition and eligibility metadata are still read every hour.
+//! - [`Table::Designs`]: demanded equipment-design country modifiers. It
+//!   subscribes independently to those same accumulator recalculation/reset
+//!   writers; taking these marks never consumes the visibility marks.
+//! - [`Table::UnitSpeeds`]: CountryUnitSpeedEntries, read with the division
+//!   presentation ([`crate::extended::division_presentation`]). Every writer
+//!   that marks [`Table::Counters`] marks it too, so it certifies exactly what
+//!   the counter set does (country modifier recalculation rebuilds the
+//!   accumulator its entries are read from); a set has one consumer, so the
+//!   two families never take each other's marks.
 //!
 //! A marked country is read within the hour; an unmarked one keeps the rows
 //! of its last read until its daily slice, which also compares it with that
@@ -59,6 +68,7 @@ pub mod weather_carry;
 use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
+    watch_registry::WatchRegistry,
 };
 use engine_mutations::{
     country_input_mutations as sites, country_input_mutations::FACTION_SHARING_BASE,
@@ -74,8 +84,42 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
+/// Attach/detach registration while native callbacks are quiescent.
+/// Modifier recalculation is patched once; source dependants wrap its original.
+pub type DesignSourceOriginal = unsafe extern "system" fn(usize, usize, usize, usize) -> usize;
+pub struct DesignSourceForwarder {
+    pub call: unsafe fn([usize; 4], DesignSourceOriginal) -> usize,
+    pub enabled: fn(bool),
+}
+static DESIGN_SOURCES: std::sync::atomic::AtomicPtr<DesignSourceForwarder> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+pub fn design_source_forwarder(receiver: Option<&'static DesignSourceForwarder>) {
+    let pointer = receiver.map_or(std::ptr::null_mut(), |receiver| {
+        std::ptr::from_ref(receiver).cast_mut()
+    });
+    DESIGN_SOURCES.store(pointer, Ordering::Release);
+    if let Some(receiver) = receiver {
+        (receiver.enabled)(DOMAIN.hooks.load(Ordering::Acquire));
+    }
+}
+fn design_source_availability(enabled: bool) {
+    if let Some(receiver) = unsafe { DESIGN_SOURCES.load(Ordering::Acquire).as_ref() } {
+        (receiver.enabled)(enabled);
+    }
+}
+unsafe fn design_source_invoke(args: [usize; 4], original: DesignSourceOriginal) -> usize {
+    let receiver = DESIGN_SOURCES.load(Ordering::Acquire);
+    if let Some(receiver) = unsafe { receiver.as_ref() } {
+        unsafe { (receiver.call)(args, original) }
+    } else {
+        unsafe { original(args[0], args[1], args[2], args[3]) }
+    }
+}
+
 const SITES: usize = MUTATIONS.len();
 static DOMAIN: Domain = Domain::new();
+static ACCUMULATOR_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static SHARING_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 /// The module base receivers resolve country link ids against
 /// ([`sites::of_link`]); stored before any hook is enabled.
@@ -94,6 +138,8 @@ static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled:
     "an unmarked country's appearance row differs from its last read",
     "an unmarked country's counter row differs from its last read",
     "an unmarked country's visibility accumulator differs from its last read",
+    "an unmarked country's equipment design modifiers differ from its last read",
+    "an unmarked country's unit speed entries differ from its last read",
 ]);
 /// Country id bound of the latest complete census, for off-thread sizing.
 static IDS: AtomicUsize = AtomicUsize::new(0);
@@ -109,16 +155,19 @@ pub enum Table {
     Appearance = 5,
     Counters = 6,
     Visibility = 7,
+    Designs = 8,
+    UnitSpeeds = 9,
 }
 
 /// One set per [`Table`].
-const SETS: usize = 8;
+const SETS: usize = 10;
 
 /// Per [`Table`], whether captures read every country every hour, still
 /// comparing each unmarked one with its last read, rather than the hour's
 /// slice (each set's burn-in): `country_input_verify` for stability and
 /// research, `technology_verify`, `focus_verify`, `projects_verify`,
-/// `appearance_verify`, `counter_verify` and `visibility_verify` for their sets.
+/// `appearance_verify`, `counter_verify` (the counter and unit speed sets) and
+/// `visibility_verify` for their sets.
 pub const VERIFY: [bool; SETS] = [
     cfg!(feature = "country_input_verify"),
     cfg!(feature = "country_input_verify"),
@@ -128,6 +177,8 @@ pub const VERIFY: [bool; SETS] = [
     cfg!(feature = "appearance_verify"),
     cfg!(feature = "counter_verify"),
     cfg!(feature = "visibility_verify"),
+    false,
+    cfg!(feature = "counter_verify"),
 ];
 
 /// Per [`Table`], whether its marks select countries at all
@@ -143,6 +194,8 @@ const CONFIGURED: [bool; SETS] = [
     cfg!(feature = "appearance_changes"),
     cfg!(feature = "counter_changes"),
     cfg!(feature = "visibility_changes"),
+    true,
+    cfg!(feature = "counter_changes"),
 ];
 
 /// A writer another family patches and forwards ([`forwarded`]).
@@ -354,6 +407,8 @@ const fn table_flags(tables: Tables) -> [bool; SETS] {
         tables.appearance,
         tables.counters,
         tables.visibility,
+        tables.visibility,
+        tables.counters,
     ]
 }
 
@@ -412,6 +467,8 @@ impl Forwarder {
 
 /// One observation domain: a set per [`Table`] and each site's calls.
 pub struct Domain {
+    sharing: WatchRegistry,
+    accumulator: WatchRegistry,
     sets: [DirtySet; SETS],
     calls: [AtomicU64; SITES],
     /// Forwarded calls per [`Forward`].
@@ -453,6 +510,26 @@ pub struct Mismatch {
     pub field: &'static str,
 }
 
+/// Research modifier wire kinds, including the sharing-roster kind used by
+/// the integrated collector. Numeric arrays keep every kind separate.
+pub const RESEARCH_MODIFIER_KINDS: usize = 32;
+
+/// Observed rows and acquisition mode of a research comparison. Constructed
+/// from acquired rows on the worker; native writers only mark dirty owners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ResearchMismatch {
+    pub previous_counts: Option<[u64; 3]>,
+    pub current_counts: [u64; 3],
+    pub previous_modifier_counts: Option<[u64; RESEARCH_MODIFIER_KINDS]>,
+    pub current_modifier_counts: [u64; RESEARCH_MODIFIER_KINDS],
+    pub modifier_identity_differences: u32,
+    pub modifier_value_differences: u32,
+    pub take_available: bool,
+    pub certified: bool,
+    pub force_full: bool,
+    pub selection_force_full: bool,
+}
+
 /// A [`Mismatch`] and the attachment hour its family recorded it in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct MismatchDetail {
@@ -460,6 +537,8 @@ pub struct MismatchDetail {
     pub field: &'static str,
     /// Hours the family recorded before this one in the attachment.
     pub hour: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub research: Option<ResearchMismatch>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -476,6 +555,11 @@ pub struct Marks<'a> {
     /// The sets the receiver names countries for, and the technology set
     /// when it names only the writer's own country ([`Receiver::own`]).
     _parts: [Part<'a>; 2],
+    _occupation: Option<crate::watch_registry::Notification<'static>>,
+    _wargoals: Option<crate::wargoal_changes::Guard>,
+    _project_reset: Option<crate::project_variable_changes::Reset>,
+    _accumulator: Option<crate::watch_registry::Notification<'a>>,
+    _market: Option<crate::market_changes::CountryReset>,
 }
 
 #[derive(Default)]
@@ -499,6 +583,11 @@ impl<'a> Marks<'a> {
     pub fn none() -> Self {
         Self {
             _parts: [Part::default(), Part::default()],
+            _occupation: None,
+            _wargoals: None,
+            _project_reset: None,
+            _accumulator: None,
+            _market: None,
         }
     }
 }
@@ -557,6 +646,8 @@ impl Default for Domain {
 impl Domain {
     pub const fn new() -> Self {
         Self {
+            sharing: WatchRegistry::retaining(),
+            accumulator: WatchRegistry::retaining(),
             sets: [const { DirtySet::new() }; SETS],
             calls: [const { AtomicU64::new(0) }; SITES],
             forwarded: [const { AtomicU64::new(0) }; Forward::ALL.len()],
@@ -602,6 +693,8 @@ impl Domain {
             tables.appearance.then_some(self.set(Table::Appearance)),
             tables.counters.then_some(self.set(Table::Counters)),
             tables.visibility.then_some(self.set(Table::Visibility)),
+            tables.visibility.then_some(self.set(Table::Designs)),
+            tables.counters.then_some(self.set(Table::UnitSpeeds)),
         ]
     }
 
@@ -621,6 +714,11 @@ impl Domain {
         };
         Marks {
             _parts: [shared, own],
+            _occupation: None,
+            _wargoals: None,
+            _project_reset: None,
+            _accumulator: None,
+            _market: None,
         }
     }
 
@@ -667,7 +765,9 @@ impl Domain {
     /// is about to run with `first` and `second` its first two arguments.
     pub fn notify(&self, site: usize, first: usize, second: usize) -> Marks<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
-        self.mark(MUTATIONS[site].2, MUTATIONS[site].1, first, second)
+        let mut marks = self.mark(MUTATIONS[site].2, MUTATIONS[site].1, first, second);
+        marks._accumulator = (site == 0).then(|| self.accumulator.notify(first));
+        marks
     }
 
     /// `sync research slots(status)` around `original`: the daily
@@ -739,15 +839,23 @@ impl Domain {
         let receiver = MUTATIONS[site].1;
         let tables = MUTATIONS[site].2;
         let before = state(first);
+        let sharing_running = (site == FACTION_SHARING_BASE).then(|| self.sharing.running());
+        let sharing =
+            (site == FACTION_SHARING_BASE && before.is_none()).then(|| self.sharing.notify(first));
         let covered = before
             .is_none()
             .then(|| self.mark(tables, receiver, first, 0));
         let result = original();
         if before.is_some() && state(first) != before {
+            if site == FACTION_SHARING_BASE {
+                drop(self.sharing.notify(first));
+            }
             changed.fetch_add(1, Ordering::Relaxed);
             drop(self.mark(tables, receiver, first, 0));
         }
         drop(covered);
+        drop(sharing);
+        drop(sharing_running);
         result
     }
 
@@ -758,7 +866,16 @@ impl Domain {
         if site == Forward::ResetCountry {
             self.network_writes.fetch_add(1, Ordering::SeqCst);
         }
-        self.mark(site.tables(), site.receiver(), first, second)
+        let mut marks = self.mark(site.tables(), site.receiver(), first, second);
+        if site == Forward::ResetCountry {
+            marks._wargoals = Some(crate::wargoal_changes::country_reset(first));
+        }
+        if site == Forward::DiplomacyReset {
+            marks._wargoals = Some(crate::wargoal_changes::diplomacy_reset(first));
+        }
+        marks._accumulator =
+            (site == Forward::ResetCountry).then(|| self.accumulator.notify(first));
+        marks
     }
 
     /// The counted intel network writes, while the hooks and the politics
@@ -767,6 +884,11 @@ impl Domain {
         let observed = self.hooks.load(Ordering::SeqCst)
             && self.forwarders[Forwarder::Politics as usize].load(Ordering::SeqCst);
         observed.then(|| self.network_writes.load(Ordering::SeqCst))
+    }
+
+    fn intel_network_resets(&self) -> Option<u64> {
+        self.intel_network_writes()
+            .map(|_| self.forwarded[Forward::ResetCountry as usize].load(Ordering::Acquire))
     }
 
     /// The counted province weather writes, while the hooks are enabled and
@@ -816,6 +938,11 @@ impl Domain {
     /// reaching it ([`Forwarder::reaches`]) are enabled; enabling starts an
     /// epoch.
     fn apply(&self) {
+        self.sharing.set_enabled(self.hooks.load(Ordering::SeqCst));
+        self.accumulator.set_enabled(
+            self.hooks.load(Ordering::SeqCst)
+                && self.forwarders[Forwarder::Politics as usize].load(Ordering::SeqCst),
+        );
         let hooks = self.hooks.load(Ordering::SeqCst);
         for (index, set) in self.sets.iter().enumerate() {
             let forwarded = Forwarder::ALL.iter().all(|&forwarder| {
@@ -823,6 +950,12 @@ impl Domain {
                     || self.forwarders[forwarder as usize].load(Ordering::SeqCst)
             });
             set.set_enabled(hooks && forwarded);
+            if index == Table::Stability as usize {
+                crate::occupation_changes::forwarder(
+                    crate::occupation_changes::Forwarder::Exile,
+                    hooks && forwarded,
+                );
+            }
         }
     }
 
@@ -838,6 +971,10 @@ impl Domain {
             set.offer(ids);
             set.boundary(false);
         }
+        domain.accumulator.offer(ids);
+        domain.accumulator.boundary(false);
+        domain.sharing.offer(ids);
+        domain.sharing.boundary(false);
         domain.hooks.store(true, Ordering::SeqCst);
         for forwarder in &domain.forwarders {
             forwarder.store(true, Ordering::SeqCst);
@@ -861,6 +998,8 @@ impl Domain {
     /// The hourly boundary; `invalidate` starts an epoch.
     #[cfg(any(test, feature = "test-support"))]
     pub fn boundary(&self, invalidate: bool) {
+        self.accumulator.boundary(invalidate);
+        self.sharing.boundary(invalidate);
         for set in &self.sets {
             set.boundary(invalidate);
         }
@@ -880,6 +1019,11 @@ pub trait Changes: Sync {
     /// A read of an unmarked country differed from its last read: disable
     /// reuse of `table` for the attachment and keep where it differed.
     fn mismatch(&self, table: Table, at: Mismatch);
+    /// A research mismatch with its complete per-list/per-kind comparison.
+    /// Other consumers may keep only the common mismatch envelope.
+    fn research_mismatch(&self, at: Mismatch, _detail: ResearchMismatch) {
+        self.mismatch(Table::Research, at);
+    }
     /// Read every country of `table` every hour, still comparing each
     /// unmarked one ([`VERIFY`]).
     fn every(&self, table: Table) -> bool;
@@ -893,20 +1037,30 @@ impl Changes for Domain {
         self.set(table).take(visit)
     }
     fn mismatch(&self, table: Table, at: Mismatch) {
+        self.keep_mismatch(table, at, None);
+    }
+    fn research_mismatch(&self, at: Mismatch, detail: ResearchMismatch) {
+        self.keep_mismatch(Table::Research, at, Some(detail));
+    }
+    fn every(&self, table: Table) -> bool {
+        self.every[table as usize]
+    }
+}
+
+impl Domain {
+    fn keep_mismatch(&self, table: Table, at: Mismatch, research: Option<ResearchMismatch>) {
         self.set(table).poison();
         let detail = MismatchDetail {
             country: at.country,
             field: at.field,
             hour: self.hours[table as usize].load(Ordering::Relaxed),
+            research,
         };
         let mut held = self.mismatches[table as usize]
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         held.first.get_or_insert(detail);
         held.last = Some(detail);
-    }
-    fn every(&self, table: Table) -> bool {
-        self.every[table as usize]
     }
 }
 
@@ -918,6 +1072,9 @@ impl Changes for Observer {
     }
     fn mismatch(&self, table: Table, at: Mismatch) {
         DOMAIN.mismatch(table, at);
+    }
+    fn research_mismatch(&self, at: Mismatch, detail: ResearchMismatch) {
+        DOMAIN.research_mismatch(at, detail);
     }
     fn every(&self, table: Table) -> bool {
         DOMAIN.every(table)
@@ -934,6 +1091,11 @@ pub fn drifts(memory: &impl Memory, country: usize) -> bool {
         .is_none_or(|count| count >= 1)
 }
 
+/// The MIO policy reload is installed and enabled with this existing family.
+pub fn mio_policies_observed() -> bool {
+    DOMAIN.hooks.load(Ordering::SeqCst)
+}
+
 /// A count moving with every IntelNetworks write outside the daily step,
 /// or `None` while unobserved ([`crate::extended::intel`]). Country dynamic
 /// reuse runs the forwarded appearance reset before the strategic operative
@@ -941,6 +1103,13 @@ pub fn drifts(memory: &impl Memory, country: usize) -> bool {
 /// growth command sets their local strengths.
 pub fn intel_network_writes() -> Option<u64> {
     DOMAIN.intel_network_writes()
+}
+
+/// Existing forwarded reset occurrences distinguish destroyed network
+/// lifetimes from console growth, which retains the national caches.
+/// Reading this certificate adds no callback work.
+pub fn intel_network_resets() -> Option<u64> {
+    DOMAIN.intel_network_resets()
 }
 
 /// A count moving with every province weather writer outside the hourly
@@ -953,13 +1122,24 @@ pub fn weather_writes() -> Option<u64> {
 
 /// Notifications running now.
 pub fn active() -> usize {
-    DOMAIN.sets.iter().map(|set| set.active()).sum()
+    DOMAIN.accumulator.active()
+        + DOMAIN.sharing.active()
+        + DOMAIN.sets.iter().map(|set| set.active()).sum::<usize>()
+        + crate::crew_changes::active()
+        + crate::wargoal_changes::active()
 }
 
 /// Game thread, in the hourly callback before any capture. `invalidate`
 /// after a load, gap or recovery: nothing observed before it certifies
 /// anything.
 pub fn boundary(invalidate: bool) {
+    DOMAIN.accumulator.boundary(invalidate);
+    DOMAIN.sharing.boundary(invalidate);
+    if invalidate {
+        crate::project_variable_changes::invalidate();
+    }
+    crate::crew_changes::boundary(invalidate);
+    crate::wargoal_changes::boundary(invalidate);
     for set in &DOMAIN.sets {
         set.boundary(invalidate);
     }
@@ -968,6 +1148,13 @@ pub fn boundary(invalidate: bool) {
 /// A forwarding family's patches enabled or disabled; outside attach and
 /// detach only. The domain observes only while every forwarder is enabled.
 pub fn forwarder(family: Forwarder, enabled: bool) {
+    if family == Forwarder::Politics {
+        crate::wargoal_changes::country_reset_forwarder(enabled);
+        crate::market_changes::observe_resets(enabled);
+    }
+    if family == Forwarder::Relations {
+        crate::wargoal_changes::reset_forwarder(enabled);
+    }
     DOMAIN.forwarders[family as usize].store(enabled, Ordering::SeqCst);
     DOMAIN.apply();
 }
@@ -977,7 +1164,52 @@ pub fn forwarder(family: Forwarder, enabled: bool) {
 /// for [`Forward::Roles`] and [`Forward::ScientistRoles`]). Hold the result
 /// over the native call.
 pub fn forwarded(site: Forward, first: usize, second: usize) -> Marks<'static> {
-    DOMAIN.forward(site, first, second)
+    let mut marks = DOMAIN.forward(site, first, second);
+    marks._occupation =
+        occupation_forward_receiver(site, first).map(crate::occupation_changes::changed);
+    if site == Forward::ResetCountry {
+        marks._project_reset = Some(crate::project_variable_changes::resetting());
+    }
+    if site == Forward::ResetCountry {
+        marks._market = Some(crate::market_changes::country_reset(first));
+    }
+    marks
+}
+
+// Exile operands have diplomacy certificates, separate from modifier-source certificates.
+fn occupation_forward_receiver(site: Forward, first: usize) -> Option<usize> {
+    matches!(site, Forward::DiplomacyReset).then_some(first)
+}
+fn occupation_exile_receiver(site: usize, first: usize) -> Option<usize> {
+    matches!(
+        site,
+        10..=12
+            | sites::ADD_EXILE_LEGITIMACY
+            | sites::SET_EXILE_LEGITIMACY
+            | sites::EXILE_EQUIPMENT_LEGITIMACY
+    )
+    .then_some(first)
+}
+
+/// A generic variable writer of a store the selected project census registered.
+pub fn project_variables_written(owner: Option<u32>) -> Marks<'static> {
+    let mut sets: Sets<'static> = [None; SETS];
+    sets[Table::Projects as usize] = Some(DOMAIN.set(Table::Projects));
+    let part = match owner {
+        Some(owner) => Part {
+            held: sets.map(|set| set.map(|set| set.notify(owner as usize))),
+            again: None,
+        },
+        None => Part::every(sets),
+    };
+    Marks {
+        _parts: [part, Part::default()],
+        _project_reset: None,
+        _occupation: None,
+        _wargoals: None,
+        _accumulator: None,
+        _market: None,
+    }
 }
 
 /// The writer a political status site forwards
@@ -1116,7 +1348,36 @@ pub fn forwarded_pool(site: usize) -> Marks<'static> {
 /// census saw. Nothing is offered before a capture walked them: a later
 /// larger bitmap waits for an invalidating hour, while the first installs
 /// at once.
+pub fn sharing_demand(count: usize) {
+    SHARING_DEMAND.fetch_max(count, Ordering::Relaxed);
+}
+pub fn sharing_quiet() -> Option<(u64, u64)> {
+    DOMAIN.sharing.quiet()
+}
+pub fn sharing_sequence(group: usize) -> Option<(u64, u64)> {
+    DOMAIN.sharing.sequence(group)
+}
+pub fn accumulator_demand(count: usize) {
+    ACCUMULATOR_DEMAND.fetch_max(count, Ordering::Relaxed);
+}
+pub fn accumulator_quiet() -> Option<(u64, u64)> {
+    DOMAIN.accumulator.quiet()
+}
+pub fn accumulator_sequence(country: usize) -> Option<(u64, u64)> {
+    DOMAIN.accumulator.sequence(country)
+}
 pub fn presize() {
+    crate::wargoal_changes::presize();
+    DOMAIN.accumulator.offer(
+        ACCUMULATOR_DEMAND
+            .load(Ordering::Relaxed)
+            .max(DOMAIN.accumulator.registered()),
+    );
+    DOMAIN.sharing.offer(
+        SHARING_DEMAND
+            .load(Ordering::Relaxed)
+            .max(DOMAIN.sharing.registered()),
+    );
     let ids = IDS.load(Ordering::Relaxed);
     if ids != 0 {
         for set in &DOMAIN.sets {
@@ -1127,6 +1388,10 @@ pub fn presize() {
 
 /// Off the game thread: free replaced bitmaps.
 pub fn collect() {
+    DOMAIN.accumulator.collect();
+    DOMAIN.sharing.collect();
+    crate::crew_changes::collect();
+    crate::wargoal_changes::collect();
     for set in &DOMAIN.sets {
         set.collect();
     }
@@ -1228,6 +1493,10 @@ pub fn status() -> impl serde::Serialize {
         "appearance": table(Table::Appearance),
         "counters": table(Table::Counters),
         "visibility": table(Table::Visibility),
+        "acquired_crews": crate::crew_changes::status(),
+        "wargoals": crate::wargoal_changes::status(),
+        "designs": table(Table::Designs),
+        "unit_speeds": table(Table::UnitSpeeds),
         "events": events,
         "forwarded": forwarded,
         "forwarders": forwarders,
@@ -1243,6 +1512,7 @@ pub fn status() -> impl serde::Serialize {
 
 pub struct Hooks {
     hooks: Vec<Hook>,
+    wargoals: crate::wargoal_changes::Hooks,
 }
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
@@ -1253,11 +1523,11 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "country_input_changes")
             && MUTATIONS.iter().all(|(site, _, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             BASE.store(base, Ordering::Release);
@@ -1346,12 +1616,31 @@ impl Hooks {
                 weather_remove_province_modifier as *const () as usize,
                 weather_expiry_rebuild as *const () as usize,
                 research_progress as *const () as usize,
+                set_recruitment_target as *const () as usize,
+                set_recruitment_ratio as *const () as usize,
+                add_exile_manpower as *const () as usize,
+                restore_exile_manpower as *const () as usize,
+                use_exile_manpower as *const () as usize,
+                set_exile_manpower_cap as *const () as usize,
+                add_exile_legitimacy as *const () as usize,
+                set_exile_legitimacy as *const () as usize,
+                exile_equipment_legitimacy as *const () as usize,
+                refresh_wing_crews as *const () as usize,
+                refresh_ship_crews as *const () as usize,
+                remove_ship_crews as *const () as usize,
+                add_sent_expeditionary as *const () as usize,
+                remove_sent_expeditionary as *const () as usize,
             ];
             for (index, (site, _, _)) in MUTATIONS.iter().enumerate() {
                 let hook = if index == sites::WEATHER_EXPIRY_REBUILD {
                     let hook =
                         unsafe { Hook::new_call(base + site.rva, callbacks[index], site.sentinel) }
-                            .map_err(|_| "native hook construction failed")?;
+                            .map_err(|cause| {
+                                format!(
+                                    "country_input_changes hook {} construction failed: {cause}",
+                                    site.name
+                                )
+                            })?;
                     // The detour calls the CALL's target itself.
                     ORIGINAL[index].store(
                         base + sites::PROVINCE_WEATHER_REBUILD_RVA,
@@ -1361,18 +1650,35 @@ impl Hooks {
                 } else {
                     let hook =
                         unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                            .map_err(|_| "native hook construction failed")?;
+                            .map_err(|cause| {
+                                format!(
+                                    "country_input_changes hook {} construction failed: {cause}",
+                                    site.name
+                                )
+                            })?;
                     ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                     hook
                 };
                 hooks.push(hook);
             }
         }
-        Ok(Self { hooks })
+        let wargoals = unsafe { crate::wargoal_changes::Hooks::new(memory, base) }?;
+        Ok(Self { hooks, wargoals })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+        if !self.wargoals.set_enabled(enabled)? {
+            return Ok(false);
+        }
         if !enabled {
+            crate::project_variable_changes::project_hooks_enabled(false);
+            crate::crew_changes::enabled(false);
             DOMAIN.hooks.store(false, Ordering::SeqCst);
+            design_source_availability(false);
+            collector_certificates::content_changes::enabled(
+                collector_certificates::content_changes::Writer::Technology,
+                false,
+            );
+            crate::world_input_changes::mio_policy_observation(false);
             DOMAIN.apply();
             crate::opinion_changes::set_war_forward(false);
             crate::naval_tree_changes::forwarder(0, false);
@@ -1387,15 +1693,26 @@ impl Hooks {
         // other families in a runtime round (`hook::shared`): a thread at any
         // of its sites, or in a tap, holds every site back until the next
         // attempt.
-        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
-            .map_err(|_| "native hook state change failed")?
-        {
+        if !Hook::set_family_enabled_shared_named(
+            &mut self.hooks,
+            enabled,
+            "country_input_changes",
+            &MUTATIONS.map(|(site, _, _)| site.name),
+        )? {
             return Ok(false);
         }
         DOMAIN
             .hooks
             .store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
         DOMAIN.apply();
+        crate::project_variable_changes::project_hooks_enabled(enabled && !self.hooks.is_empty());
+        crate::crew_changes::enabled(enabled && !self.hooks.is_empty());
+        design_source_availability(enabled && !self.hooks.is_empty());
+        collector_certificates::content_changes::enabled(
+            collector_certificates::content_changes::Writer::Technology,
+            enabled && !self.hooks.is_empty(),
+        );
+        crate::world_input_changes::mio_policy_observation(enabled && !self.hooks.is_empty());
         // The relation tuples observe the war body here.
         crate::opinion_changes::set_war_forward(enabled && !self.hooks.is_empty());
         // The naval tree family observes modifier recalculation, and the advisor
@@ -1417,7 +1734,10 @@ impl Hooks {
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
-        self.hooks.iter().flat_map(Hook::executable_ranges)
+        self.hooks
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .chain(self.wargoals.executable_ranges())
     }
 }
 impl Drop for Hooks {
@@ -1426,6 +1746,11 @@ impl Drop for Hooks {
         // the hooks were never enabled, or were removed and drained after
         // the last capture; the forwarding families are restored with the
         // other families before any hook is dropped.
+        unsafe {
+            DOMAIN.accumulator.release();
+            DOMAIN.sharing.release()
+        };
+        unsafe { crate::crew_changes::release() };
         for set in &DOMAIN.sets {
             unsafe { set.release() };
         }
@@ -1444,7 +1769,23 @@ macro_rules! callback {
             fourth: usize,
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
-            let _marks = DOMAIN.notify($site, first, second);
+            let _sharing = matches!($site, 30..=32).then(|| DOMAIN.sharing.notify(first));
+            let _project_reset = ($site == 54).then(crate::project_variable_changes::resetting);
+            let _project = matches!(MUTATIONS[$site].1, Receiver::Project)
+                .then(|| crate::project_variable_changes::writing_project(first));
+            // Ordinary manpower operations do not write exile resources.
+            let wanted = match $site {
+                sites::ADD_EXILE_MANPOWER | sites::USE_EXILE_MANPOWER => third as u8 != 0,
+                sites::RESTORE_EXILE_MANPOWER => fourth as u8 != 0,
+                _ => true,
+            };
+            let _crew =
+                (sites::CREW_WRITERS.contains(&$site)).then(|| crate::crew_changes::notify(first));
+            let _marks = (wanted && !sites::CREW_WRITERS.contains(&$site))
+                .then(|| DOMAIN.notify($site, first, second));
+            let _occupation =
+                occupation_exile_receiver($site, first).map(crate::occupation_changes::changed);
+            let _mio_policies = ($site == 69).then(crate::world_input_changes::mio_policy_reload);
             // Modifier recalculation also rebuilds the country's naval hover
             // tree, whose family this patch forwards ([`crate::naval_tree_changes`]).
             let _naval = ($site == 0).then(|| crate::naval_tree_changes::forwarded(0, first));
@@ -1467,7 +1808,19 @@ macro_rules! callback {
                 .flatten();
             let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
-            timing.original(|| unsafe { original(first, second, third, fourth) })
+            timing.original(|| unsafe {
+                if $site == 0 {
+                    design_source_invoke([first, second, third, fourth], original)
+                } else if $site == 45 {
+                    collector_certificates::content_changes::invoke(
+                        collector_certificates::content_changes::Writer::Technology,
+                        [first, second, third, fourth],
+                        original,
+                    )
+                } else {
+                    original(first, second, third, fourth)
+                }
+            })
         }
     };
 }
@@ -1498,6 +1851,11 @@ unsafe extern "system" fn replace_relation(
     let _marks = DOMAIN.notify(7, status, relation);
     let _tuples = crate::opinion_changes::relation_replaced(status);
     let _wars = crate::war_changes::forwarded(crate::war_changes::Site::ReplaceRelation);
+    let _participation = crate::war_changes::participation_change(
+        crate::war_changes::Site::ReplaceRelation,
+        status,
+        0,
+    );
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[7].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(status, relation, slot, fourth) })
@@ -1652,7 +2010,21 @@ macro_rules! callback5 {
             fifth: usize,
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
-            let _marks = DOMAIN.notify($site, first, second);
+            let _project_reset = ($site == 54).then(crate::project_variable_changes::resetting);
+            let _project = matches!(MUTATIONS[$site].1, Receiver::Project)
+                .then(|| crate::project_variable_changes::writing_project(first));
+            // Ordinary manpower operations do not write exile resources.
+            let wanted = match $site {
+                sites::ADD_EXILE_MANPOWER | sites::USE_EXILE_MANPOWER => third as u8 != 0,
+                sites::RESTORE_EXILE_MANPOWER => fourth as u8 != 0,
+                _ => true,
+            };
+            let _crew =
+                (sites::CREW_WRITERS.contains(&$site)).then(|| crate::crew_changes::notify(first));
+            let _marks = (wanted && !sites::CREW_WRITERS.contains(&$site))
+                .then(|| DOMAIN.notify($site, first, second));
+            let _occupation =
+                occupation_exile_receiver($site, first).map(crate::occupation_changes::changed);
             let original: unsafe extern "system" fn(usize, usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
             timing.original(|| unsafe { original(first, second, third, fourth, fifth) })
@@ -1805,3 +2177,30 @@ unsafe extern "system" fn faction_sharing_base(
 
 #[cfg(test)]
 mod tests;
+
+/// # Safety
+/// The faction acquisition worker owns the native quiescent lease.
+pub unsafe fn accumulator_install_growth() {
+    unsafe {
+        DOMAIN.accumulator.install_growth_quiescent();
+    }
+}
+callback!(set_recruitment_target, sites::SET_RECRUITMENT_TARGET);
+callback!(set_recruitment_ratio, sites::SET_RECRUITMENT_RATIO);
+callback!(add_exile_manpower, sites::ADD_EXILE_MANPOWER);
+callback!(restore_exile_manpower, sites::RESTORE_EXILE_MANPOWER);
+callback!(use_exile_manpower, sites::USE_EXILE_MANPOWER);
+callback!(set_exile_manpower_cap, sites::SET_EXILE_MANPOWER_CAP);
+callback!(add_exile_legitimacy, sites::ADD_EXILE_LEGITIMACY);
+callback!(set_exile_legitimacy, sites::SET_EXILE_LEGITIMACY);
+callback!(
+    exile_equipment_legitimacy,
+    sites::EXILE_EQUIPMENT_LEGITIMACY
+);
+
+callback!(refresh_wing_crews, sites::REFRESH_WING_CREWS);
+callback!(refresh_ship_crews, sites::REFRESH_SHIP_CREWS);
+callback!(remove_ship_crews, sites::REMOVE_SHIP_CREWS);
+
+callback!(add_sent_expeditionary, sites::ADD_SENT_EXPEDITIONARY);
+callback!(remove_sent_expeditionary, sites::REMOVE_SENT_EXPEDITIONARY);

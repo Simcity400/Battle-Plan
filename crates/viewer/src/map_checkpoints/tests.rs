@@ -987,6 +987,12 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
         intel_icons::{EntryKind, IntelAssets, IntelDefines, OperationPriorities, Write, icons},
         raids::test_support::{self, put},
     };
+    const HOVER_TABLES: [TableId; 4] = [
+        TableId::IntelContributions,
+        TableId::IntelSources,
+        TableId::IntelNetworkSummaries,
+        TableId::PropagandaEfforts,
+    ];
     let selected = dashboard_base::prepared_map::selected_tables();
     let mut records = crate::playback::tests::records(1, &[100]);
     records.retain(|record| !matches!(record, Record::Frame(_)));
@@ -1035,7 +1041,7 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
         );
         put::<tables::OperativeMissions>(
             &mut frame,
-            [6, 8]
+            [6, 8, 2]
                 .into_iter()
                 .enumerate()
                 .map(|(i, variant)| OperativeMissionRow {
@@ -1051,6 +1057,59 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
                 })
                 .collect(),
         );
+        put::<tables::IntelContributions>(
+            &mut frame,
+            vec![IntelContributionRow {
+                owner: 10,
+                target: 11,
+                kind: 4,
+                pool: 17,
+                civilian: i64::from(hour),
+                ..Default::default()
+            }],
+        );
+        put::<tables::IntelSources>(
+            &mut frame,
+            vec![IntelSourceRow {
+                owner: 10,
+                target: 11,
+                pool: 19,
+                source: 3,
+                army: -i64::from(hour),
+                ..Default::default()
+            }],
+        );
+        put::<tables::IntelNetworkSummaries>(
+            &mut frame,
+            vec![IntelNetworkSummaryRow {
+                owner_country: 10,
+                target_country: 11,
+                covered_core_states: hour - 99,
+                controlled_strength_sum: i64::from(hour),
+                ..Default::default()
+            }],
+        );
+        put::<tables::PropagandaEfforts>(
+            &mut frame,
+            vec![PropagandaEffortRow {
+                slot: 1,
+                country: 11,
+                sequence: u64::MAX,
+                stability: i64::from(hour),
+                war_support: -i64::from(hour),
+                ..Default::default()
+            }],
+        );
+        for table in HOVER_TABLES {
+            frame.metrics.table_ns[table.index()] = 1;
+        }
+        if hour == 101 {
+            for table in HOVER_TABLES {
+                *frame.tables[table.index()] = TableView::Unavailable {
+                    reason: format!("synthetic {table:?} acquisition refusal"),
+                };
+            }
+        }
         put::<tables::StrategicOperatives>(
             &mut frame,
             vec![StrategicOperativeRow {
@@ -1116,7 +1175,7 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
         IntelDefines {
             cutoff: 100_000_000,
             offset: [0, 0],
-            max_stack: 3,
+            max_stack: 4,
             priorities: OperationPriorities {
                 can_start: 1,
                 completed: 2,
@@ -1145,6 +1204,18 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
         let Some(Current::Frame(actual)) = prepared.seek(1, hour).unwrap() else {
             panic!("prepared hour missing")
         };
+        for table in HOVER_TABLES {
+            assert_eq!(
+                actual.tables[table.index()],
+                ordinary.tables[table.index()],
+                "{table:?} hour {hour}"
+            );
+            assert_eq!(
+                actual.tables[table.index()].sampled_at(),
+                ordinary.tables[table.index()].sampled_at(),
+                "{table:?} supplying read at hour {hour}"
+            );
+        }
         let expected = build(&ordinary);
         let actual = build(&actual);
         let entries: Vec<_> = expected
@@ -1157,7 +1228,7 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
                 .iter()
                 .filter(|entry| entry.kind == EntryKind::Operative)
                 .count(),
-            2
+            3
         );
         assert_eq!(
             entries
@@ -1173,6 +1244,21 @@ fn prepared_and_ordinary_hours_build_equal_operative_operation_and_progress_icon
                     .flat_map(|entry| &entry.writes)
                     .any(|write| matches!(write, Write::Text(_, text) if text.contains(progress)))
             );
+        }
+        if hour != 101 {
+            for detail in [
+                "Prior-day dynamic contribution",
+                "Static pool 19, source 3",
+                "Recorded national network cache",
+                "Recorded propaganda history",
+            ] {
+                assert!(
+                    entries
+                        .iter()
+                        .any(|entry| entry.tooltip.body.contains(detail)),
+                    "missing {detail} at hour {hour}"
+                );
+            }
         }
         assert_eq!(actual.states, expected.states, "hour {hour}");
         assert_eq!(actual.report, expected.report, "hour {hour}");

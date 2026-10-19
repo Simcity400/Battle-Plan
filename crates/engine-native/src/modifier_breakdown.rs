@@ -10,6 +10,96 @@ pub struct Node {
     pub name: Vec<u8>,
 }
 
+/// A complete raw source node. Playback selects keys and applies the recorded
+/// definition metadata, including dynamic keys from installed content.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SourceValue {
+    pub key: u32,
+    pub raw: i64,
+}
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SourceNode {
+    pub children: u32,
+    pub name: Vec<u8>,
+    pub values: Vec<SourceValue>,
+}
+/// Visit distinct demanded roots only after their writer certificate moved.
+/// Ancestor cycles refuse; repeated child occurrences retain their order.
+pub fn source_nodes(
+    memory: &impl Memory,
+    root: usize,
+    mut visit: impl FnMut(u32, SourceNode) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let mut stack: Vec<(usize, Array, u32)> = Vec::new();
+    let mut address = root;
+    let mut ordinal = 0u32;
+    loop {
+        if address == 0 || stack.iter().any(|&(active, ..)| active == address) {
+            return Err("division modifier source null node or ancestor cycle");
+        }
+        let children = Array::read(
+            memory,
+            address
+                .checked_add(CHILDREN)
+                .ok_or("division modifier source address overflow")?,
+            8,
+        )
+        .ok_or("division modifier source children unreadable")?;
+        let mut values = Vec::new();
+        let mut failure = false;
+        modifier_accumulator::entries_at(memory, address, &mut |key, raw| {
+            if crate::allocation::reserve(&mut values, 1).is_err() {
+                failure = true;
+            } else {
+                values.push(SourceValue { key, raw });
+            }
+        })?;
+        if failure {
+            return Err("division modifier source values allocation failed");
+        }
+        values.sort_unstable_by_key(|value| value.key);
+        let name = text(
+            memory,
+            address
+                .checked_add(DISPLAY)
+                .ok_or("division modifier source display overflow")?,
+        )?;
+        visit(
+            ordinal,
+            SourceNode {
+                children: children.count,
+                name,
+                values,
+            },
+        )?;
+        ordinal = ordinal
+            .checked_add(1)
+            .ok_or("division modifier source ordinal overflow")?;
+        crate::allocation::reserve(&mut stack, 1)
+            .map_err(|_| "division modifier source stack allocation failed")?;
+        stack.push((address, children, 0));
+        loop {
+            let Some((_, children, next)) = stack.last_mut() else {
+                return Ok(());
+            };
+            if *next == children.count {
+                stack.pop();
+                continue;
+            }
+            let pointer = children
+                .element(*next, 8)
+                .and_then(|slot| read::<u64>(memory, slot))
+                .filter(|&pointer| pointer != 0)
+                .ok_or("division modifier source child unreadable")?;
+            *next += 1;
+            address = (pointer as usize)
+                .checked_add(CHILD_ACCUMULATOR)
+                .ok_or("division modifier source child overflow")?;
+            break;
+        }
+    }
+}
+
 /// Accumulator children header and stored display string.
 const CHILDREN: usize = 0x18;
 const DISPLAY: usize = 0x48;
@@ -43,6 +133,115 @@ pub fn printed_nodes(
     key: u32,
 ) -> Result<Vec<Node>, &'static str> {
     walk(memory, base, root, key, Names::NonzeroLeaves)
+}
+
+/// A single requested key's preorder or its local refusal.
+pub type PrintedTree = Result<Vec<Node>, &'static str>;
+
+/// Printed preorders for several requested keys, in the supplied key order. A single
+/// traversal shares child headers and nonzero-leaf display reads. Numeric probes follow
+/// the native requested-key getter; unrelated accumulator entries are never enumerated.
+/// Key-specific value or leaf-label failures refuse only that key. Invalid shared structure
+/// refuses the walk, since no requested preorder can authenticate it.
+pub fn printed_keys(
+    memory: &impl Memory,
+    base: usize,
+    root: usize,
+    keys: &[u32],
+) -> Result<Vec<PrintedTree>, &'static str> {
+    let definitions = crate::modifier_definition::DefinitionMemo::default();
+    let mut output =
+        crate::allocation::vec(keys.len()).map_err(|_| "modifier breakdown allocation failed")?;
+    output.resize_with(keys.len(), || Ok(Vec::new()));
+    if keys.is_empty() {
+        return Ok(output);
+    }
+    let mut values = crate::allocation::default_vec::<i64>(keys.len())
+        .map_err(|_| "modifier breakdown allocation failed")?;
+    let mut stack: Vec<(usize, Array, u32)> = Vec::new();
+    let mut address = root;
+    loop {
+        if address == 0 || stack.iter().any(|&(active, ..)| active == address) {
+            return Err("modifier breakdown null node or ancestor cycle");
+        }
+        let children = address
+            .checked_add(CHILDREN)
+            .and_then(|p| Array::read(memory, p, 8))
+            .ok_or("modifier breakdown children unreadable or invalid")?;
+        for ((&key, value), nodes) in keys.iter().zip(&mut values).zip(&mut output) {
+            *value = 0;
+            if nodes.is_ok() {
+                match modifier_accumulator::requested_effective_memo(
+                    memory,
+                    base,
+                    address,
+                    key,
+                    &definitions,
+                ) {
+                    Ok(current) => *value = current,
+                    Err(reason) => *nodes = Err(reason),
+                }
+            }
+        }
+        let name = if children.count == 0 && values.iter().any(|&v| v != 0) {
+            text(
+                memory,
+                address
+                    .checked_add(DISPLAY)
+                    .ok_or("modifier breakdown display address overflow")?,
+            )
+        } else {
+            Ok(Vec::new())
+        };
+        for (output, &value) in output.iter_mut().zip(&values) {
+            if output.is_err() {
+                continue;
+            }
+            let name = if children.count == 0 && value != 0 {
+                match &name {
+                    Ok(name) => crate::allocation::copy_vec(name)
+                        .map_err(|_| "modifier breakdown allocation failed")?,
+                    Err(reason) => {
+                        *output = Err(*reason);
+                        continue;
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+            let nodes = output.as_mut().unwrap();
+            crate::allocation::reserve(nodes, 1)
+                .map_err(|_| "modifier breakdown allocation failed")?;
+            nodes.push(Node {
+                children: children.count,
+                value,
+                name,
+            });
+        }
+        crate::allocation::reserve(&mut stack, 1)
+            .map_err(|_| "modifier breakdown allocation failed")?;
+        stack.push((address, children, 0));
+        loop {
+            let Some((_, children, ordinal)) = stack.last_mut() else {
+                return Ok(output);
+            };
+            if *ordinal == children.count {
+                stack.pop();
+                continue;
+            }
+            let pointer = children
+                .element(*ordinal, 8)
+                .and_then(|p| read::<u64>(memory, p))
+                .and_then(|p| usize::try_from(p).ok())
+                .filter(|&p| p != 0)
+                .ok_or("modifier breakdown child pointer unreadable or null")?;
+            *ordinal += 1;
+            address = pointer
+                .checked_add(CHILD_ACCUMULATOR)
+                .ok_or("modifier breakdown child address overflow")?;
+            break;
+        }
+    }
 }
 
 /// Which nodes' display bytes a walk reads.
@@ -278,6 +477,93 @@ mod tests {
             .copy(address, output)
         }
     }
+    #[test]
+    fn occupation_printed_keys_share_tree_headers_and_match_single_key_preorders() {
+        use std::cell::Cell;
+        let mut fixture = Fixture::new();
+        let root = fixture.alloc(0x100);
+        let leaf = fixture.alloc(0x100);
+        let key = keys::LAND_REINFORCE_RATE;
+        fixture.node(leaf, b"fixture source", &[(key, 321), (key + 1, -432)], &[]);
+        fixture.node(root, b"", &[(key, 321), (key + 1, -432)], &[leaf, leaf]);
+        struct Traced<'a>(&'a Fixture, Cell<usize>, usize, usize);
+        impl Memory for Traced<'_> {
+            fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+                if [self.2 + CHILDREN, self.3 + CHILDREN, self.3 + DISPLAY].contains(&address) {
+                    self.1.set(self.1.get() + 1);
+                }
+                self.0.copy(address, out)
+            }
+        }
+        let traced = Traced(&fixture, Cell::new(0), root, leaf);
+        let actual = printed_keys(&traced, 0, root, &[key, key + 1])
+            .unwrap()
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let shared = traced.1.replace(0);
+        let expected = vec![
+            printed_nodes(&traced, 0, root, key).unwrap(),
+            printed_nodes(&traced, 0, root, key + 1).unwrap(),
+        ];
+        assert_eq!(actual, expected);
+        assert!(
+            shared < traced.1.get(),
+            "shared traversal must avoid repeated headers and labels"
+        );
+        assert_eq!(actual[0][1].name, b"fixture source");
+        assert_eq!(actual[1][2].value, -432);
+    }
+
+    #[test]
+    fn occupation_printed_keys_keep_a_healthy_tree_when_another_key_value_is_unreadable() {
+        let mut fixture = Fixture::new();
+        let root = fixture.alloc(0x100);
+        let leaf = fixture.alloc(0x100);
+        let key = keys::LAND_REINFORCE_RATE;
+        fixture.node(leaf, b"fixture source", &[(key, 321), (key + 1, -432)], &[]);
+        fixture.node(root, b"", &[(key, 321), (key + 1, -432)], &[leaf]);
+        let entries = u64::from_le_bytes(fixture.0[leaf..leaf + 8].try_into().unwrap()) as usize;
+        struct Fault<'a>(&'a Fixture, usize);
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+                if address < self.1 + 8 && address + out.len() > self.1 {
+                    return false;
+                }
+                self.0.copy(address, out)
+            }
+        }
+        let output =
+            printed_keys(&Fault(&fixture, entries + 24), 0, root, &[key, key + 1]).unwrap();
+        assert_eq!(
+            output[0].as_ref().unwrap(),
+            &printed_nodes(&fixture, 0, root, key).unwrap()
+        );
+        assert!(output[1].is_err());
+    }
+
+    #[test]
+    fn occupation_printed_keys_label_failure_does_not_refuse_a_zero_leaf_key() {
+        let mut fixture = Fixture::new();
+        let root = fixture.alloc(0x100);
+        let leaf = fixture.alloc(0x100);
+        let key = keys::LAND_REINFORCE_RATE;
+        fixture.node(leaf, b"fixture source", &[(key, 0), (key + 1, 1)], &[]);
+        fixture.node(root, b"", &[(key, 1), (key + 1, 1)], &[leaf]);
+        struct Fault<'a>(&'a Fixture, usize);
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+                if (self.1 + DISPLAY..self.1 + DISPLAY + 32).contains(&address) {
+                    return false;
+                }
+                self.0.copy(address, out)
+            }
+        }
+        let output = printed_keys(&Fault(&fixture, leaf), 0, root, &[key, key + 1]).unwrap();
+        assert_eq!(output[0].as_ref().unwrap()[1].value, 0);
+        assert!(output[1].is_err());
+    }
+
     impl Fixture {
         fn new() -> Self {
             Self(vec![0; 0x2000])
@@ -335,6 +621,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shared_source_nodes_preserve_raw_keys_labels_and_repeated_children() {
+        let mut fixture = Fixture::new();
+        let root = fixture.alloc(0x200);
+        let child = fixture.alloc(0x200);
+        fixture.node(child, b"Source", &[(57, 19), (79, -31)], &[]);
+        fixture.node(root, b"Root", &[(57, 38), (79, -62)], &[child, child]);
+        let mut nodes = Vec::new();
+        source_nodes(&fixture, root, |ordinal, node| {
+            assert_eq!(ordinal as usize, nodes.len());
+            nodes.push(node);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].children, 2);
+        assert_eq!(nodes[1], nodes[2]);
+        assert_eq!(nodes[1].name, b"Source");
+        assert_eq!(
+            nodes[1].values,
+            [
+                SourceValue { key: 57, raw: 19 },
+                SourceValue { key: 79, raw: -31 }
+            ]
+        );
+    }
     #[test]
     fn country_and_selected_commander_trees_keep_order_labels_and_getter_values() {
         let mut f = Fixture::new();

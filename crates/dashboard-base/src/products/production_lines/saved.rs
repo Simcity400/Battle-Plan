@@ -24,7 +24,7 @@ use std::{
 };
 
 /// The saved layout's version: a scan saved by another is scanned again.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 4;
 
 #[cfg(test)]
 thread_local! {
@@ -51,6 +51,7 @@ pub struct SavedModifierRun {
 pub struct SavedLines {
     pub schema: u32,
     pub lines: Vec<ScannedLine>,
+    pub designs: BTreeMap<u64, Vec<super::DesignRead>>,
     pub modifiers: BTreeMap<String, Vec<SavedModifierRun>>,
     /// The countries' modifier rows the runs name, each once, in the
     /// recording's row encoding.
@@ -146,6 +147,7 @@ impl SavedLines {
         Ok(Self {
             schema: SCHEMA,
             lines: scanned.lines.clone(),
+            designs: scanned.designs.clone(),
             modifiers,
             countries,
             localised: localised.unwrap_or(false),
@@ -224,6 +226,7 @@ impl SavedLines {
         }
         Ok(Some(ScannedLines {
             lines: self.lines,
+            designs: self.designs,
             modifiers,
             modifier_layout_refusals: self.modifier_layout_refusals,
             variants: self.variants,

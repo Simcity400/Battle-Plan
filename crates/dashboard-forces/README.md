@@ -1,5 +1,7 @@
 # dashboard-forces
 
+The Army size template roster preserves names and independent layout/model facts when template settings explicitly refuse acquisition. A refused settings payload is never used as a default roster ordinal or priority.
+
 The force-size products: army size, supply health, air force size and navy
 size by country, and the parts-race families air and navy share to prepare and
 query their series. Their behaviour is documented beside the code in
@@ -81,6 +83,8 @@ distinct entries. Content-dependent point parts keep their ordinary projection.
 State reads project every visited hour, including hours before the requested
 point, so native count and class-index overflow refusals remain observable.
 
+Army size accepts a reached `templateAt` country/hour request for the existing breakdown. It reads the selected country's complete template roster (including unused templates), staff/garrison configuration and country-owned HQ groups from exact replay rows, independently of deployed membership. It shares plain formatting with division hovers, performs no series preparation and adds no recorder work.
+`naval-management` answers one country and hour for the Navy Size drill. It joins standing orders, native composition/detachments, repair ports, dockyards, ship hull HP and refit work through full recorded identities. Content labels resolve through the recorded catalogue; missing inputs remain warnings alongside independent readable sections.
 Army history windows retain their recorded numeric fold together with its
 availability, warning counts and battalion compositions in the shared bounded
 observation LRU. The channel, selected tags, composition choice and window name
@@ -96,3 +100,5 @@ With unchanged supply membership, only the owners of changed division operands
 have their totals projected and compared; every other owner's counts carry
 unchanged. Snapshots, membership changes and unavailable operands retain the
 whole census.
+
+Army size accepts a reached `templateAt` country/hour request for the existing breakdown. It reads the selected country's complete template roster (including unused templates), staff/garrison configuration and country-owned HQ groups from exact replay rows, independently of deployed membership. It shares plain formatting with division hovers, performs no series preparation and adds no recorder work.

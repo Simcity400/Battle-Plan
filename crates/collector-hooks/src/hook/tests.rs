@@ -9,6 +9,50 @@ unsafe fn invoke(address: usize) -> usize {
     let function: unsafe extern "system" fn() -> usize = unsafe { std::mem::transmute(address) };
     unsafe { function() }
 }
+
+#[test]
+fn adjacent_call_prefixes_publish_recheck_and_restore_together() {
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for spacing in [7, 10] {
+        let code = TestCode::new();
+        let base = code.0 as usize;
+        let mut bytes = [0x90_u8; 64];
+        for offset in [0, spacing] {
+            bytes[offset] = 0xe8;
+            bytes[offset + 1..offset + 5]
+                .copy_from_slice(&((48 - offset - 5) as i32).to_le_bytes());
+        }
+        bytes[48] = 0xc3;
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+        }
+        let mut hooks: Vec<_> = [0, spacing]
+            .into_iter()
+            .map(|offset| {
+                let original = bytes[offset..offset + 16].try_into().unwrap();
+                unsafe {
+                    Hook::new_call_span(
+                        base + offset,
+                        callback as *const () as usize,
+                        original,
+                        if offset == 0 { spacing } else { 16 },
+                    )
+                }
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(Hook::set_family_enabled(&mut hooks, true), Ok(true));
+        assert!(hooks.iter().all(|hook| hook.snapshot_failure().is_none()));
+        assert_eq!(Hook::set_family_enabled(&mut hooks, true), Ok(true));
+        assert_eq!(Hook::set_family_enabled(&mut hooks, false), Ok(true));
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(code.0.cast::<u8>(), bytes.len()) },
+            bytes
+        );
+    }
+}
 #[test]
 fn family_refuses_every_write_if_one_sentinel_changed_and_checks_retries() {
     let _guard = FAMILY_TEST
@@ -115,6 +159,26 @@ fn disabling_flush_failure_rolls_back_to_owned_patch_and_can_retry() {
     assert!(hook.is_enabled());
     assert_eq!(unsafe { invoke(site) }, 19);
     assert_eq!(hook.set_enabled(false), Ok(true));
+    assert!(!hook.is_enabled());
+    assert_eq!(unsafe { invoke(site) }, 7);
+}
+
+#[test]
+fn installation_keeps_the_first_native_rollback_failure_after_successful_disable() {
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    let (site, bytes) = code.stub(0, original as *const () as usize);
+    let mut hook = unsafe { Hook::new(site, callback as *const () as usize, bytes) }.unwrap();
+    let (_, report) = installation::capture(|| {
+        fail_flushes(2);
+        assert!(hook.set_enabled(true).is_err());
+        assert_eq!(hook.set_enabled(false), Ok(true));
+    });
+    let failure = report.failure.unwrap();
+    assert_eq!(failure.kind, installation::Kind::Rollback);
+    assert_eq!(failure.site, Some(site));
     assert!(!hook.is_enabled());
     assert_eq!(unsafe { invoke(site) }, 7);
 }
@@ -296,6 +360,15 @@ fn a_terminating_thread_is_left_unheld_and_other_refusals_still_fail() {
 /// one suspension.
 #[test]
 fn a_thread_at_any_site_holds_its_whole_family_under_one_suspension() {
+    assert_busy_family_publication(true);
+}
+
+#[test]
+fn untracked_family_keeps_markers_untouched_and_uses_only_one_scan() {
+    assert_busy_family_publication(false);
+}
+
+fn assert_busy_family_publication(track_busy: bool) {
     use std::os::windows::io::AsRawHandle;
     let _guard = FAMILY_TEST
         .lock()
@@ -310,6 +383,19 @@ fn a_thread_at_any_site_holds_its_whole_family_under_one_suspension() {
         unsafe { Hook::new(site, callback as *const () as usize, bytes) }.unwrap()
     };
     let mut family = vec![new((first, code_bytes(first))), new((held, held_bytes))];
+    family[0]
+        .publication_busy
+        .store(!track_busy, Ordering::Relaxed);
+    let publish = |family: &mut [Hook], enabled| {
+        if track_busy {
+            Hook::set_enabled_batch_tracking_busy(
+                &mut family.iter_mut().collect::<Vec<_>>(),
+                enabled,
+            )
+        } else {
+            Hook::set_family_enabled(family, enabled)
+        }
+    };
     let mut other_family = vec![new((other, code_bytes(other)))];
     let worker = std::thread::spawn(move || unsafe { invoke(held) });
     // Wait until the worker executes inside the held site.
@@ -329,7 +415,15 @@ fn a_thread_at_any_site_holds_its_whole_family_under_one_suspension() {
     }
     let suspensions = || SUSPENSIONS.with(std::cell::Cell::get);
     let before = suspensions();
-    assert_eq!(Hook::set_family_enabled(&mut family, true), Ok(false));
+    IP_SCANS.with(|count| count.set(0));
+    assert_eq!(publish(&mut family, true), Ok(false));
+    assert_eq!(
+        IP_SCANS.with(std::cell::Cell::get),
+        1,
+        "one suspended-thread scan"
+    );
+    assert_eq!(family[0].publication_busy(), !track_busy);
+    assert_eq!(family[1].publication_busy(), track_busy);
     assert_eq!(suspensions() - before, 1, "one suspension for the family");
     assert!(
         family.iter().all(|hook| !hook.is_enabled()),
@@ -353,7 +447,16 @@ fn a_thread_at_any_site_holds_its_whole_family_under_one_suspension() {
     unsafe { ptr::write_unaligned(target as *mut u64, held as u64) };
     flush(target);
     let before = suspensions();
-    assert_eq!(Hook::set_family_enabled(&mut family, true), Ok(true));
+    assert_eq!(publish(&mut family, true), Ok(true));
+    assert_eq!(
+        family[0].publication_busy(),
+        !track_busy,
+        "ordinary publication never resets diagnostic markers"
+    );
+    assert!(
+        !family[1].publication_busy(),
+        "tracked retries clear the previous collision"
+    );
     assert_eq!(suspensions() - before, 1, "both sites under one suspension");
     assert_eq!(unsafe { invoke(first) }, 19);
     assert_eq!(unsafe { invoke(held) }, 19);
@@ -366,4 +469,44 @@ fn a_thread_at_any_site_holds_its_whole_family_under_one_suspension() {
 
 fn code_bytes(site: usize) -> [u8; 16] {
     unsafe { ptr::read_unaligned(site as *const [u8; 16]) }
+}
+
+#[test]
+fn a_busy_tap_names_only_its_site_and_clears_after_retry() {
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    static FLIGHTS: AtomicUsize = AtomicUsize::new(0);
+    let code = TestCode::new();
+    let (site, bytes) = code.stub(0, original as *const () as usize);
+    let callback = callback as *const () as usize;
+    let mut hook = unsafe {
+        Hook::new_with_safety(
+            site,
+            callback,
+            bytes,
+            TapSafety {
+                in_flight: &FLIGHTS,
+                stub: callback..callback + 1,
+            },
+        )
+    }
+    .unwrap();
+    FLIGHTS.store(1, Ordering::SeqCst);
+    assert_eq!(
+        Hook::set_enabled_batch_tracking_busy(&mut [&mut hook], true),
+        Ok(false)
+    );
+    assert!(hook.publication_busy());
+    assert!(!hook.is_enabled());
+    FLIGHTS.store(0, Ordering::SeqCst);
+    assert_eq!(
+        Hook::set_enabled_batch_tracking_busy(&mut [&mut hook], true),
+        Ok(true)
+    );
+    assert!(!hook.publication_busy());
+    assert_eq!(
+        Hook::set_enabled_batch_tracking_busy(&mut [&mut hook], false),
+        Ok(true)
+    );
 }

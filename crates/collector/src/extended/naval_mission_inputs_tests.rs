@@ -671,7 +671,7 @@ fn a_full_hour_records_every_raiding_and_escort_task_force_ledger_and_country() 
             weather_coordination: Some(-2_000),
             weather_raiding: None,
             leader: leader(1),
-            headquarters: vec![character(1)],
+            headquarters: vec![character(1)].into(),
             range_fleet: (1 << 32) | 61,
             range_begin: 0,
             range_end: 3,
@@ -713,6 +713,7 @@ fn a_full_hour_records_every_raiding_and_escort_task_force_ledger_and_country() 
             raiding: Some(2),
             escort: Some(20_000),
             weather_reduction: Some(-30_000),
+            escort_tree: replay_data::rows::Recorded::Value(None),
             ..Default::default()
         }
     );
@@ -888,7 +889,7 @@ fn a_short_buffer_truncates_with_its_demand_and_never_publishes_the_family() {
 }
 
 #[test]
-fn a_bad_read_makes_every_table_unavailable() {
+fn a_bad_mission_read_refuses_dependents_and_preserves_independent_map_witnesses() {
     let mut world = build(2);
     let task = world.tasks[2][1];
     world.put(task + ctask_force::NAVAL_MISSION + 8, 1);
@@ -900,10 +901,23 @@ fn a_bad_read_makes_every_table_unavailable() {
         true,
         &mut SliceFingerprints::new(),
     );
-    assert!(views.iter().all(|view| matches!(
-        view,
-        TableView::Unavailable { reason } if reason == "naval mission identity mismatch"
-    )));
+    for index in [0, 2, 3] {
+        assert!(
+            matches!(&views[index],TableView::Unavailable{reason}if reason=="naval mission identity mismatch")
+        );
+    }
+    assert!(
+        matches!(&views[1],TableView::Unavailable{reason}if reason=="naval mission ledger census truncated")
+    );
+    assert!(captured.map_roster_complete);
+    for index in [4, 5] {
+        if let TableView::Unavailable { reason } = &views[index] {
+            assert_ne!(
+                reason, "naval mission identity mismatch",
+                "independent map failures keep their own reason"
+            );
+        }
+    }
 }
 
 #[test]
@@ -938,6 +952,7 @@ fn five_thousand_countries_capture_completely_after_country_sizing_and_growth() 
         captured
             .outcomes()
             .iter()
+            .take(4)
             .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
     );
     assert_eq!(
@@ -1016,6 +1031,7 @@ fn naval_mission_bench() {
             captured
                 .outcomes()
                 .iter()
+                .take(4)
                 .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
         );
         println!(
@@ -1223,8 +1239,8 @@ fn worker_capture_sizes_every_naval_mission_arena_before_first_publication_at_fi
             Some(&mut fingerprints),
         );
         assert_eq!(
-            captured.outcomes(),
-            [
+            &captured.outcomes()[..4],
+            &[
                 Outcome::Rows { len: 20_000 },
                 Outcome::Rows { len: 15_000 },
                 Outcome::Rows { len: 5_000 },
@@ -1264,8 +1280,8 @@ fn ordinary_strict_missions_grow_on_first_and_later_publications() {
         let count = count as usize;
         let captured = &owner.naval_mission_inputs;
         assert_eq!(
-            captured.outcomes(),
-            [
+            &captured.outcomes()[..4],
+            &[
                 Outcome::Rows { len: count * 4 },
                 Outcome::Rows { len: count * 3 },
                 Outcome::Rows { len: count },
@@ -1323,12 +1339,22 @@ fn growing_strict_missions_preserve_fixed_original_reads_and_first_faults() {
         let mut growing = Captured::vacant();
         fixed.capture(&fixed_memory, world.base, world.game_state, 0, true, None);
         growing.capture_growing(&growing_memory, world.base, world.game_state, 0, true, None);
-        assert_eq!(growing.outcomes(), fixed.outcomes(), "fault {failure:?}");
         assert_eq!(
-            growing_memory.reads.borrow().as_slice(),
-            fixed_memory.reads.borrow().as_slice(),
+            &growing.outcomes()[..4],
+            &fixed.outcomes()[..4],
             "fault {failure:?}"
         );
+        // Optional strike-sibling reads are worker-only. The original mission
+        // acquisition remains an ordered subsequence, with no replaced reads.
+        let additional = growing_memory.reads.borrow();
+        let original = fixed_memory.reads.borrow();
+        let mut remaining = additional.iter();
+        for read in original.iter() {
+            assert!(
+                remaining.any(|candidate| candidate == read),
+                "original read {read:?}, fault {failure:?}"
+            );
+        }
         if failure.is_some() {
             assert!(growing_memory.failed.get(), "fault reached {failure:?}");
             assert_eq!(
@@ -1362,4 +1388,378 @@ fn growing_strict_missions_preserve_fixed_original_reads_and_first_faults() {
             );
         }
     }
+}
+
+#[test]
+fn dominance_ranges_read_only_omitted_siblings_of_registered_strike_fleets() {
+    let world = build(2);
+    let memory = TransportMemory {
+        world: &world,
+        reads: Default::default(),
+        fail_once: None,
+        failed: Default::default(),
+    };
+    let mut captured = Captured::vacant();
+    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    let views = captured.tables();
+    let ranges = rows::<tables::NavalDominanceTaskForceRanges>(&views[6]);
+    assert_eq!(ranges.len(), 2);
+    assert_eq!(ranges[0].task_force, task_handle(1, 4));
+    assert_eq!(ranges[1].task_force, task_handle(2, 4));
+    assert_eq!(rows::<tables::NavalMissionTaskForces>(&views[0]).len(), 8);
+    let mut world = build(2);
+    empty_navy(&mut world, 1, true);
+    let memory = TransportMemory {
+        world: &world,
+        reads: Default::default(),
+        fail_once: None,
+        failed: Default::default(),
+    };
+    let mut captured = Captured::vacant();
+    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    let views = captured.tables();
+    let ranges = rows::<tables::NavalDominanceTaskForceRanges>(&views[6]);
+    assert_eq!(ranges.len(), 1);
+    assert_eq!(ranges[0].task_force, task_handle(2, 4));
+    let idle_header = world.base + world.tasks[1][4] + ctask_force::NAVAL_MISSION;
+    assert!(
+        !memory
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(at, _)| at == idle_header)
+    );
+}
+
+#[test]
+fn failed_optional_sibling_does_not_refuse_existing_mission_tables() {
+    let world = build(2);
+    let memory = TransportMemory {
+        world: &world,
+        reads: Default::default(),
+        fail_once: Some(world.base + world.tasks[1][4] + ctask_force::NAVAL_MISSION),
+        failed: Default::default(),
+    };
+    let mut captured = Captured::vacant();
+    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    assert!(memory.failed.get());
+    let views = captured.tables();
+    assert_eq!(rows::<tables::NavalMissionTaskForces>(&views[0]).len(), 8);
+    assert!(matches!(
+        captured.ranges_outcome,
+        Outcome::Unavailable { .. }
+    ));
+    assert!(matches!(captured.countries.outcome, Outcome::Rows { .. }));
+    assert!(matches!(captured.commanders.outcome, Outcome::Rows { .. }));
+}
+
+#[test]
+fn mission_weather_failure_preserves_the_independent_physical_map_census() {
+    let mut world = build(1);
+    let capacity = fixture_capacities(&world);
+    world.put(GAME_STATE + cgame_state::WEATHER_MANAGER, 0);
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.capture(&world.slice(), world.base, world.game_state, 71, true, None);
+    let Outcome::Unavailable {
+        reason: mission_reason,
+    } = captured.task_forces.outcome
+    else {
+        panic!("missing weather must refuse mission operands");
+    };
+    assert!(
+        captured.map_roster_complete,
+        "map membership has no mission-weather dependency"
+    );
+    assert_eq!(
+        captured.ledgers.outcome,
+        Outcome::Rows { len: 3 },
+        "a complete authenticated roster joins ledgers despite independent modifier failure"
+    );
+    for outcome in [captured.mines_outcome, captured.accidents_outcome] {
+        if let Outcome::Unavailable { reason } = outcome {
+            assert_ne!(
+                reason, mission_reason,
+                "map refusal must name its own missing witness"
+            );
+            assert_ne!(reason, "naval mission ledger census truncated");
+        }
+    }
+}
+
+#[test]
+fn unavailable_map_certificates_preserve_the_original_mission_products() {
+    let world = build(1);
+    let mut captured = Captured::with_capacities(&fixture_capacities(&world));
+    let views = capture(
+        &mut captured,
+        &world,
+        71,
+        true,
+        &mut SliceFingerprints::new(),
+    );
+    assert!(captured.map_roster_complete);
+    for view in &views[..4] {
+        assert!(matches!(view, TableView::Complete(_)), "{view:?}");
+    }
+    // No live writer/world observer is installed in this fixture. A failed
+    // map certificate must not be interpreted as a certified empty map.
+    assert!(matches!(
+        captured.mines_outcome,
+        Outcome::Unavailable { .. }
+    ));
+    assert!(matches!(
+        captured.accidents_outcome,
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn an_empty_mission_navy_still_observes_its_map_certificates() {
+    let mut world = build(1);
+    empty_navy(&mut world, 1, true);
+    let mut captured = Captured::with_capacities(&fixture_capacities(&world));
+    captured.capture(&world.slice(), world.base, world.game_state, 71, true, None);
+    assert!(captured.map_roster_complete);
+    assert_eq!(captured.ledgers.outcome, Outcome::Rows { len: 0 });
+    assert!(matches!(
+        captured.mines_outcome,
+        Outcome::Unavailable { .. }
+    ));
+    assert!(matches!(
+        captured.accidents_outcome,
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn patrol_members_reuse_original_stats_and_do_not_duplicate_mission_context() {
+    let world = build(1);
+    let memory = TransportMemory {
+        world: &world,
+        reads: Default::default(),
+        fail_once: None,
+        failed: Default::default(),
+    };
+    let mut captured = Captured::vacant();
+    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    let views = captured.tables();
+    let sources = rows::<tables::NavalPatrolMissionInputs>(&views[7]);
+    assert_eq!(
+        sources.len(),
+        3,
+        "only distinct registered identities are demanded"
+    );
+    assert!(sources.iter().all(|source| !source.local_detection_known
+        && !source.weather_detection_known
+        && !source.headquarters_known
+        && source.headquarters.is_empty()
+        && source.leader == 0));
+    assert!(captured.patrol_headquarters.is_empty());
+    let reads = memory.reads.borrow();
+    for task in &world.tasks[1][..4] {
+        assert_eq!(
+            reads
+                .iter()
+                .filter(|&&(at, _)| at == world.base + task + cunit::STAT_BLOCK)
+                .count(),
+            1,
+            "a patrol source must reuse the strict row's original selector"
+        );
+    }
+    let header = world.base + world.tasks[1][ESCORTING] + ctask_force::NAVAL_MISSION;
+    assert_eq!(
+        reads.iter().filter(|&&(at, _)| at == header).count(),
+        1,
+        "repeated escort registrations must reuse one original mission header"
+    );
+    drop(reads);
+    let first = rows::<tables::NavalMissionTaskForces>(&views[0])
+        .iter()
+        .find(|row| row.task_force == task_handle(1, ESCORTING))
+        .unwrap()
+        .headquarters
+        .clone();
+    captured.capture_growing(&memory, world.base, world.game_state, 1, true, None);
+    let after = captured.tables();
+    let second = &rows::<tables::NavalMissionTaskForces>(&after[0])
+        .iter()
+        .find(|row| row.task_force == task_handle(1, ESCORTING))
+        .unwrap()
+        .headquarters;
+    assert!(
+        Arc::ptr_eq(&first, second),
+        "existing mission lists also share quiet frames"
+    );
+}
+
+#[test]
+fn omitted_patrol_context_shares_headquarters_until_references_change() {
+    let mut world = build(1);
+    // With no registered strike, these sources have neither strict mission
+    // operands nor a demanded sibling range packet.
+    for index in [STRIKE, ESCORTING] {
+        let at = world.tasks[1][index] + ctask_force::MISSION;
+        world.bytes[at..at + 4].copy_from_slice(&1_u32.to_le_bytes());
+    }
+    let mut captured = Captured::vacant();
+    captured.capture_growing(&world.slice(), world.base, world.game_state, 0, true, None);
+    let id = task_handle(1, ESCORTING);
+    let source = |captured: &Captured| {
+        let views = captured.tables();
+        rows::<tables::NavalPatrolMissionInputs>(&views[7])
+            .iter()
+            .find(|row| row.task_force == id)
+            .unwrap()
+            .clone()
+    };
+    let first = source(&captured);
+    assert!(
+        first.headquarters_known && first.local_detection_known && first.weather_detection_known
+    );
+    assert_eq!(first.headquarters.as_slice(), &[character(1)]);
+    captured.capture_growing(&world.slice(), world.base, world.game_state, 1, true, None);
+    let second = source(&captured);
+    assert!(
+        Arc::ptr_eq(&first.headquarters, &second.headquarters),
+        "unchanged source lists allocate once"
+    );
+    let header = world.tasks[1][ESCORTING] + ctask_force::ATTACHED_HEADQUARTERS;
+    let references = world.pointer(header) - world.base;
+    let headquarters = world.pointer(references) - world.base;
+    let commander = world.pointer(headquarters + native::HEADQUARTERS_COMMANDER) - world.base;
+    world.put(commander + native::COMMANDER_CHARACTER, 0);
+    captured.capture_growing(&world.slice(), world.base, world.game_state, 2, true, None);
+    let third = source(&captured);
+    assert_eq!(third.headquarters.as_slice(), &[0]);
+    assert!(!Arc::ptr_eq(&second.headquarters, &third.headquarters));
+    assert_eq!(
+        first.headquarters.as_slice(),
+        &[character(1)],
+        "published source lists stay immutable"
+    );
+}
+
+#[test]
+fn patrol_leaf_failure_preserves_existing_missions_ranges_and_map_outcomes() {
+    let world = build(1);
+    let mut baseline = Captured::vacant();
+    baseline.capture_growing(&world.slice(), world.base, world.game_state, 0, true, None);
+    let task = world.tasks[1][ESCORTING];
+    let stats = world.pointer(task + cunit::STAT_BLOCK);
+    let memory = TransportMemory {
+        world: &world,
+        reads: Default::default(),
+        fail_once: Some(stats + engine_native::naval_patrol_inputs::SURFACE_DETECTION),
+        failed: Default::default(),
+    };
+    let mut failed = Captured::vacant();
+    failed.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    assert!(memory.failed.get());
+    let before = baseline.tables();
+    let after = failed.tables();
+    assert_eq!(
+        rows::<tables::NavalMissionTaskForces>(&before[0]),
+        rows::<tables::NavalMissionTaskForces>(&after[0])
+    );
+    assert_eq!(
+        rows::<tables::NavalDominanceTaskForceRanges>(&before[6]),
+        rows::<tables::NavalDominanceTaskForceRanges>(&after[6])
+    );
+    assert_eq!(baseline.mines_outcome, failed.mines_outcome);
+    assert_eq!(baseline.accidents_outcome, failed.accidents_outcome);
+    let source = rows::<tables::NavalPatrolMissionInputs>(&after[7])
+        .iter()
+        .find(|row| row.task_force == task_handle(1, ESCORTING))
+        .unwrap();
+    assert_eq!(source.surface_detection, None);
+    assert_eq!(
+        source.carrier_detection,
+        Some(0),
+        "independent source leaves survive a failed word"
+    );
+}
+
+#[test]
+fn incomplete_patrol_witness_refuses_only_its_optional_table() {
+    let world = build(1);
+    let mut captured = Captured::vacant();
+    captured.capture_growing(&world.slice(), world.base, world.game_state, 0, true, None);
+    let before = captured.tables();
+    let outcomes = captured.outcomes();
+    let member = captured.census.first[..captured.census.len]
+        .iter_mut()
+        .find(|member| member.id == task_handle(1, STRIKE))
+        .unwrap();
+    member.visit = None;
+    captured.patrol.clear();
+    let memory = world.slice();
+    let countries = ccountry::Reader::new(&memory, world.base, world.game_state).unwrap();
+    let reason = captured
+        .read_patrol_members(&memory, world.base, world.game_state, &countries)
+        .unwrap_err();
+    captured.patrol_outcome = Outcome::Unavailable { reason };
+    let after = captured.tables();
+    assert_eq!(
+        rows::<tables::NavalMissionTaskForces>(&before[0]),
+        rows::<tables::NavalMissionTaskForces>(&after[0])
+    );
+    assert_eq!(
+        rows::<tables::NavalDominanceTaskForceRanges>(&before[6]),
+        rows::<tables::NavalDominanceTaskForceRanges>(&after[6])
+    );
+    assert_eq!(&captured.outcomes()[..7], &outcomes[..7]);
+    assert!(matches!(after[7], TableView::Unavailable { .. }));
+}
+
+#[test]
+fn patrol_never_retries_an_optional_range_source_failed_selector() {
+    let mut world = build(1);
+    let source = world.tasks[1][ESCORTING];
+    let kind = source + ctask_force::MISSION;
+    world.bytes[kind..kind + 4].copy_from_slice(&1_u32.to_le_bytes());
+    let selector = world.base + source + cunit::STAT_BLOCK;
+    let memory = TransportMemory {
+        world: &world,
+        reads: Default::default(),
+        fail_once: Some(selector),
+        failed: Default::default(),
+    };
+    let mut captured = Captured::vacant();
+    captured.capture_growing(&memory, world.base, world.game_state, 0, true, None);
+    assert!(memory.failed.get());
+    assert!(matches!(
+        captured.ranges_outcome,
+        Outcome::Unavailable { .. }
+    ));
+    let views = captured.tables();
+    assert_eq!(rows::<tables::NavalMissionTaskForces>(&views[0]).len(), 3);
+    let packet = rows::<tables::NavalPatrolMissionInputs>(&views[7])
+        .iter()
+        .find(|row| row.task_force == task_handle(1, ESCORTING))
+        .unwrap();
+    assert_eq!(packet.surface_detection, None);
+    assert_eq!(packet.carrier_detection, None);
+    assert!(
+        !packet.local_detection_known
+            && !packet.weather_detection_known
+            && !packet.headquarters_known,
+        "failed original context is never replaced by a second source observation"
+    );
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == selector)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn vacant_source_placeholder_owns_no_shared_headquarters_allocation() {
+    let captured = Captured::vacant();
+    assert!(captured.empty_headquarters.is_none());
+    assert!(captured.mission_headquarters.is_empty() && captured.patrol_headquarters.is_empty());
+    assert_eq!(captured.allocated_bytes(), 0);
 }

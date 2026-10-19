@@ -28,6 +28,8 @@ pub struct Row {
     pub slot: u32,
     pub definition_token: u32,
     pub definition_active: u8,
+    /// Authenticated pass-local address for demanded immutable operands.
+    pub definition_pointer: usize,
 }
 
 /// The containing variant authenticates this header. The collection identity
@@ -148,6 +150,7 @@ pub fn walk(
                             slot: u32::from_le_bytes(entry[..4].try_into().unwrap()),
                             definition_token: u32::from_le_bytes(field[8..12].try_into().unwrap()),
                             definition_active: field[12],
+                            definition_pointer: definitions[slot],
                         };
                         len += 1;
                     }

@@ -164,6 +164,7 @@ pub struct Environment {
     ideologies: Database<installed_content_core::ideologies::Ideologies>,
     terrain_definitions: Database<installed_content_core::terrain::TerrainDefinitions>,
     leader_traits: Database<installed_content_core::leader_traits::LeaderTraits>,
+    ideas: Database<installed_content_core::ideas::IdeaContent>,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) inputs: std::sync::OnceLock<Result<EnvironmentInputs, String>>,
 }
@@ -178,6 +179,7 @@ impl Environment {
             ideologies: Default::default(),
             terrain_definitions: Default::default(),
             leader_traits: Default::default(),
+            ideas: Default::default(),
             #[cfg(any(test, feature = "test-support"))]
             inputs: std::sync::OnceLock::new(),
         })
@@ -188,12 +190,34 @@ impl Environment {
             self.ideologies.get().map(|db| &db.1),
             self.terrain_definitions.get().map(|db| &db.1),
             self.leader_traits.get().map(|db| &db.1),
+            self.ideas.get().map(|db| &db.1),
         ]
         .into_iter()
         .flatten()
         .flatten()
         .cloned()
         .collect()
+    }
+
+    fn ideas(&self) -> Result<&installed_content_core::ideas::IdeaContent, &str> {
+        self.ideas
+            .get_or_init(|| {
+                let loaded = (|| {
+                    let officers = self
+                        .defines
+                        .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
+                    installed_content_core::ideas::read(&self.layers, &officers)
+                })();
+                match loaded {
+                    Ok((ideas, _, notes)) => {
+                        (Ok(ideas), notes.into_iter().map(|(_, why)| why).collect())
+                    }
+                    Err(error) => (Err(error.to_string()), Vec::new()),
+                }
+            })
+            .0
+            .as_ref()
+            .map_err(String::as_str)
     }
 
     pub(crate) fn defines(&self) -> &installed_content_core::defines::Defines {
@@ -450,7 +474,7 @@ impl<'a> ScriptedText<'a> {
     pub(crate) fn world(&self) -> Result<&World<'a>, String> {
         let world = self.trigger_world()?;
         match world.core_gap() {
-            Some(gap) => Err(gap),
+            Some(gap) => Err(gap.to_string()),
             None => Ok(world),
         }
     }

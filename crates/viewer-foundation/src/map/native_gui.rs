@@ -552,7 +552,7 @@ fn localised(resources: &dyn Resources, key: &[u8]) -> Option<String> {
 /// [`localised`]'s codepoints: the one path from an authored key to what its text object draws,
 /// which asset collection reads the inline icons of too ([`Assets::add_localised`]).
 fn shown_chars(localisation: &Localisation, key: &[u8]) -> Option<Vec<char>> {
-    native_text::decode(&localisation.localise_bytes(key, &[]))
+    native_text::decode(&localisation.localise_bytes(key, &[]).ok()?)
 }
 
 /// Which of the game's sprite setters the code replaced an element's sprite through; each
@@ -599,6 +599,10 @@ pub struct Bound {
     pub color: Option<[f32; 4]>,
     /// A progress bar's value (stored as given, clamped above to `steps` only).
     pub progress: Option<i32>,
+    /// Raw value written by the normalized float setter, after its own clamp,
+    /// double scaling and float rounding. Rendering does not apply the integer
+    /// setter's upper clamp again.
+    pub progress_float: Option<i32>,
     /// A texture the code draws in the element's place instead of a sprite's frame (a flag
     /// atlas cell); its size replaces the sprite's frame in the element's geometry.
     pub texture: Option<Texture>,
@@ -1114,6 +1118,18 @@ pub struct Holder {
     pub before: usize,
     /// The position the code set on the grid or list ([`Bound::position`]).
     pub position: Option<[i32; 2]>,
+}
+
+/// The progress drawable's normalized setter clamps the supplied ratio first,
+/// scales in double precision, narrows to float and adds a signed half before
+/// truncating. Integer setters have a separate upper clamp.
+pub fn normalized_progress_value(fraction: f32, steps: i32) -> i32 {
+    let value = (f64::from(fraction.clamp(0.0, 1.0)) * f64::from(steps)) as f32;
+    truncate_f32(if value < 0.0 {
+        value - 0.5
+    } else {
+        value + 0.5
+    })
 }
 
 /// Rounds halves away from zero.
@@ -2450,6 +2466,7 @@ impl Walk<'_> {
         let stretch = bound.and_then(|bound| bound.stretch);
         let bound_frame = bound.and_then(|bound| bound.frame);
         let bound_progress = bound.and_then(|bound| bound.progress);
+        let bound_progress_float = bound.and_then(|bound| bound.progress_float);
         let bound_clock = bound.and_then(|bound| bound.clock);
         let bound_pulse = bound.and_then(|bound| bound.pulse);
         let bound_shield = bound.and_then(|bound| bound.shield);
@@ -2648,18 +2665,19 @@ impl Walk<'_> {
                 textured,
             } => {
                 // Progress bars ignore drawable scale and stretch, selecting Texture or Color
-                // independently of button state. Values remain as written except for the upper
-                // clamp to `steps`; icon frames supply them directly and button state supplies
-                // them until a positive explicit frame overrides it.
+                // independently of button state. Integer assignments clamp above to
+                // `steps`; normalized assignments already applied their own setter and
+                // render their rounded state directly. Authored icon frames and button
+                // states use the integer path.
                 let own = match frame {
                     FrameSource::Own(frame) => frame,
                     FrameSource::State(frame) if frame > 0 => frame,
                     FrameSource::State(_) => state.number() as i32,
                 };
-                let mut value = bound_progress.or(bound_frame).unwrap_or(own);
-                if value > steps {
-                    value = steps;
-                }
+                let value = match bound_progress_float {
+                    Some(value) => value,
+                    None => bound_progress.or(bound_frame).unwrap_or(own).min(steps),
+                };
                 // `(value / steps) * u scale` in `f32` (the u scale is 1 unless textures are
                 // forced to powers of two): a zero `steps` divides by zero.
                 let state_value = (value as f32 / steps as f32) * 1.0;

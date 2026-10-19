@@ -554,7 +554,7 @@ pub fn railway_construction(
 mod occupation;
 pub use occupation::{
     assigned_manpower, collaboration, garrison_equipment, garrisons, occupation_laws,
-    occupation_settings, reserve_manpower, resistance,
+    occupation_settings, reserve_manpower, resistance, resistance_hover, resistance_map,
 };
 
 mod states;

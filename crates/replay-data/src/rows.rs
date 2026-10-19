@@ -164,6 +164,8 @@ pub struct StateRow {
     pub movement_infrastructure: i64,
     /// Stored signed available manpower.
     pub manpower_available: i32,
+    /// Stored state pool population unavailable for recruitment.
+    pub manpower_locked: Recorded<i32>,
     /// Exact localised bytes set by `set_state_name`, empty when absent;
     /// the display name prefers this rename.
     pub custom_name: Vec<u8>,
@@ -182,6 +184,11 @@ pub struct StateRow {
     /// `state_population` triggers compare and the manpower map mode colours
     /// each state by. Available manpower is not population.
     pub population: Recorded<i32>,
+    /// Cached index into the native state province list, in recorded-content order.
+    pub best_vp_index: Recorded<Option<i32>>,
+    /// Whether the cached controller grouping takes the whole-state branch.
+    /// None is a capture refusal; false groups positive province controllers.
+    pub single_controller: Recorded<Option<u32>>,
     /// The token of the state's live category, read every hour beside
     /// `population` and saved as `state_category`: what the states map mode
     /// colours each state by and whose `buildings_max_level` limits building
@@ -350,6 +357,7 @@ pub struct TaskForceRow {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ShipRow {
+    pub required_manpower: Recorded<Option<i32>>,
     pub id: u64,
     pub task_force: u64,
     pub strength: i64,
@@ -362,6 +370,7 @@ pub struct ShipRow {
     pub category: u32,
     pub sunk_convoys: i32,
     pub class_id: i32,
+    pub acquired_manpower: Recorded<Option<i32>>,
 }
 
 impl ShipRow {
@@ -414,6 +423,8 @@ pub struct AirWingRow {
     pub base_override: u64,
     pub country_override: i32,
     pub planes: i32,
+    pub acquired_manpower: Recorded<Option<i32>>,
+    pub exile_country: Recorded<Option<i32>>,
     pub mission_mask: u32,
     pub mission_region: Option<u32>,
     /// Stored raid range-limit operand.
@@ -426,9 +437,8 @@ pub struct AirWingRow {
     pub eligibility_veto: u8,
     pub eligibility_counter: i32,
     pub eligibility_limit: i32,
-    /// For a tactical-mission wing, the attached orders group's full handle
-    /// as stored, `Some(0)` when null; `None` for other wings or when
-    /// the group did not authenticate.
+    /// Attached orders group's authenticated full handle, `Some(0)` when
+    /// null; `None` when the same-pass group identity is unavailable.
     pub attached_orders_group: Option<u64>,
     /// The wing's position in its owner's pools as stored: pools in order,
     /// each pool's wings in order, from zero for each owner. The training pass
@@ -443,19 +453,98 @@ pub struct AirWingRow {
     /// recorded content stack. Some(0) is the null subtype; None is an optional
     /// acquisition refusal, older formats NotRecorded.
     pub pool_subunit: Recorded<Option<u32>>,
-    /// Stored full paired raid reference and same-read liveness for idle
-    /// transport wings. Never derive liveness from the raid roster.
+    /// Stored full paired raid reference and certified liveness for pool-backed
+    /// wings. Never derive liveness from the raid roster.
     pub raid_reference: Recorded<Option<AirWingRaidReference>>,
     /// Selected fixed5 stat 0x32, mission 0x8; no graphical choice. None means
     /// another mission or an optional read refusal; older formats use
     /// NotRecorded, while Some(0) is an observed zero.
     pub strategic_bombing_raw: Recorded<Option<i64>>,
+    /// Independent writer-certified saved reinforcement preference byte.
+    /// None is unavailable admission/read; every raw byte remains representable.
+    pub replacement_setting: Recorded<Option<u8>>,
+    /// Bit 0/1: training-stop known/value; bit 2/3: attachment coverage
+    /// known/value; bit 4/5: raid-assignment liveness known/value.
+    /// Unreached fields and missing certificates remain unknown.
+    pub map_flags: Recorded<Option<u32>>,
+    /// Independent numeric columns keep a changing execution count from
+    /// repeating the quiet cached statistic, context and training operands.
+    pub fuel_base_raw: Recorded<Option<i64>>,
+    pub fuel_current_type: Recorded<Option<i32>>,
+    pub fuel_effective_aircraft: Recorded<Option<i32>>,
+    pub fuel_context_mode: Recorded<Option<u32>>,
+    pub fuel_capacity_class: Recorded<Option<i32>>,
+    pub fuel_override_resolved: Recorded<Option<u32>>,
+}
+
+impl AirWingRow {
+    pub fn fuel_inputs(&self) -> Result<AirWingFuelInputs, String> {
+        Ok(AirWingFuelInputs {
+            base_fuel: *self.fuel_base_raw.require("AirWings.fuel_base_raw")?,
+            current_type: *self
+                .fuel_current_type
+                .require("AirWings.fuel_current_type")?,
+            effective_aircraft: *self
+                .fuel_effective_aircraft
+                .require("AirWings.fuel_effective_aircraft")?,
+            context_mode: self
+                .fuel_context_mode
+                .require("AirWings.fuel_context_mode")?
+                .map(u8::try_from)
+                .transpose()
+                .map_err(|_| "Air fuel context is outside its stored byte".to_owned())?,
+            capacity_class: *self
+                .fuel_capacity_class
+                .require("AirWings.fuel_capacity_class")?,
+            override_resolved: match self
+                .fuel_override_resolved
+                .require("AirWings.fuel_override_resolved")?
+            {
+                Some(0) => Some(false),
+                Some(1) => Some(true),
+                None => None,
+                _ => {
+                    return Err(
+                        "Air fuel override liveness is outside its native boolean domain".into(),
+                    );
+                }
+            },
+        })
+    }
+    pub fn training_stop(&self) -> Option<bool> {
+        self.map_flag(0)
+    }
+    pub fn attachment_coverage(&self) -> Option<bool> {
+        self.map_flag(2)
+    }
+    pub fn assigned_to_raid(&self) -> Option<bool> {
+        self.map_flag(4)
+    }
+    fn map_flag(&self, bit: u32) -> Option<bool> {
+        match self.map_flags {
+            Recorded::Value(Some(flags)) if flags & (1 << bit) != 0 => {
+                Some(flags & (2 << bit) != 0)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AirWingRaidReference {
     pub raw: u64,
     pub resolves: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AirWingFuelInputs {
+    pub base_fuel: Option<i64>,
+    pub current_type: Option<i32>,
+    pub effective_aircraft: Option<i32>,
+    pub context_mode: Option<u8>,
+    pub capacity_class: Option<i32>,
+    /// Raw registry liveness for the reached training override gate.
+    pub override_resolved: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -631,6 +720,15 @@ macro_rules! define_tables {
             }
         }
         impl TableRows {
+            pub(crate) fn range_update_fits(&self, previous: &TableRows, ranges: &[std::ops::Range<u128>]) -> bool {
+                match (self, previous) { $((Self::$table(fresh), Self::$table(old)) => crate::sliced::ranges::fits(old, fresh, ranges)),+, _ => false }
+            }
+            pub(crate) fn encode_range_update(&self, previous: &TableRows, ranges: &[std::ops::Range<u128>], output: &mut Vec<u8>, deleted: &mut Vec<u8>) -> io::Result<bool> {
+                match (self, previous) { $((Self::$table(fresh), Self::$table(old)) => crate::sliced::ranges::encode(old, fresh, ranges, output, deleted)),+, _ => Err(invalid("key range table type mismatch")) }
+            }
+            pub(crate) fn apply_range_update(self, previous: &mut TableRows, ranges: &[std::ops::Range<u128>]) -> io::Result<TableRows> {
+                match (self, previous) { $((Self::$table(fresh), Self::$table(old)) => crate::sliced::ranges::apply(old, fresh, ranges).map(Self::$table)),+, _ => Err(invalid("key range table type mismatch")) }
+            }
             /// Bytes of the row allocation: its capacity at this table's own
             /// row size. Strings and lists a row owns on the heap are not counted.
             pub fn allocated_bytes(&self) -> usize {
@@ -1124,6 +1222,88 @@ StateTemporaryResources = 335 => StateTemporaryResource(StateTemporaryResourceRo
 ConvoyClients = 336 => ConvoyClient(ConvoyClientRow),
 TradeRoutes = 337 => TradeRoute(TradeRouteRow),
 RegionalConvoyEfficiency = 338 => RegionalConvoyEfficiency(RegionalConvoyEfficiencyRow),
+CountryWargoals = 339 => CountryWargoal(CountryWargoalRow),
+WargoalTargets = 340 => WargoalTarget(WargoalTargetRow),
+WargoalJustifications = 341 => WargoalJustification(WargoalJustificationRow),
+IndustrialOrganisationDetails = 342 => IndustrialOrganisationDetails(IndustrialOrganisationDetailsRow),
+IndustrialOrganisationPolicies = 343 => IndustrialOrganisationPolicies(IndustrialOrganisationPoliciesRow),
+VariantChanges = 344 => VariantChange(VariantChangeRow),
+VariantBonusSnapshots = 345 => VariantBonusSnapshot(VariantBonusSnapshotRow),
+DesignCountryModifiers = 346 => DesignCountryModifier(DesignCountryModifierRow),
+DesignCountryTemplates = 347 => DesignCountryTemplates(DesignCountryTemplatesRow),
+DesignObserverContext = 348 => DesignObserverContext(DesignObserverContextRow),
+DesignOrganisationLiveness = 349 => DesignOrganisationLiveness(DesignOrganisationLivenessRow),
+
+DivisionHistory = 350 => DivisionHistory(SharedDivisionHistoryRow),
+DivisionPanelSources = 351 => DivisionPanelSources(SharedDivisionPanelSourceRow),
+DivisionPanelStats = 352 => DivisionPanelStats(DivisionPanelStatsRow),
+DoctrineFolders = 353 => DoctrineFolder(DoctrineFolderRow),
+DoctrineTracks = 354 => DoctrineTrack(DoctrineTrackRow),
+DoctrineLeaderMastery = 355 => DoctrineLeaderMastery(DoctrineLeaderMasteryRow),
+DoctrineCostReductions = 356 => DoctrineCostReduction(DoctrineCostReductionRow),
+DoctrineMasteryGrants = 357 => DoctrineMasteryGrant(DoctrineMasteryGrantRow),
+DoctrineEquipmentBonuses = 358 => DoctrineEquipmentBonus(DoctrineEquipmentBonusRow),
+DoctrineCountries = 359 => DoctrineCountry(DoctrineCountryRow),
+ScientistDaily = 360 => ScientistDaily(ScientistDailyRow),
+FactionAccounts = 361 => FactionAccount(FactionAccountRow),
+FactionResearch = 362 => FactionResearch(FactionResearchRow),
+FactionMinimumUpgrades = 363 => FactionMinimumUpgrade(FactionMinimumUpgradeRow),
+FactionDoctrine = 364 => FactionDoctrine(FactionDoctrineRow),
+FactionProjection = 365 => FactionProjection(FactionProjectionRow),
+FactionResources = 366 => FactionResource(FactionResourceRow),
+FactionGoalStatus = 367 => FactionGoalStatus(FactionGoalStatusRow),
+FactionGoalEntries = 368 => FactionGoalEntry(FactionGoalEntryRow),
+FactionRules = 369 => FactionRule(FactionRuleRow),
+FactionPrograms = 370 => FactionProgram(FactionProgramRow),
+FactionManpower = 371 => FactionManpower(FactionManpowerRow),
+FactionUnlocks = 372 => FactionUnlock(FactionUnlockRow),
+FactionVariables = 373 => FactionVariable(FactionVariableRow),
+FactionAdvisorModifiers = 374 => FactionAdvisorModifier(FactionAdvisorModifierRow),
+CombatLogGroups = 375 => CombatLogGroups(CombatLogGroupRow),
+CombatLogMonths = 376 => CombatLogMonths(CombatLogMonthRow),
+CombatLogManpower = 377 => CombatLogManpower(CombatLogManpowerRow),
+CombatLogTemplates = 378 => CombatLogTemplates(CombatLogTemplateRow),
+CombatLogReferences = 379 => CombatLogReferences(CombatLogReferenceRow),
+CombatLogBattles = 380 => CombatLogBattles(CombatLogBattleRow),
+CombatLogEnemyEquipment = 381 => CombatLogEnemyEquipment(CombatLogEnemyEquipmentRow),
+CombatLogBattleSides = 382 => CombatLogBattleSides(CombatLogBattleSideRow),
+CombatLogBattleEquipment = 383 => CombatLogBattleEquipment(CombatLogBattleEquipmentRow),
+CombatLogBattleModifiers = 384 => CombatLogBattleModifiers(CombatLogBattleModifierRow),
+CombatLogBattleCountries = 385 => CombatLogBattleCountries(CombatLogBattleCountryRow),
+CombatLogObservers = 386 => CombatLogObservers(CombatLogObserverRow),
+CountryTemplateState = 387 => CountryTemplateState(CountryTemplateStateRow),
+NavalRepairCountries = 388 => NavalRepairCountries(NavalRepairCountryRow),
+NavalRepairFleets = 389 => NavalRepairFleets(NavalRepairFleetRow),
+NavalRepairTaskForces = 390 => NavalRepairTaskForces(NavalRepairTaskForceRow),
+NavalTaskForceComposition = 391 => NavalTaskForceComposition(NavalTaskForceCompositionRow),
+NavalRepairBases = 392 => NavalRepairBases(NavalRepairBaseRow),
+NavalRepairQueue = 393 => NavalRepairQueue(NavalRepairQueueRow),
+NavalRefitShips = 394 => NavalRefitShips(NavalRefitShipRow),
+NavalRefitProgress = 395 => NavalRefitProgress(NavalRefitProgressRow),
+NavalRepairChildren = 396 => NavalRepairChildren(NavalRepairChildRow),
+CountryMarket = 397 => CountryMarket(CountryMarketRow),
+MarketContractTerms = 398 => MarketContractTerms(MarketContractTermsRow),
+LendLeaseAgreements = 399 => LendLeaseAgreement(LendLeaseAgreementRow),
+MarketEvents = 400 => MarketEvent(MarketEventRow),
+IntelNetworkSummaries = 401 => IntelNetworkSummary(IntelNetworkSummaryRow),
+PropagandaEfforts = 402 => PropagandaEffort(PropagandaEffortRow),
+IntelContributions = 403 => IntelContribution(IntelContributionRow),
+IntelSources = 404 => IntelSource(IntelSourceRow),
+IntelNetworkAuxiliaries = 405 => IntelNetworkAuxiliary(IntelNetworkAuxiliaryRow),
+MovementStateTerms = 406 => MovementStateTerm(MovementStateTermRow),
+CoreSupplyAccess = 407 => CoreSupplyAccess(CoreSupplyAccessRow),
+CountryUnitSpeedEntries = 408 => CountryUnitSpeedEntry(CountryUnitSpeedEntryRow),
+RiverRelations = 409 => RiverRelation(RiverRelationRow),
+DivisionTransportSpeeds = 410 => DivisionTransportSpeed(OwnerTransportSpeedRow),
+WarParticipation = 411 => WarParticipation(WarParticipationRow),
+WarCapturedProvinces = 412 => WarCapturedProvinces(WarCapturedProvinceRow),
+WarLendLeaseHistories = 413 => WarLendLeaseHistories(WarLendLeaseHistoryRow),
+AirGroundCrews = 414 => AirGroundCrews(AirGroundCrewRow),
+AirTransferInputs = 415 => AirTransferInputs(AirTransferInputRow),
+NavalRegionalMines = 416 => NavalRegionalMines(NavalRegionalMineRow),
+NavalAccidentReports = 417 => NavalAccidentReports(NavalAccidentReportRow),
+NavalDominanceTaskForceRanges = 418 => NavalDominanceTaskForceRanges(NavalMissionTaskForceRow),
+NavalPatrolMissionInputs = 419 => NavalPatrolMissionInputs(NavalPatrolMissionInputRow),
 }
 impl TableId {
     /// Discard only proven field framing. No old row is decoded, validated as
@@ -2408,12 +2588,12 @@ row_codec!(CampaignRow, 0, |_row| 0, |_key| {  }, {0 => id: Bytes}, |_row| Ok(()
 row_codec!(EventFeedHistoryRow, 0, |_row| 0, |_key| {}, {
     0 => generation: U64, 1 => read_hour: I32, 2 => coverage: Opaque,
     3 => counts: Opaque, 4 => outstanding: U64, 5 => failure: Opaque,
-    6 => events: Opaque
+    6 => events: Opaque, 7 => script_tokens: Bytes, 8 => script_scopes: Opaque, 9 => script_refusals: U8
 }, |row| row.validate());
 row_codec!(CountryRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32, 1 => tag: Bytes, 2 => political_power_raw: OptionalI64, 3 => command_power_raw: I64, 4 => stability_raw: I64, 5 => war_support_raw: I64, 6 => convoys_raw: OptionalI64, 7 => peace_conference_participant: U8, 8 => manpower_residual: I32, 9 => border_land_doctrine_level: OptionalI32}, |_row| Ok(()));
 row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32}, |_row| Ok(()));
 row_codec!(ProvinceRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => state: U32, 1 => owner: U32, 2 => controller: U32, 3 => victory_points: I32, 4 => fort_positive: U8, 5 => move_gate: U8, 6 => port_sea: I32, 7 => attack: Opaque, 8 => selected_areas: Opaque, 9 => fort_bunker: OptionalI64, 10 => controller_area: OptionalU32, 11 => owner_area: OptionalU32, 12 => area_node: Opaque}, |_row| Ok(()));
-row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32}, |_row| Ok(()));
+row_codec!(StateRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => owner: U32, 1 => controller: U32, 2 => movement_infrastructure: I64, 3 => custom_name: Bytes, 4 => owner_name: Bytes, 5 => manpower_available: I32, 6 => continent: OptionalU32, 7 => railway_infrastructure: OptionalI64, 8 => population: I32, 9 => category: OptionalU32, 10 => manpower_locked: I32, 11 => best_vp_index: OptionalI32, 12 => single_controller: OptionalU32}, |_row| Ok(()));
 row_codec!(DivisionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => roster_owner: U32, 1 => logical_owner: U32, 2 => expeditionary_owner: U32, 3 => province: U32, 4 => template: U64, 5 => hit_points: I64 @ Self::HIT_POINTS_STEP, 6 => organisation: I64 @ Self::ORGANISATION_STEP, 7 => orders_group: U64, 8 => reveal_skip: U8}, |_row| Ok(()));
 row_codec!(WarRelationRow, 64, |row| (row.first_country as u128) << 32 | row.second_country as u128, |key| { first_country: (key >> 32) as u32, second_country: key as u32 }, {0 => start_hour: I32, 1 => end_hour: I32, 2 => cancel: U8, 3 => first_casualties: I64, 4 => second_casualties: I64, 5 => first_unknown_casualties: I64, 6 => second_unknown_casualties: I64, 7 => first_was_instigator: U8}, |_row| Ok(()));
 row_codec!(FactionRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => name: Bytes, 1 => template_token: OptionalU32, 2 => color_red: U32, 3 => color_green: U32, 4 => color_blue: U32, 5 => color_alpha: U32, 6 => color_overridden: U8}, |_row| Ok(()));
@@ -2423,10 +2603,10 @@ row_codec!(HumanControllerRow, 32, |row| row.country as u128, |key| { country: k
 row_codec!(LandCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => duration: I32, 2 => day: I32, 3 => attackers: U64List, 4 => defenders: U64List, 5 => attacker_classes: U32List, 6 => defender_classes: U32List}, |_row| Ok(()));
 row_codec!(FleetRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => home_base: U32, 2 => name: Opaque, 3 => leader: OptionalU64}, |_row| Ok(()));
 row_codec!(TaskForceRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => fleet: U64, 1 => roster_owner: U32, 2 => logical_owner: U32, 3 => expeditionary_owner: U32, 4 => province: U32, 5 => mission: U32, 6 => route_count: I32, 7 => combat_references: I32}, |_row| Ok(()));
-row_codec!(ShipRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => task_force: U64, 1 => strength: I64, 2 => organisation: I64, 3 => experience: I64 @ Self::EXPERIENCE_STEP, 4 => category: U32, 5 => sunk_convoys: I32, 6 => class_id: I32}, |_row| Ok(()));
+row_codec!(ShipRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => task_force: U64, 1 => strength: I64, 2 => organisation: I64, 3 => experience: I64 @ Self::EXPERIENCE_STEP, 4 => category: U32, 5 => sunk_convoys: I32, 6 => class_id: I32, 7 => acquired_manpower: OptionalI32, 8 => required_manpower: OptionalI32}, |_row| Ok(()));
 row_codec!(NavalCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => attacker_positioning: I64, 2 => defender_positioning: I64, 3 => attacker_anti_air: I64, 4 => defender_anti_air: I64, 5 => registry_ordinal: U32}, |_row| Ok(()));
 row_codec!(NavalCombatParticipantRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.battle_slot as u128, |key| { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32 }, {0 => ship: U64, 1 => owner: U32, 2 => state: U32}, |row| if row.side > 1 { Err(invalid("naval combat participant side exceeds one")) } else { Ok(()) });
-row_codec!(AirWingRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => air_base: U64, 2 => base_override: U64, 3 => country_override: I32, 4 => planes: I32, 5 => mission_mask: U32, 6 => mission_region: OptionalU32, 7 => base_range_raw: I64, 8 => ace: U64, 9 => mission_active: U8, 10 => eligibility_veto: U8, 11 => eligibility_counter: I32, 12 => eligibility_limit: I32, 13 => attached_orders_group: OptionalU64, 14 => pool_ordinal: U32, 15 => name: Opaque, 16 => pool_subunit: OptionalU32, 17 => raid_reference: Opaque, 18 => strategic_bombing_raw: OptionalI64}, |_row| Ok(()));
+row_codec!(AirWingRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => air_base: U64, 2 => base_override: U64, 3 => country_override: I32, 4 => planes: I32, 5 => mission_mask: U32, 6 => mission_region: OptionalU32, 7 => base_range_raw: I64, 8 => ace: U64, 9 => mission_active: U8, 10 => eligibility_veto: U8, 11 => eligibility_counter: I32, 12 => eligibility_limit: I32, 13 => attached_orders_group: OptionalU64, 14 => pool_ordinal: U32, 15 => name: Opaque, 16 => pool_subunit: OptionalU32, 17 => raid_reference: Opaque, 18 => strategic_bombing_raw: OptionalI64, 19 => acquired_manpower: OptionalI32, 20 => exile_country: OptionalI32, 21 => replacement_setting: Opaque, 22 => map_flags: OptionalU32, 23 => fuel_base_raw: OptionalI64, 24 => fuel_current_type: OptionalI32, 25 => fuel_effective_aircraft: OptionalI32, 26 => fuel_context_mode: OptionalU32, 27 => fuel_capacity_class: OptionalI32, 28 => fuel_override_resolved: OptionalU32}, |_row| Ok(()));
 row_codec!(ArmyOrderRow, 96, |row| (row.owner_group as u128) << 32 | row.instance as u128, |key| { owner_group: (key >> 32) as u64, instance: key as u32 }, {0 => country: U32, 1 => order_type: I32, 2 => active: U8, 3 => paradrop_target: U32, 4 => path: U32List, 5 => target_states: U32List}, |_row| Ok(()));
 
 pub fn encode_delta(
@@ -3008,6 +3188,7 @@ macro_rules! opaque_value {
 opaque_value!(crate::event_feed_rows::EventFeedCoverage);
 opaque_value!(Option<crate::event_feed_rows::EventFeedCounts>);
 opaque_value!(Vec<crate::event_feed_rows::EventFeedEvent>);
+opaque_value!(Vec<crate::event_feed_rows::EventFeedScope>);
 
 /// A field borrows either decoded native values or checked wire bytes. Decoding a
 /// list allocates only when constructing its owning row, never a temporary list.
@@ -3107,6 +3288,151 @@ mod land_modifier_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn patrol_disruption_delta_does_not_repeat_quiet_combat_inputs() {
+        let previous = AirMissionInputRow {
+            wing: 7,
+            patrol_disruption_raw: (Some(17)).into(),
+            patrol_attack_raw: (Some(i64::MAX)).into(),
+            patrol_defence_raw: (Some(i64::MIN)).into(),
+            patrol_speed_raw: (Some(-13)).into(),
+            patrol_wing_attack_raw: (Some(-19)).into(),
+            patrol_wing_defence_raw: (Some(23)).into(),
+            ..Default::default()
+        };
+        let next = AirMissionInputRow {
+            patrol_disruption_raw: (Some(-29)).into(),
+            ..previous.clone()
+        };
+        let delta = next.delta(Some(&previous)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1 << 13);
+        assert_eq!(
+            delta.apply::<AirMissionInputRow>(Some(previous)).unwrap(),
+            next
+        );
+        round_trip(TableId::AirMissionInputs, next);
+    }
+
+    #[test]
+    fn patrol_held_marker_delta_is_independent_of_disruption_and_combat() {
+        let previous = AirMissionInputRow {
+            wing: 7,
+            patrol_disruption_raw: (Some(11)).into(),
+            patrol_attack_raw: (Some(13)).into(),
+            patrol_defence_raw: (Some(17)).into(),
+            patrol_night_applied_raw: (Some(-100_000)).into(),
+            ..Default::default()
+        };
+        let next = AirMissionInputRow {
+            patrol_night_applied_raw: (Some(50_001)).into(),
+            ..previous.clone()
+        };
+        let delta = next.delta(Some(&previous)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1 << 19);
+        assert_eq!(
+            delta.apply::<AirMissionInputRow>(Some(previous)).unwrap(),
+            next
+        );
+        round_trip(TableId::AirMissionInputs, next);
+    }
+
+    #[test]
+    fn patrol_air_detection_numeric_columns_delta_independently_of_execution_and_normalization() {
+        let previous = AirMissionInputRow {
+            wing: 7,
+            current_type: (Some(8)).into(),
+            effective_aircraft: (Some(13)).into(),
+            detection_stat_13: (Some(i64::MIN)).into(),
+            detection_stat_14: (Some(i64::MAX)).into(),
+            ..Default::default()
+        };
+        let next = AirMissionInputRow {
+            detection_stat_13: (Some(-123_456)).into(),
+            ..previous.clone()
+        };
+        let delta = next.delta(Some(&previous)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1 << 11);
+        assert_eq!(
+            delta.apply::<AirMissionInputRow>(Some(previous)).unwrap(),
+            next
+        );
+        round_trip(TableId::AirMissionInputs, next);
+    }
+
+    #[test]
+    fn wing_fuel_count_delta_does_not_repeat_quiet_statistic_or_training_fields() {
+        let previous = AirWingRow {
+            id: 7,
+            fuel_base_raw: Some(i64::MIN).into(),
+            fuel_current_type: Some(4).into(),
+            fuel_effective_aircraft: Some(81).into(),
+            fuel_context_mode: Some(2).into(),
+            fuel_capacity_class: None.into(),
+            fuel_override_resolved: None.into(),
+            ..Default::default()
+        };
+        let next = AirWingRow {
+            fuel_effective_aircraft: Some(80).into(),
+            ..previous.clone()
+        };
+        let delta = next.delta(Some(&previous)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1 << 25);
+        assert_eq!(delta.apply::<AirWingRow>(Some(previous)).unwrap(), next);
+        assert_eq!(next.fuel_inputs().unwrap().base_fuel, Some(i64::MIN));
+        assert_eq!(next.fuel_inputs().unwrap().effective_aircraft, Some(80));
+        round_trip(TableId::AirWings, next);
+    }
+
+    #[test]
+    fn wing_fuel_accessor_preserves_independent_absence_and_rejects_invalid_domains() {
+        let mut row = AirWingRow {
+            fuel_base_raw: None.into(),
+            fuel_current_type: Some(0).into(),
+            fuel_effective_aircraft: None.into(),
+            fuel_context_mode: None.into(),
+            fuel_capacity_class: Some(-1).into(),
+            fuel_override_resolved: Some(0).into(),
+            ..Default::default()
+        };
+        let input = row.fuel_inputs().unwrap();
+        assert_eq!(input.base_fuel, None);
+        assert_eq!(input.current_type, Some(0));
+        assert_eq!(input.capacity_class, Some(-1));
+        assert_eq!(input.override_resolved, Some(false));
+        row.fuel_override_resolved = Some(2).into();
+        assert!(row.fuel_inputs().is_err());
+        row.fuel_override_resolved = Some(1).into();
+        row.fuel_context_mode = Some(256).into();
+        assert!(row.fuel_inputs().is_err());
+    }
+
+    #[test]
+    fn air_grid_flag_pairs_keep_raid_training_and_coverage_independently_unknown() {
+        for packed in 0..64 {
+            let row = AirWingRow {
+                map_flags: Some(packed).into(),
+                ..Default::default()
+            };
+            for (shift, value) in [
+                (0, row.training_stop()),
+                (2, row.attachment_coverage()),
+                (4, row.assigned_to_raid()),
+            ] {
+                assert_eq!(
+                    value,
+                    (packed & (1 << shift) != 0).then_some(packed & (2 << shift) != 0)
+                );
+            }
+        }
+        for map_flags in [Recorded::NotRecorded, Recorded::Value(None)] {
+            let row = AirWingRow {
+                map_flags,
+                ..Default::default()
+            };
+            assert_eq!(row.assigned_to_raid(), None);
+        }
+    }
 
     #[test]
     fn validated_copy_does_not_repeat_admission_validation() {
@@ -3534,6 +3860,8 @@ mod tests {
         round_trip(
             TableId::States,
             StateRow {
+                manpower_locked: Default::default(),
+
                 id: u32::MAX,
                 owner: 0,
                 controller: u32::MAX,
@@ -3545,6 +3873,10 @@ mod tests {
                 custom_name: vec![0xff, 0, b'a'],
                 owner_name: "Département".into(),
                 continent: Recorded::Value(Some(u32::MAX)),
+
+                best_vp_index: Default::default(),
+
+                single_controller: Default::default(),
             },
         );
         round_trip(
@@ -3818,6 +4150,9 @@ mod tests {
         round_trip(
             TableId::Ships,
             ShipRow {
+                acquired_manpower: Default::default(),
+                required_manpower: Default::default(),
+
                 id: u64::MAX,
                 task_force: u64::MAX,
                 strength: i64::MIN,
@@ -3854,6 +4189,9 @@ mod tests {
         round_trip(
             TableId::AirWings,
             AirWingRow {
+                acquired_manpower: Default::default(),
+                exile_country: Default::default(),
+
                 id: u64::MAX,
                 owner: u32::MAX,
                 air_base: u64::MAX,
@@ -3872,6 +4210,14 @@ mod tests {
                 pool_ordinal: u32::MAX,
                 name: Recorded::Value(Some(vec![0xff, 0, b'x'])),
                 strategic_bombing_raw: Recorded::Value(Some(i64::MIN)),
+                replacement_setting: Recorded::Value(Some(u8::MAX)),
+                map_flags: Recorded::Value(Some(15)),
+                fuel_base_raw: Some(i64::MIN).into(),
+                fuel_current_type: Some(i32::MIN).into(),
+                fuel_effective_aircraft: Some(i32::MAX).into(),
+                fuel_context_mode: Some(u32::from(u8::MAX)).into(),
+                fuel_capacity_class: Some(i32::MIN).into(),
+                fuel_override_resolved: Some(0).into(),
                 pool_subunit: Recorded::Value(Some(u32::MAX)),
                 raid_reference: Recorded::Value(Some(AirWingRaidReference {
                     raw: u64::MAX,
@@ -3921,6 +4267,8 @@ mod tests {
         assert_eq!(old.delta(Some(&old)).unwrap(), None);
         for mask in 1..=TableId::States.full_mask() {
             let new = StateRow {
+                manpower_locked: Recorded::Value(if mask & 1024 != 0 { -1 } else { 0 }),
+
                 id: old.key().try_into().unwrap(),
                 manpower_available: if mask & 32 != 0 { i32::MAX } else { 0 },
                 continent: Recorded::Value(if mask & 64 != 0 { Some(123) } else { None }),
@@ -3940,12 +4288,15 @@ mod tests {
                 } else {
                     Vec::new()
                 },
+
+                best_vp_index: (if mask & 2048 != 0 { Some(-1) } else { None }).into(),
+                single_controller: (if mask & 4096 != 0 { Some(1) } else { None }).into(),
             };
             let delta = new.delta(Some(&old)).unwrap().unwrap();
             assert_eq!(delta.mask, mask);
             let mut bytes = Vec::new();
             encode_delta(TableId::States, &delta, 0, &mut bytes).unwrap();
-            // Ten fields take a two-byte mask.
+            // Thirteen fields take a two-byte mask.
             let scalars = 5
                 + 2
                 + usize::from(mask & 1 != 0)
@@ -3955,7 +4306,10 @@ mod tests {
                 + 3 * usize::from(mask & 64 != 0)
                 + 2 * usize::from(mask & 128 != 0)
                 + usize::from(mask & 256 != 0)
-                + 3 * usize::from(mask & 512 != 0);
+                + 3 * usize::from(mask & 512 != 0)
+                + usize::from(mask & 1024 != 0)
+                + 2 * usize::from(mask & 2048 != 0)
+                + 2 * usize::from(mask & 4096 != 0);
             // The name fields add their own length-prefixed bytes.
             let names = 6 * usize::from(mask & 8 != 0) + 5 * usize::from(mask & 16 != 0);
             if names == 0 {

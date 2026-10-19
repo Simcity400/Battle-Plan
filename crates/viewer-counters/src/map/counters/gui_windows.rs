@@ -424,6 +424,7 @@ impl<'w> Writes<'w> {
             selectable: None,
             owner: None,
             port_tooltip: None,
+            naval_convoy: None,
         }
     }
 }
@@ -435,6 +436,8 @@ impl<'w> Writes<'w> {
 /// ([`native_gui::lifecycle::Withheld`]), counted where the window would draw.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Update {
+    /// Regional raider whose live targets supply this tiny convoy control.
+    pub naval_convoy: Option<u64>,
     /// Task-force members and ownership bound to a presented plate.
     pub selectable: Option<(bool, Arc<[u64]>)>,
     /// The canonical slot of the task force's owner, which the counter filter reads.

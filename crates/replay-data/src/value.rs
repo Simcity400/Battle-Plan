@@ -78,6 +78,42 @@ pub trait Value: Sized {
     }
 }
 
+/// Immutable, unstepped nested operands shared by held capture rows. Cloning a
+/// row retains the same payload allocation; decoding still owns its wire values.
+impl<T: Value> Value for std::sync::Arc<T> {
+    const MINIMUM_ENCODED_BYTES: usize = T::MINIMUM_ENCODED_BYTES;
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        if T::HAS_STEPS {
+            return Err(invalid("shared nested operands must be unstepped"));
+        }
+        (**self).encoded_bytes()
+    }
+    fn recorded_bytes(&self) -> io::Result<usize> {
+        (**self).recorded_bytes()
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self::clone(self))
+    }
+    fn heap_bytes(&self) -> usize {
+        size_of::<T>() + (**self).heap_bytes()
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        if T::HAS_STEPS {
+            return Err(invalid("shared nested operands must be unstepped"));
+        }
+        (**self).encode_reserved(output)
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        if T::HAS_STEPS {
+            return Err(invalid("shared nested operands must be unstepped"));
+        }
+        Ok(Self::new(T::decode(input)?))
+    }
+    fn visit_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
+        (**self).visit_field_gaps(visit);
+    }
+}
+
 impl<T: Value> Value for crate::rows::Recorded<T> {
     fn heap_bytes(&self) -> usize {
         match self {
@@ -790,5 +826,63 @@ mod tests {
         );
         assert!(vec![[0_u8; 0]].encode(&mut Vec::new()).is_err());
         assert!(Vec::<[u8; 0]>::decode(&mut Decoder::new(&[1, 0, 0, 0])).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fleet_membership_tests {
+    use super::*;
+    use std::sync::Arc;
+    #[test]
+    fn immutable_full_reference_membership_shares_payload_and_keeps_repeats() {
+        let values = Arc::new(vec![u64::MAX, 0, u64::MAX]);
+        let cloned = Value::try_clone(&values).unwrap();
+        assert!(Arc::ptr_eq(&values, &cloned));
+        let mut bytes = Vec::new();
+        values.encode(&mut bytes).unwrap();
+        assert_eq!(
+            Arc::<Vec<u64>>::decode(&mut Decoder::new(&bytes)).unwrap(),
+            values
+        );
+    }
+
+    #[test]
+    fn immutable_fleet_membership_clone_shares_payload_and_codec_keeps_repeats() {
+        let values = Arc::new(vec![2_u32, 2, 7]);
+        let cloned = Value::try_clone(&values).unwrap();
+        assert!(Arc::ptr_eq(&values, &cloned));
+        let mut bytes = Vec::new();
+        values.encode(&mut bytes).unwrap();
+        assert_eq!(
+            Arc::<Vec<u32>>::decode(&mut Decoder::new(&bytes)).unwrap(),
+            values
+        );
+    }
+
+    #[test]
+    fn optional_fleet_membership_native_and_prepared_codecs_keep_absence_and_repeats() {
+        use crate::rows::{Kind, NativeValue, checkpoint::Native};
+        type Membership = Option<Arc<Vec<u32>>>;
+        for values in [None, Some(Arc::new(vec![])), Some(Arc::new(vec![2, 2, 7]))] {
+            let cloned = NativeValue::try_clone(&values).unwrap();
+            if let Some(values) = &values {
+                assert!(Arc::ptr_eq(values, cloned.as_ref().unwrap()));
+            } else {
+                assert!(cloned.is_none());
+            }
+            let mut bytes = Vec::new();
+            NativeValue::field(&values).encode(&mut bytes).unwrap();
+            let mut input = Decoder::new(&bytes);
+            let decoded = Membership::from_field(Kind::Opaque.decode(&mut input).unwrap()).unwrap();
+            input.finish().unwrap();
+            assert_eq!(decoded, values);
+
+            let mut bytes = Vec::new();
+            Native::encode(&values, &mut bytes).unwrap();
+            let mut input = Decoder::new(&bytes);
+            let decoded = <Membership as Native>::decode(Kind::Opaque, &mut input).unwrap();
+            input.finish().unwrap();
+            assert_eq!(decoded, values);
+        }
     }
 }

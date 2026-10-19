@@ -209,7 +209,10 @@ fn walk_buffer(
     }
 }
 
+pub mod inventory;
 pub mod relation;
 
 #[cfg(test)]
 mod tests;
+
+pub mod mutations;

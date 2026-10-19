@@ -118,7 +118,7 @@ pub(super) fn capture(
 /// Read country, roster state, then friendly roster state. Closures preserve
 /// the caller's acquired roots and skipped reads.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn read_inputs(
+pub fn read_inputs(
     memory: &impl Memory,
     base: usize,
     game_state: usize,

@@ -11,6 +11,7 @@
 //! only while its own hooks and both forwarders are enabled. Anything unobserved (disabled,
 //! poisoned, a refused registration, an epoch change, a running writer) makes the capture read that
 //! base afresh ([`crate::extended::air::RegistrationStore`]).
+pub mod fuel;
 pub mod registration;
 
 use crate::{
@@ -297,7 +298,7 @@ pub fn forwarder(forwarder: Forwarder, enabled: bool) {
 
 /// Notifications running now.
 pub fn active() -> usize {
-    WATCHES.registry.active()
+    WATCHES.registry.active().saturating_add(fuel::active())
 }
 
 /// Game thread, in the hourly callback before any capture. `invalidate`
@@ -305,12 +306,14 @@ pub fn active() -> usize {
 /// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
+    fuel::boundary(invalidate);
 }
 
 /// Off the game thread: size the watches for the bases the latest pass
 /// visited. Nothing is offered before a pass visited them: a later larger
 /// table waits for an invalidating hour, while the first installs at once.
 pub fn presize() {
+    fuel::presize();
     let bases = BASES.load(Ordering::Relaxed);
     if bases != 0 {
         WATCHES.offer(bases);
@@ -320,6 +323,7 @@ pub fn presize() {
 /// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
+    fuel::collect();
 }
 
 /// A compared base `handle` differed from its held subtree at `hour`; the
@@ -389,12 +393,14 @@ pub fn status() -> impl serde::Serialize {
         "forwarded_capacities": WATCHES.capacities.load(Ordering::Relaxed),
         "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
         "watches": WATCHES.registry.status(),
+        "fuel": fuel::status(),
         "scope": "cumulative since attach; a state air base's AirBaseRegistrations subtree (slot vector, dense list, containers, pools, wings) is carried (carried_bases) by splicing the log spans its latest fresh read took into the hour's air bases log, when the base is at the same address, no hooked writer touched its handle since that read registered it and the hour takes its slots as that read did; its container countries' links are resolved afresh and must still name the held slots; host bases and every other base are read afresh (read_bases); every hour also reads the carryable bases of its slice afresh (one in rotation_hours by base handle; every one in verify mode) and compares them with the held subtree, disabling reuse at the first mismatch (sampled_*); the decode worker appends a base's rows from its walk of the same held segment in an earlier hour (decoded_reused_bases) and keeps the rows of each reported base it walks (decoded_walked_bases)"
     })
 }
 
 pub struct Hooks {
     hooks: Vec<Hook>,
+    fuel: fuel::Hooks,
 }
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
@@ -409,7 +415,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "air_base_carry_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -422,6 +428,7 @@ impl Hooks {
                 destroy_all_wings as *const () as usize,
                 split_wing as *const () as usize,
                 destroy_pool as *const () as usize,
+                rebind_pool_definition as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
@@ -430,9 +437,18 @@ impl Hooks {
                 hooks.push(hook);
             }
         }
-        Ok(Self { hooks })
+        Ok(Self {
+            hooks,
+            fuel: unsafe { fuel::Hooks::new(memory, base) }?,
+        })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        if !self.fuel.set_enabled(enabled)? {
+            return Ok(false);
+        }
+        if !enabled {
+            crate::wing_preferences::publication_enabled(false);
+        }
         if !enabled {
             WATCHES.hooks.store(false, Ordering::SeqCst);
             WATCHES.apply();
@@ -450,14 +466,19 @@ impl Hooks {
             .hooks
             .store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
         WATCHES.apply();
+        crate::wing_preferences::publication_enabled(enabled && self.hooks.len() == SITES);
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
-        self.hooks.iter().flat_map(Hook::executable_ranges)
+        self.hooks
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .chain(self.fuel.executable_ranges())
     }
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        crate::wing_preferences::publication_enabled(false);
         // SAFETY: like each Hook's relay, the watch tables are dropped only
         // once the hooks were never enabled, or were removed and drained
         // after the last capture.
@@ -471,13 +492,16 @@ impl Drop for Hooks {
 // flight.
 macro_rules! callback {
     ($name:ident, $site:expr, ($first:ident $(, $arg:ident)*)) => {
-        unsafe extern "system" fn $name($first: usize $(, $arg: usize)*) -> usize {
+        unsafe extern "system-unwind" fn $name($first: usize $(, $arg: usize)*) -> usize {
             let timing =
                 crate::hook_timing::enter(crate::hook_timing::Family::AirBaseCarryChanges);
             let _notification = WATCHES.notify_site($site, $first);
-            let original: unsafe extern "system" fn($first: usize $(, $arg: usize)*) -> usize =
+            let preference = crate::wing_preferences::base_site($site, &[$first $(, $arg)*]);
+            let original: unsafe extern "system-unwind" fn($first: usize $(, $arg: usize)*) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
-            timing.original(|| unsafe { original($first $(, $arg)*) })
+            let result = timing.original(|| unsafe { original($first $(, $arg)*) });
+            if let Some(preference) = preference { preference.finish(result); }
+            result
         }
     };
 }
@@ -499,6 +523,7 @@ callback!(destroy_all_wings, 6, (pool));
 callback!(split_wing, 7, (pool, wing, size, force));
 // Wing pool deleting destructor(pool, flags) -> pool.
 callback!(destroy_pool, 8, (pool, flags));
+callback!(rebind_pool_definition, 9, (pool));
 
 #[cfg(test)]
 mod tests {

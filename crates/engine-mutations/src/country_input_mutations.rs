@@ -197,6 +197,18 @@ pub struct Tables {
 }
 
 impl Tables {
+    pub const NONE: Self = Self {
+        stability: false,
+        research: false,
+        technologies: false,
+        focus: false,
+        intel_networks: false,
+        projects: false,
+        appearance: false,
+        counters: false,
+        visibility: false,
+        weather: false,
+    };
     pub const STABILITY: Self = Self {
         stability: true,
         research: false,
@@ -378,6 +390,8 @@ pub enum Receiver {
     /// RCX is the country and EDX the air statistic column; only column
     /// 1 (interception) is recorded.
     Interception,
+    /// RCX is the embedded country manpower; its owner tag is beside its vtable.
+    Manpower,
     /// RCX is a relation status; its owner is its diplomacy's
     /// (`crelation_status::DIPLOMACY_STATUS`) country
     /// (`cdiplomacy_status::COUNTRY`).
@@ -505,7 +519,7 @@ const REBUILD_LOCALIZED_NAME_RVA: usize = 0x70_9950;
 
 /// Each hooked site, how its arguments name its countries, and the tables
 /// its writes reach.
-pub const MUTATIONS: [(MutationSite, Receiver, Tables); 84] = [
+pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
     // Country modifier recalculation (country): stores RCX in its home slot.
     (
         MutationSite {
@@ -1754,6 +1768,174 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 84] = [
         Receiver::Technology,
         Tables::TECHNOLOGY,
     ),
+    (
+        MutationSite {
+            name: "set_recruitment_target",
+            rva: 0xce9cf0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf9, 0x48,
+                0x83, 0xc1,
+            ],
+        },
+        Receiver::Manpower,
+        Tables::STABILITY,
+    ),
+    (
+        MutationSite {
+            name: "set_recruitment_ratio",
+            rva: 0xcea0a0,
+            sentinel: [
+                0x48, 0x6b, 0xc2, 0x64, 0x48, 0x89, 0x41, 0x10, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
+                0xcc, 0xcc,
+            ],
+        },
+        Receiver::Manpower,
+        Tables::STABILITY,
+    ),
+    (
+        MutationSite {
+            name: "add_exile_manpower",
+            rva: 0xce5a60,
+            sentinel: [
+                0x40, 0x53, 0x55, 0x48, 0x83, 0xec, 0x48, 0x8b, 0xda, 0x48, 0x8b, 0xe9, 0x45, 0x84,
+                0xc0, 0xf,
+            ],
+        },
+        Receiver::Manpower,
+        Tables::STABILITY,
+    ),
+    (
+        MutationSite {
+            name: "restore_exile_manpower",
+            rva: 0xce9a80,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x8, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
+                0x30, 0x41,
+            ],
+        },
+        Receiver::Manpower,
+        Tables::STABILITY,
+    ),
+    (
+        MutationSite {
+            name: "use_exile_manpower",
+            rva: 0xcea0b0,
+            sentinel: [
+                0x40, 0x53, 0x57, 0x48, 0x83, 0xec, 0x38, 0x8b, 0xda, 0x48, 0x8b, 0xf9, 0x45, 0x84,
+                0xc0, 0x74,
+            ],
+        },
+        Receiver::Manpower,
+        Tables::STABILITY,
+    ),
+    (
+        MutationSite {
+            name: "set_exile_manpower_cap",
+            rva: 0xce9fa0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x48, 0x83, 0xec,
+                0x20, 0x48,
+            ],
+        },
+        Receiver::Manpower,
+        Tables::STABILITY,
+    ),
+    (
+        MutationSite {
+            name: "add_exile_legitimacy",
+            rva: 0xd1fc90,
+            sentinel: [
+                0x4c, 0x8b, 0x81, 0xb0, 0x1, 0x0, 0x0, 0x4c, 0x3, 0xc2, 0x79, 0xc, 0x48, 0xc7,
+                0x81, 0xb0,
+            ],
+        },
+        Receiver::DiplomacyStatus,
+        Tables::STABILITY,
+    ),
+    (
+        MutationSite {
+            name: "set_exile_legitimacy",
+            rva: 0xd307d0,
+            sentinel: [
+                0x48, 0x85, 0xd2, 0x79, 0xc, 0x48, 0xc7, 0x81, 0xb0, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0,
+                0x0,
+            ],
+        },
+        Receiver::DiplomacyStatus,
+        Tables::STABILITY,
+    ),
+    (
+        MutationSite {
+            name: "exile_equipment_legitimacy",
+            rva: 0xd2c700,
+            sentinel: [
+                0x48, 0xf, 0xaf, 0x15, 0x0, 0x1, 0x5f, 0x2, 0x4c, 0x8b, 0xc1, 0x48, 0xb8, 0x9,
+                0xe1, 0xd1,
+            ],
+        },
+        Receiver::DiplomacyStatus,
+        Tables::STABILITY,
+    ),
+    (
+        MutationSite {
+            name: "refresh_wing_crews",
+            rva: 0xf532a0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x83, 0xec,
+                0x30, 0x80,
+            ],
+        },
+        Receiver::Every,
+        Tables::NONE,
+    ),
+    (
+        MutationSite {
+            name: "refresh_ship_crews",
+            rva: 0xc2eda0,
+            sentinel: [
+                0x40, 0x53, 0x55, 0x57, 0x41, 0x54, 0x48, 0x83, 0xec, 0x28, 0x33, 0xed, 0x4c, 0x89,
+                0x74, 0x24,
+            ],
+        },
+        Receiver::Every,
+        Tables::NONE,
+    ),
+    (
+        MutationSite {
+            name: "remove_ship_crews",
+            rva: 0xc2e9a0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
+                0x20, 0x57,
+            ],
+        },
+        Receiver::Every,
+        Tables::NONE,
+    ),
+    (
+        MutationSite {
+            name: "add_sent_expeditionary",
+            rva: 0x6c5690,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8d, 0xb9, 0xf8,
+                0x2, 0x0,
+            ],
+        },
+        Receiver::Country,
+        Tables::COUNTERS,
+    ),
+    (
+        MutationSite {
+            name: "remove_sent_expeditionary",
+            rva: 0x7032d0,
+            sentinel: [
+                0x48, 0x8b, 0x81, 0xf8, 0x2, 0x0, 0x0, 0x4c, 0x8b, 0xd1, 0x4c, 0x63, 0x81, 0x4,
+                0x3, 0x0,
+            ],
+        },
+        Receiver::Country,
+        Tables::COUNTERS,
+    ),
 ];
 
 /// Indices in [`MUTATIONS`] of the sites whose writes only CountryAppearance
@@ -1788,6 +1970,24 @@ pub const PROVINCE_WEATHER_REBUILD_RVA: usize = 0xf0_cad0;
 /// Index of technology progress addition in [`MUTATIONS`], whose
 /// detour marks only a call with [`EFFECT_PROGRESS_SOURCE`].
 pub const RESEARCH_PROGRESS: usize = 83;
+
+/// Country recruitment, exile resources, crew certificates and sent references.
+pub const SET_RECRUITMENT_TARGET: usize = 84;
+pub const SET_RECRUITMENT_RATIO: usize = 85;
+pub const ADD_EXILE_MANPOWER: usize = 86;
+pub const RESTORE_EXILE_MANPOWER: usize = 87;
+pub const USE_EXILE_MANPOWER: usize = 88;
+pub const SET_EXILE_MANPOWER_CAP: usize = 89;
+pub const ADD_EXILE_LEGITIMACY: usize = 90;
+pub const SET_EXILE_LEGITIMACY: usize = 91;
+pub const EXILE_EQUIPMENT_LEGITIMACY: usize = 92;
+pub const REFRESH_WING_CREWS: usize = 93;
+pub const REFRESH_SHIP_CREWS: usize = 94;
+pub const REMOVE_SHIP_CREWS: usize = 95;
+pub const ADD_SENT_EXPEDITIONARY: usize = 96;
+pub const REMOVE_SENT_EXPEDITIONARY: usize = 97;
+pub const CREW_WRITERS: std::ops::Range<usize> = REFRESH_WING_CREWS..ADD_SENT_EXPEDITIONARY;
+
 /// Progress source (R8): technology-setting and random-stolen-bonus effects
 /// pass 2, daily slot progress and console pass 0, assignment passes 1.
 pub const EFFECT_PROGRESS_SOURCE: u32 = 2;
@@ -1823,6 +2023,12 @@ pub fn countries(
     match receiver {
         Receiver::Every => false,
         Receiver::Country => named(of_country(memory, first)),
+        Receiver::Manpower => named(link_at(
+            memory,
+            base,
+            first,
+            engine_native::ccountry_manpower::COUNTRY,
+        )),
         Receiver::Interception => {
             second as u32 != INTERCEPTION_COLUMN || named(of_country(memory, first))
         }

@@ -59,6 +59,8 @@ pub const STOCKPILE_INDEX: usize = 0x538;
 /// Is-archetype byte, set when the archetype link resolves to this type.
 /// Only such types enter the archetype list used by logistics.
 pub const IS_ARCHETYPE: usize = 0x555;
+/// Registered country modifier key used for equipment design XP cost.
+pub const DESIGN_COST_MODIFIER: usize = 0x55c;
 /// CEquipmentType primary category flags u64.
 pub const PRIMARY_CATEGORY_FLAGS: usize = 0x540;
 /// CEquipmentType secondary category flags u64.
@@ -101,3 +103,6 @@ pub const NORMALIZE_THIRD_SELECTOR: u64 = 0x100;
 pub const SPECIAL_POOL_MASK: u64 = 1;
 /// Equipment category bit selecting alternate country-runtime subtraction; occupation stockpile_amount tests bit 31.
 pub const RUNTIME_SUBTRACTION_MASK: u64 = 1 << 31;
+
+mod category_cache;
+pub use category_cache::CategoryCache;

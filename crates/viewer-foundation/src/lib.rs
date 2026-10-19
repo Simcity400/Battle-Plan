@@ -16,6 +16,7 @@ pub mod modifier_names;
 pub mod movement_timing;
 pub mod naval_check;
 pub mod naval_icon_frames;
+pub mod naval_labels;
 pub mod naval_math;
 pub mod naval_sides;
 pub mod parallel;
@@ -34,3 +35,5 @@ pub mod worker_priority;
 pub mod builder_pool;
 
 pub mod unit_class;
+
+pub mod recorded_labels;

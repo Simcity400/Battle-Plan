@@ -20,6 +20,7 @@ use crate::{
 };
 
 pub mod overview;
+pub mod participation;
 
 /// Ordered goal handles for each stored endpoint.
 pub const GOALS: [usize; 2] = [0x168, 0x180];

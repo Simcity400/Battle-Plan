@@ -442,7 +442,10 @@ fn start(_: FormatVersion) -> Box<dyn Extract> {
 }
 
 /// One run of a block's facts, in hour order.
-#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Block facts retain observed frames inline without a per-hour allocation."
+)]
 enum Hour {
     /// An hour observed on its own frame, with its change facts.
     Kept {

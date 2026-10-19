@@ -32,7 +32,9 @@ use ts_rs::TS;
 
 mod diplomacy;
 
+mod decision_roster;
 mod native;
+mod script_effects;
 
 mod nuclear;
 pub(crate) mod prepared;
@@ -83,6 +85,23 @@ pub enum EventFeedKind {
     ProjectFinished,
     NukesIncreased,
     NuclearStrike,
+    ScriptEventFired,
+    NewsEventFired,
+    EventOptionSelected,
+    DecisionSelected,
+    DecisionRemoved,
+    DecisionCancelled,
+    DecisionTimedOut,
+    DecisionActivated,
+    DecisionCompleted,
+    DecisionReenabled,
+    DecisionRemovalEffect,
+    DecisionCancellationEffect,
+    DecisionCompletionEffect,
+    DecisionTimeoutEffect,
+    DecisionDurationChanged,
+    DecisionRosterRebuilt,
+    ScriptStateObserved,
 }
 impl EventFeedKind {
     fn category(self) -> EventFeedCategory {
@@ -104,7 +123,26 @@ impl EventFeedKind {
             FactionJoined | FactionLeft | BecameSubject | GuaranteeGranted => {
                 EventFeedCategory::Diplomacy
             }
-            RulingPartyChanged | LawChanged | AdvisorHired => EventFeedCategory::Politics,
+            RulingPartyChanged
+            | LawChanged
+            | AdvisorHired
+            | ScriptEventFired
+            | NewsEventFired
+            | EventOptionSelected
+            | DecisionSelected
+            | DecisionRemoved
+            | DecisionCancelled
+            | DecisionTimedOut
+            | DecisionActivated
+            | DecisionCompleted
+            | DecisionReenabled
+            | DecisionRemovalEffect
+            | DecisionCancellationEffect
+            | DecisionCompletionEffect
+            | DecisionTimeoutEffect
+            | DecisionDurationChanged
+            | DecisionRosterRebuilt
+            | ScriptStateObserved => EventFeedCategory::Politics,
             FocusCompleted | ProjectFinished | NukesIncreased => EventFeedCategory::Milestones,
         }
     }
@@ -311,6 +349,7 @@ struct Builder {
     /// countries' tags, so a derived peace row the native row already shows
     /// is not repeated ([`peace_fallback`]).
     war_ends: BTreeSet<(i32, String, String)>,
+    script_inputs: BTreeMap<String, script_effects::Inputs>,
     #[serde(with = "crate::prepared_production::map_pairs")]
     item_keys: BTreeMap<(Option<String>, Option<String>), Vec<u32>>,
     #[serde(with = "crate::prepared_production::map_pairs")]
@@ -371,6 +410,7 @@ impl Builder {
     fn new(first: i32, last: i32) -> Self {
         Self {
             war_ends: BTreeSet::new(),
+            script_inputs: BTreeMap::new(),
             feed: Feed {
                 first,
                 last,
@@ -579,6 +619,184 @@ fn plain_item(
         description,
         idea: None,
     }
+}
+
+#[derive(Default)]
+struct ScriptContentIndex(std::sync::Mutex<Option<Arc<installed_content_events::events::LazyEvents>>>);
+
+/// Event labels use the same recorded stack and event database lookup as
+/// effect descriptions. A plain sole title needs no runtime trigger capture.
+fn script_presentation(
+    builder: &mut Builder,
+    catalogue: &Catalogue,
+    kind: EventFeedKind,
+    item: &mut EventFeedItem,
+    inputs: Option<&script_effects::Inputs>,
+) -> io::Result<()> {
+    if kind == EventFeedKind::DecisionRosterRebuilt {
+        return decision_roster::present(builder, catalogue, item, inputs);
+    }
+    if !matches!(
+        kind,
+        EventFeedKind::ScriptEventFired
+            | EventFeedKind::NewsEventFired
+            | EventFeedKind::EventOptionSelected
+    ) {
+        if matches!(
+            kind,
+            EventFeedKind::DecisionSelected
+                | EventFeedKind::DecisionRemoved
+                | EventFeedKind::DecisionCancelled
+                | EventFeedKind::DecisionTimedOut
+                | EventFeedKind::DecisionActivated
+                | EventFeedKind::DecisionCompleted
+                | EventFeedKind::DecisionReenabled
+                | EventFeedKind::DecisionRemovalEffect
+                | EventFeedKind::DecisionCancellationEffect
+                | EventFeedKind::DecisionCompletionEffect
+                | EventFeedKind::DecisionTimeoutEffect
+                | EventFeedKind::DecisionDurationChanged
+        ) {
+            let token = item.token.as_deref().unwrap_or("unidentified decision");
+            builder.unavailable("decisionPresentation","Decision presentation",
+                format!("Decision {token}: country-qualified title and triggered artwork require exact historical presentation inputs."),Some(1));
+        }
+        script_effects::present(builder, catalogue, kind, item, inputs)?;
+        return Ok(());
+    }
+    let Some(token) = &item.token else {
+        return Ok(());
+    };
+    let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
+    let events = {
+        let mut index = cache
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(index.get_or_insert_with(|| {
+            Arc::new(installed_content_events::events::LazyEvents::from_content(
+                Arc::clone(&catalogue.content),
+            ))
+        }))
+    };
+    let event = match events.get(token.as_bytes()) {
+        Ok(event) if event.refused.is_none() => event,
+        Ok(event) => {
+            builder.unavailable(
+                "scriptEventContent",
+                "Event content",
+                event.refused.as_ref().unwrap(),
+                Some(1),
+            );
+            script_effects::present(builder, catalogue, kind, item, inputs)?;
+            return Ok(());
+        }
+        Err(reason) => {
+            builder.unavailable("scriptEventContent", "Event content", reason, Some(1));
+            script_effects::present(builder, catalogue, kind, item, inputs)?;
+            return Ok(());
+        }
+    };
+    let localise = |key: &[u8]| -> Result<String, String> {
+        let key = std::str::from_utf8(key)
+            .map_err(|_| format!("Event {token} localisation key is not UTF-8"))?;
+        catalogue
+            .localised(key, catalogue::View::Plain)
+            .ok_or_else(|| {
+                format!("Event {token}: {key} needs unavailable historical localisation operands")
+            })
+    };
+    for (field, keys) in [
+        ("title", event.sole_title_key()),
+        ("body", event.sole_description_key()),
+    ] {
+        match keys.and_then(|key| key.map(localise).transpose()) {
+            Ok(Some(value)) => {
+                if field == "title" {
+                    item.name = Some(value);
+                } else {
+                    item.description = Some(value);
+                }
+            }
+            Ok(None) => {}
+            Err(reason) => builder.unavailable(
+                "scriptEventPresentation",
+                &format!("Event {field}"),
+                reason,
+                Some(1),
+            ),
+        }
+    }
+    if event.picture.is_empty() {
+        builder.unavailable(
+            "scriptEventPicture",
+            "Event picture",
+            format!("Event {token}: default picture selection has no recorded presentation result"),
+            Some(1),
+        );
+    } else if let Ok(picture) = std::str::from_utf8(&event.picture) {
+        let image = (|| -> Result<String, String> {
+            let sprite = catalogue
+                .sprites
+                .find(picture)?
+                .ok_or_else(|| format!("Event {token}: picture {picture} is undeclared"))?;
+            let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
+            catalogue::sprite_frame_png(
+                &catalogue.content.layers,
+                sprite,
+                decode,
+                0,
+                artwork::ICON_EDGE,
+            )
+            .map_err(|why| why.to_string())
+        })();
+        match image {
+            Ok(icon) => item.icon = Some(icon),
+            Err(reason) => {
+                builder.unavailable("scriptEventPicture", "Event picture", reason, Some(1))
+            }
+        }
+    } else {
+        builder.unavailable(
+            "scriptEventPicture",
+            "Event picture",
+            format!("Event {token}: picture key is not UTF-8"),
+            Some(1),
+        );
+    }
+    let mut options = Vec::new();
+    for (ordinal, name) in event.option_names.iter().enumerate() {
+        let name = match localise(name) {
+            Ok(name) => name,
+            Err(reason) => {
+                builder.unavailable(
+                    "scriptEventOptionName",
+                    "Event option name",
+                    reason,
+                    Some(1),
+                );
+                String::from_utf8_lossy(name).into_owned()
+            }
+        };
+        options.push(format!("{ordinal}: {name}"));
+        for trigger in &event.option_triggers[ordinal] {
+            builder.unavailable("scriptEventOptionAdmission","Offered event option",
+                format!("Event {token} option {ordinal}: trigger {} needs exact presentation-time inputs",trigger.key.as_deref().map(String::from_utf8_lossy).unwrap_or_default()),Some(1));
+        }
+        if event.original_recipient_only[ordinal] {
+            builder.unavailable("scriptEventOptionAdmission","Offered event option",format!("Event {token} option {ordinal}: original_recipient_only requires exact presentation ownership"),Some(1));
+        }
+    }
+    if !options.is_empty() {
+        let body = item.description.get_or_insert_default();
+        if !body.is_empty() {
+            body.push_str("\n\n");
+        }
+        body.push_str("Authored options (native ordinals):\n");
+        body.push_str(&options.join("\n"));
+    }
+    script_effects::present(builder, catalogue, kind, item, inputs)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -964,6 +1182,18 @@ fn build(
         builder.feed.warnings.extend(warnings);
     }
     if let Some(catalogue) = &catalogue {
+        let script_items: BTreeSet<_> = builder
+            .feed
+            .rows
+            .iter()
+            .filter_map(|row| row.item.map(|item| (item, row.kind, row.id.clone())))
+            .collect();
+        for (index, kind, id) in script_items {
+            let mut item = builder.feed.items[index as usize].clone();
+            let inputs = builder.script_inputs.get(&id).cloned();
+            script_presentation(&mut builder, catalogue, kind, &mut item, inputs.as_ref())?;
+            builder.feed.items[index as usize] = item;
+        }
         for (reason, count) in catalogue.refusal_entries() {
             let count = count
                 .map(u32::try_from)

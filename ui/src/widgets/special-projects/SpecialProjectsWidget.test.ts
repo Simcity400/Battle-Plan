@@ -382,5 +382,50 @@ test('a reply answered from its prepared prefix lists what the prefix holds and 
     assert.ok(cards.includes('Started') && cards.includes('Still being prepared'), cards);
     assert.ok(!cards.includes('Projects in progress are still being prepared.'), cards);
 
+    Object.assign(shared.__projectPrefix.reply, { projects: [], current: undefined, details: {
+      hour: 200, breakthroughs:[{specialization:{token:'mod_skill',name:'Mod specialization'},points:12345,readHour:192}], scientists: [{character:7,person:{assigned:true,id:7,name:'Mod scientist',portrait:null,missing:null},active:1,injuryDays:5,injuryHour:192,visible:false,visibilityHour:192,stateRefusals:{},
+        skills:[{specialization:{token:'mod_skill',name:'Mod specialization'},level:3,experienceRaw:'123456'}],traits:[{token:'mod_trait',name:'Mod trait'}]}],
+      programs:[{id:9,province:11,readHour:192,facility:{speedRaw:'120000',unavailable:null,sources:[{kind:'Scientist skill',unit:'factor',label:null,modifier:null,assignment:1,scientistReference:'30064771145',valueRaw:'120000'}]},assignments:[{ordinal:0,reference:'0',person:{assigned:false,id:null,name:null,portrait:null,missing:null},target:0,current:0,timed:0},
+        {ordinal:1,reference:'30064771145',person:{assigned:true,id:7,name:'Mod support',portrait:null,missing:null},target:5,current:2,timed:1}]}],
+      projects:[{owner:22,id:3,label:{token:'mod_project',name:'Mod project'},readHour:200,pendingKnown:true,
+        pending:{label:{token:'mod_reward',name:'Pending mod reward'},description:'Reward description',unavailable:null,options:[{label:{token:'mod_option',name:'Offered mod option'},effects:{text:'Pay 5 units',refusals:{}}}]},
+        choices:[{ordinal:0,date:190,reward:{token:'mod_reward',name:'Chosen reward'},option:{token:'mod_option',name:'Chosen option'},province:11,progress:12345,characterReference:'30064771145',country:22,scientist:7,state:8}],
+        seed:1,variables:[{name:'mod_variable',valueRaw:'123456'}],output:{text:'Scoped project output',refusals:{}}}],unavailable:[]
+    } });
+    const detailCards = renderToStaticMarkup(createElement(Widget, props('live')));
+    assert.match(detailCards, /Mod scientist/);
+    assert.match(detailCards, /Mod specialization/);
+    assert.match(detailCards, /Mod trait/);
+    assert.match(detailCards, /Supporting/);
+    assert.match(detailCards, /Mod support/);
+    assert.match(detailCards, /Research speed: 1.2/);
+    assert.match(detailCards, /Hidden from scientist roster/);
+    assert.match(detailCards, /1.2345 breakthrough progress/);
+    assert.match(detailCards, /3 days remaining/);
+    assert.match(detailCards, /Pending mod reward/);
+    assert.match(detailCards, /Offered mod option/);
+    assert.match(detailCards, /Pay 5 units/);
+    assert.match(detailCards, /Chosen option/);
+    assert.match(detailCards, /Character reference 30064771145/);
+    assert.match(detailCards, /Scoped project output/);
+    assert.match(detailCards, /mod_variable/);
+    assert.doesNotMatch(detailCards, /No special projects yet/);
+    Object.assign(shared.__projectPrefix.reply, { current: { ...currentReply, unavailable: 'Current projects are still being prepared' } });
+    const independentDetails = renderToStaticMarkup(createElement(Widget, props('live')));
+    assert.match(independentDetails, /Mod scientist/);
+    assert.match(independentDetails, /Mod support/);
+    Object.assign(shared.__projectPrefix.reply, { current: { ...currentReply, available: [], readHours: [], projects: [], unavailable: 'Synthetic Projects refusal' } });
+    const refusedProjects = renderToStaticMarkup(createElement(Widget, props('live')));
+    assert.match(refusedProjects, /Projects were not recorded at this time/);
+    assert.match(refusedProjects, /Mod scientist/);
+    assert.doesNotMatch(refusedProjects, /No projects in progress/);
+    Object.assign(shared.__projectPrefix.reply, { current: undefined, available: [], readHours: [] });
+    delete (shared.__projectPrefix.reply as Partial<typeof prefix>).pending;
+    const gapWithDetails = renderToStaticMarkup(createElement(Widget, props('live')));
+    assert.match(gapWithDetails, /Projects were not recorded at this time/);
+    assert.match(gapWithDetails, /Mod support/);
+    assert.doesNotMatch(gapWithDetails, /No projects in progress/);
+
+
   } finally { delete shared.__projectPrefix; await vite.close(); }
 });

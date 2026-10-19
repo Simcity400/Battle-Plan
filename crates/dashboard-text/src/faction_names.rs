@@ -334,7 +334,7 @@ fn formatted(
 
 /// Arguments in authored order, then the core localiser.
 /// The work stack sizes from the parsed tree, without a private depth limit.
-fn bound_name(
+pub fn bound_name(
     bound: &BoundLocalization,
     localisation: &Localisation,
     mut token_of: impl FnMut(&[u8]) -> Result<Option<u32>, String>,

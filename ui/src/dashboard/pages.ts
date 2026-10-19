@@ -26,6 +26,7 @@ export const PAGES = [
     ['wars', 0, 10, 12, 10],
     ['world-tension', 0, 20, 6, 10], ['autonomy', 6, 20, 6, 10],
     ['peace-deals', 0, 30, 6, 10], ['territory-transfers', 6, 30, 6, 10],
+    ['war-goals', 0, 40, 12, 9],
   ] },
   { id: 'economy', label: 'Economy', icon: 'factory', panels: [
     ['factories', 0, 0, 6, 10], ['equipment-produced', 6, 0, 6, 10],

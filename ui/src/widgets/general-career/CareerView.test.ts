@@ -11,7 +11,7 @@ const data: UnitLeadersData = { branchId: '1', firstHour: 100,
   people: [{ characterId: 9, token: 'mod_character', name: 'Commander', portraitHour: 100, portraitReference: '21474841193' }],
   roles: [{ owner: 'mod country', category: 1, rank: 'Rank', kind: 1, maximumSkill: 12, attributeNames: ['Attack', 'Defence', 'Planning', 'Logistics'] }],
   traits: [], leaders: [{ reference: '21474841193', runs: [{ firstHour: 100, lastHour: 500,
-    value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], traits: [] } }],
+    value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [] } }],
     traitGains: [], commands: [], battleStarts: [100], battleStartReadHours: [100], unknownBattleStarts: [0], battleWon: [true], battleResultHours: [110], battleResultReadHours: [125], partialFrom: null }],
   observed: [{ firstHour: 100, lastHour: 500, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
   resultsMissing: 'Result not recorded', navyCommandsMissing: 'Navy commands not recorded', warnings: [] };
@@ -71,6 +71,20 @@ test('actual career renderer preserves growing zoom and supplies the shown label
     assert.deepEqual(host.__careerParity?.().rows, host.__careerTimelines.at(-1)!.lanes);
     assert.equal(host.__careerTimelines.at(-1)!.lanes.at(-1)!.spans[0].positiveCount, 1,
       'A window selects native result dates but eligibility uses the displayed read');
+    host.__careerData = structuredClone(data);
+    host.__careerData.leaders[0].runs[0].value.progress = {
+      experienceRaw: '12345678', nextRequiredRaw: '20000000', factors: [{token: 'mod_trait', name: 'Custom factor', factorRaw: '25000'}], training: [
+        { token: 'mod_trait', name: 'Custom training', experienceRaw: '9876543', requiredRaw: '12000000' },
+        { token: 'mod_trait', name: 'Custom training', experienceRaw: '-100', requiredRaw: '12000000' },
+      ],
+    };
+    const experience = renderToStaticMarkup(createElement(Career, { ...props, reference: '21474841193', hour: 130 }));
+    assert.match(experience, /123\.45678 \/ 200\.0/);
+    assert.match(experience, /Custom factor: .*\+25\.0%/);
+    assert.match(experience, /Custom training: .*98\.76543 \/ 120\.0/);
+    assert.match(experience, /Custom training: .*-0\.001 \/ 120\.0/);
+    host.__careerData.leaders[0].runs[0].value.progress!.training = [];
+    assert.match(renderToStaticMarkup(createElement(Career, { ...props, reference: '21474841193', hour: 130 })), /No traits in training/);
     host.__careerData = structuredClone(data);
     host.__careerData.roles[0].kind = 2;
     host.__careerData.leaders[0].partialFrom = 101;

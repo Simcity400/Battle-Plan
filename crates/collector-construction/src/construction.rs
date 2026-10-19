@@ -83,7 +83,7 @@ impl Capacities {
         };
         for (index, outcome) in [
             (2, state_resource_entry::walk(memory, base, state, &mut [])),
-            (10, cresistance::walk(memory, base, state, &mut [])),
+            (10, Outcome::Rows { len: 0 }),
         ] {
             crate::table_capture::grow_capacity(&mut self.rows[index], rows(outcome)?);
         }
@@ -571,15 +571,10 @@ impl Captured {
         self.equipment.len = occupation.equipment_len;
         self.equipment.required = occupation.required_equipment;
         ticks[5] = elapsed(begin);
-        reads.select(TABLES[10]);
-        ticks[10] = single(&mut self.resistance, |output| {
-            cresistance::walk_buffer(
-                memory,
-                base,
-                game_state,
-                engine_native::walk::Buffer::for_worker(output, growing),
-            )
-        });
+        // The host supplies this table from the hourly state worker.
+        self.resistance.outcome = Outcome::Unavailable {
+            reason: "state resistance is acquired by the state worker",
+        };
         reads.select(TABLES[11]);
         ticks[11] = single(&mut self.collaboration, |output| {
             ccountry_collaboration_status::walk_buffer(
@@ -723,6 +718,7 @@ impl Captured {
                     compliance: row.compliance,
                     compliance_speed: row.compliance_speed,
                     active: row.active,
+                    ..Default::default()
                 },
             ),
             table::<tables::CountryCollaboration, _>(

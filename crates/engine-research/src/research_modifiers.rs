@@ -24,7 +24,15 @@ use crate::{
     research_inputs, research_inputs::Text, walk::Outcome,
 };
 
+pub mod grants;
 mod sharing;
+static SCRIPTED_SHARING_ROSTER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Loader-only demand, before the existing research writer certificate is published.
+pub fn scripted_sharing_roster(enabled: bool) {
+    SCRIPTED_SHARING_ROSTER.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
 #[cfg(test)]
 mod tests;
 
@@ -57,6 +65,13 @@ pub enum Kind {
     SharingCategory,
     SharingDoctrine,
     SharingMissingMember,
+    GrantCounter,
+    SpeedGrant,
+    CostGrant,
+    GrantUses,
+    GrantTechnology,
+    GrantCategory,
+    SharingRoster,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -260,8 +275,55 @@ pub fn walk_country_buffer<M: Memory>(
     inputs: &[research_inputs::Row],
     output: crate::walk::Buffer<'_, Row>,
 ) -> Outcome {
+    walk_country_buffer_with_roster(
+        memory, base, countries, country, context, inputs, output, false,
+    )
+}
+
+/// The caller has acquired a valid Research writer epoch for this selection.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep the certified capture operands and caller-owned output explicit without new capture state."
+)]
+pub fn walk_country_buffer_certified<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    country: ccountry::Country,
+    context: Result<Context, &'static str>,
+    inputs: &[research_inputs::Row],
+    output: crate::walk::Buffer<'_, Row>,
+    certificate_available: bool,
+) -> Outcome {
+    walk_country_buffer_with_roster(
+        memory,
+        base,
+        countries,
+        country,
+        context,
+        inputs,
+        output,
+        certificate_available && SCRIPTED_SHARING_ROSTER.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep roster demand separate from the acquired research inputs and caller-owned output."
+)]
+fn walk_country_buffer_with_roster<M: Memory>(
+    memory: &M,
+    base: usize,
+    countries: &ccountry::Reader<'_, M>,
+    country: ccountry::Country,
+    context: Result<Context, &'static str>,
+    inputs: &[research_inputs::Row],
+    output: crate::walk::Buffer<'_, Row>,
+    record_roster: bool,
+) -> Outcome {
     // Idle countries need neither defines, modifier trees nor sharing/industrial state.
-    if !inputs.iter().any(|r| r.slot.technology_present != 0) {
+    let active = inputs.iter().any(|r| r.slot.technology_present != 0);
+    if !active && !record_roster {
         return Outcome::Rows { len: 0 };
     }
     let growing = output.is_growing();
@@ -276,6 +338,16 @@ pub fn walk_country_buffer<M: Memory>(
         },
     };
     let result = (|| {
+        if !active {
+            let status = match inputs.first() {
+                Some(input) if input.status_pointer != 0 => input.status_pointer,
+                _ => {
+                    let raw = crate::ctechnology_status::copy_status(memory, country.pointer)?;
+                    crate::ctechnology_status::decode_status(base, country.pointer, &raw)?
+                }
+            };
+            return sharing::record_roster(memory, base, status, &mut out);
+        }
         let context = context?;
         let accumulator = at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?;
         let (raw, metadata) = modifier(
@@ -296,6 +368,9 @@ pub fn walk_country_buffer<M: Memory>(
             .unwrap()
             .status_pointer;
         let sharing = sharing::Country::read(memory, base, countries, country, status, growing)?;
+        if record_roster {
+            sharing.record_roster(&mut out)?;
+        }
         let (raw, metadata) = if sharing.is_empty() {
             (0, None)
         } else {

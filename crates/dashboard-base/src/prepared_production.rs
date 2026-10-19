@@ -56,6 +56,7 @@ pub const TABLES: &[TableId] = &[
     TableId::CountryAppearance,
     TableId::LexicalTokens,
     TableId::VariantDefinitions,
+    TableId::VariantChanges,
     TableId::VariantModules,
     TableId::VariantUpgrades,
     TableId::ProductionLines,
@@ -1519,12 +1520,13 @@ impl ProductionAccumulator {
         {
             self.forget_names(last.saturating_add(1));
         }
-        let names_read = slot_read(
-            format,
-            &frame.metrics,
-            TableId::VariantDefinitions,
-            frame.hour,
-        );
+        let names_read = equipment::design_changed(frame)
+            || slot_read(
+                format,
+                &frame.metrics,
+                TableId::VariantDefinitions,
+                frame.hour,
+            );
         if frame.complete::<tables::VariantDefinitions>().is_err()
             || names_read
                 && (frame.complete::<tables::Countries>().is_err()

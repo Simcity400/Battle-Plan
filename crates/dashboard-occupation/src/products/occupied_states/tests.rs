@@ -528,6 +528,7 @@ fn frame(hour: i32, read: bool) -> DecodedFrame {
             compliance: 0,
             speed: -1,
             compliance_speed: 2,
+            ..Default::default()
         }]));
     *frame.tables[TableId::StateGarrisons.index()] =
         TableView::Complete(TableRows::StateGarrisons(vec![StateGarrisonRow {
@@ -557,6 +558,8 @@ fn frame(hour: i32, read: bool) -> DecodedFrame {
         }]));
     if read {
         frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
+        frame.metrics.table_ns[TableId::StateGarrisons.index()] = 1;
+        frame.metrics.table_ns[TableId::CountryCollaboration.index()] = 1;
     }
     frame
 }
@@ -1732,4 +1735,29 @@ fn occupation_default_continent_reads_the_retained_cache_through_from_capital() 
             .unwrap()
             .contains("duplicate continent")
     );
+}
+
+#[test]
+fn balance_only_country_changes_preserve_held_state_endpoints_before_a_new_read() {
+    let first = frame(100, true);
+    let mut carried = first.clone();
+    carried.hour = 101;
+    carried.metrics.table_ns[TableId::StateResistance.index()] = 0;
+    let mut countries = carried.complete::<tables::Countries>().unwrap().to_vec();
+    countries[0].political_power_raw = Some(17);
+    *carried.tables[TableId::Countries.index()] =
+        TableView::Complete(replay_data::rows::TableRows::Countries(countries));
+    let mut next = carried.clone();
+    next.hour = 102;
+    next.metrics.table_ns[TableId::StateResistance.index()] = 1;
+    let mut resistance = next.complete::<tables::StateResistance>().unwrap().to_vec();
+    resistance[0].compliance = 1;
+    *next.tables[TableId::StateResistance.index()] =
+        TableView::Complete(replay_data::rows::TableRows::StateResistance(resistance));
+    let mut scan = super::scan::Scan::new(None);
+    for observed in [&first, &carried, &next] {
+        scan.push(observed, observed.hour, None).unwrap();
+    }
+    let snapshot = scan.snapshot();
+    assert_eq!(snapshot.states.states[0].runs[0].last_hour, 101);
 }

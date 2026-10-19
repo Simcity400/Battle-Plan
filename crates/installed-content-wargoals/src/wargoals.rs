@@ -10,7 +10,7 @@ use crate::{
     fields::invalid,
     key_names::KeyNames,
     parser::{
-        c_string,
+        self, c_string,
         native::{self, Shape},
     },
     script_files,
@@ -24,6 +24,130 @@ pub struct Database {
     pub notes: Vec<String>,
     gap: Option<String>,
     prefixes: Vec<(Vec<u8>, Result<String, String>)>,
+    terms: Vec<Terms>,
+}
+
+/// Definition operands, independent of whether an action or peace term is enabled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Terms {
+    pub annex: bool,
+    pub allowed: Vec<parser::Item>,
+    pub available: Vec<parser::Item>,
+    /// Take states, liberate, puppet, force government, in that order.
+    pub limits: [i32; 4],
+    pub cost_factors: [i64; 4],
+    pub threat_factors: [i64; 4],
+    pub conditions: [Vec<parser::Item>; 4],
+    pub generate_base_cost: i32,
+    pub generate_per_state_cost: i32,
+    pub expiry_days: i32,
+    pub threat: i64,
+}
+impl Default for Terms {
+    fn default() -> Self {
+        Self {
+            annex: false,
+            allowed: Vec::new(),
+            available: Vec::new(),
+            limits: [0; 4],
+            cost_factors: [100_000; 4],
+            threat_factors: [100_000; 4],
+            conditions: Default::default(),
+            generate_base_cost: 0,
+            generate_per_state_cost: 0,
+            expiry_days: 0,
+            threat: 0,
+        }
+    }
+}
+impl Terms {
+    fn read(items: &[parser::Item]) -> Self {
+        let mut out = Self::default();
+        for item in items {
+            let Some(key) = item.keyword() else { continue };
+            let key = key.folded();
+            let key = key.as_slice();
+            if key == b"allowed" {
+                out.allowed
+                    .extend_from_slice(item.value.items().unwrap_or_default());
+            } else if key == b"available" {
+                out.available
+                    .extend_from_slice(item.value.items().unwrap_or_default());
+            } else if key == b"annex" {
+                out.annex = item
+                    .value
+                    .scalar()
+                    .and_then(parser::read_bool)
+                    .unwrap_or(out.annex);
+            } else if key == b"threat" {
+                out.threat = installed_content_core::modifiers::read_fixed5(item).unwrap_or(out.threat);
+            } else if let Some(index) = [
+                b"take_states".as_slice(),
+                b"liberate",
+                b"puppet",
+                b"force_government",
+            ]
+            .iter()
+            .position(|k| *k == key)
+            {
+                out.conditions[index].extend_from_slice(item.value.items().unwrap_or_default());
+            } else if let Some(index) = [
+                b"take_states_limit".as_slice(),
+                b"liberate_limit",
+                b"puppet_limit",
+                b"force_government_limit",
+            ]
+            .iter()
+            .position(|k| *k == key)
+            {
+                if let Some(value) = item
+                    .value
+                    .scalar()
+                    .and_then(|v| installed_content_core::crt::scan_i32(v).stored())
+                {
+                    out.limits[index] = value;
+                }
+            } else if let Some(index) = [
+                b"take_states_cost".as_slice(),
+                b"liberate_cost",
+                b"puppet_cost",
+                b"force_government_cost",
+                b"take_states_threat_factor",
+                b"liberate_threat_factor",
+                b"puppet_threat_factor",
+                b"force_government_threat_factor",
+            ]
+            .iter()
+            .position(|k| *k == key)
+            {
+                let factor = if index < 4 {
+                    &mut out.cost_factors[index]
+                } else {
+                    &mut out.threat_factors[index - 4]
+                };
+                let value = installed_content_core::modifiers::read_fixed5(item).unwrap_or(*factor);
+                *factor = value
+                    .wrapping_mul(1000)
+                    .wrapping_div(100_000)
+                    .wrapping_add(100_000);
+            } else {
+                let field = match key {
+                    b"generate_base_cost" => &mut out.generate_base_cost,
+                    b"generate_per_state_cost" => &mut out.generate_per_state_cost,
+                    b"expire" => &mut out.expiry_days,
+                    _ => continue,
+                };
+                if let Some(value) = item
+                    .value
+                    .scalar()
+                    .and_then(|v| installed_content_core::crt::scan_i32(v).stored())
+                {
+                    *field = value;
+                }
+            }
+        }
+        out
+    }
 }
 
 #[derive(Default)]
@@ -61,6 +185,23 @@ impl Names {
 }
 
 impl Database {
+    pub fn terms(&self, name: &[u8]) -> Result<&Terms, String> {
+        self.find(name)?
+            .ok_or_else(|| "war-goal definition is absent from recorded content".to_string())?;
+        let mut matches = self
+            .names
+            .iter()
+            .zip(&self.terms)
+            .filter(|(n, _)| Token::c_str(n) == Token::c_str(name))
+            .map(|(_, t)| t);
+        let first = matches
+            .next()
+            .ok_or_else(|| "war-goal terms are unavailable".to_string())?;
+        if matches.any(|other| other != first) {
+            return Err("war-goal definition occurrence has differing terms".into());
+        }
+        Ok(first)
+    }
     pub fn find(&self, name: &[u8]) -> Result<Option<&[u8]>, String> {
         if let Some(why) = &self.gap {
             return Err(format!("wargoal definitions uncertain: {why}"));
@@ -126,6 +267,13 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
         return Err(invalid(format!("wargoals: {cause}")));
     }
     Ok(Database {
+        terms: read
+            .items
+            .iter()
+            .filter(|item| item.keyword_is("wargoal_types"))
+            .flat_map(|item| item.value.items().unwrap_or_default())
+            .map(|item| Terms::read(item.value.items().unwrap_or_default()))
+            .collect(),
         prefixes: read
             .items
             .iter()
@@ -172,6 +320,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
         match parse(&layers.read(&path)?, &names) {
             Ok(parsed) => {
                 database.prefixes.extend(parsed.prefixes);
+                database.terms.extend(parsed.terms);
                 database.names.extend(parsed.names);
                 database.notes.extend(parsed.notes);
             }
@@ -203,6 +352,57 @@ pub fn read_names(layers: &ResolvedLayers) -> io::Result<Names> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wargoal_terms_keep_native_defaults_repeated_assignments_and_mod_definition_ambiguity() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let database = parse(b"@cost=25 wargoal_types={custom={annex=yes annex=invalid take_states_limit=3 take_states_cost=@cost take_states_cost=-12.5 liberate_threat_factor=50 expire=90 generate_base_cost=12 generate_per_state_cost=4 take_states={always=yes} allowed={always=yes} allowed={always=no} available={tag=MOD}}}", &KeyNames::default()).unwrap();
+        let term = database.terms(b"custom").unwrap();
+        assert!(term.annex);
+        assert_eq!(term.limits, [3, 0, 0, 0]);
+        assert_eq!(term.cost_factors, [87500, 100000, 100000, 100000]);
+        assert_eq!(term.threat_factors, [100000, 150000, 100000, 100000]);
+        assert_eq!(
+            (
+                term.expiry_days,
+                term.generate_base_cost,
+                term.generate_per_state_cost
+            ),
+            (90, 12, 4)
+        );
+        assert_eq!(term.conditions[0].len(), 1);
+        assert_eq!(term.allowed.len(), 2);
+        assert_eq!(term.available.len(), 1);
+        assert!(term.allowed[0].keyword_is("always"));
+        assert_eq!(term.allowed[0].value.scalar(), Some(b"yes".as_slice()));
+        assert_eq!(term.allowed[1].value.scalar(), Some(b"no".as_slice()));
+        for field in ["allowed", "available"] {
+            let source = format!(
+                "wargoal_types={{custom={{{field}={{always=yes}}}} CUSTOM={{{field}={{always=no}}}}}}"
+            );
+            assert!(
+                parse(source.as_bytes(), &KeyNames::default())
+                    .unwrap()
+                    .terms(b"custom")
+                    .unwrap_err()
+                    .contains("differing terms")
+            );
+        }
+        let duplicate = parse(
+            b"wargoal_types={custom={annex=yes} CUSTOM={annex=no}}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert!(
+            duplicate
+                .terms(b"custom")
+                .unwrap_err()
+                .contains("differing terms")
+        );
+        let identical =
+            parse(b"wargoal_types={custom={} CUSTOM={}}", &KeyNames::default()).unwrap();
+        assert_eq!(identical.terms(b"custom").unwrap(), &Terms::default());
+    }
 
     #[test]
     fn war_naming_keeps_main_reader_forms_and_token_identity() {

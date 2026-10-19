@@ -217,9 +217,37 @@ struct CountryArea {
     /// A group's area (a faction's or a player's), which shows no tag when its name does not
     /// resolve.
     faction: bool,
+    strategic: bool,
 }
 
 impl NameAreas {
+    /// The strategic-name layer groups every province kind by strategic region;
+    /// connected components and name fitting follow the ordinary map-name pass.
+    pub fn strategic(
+        map: &MapData,
+        regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
+        name: impl Fn(&installed_content_regions::regions::StrategicRegion) -> Result<String, String>,
+    ) -> Self {
+        Self {
+            countries: regions
+                .values()
+                .map(|region| CountryArea {
+                    tag: format!("strategic region {}", region.id),
+                    text: name(region),
+                    members: region
+                        .provinces
+                        .iter()
+                        .copied()
+                        .filter(|id| map.definitions.contains_key(id))
+                        .collect(),
+                    faction: true,
+                    strategic: true,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
     /// The hour's name areas. With `groups`, a group's countries form one area under the
     /// group's name: a faction's members in the factions mode, a player's country in the
     /// players mode. Countries outside every group keep their own names when the groups say so,
@@ -277,6 +305,7 @@ impl NameAreas {
                         text: text.clone(),
                         members: BTreeSet::new(),
                         faction: true,
+                        strategic: false,
                     })
                     .members
                     .extend(members);
@@ -295,6 +324,7 @@ impl NameAreas {
                 text: names.name(slot),
                 members,
                 faction: false,
+                strategic: false,
             });
         }
         areas.extend(faction_areas.into_values());
@@ -329,6 +359,7 @@ impl NameAreas {
                     text: name(state),
                     members: members.remove(&state.id)?,
                     faction: true,
+                    strategic: false,
                 })
             })
             .collect();
@@ -462,6 +493,10 @@ fn area_bytes(key: &AreaKey, name: Option<&WorldName>) -> usize {
             + name.pages.len() * std::mem::size_of::<usize>()
             + name.corners.len() * std::mem::size_of::<[f32; 3]>()
             + name.uvs.len() * std::mem::size_of::<[f32; 4]>()
+            + name
+                .strategic_provinces
+                .as_ref()
+                .map_or(0, |provinces| std::mem::size_of_val(provinces.as_ref()))
     });
     std::mem::size_of::<PlacedArea>() + key_bytes + name_bytes
 }
@@ -486,6 +521,7 @@ pub fn place_areas(
         text,
         members,
         faction,
+        strategic,
     } in &areas.countries
     {
         // A faction whose name does not resolve shows none.
@@ -514,9 +550,9 @@ pub fn place_areas(
                 (Some(placed), Some(generation)) => placed.place(
                     generation,
                     (tag.clone(), text.clone(), component.clone()),
-                    || world_name(inputs, tag, text, &component),
+                    || world_name(inputs, tag, text, &component, *strategic),
                 ),
-                _ => world_name(inputs, tag, text, &component),
+                _ => world_name(inputs, tag, text, &component, *strategic),
             };
             match name {
                 Some(name) => result.country.push(name),
@@ -567,6 +603,7 @@ fn world_name(
     key: &str,
     text: &str,
     area: &[u32],
+    strategic: bool,
 ) -> Option<WorldName> {
     if text.is_empty() {
         return None;
@@ -615,6 +652,7 @@ fn world_name(
     let (_, z_of_min_y) = world_from_pixel(map.height, 0.0, placed.aabb[1]);
     let (_, z_of_max_y) = world_from_pixel(map.height, 0.0, placed.aabb[3]);
     Some(WorldName {
+        strategic_provinces: strategic.then(|| Arc::from(area)),
         key: key.to_owned(),
         text: text.to_owned(),
         pages,
@@ -653,6 +691,7 @@ fn height_at(heightmap: &IndexedImage, x: f32, y: f32) -> f32 {
 /// One placed name's static geometry, located in the vertex chunks.
 #[derive(Clone, Debug, PartialEq)]
 struct StaticName {
+    strategic_provinces: Option<Arc<[u32]>>,
     source: usize,
     page: usize,
     chunk: usize,
@@ -711,6 +750,7 @@ fn static_names(
                 glyph += 1;
             }
             names.push(StaticName {
+                strategic_provinces: name.strategic_provinces.clone(),
                 source,
                 page,
                 chunk,
@@ -734,12 +774,24 @@ struct NativeDraw {
     alpha_offset: [f32; 2],
 }
 
+#[cfg(test)]
 fn native_copies(
     names: &[StaticName],
     camera: Camera,
     viewport: [u32; 2],
     layer_alpha: f32,
     wraps: &[f32],
+) -> Vec<NativeDraw> {
+    native_hover_copies(names, camera, viewport, layer_alpha, wraps, None)
+}
+
+fn native_hover_copies(
+    names: &[StaticName],
+    camera: Camera,
+    viewport: [u32; 2],
+    layer_alpha: f32,
+    wraps: &[f32],
+    hovered_province: Option<u32>,
 ) -> Vec<NativeDraw> {
     if layer_alpha == 0.0 {
         return Vec::new();
@@ -753,6 +805,12 @@ fn native_copies(
         let planes = side_planes(camera, viewport);
         for group in names.chunk_by(|a, b| a.source == b.source) {
             let first = &group[0];
+            if let (Some(provinces), Some(province)) =
+                (&first.strategic_provinces, hovered_province)
+                && provinces.binary_search(&province).is_err()
+            {
+                continue;
+            }
             if seen.contains(&first.source) {
                 continue;
             }
@@ -816,6 +874,7 @@ fn arrow_draws(names: &[StaticName], admitted: &[(usize, usize)]) -> Vec<NativeD
 
 /// The content shader, font pages and placed country names or order labels.
 pub struct NamePass {
+    hovered_province: Option<u32>,
     country_layer: bool,
     compiled: Result<super::name_shader::Names, String>,
     pages: Vec<wgpu::TextureView>,
@@ -851,6 +910,7 @@ impl NamePass {
         }
         .map_err(|error| error.to_string());
         Ok(Self {
+            hovered_province: None,
             country_layer,
             compiled,
             pages: textures.views(),
@@ -860,6 +920,12 @@ impl NamePass {
             generation: None,
             count: 0,
         })
+    }
+
+    /// A picked province restricts strategic names to its connected area when the local preference
+    /// does not request every region. Other name layers keep their ordinary admission.
+    pub fn set_strategic_hover(&mut self, province: Option<u32>) {
+        self.hovered_province = province;
     }
 
     /// Uploads glyphs once per placement and selects visible country names.
@@ -906,7 +972,14 @@ impl NamePass {
             self.generation = Some(placements.generation);
         }
         if self.country_layer {
-            self.draws = native_copies(&self.names, camera, viewport, layer_alpha, wrap);
+            self.draws = native_hover_copies(
+                &self.names,
+                camera,
+                viewport,
+                layer_alpha,
+                wrap,
+                self.hovered_province,
+            );
         }
         self.update_count();
     }
@@ -1027,6 +1100,21 @@ impl LayerFade {
     /// The settled value at this camera.
     pub fn instant(camera: Camera) -> Self {
         Self(Self::target(camera))
+    }
+
+    /// A changed hovered region resets the already stepped fade, unless the local preference
+    /// requests all names. With no picked province the native renderer keeps the whole layer.
+    pub fn strategic_hover(
+        self,
+        show_all: bool,
+        picked: Option<u32>,
+        previous: Option<u32>,
+    ) -> Self {
+        if !show_all && picked.is_some() && picked != previous {
+            Self(0.0)
+        } else {
+            self
+        }
     }
 
     /// One frame of the engine's integration.

@@ -12,6 +12,10 @@ use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 use super::{complete_table, invalid};
 
+fn contained_refusal(reason: &str) -> bool {
+    reason.contains("spool validation failed: ") || reason.contains("hook family ")
+}
+
 /// The tables a comparison group compares, when its name says so: a group
 /// named after one table, optionally with a family prefix ("economy
 /// CountryFuel"), or one of the named multi-table groups. Other groups name
@@ -19,6 +23,7 @@ use super::{complete_table, invalid};
 pub fn group_tables(name: &str) -> Vec<TableId> {
     let last = name.rsplit(' ').next().unwrap_or(name);
     match last {
+        "IntelSourcePools" => vec![TableId::IntelSources, TableId::IntelContributions],
         "Deployment" => vec![
             TableId::DeploymentConveyors,
             TableId::DeploymentLines,
@@ -356,7 +361,11 @@ impl Report {
             .filter(|(table, rows)| {
                 rows.is_err()
                     && !retired_table(**table)
-                    && !self.deferred_tables.contains_key(*table)
+                    && (!self.deferred_tables.contains_key(*table)
+                        || rows
+                            .as_ref()
+                            .err()
+                            .is_some_and(|reason| contained_refusal(reason)))
             })
             .count()
     }
@@ -832,10 +841,10 @@ impl Report {
                         println!("  {table:?}: retired, not compared ({reason})")
                     }
                     Err(reason) => match self.deferred_tables.get(table) {
-                        Some(deferred) => {
+                        Some(deferred) if !contained_refusal(reason) => {
                             println!("  {table:?}: publication deferred ({deferred})")
                         }
-                        None => println!("  {table:?}: {reason}"),
+                        _ => println!("  {table:?}: {reason}"),
                     },
                 }
             }

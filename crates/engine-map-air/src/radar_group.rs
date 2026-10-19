@@ -27,6 +27,8 @@ pub const AUXILIARY_ARRAY_30_COUNT: usize = 0x3c;
 pub const STATE: usize = 0x48;
 /// Signed raw i64 scalar using fixed-point scale 100000.
 pub const SCALAR_50: usize = 0x50;
+/// Cached fixed5 radius used by the range symbol.
+pub const COVERAGE_RADIUS: usize = SCALAR_50;
 /// Signed i32 aggregate of signed i16 state operands; semantic label is unknown.
 pub const AGGREGATE_58: usize = 0x58;
 /// Owning radar-pool pointer.
@@ -35,6 +37,8 @@ pub const PARENT: usize = 0x60;
 pub const SIZE: usize = 0x70;
 /// Coverage update using game-state province indices.
 pub const UPDATE_RVA: usize = 0x0108_ec70;
+/// Supported executable's update-entry fingerprint, using FNV-1a over 16 bytes.
+pub const UPDATE_PREFIX_HASH: u64 = 0x348d_1fd7_4174_e813;
 /// Group creation per radar-carrying controlled state.
 pub const CREATE_RVA: usize = 0x0109_3140;
 /// Building-change producer creating or reusing a group before updating coverage.
@@ -54,8 +58,30 @@ pub struct Row {
     pub ordinal: u32,
     /// Host CState id; a null host-state pointer is recorded as absent, not zero.
     pub state: Option<u32>,
+    pub symbol: Option<Symbol>,
     pub provinces_start: usize,
     pub provinces_len: usize,
+}
+
+/// Presentation operands carried under the radar update writer's certificate.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Symbol {
+    pub radius: i64,
+}
+
+/// A demanded group's cached radius. The caller already authenticated its group.
+pub fn radius(memory: &impl Memory, group: usize) -> Option<i64> {
+    group
+        .checked_add(COVERAGE_RADIUS)
+        .and_then(|at| read::<i64>(memory, at))
+}
+
+/// Only a group with an authenticated nonnull host needs a map range.
+pub fn symbol(memory: &impl Memory, group: usize, state: usize) -> Option<Symbol> {
+    (state != 0)
+        .then(|| radius(memory, group))
+        .flatten()
+        .map(|radius| Symbol { radius })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +109,7 @@ pub fn walk(
         game_state,
         Buffer::Fixed(output),
         Buffer::Fixed(provinces),
+        |_, _| None,
     )
 }
 
@@ -100,6 +127,45 @@ pub fn walk_growing(
         game_state,
         Buffer::Growing(output),
         Buffer::Growing(provinces),
+        |_, _| None,
+    )
+}
+
+/// The existing census supplies authenticated group and host pointers to a
+/// writer-certified symbol cache. It does not read symbol fields itself.
+pub fn walk_with_symbols(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut [Row],
+    provinces: &mut [u32],
+    symbols: impl FnMut(usize, usize) -> Option<Symbol>,
+) -> Walk {
+    walk_buffers(
+        memory,
+        base,
+        game_state,
+        Buffer::Fixed(output),
+        Buffer::Fixed(provinces),
+        symbols,
+    )
+}
+
+pub fn walk_growing_with_symbols(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+    provinces: &mut Vec<u32>,
+    symbols: impl FnMut(usize, usize) -> Option<Symbol>,
+) -> Walk {
+    walk_buffers(
+        memory,
+        base,
+        game_state,
+        Buffer::Growing(output),
+        Buffer::Growing(provinces),
+        symbols,
     )
 }
 
@@ -109,6 +175,7 @@ fn walk_buffers(
     game_state: usize,
     mut output: Buffer<'_, Row>,
     mut provinces: Buffer<'_, u32>,
+    mut symbols: impl FnMut(usize, usize) -> Option<Symbol>,
 ) -> Walk {
     let mut provinces_len = 0;
     let mut required_provinces = 0_usize;
@@ -188,6 +255,7 @@ fn walk_buffers(
                     .then(|| usize::try_from(u64::from_le_bytes(state)).ok())
                     .flatten()
                     .ok_or("radar group state pointer unreadable")?;
+                let host = state;
                 let state = if state == 0 {
                     None
                 } else {
@@ -228,6 +296,7 @@ fn walk_buffers(
                     country: country.id,
                     ordinal,
                     state,
+                    symbol: symbols(group, host),
                     provinces_start: provinces_len,
                     provinces_len: count,
                 };
@@ -397,6 +466,7 @@ mod tests {
                 state: Some(77),
                 provinces_start: 0,
                 provinces_len: 3,
+                ..Default::default()
             }
         );
         assert_eq!(
@@ -407,9 +477,29 @@ mod tests {
                 state: None,
                 provinces_start: 3,
                 provinces_len: 0,
+                ..Default::default()
             }
         );
         assert_eq!(&provinces[..3], [u32::MAX, 1, 13_413]);
+    }
+
+    #[test]
+    fn symbol_inputs_read_only_the_demanded_cached_radius() {
+        let mut bytes = fixture();
+        put(
+            &mut bytes,
+            GROUP + COVERAGE_RADIUS,
+            &123_456_i64.to_le_bytes(),
+        );
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            symbol(&memory, GROUP, STATE_A),
+            Some(Symbol { radius: 123_456 })
+        );
+        assert_eq!(symbol(&memory, GROUP, 0), None);
     }
 
     #[test]

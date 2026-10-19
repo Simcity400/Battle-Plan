@@ -121,6 +121,19 @@ impl VariantsRequest {
         [0; production::N]
     }
 }
+/// A scheduled membership census does not revoke certified nested values.
+fn variant_read_plan(hour: i32, force_full: bool, recovery: bool) -> (bool, bool) {
+    let fresh = force_full || recovery;
+    (
+        fresh
+            || replay_data::cadence::should_walk(
+                replay_data::rows::TableId::VariantDefinitions,
+                hour,
+                false,
+            ),
+        fresh,
+    )
+}
 /// The governance family's hourly research tables, walked beside the rest
 /// of the family (see `governance::ResearchPart`).
 pub(crate) struct ResearchRequest {
@@ -1687,16 +1700,25 @@ fn run_with_memory(
             // The campaign registry includes variants absent from units,
             // production and stockpiles. Keep all entries and duplicates.
             let begin = sampling::qpc();
-            request
-                .registry
-                .acquire(memory, context.base, context.game_state);
+            let (acquire_roster, fresh) = variant_read_plan(
+                context.hour,
+                context.force_full,
+                production::design_changes::needs_full(),
+            );
+            if acquire_roster {
+                request
+                    .registry
+                    .acquire(memory, context.base, context.game_state);
+            } else {
+                request.registry.mark_skipped();
+            }
             let registry_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
             let mut variants = request.variants.capture(
                 memory,
                 context.base,
                 request.registry.sources(),
                 context.hour,
-                context.force_full,
+                fresh,
             );
             variants[3] = variants[3].saturating_add(registry_ticks);
             Report::Variants(variants)
@@ -1869,6 +1891,7 @@ fn run_with_memory(
                 &request.countries.bytes_view(memory),
                 request.base,
                 request.game_state,
+                request.mission_store.as_deref_mut(),
             );
             Report::AirMissions(AirMissionsReport)
         }
@@ -2466,6 +2489,23 @@ impl<'a> Batch<'a> {
         self.parked[index] = false;
         self.pool.unpark(ticket)
     }
+    /// Refuse in the pool's existing heap cell, without an owned request copy.
+    pub(crate) fn finish_parked_into(
+        &mut self,
+        ticket: Ticket,
+        out: &mut Option<Completion<Job, Report>>,
+        complete: impl FnOnce(&mut Job) -> Option<Result<Report, Failure>>,
+    ) -> bool {
+        let Some(index) = self.position(ticket, true) else {
+            return false;
+        };
+        if !self.pool.executor.finish_parked_into(ticket, out, complete) {
+            return false;
+        }
+        self.tickets[index] = None;
+        self.parked[index] = false;
+        true
+    }
     #[cfg(test)]
     pub(crate) fn finish(&mut self, ticket: Ticket) -> Option<Completion<Job, Report>> {
         let mut completed = None;
@@ -2569,6 +2609,17 @@ mod tests {
     use characters::CharactersCopyContext;
     use engine_native::memory::ReadCounts;
     use replay_data::rows::TableId;
+
+    #[test]
+    fn variant_schedule_reads_membership_without_forcing_dependency_baselines() {
+        for hour in 0..48 {
+            let scheduled =
+                replay_data::cadence::should_walk(TableId::VariantDefinitions, hour, false);
+            assert_eq!(variant_read_plan(hour, false, false), (scheduled, false));
+            assert_eq!(variant_read_plan(hour, true, false), (true, true));
+            assert_eq!(variant_read_plan(hour, false, true), (true, true));
+        }
+    }
 
     fn accounted_read(owner: TableId, len: usize) {
         read_accounting::with_table(owner, || {
@@ -3479,7 +3530,7 @@ mod tests {
                 game_state: 0x1000,
                 trait_rows: 0,
                 trait_bytes: 0,
-                active: [true; 5],
+                active: [true; crate::extended::characters::N],
             },
             payload: Default::default(),
             roles: characters::Roles::Independent,

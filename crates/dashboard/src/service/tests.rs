@@ -973,7 +973,7 @@ impl PreparationHold {
         let flags: Vec<_> = (0..jobs)
             .map(|_| Arc::new(AtomicBool::new(false)))
             .collect();
-        for flag in &flags {
+        for (index, flag) in flags.iter().enumerate() {
             let sent = sent.clone();
             service
                 .inner
@@ -985,10 +985,10 @@ impl PreparationHold {
                     }
                 })
                 .unwrap();
-        }
-        // Two workers start; the rest wait in the queue.
-        for _ in 0..jobs.min(2) {
-            seen.recv_timeout(HANG_GUARD).unwrap();
+            // Occupy both workers before filling their bounded queue.
+            if index < 2 {
+                seen.recv_timeout(HANG_GUARD).unwrap();
+            }
         }
         Self(flags)
     }

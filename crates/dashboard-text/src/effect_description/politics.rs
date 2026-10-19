@@ -34,13 +34,18 @@ impl Renderer<'_, '_, '_> {
                 Some(world) => world,
                 None => self.context.text.trigger_world()?,
             };
-            return Ok(world.named_ideology(operand)?.1.to_vec());
+            return Ok(world
+                .named_ideology(operand)
+                .map_err(|why| why.to_string())?
+                .1
+                .to_vec());
         }
         let (_, token) = self
             .evaluator()?
             .ideology_specifier(Some(operand), scopes, |token| {
-                names.counts.is_ideology(token)
-            })?;
+                names.counts.is_ideology(token).map_err(Into::into)
+            })
+            .map_err(|why| why.to_string())?;
         Ok(token.to_vec())
     }
 
@@ -432,7 +437,8 @@ impl Renderer<'_, '_, '_> {
             .or_else(|| field(children(item), "target").and_then(|item| item.value.scalar()));
         let Some(country) = target
             .map(|target| self.evaluator()?.scoped_country(target, scopes))
-            .transpose()?
+            .transpose()
+            .map_err(|why| why.to_string())?
             .flatten()
         else {
             return Ok(String::new());

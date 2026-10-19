@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-native.workspace = true
 replay.workspace = true
 engine-executable.workspace = true
 installed-content-core.workspace = true
@@ -54,6 +55,7 @@ recorder-oracle-construction.workspace = true
 recorder-oracle-combat-log.workspace = true
 recorder-oracle-production.workspace = true
 recorder-oracle-naval-history.workspace = true
+recorder-oracle-naval-missions.workspace = true
 recorder-oracle-core.workspace = true
 recorder-oracle-combat-details.workspace = true
 recorder-oracle-characters.workspace = true

@@ -13,6 +13,16 @@ pub(crate) trait CheckpointValue: Sized {
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self>;
 }
 
+impl<T: CheckpointValue> CheckpointValue for std::sync::Arc<T> {
+    const MINIMUM_BYTES: usize = T::MINIMUM_BYTES;
+    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        CheckpointValue::encode(&**self, output)
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        T::decode(input).map(Self::new)
+    }
+}
+
 /// Reuse strict codecs whose values have no display conversion or field gaps.
 macro_rules! wire_value {
     ($($ty:ty),+ $(,)?) => {
@@ -52,6 +62,10 @@ wire_value!(
     crate::event_feed_rows::EventFeedCoverage,
     crate::event_feed_rows::EventFeedRoute,
     crate::event_feed_rows::EventFeedHistoryRow,
+    crate::event_feed_rows::EventFeedScope,
+    crate::event_feed_rows::EventFeedScript,
+    crate::event_feed_rows::EventFeedCountry,
+    crate::event_feed_rows::EventFeedEvent,
     NuclearStrikePart,
     MapEventFaults,
     MapEventFamilyHealth,

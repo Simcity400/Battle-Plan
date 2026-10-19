@@ -20,9 +20,11 @@ import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useProductWindows } from '../../dashboard/productWindows';
+import { useProduct } from '../../dashboard/products';
 import type { ArmyAttribution, ArmyMeasure, ArmySizeReply } from '../../generated/dashboard';
 import { ARMY_REMAINDER, armyDrillBands, armyDrillNumbers, armyDrillIdentityReply, armyDrillValue } from './armyDrill';
-import { armySizeRequest, armyWindows, formatArmyValue, measureName, mergeArmyWindows, typeName, validateArmyWindow } from './armySizeData';
+import { armySizeRequest, armyWindows, formatArmyValue, measureName, mergeArmyWindows, typeName, validateArmyWindow, validateArmySizeReply } from './armySizeData';
+import CountryPeople from '../country-people/CountryPeople';
 import type { armyCountrySelection } from './ArmyCountryChip';
 
 /** A chosen country's complete history is independent of the parent race/group. */
@@ -69,13 +71,22 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
   const labels = stores.labels.update(pickScope, pending ? undefined : incomingLabels, reply => reply);
   const shown = numbers ?? incomingData;
   const data = useMemo(() => shown ? { ...shown, ...labels } : undefined, [shown, labels]);
+  const [peopleWarnings, setPeopleWarnings] = useState<string[]>([]);
   useEffect(() => {
-    onWarnings(data?.warnings ?? []);
+    onWarnings([...(data?.warnings ?? []), ...peopleWarnings]);
     return () => onWarnings([]);
-  }, [data, onWarnings]);
+  }, [data, peopleWarnings, onWarnings]);
   const selected = useMemo(() => data && tag ? armyDrillIdentityReply(data, tag, originHour) : null, [data, tag, originHour]);
   const identitySpans = useMemo(() => countryDrillSpans(data?.series ?? [], tag ?? '', originHour), [data, tag, originHour]);
   const actor = countryDrillTagAt(identitySpans, hour);
+  const roster = useProduct<ArmySizeReply>(runtime.client, track && actor ? {
+    sourceId: track.source.id, revision: track.source.revision, product: 'army-size',
+    params: { ...armySizeRequest(track.branch.id, { tags: [actor] }, measure, countFor, false, null), templateAt: [actor, hour] },
+  } : null, active, validateArmySizeReply, track?.source);
+  useEffect(() => {
+    onWarnings([...(data?.warnings ?? []), ...(roster.data?.warnings ?? [])]);
+    return () => onWarnings([]);
+  }, [data, roster.data, onWarnings]);
   const model = useMemo(() => selected ? countryValuesModel(selected) : null, [selected]);
   const pickOwner = useMemo(() => ({ client: runtime.client, scope: pickScope, model: numbers }),
     [runtime.client, pickScope, numbers]);
@@ -104,6 +115,7 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
       {pinned && <p className="drill-day">{dayLabel(hour)} {track !== undefined && !following
         && <button type="button" className="button small" onClick={onFollow}>Follow playback</button>}</p>}
       {pending && <WidgetState kind="loading" label="Loading army data…" />}
+      {measure === 'manpower' && <CountryPeople runtime={runtime} track={track} tag={pending || error ? null : actor} hour={hour} active={active} view="manpower" onWarnings={setPeopleWarnings} />}
       <DrillParts virtual active={active} parts={at?.parts.flatMap(part => part.value === null ? [] : [{ ...part,
         value: part.value, color: colours.get(part.id) }]) ?? []} format={formatArmyValue} total={at?.total ?? undefined}
         unattributed={at?.residual == null ? undefined : { label: ARMY_REMAINDER.label,
@@ -111,6 +123,12 @@ export default function ArmyBreakdown({ runtime, track, active, options, country
         totalRow={{ label: measureName(measure), value: at?.totalText ?? 'Not known' }} />
       {!actor && !pending && <p className="drill-empty">Country unavailable at this time.</p>}
       {!!at?.missing.length && <p className="drill-empty">Not recorded: {at.missing.join(', ')}.</p>}
+      {actor && <section className="army-template-roster" aria-label="Division template roster">
+        <h3>Division templates</h3>
+        {roster.error ? <WidgetState kind="error" what="the template roster" detail={roster.error} onRetry={roster.retry} />
+          : roster.data?.templateSections === undefined ? <WidgetState kind="loading" label="Loading templates…" />
+            : roster.data.templateSections.map((section, index) => <pre key={index}>{section}</pre>)}
+      </section>}
     </div>}
     onPick={onPick} pickOwner={pickOwner} onViewChange={onViewChange} label="Army breakdown" empty="Army data is unavailable at this time."
     resetKey={pickScope} formatValue={formatArmyValue} presentation={{ exact: true, held: true,

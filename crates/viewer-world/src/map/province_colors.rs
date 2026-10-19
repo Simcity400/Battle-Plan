@@ -1,0 +1,224 @@
+//! Incremental province colour pixels, using the political pass's immutable ID image.
+use super::*;
+use std::collections::BTreeMap;
+use viewer_foundation::map::textures::Bound;
+
+pub(crate) struct ProvinceColors {
+    pub bound: Bound,
+    colors: Vec<u32>,
+    palette: wgpu::Buffer,
+    tiles: wgpu::Buffer,
+    uniform: wgpu::Buffer,
+    pipeline: wgpu::ComputePipeline,
+    group: wgpu::BindGroup,
+    provinces: Arc<[Province]>,
+    params: [u32; 8],
+    pending: bool,
+    dirty: Vec<bool>,
+    last: BTreeMap<u32, [u8; 4]>,
+}
+
+impl ProvinceColors {
+    pub(crate) fn new(device: &wgpu::Device, source: &Static) -> io::Result<Self> {
+        let source = &source.strategic;
+        let p = source.params;
+        let colors = vec![0_u32; source.provinces.len()];
+        let palette = buffer(
+            device,
+            "province stripe palette",
+            bytemuck::cast_slice(&colors),
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        )?;
+        let tiles = zero_buffer(
+            device,
+            "province stripe dirty tiles",
+            u64::from(p.columns) * u64::from(p.rows) * 8,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        )?;
+        let params = [
+            p.width,
+            p.height,
+            p.packed_ids,
+            0,
+            p.dispatch_stride,
+            GRID_CELL,
+            0,
+            0,
+        ];
+        let uniform = buffer(
+            device,
+            "province stripe parameters",
+            bytemuck::cast_slice(&params),
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        )?;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ProvinceSecondaryColorMap"),
+            size: wgpu::Extent3d {
+                width: p.width,
+                height: p.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+        });
+        let output = texture.create_view(&wgpu::TextureViewDescriptor {
+            usage: Some(wgpu::TextureUsages::STORAGE_BINDING),
+            ..Default::default()
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
+            ..Default::default()
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("province stripe pixels"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("province stripe pixels"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("province stripe pixels"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: source.ids.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: palette.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: tiles.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&output),
+                },
+            ],
+        });
+        Ok(Self {
+            bound: Bound { texture, view },
+            colors,
+            palette,
+            tiles,
+            uniform,
+            pipeline,
+            group,
+            provinces: Arc::clone(&source.provinces),
+            params,
+            pending: false,
+            dirty: vec![false; (p.columns * p.rows) as usize],
+            last: BTreeMap::new(),
+        })
+    }
+
+    pub(crate) fn update(&mut self, queue: &wgpu::Queue, values: &BTreeMap<u32, [u8; 4]>) {
+        if self.last == *values {
+            return;
+        }
+        self.last.clone_from(values);
+        let columns = self.params[0].div_ceil(GRID_CELL);
+
+        for (id, (color, province)) in self
+            .colors
+            .iter_mut()
+            .zip(self.provinces.iter())
+            .enumerate()
+        {
+            let next = values
+                .get(&(id as u32))
+                .copied()
+                .map(u32::from_le_bytes)
+                .unwrap_or(0);
+            if next == *color {
+                continue;
+            }
+            *color = next;
+            if province.pixels == 0 {
+                continue;
+            }
+            for y in province.bounds[1]..=province.bounds[3] {
+                for x in province.bounds[0]..=province.bounds[2] {
+                    self.dirty[(y * columns + x) as usize] = true;
+                }
+            }
+        }
+        let tiles: Vec<[u32; 2]> = self
+            .dirty
+            .iter()
+            .enumerate()
+            .filter_map(|(at, changed)| {
+                changed.then_some([at as u32 % columns, at as u32 / columns])
+            })
+            .collect();
+        if tiles.is_empty() {
+            return;
+        }
+        // Keep preceding dirty tiles when several updates precede a submission.
+        self.params[3] = tiles.len() as u32;
+        queue.write_buffer(&self.palette, 0, bytemuck::cast_slice(&self.colors));
+        queue.write_buffer(&self.tiles, 0, bytemuck::cast_slice(&tiles));
+        queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&self.params));
+        self.pending = true;
+    }
+
+    pub(crate) fn encode(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.pending {
+            return;
+        }
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("province stripe pixels"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.group, &[]);
+        let count = self.params[3];
+        let stride = self.params[4];
+        pass.dispatch_workgroups(count.min(stride), count.div_ceil(stride), 1);
+        self.pending = false;
+        self.dirty.fill(false);
+    }
+}
+
+const SHADER: &str = r#"
+struct Params { width:u32, height:u32, packed:u32, count:u32, stride:u32, tile:u32, spare1:u32, spare2:u32 }
+@group(0) @binding(0) var<uniform> p:Params;
+@group(0) @binding(1) var<storage,read> ids:array<u32>;
+@group(0) @binding(2) var<storage,read> colors:array<u32>;
+@group(0) @binding(3) var<storage,read> tiles:array<vec2<u32>>;
+@group(0) @binding(4) var output:texture_storage_2d<rgba8unorm,write>;
+@compute @workgroup_size(8,8)
+fn main(@builtin(workgroup_id) group:vec3<u32>, @builtin(local_invocation_id) local:vec3<u32>) {
+    let tile=group.x+group.y*p.stride;
+    if tile>=p.count {return;}
+    let origin=tiles[tile]*p.tile;
+    for(var y=local.y;y<p.tile;y+=8u) {
+        for(var x=local.x;x<p.tile;x+=8u) {
+            let point=origin+vec2<u32>(x,y);
+            if point.x>=p.width || point.y>=p.height {continue;}
+            let at=point.y*p.width+point.x;
+            var id:u32;
+            if p.packed!=0u {id=(ids[at/2u]>>((at%2u)*16u))&65535u;} else {id=ids[at];}
+            textureStore(output,vec2<i32>(point),unpack4x8unorm(colors[id]));
+        }
+    }
+}
+"#;

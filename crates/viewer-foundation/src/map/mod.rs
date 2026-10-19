@@ -44,7 +44,9 @@ pub mod textures;
 pub mod ui_scale;
 pub mod visibility;
 
+pub mod air_detection;
 pub mod air_range;
+pub mod air_region_reach;
 pub mod aircraft_model;
 
 pub mod model_admission;
@@ -89,6 +91,7 @@ pub mod counter_action;
 pub mod counter_inputs;
 pub mod counter_status;
 pub mod naval_count_approx;
+pub mod naval_dominance_sources;
 pub mod railway_gun_counter;
 
 pub mod counter_attrition;
@@ -96,3 +99,11 @@ pub mod port_mission_defines;
 
 pub mod counter_anchors;
 pub mod counter_hovers;
+
+pub mod border_power;
+
+pub mod division_panel;
+
+pub mod naval_mine_levels;
+
+pub mod naval_region_control;

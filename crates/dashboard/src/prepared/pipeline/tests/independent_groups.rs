@@ -772,6 +772,44 @@ fn country_groups_cold_single_hour_query_keeps_the_sampled_name_read() {
 }
 
 #[test]
+fn cold_country_groups_merge_explicit_gaps_with_unsaved_block_discontinuities() {
+    let replay = scenario(3, false);
+    let mut continuation = continuation_records(
+        &replay,
+        1,
+        (114..=117).map(|hour| groups_frame(1, hour)).collect(),
+    );
+    // The explicit witness covers only the first of two hours with no block.
+    continuation.push(replay::spool::Record::Gap(replay_frame::branches::Gap {
+        branch: 1,
+        first_hour: 112,
+        last_hour: 112,
+        reason: "synthetic incomplete gap witness".into(),
+    }));
+    let replay = replay.append(&[continuation]).unwrap();
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("groups-cold-gaps");
+    let data = query(&source, "country-groups", "1").unwrap();
+    assert_eq!(data["coverage"]["lastHour"], 99);
+    for list in ["humans", "factions", "wars"] {
+        assert_eq!(
+            data["unobserved"][list],
+            serde_json::json!([{"firstHour": 112, "lastHour": 113}]),
+            "{list}: every unrecorded hour is unobserved"
+        );
+    }
+    assert_eq!(
+        data["approximate"],
+        serde_json::json!([
+            {"firstHour": 100, "lastHour": 111},
+            {"firstHour": 114, "lastHour": 117}
+        ])
+    );
+    assert_eq!(data["pending"], serde_json::json!([]));
+    clear(source);
+}
+
+#[test]
 fn prepared_country_groups_query_refuses_missing_and_empty_name_histories() {
     use crate::products::country_groups::Scan;
     use serde_json::json;

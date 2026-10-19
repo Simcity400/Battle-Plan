@@ -32,7 +32,7 @@ impl Context<'_> {
         )
     }
 
-    fn state_row(&self) -> Result<&replay_data::rows::StateRow, String> {
+    pub(super) fn state_row(&self) -> Result<&replay_data::rows::StateRow, String> {
         let id = self.province.state;
         self.frame
             .complete::<tables::States>()
@@ -52,6 +52,12 @@ impl Context<'_> {
     }
 
     pub(super) fn mode_lines(&self, mode: &ModeHover, out: &mut Tooltip) {
+        if let ModeHover::StrategicAir(selected) = mode {
+            return super::strategic_air::append(self, selected, out);
+        }
+        if let ModeHover::StrategicNavy(sources) = mode {
+            return super::strategic_navy::append(self, sources, out);
+        }
         // The infrastructure line shows for every province, a stateless one at level zero.
         if let ModeHover::Infrastructure(level) = mode {
             let text = level.clone().and_then(|level| {
@@ -70,7 +76,11 @@ impl Context<'_> {
             return;
         }
         match mode {
-            ModeHover::Location { .. } | ModeHover::Nothing | ModeHover::Infrastructure(_) => {}
+            ModeHover::Location { .. }
+            | ModeHover::Nothing
+            | ModeHover::Infrastructure(_)
+            | ModeHover::StrategicAir(_) => {}
+            ModeHover::StrategicNavy(_) => {}
             ModeHover::Manpower => line(out, "population", 0, self.population()),
             ModeHover::Diplomacy {
                 very_good,
@@ -78,7 +88,8 @@ impl Context<'_> {
             } => line(out, "diplomacy", 0, self.diplomacy(*very_good, *very_bad)),
             ModeHover::Ideology => line(out, "ideology", 0, self.ideology()),
             ModeHover::Operatives => super::operatives::append(self, out),
-            ModeHover::Occupation => self.occupation(out),
+            ModeHover::Occupation => self.occupation(out, false),
+            ModeHover::OccupationMarker => self.occupation(out, true),
             ModeHover::Resources => self.resource_lines(out),
             ModeHover::Scripted(name) => {
                 line(
@@ -208,7 +219,7 @@ impl Context<'_> {
     /// The resistance and compliance modes' hover, the same in both: the state, its resistance
     /// and compliance with each line the recorded hour can give, or why resistance cannot grow
     /// there. A line whose operands are not recorded is refused by its key.
-    fn occupation(&self, out: &mut Tooltip) {
+    fn occupation(&self, out: &mut Tooltip, marker: bool) {
         let row = self
             .frame
             .complete::<tables::StateResistance>()
@@ -216,13 +227,21 @@ impl Context<'_> {
             .map(|rows| {
                 rows.iter()
                     .find(|row| row.state == self.province.state)
-                    .filter(|row| row.active != 0)
-                    .cloned()
+                    .filter(|row| marker || row.active != 0)
             });
         match row {
             Ok(Some(row)) => {
                 let mut refused = Vec::new();
-                let text = self.occupation_lines(&row, &mut refused);
+                let text = if marker {
+                    match (&row.hover, &row.modifier_sources) {
+                        (Recorded::Value(Some(hover)), Recorded::Value(sources)) => {
+                            self.occupation_marker(row, hover, sources, &mut refused)
+                        }
+                        _ => Err("occupation marker resistance description is not recorded".into()),
+                    }
+                } else {
+                    self.occupation_lines(row, &mut refused)
+                };
                 line(out, "occupied state", 0, text);
                 for (key, why) in refused {
                     out.refuse("state resistance", format!("{key}: {why}"));
@@ -245,6 +264,11 @@ impl Context<'_> {
         row: &replay_data::rows::StateResistanceRow,
         refused: &mut Vec<(&'static str, String)>,
     ) -> Result<String, String> {
+        if let (Recorded::Value(Some(hover)), Recorded::Value(sources)) =
+            (&row.hover, &row.modifier_sources)
+        {
+            return self.occupation_complete(row, hover, sources, refused);
+        }
         let defines = self
             .content
             .province_hover
@@ -266,22 +290,47 @@ impl Context<'_> {
             "MODIFIER_BASE_VALUE_PERCENTAGE",
             percent(defines.target_base),
         )?);
-        refuse(
-            "RESISTANCE_TARGET_MODIFIER_HAS_CLAIM",
-            "the state's claims are not recorded",
-        );
-        refuse(
-            "RESISTANCE_TARGET_MODIFIER_POP_LOW",
-            "the state's current population is not recorded",
-        );
-        refuse(
-            "RESISTANCE_TARGET_MODIFIER_IS_AT_PEACE",
-            "the controller's peace test is not derived",
-        );
-        refuse(
-            "RESISTANCE_TARGET_MODIFIER_PER_STABILITY_LOSS",
-            "the controller's effective stability is not derived",
-        );
+        let claim = self.occupation_claim();
+        let stability = self.occupation_stability();
+        for (key, amount) in [
+            (
+                "RESISTANCE_TARGET_MODIFIER_HAS_CLAIM",
+                claim
+                    .clone()
+                    .map(|claim| if claim { defines.claim } else { 0 }),
+            ),
+            (
+                "RESISTANCE_TARGET_MODIFIER_POP_LOW",
+                self.state_row().and_then(|state| match state.population {
+                    Recorded::Value(population) => Ok(defines.population(population)),
+                    Recorded::NotRecorded => Err("the state's population is not recorded".into()),
+                }),
+            ),
+            (
+                "RESISTANCE_TARGET_MODIFIER_IS_AT_PEACE",
+                stability
+                    .as_ref()
+                    .map(|row| if row.at_war == 0 { defines.peace } else { 0 })
+                    .map_err(Clone::clone),
+            ),
+            (
+                "RESISTANCE_TARGET_MODIFIER_PER_STABILITY_LOSS",
+                stability.as_ref().map_err(Clone::clone).and_then(|row| {
+                    replay_data::country_stability::stability(row)
+                        .value
+                        .map(|stability| defines.stability_loss(stability))
+                        .ok_or_else(|| {
+                            "the controller's stability modifier read was refused".into()
+                        })
+                }),
+            ),
+        ] {
+            match amount {
+                Ok(0) => {}
+                Ok(amount) => lines.push(value(key, percent(amount))?),
+                Err(why) => refuse(key, &why),
+            }
+        }
         match self.capitulated(row.country) {
             Ok(true) => lines.push(value(
                 "RESISTANCE_TARGET_MODIFIER_OCCUPIED_CAPITULATED",
@@ -345,19 +394,33 @@ impl Context<'_> {
             "COMPLIANCE_GROWTH_VALUE, COMPLIANCE_DECAY_VALUE",
             "the compliance gain modifiers are not recorded",
         );
-        let base = format!(
-            "\u{11}G{}\u{11}!",
-            installed_content_core::fixed5::fixed5_to_string(defines.compliance_growth_base, 3)
-        );
+        let base = super::occupation::base_value(defines.compliance_growth_base, 'G');
         lines.push(self.loc("MODIFIER_BASE_VALUE_STR", &[("VALUE", Arg::Text(&base))])?);
-        refuse(
-            "COMPLIANCE_GROWTH_HAS_CLAIM",
-            "the state's claims are not recorded",
-        );
-        refuse(
-            "COMPLIANCE_GROWTH_IS_AT_PEACE",
-            "the controller's peace test is not derived",
-        );
+        for (key, amount) in [
+            (
+                "COMPLIANCE_GROWTH_HAS_CLAIM",
+                claim.map(|claim| if claim { defines.compliance_claim } else { 0 }),
+            ),
+            (
+                "COMPLIANCE_GROWTH_IS_AT_PEACE",
+                stability
+                    .as_ref()
+                    .map(|row| {
+                        if row.at_war == 0 {
+                            defines.compliance_peace
+                        } else {
+                            0
+                        }
+                    })
+                    .map_err(Clone::clone),
+            ),
+        ] {
+            match amount {
+                Ok(0) => {}
+                Ok(amount) => lines.push(value(key, percent(amount))?),
+                Err(why) => refuse(key, &why),
+            }
+        }
         refuse(
             "compliance growth modifiers",
             "the controller's, state's and relation's modifier totals are not recorded",
@@ -386,9 +449,44 @@ impl Context<'_> {
         Ok(lines.join("\n"))
     }
 
+    /// Claims compare either the raw country reference or its canonical slot, as cores do.
+    pub(super) fn occupation_claim(&self) -> Result<bool, String> {
+        let controller = self.state_row()?.controller;
+        let slot = self.slot(controller)?;
+        let state = self
+            .frame
+            .complete::<tables::StateCores>()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .find(|row| row.state == self.province.state)
+            .ok_or("the state's core and claim row is absent")?;
+        let Recorded::Value(claims) = &state.claims else {
+            return Err("the state's claims are not recorded".into());
+        };
+        claims.iter().try_fold(false, |found, &claim| {
+            if found || claim == controller {
+                return Ok(true);
+            }
+            Ok(claim != 0 && controller != 0 && self.slot(claim)? == slot)
+        })
+    }
+
+    /// This row's peace flag is the native war test excluding an exiled counterpart.
+    pub(super) fn occupation_stability(
+        &self,
+    ) -> Result<&replay_data::rows::CountryStabilityInputRow, String> {
+        let controller = self.slot(self.state_row()?.controller)?;
+        self.frame
+            .complete::<tables::CountryStabilityInputs>()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .find(|row| self.links.get(&row.country) == Some(&controller))
+            .ok_or_else(|| "the controller's stability inputs are absent".into())
+    }
+
     /// Whether the occupied country (a raw reference) is capitulated as the resistance target
     /// reads it: it owns a state and controls none.
-    fn capitulated(&self, occupied: u32) -> Result<bool, String> {
+    pub(super) fn capitulated(&self, occupied: u32) -> Result<bool, String> {
         let slot = self.slot(occupied)?;
         let row = self
             .frame
@@ -401,7 +499,7 @@ impl Context<'_> {
     }
 
     /// The victory points of the hovered state's provinces.
-    fn state_victory_points(&self) -> Result<i64, String> {
+    pub(super) fn state_victory_points(&self) -> Result<i64, String> {
         Ok(self
             .frame
             .complete::<tables::Provinces>()
@@ -452,50 +550,89 @@ impl Context<'_> {
 }
 
 /// One in fixed5.
-const FIXED5: i64 = 100_000;
+pub(super) const FIXED5: i64 = 100_000;
 
 /// Why the resistance target's own lines are refused.
 const TARGET_UNRECORDED: &str =
     "the resistance target is not recorded (its modifier, claim, population and spread terms)";
 
 /// A fixed5 percentage-point value as the fraction the percent formats print.
-fn percent(points: i64) -> i64 {
-    points / 100
+pub(super) fn percent(points: i64) -> i64 {
+    if [i64::MIN, i64::MIN + 1, i64::MAX].contains(&points) {
+        i64::from(u32::MAX)
+    } else {
+        points.wrapping_mul(FIXED5) / 10_000_000
+    }
 }
 
 /// Fixed5 multiplication, truncated toward zero.
-fn mul(a: i64, b: i64) -> i64 {
-    ((i128::from(a) * i128::from(b)) / i128::from(FIXED5)) as i64
+pub(super) fn mul(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b) / FIXED5
 }
 
 /// A fixed5 value truncated to whole units.
-fn whole_points(value: i64) -> i64 {
+pub(super) fn whole_points(value: i64) -> i64 {
     value / FIXED5
 }
 
-/// The `NCountry` resistance and compliance defines the occupation hover reads, each fixed5.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The resistance and compliance defines the occupation hover reads, each fixed5.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct OccupationDefines {
-    target_base: i64,
-    occupied_capitulated: i64,
-    per_compliance: i64,
+    pub(super) target_base: i64,
+    pub(super) claim: i64,
+    pub(super) peace: i64,
+    pub(super) per_stability_loss: i64,
+    pub(super) population_low: i64,
+    pub(super) population_very_low: i64,
+    pub(super) population_low_cutoff: i32,
+    pub(super) population_very_low_cutoff: i32,
+    pub(super) occupied_capitulated: i64,
+    pub(super) per_compliance: i64,
     /// `RESISTANCE_TARGET_MODIFIER_STATE_VP`: (total victory points, target modifier) pairs.
-    state_vp: Vec<(i64, i64)>,
-    compliance_growth_base: i64,
-    decay_at_max_compliance: i64,
+    pub(super) state_vp: Vec<(i64, i64)>,
+    pub(super) compliance_growth_base: i64,
+    pub(super) compliance_claim: i64,
+    pub(super) compliance_peace: i64,
+    pub(super) decay_at_max_compliance: i64,
+    pub(super) max_stability: i64,
+    pub(super) max_legitimacy: i64,
+    pub(super) exile_min: i64,
+    pub(super) exile_max: i64,
+    pub(super) target_floor: i64,
+    pub(super) reenable: i64,
+    pub(super) decay_base: i64,
+    pub(super) decay_min: i64,
+    pub(super) decay_max: i64,
+    pub(super) decay_claim: i64,
+    pub(super) decay_factors: Vec<(i64, i64)>,
+    pub(super) growth_base: i64,
+    pub(super) growth_min: i64,
+    pub(super) growth_max: i64,
+    pub(super) compliance_min: i64,
+    pub(super) compliance_max: i64,
+    pub(super) exile_decay: i64,
+    pub(super) no_gain_limit: i64,
 }
 
 impl OccupationDefines {
     pub(super) fn load(defines: &installed_content_core::defines::Defines) -> std::io::Result<Self> {
-        let value = |name: &str| defines.fixed5("NCountry", name);
-        let pairs = defines.fixed5_array("NCountry", "RESISTANCE_TARGET_MODIFIER_STATE_VP")?;
+        let value = |name: &str| defines.fixed5("NResistance", name);
+        let pairs = defines.fixed5_array("NResistance", "RESISTANCE_TARGET_MODIFIER_STATE_VP")?;
         if pairs.len() % 2 != 0 {
             return Err(std::io::Error::other(
-                "NCountry.RESISTANCE_TARGET_MODIFIER_STATE_VP holds an odd number of values",
+                "NResistance.RESISTANCE_TARGET_MODIFIER_STATE_VP holds an odd number of values",
             ));
         }
         Ok(Self {
             target_base: value("RESISTANCE_TARGET_BASE")?,
+            claim: value("RESISTANCE_TARGET_MODIFIER_HAS_CLAIM")?,
+            peace: value("RESISTANCE_TARGET_MODIFIER_IS_AT_PEACE")?,
+            per_stability_loss: value("RESISTANCE_TARGET_MODIFIER_PER_STABILITY_LOSS")?,
+            population_low: value("RESISTANCE_TARGET_MODIFIER_POP_LOW")?,
+            population_very_low: value("RESISTANCE_TARGET_MODIFIER_POP_VERY_LOW")?,
+            population_low_cutoff: defines.int32("NResistance", "RESISTANCE_POP_LOW_CUTOFF")?,
+            population_very_low_cutoff: defines
+                .int32("NResistance", "RESISTANCE_POP_VERY_LOW_CUTOFF")?,
             occupied_capitulated: value("RESISTANCE_TARGET_MODIFIER_OCCUPIED_CAPITULATED")?,
             per_compliance: value("RESISTANCE_TARGET_MODIFIER_PER_COMPLIANCE")?,
             state_vp: pairs
@@ -503,16 +640,66 @@ impl OccupationDefines {
                 .map(|pair| (pair[0], pair[1]))
                 .collect(),
             compliance_growth_base: value("COMPLIANCE_GROWTH_BASE")?,
+            compliance_claim: value("COMPLIANCE_GROWTH_HAS_CLAIM")?,
+            compliance_peace: value("COMPLIANCE_GROWTH_IS_AT_PEACE")?,
             decay_at_max_compliance: value("COMPLIANCE_DECAY_AT_MAX_COMPLIANCE")?,
+            max_stability: defines.fixed5("NCountry", "MAX_STABILITY")?,
+            max_legitimacy: defines.fixed5("NCountry", "GIE_MAX_LEGITIMACY")?,
+            exile_min: value("RESISTANCE_TARGET_MODIFIER_OCCUPIED_IS_EXILE_MIN")?,
+            exile_max: value("RESISTANCE_TARGET_MODIFIER_OCCUPIED_IS_EXILE_MAX")?,
+            target_floor: value("RESISTANCE_TARGET_MIN_CAP_FOR_NON_COMPLIANCE")?,
+            reenable: value("RESISTANCE_TARGET_TO_REENABLE_RESISTANCE")?,
+            decay_base: value("RESISTANCE_DECAY_BASE")?,
+            decay_min: value("RESISTANCE_DECAY_MIN")?,
+            decay_max: value("RESISTANCE_DECAY_MAX")?,
+            decay_claim: value("RESISTANCE_DECAY_MODIFIER_HAS_CLAIM")?,
+            decay_factors: {
+                let values =
+                    defines.fixed5_array("NResistance", "RESISTANCE_DECAY_MODIFIER_FACTORS")?;
+                if values.len() % 2 != 0 {
+                    return Err(std::io::Error::other(
+                        "NResistance.RESISTANCE_DECAY_MODIFIER_FACTORS holds an odd number of values",
+                    ));
+                }
+                values.chunks_exact(2).map(|v| (v[0], v[1])).collect()
+            },
+            growth_base: value("RESISTANCE_GROWTH_BASE")?,
+            growth_min: value("RESISTANCE_GROWTH_MIN")?,
+            growth_max: value("RESISTANCE_GROWTH_MAX")?,
+            compliance_min: value("COMPLIANCE_GROWTH_MIN")?,
+            compliance_max: value("COMPLIANCE_GROWTH_MAX")?,
+            exile_decay: value("COMPLIANCE_DECAY_PER_EXILE_LEGITIMACY")?,
+            no_gain_limit: value("NO_COMPLIANCE_GAIN_ENABLE_LIMIT")?,
         })
     }
 
     /// The target modifier of the last pair whose victory point total the state reaches.
-    fn state_vp(&self, victory_points: i64) -> i64 {
+    // Visit thresholds in authored order; the final admitted pair supplies the modifier.
+    #[allow(clippy::double_ended_iterator_last)]
+    pub(super) fn state_vp(&self, victory_points: i64) -> i64 {
         self.state_vp
             .iter()
             .rfind(|(total, _)| victory_points * FIXED5 >= *total)
             .map_or(0, |(_, modifier)| *modifier)
+    }
+
+    pub(super) fn population(&self, population: i32) -> i64 {
+        if population > self.population_low_cutoff {
+            0
+        } else if population > self.population_very_low_cutoff {
+            self.population_low
+        } else {
+            self.population_very_low
+        }
+    }
+
+    pub(super) fn stability_loss(&self, stability: i64) -> i64 {
+        // The native target keeps only whole percentage points of this term.
+        let points = (self.max_stability.wrapping_sub(stability))
+            .wrapping_mul(self.per_stability_loss)
+            .wrapping_mul(100)
+            / 10_000_000_000;
+        i64::from(points as i32).wrapping_mul(FIXED5)
     }
 }
 
@@ -521,9 +708,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn occupation_defines_use_the_resistance_section_and_keep_inclusive_population_cutoffs() {
+        let defines = installed_content_core::defines::Defines::new().unwrap();
+        let names = [
+            "RESISTANCE_TARGET_BASE",
+            "RESISTANCE_TARGET_MODIFIER_HAS_CLAIM",
+            "RESISTANCE_TARGET_MODIFIER_IS_AT_PEACE",
+            "RESISTANCE_TARGET_MODIFIER_PER_STABILITY_LOSS",
+            "RESISTANCE_TARGET_MODIFIER_POP_LOW",
+            "RESISTANCE_TARGET_MODIFIER_POP_VERY_LOW",
+            "RESISTANCE_POP_LOW_CUTOFF",
+            "RESISTANCE_POP_VERY_LOW_CUTOFF",
+            "RESISTANCE_TARGET_MODIFIER_OCCUPIED_CAPITULATED",
+            "RESISTANCE_TARGET_MODIFIER_PER_COMPLIANCE",
+            "COMPLIANCE_GROWTH_BASE",
+            "COMPLIANCE_GROWTH_HAS_CLAIM",
+            "COMPLIANCE_GROWTH_IS_AT_PEACE",
+            "COMPLIANCE_DECAY_AT_MAX_COMPLIANCE",
+            "RESISTANCE_TARGET_MODIFIER_OCCUPIED_IS_EXILE_MIN",
+            "RESISTANCE_TARGET_MODIFIER_OCCUPIED_IS_EXILE_MAX",
+            "RESISTANCE_TARGET_MIN_CAP_FOR_NON_COMPLIANCE",
+            "RESISTANCE_TARGET_TO_REENABLE_RESISTANCE",
+            "RESISTANCE_DECAY_BASE",
+            "RESISTANCE_DECAY_MIN",
+            "RESISTANCE_DECAY_MAX",
+            "RESISTANCE_DECAY_MODIFIER_HAS_CLAIM",
+            "RESISTANCE_GROWTH_BASE",
+            "RESISTANCE_GROWTH_MIN",
+            "RESISTANCE_GROWTH_MAX",
+            "COMPLIANCE_GROWTH_MIN",
+            "COMPLIANCE_GROWTH_MAX",
+            "COMPLIANCE_DECAY_PER_EXILE_LEGITIMACY",
+            "NO_COMPLIANCE_GAIN_ENABLE_LIMIT",
+        ];
+        let fields = names
+            .iter()
+            .map(|name| format!("{name}=0"))
+            .collect::<Vec<_>>()
+            .join(",");
+        defines.load("fixture.lua",format!("NDefines={{NCountry={{MAX_STABILITY=1.25,GIE_MAX_LEGITIMACY=200}},NResistance={{{fields},RESISTANCE_TARGET_MODIFIER_STATE_VP={{1,2}},RESISTANCE_DECAY_MODIFIER_FACTORS={{3,4}}}}}}\nNDefines.NResistance.RESISTANCE_TARGET_BASE=11.25\nNDefines.NResistance.RESISTANCE_POP_LOW_CUTOFF=123\nNDefines.NResistance.RESISTANCE_POP_VERY_LOW_CUTOFF=12\nNDefines.NResistance.RESISTANCE_TARGET_MODIFIER_POP_LOW=-8\nNDefines.NResistance.RESISTANCE_TARGET_MODIFIER_POP_VERY_LOW=-13\nNDefines.NResistance.RESISTANCE_TARGET_MODIFIER_PER_STABILITY_LOSS=0.17").as_bytes()).unwrap();
+        let d = OccupationDefines::load(&defines).unwrap();
+        assert_eq!(d.target_base, 1_125_000);
+        assert_eq!(
+            [
+                d.population(124),
+                d.population(123),
+                d.population(13),
+                d.population(12)
+            ],
+            [0, -800_000, -800_000, -1_300_000]
+        );
+        assert_eq!(d.stability_loss(FIXED5), 400_000);
+        assert_eq!(d.stability_loss(125_000), 0);
+    }
+
+    #[test]
     fn occupation_arithmetic_truncates_as_the_game_does() {
         // 12.34567% resistance prints as 12.34%: the level over a hundred, still fixed5.
         assert_eq!(percent(1_234_567), 12_345);
+        assert_eq!(percent(i64::MAX), i64::from(u32::MAX));
         // 40% compliance at -0.5 per point is -20 whole points; just under it, -19.
         assert_eq!(whole_points(mul(4_000_000, -50_000)), -20);
         assert_eq!(whole_points(mul(3_999_999, -50_000)), -19);
@@ -534,6 +777,7 @@ mod tests {
             state_vp: vec![(500_000, -100_000), (2_000_000, -500_000)],
             compliance_growth_base: 7_500,
             decay_at_max_compliance: -8_300,
+            ..Default::default()
         };
         assert_eq!(defines.state_vp(0), 0);
         assert_eq!(defines.state_vp(5), -100_000);

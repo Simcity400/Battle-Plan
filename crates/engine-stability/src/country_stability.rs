@@ -272,6 +272,7 @@ pub struct Span {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct InputRow {
     pub country: u32,
+    pub manpower: crate::ccountry_manpower::Row,
     pub stability_raw: i64,
     pub war_support_raw: i64,
     pub at_war: bool,
@@ -351,6 +352,7 @@ impl Keys {
 /// statics and the tracked keys' metadata.
 #[derive(Debug)]
 pub struct Context {
+    pub manpower_enabled: bool,
     pub keys: Keys,
     pub defines: [i64; DEFINES],
     pub world_tension_raw: i64,
@@ -394,6 +396,7 @@ impl Context {
             *value = address;
         }
         Ok(Self {
+            manpower_enabled: true,
             keys,
             defines,
             world_tension_raw: manager[0].total_raw,
@@ -848,7 +851,8 @@ fn demand_advisory(
 ) -> Result<Demand, &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
     let keys = Keys::resolve(memory, base)?;
-    let context = Context::read(memory, base, state, keys)?;
+    let mut context = Context::read(memory, base, state, keys)?;
+    context.manpower_enabled = false;
     let mut scratch = Scratch::vacant();
     let mut rows = Vec::new();
     let mut bytes = Vec::new();
@@ -922,7 +926,8 @@ fn inputs<M: Memory>(
         return Err("country stability fields unreadable");
     }
     let children = Array::from_header(children, 8).ok_or("country modifier children invalid")?;
-    let (at_war, offensive_war, defensive_war) = war_flags(memory, base, countries, country)?;
+    let (at_war, offensive_war, defensive_war, diplomacy) =
+        war_flags(memory, base, countries, country)?;
     phase!(Totals);
     let mut totals = [None; TOTALS];
     let (sorted, len) = context.keys.sorted_totals();
@@ -949,6 +954,11 @@ fn inputs<M: Memory>(
     }
     Ok(InputRow {
         country: country.id,
+        manpower: if context.manpower_enabled {
+            crate::ccountry_manpower::read_authenticated(memory, c, diplomacy)
+        } else {
+            Default::default()
+        },
         stability_raw: i64_at(&bases, 0),
         war_support_raw: i64_at(&bases, 8),
         at_war,
@@ -993,7 +1003,7 @@ fn war_flags<M: Memory>(
     base: usize,
     countries: &ccountry::Reader<'_, M>,
     country: ccountry::Country,
-) -> Result<(bool, bool, bool), &'static str> {
+) -> Result<(bool, bool, bool, usize), &'static str> {
     phase!(Wars);
     let diplomacy = pointer(memory, at(country.pointer, ccountry::DIPLOMACY_STATUS)?)?;
     let mut head = [0_u8; 8];
@@ -1058,7 +1068,7 @@ fn war_flags<M: Memory>(
         }
         Ok(())
     })?;
-    Ok((at_war, offensive, defensive))
+    Ok((at_war, offensive, defensive, diplomacy))
 }
 
 /// Interception-ring sum for the country's air-statistics object, read passively.

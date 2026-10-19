@@ -75,7 +75,7 @@ impl Viewer {
     ) -> Result<(), std::io::Error> {
         laps.lap("before_hour");
         // The hour builders lay counters and icons out with the map mode's visibility.
-        self.counter_view.visibility = viewer_world::map::map_mode::visibility::of(&self.map_mode);
+        self.counter_view.set_mode(&self.map_mode);
         if self.scene.is_none() {
             return Err(std::io::Error::other("the map scene was not created"));
         }
@@ -618,6 +618,7 @@ impl Viewer {
             overlay_tables,
         )));
         self.overlay_at = Some(OverlayKey {
+            occupation: counter_view.occupation,
             branch,
             hour,
             camera: view.camera,
@@ -626,6 +627,9 @@ impl Viewer {
             perspective: self.perspective.clone(),
             counter_settings: counter_view.settings,
             selected: counter_view.selected,
+            air_selected: counter_view.air_selected,
+            air_bases: counter_view.air_bases,
+            fleets_selected: counter_view.fleets_selected,
             hovered: counter_view.hovered,
             visibility: counter_view.visibility,
             operatives: counter_view.operatives,

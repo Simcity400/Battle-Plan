@@ -30,7 +30,11 @@ impl TraceMemory {
     fn fixture(status: usize, country: usize, ruling: u64) -> Self {
         let mut memory = Self::default();
         for (offset, bytes) in [
-            (LAST_ELECTION, (-400_i32).to_le_bytes().to_vec()),
+            (LAST_ELECTION, {
+                let mut dates = vec![0; 4];
+                dates[..4].copy_from_slice(&(-400_i32).to_le_bytes());
+                dates
+            }),
             // The ruling pointer's copy spans the fields up to the elections
             // byte; the fields between them are readable zeros.
             (RULING_PARTY, vec![0; RULING_SPAN]),
@@ -263,8 +267,9 @@ fn idea_capacity_still_validates_tokens_without_reading_omitted_heap_payloads() 
 // Independent scalar-row baseline for pair-read equivalence. The identity
 // reader is shared; every observation it issues remains in the trace.
 fn scalar_row(reader: &Reader<'_, impl Memory>) -> Result<Row, &'static str> {
-    let last_election =
-        read::<i32>(reader.memory, reader.at(LAST_ELECTION)?).ok_or("last election unreadable")?;
+    let dates = read::<[u8; 4]>(reader.memory, reader.at(LAST_ELECTION)?)
+        .ok_or("last election unreadable")?;
+    let last_election = i32::from_le_bytes(dates[..4].try_into().unwrap());
     let capitals = reader
         .country
         .checked_add(ccountry::CAPITAL)
@@ -288,6 +293,8 @@ fn scalar_row(reader: &Reader<'_, impl Memory>) -> Result<Row, &'static str> {
     };
     Ok(Row {
         last_election,
+        next_election_cache: None,
+        election_interval: frequency,
         capital: capitals[0],
         original_capital: capitals[1],
         ruling_party,
@@ -330,6 +337,8 @@ fn compare(
 fn expected(ruling_party: Option<u32>) -> Result<Row, &'static str> {
     Ok(Row {
         last_election: -400,
+        next_election_cache: None,
+        election_interval: 48,
         capital: -17,
         original_capital: 0,
         ruling_party,
@@ -414,6 +423,7 @@ fn politics_pairs_test_elections_as_has_elections_does() {
         memory.put(STATUS + ELECTIONS_ALLOWED, &[byte]);
         let mut row = expected(Some(33)).unwrap();
         row.has_elections = has_elections;
+        row.election_interval = frequency;
         compare(&memory, BASE, STATUS, COUNTRY_POINTER, Ok(row), &reads);
     }
 }
@@ -576,4 +586,74 @@ fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
             (STATUS + RULING_PARTY, RULING_SPAN),
         ],
     );
+}
+
+#[test]
+fn manpower_election_cache_reads_only_eligible_initializer_dates_and_refuses_independently() {
+    for last in [crate::cgame_date::NULL_RAW_HOUR, RESET_LAST_ELECTION] {
+        let mut memory = TraceMemory::fixture(STATUS, COUNTRY_POINTER, 0);
+        memory.put(STATUS + LAST_ELECTION, &last.to_le_bytes());
+        memory.put(STATUS + NEXT_ELECTION_CACHE, &12345_i32.to_le_bytes());
+        let row = Reader {
+            memory: &memory,
+            base: BASE,
+            country: COUNTRY_POINTER,
+            status: STATUS,
+        }
+        .row()
+        .unwrap();
+        assert_eq!(row.next_election_cache, Some(12345));
+        assert_eq!(
+            memory.reads.borrow().last(),
+            Some(&(STATUS + NEXT_ELECTION_CACHE, 4))
+        );
+        memory.reads.borrow_mut().clear();
+        memory.fault = Some((3, 0));
+        let refused = Reader {
+            memory: &memory,
+            base: BASE,
+            country: COUNTRY_POINTER,
+            status: STATUS,
+        }
+        .row()
+        .unwrap();
+        assert_eq!(refused.last_election, last);
+        assert_eq!(refused.next_election_cache, None);
+        memory.fault = None;
+        memory.reads.borrow_mut().clear();
+        let uncertified = Reader {
+            memory: &memory,
+            base: BASE,
+            country: COUNTRY_POINTER,
+            status: STATUS,
+        }
+        .row_with_election_cache(false)
+        .unwrap();
+        assert_eq!(uncertified.next_election_cache, None);
+        assert!(
+            !memory
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(at, _)| at == STATUS + NEXT_ELECTION_CACHE)
+        );
+        memory.reads.borrow_mut().clear();
+        memory.put(STATUS + ELECTIONS_ALLOWED, &[0]);
+        let disabled = Reader {
+            memory: &memory,
+            base: BASE,
+            country: COUNTRY_POINTER,
+            status: STATUS,
+        }
+        .row()
+        .unwrap();
+        assert_eq!(disabled.next_election_cache, None);
+        assert!(
+            !memory
+                .reads
+                .borrow()
+                .iter()
+                .any(|&(at, _)| at == STATUS + NEXT_ELECTION_CACHE)
+        );
+    }
 }

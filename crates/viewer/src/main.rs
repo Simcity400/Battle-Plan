@@ -123,7 +123,7 @@ Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, 
              rails include trains/bridges; weather omits particles only, preserving terrain snow/mud
            --counters-json <out.json>, submitted plates with interface rectangles
              (device pixels at --ui-scale 1), sprite frames and text
-           --province-hover <id>, print the province's hover text in the dump's map mode
+           --province-hover <id>, print hover text and set the local strategic-name hover
            --intel-hover <x,y>, print an Operatives map entry's hover (repeatable)
              under that interface point, or that none takes it
            --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel
@@ -374,7 +374,8 @@ struct Options {
     /// Write the actual rendered counter quads, grouped into plates.
     counters_json: Option<PathBuf>,
     /// Dump-only: print this province's hover text in the dump's map mode, its
-    /// control codepoints escaped, and its refusals.
+    /// control codepoints escaped, and its refusals. Also supplies the local picked
+    /// province for strategic-name admission; no pointer means the native whole layer.
     province_hover: Option<u32>,
     /// Dump-only: print the hover text of the intel entry under this interface point.
     intel_hover: Vec<[f32; 2]>,
@@ -1317,13 +1318,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &options.perspective,
             omitted,
             options.counter_settings(document.game_counters),
-            visibility,
-            matches!(
-                options.map_mode,
-                viewer_world::map::map_mode::MapMode::Stock(
-                    viewer_world::map::map_mode::Stock::Operatives
-                )
-            ),
+            &options.map_mode,
         )?;
         let mut combat_warnings = Vec::new();
         if let Some(selector) = options.combat {
@@ -1460,6 +1455,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 overlay: Overlay {
                     names: (!omitted.labels).then_some(&placements),
                     layer_alpha: fade.0,
+                    strategic_hover: (!document.content.game_strategic_names)
+                        .then_some(options.province_hover)
+                        .flatten(),
                     sprites: None,
                     ui_scale,
                     // A free camera draws the map's interface only when asked to.
@@ -1480,6 +1478,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {warning}");
         }
         for warning in dump_overlay.prepared().intel_report().warnings() {
+            eprintln!("Warning: {warning}");
+        }
+        for warning in dump_overlay
+            .prepared()
+            .mode_icon_warnings()
+            .into_iter()
+            .chain(dump_overlay.prepared().stripe_warnings())
+            .chain(
+                dump_overlay
+                    .prepared()
+                    .naval_selection
+                    .refused
+                    .iter()
+                    .map(|(why, count)| format!("Navy selection: {count} withheld: {why}")),
+            )
+        {
             eprintln!("Warning: {warning}");
         }
         for point in &options.intel_hover {
@@ -1510,6 +1524,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        let naval_hover_sources = (options.province_hover.is_some()
+            && matches!(
+                options.map_mode,
+                viewer_world::map::map_mode::MapMode::Stock(
+                    viewer_world::map::map_mode::Stock::StrategicNavy
+                )
+            ))
+        .then(|| dump_overlay.naval_dominance_sources());
         let (label_batch, label_report, counter_report, raid_report) = (
             dump_overlay.batch,
             dump_overlay.labels,
@@ -1554,7 +1576,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let (Some(province), crate::playback::Current::Frame(frame)) =
             (options.province_hover, document.playback.current())
         {
-            let mode = crate::app::picker::mode_hover(
+            let mut mode = crate::app::picker::mode_hover(
                 &options.map_mode,
                 document.map_modes.defines.opinion_thresholds(),
                 || {
@@ -1564,6 +1586,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .hover_level(frame, province)
                 },
             );
+            if let (
+                viewer_counter_products::map::province_tooltips::ModeHover::StrategicNavy(sources),
+                Some(prepared_sources),
+            ) = (&mut mode, naval_hover_sources)
+            {
+                *sources = prepared_sources;
+            }
             // The hover's air statistics wait for the roster history worker, as the
             // interactive hover does through its wake: ask again until nothing is pending.
             let mut cache = viewer_counter_products::map::province_tooltips::Cache::default();

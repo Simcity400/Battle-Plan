@@ -94,6 +94,15 @@
 //!   recalculation. Most daily writes keep the stored value, so the site
 //!   marks the country only on a difference. The third list has its own
 //!   append and withdrawal paths for gun emplacements, which no row records.
+//! - TradeRoutes: the state-to-state updater owns the land and general naval
+//!   builders. Supply clients instead use the port-to-port updater, which writes
+//!   kind, state and port endpoints and sea regions itself. Province control,
+//!   ports, access and supply changes reach these two updaters. Origin refresh
+//!   can also clear kind and sea-region count inline when its capital is missing;
+//!   otherwise it delegates to the state-to-state updater. Constructors and the
+//!   save reader bound route lifetime. Destruction removes a census reference;
+//!   exchange, lend-lease and market membership changes select their owners via
+//!   the freshly read route census, as do supply-client creation and removal.
 //!
 //! Every site takes at most four integer or pointer arguments and returns
 //! RAX unchanged from its original.
@@ -130,6 +139,8 @@ pub enum Receiver {
     /// RCX is a trade route; its sender link (`resource_map::ROUTE_LINKS[0]`) names the
     /// country holding it.
     Route,
+    /// RCX is an origin; its client country names its own or rights-holder list owner.
+    OriginRoute,
     /// RDX points to the raw link of the country that sends every route being built: a
     /// route's sender, or a new country resources object's country, whose delivery routes
     /// it builds.
@@ -139,7 +150,7 @@ pub enum Receiver {
 }
 
 /// The raid state sites, site list sites, claim sites, strategic-location sites, then route sites.
-pub const MUTATIONS: [(MutationSite, Receiver); 33] = [
+pub const MUTATIONS: [(MutationSite, Receiver); 35] = [
     // Refresh resource gates (state).
     (
         MutationSite {
@@ -490,8 +501,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 33] = [
         },
         Receiver::Province,
     ),
-    // Route update (route, from, to, force): the only caller of both path builders; it also
-    // sets the route's kind.
+    // State-to-state route update (route, from, to, force).
     (
         MutationSite {
             name: "update_trade_route",
@@ -540,13 +550,55 @@ pub const MUTATIONS: [(MutationSite, Receiver); 33] = [
         },
         Receiver::EveryRoute,
     ),
+    // Port-to-port supply route update (route, from province, to province).
+    (
+        MutationSite {
+            name: "update_supply_trade_route",
+            rva: 0xca_d6b0,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+                0x41, 0x57,
+            ],
+        },
+        Receiver::Route,
+    ),
+    // Origin refresh (origin, force): a missing capital clears kind inline.
+    (
+        MutationSite {
+            name: "refresh_origin_trade_route",
+            rva: 0xc9_a950,
+            sentinel: [
+                0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+                0x18, 0x57,
+            ],
+        },
+        Receiver::OriginRoute,
+    ),
 ];
 
 /// The [`MUTATIONS`] index of the first trade-route writer, after the claim writers.
 pub const FIRST_ROUTE_SITE: usize = 29;
+/// Origin refresh requires a before/after kind check around its original.
+pub const ORIGIN_ROUTE_SITE: usize = 34;
+/// An origin's client country owns its census rows, independently of its route's sender.
+pub const ORIGIN_OWNER: usize = 0x18;
+
+/// The origin refresh's only inline change visible to TradeRoutes is its kind.
+/// Its other inline store clears sea-region count at kind zero, which reads the
+/// land path. Every path rebuild delegates to the hooked route updater.
+pub fn origin_route_kind(memory: &impl crate::Memory, origin: usize) -> Option<u8> {
+    crate::read(
+        memory,
+        origin
+            .checked_add(crate::cresource_origin::DELIVERY_ROUTE)?
+            .checked_add(crate::resource_map::ROUTE_KIND)?,
+    )
+}
 
 /// The raw link of the country holding the route a route writer names: the route's sender
-/// for [`Receiver::Route`], the link RDX points to for [`Receiver::RouteSender`].
+/// for [`Receiver::Route`], the origin's client country for [`Receiver::OriginRoute`],
+/// or the link RDX points to for [`Receiver::RouteSender`]. The observer forwards
+/// an origin's nested route updates through its origin receiver too.
 /// `Ok(None)` for link zero, which no country holds; `Err` when it does not read.
 pub fn route_country(
     memory: &impl crate::Memory,
@@ -556,6 +608,7 @@ pub fn route_country(
 ) -> Result<Option<u32>, Unreadable> {
     let link = match receiver {
         Receiver::Route => first.checked_add(crate::resource_map::ROUTE_LINKS[0]),
+        Receiver::OriginRoute => first.checked_add(ORIGIN_OWNER),
         Receiver::RouteSender => Some(second),
         _ => None,
     };
@@ -939,12 +992,12 @@ mod tests {
         }
     }
 
-    /// A route writer names the country holding its route: the route's sender link, or the
-    /// link RDX points to for the constructors; link zero names nothing.
+    /// A route writer names its sender, an origin its list owner, and constructors
+    /// the country link they receive; link zero names nothing.
     #[test]
     fn route_writers_name_the_country_holding_the_route() {
         let base = 0x1000;
-        let mut bytes = vec![0_u8; 0x400];
+        let mut bytes = vec![0_u8; 0x800];
         let route = 0x100;
         bytes[route + crate::resource_map::ROUTE_LINKS[0]..][..4]
             .copy_from_slice(&9_u32.to_le_bytes());
@@ -952,6 +1005,12 @@ mod tests {
             .copy_from_slice(&5_u32.to_le_bytes());
         let link = 0x300;
         bytes[link..][..4].copy_from_slice(&7_u32.to_le_bytes());
+        let origin = 0x400;
+        bytes[origin + ORIGIN_OWNER..][..4].copy_from_slice(&11_u32.to_le_bytes());
+        bytes[origin
+            + crate::cresource_origin::DELIVERY_ROUTE
+            + crate::resource_map::ROUTE_LINKS[0]..][..4]
+            .copy_from_slice(&9_u32.to_le_bytes());
         let memory = SliceMemory {
             base,
             bytes: &bytes,
@@ -976,11 +1035,20 @@ mod tests {
             route_country(&memory, Receiver::EveryRoute, base + route, base + link),
             Err(Unreadable)
         );
+        assert_eq!(
+            route_country(&memory, Receiver::OriginRoute, base + origin, 0),
+            Ok(Some(11))
+        );
+        assert_eq!(origin_route_kind(&memory, base + origin), Some(0));
+        assert_eq!(origin_route_kind(&memory, usize::MAX), None);
         for (site, receiver) in &MUTATIONS[FIRST_ROUTE_SITE..] {
             assert!(
                 matches!(
                     receiver,
-                    Receiver::Route | Receiver::RouteSender | Receiver::EveryRoute
+                    Receiver::Route
+                        | Receiver::RouteSender
+                        | Receiver::OriginRoute
+                        | Receiver::EveryRoute
                 ),
                 "{}",
                 site.name

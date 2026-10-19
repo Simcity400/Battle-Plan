@@ -1,6 +1,7 @@
 //! Native saved-target selectors over fresh caller scopes.
 use super::{Scope, Scopes, eval::Evaluator};
 use crate::scope::{RecordedScopes, valid_saved_target};
+use crate::triggers::Failure;
 use replay_data::rows::GlobalSavedEventTargetRow as Row;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,7 +55,7 @@ impl Selected {
         caller: Scope,
         name: &[u8],
         reader: Reader,
-    ) -> Result<Option<Scope>, String> {
+    ) -> Result<Option<Scope>, Failure> {
         Ok(match self {
             Self::Missing => None,
             Self::State(id) => Some(Scope::State(id as u32)),
@@ -62,7 +63,7 @@ impl Selected {
             Self::Leader(reference) => Some(Scope::Leader(reference)),
             Self::Character(id) => Some(Scope::Character(id)),
             Self::Caller => Some(caller),
-            Self::Unsupported(kind) => return Err(reader.refusal(name, kind)),
+            Self::Unsupported(kind) => return Err(reader.refusal(name, kind).into()),
         })
     }
 }
@@ -144,7 +145,7 @@ impl Evaluator<'_, '_> {
         name: &[u8],
         reader: Reader,
         scopes: Scopes,
-    ) -> Result<Option<Scopes>, String> {
+    ) -> Result<Option<Scopes>, Failure> {
         let recorded = self.world().recorded();
         if let Some(mut this) = self.graph_saved(name, reader, scopes)? {
             if matches!(reader, Reader::CountrySelector)

@@ -70,6 +70,10 @@ pub enum Family {
     /// Ten script flag manager writers covering values, duration, loading,
     /// expiry, clearing, assignment, construction, release and destruction.
     FlagChanges,
+    /// Strategic operative daily propaganda append and reset.
+    PropagandaChanges,
+    IntelSources,
+    NetworkAuxiliary,
     /// Seven building/status writers and the nudge-mode entry, which poisons reuse.
     BuildingChanges,
     /// Fourteen available- and appointed-advisor and advisor-token writers.
@@ -96,13 +100,15 @@ pub enum Family {
     /// The division active-stat block writer.
     ArmyStatChanges,
     /// Stability, research, focus, project, appearance and counter writers
-    /// of `engine::country_input_mutations`.
+    /// of the country-input mutation descriptors.
     CountryInputChanges,
     /// Twelve raid state and building-override writers.
     RaidChanges,
     /// Country modifier recalculation and appearance reset, leader modifier
     /// recalculation and HQ scaling, and leader construction, copying and destruction.
     NavalTreeChanges,
+    /// Naval repair/refit policy taps and lifecycle method detours.
+    NavalManagementChanges,
     /// Twenty-three unit leader writers, including eight component setters.
     UnitLeaderChanges,
     /// Eight role census writers.
@@ -150,14 +156,25 @@ pub enum Family {
     /// War and annexation call bridges (before/returned).
     EventFeed,
     /// The event feed's eight provenance entry detours
-    /// ([`engine::event_feed_sites::provenance::ENTRIES`]).
+    /// ([event-feed provenance entries](../../engine-events/src/event_feed_sites.rs)).
     EventFeedProvenance,
     /// Map event entry and call detours and the critical bombardment tap.
     MapEvents,
     /// World reset and construction taps and the deletion pre-observer.
     WorldLifetime,
+    /// Equipment design writers and ordered publication/removal snapshots.
+    VariantChanges,
+    /// Stored faction goal structure, progress and status writers.
+    FactionGoals,
+    FactionCompanions,
+    FactionResourceRebuild,
+    FactionRefreshPhases,
+    /// Dedicated international market and lend-lease writers.
+    MarketChanges,
+    /// Bilateral war contribution writers, first-credit capture and delivery histories.
+    WarParticipation,
 }
-pub const FAMILY_COUNT: usize = 51;
+pub const FAMILY_COUNT: usize = 62;
 
 /// How collector code surrounds the native original.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,6 +217,9 @@ impl Family {
         Self::RelationChanges,
         Self::HistoryChanges,
         Self::FlagChanges,
+        Self::PropagandaChanges,
+        Self::IntelSources,
+        Self::NetworkAuxiliary,
         Self::BuildingChanges,
         Self::AdvisorPoolChanges,
         Self::PartyLeaderChanges,
@@ -215,6 +235,7 @@ impl Family {
         Self::CountryInputChanges,
         Self::RaidChanges,
         Self::NavalTreeChanges,
+        Self::NavalManagementChanges,
         Self::UnitLeaderChanges,
         Self::CensusChanges,
         Self::WorldInputChanges,
@@ -239,6 +260,13 @@ impl Family {
         Self::EventFeedProvenance,
         Self::MapEvents,
         Self::WorldLifetime,
+        Self::VariantChanges,
+        Self::FactionGoals,
+        Self::FactionCompanions,
+        Self::FactionResourceRebuild,
+        Self::FactionRefreshPhases,
+        Self::MarketChanges,
+        Self::WarParticipation,
     ];
     /// The status key; families with their own status reuse that key.
     pub fn name(self) -> &'static str {
@@ -255,6 +283,9 @@ impl Family {
             Self::RelationChanges => "relation_changes",
             Self::HistoryChanges => "history_changes",
             Self::FlagChanges => "flag_changes",
+            Self::PropagandaChanges => "propaganda_changes",
+            Self::IntelSources => "intel_sources",
+            Self::NetworkAuxiliary => "network_auxiliary",
             Self::BuildingChanges => "building_changes",
             Self::AdvisorPoolChanges => "advisor_pool_changes",
             Self::PartyLeaderChanges => "party_leader_changes",
@@ -265,17 +296,23 @@ impl Family {
             Self::PoliticalStatusChanges => "political_status_changes",
             Self::MissionChanges => "mission_changes",
             Self::RailChanges => "rail_changes",
+            Self::VariantChanges => "variant_changes",
             Self::TerritoryChanges => "territory_changes",
             Self::ArmyStatChanges => "army_stat_changes",
             Self::CountryInputChanges => "country_input_changes",
             Self::RaidChanges => "raid_changes",
             Self::NavalTreeChanges => "naval_tree_changes",
+            Self::NavalManagementChanges => "naval_management_changes",
             Self::UnitLeaderChanges => "unit_leader_changes",
             Self::CensusChanges => "census_changes",
             Self::WorldInputChanges => "world_input_changes",
             Self::AirRecordChanges => "air_record_changes",
             Self::LocalSubunitChanges => "local_subunit_changes",
             Self::TemplateChanges => "template_changes",
+            Self::FactionGoals => "faction_goals",
+            Self::FactionCompanions => "faction_companions",
+            Self::FactionResourceRebuild => "faction_resource_rebuild",
+            Self::FactionRefreshPhases => "faction_refresh_phases",
             Self::ShipModelChanges => "ship_model_changes",
             Self::ProvinceUnitChanges => "province_unit_changes",
             Self::AirBaseCarryChanges => "air_base_carry_changes",
@@ -294,6 +331,8 @@ impl Family {
             Self::EventFeedProvenance => "event_feed_provenance",
             Self::MapEvents => "map_events",
             Self::WorldLifetime => "world_lifetime",
+            Self::MarketChanges => "market_changes",
+            Self::WarParticipation => "war_participation",
         }
     }
     pub fn kind(self) -> Kind {
@@ -308,6 +347,9 @@ impl Family {
             | Self::RelationChanges
             | Self::HistoryChanges
             | Self::FlagChanges
+            | Self::PropagandaChanges
+            | Self::IntelSources
+            | Self::NetworkAuxiliary
             | Self::BuildingChanges
             | Self::AdvisorPoolChanges
             | Self::PartyLeaderChanges
@@ -318,6 +360,7 @@ impl Family {
             | Self::PoliticalStatusChanges
             | Self::MissionChanges
             | Self::RailChanges
+            | Self::VariantChanges
             | Self::TerritoryChanges
             | Self::ArmyStatChanges
             | Self::CountryInputChanges
@@ -337,8 +380,16 @@ impl Family {
             | Self::LogisticsBalance
             | Self::NavalResultSources
             | Self::NuclearStrikes
-            | Self::EventFeedProvenance => Kind::Detour,
-            Self::LandEvents | Self::MapEvents => Kind::Mixed,
+            | Self::WarParticipation
+            | Self::EventFeedProvenance
+            | Self::FactionRefreshPhases
+            | Self::FactionResourceRebuild => Kind::Detour,
+            Self::LandEvents
+            | Self::MapEvents
+            | Self::MarketChanges
+            | Self::FactionGoals
+            | Self::FactionCompanions
+            | Self::NavalManagementChanges => Kind::Mixed,
             Self::ExperienceGains
             | Self::FuelAwards
             | Self::PoliticsCaptureTaps
@@ -352,7 +403,7 @@ impl Family {
     /// The hourly boundary runs once per game hour, so every call is timed.
     fn period_log2(self) -> u32 {
         match self {
-            Self::Hourly => 0,
+            Self::Hourly | Self::MarketChanges => 0,
             _ => DEFAULT_PERIOD_LOG2,
         }
     }
@@ -857,6 +908,26 @@ mod tests {
         let mut names = Family::ALL.map(Family::name);
         names.sort_unstable();
         assert!(names.windows(2).all(|pair| pair[0] != pair[1]));
+    }
+
+    #[test]
+    fn war_participation_registers_sampled_detours_with_original_accounting() {
+        let family = Family::WarParticipation;
+        assert_eq!(family.name(), "war_participation");
+        assert_eq!(family.kind(), Kind::Detour);
+        assert_eq!(family.period(), 64);
+        let table = table();
+        table.claim();
+        for _ in 0..65 {
+            let span = table.enter(0, family, false);
+            span.original(|| std::hint::black_box(7));
+        }
+        let totals = table.totals()[family as usize];
+        assert_eq!((totals.calls, totals.sampled), (65, 2));
+        assert!(totals.original > 0);
+        assert!(totals.detour > 0);
+        let status: Value = serde_json::to_value(status()).unwrap();
+        assert!(status["families"]["war_participation"].is_object());
     }
 
     #[test]

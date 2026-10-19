@@ -226,6 +226,8 @@ struct PendingBranch {
 
 #[derive(Default)]
 struct WorkSample {
+    validation_refused: bool,
+    validation_families: u32,
     conversion: i64,
     frame_encoding: Option<i64>,
     record_writes: Option<i64>,
@@ -370,7 +372,74 @@ fn character_cache(
     })
 }
 
+#[derive(Serialize)]
+struct ValidationRefusal {
+    table: String,
+    column: Option<String>,
+    reason: String,
+    detail: String,
+    first_hour: i32,
+    last_hour: i32,
+    count: u64,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ValidationRefusals(Arc<std::sync::Mutex<Vec<ValidationRefusal>>>);
+impl Serialize for ValidationRefusals {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .serialize(serializer)
+    }
+}
+
+fn validation_refusal(
+    failures: &mut Vec<ValidationRefusal>,
+    directory: &Path,
+    table: TableId,
+    hour: i32,
+    error: io::Error,
+) -> io::Result<String> {
+    let detail = replay_data::codec::try_format(format_args!("{error}"))?;
+    let (column, reason) = detail
+        .split_once(" column ")
+        .and_then(|(_, rest)| rest.split_once(": "))
+        .map_or(
+            (
+                None,
+                detail.split_once(": ").map_or(detail.as_str(), |(_, r)| r),
+            ),
+            |(column, reason)| (Some(column), reason),
+        );
+    let table_name = replay_data::codec::try_format(format_args!("{table:?}"))?;
+    if let Some(failure) = failures
+        .iter_mut()
+        .find(|f| f.table == table_name && f.column.as_deref() == column && f.reason == reason)
+    {
+        failure.last_hour = hour;
+        failure.count += 1;
+    } else {
+        engine_allocation::reserve(failures, 1)?;
+        failures.push(ValidationRefusal {
+            table: table_name,
+            column: column.map(engine_allocation::string).transpose()?,
+            reason: engine_allocation::string(reason)?,
+            detail: engine_allocation::string(&detail)?,
+            first_hour: hour,
+            last_hour: hour,
+            count: 1,
+        });
+        crate::hook_failures::log(
+            directory.parent().unwrap_or(directory),
+            format_args!("spool validation refused at hour {hour}: {detail}"),
+        )?;
+    }
+    replay_data::codec::try_format(format_args!("spool validation failed: {detail}"))
+}
+
 struct Campaign<B: SegmentBackend = FileBackend> {
+    validation_refusals: ValidationRefusals,
     world_generation: Option<u64>,
     directory: PathBuf,
     session: SessionStart,
@@ -450,6 +519,7 @@ impl Campaign {
         let world_generation = history.campaign_world_generation(id);
         let (tracker, history_file) = history.take(id, session)?;
         Ok(Self {
+            validation_refusals: ValidationRefusals::default(),
             directory,
             session: session.try_clone()?,
             resumed: tracker.last_observation(),
@@ -1218,19 +1288,38 @@ impl<B: SegmentBackend> Campaign<B> {
         let span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Encode);
         let frame = {
             let _phase = crate::allocation::enter(crate::allocation::Phase::Encode);
-            match helpers {
-                Some(helpers) => {
-                    let mut segments = crate::spool_segments::encode(
-                        &self.encoder,
-                        &source,
-                        (branch, hour, restarting),
-                        helpers,
-                    );
-                    self.encoder
-                        .prepare_bytes_with(source, restarting, &mut segments)
-                }
-                None => self.encoder.prepare_bytes(source, restarting),
-            }
+            let mut segments = match helpers {
+                Some(helpers) => crate::spool_segments::encode(
+                    &self.encoder,
+                    &source,
+                    (branch, hour, restarting),
+                    helpers,
+                ),
+                None => std::array::from_fn(|_| None),
+            };
+            self.encoder
+                .prepare_contained(source, restarting, &mut segments, |table, error| {
+                    let reason = validation_refusal(
+                        &mut self
+                            .validation_refusals
+                            .0
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        &self.directory,
+                        table,
+                        hour,
+                        error,
+                    )?;
+                    // No refused table may survive in a producer's cached rows.
+                    self.staggered_cache.remove(&table);
+                    self.sliced_cache.remove(&table);
+                    self.pending_slices.retain(|(id, _)| *id != table);
+                    work.validation_refused = true;
+                    if let Some(family) = crate::slicing::family_of(table) {
+                        work.validation_families |= 1 << family;
+                    }
+                    Ok(reason)
+                })
         };
         work.frame_encoding = Some(current_qpc() - encoding_started);
         let mut prepared = frame?;
@@ -1748,6 +1837,7 @@ fn set_viewed(
 }
 
 struct Statistics {
+    validation_refusals: ValidationRefusals,
     game_score: crate::extended::game_score::Work,
     country_rosters: crate::extended::country_counters::RosterWork,
     reserved_visibility: crate::extended::reserved_visibility::Work,
@@ -1813,6 +1903,7 @@ struct Statistics {
 impl Default for Statistics {
     fn default() -> Self {
         Self {
+            validation_refusals: ValidationRefusals::default(),
             country_rosters: crate::extended::country_counters::RosterWork::default(),
             reserved_visibility: crate::extended::reserved_visibility::Work::default(),
             state_map_inputs: crate::acquisition_states::InputWork::default(),
@@ -1975,7 +2066,13 @@ impl CapturedStatistics {
         ]
         .into_iter()
         .chain(captured.map.outcomes())
-        .chain(crate::extended::TABLES.map(|table| extended_outcomes[table.index()]))
+        .chain(crate::extended::PACK_TABLES.map(|table| {
+            if table == TableId::StateResistance {
+                captured.state_inputs.occupation.outcome()
+            } else {
+                extended_outcomes[table.index()]
+            }
+        }))
         .filter(|outcome| matches!(outcome, Outcome::Truncated { .. }))
         .count();
         Ok(Self {
@@ -2108,6 +2205,9 @@ pub struct Processor {
 }
 
 impl Processor {
+    pub(crate) fn validation_refusals(&self) -> ValidationRefusals {
+        self.stats.validation_refusals.clone()
+    }
     pub(crate) fn observe_game_score_sizing(
         &mut self,
         sizing: &engine_native::game_score_inputs::ArenaSizing,
@@ -2160,7 +2260,8 @@ impl Processor {
 
     fn campaign(&mut self, id: &str) -> io::Result<&mut Campaign> {
         if !self.campaigns.contains_key(id) {
-            let campaign = Campaign::open(&self.root, &mut self.history, id, &self.session)?;
+            let mut campaign = Campaign::open(&self.root, &mut self.history, id, &self.session)?;
+            campaign.validation_refusals = self.stats.validation_refusals.clone();
             self.campaigns
                 .insert(engine_allocation::string(id)?, campaign)?;
         }
@@ -2622,6 +2723,7 @@ impl Processor {
                 second: self.second_helper.as_ref(),
                 backlogged: self.backlogged,
             });
+        crate::hook_failures::apply(&mut source)?;
         crate::spool_compare::compare_frame(
             &campaign.encoder,
             crate::spool_compare::Target {
@@ -2681,7 +2783,8 @@ impl Processor {
         if let Some(publication) = map_event_publication {
             publication.commit();
         }
-        self.retry_full |= retry_full;
+        self.retry_full |= retry_full || work.validation_refused;
+        self.unpublished_families |= work.validation_families;
         self.unknown_pending = 0;
         self.suppress_origin = false;
         // The status names the viewed country's flag operands from rows just
@@ -3089,6 +3192,8 @@ impl Processor {
                 "accounted_in": "Countries",
             },
             "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": &stats.last_error,
+            "validation_refusals": &stats.validation_refusals,
+            "failed_hook_families": crate::hook_failures::status(),
             "input_demand_errors": stats.input_demand_errors,
             "input_demand_last_error": stats.input_demand_last_error,
             "sampled_buffer_allocation": {
@@ -3126,6 +3231,8 @@ impl Processor {
             "railway_gun_names": crate::extended::railway_guns::name_data(),
             "railway_gun_eta": crate::extended::railway_guns::eta_data(),
             "railway_gun_owner_transport": crate::extended::railway_guns::transport_data(),
+            "division_speed_terms": crate::extended::division_presentation::speed_term_data(),
+            "division_template_speed_keys": crate::extended::division_templates::speed_key_data(),
             "division_movement_arrows": crate::extended::division_presentation::movement_arrow_data(),
             "railway_gun_movement_arrows": crate::extended::railway_guns::movement_arrow_data(),
             "task_force_movement_arrows": crate::extended::naval_counters::movement_arrow_data(),
@@ -3268,7 +3375,12 @@ fn state_table(
             movement_infrastructure: state.movement_infrastructure,
             continent: replay_data::rows::Recorded::Value(state.continent),
             manpower_available: state.manpower_available,
+            manpower_locked: replay_data::rows::Recorded::Value(state.manpower_locked),
             population: replay_data::rows::Recorded::Value(state.population),
+            best_vp_index: replay_data::rows::Recorded::Value(state.best_vp_index),
+            single_controller: replay_data::rows::Recorded::Value(
+                state.single_controller.map(u32::from),
+            ),
             category: replay_data::rows::Recorded::Value(state.category),
             railway_infrastructure: replay_data::rows::Recorded::Value(
                 captured.state_inputs.fraction(state.id),
@@ -3402,6 +3514,24 @@ fn decoded_with_costs(
                     convert_with_helper(captured, &clock, conversion, helpers, &mut tables, span);
             }
         }
+        tables[TableId::StateResistance.index()] = captured.state_inputs.occupation.table().into();
+        for (table, value) in crate::faction_companions::TABLES
+            .into_iter()
+            .zip(captured.faction_companions.inputs())
+        {
+            tables[table.index()] = value;
+        }
+        for (table, value) in crate::faction_goals::TABLES
+            .into_iter()
+            .zip(captured.faction_goals.inputs())
+        {
+            tables[table.index()] = value;
+        }
+        captured
+            .map
+            .naval
+            .management
+            .insert(collector_naval_management::forces::TABLES, &mut tables);
         tables
     };
     let mut input = FrameInput {
@@ -4213,6 +4343,81 @@ mod tests {
     }
 
     #[test]
+    fn validation_refuses_only_bad_table_and_next_hour_rebaselines() {
+        use replay_frame::frame::{FrameDecoder, TableUpdate};
+        let directory =
+            std::env::temp_dir().join(format!("hoi4-contain-table-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let mut processor =
+            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+        let retained = processor.validation_refusals();
+        processor.frame(&captured(10)).unwrap();
+        for hour in [11, 12] {
+            let mut prepared = processor.prepare_frame(&captured(hour)).unwrap();
+            prepared.source.tables[TableId::States.index()] =
+                TableView::Complete(TableRows::States(vec![StateRow {
+                    id: 64,
+                    continent: Recorded::NotRecorded,
+                    ..Default::default()
+                }]))
+                .into();
+            // Also fail a second table: containment must visit every offender.
+            prepared.source.tables[TableId::Campaign.index()] =
+                TableView::Complete(TableRows::Campaign(Vec::new())).into();
+            processor.write_prepared(prepared).unwrap();
+        }
+        processor.frame(&captured(13)).unwrap();
+        processor.detach().unwrap();
+        let status = processor.json();
+        assert_eq!(status["hours"], 4);
+        assert_eq!(status["write_errors"], 0);
+        let refusals = status["validation_refusals"].as_array().unwrap();
+        let states = refusals.iter().find(|f| f["table"] == "States").unwrap();
+        assert_eq!(states["column"], "continent");
+        assert_eq!(states["first_hour"], 11);
+        assert_eq!(states["last_hour"], 12);
+        assert_eq!(states["count"], 2);
+        let log = fs::read_to_string(directory.join("recorder.log")).unwrap();
+        assert_eq!(log.matches("States: row 64 column continent").count(), 1);
+        let campaign = processor
+            .campaigns
+            .get_mut(std::str::from_utf8(ID).unwrap())
+            .unwrap();
+        assert!(campaign.pending.is_empty());
+        let mut decoder = FrameDecoder::new();
+        let mut frames = 0;
+        for file in fs::read_dir(&campaign.directory).unwrap().flatten() {
+            if file.file_name().to_string_lossy().starts_with("spool.") {
+                for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
+                {
+                    if let Record::Frame(frame) = record {
+                        let decoded = decoder.apply(&frame).unwrap();
+                        frames += 1;
+                        if [11, 12].contains(&frame.hour) {
+                            assert!(
+                                matches!(&*decoded.tables[TableId::States.index()], TableView::Unavailable { reason } if reason.contains("States: row 64 column continent"))
+                            );
+                            assert!(decoded.complete::<tables::Clock>().is_ok());
+                        }
+                        if frame.hour == 13 {
+                            assert!(matches!(
+                                frame.tables[TableId::States.index()],
+                                TableUpdate::Snapshot(_)
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(frames, 4);
+        drop(processor);
+        // Runtime fallback status keeps the ledger even after spool ownership ends.
+        let retained = serde_json::to_value(&retained).unwrap();
+        assert_eq!(retained, status["validation_refusals"]);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn spool_validation_detail_survives_ordinary_failure_and_detach() {
         const TEST: &str =
             "spooling::tests::spool_validation_detail_survives_ordinary_failure_and_detach";
@@ -4250,14 +4455,13 @@ mod tests {
         source = captured(11);
         source.order_counters.forced = false;
         let mut prepared = processor.prepare_frame(&source).unwrap();
-        prepared.source.tables[TableId::States.index()] =
-            TableView::Complete(TableRows::States(vec![StateRow {
-                id: 64,
-                continent: Recorded::NotRecorded,
+        prepared.source.tables[TableId::Clock.index()] =
+            TableView::Complete(TableRows::Clock(vec![ClockRow {
+                hour: 12,
                 ..Default::default()
             }]))
             .into();
-        let detail = "States: row 64 column continent: missing or not recorded row field";
+        let detail = "Clock: clock row hour differs from frame hour";
         let expected = format!("spool validation failed: {detail}");
         assert_eq!(
             processor.write_prepared(prepared).unwrap_err().to_string(),
@@ -4339,16 +4543,15 @@ mod tests {
         prepare_order_counter_sample(&mut source, 10, 7);
         let mut witness = OrderCounterWitness::default();
         let prepared = PreparedOrderWitness::capture(&source, Some(1));
-        let detail = "States: row 64 column continent: missing or not recorded row field";
+        let detail = "Clock: clock row hour differs from frame hour";
         let expected = format!("spool validation failed: {detail}");
         {
             let (mut campaign, _) = campaign();
             let branch = campaign.observe(None, 10, Some(1)).unwrap();
             let mut frame = staggered_frame(branch, 10, false);
-            *frame.tables[TableId::States.index()] =
-                TableView::Complete(TableRows::States(vec![StateRow {
-                    id: 64,
-                    continent: Recorded::NotRecorded,
+            *frame.tables[TableId::Clock.index()] =
+                TableView::Complete(TableRows::Clock(vec![ClockRow {
+                    hour: 11,
                     ..Default::default()
                 }]));
             let result = campaign.write(frame, 1000, Some(1), 0, &mut WorkSample::default());
@@ -5726,6 +5929,7 @@ mod tests {
         let session = session();
         (
             Campaign {
+                validation_refusals: ValidationRefusals::default(),
                 world_generation: None,
                 directory: PathBuf::new(),
                 session,
@@ -7031,7 +7235,7 @@ mod tests {
                     "hour {hour}"
                 );
                 if fail && fail_encoding {
-                    input.tables[TableId::UnitIntel.index()] =
+                    input.tables[TableId::Clock.index()] =
                         TableView::Complete(TableRows::Clock(Vec::new())).into();
                 }
                 store.borrow_mut().fail_frame_flush = fail && !fail_encoding;
@@ -7128,6 +7332,8 @@ mod tests {
             ]));
         tables[TableId::MapEvents.index()] =
             TableView::Complete(TableRows::MapEvents(vec![Default::default()]));
+        tables[TableId::DesignObserverContext.index()] =
+            TableView::Complete(TableRows::DesignObserverContext(vec![Default::default()]));
         tables[TableId::GameScoreMultipliers.index()] = TableView::Unavailable {
             reason: "score multipliers outside staggered fixture".into(),
         };
@@ -7368,7 +7574,7 @@ mod tests {
                 .unwrap();
             campaign.assemble_reserved_intel_sample(&mut failed);
             if fail_encoding {
-                failed.tables[TableId::UnitIntel.index()] =
+                failed.tables[TableId::Clock.index()] =
                     TableView::Complete(TableRows::Clock(Vec::new())).into();
             } else {
                 store.borrow_mut().fail_frame_flush = true;
@@ -7968,7 +8174,7 @@ mod tests {
             let latest = Arc::clone(intel_allocation(&failed, TableId::ScriptFlags));
             assert!(!Arc::ptr_eq(&original, &latest));
             if fail_encoding {
-                failed.tables[TableId::CountryLinks.index()] =
+                failed.tables[TableId::Clock.index()] =
                     TableView::Complete(TableRows::Clock(Vec::new())).into();
             } else {
                 store.borrow_mut().fail_frame_flush = true;
@@ -8171,6 +8377,77 @@ mod tests {
     }
 
     #[test]
+    fn scientist_daily_projection_survives_off_slot_keyframe_slot_and_following_delta() {
+        use replay_frame::frame::{FrameDecoder, TableUpdate};
+        let (mut campaign, store) = campaign();
+        let mut decoder = FrameDecoder::new();
+        for (hour, daily, ordinal) in [(3, false, 0), (4, true, 0), (5, false, 1)] {
+            let branch = campaign.observe(None, hour, Some(1)).unwrap();
+            let mut input: FrameInput = staggered_frame(branch, hour, false).into();
+            for (id, table) in collector_projects::projects::TABLES.into_iter().zip(
+                collector_projects::projects::scientist_spool_fixture(daily, ordinal),
+            ) {
+                if matches!(
+                    id,
+                    TableId::Scientists | TableId::ScientistSkills | TableId::ScientistDaily
+                ) {
+                    input.tables[id.index()] = table.into();
+                }
+            }
+            let skipped = campaign.apply_staggered_inputs(&mut input);
+            assert_eq!(skipped[TableId::ScientistDaily.index()], !daily);
+            campaign
+                .write(
+                    input,
+                    1000 + i64::from(hour),
+                    Some(1),
+                    0,
+                    &mut WorkSample::default(),
+                )
+                .unwrap();
+            assert_eq!(campaign.last_written, Some(hour));
+            campaign.retired.clear();
+            let recovered = recover_prefix(store.borrow().segments.values().last().unwrap());
+            let encoded = recovered
+                .records
+                .iter()
+                .rev()
+                .find_map(|record| match record {
+                    Record::Frame(frame) => Some(frame),
+                    _ => None,
+                })
+                .unwrap();
+            if hour == 5 {
+                assert!(matches!(
+                    &encoded.tables[TableId::Scientists.index()],
+                    TableUpdate::Delta { .. }
+                ));
+            }
+            let decoded = decoder.apply(encoded).unwrap();
+            assert_eq!(
+                decoded.complete::<tables::Scientists>().unwrap()[0].ordinal,
+                ordinal
+            );
+            if hour >= 4 {
+                let daily = &decoded.complete::<tables::ScientistDaily>().unwrap()[0];
+                assert_eq!(
+                    daily.injury_days,
+                    replay_data::rows::Recorded::Value(Some(8))
+                );
+                assert_eq!(
+                    daily.template_visibility,
+                    replay_data::rows::Recorded::Value(Some(1))
+                );
+                assert!(
+                    matches!(&daily.template_origin, replay_data::rows::Recorded::Value(Some(origin)) if origin.line == 17)
+                );
+            } else {
+                assert!(decoded.complete::<tables::ScientistDaily>().is_err());
+            }
+        }
+    }
+
+    #[test]
     fn staggered_complete_cache_and_encoder_share_refreshes_off_hours_and_keyframes() {
         let (mut campaign, store) = campaign();
         let mut reference = FrameEncoder::new();
@@ -8292,7 +8569,7 @@ mod tests {
             let mut failed: FrameInput = staggered_frame(branch, 1, false).into();
             failed.tables[table.index()] = TableView::Complete(daily_rows(2)).into();
             if fail_encoding {
-                failed.tables[TableId::UnitIntel.index()] =
+                failed.tables[TableId::Clock.index()] =
                     TableView::Complete(TableRows::Clock(Vec::new())).into();
             } else {
                 store.borrow_mut().fail_frame_flush = true;

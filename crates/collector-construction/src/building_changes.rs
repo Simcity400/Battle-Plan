@@ -363,7 +363,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "building_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -397,6 +397,7 @@ impl Hooks {
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             WATCHES.registry.set_enabled(false);
+            collector_observers::world_input_changes::fog_forwarder(false);
             collector_observers::nuclear_strikes::forwarder(
                 replay_data::rows::NuclearStrikePart::Buildings,
                 false,
@@ -422,6 +423,9 @@ impl Hooks {
             replay_data::rows::NuclearStrikePart::Buildings,
             enabled && !self.hooks.is_empty(),
         );
+        collector_observers::world_input_changes::fog_forwarder(
+            enabled && self.hooks.len() == SITES,
+        );
         crate::rail_changes::forwarder(enabled && !self.hooks.is_empty());
         crate::raid_changes::forwarder(enabled && !self.hooks.is_empty());
         Ok(true)
@@ -432,6 +436,7 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        collector_observers::world_input_changes::fog_forwarder(false);
         // SAFETY: like each Hook's relay, the watch tables are dropped only
         // once the hooks were never enabled, or were removed and drained
         // after the last capture.
@@ -448,6 +453,7 @@ macro_rules! callback {
         unsafe extern "system" fn $name($first: usize $(, $arg: usize)*) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::BuildingChanges);
             let _notification = WATCHES.notify_site($site, $first);
+            let _fog = ($site == 7).then(collector_observers::world_input_changes::fog_nudge_entered);
             let _forwarded = forward(MUTATIONS[$site].1, $first);
             let original: unsafe extern "system" fn($first: usize $(, $arg: usize)*) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };

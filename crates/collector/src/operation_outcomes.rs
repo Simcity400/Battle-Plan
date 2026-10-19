@@ -1133,14 +1133,21 @@ impl Hooks {
             return Self { entry: None };
         }
         unsafe { Self::install(memory, base) }.unwrap_or_else(|reason| {
+            crate::hook::installation::refused(
+                crate::hook::installation::Kind::Construction,
+                None,
+                &reason,
+            );
             let _ = UNHOOKED.set(std::borrow::Cow::Owned(reason));
             Self { entry: None }
         })
     }
     unsafe fn install(memory: &impl Memory, base: usize) -> Result<Self, String> {
-        if engine_native::read::<[u8; 16]>(memory, base + native::COMPLETION_RVA)
-            != Some(native::COMPLETION_SENTINEL)
-        {
+        if !crate::hook::installation::sentinel(
+            memory,
+            base + native::COMPLETION_RVA,
+            native::COMPLETION_SENTINEL,
+        ) {
             COUNTERS[3].fetch_add(1, Ordering::Relaxed);
             return Err(
                 engine_allocation::string("operation completion entry sentinel differs")

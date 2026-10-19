@@ -33,3 +33,5 @@ Shared framework conventions: [widgets](../README.md).
 
 A cold prefix without casualty observations renders Still being prepared; it
 supplies no zero total and does not assert a recording gap.
+
+The expandable Game's retained Combat Log section shows the selected countries' monthly group manpower counters in their native order at the reached hour, with each stored reason and ordinal. It uses the shared country-selection resolver. These remain separate from all-service war totals. Its source availability is independent of terminal-event coverage. It loads only when opened.

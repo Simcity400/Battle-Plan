@@ -36,6 +36,8 @@ pub const TIMED_TRAIT_STRIDE: usize = 0x10;
 pub const TRAIT_EXPERIENCE_DATA: usize = 0xdf8;
 /// CUnitLeader trait-experience count i32.
 pub const TRAIT_EXPERIENCE_COUNT: usize = 0xe04;
+/// Ordered per-trait XP-factor overrides, independent of acquired traits and progress.
+pub const TRAIT_EXPERIENCE_FACTORS: usize = 0xe10;
 /// CUnitLeader CUnitLeaderSkill pointer.
 pub const SKILL: usize = 0xe60;
 /// CUnitLeader experience i64 /100000.
@@ -163,6 +165,7 @@ pub struct Row {
     pub character_type: u32,
     pub character_id: u32,
     pub category: i32,
+    pub experience: i64,
     pub kind: u8,
     /// 0: null pointer, 1: native invalid definition, 2: native valid definition.
     pub skill_status: u8,
@@ -199,9 +202,6 @@ pub fn read(
     let mut category = [0; 4];
     let mut skill = [0; 8];
     let mut exile = [0; 4];
-    // The experience is not read: UnitLeaders retired it, and the only display of it, a combat
-    // commander's skill progress, takes the combat side's selected commander
-    // (`cland_combat::SideDetails`).
     if memory.copy_scattered(
         [
             at(pointer, CHARACTER_TYPE)?,
@@ -219,12 +219,19 @@ pub fn read(
     if character_type != ccharacter::REFERENCE_TYPE || character_id != expected_character_id {
         return Err("unit leader character reference mismatch");
     }
+    let experience = if matches!(kind, KIND_ARMY | KIND_NAVY) {
+        read_native::<i64>(memory, at(pointer, EXPERIENCE)?)
+            .ok_or("unit leader experience unreadable")?
+    } else {
+        0
+    };
     let mut row = Row {
         reference_type,
         id,
         character_type,
         character_id,
         category: i32::from_le_bytes(category),
+        experience,
         kind,
         exile_country: i32::from_le_bytes(exile),
         ..Row::default()
@@ -647,6 +654,62 @@ pub fn walk_traits(
         arena,
         |row, _| row,
     )
+}
+
+/// Visits every native training entry in stored order, including repeated definitions.
+/// The caller has authenticated this leader and its character backlink. Definitions
+/// supply identity only; names, thresholds and effects resolve through content.
+pub fn visit_trait_progress(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    visit: impl FnMut(i32, i32, i64),
+) -> Result<usize, &'static str> {
+    visit_training(memory, base, pointer, TRAIT_EXPERIENCE_DATA, visit)
+}
+
+/// Visits the complete ordered runtime XP-factor override vector.
+pub fn visit_trait_factors(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    visit: impl FnMut(i32, i32, i64),
+) -> Result<usize, &'static str> {
+    visit_training(memory, base, pointer, TRAIT_EXPERIENCE_FACTORS, visit)
+}
+fn visit_training(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    offset: usize,
+    mut visit: impl FnMut(i32, i32, i64),
+) -> Result<usize, &'static str> {
+    let array = Array::read(memory, at(pointer, offset)?, 16)
+        .ok_or("unit leader training vector invalid or unreadable")?;
+    let expected = at(base, cunit_leader_trait::VTABLE_RVA)? as u64;
+    for ordinal in 0..array.count {
+        let address = array
+            .element(ordinal, 16)
+            .ok_or("unit leader training entry address overflow")?;
+        let entry = read_native::<[u8; 16]>(memory, address)
+            .ok_or("unit leader training entry unreadable")?;
+        let definition = usize::try_from(u64::from_le_bytes(entry[..8].try_into().unwrap()))
+            .map_err(|_| "unit leader training definition pointer overflow")?;
+        let identity = read_native::<[u8; 12]>(memory, definition)
+            .ok_or("unit leader training definition unreadable")?;
+        if u64::from_le_bytes(identity[..8].try_into().unwrap()) != expected {
+            return Err("unit leader training definition vtable mismatch");
+        }
+        let definition_ordinal =
+            read_native::<i32>(memory, at(definition, cunit_leader_trait::ORDINAL)?)
+                .ok_or("unit leader training definition ordinal unreadable")?;
+        visit(
+            i32::from_le_bytes(identity[8..].try_into().unwrap()),
+            definition_ordinal,
+            i64::from_le_bytes(entry[8..].try_into().unwrap()),
+        );
+    }
+    Ok(array.count as usize)
 }
 
 /// Reads the native trait-XP vector independently of the assigned-trait vector

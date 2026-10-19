@@ -1,4 +1,4 @@
-//! Saved pool identity and the transport wing's independently captured raid link.
+//! Saved pool identity and independently captured wing raid links.
 use std::{collections::BTreeMap, io};
 
 use installed_content_core::{tokens::Token, unit_leader::SubUnits};
@@ -162,6 +162,28 @@ fn raid(
             return;
         }
         Recorded::Value(None) => {
+            if actual.air_base != 0 {
+                // Certified non-resolution needs no duplicate raw-null packet.
+                // The serializer omits both null and stale references.
+                match actual.assigned_to_raid() {
+                    Some(false) => {
+                        report.compared("AirWings.raid_reference", 1);
+                        if let Some(saved) = expected.raid {
+                            report.difference(
+                                format!("{label}.raid_reference.resolves"),
+                                false,
+                                saved,
+                            );
+                        }
+                    }
+                    _ => report.difference(
+                        format!("{label}.raid_reference: guarded read or registry/memo refusal"),
+                        "unavailable",
+                        expected.raid,
+                    ),
+                }
+                return;
+            }
             match admitted {
                 Some(true) => report.difference(format!("{label}.raid_reference: guarded read or registry/memo refusal"), "unavailable", expected.raid),
                 Some(false) => report.limitation("raid-reference capture is limited to transport wings with zero mission mask/veto and counter <= limit; this saved raid link is outside that capture demand", format!("{label}.raid_reference: saved {:?}", expected.raid)),

@@ -102,6 +102,42 @@ static OPERATIVE_REFUSALS: OperativeRefusals = OperativeRefusals::new();
 /// ([`crate::country_input_changes::intel_network_writes`]) the last
 /// complete IntelNetworks read saw.
 static NETWORK_RESETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NETWORK_CACHE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+// Last attempted membership epoch. A failed cut stays unavailable until the
+// next required census instead of starting an hourly recovery walk.
+static NETWORK_CAPTURE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+struct NetworkSummaryCache {
+    values: ccountry_intel_network::SummaryCache,
+    epoch: u64,
+    resets: u64,
+}
+
+/// Load/gap invalidation is a constant-time mark; acquisition remains on the
+/// existing network worker census.
+pub fn network_summary_boundary(invalidate: bool) {
+    if invalidate {
+        NETWORK_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+/// One residual worker owns the native census at a time. Frames share its
+/// aggregate cache so recycled frames never reread unchanged networks.
+static NETWORK_SUMMARY_CACHE: std::sync::Mutex<NetworkSummaryCache> =
+    std::sync::Mutex::new(NetworkSummaryCache {
+        values: ccountry_intel_network::SummaryCache::new(),
+        epoch: 0,
+        resets: 0,
+    });
+
+pub fn network_summary_capture_diagnostics() -> impl serde::Serialize {
+    let cache = NETWORK_SUMMARY_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    crate::status::status!({
+        "shared_cache_bytes": cache.values.allocated_bytes(),
+        "scope": "one worker cache per attachment; native aggregate payload read only on daily/forced refresh or a newly authenticated network; intervening censuses reuse certified payload and observe current membership",
+    })
+}
 
 pub fn operative_capture_diagnostics() -> impl serde::Serialize {
     OPERATIVE_REFUSALS.diagnostics()
@@ -150,7 +186,7 @@ pub use flag_store::{FlagReuse, FlagStore};
 mod variable_store;
 pub use variable_store::{VariableReuse, VariableStore};
 
-pub const N: usize = 21;
+pub const N: usize = 26;
 pub const TABLES: [TableId; N] = [
     TableId::Capitulation,
     TableId::Subjects,
@@ -173,7 +209,26 @@ pub const TABLES: [TableId; N] = [
     TableId::OperativeMissions,
     TableId::StrategicOperatives,
     TableId::AgencyOperationBuffers,
+    TableId::IntelNetworkSummaries,
+    TableId::PropagandaEfforts,
+    TableId::IntelContributions,
+    TableId::IntelSources,
+    TableId::IntelNetworkAuxiliaries,
 ];
+
+const fn table_slot(table: TableId) -> usize {
+    let mut index = 0;
+    while index < TABLES.len() {
+        if TABLES[index].index() == table.index() {
+            return index;
+        }
+        index += 1;
+    }
+    panic!("intel read group table is absent from TABLES");
+}
+
+const CONTRIBUTIONS_SLOT: usize = table_slot(TableId::IntelContributions);
+const SOURCES_SLOT: usize = table_slot(TableId::IntelSources);
 
 const UNCAPTURED: Outcome = Outcome::Unavailable {
     reason: "clock unavailable",
@@ -198,6 +253,12 @@ pub struct CaptureReport {
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("agency scalars and acquired upgrade levels", 3, &[3, 17]),
     ("operations and assigned slots", 9, &[9, 10]),
+    ("network state rows and national caches", 6, &[6, 21]),
+    (
+        "source contributions, pools and held references",
+        CONTRIBUTIONS_SLOT,
+        &[CONTRIBUTIONS_SLOT, SOURCES_SLOT],
+    ),
     ("relation opinions and typed tuples", 14, &[13, 14]),
 ];
 
@@ -344,6 +405,7 @@ impl Capacities {
     /// (`script_variable_demand`).
     pub fn raise_for_script_variables(&mut self, demand: VariableDemand) {
         use crate::country_scale::{raise, rows};
+        crate::variable_changes::offer_scopes(demand.scopes);
         raise(&mut self.rows[8], rows(demand.scopes, 1));
         raise(&mut self.variable_entries, rows(demand.entries, 1));
         raise(&mut self.variable_names, rows(demand.bytes, 1));
@@ -540,6 +602,14 @@ pub struct Captured {
     agency_operation_buffers: CaptureRows<agency_operation_buffers::Row>,
     cryptology: CaptureRows<ccryptology::Row>,
     networks: CaptureRows<ccountry_intel_network::Row>,
+    network_summaries: CaptureRows<ccountry_intel_network::Summary>,
+    propaganda: CaptureRows<crate::propaganda_changes::Row>,
+    source_contributions: CaptureRows<rows::IntelContributionRow>,
+    source_values: CaptureRows<rows::IntelSourceRow>,
+    network_auxiliary: CaptureRows<rows::IntelNetworkAuxiliaryRow>,
+    certified_snapshots: [Option<Arc<crate::retained_snapshot::Snapshot>>; 4],
+    source_seeds: Vec<crate::source_state::Seed>,
+    source_census_complete: bool,
     flags: CaptureRows<ScopedFlag>,
     variables: CaptureRows<cvariables::ScopeRow>,
     operations: CaptureRows<coperation_instance::Row>,
@@ -681,6 +751,14 @@ impl Captured {
             agency_operation_buffers: CaptureRows::new(capacity.rows[20]),
             cryptology: CaptureRows::new(capacity.rows[5]),
             networks: CaptureRows::new(capacity.rows[6]),
+            network_summaries: CaptureRows::new(capacity.rows[21]),
+            propaganda: CaptureRows::new(capacity.rows[22]),
+            source_contributions: CaptureRows::new(capacity.rows[23]),
+            source_values: CaptureRows::new(capacity.rows[24]),
+            network_auxiliary: CaptureRows::new(capacity.rows[25]),
+            certified_snapshots: std::array::from_fn(|_| None),
+            source_seeds: Vec::new(),
+            source_census_complete: false,
             flags: CaptureRows::new(capacity.rows[7]),
             variables: CaptureRows::new(capacity.rows[8]),
             operations: CaptureRows::new(capacity.rows[9]),
@@ -828,6 +906,13 @@ impl Captured {
         self.agency_operation_buffers.reset();
         self.cryptology.reset();
         self.networks.reset();
+        self.network_summaries.reset();
+        self.propaganda.reset();
+        self.source_contributions.reset();
+        self.source_values.reset();
+        self.network_auxiliary.reset();
+        self.certified_snapshots.fill(None);
+        self.source_census_complete = false;
         self.flags.reset();
         self.variables.reset();
         self.operations.reset();
@@ -852,7 +937,21 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.capitulation.allocated_bytes()
+        // The vector moved into a changed cut's handle still belongs to this
+        // frame until spool return recycles it. Quiet borrowers own no copy.
+        let handed_off = self
+            .certified_snapshots
+            .iter()
+            .zip(&self.outcomes()[22..26])
+            .filter_map(|(snapshot, outcome)| {
+                matches!(outcome, Outcome::Rows { .. })
+                    .then_some(snapshot.as_ref())
+                    .flatten()
+            })
+            .map(|snapshot| snapshot.acquired_bytes())
+            .sum::<usize>();
+        handed_off
+            + self.capitulation.allocated_bytes()
             + self.war_goal_recipients.capacity() * size_of::<u32>()
             + self.subjects.allocated_bytes()
             + self.autonomy.allocated_bytes()
@@ -866,6 +965,12 @@ impl Captured {
             + self.agency_operation_buffers.allocated_bytes()
             + self.cryptology.allocated_bytes()
             + self.networks.allocated_bytes()
+            + self.network_summaries.allocated_bytes()
+            + self.propaganda.allocated_bytes()
+            + self.source_contributions.allocated_bytes()
+            + self.source_values.allocated_bytes()
+            + self.network_auxiliary.allocated_bytes()
+            + self.source_seeds.capacity() * size_of::<crate::source_state::Seed>()
             + self.flags.allocated_bytes()
             + self.variables.allocated_bytes()
             + self.operations.allocated_bytes()
@@ -892,6 +997,32 @@ impl Captured {
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
+        // Spool only, before reset/reuse. Restore the exact acquisition vectors
+        // moved into lazy handles; no per-table buffer allocation on the worker.
+        for (index, outcome) in [
+            self.propaganda.outcome,
+            self.source_contributions.outcome,
+            self.source_values.outcome,
+            self.network_auxiliary.outcome,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !matches!(outcome, Outcome::Rows { .. }) {
+                continue;
+            }
+            if let Some(snapshot) = &self.certified_snapshots[index]
+                && let Some(acquired) = snapshot.recycle_acquired()
+            {
+                use crate::retained_snapshot::AcquiredRows;
+                match acquired {
+                    AcquiredRows::Propaganda(rows) => self.propaganda.rows = rows,
+                    AcquiredRows::Contributions(rows) => self.source_contributions.rows = rows,
+                    AcquiredRows::Sources(rows) => self.source_values.rows = rows,
+                    AcquiredRows::NetworkAuxiliaries(rows) => self.network_auxiliary.rows = rows,
+                }
+            }
+        }
         self.capitulation.grow(&mut capacity.rows[0]);
         self.subjects.grow(&mut capacity.rows[1]);
         self.autonomy.grow(&mut capacity.rows[2]);
@@ -919,6 +1050,11 @@ impl Captured {
         self.agency_operation_buffers.grow(&mut capacity.rows[20]);
         self.cryptology.grow(&mut capacity.rows[5]);
         self.networks.grow(&mut capacity.rows[6]);
+        self.network_summaries.grow(&mut capacity.rows[21]);
+        self.propaganda.grow(&mut capacity.rows[22]);
+        self.source_contributions.grow(&mut capacity.rows[23]);
+        self.source_values.grow(&mut capacity.rows[24]);
+        self.network_auxiliary.grow(&mut capacity.rows[25]);
         self.flags.grow(&mut capacity.rows[7]);
         self.variables.grow(&mut capacity.rows[8]);
         self.operations.grow(&mut capacity.rows[9]);
@@ -1080,6 +1216,11 @@ impl Captured {
             18 => operative_missions,
             19 => strategic_operatives,
             20 => agency_operation_buffers,
+            21 => network_summaries,
+            22 => propaganda,
+            23 => source_contributions,
+            24 => source_values,
+            25 => network_auxiliary,
         );
         self.country_intel_outcome = Outcome::Unavailable {
             reason: if intel_due {
@@ -1124,10 +1265,13 @@ impl Captured {
         // with them unobserved, reads the table again.
         let resets = crate::country_input_changes::intel_network_writes();
         if include_residual
-            && resets != Some(NETWORK_RESETS.load(std::sync::atomic::Ordering::SeqCst))
+            && (resets != Some(NETWORK_RESETS.load(std::sync::atomic::Ordering::SeqCst))
+                || NETWORK_CAPTURE_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+                    != NETWORK_CACHE_EPOCH.load(std::sync::atomic::Ordering::SeqCst))
         {
             active[6] = true;
         }
+        active[21] = active[6];
         if self.relations_raw_mode {
             active[13] = self.relation_active[0];
             active[14] = self.relation_active[1];
@@ -1162,6 +1306,11 @@ impl Captured {
                 operative_missions = 18,
                 strategic_operatives = 19,
                 agency_operation_buffers = 20,
+                network_summaries = 21,
+                propaganda = 22,
+                source_contributions = 23,
+                source_values = 24,
+                network_auxiliary = 25,
             );
         }
         if include_delegated {
@@ -1303,7 +1452,93 @@ impl Captured {
                 ticks[18] = elapsed(begin);
             }
             plain!(5, cryptology, ccryptology::walk_growing);
-            plain!(6, networks, ccountry_intel_network::walk_growing);
+            if active[6] {
+                let _reads = read_accounting::table(TABLES[6]);
+                let begin = qpc();
+                let membership_epoch =
+                    NETWORK_CACHE_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
+                let scheduled = replay_data::cadence::should_walk(TABLES[21], hour, force_full);
+                if scheduled || resets.is_some() {
+                    let mut cache = NETWORK_SUMMARY_CACHE
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let epoch = NETWORK_CACHE_EPOCH.load(std::sync::atomic::Ordering::SeqCst);
+                    let lifetimes = crate::country_input_changes::intel_network_resets();
+                    // A freed/recreated network can reuse its address and pair.
+                    // A lifetime reset therefore revokes payload reuse, whereas
+                    // the independent console growth occurrence does not.
+                    let lifetime_changed = cache.epoch != epoch || lifetimes != Some(cache.resets);
+                    let refresh = scheduled || lifetime_changed;
+                    let read = ccountry_intel_network::walk_with_cached_summaries_growing(
+                        memory,
+                        base,
+                        state,
+                        &mut self.networks.rows,
+                        &mut self.network_summaries.rows,
+                        &mut cache.values,
+                        refresh,
+                    );
+                    if matches!(read.summaries, Outcome::Rows { .. }) {
+                        cache.epoch = epoch;
+                        if let Some(lifetimes) = lifetimes {
+                            cache.resets = lifetimes;
+                        }
+                    }
+                    self.networks.outcome = bounded(read.states, self.networks.rows.len());
+                    self.network_summaries.outcome =
+                        bounded(read.summaries, self.network_summaries.rows.len());
+                    if active[25] {
+                        if let Outcome::Rows { len } = self.network_summaries.outcome {
+                            if crate::network_auxiliary::membership(
+                                &self.network_summaries.rows[..len],
+                                &self.networks.rows[..match self.networks.outcome {
+                                    Outcome::Rows { len } => len,
+                                    _ => 0,
+                                }],
+                                lifetime_changed,
+                            )
+                            .is_err()
+                            {
+                                crate::network_auxiliary::refused();
+                            }
+                        } else {
+                            crate::network_auxiliary::refused();
+                        }
+                    }
+                    if let Outcome::Rows { len } = self.network_summaries.outcome {
+                        if crate::source_changes::network_membership(
+                            &self.network_summaries.rows[..len],
+                            lifetime_changed,
+                        )
+                        .is_err()
+                        {
+                            crate::source_changes::network_refused();
+                        }
+                    } else {
+                        crate::source_changes::network_refused();
+                    }
+                } else {
+                    // No certificate permits a quiet carry. Preserve the existing
+                    // state's fallback without adding an hourly aggregate scan.
+                    self.networks.outcome = ccountry_intel_network::walk_growing(
+                        memory,
+                        base,
+                        state,
+                        &mut self.networks.rows,
+                    );
+                    self.network_summaries.outcome = Outcome::Unavailable {
+                        reason: "intel network summary writer certificate unavailable",
+                    };
+                    crate::source_changes::network_refused();
+                    NETWORK_SUMMARY_CACHE
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .values
+                        .invalidate();
+                }
+                ticks[6] = elapsed(begin);
+                NETWORK_CAPTURE_EPOCH.store(membership_epoch, std::sync::atomic::Ordering::SeqCst);
+            }
             if let (Some(resets), Outcome::Rows { .. }) = (resets, self.networks.outcome) {
                 NETWORK_RESETS.store(resets, std::sync::atomic::Ordering::SeqCst);
             }
@@ -1328,6 +1563,7 @@ impl Captured {
             }
             if active[19] {
                 let begin = qpc();
+                let mut objects = None;
                 capture_named(
                     &mut self.strategic_operatives,
                     &mut self.strategic_operative_entries,
@@ -1335,6 +1571,7 @@ impl Captured {
                         let _reads = read_accounting::table(TABLES[19]);
                         let read =
                             strategic_operatives::walk_growing(memory, base, state, rows, entries);
+                        objects = read.objects;
                         ArenaRead {
                             outcome: read.outcome,
                             len: read.entries_len,
@@ -1343,6 +1580,24 @@ impl Captured {
                     },
                 );
                 ticks[19] = elapsed(begin);
+                let begin = qpc();
+                let _reads = read_accounting::table(TABLES[22]);
+                self.propaganda.outcome = match self.strategic_operatives.outcome {
+                    Outcome::Rows { len } => crate::propaganda_changes::capture(
+                        memory,
+                        base,
+                        objects,
+                        &self.strategic_operatives.rows[..len],
+                        force_full,
+                        replay_data::cadence::should_walk(TABLES[6], hour, false),
+                        &mut self.propaganda.rows,
+                        &mut self.certified_snapshots[0],
+                    ),
+                    _ => Outcome::Unavailable {
+                        reason: "propaganda strategic census incomplete",
+                    },
+                };
+                ticks[22] = elapsed(begin);
             }
             if active[7] {
                 let begin = qpc();
@@ -1516,18 +1771,35 @@ impl Captured {
                 Walk::Ready(buffer) => {
                     self.country_intel_sample = Some(Err("country intel acquisition incomplete"));
                     let begin = qpc();
+                    self.source_seeds.clear();
+                    let mut source_error = false;
                     let result = {
                         let _reads = read_accounting::table(TABLES[15]);
                         if grow_vec(
                             &mut buffer.scratch,
                             engine_native::country_intel_row::STRIDE,
                         ) {
-                            ccountry_intel::walk_with_reserved_growing(
+                            ccountry_intel::walk_with_reserved_visit(
                                 memory,
                                 base,
                                 state,
-                                &mut buffer.rows.rows,
+                                engine_native::walk::Buffer::Growing(&mut buffer.rows.rows),
                                 &mut buffer.scratch,
+                                &mut |owner, root, country| {
+                                    if !source_error {
+                                        if engine_allocation::reserve(&mut self.source_seeds, 1)
+                                            .is_ok()
+                                        {
+                                            self.source_seeds.push(crate::source_state::Seed {
+                                                owner,
+                                                root,
+                                                country,
+                                            });
+                                        } else {
+                                            source_error = true;
+                                        }
+                                    }
+                                },
                             )
                         } else {
                             ccountry_intel::ReservedCapture {
@@ -1540,6 +1812,11 @@ impl Captured {
                             }
                         }
                     };
+                    self.source_census_complete = !source_error
+                        && matches!(result.outcome, Outcome::Rows { .. })
+                        && result.vector_count.is_ok();
+                    self.source_seeds.sort_unstable_by_key(|seed| seed.root);
+                    self.source_seeds.dedup();
                     buffer.rows.outcome = bounded(result.outcome, buffer.rows.rows.len());
                     buffer.reserved_required =
                         buffer.reserved_required.max(result.reserved_required);
@@ -1553,6 +1830,36 @@ impl Captured {
                     buffer.rows.outcome
                 }
             };
+        }
+        if include_residual && (active[CONTRIBUTIONS_SLOT] || active[SOURCES_SLOT]) {
+            let begin = qpc();
+            let _reads = read_accounting::table(TABLES[CONTRIBUTIONS_SLOT]);
+            let seeds = self
+                .source_census_complete
+                .then_some(self.source_seeds.as_slice());
+            let (contributions, sources) = crate::source_changes::capture(
+                memory,
+                base,
+                seeds,
+                context.force_full,
+                &mut self.source_contributions.rows,
+                &mut self.source_values.rows,
+                &mut self.certified_snapshots[1..3],
+            );
+            self.source_contributions.outcome = contributions;
+            self.source_values.outcome = sources;
+            ticks[CONTRIBUTIONS_SLOT] = elapsed(begin);
+        }
+        if include_residual && active[25] {
+            let begin = qpc();
+            let _reads = read_accounting::table(TABLES[25]);
+            self.network_auxiliary.outcome = crate::network_auxiliary::capture(
+                memory,
+                base,
+                &mut self.network_auxiliary.rows,
+                &mut self.certified_snapshots[3],
+            );
+            ticks[25] = elapsed(begin);
         }
         CaptureReport { ticks }
     }
@@ -1580,6 +1887,11 @@ impl Captured {
             self.operative_missions.outcome,
             self.strategic_operatives.outcome,
             self.agency_operation_buffers.outcome,
+            self.network_summaries.outcome,
+            self.propaganda.outcome,
+            self.source_contributions.outcome,
+            self.source_values.outcome,
+            self.network_auxiliary.outcome,
         ]
     }
 
@@ -1609,15 +1921,21 @@ impl Captured {
         };
         // Converted once a day; the spool's staggered cache carries it between.
         let country_intel = TableInput::Sampled(self.country_intel_table(outcomes[15]));
-        self.convert_tables(TableInput::Sampled, flags, country_intel, |outcome| {
-            if let Some((token, previous)) = baseline
-                && self.variables_equal(outcome, previous, scratch)
-            {
-                TableInput::ComparedEqual(token)
-            } else {
-                TableInput::Sampled(self.variables_table(outcome))
-            }
-        })
+        self.convert_tables(
+            TableInput::Sampled,
+            TableInput::SharedComplete,
+            flags,
+            country_intel,
+            |outcome| {
+                if let Some((token, previous)) = baseline
+                    && self.variables_equal(outcome, previous, scratch)
+                {
+                    TableInput::ComparedEqual(token)
+                } else {
+                    TableInput::Sampled(self.variables_table(outcome))
+                }
+            },
+        )
     }
 
     #[cfg(test)]
@@ -1625,15 +1943,34 @@ impl Captured {
         let outcomes = self.outcomes();
         self.convert_tables(
             std::convert::identity,
+            |rows| TableView::Complete(rows.try_clone().expect("synthetic snapshot clone")),
             self.flags_table(outcomes[7]),
             self.country_intel_table(outcomes[15]),
             |outcome| self.variables_table(outcome),
         )
     }
 
+    fn certified_table<V>(
+        &self,
+        slot: usize,
+        sample: impl FnOnce(TableView) -> V,
+        shared: impl FnOnce(Arc<TableRows>) -> V,
+        project: impl FnOnce() -> TableView,
+    ) -> V {
+        match &self.certified_snapshots[slot - 22] {
+            Some(snapshot) => match snapshot.input() {
+                TableInput::SharedComplete(rows) => shared(rows),
+                TableInput::Sampled(view) => sample(view),
+                _ => unreachable!("certified snapshot only projects complete rows or refusal"),
+            },
+            None => sample(project()),
+        }
+    }
+
     fn convert_tables<V>(
         &self,
         sample: impl Fn(TableView) -> V,
+        shared: impl Fn(Arc<TableRows>) -> V,
         flags: V,
         country_intel: V,
         variables: impl FnOnce(Outcome) -> V,
@@ -1734,6 +2071,50 @@ impl Captured {
             sample(self.operative_missions_table(outcomes[18])),
             sample(self.strategic_operatives_table(outcomes[19])),
             sample(self.agency_operation_buffers_table(outcomes[20])),
+            sample(table::<tables::IntelNetworkSummaries, _>(
+                outcomes[21],
+                &self.network_summaries.rows,
+                |r| rows::IntelNetworkSummaryRow {
+                    owner_country: r.owner_country,
+                    target_country: r.target_country,
+                    covered_core_states: r.covered_core_states,
+                    ordinal: r.ordinal,
+                    covered_controlled_states: r.covered_controlled_states,
+                    covered_worth: r.covered_worth,
+                    controlled_strength_sum: r.controlled_strength_sum,
+                    core_strength_sum: r.core_strength_sum,
+                    max_state_strength: r.max_state_strength,
+                },
+            )),
+            self.certified_table(22, &sample, &shared, || {
+                table::<tables::PropagandaEfforts, _>(outcomes[22], &self.propaganda.rows, |r| {
+                    rows::PropagandaEffortRow {
+                        slot: r.slot,
+                        country: r.country,
+                        sequence: r.sequence,
+                        stability: r.stability,
+                        war_support: r.war_support,
+                        derived_drift: r.derived_drift,
+                    }
+                })
+            }),
+            self.certified_table(23, &sample, &shared, || {
+                table::<tables::IntelContributions, _>(
+                    outcomes[23],
+                    &self.source_contributions.rows,
+                    |row| *row,
+                )
+            }),
+            self.certified_table(24, &sample, &shared, || {
+                table::<tables::IntelSources, _>(outcomes[24], &self.source_values.rows, |row| *row)
+            }),
+            self.certified_table(25, &sample, &shared, || {
+                table::<tables::IntelNetworkAuxiliaries, _>(
+                    outcomes[25],
+                    &self.network_auxiliary.rows,
+                    |row| *row,
+                )
+            }),
         ]
     }
 }
@@ -4348,6 +4729,442 @@ pub fn intel_shadow_fixture(value: i64) -> Captured {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn certified_quiet_tables_seed_first_off_slot_periodic_and_post_gap_keyframes() {
+        use crate::retained_snapshot::RetainedSnapshot;
+        use replay_frame::frame::{
+            FrameDecoder, FrameEncoder, FrameInput, Metrics, TABLE_COUNT, TableUpdate,
+        };
+        let expected = [
+            TableRows::PropagandaEfforts(vec![
+                rows::PropagandaEffortRow {
+                    slot: 0,
+                    country: 0,
+                    sequence: 7,
+                    stability: -17,
+                    war_support: 29,
+                    derived_drift: 0,
+                },
+                rows::PropagandaEffortRow {
+                    slot: 0,
+                    country: 0,
+                    sequence: u64::MAX,
+                    stability: -31,
+                    war_support: 43,
+                    derived_drift: 0,
+                },
+            ]),
+            TableRows::IntelContributions(vec![rows::IntelContributionRow {
+                owner: 0,
+                kind: 1,
+                pool: 2,
+                ordinal: 3,
+                target: 4,
+                civilian: -5,
+                army: 6,
+                navy: 7,
+                air: 8,
+            }]),
+            TableRows::IntelSources(vec![
+                rows::IntelSourceRow {
+                    owner: 0,
+                    pool: 1,
+                    source: 2,
+                    ordinal: 3,
+                    target: 4,
+                    civilian: -5,
+                    army: 6,
+                    navy: 7,
+                    air: 8,
+                    id: 9,
+                    removed: 1,
+                    next_id: 10,
+                    discriminant: 11,
+                    count: 12,
+                    other_count: 13,
+                    reference_country: 14,
+                    reference_pool: -15,
+                },
+                rows::IntelSourceRow {
+                    owner: 0,
+                    pool: u32::MAX,
+                    source: 0,
+                    ordinal: 0,
+                    reference_country: 7,
+                    reference_pool: 9,
+                    ..Default::default()
+                },
+                rows::IntelSourceRow {
+                    owner: 0,
+                    pool: u32::MAX,
+                    source: u32::MAX,
+                    ordinal: u32::MAX,
+                    discriminant: 19,
+                    count: 4,
+                    other_count: 2,
+                    ..Default::default()
+                },
+            ]),
+            TableRows::IntelNetworkAuxiliaries(vec![
+                rows::IntelNetworkAuxiliaryRow {
+                    owner: 1,
+                    target: 2,
+                    id: 3,
+                    kind: 11,
+                    subnetwork: 4,
+                    ordinal: 5,
+                    country: 6,
+                    count_a: 7,
+                    count_b: -8,
+                    count_c: 9,
+                    first: -10,
+                    second: 11,
+                    third: 12,
+                },
+                rows::IntelNetworkAuxiliaryRow {
+                    owner: 2,
+                    target: 1,
+                    id: 1,
+                    kind: 6,
+                    country: 9,
+                    ..Default::default()
+                },
+            ]),
+        ];
+        assert_eq!(TABLES[22..26], expected.each_ref().map(TableRows::table));
+        let mut retained = std::array::from_fn::<_, 4, _>(|_| RetainedSnapshot::new());
+        let mut snapshots = std::array::from_fn::<_, 4, _>(|_| None);
+        // The worker has acquired rows, but no recording encoder has admitted them.
+        for (index, rows) in expected.iter().enumerate() {
+            assert_eq!(
+                retained[index].publish(
+                    rows.table(),
+                    Outcome::Rows { len: rows.len() },
+                    || crate::retained_snapshot::fixture(rows.try_clone().unwrap()),
+                    &mut snapshots[index]
+                ),
+                Outcome::Rows { len: rows.len() }
+            );
+        }
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        for (hour, reset, force, keyframe) in [
+            (1, false, false, true),
+            (2, false, false, false),
+            (721, false, false, true),
+            (723, true, false, true),
+            (724, false, true, true),
+        ] {
+            if reset {
+                encoder = FrameEncoder::new();
+                decoder = FrameDecoder::new();
+            }
+            captured.reset_residual();
+            for (index, expected) in expected.iter().enumerate() {
+                crate::test_support::with_allocations_denied(|| {
+                    let quiet = Outcome::Unavailable {
+                        reason: replay_data::cadence::SKIPPED_REASON,
+                    };
+                    assert_eq!(
+                        retained[index].publish(
+                            expected.table(),
+                            quiet,
+                            || panic!("quiet cut must not project rows"),
+                            &mut captured.certified_snapshots[index]
+                        ),
+                        quiet
+                    );
+                    assert!(Arc::ptr_eq(
+                        snapshots[index].as_ref().unwrap(),
+                        captured.certified_snapshots[index].as_ref().unwrap()
+                    ));
+                });
+            }
+            // Use production assembly and the spool encoder's validation/commit path.
+            let inputs =
+                captured.table_inputs(None, &mut ScriptVariableComparison::default(), None);
+            let mut tables = std::array::from_fn::<_, TABLE_COUNT, _>(|_| {
+                TableInput::Sampled(TableView::Unavailable {
+                    reason: "outside intel regression".into(),
+                })
+            });
+            for (table, input) in TABLES.into_iter().zip(inputs) {
+                if expected.iter().any(|rows| rows.table() == table) {
+                    let TableInput::SharedComplete(rows) = &input else {
+                        panic!("{table:?} lost baseline")
+                    };
+                    let TableInput::SharedComplete(projected) =
+                        snapshots[table_slot(table) - 22].as_ref().unwrap().input()
+                    else {
+                        panic!()
+                    };
+                    assert!(Arc::ptr_eq(rows, &projected));
+                    tables[table.index()] = input;
+                }
+            }
+            let mut prepared = encoder
+                .prepare_bytes(
+                    FrameInput {
+                        branch: 1,
+                        hour,
+                        tables,
+                        metrics: Metrics::default(),
+                    },
+                    force,
+                )
+                .unwrap();
+            let encoded = prepared.take_frame();
+            encoder.commit(prepared).unwrap();
+            let frame = encoded.decode().unwrap();
+            assert_eq!(frame.keyframe, keyframe);
+            let decoded = decoder.apply(&frame).unwrap();
+            for expected in &expected {
+                let actual = &*decoded.tables[expected.table().index()];
+                assert_eq!(actual, &TableView::Complete(expected.try_clone().unwrap()));
+                assert!(expected.field_gaps().next().is_none());
+                for row in expected {
+                    assert_eq!(row.not_recorded_fields(), 0);
+                    row.visit_nested_field_gaps(&mut |name| panic!("missing {name}"));
+                }
+                assert!(
+                    matches!(
+                        frame.tables[expected.table().index()],
+                        TableUpdate::Snapshot(_)
+                    ) == keyframe
+                );
+                if !keyframe {
+                    assert!(matches!(
+                        frame.tables[expected.table().index()],
+                        TableUpdate::Unchanged { .. }
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spool_return_recycles_original_native_buffer_and_preserves_an_unadmitted_baseline() {
+        use crate::retained_snapshot::{AcquiredRows, RetainedSnapshot};
+        let mut capacities = Capacities::default();
+        capacities.rows[24] = 16_384;
+        let mut captured = Captured::with_capacities(&capacities);
+        for (index, row) in captured.source_values.rows[..5000].iter_mut().enumerate() {
+            *row = rows::IntelSourceRow {
+                owner: (5000 - index) as u32,
+                pool: u32::MAX,
+                source: u32::MAX,
+                ordinal: u32::MAX,
+                count: 3,
+                ..Default::default()
+            };
+        }
+        let pointer = captured.source_values.rows.as_ptr();
+        let allocated = captured.allocated_bytes();
+        let mut retained = RetainedSnapshot::new();
+        captured.source_values.outcome = Outcome::Rows { len: 5000 };
+        assert_eq!(
+            retained.publish(
+                TableId::IntelSources,
+                captured.source_values.outcome,
+                || AcquiredRows::Sources(std::mem::take(&mut captured.source_values.rows)),
+                &mut captured.certified_snapshots[2]
+            ),
+            Outcome::Rows { len: 5000 }
+        );
+        assert_eq!(captured.source_values.rows.capacity(), 0);
+        assert_eq!(
+            captured.allocated_bytes(),
+            allocated,
+            "handoff must not lose/double frame accounting"
+        );
+        // This cut was never encoded. Off-thread return still prepares its
+        // replay baseline before restoring its original acquisition allocation.
+        captured.grow(&mut capacities);
+        assert_eq!(captured.source_values.rows.as_ptr(), pointer);
+        assert_eq!(captured.source_values.rows.capacity(), 16_384);
+        captured.reset_residual();
+        crate::test_support::with_allocations_denied(|| {
+            let quiet = Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            };
+            assert_eq!(
+                retained.publish(
+                    TableId::IntelSources,
+                    quiet,
+                    || panic!("quiet copy"),
+                    &mut captured.certified_snapshots[2]
+                ),
+                quiet
+            );
+        });
+        let inputs = captured.table_inputs(None, &mut ScriptVariableComparison::default(), None);
+        let TableInput::SharedComplete(rows) = &inputs[24] else {
+            panic!("lost unadmitted baseline")
+        };
+        assert_eq!(rows.len(), 5000);
+        rows.validate_keys().unwrap();
+        assert_eq!(rows.rows::<tables::IntelSources>().unwrap()[0].owner, 1);
+        assert_eq!(
+            rows.rows::<tables::IntelSources>().unwrap()[4999].owner,
+            5000
+        );
+    }
+
+    #[test]
+    fn source_read_cost_is_charged_to_sources_without_network_auxiliaries() {
+        let (_, anchor, members) = READ_GROUPS
+            .iter()
+            .find(|(name, _, _)| *name == "source contributions, pools and held references")
+            .unwrap();
+        assert_eq!(TABLES[*anchor], TableId::IntelContributions);
+        assert_eq!(
+            members
+                .iter()
+                .map(|&index| TABLES[index])
+                .collect::<Vec<_>>(),
+            [TableId::IntelContributions, TableId::IntelSources]
+        );
+        assert!(!members.contains(&table_slot(TableId::IntelNetworkAuxiliaries)));
+    }
+
+    #[test]
+    fn network_summary_without_a_writer_certificate_never_adds_off_cadence_payload_reads() {
+        use engine_intelligence::{
+            clocal_intel_network as local, cstrategic_operative as strategic,
+            cstrategic_operative_manager as manager,
+        };
+        use engine_native::ccountry::synthetic::World;
+        let mut world = World::new(0, 2, 0x1100);
+        let manager_root = world.alloc(0x40);
+        let objects = world.alloc(3 * 8);
+        let network_pointers = world.alloc(8);
+        let network = world.alloc(0x108);
+        let graph = world.alloc(engine_intelligence::intel_network_graph::SIZE);
+        world.u64(
+            world.game_state() + cgame_state::STRATEGIC_OPERATIVE_MANAGER,
+            manager_root as u64,
+        );
+        world.array(manager_root + manager::OPERATIVES_DATA, objects, 3);
+        for slot in 1..=2 {
+            let object = world.alloc(strategic::SIZE);
+            world.u64(objects + slot * 8, object as u64);
+            world.u64(object, strategic::VTABLE_RVA as u64);
+            world.u32(object + strategic::OWNER, slot as u32);
+            if slot == 1 {
+                world.array(object + strategic::NETWORKS_DATA, network_pointers, 1);
+            }
+        }
+        world.u64(network_pointers, network as u64);
+        world.u64(network, ccountry_intel_network::VTABLE_RVA as u64);
+        world.u32(network + ccountry_intel_network::TARGET, 2);
+        world.u64(
+            network + ccountry_intel_network::LOCAL_NETWORK,
+            local::VTABLE_RVA as u64,
+        );
+        world.u64(
+            network + ccountry_intel_network::LOCAL_NETWORK + local::GRAPH,
+            graph as u64,
+        );
+        world.u32(network + ccountry_intel_network::COVERED_CORE_STATES, 17);
+        let mut captured = Captured::with_capacities(&Capacities {
+            rows: [1; N],
+            ..Default::default()
+        });
+        let context = CaptureContext {
+            base: 0,
+            game_state: world.game_state(),
+            hour: 1,
+            force_full: true,
+        };
+        captured.capture_residual(&world.memory(), context, None, None);
+        assert_eq!(captured.network_summaries.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(captured.network_summaries.rows[0].covered_core_states, 17);
+        assert!(crate::country_input_changes::intel_network_writes().is_none());
+        fn audit_admission(captured: &Captured) {
+            for (id, view) in TABLES.into_iter().zip(captured.tables()) {
+                if ![
+                    TableId::IntelNetworkSummaries,
+                    TableId::PropagandaEfforts,
+                    TableId::IntelContributions,
+                    TableId::IntelSources,
+                    TableId::IntelNetworkAuxiliaries,
+                ]
+                .contains(&id)
+                {
+                    continue;
+                }
+                match view {
+                    TableView::Complete(rows) => {
+                        assert!(rows.field_gaps().next().is_none(), "{id:?}");
+                        for row in &rows {
+                            assert_eq!(row.not_recorded_fields(), 0, "{id:?}");
+                            row.visit_nested_field_gaps(&mut |name| panic!("{id:?}: {name}"));
+                        }
+                    }
+                    TableView::Unavailable { reason } => {
+                        // Disabled synthetic observers are genuine named refusals;
+                        // the cadence marker cannot seed a first/recovery frame.
+                        assert!(!reason.is_empty(), "{id:?}");
+                        assert_ne!(reason, replay_data::cadence::SKIPPED_REASON, "{id:?}");
+                    }
+                    TableView::Truncated { .. } => panic!("unexpected incomplete {id:?}"),
+                }
+            }
+        }
+        audit_admission(&captured);
+        captured.fail_residual_capture(context, "synthetic spool gap");
+        captured.capture_residual(
+            &world.memory(),
+            CaptureContext { hour: 3, ..context },
+            None,
+            None,
+        );
+        assert_eq!(captured.network_summaries.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(captured.network_summaries.rows[0].covered_core_states, 17);
+        audit_admission(&captured);
+
+        struct DenyPayload<'a, M> {
+            inner: &'a M,
+            start: usize,
+            end: usize,
+            attempts: std::cell::Cell<usize>,
+        }
+        impl<M: Memory> Memory for DenyPayload<'_, M> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address < self.end && address.saturating_add(output.len()) > self.start {
+                    self.attempts.set(self.attempts.get() + 1);
+                    return false;
+                }
+                self.inner.copy(address, output)
+            }
+        }
+        let memory = world.memory();
+        let denied = DenyPayload {
+            inner: &memory,
+            start: network + ccountry_intel_network::COVERED_CORE_STATES,
+            end: network + ccountry_intel_network::MAX_STATE_STRENGTH + 8,
+            attempts: std::cell::Cell::new(0),
+        };
+        captured.capture_residual(
+            &denied,
+            CaptureContext {
+                hour: 4,
+                force_full: false,
+                ..context
+            },
+            None,
+            None,
+        );
+        assert_eq!(denied.attempts.get(), 0);
+        assert_eq!(captured.networks.outcome, Outcome::Rows { len: 0 });
+        assert_eq!(
+            captured.network_summaries.outcome,
+            Outcome::Unavailable {
+                reason: "intel network summary writer certificate unavailable"
+            }
+        );
+    }
     use super::*;
     mod flag_store_tests;
     mod variable_store_tests;
@@ -5238,6 +6055,7 @@ mod tests {
             ..Default::default()
         };
         capture.networks.rows[1] = ccountry_intel_network::Row {
+            native_ordinal: 1,
             owner_country: 1,
             target_country: 2,
             state_id: 4,
@@ -5516,6 +6334,7 @@ mod tests {
         let (_, mut capture) = small();
         capture.strategic_operatives.outcome = Outcome::Rows { len: 2 };
         capture.strategic_operatives.rows[0] = strategic_operatives::Row {
+            native_pointer: 0,
             country: u32::MAX,
             slot: 7,
             mission_activity: i64::MIN,

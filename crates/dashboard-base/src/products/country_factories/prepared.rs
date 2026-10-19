@@ -195,6 +195,7 @@ pub struct Prepared {
     parts: Accumulator,
     mixes: Accumulator,
     reads: Accumulator,
+    diagnostics: Accumulator,
     first: Option<i32>,
     last: i32,
 }
@@ -212,9 +213,15 @@ impl Prepared {
         replay: &Replay,
         changes: &crate::prepared::frame_changes::FrameChanges,
     ) -> io::Result<()> {
+        let before = self.scan.result.unreadable + self.scan.result.unnamed;
         self.scan
             .observe_changes(frame, replay.format, Some(changes));
+        let refused = self.scan.result.unreadable + self.scan.result.unnamed - before;
+        let starts =
+            self.diagnostics.state(0).is_none() || self.last.checked_add(1) != Some(frame.hour);
         self.advance(frame.hour)?;
+        self.diagnostics
+            .observe(0, frame.hour, Some(refused as i128), starts);
         for tag in std::mem::take(&mut self.scan.observed) {
             let track = &self.scan.tracks[&tag];
             let raw = track
@@ -297,6 +304,7 @@ impl Prepared {
         }
         self.parts.advance(hour)?;
         self.mixes.advance(hour)?;
+        self.diagnostics.advance(hour)?;
         self.reads.advance(hour)
     }
     /// What observing `hour` does when it follows the last hour observed and
@@ -306,10 +314,14 @@ impl Prepared {
     /// in constant time. `Ok(false)`, with nothing changed, when observing it
     /// needs its frame.
     pub fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<bool> {
+        let before = self.scan.result.unreadable + self.scan.result.unnamed;
         if !self.scan.advance_quiet(hour, read) {
             return Ok(false);
         }
+        let refused = self.scan.result.unreadable + self.scan.result.unnamed - before;
         self.advance(hour)?;
+        self.diagnostics
+            .observe(0, hour, Some(refused as i128), false);
         Ok(true)
     }
     pub fn bytes(&self) -> usize {
@@ -321,6 +333,7 @@ impl Prepared {
             + self.parts.bytes()
             + self.mixes.bytes()
             + self.reads.bytes()
+            + self.diagnostics.bytes()
     }
     pub fn flush(
         &mut self,
@@ -403,6 +416,13 @@ impl Prepared {
         self.reads.flush_with_payloads(
             writer,
             &format!("factories-reads-{branch}"),
+            0,
+            cancelled,
+            &mut payloads,
+        )?;
+        self.diagnostics.flush_with_payloads(
+            writer,
+            &format!("factories-diagnostics-{branch}"),
             0,
             cancelled,
             &mut payloads,

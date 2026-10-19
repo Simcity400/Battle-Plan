@@ -17,4 +17,5 @@ pub mod nproject_cprototype_project_state;
 pub mod nproject_csimple_project_state;
 pub mod nproject_sproject_context;
 pub mod nproject_sproject_history;
+pub mod program_details;
 pub mod special_facility_flags;

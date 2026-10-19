@@ -730,7 +730,7 @@ impl Hooks {
                 let at = base
                     .checked_add(site.rva)
                     .ok_or("experience gain site address overflow")?;
-                if read::<[u8; 16]>(memory, at) != Some(site.sentinel) {
+                if !crate::hook::installation::sentinel(memory, at, site.sentinel) {
                     return Err("experience gain native sentinel mismatch");
                 }
             }
@@ -749,6 +749,11 @@ impl Hooks {
         })();
         Self {
             taps: result.unwrap_or_else(|reason| {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Construction,
+                    None,
+                    reason,
+                );
                 let _ = UNHOOKED.set(reason);
                 Vec::new()
             }),

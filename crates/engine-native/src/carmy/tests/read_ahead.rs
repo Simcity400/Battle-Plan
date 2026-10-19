@@ -126,6 +126,7 @@ fn status_holding(
         Outcome::Rows { len: seeds.len() },
         capacity,
         held,
+        &[],
     );
     assert_eq!(packet.allocated_bytes(), allocated);
     let mut rows = vec![carmy::StatusRow::default(); capacity];
@@ -483,6 +484,7 @@ fn status_reuses_entry_scratch_and_prefetches_each_scatter() {
             Outcome::Rows { len: seeds.len() },
             seeds.len(),
             &[],
+            &[],
         );
         assert_eq!(outcome, Outcome::Rows { len: seeds.len() });
         assert_eq!(packet.project(&mut rows), outcome);
@@ -543,6 +545,7 @@ fn status_maxima_reuses_one_probe_per_seed_and_keeps_carried_aliases_unread() {
             Outcome::Rows { len: seeds.len() },
             seeds.len(),
             &holds,
+            &[],
         );
         assert_eq!(outcome, Outcome::Rows { len: seeds.len() });
         assert_eq!(
@@ -601,6 +604,7 @@ fn status_maxima_collisions_use_serial_slots_and_values() {
         Outcome::Rows { len: seeds.len() },
         seeds.len(),
         &holds,
+        &[],
     );
     assert_eq!(outcome, Outcome::Rows { len: seeds.len() });
     assert_eq!(packet.maxima_probes.get(), seeds.len());

@@ -13,6 +13,7 @@ doctest = false
 test-support = []
 
 [dependencies]
+collector-observers.workspace = true
 engine-allocation.workspace = true
 engine-events.workspace = true
 engine-fuel.workspace = true

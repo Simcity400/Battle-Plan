@@ -13,6 +13,10 @@
 //! country/naval buffers and texture pair; [`View`]s with equal tables share one, and a state is
 //! released with the last view showing it. States dispatch through one shared [`Scratch`].
 
+#[path = "province_colors.rs"]
+mod province_colors;
+pub(crate) use province_colors::ProvinceColors;
+
 use std::sync::MutexGuard;
 use viewer_foundation::map::camera::MapSize;
 use viewer_foundation::map::gradient_math::DIVISOR;
@@ -22,7 +26,7 @@ use viewer_foundation::map::textures::gradient_size;
 use viewer_foundation::map::gpu_contract::{compute_limits, unsupported};
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     sync::{Arc, Mutex, Weak},
 };
@@ -30,7 +34,7 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu::{self, util::DeviceExt};
 
-use super::map_mode::{Draw, ModeLayer, POLITICAL, Source};
+use super::map_mode::{Draw, ModeLayer, POLITICAL, Source, Style};
 use super::political::Regions;
 use {
     super::gradient::{self, GRID_CELL, Layer},
@@ -320,6 +324,7 @@ impl Static {
                 mode,
                 channels: POLITICAL,
                 shown: None,
+                strategic_styles: Arc::new(BTreeMap::new()),
             }),
         });
         let mut registry = self.registry();
@@ -359,18 +364,19 @@ impl Static {
 
     /// A live state already holding this fill, whichever view it was computed for. A pooled one
     /// leaves the pool in the same critical section, so it is never reused while shown.
-    fn find(&self, regions: &Regions) -> Option<Arc<State>> {
+    fn find(&self, regions: &Regions, styles: &BTreeMap<u32, Style>) -> Option<Arc<State>> {
         let mut registry = self.registry();
         let found = registry
             .states
             .iter()
             .filter_map(Weak::upgrade)
             .find(|state| {
-                state
-                    .lock()
-                    .shown
-                    .as_ref()
-                    .is_some_and(|shown| same_fill(shown, regions))
+                let fill = state.lock();
+                fill.strategic_styles.as_ref() == styles
+                    && fill
+                        .shown
+                        .as_ref()
+                        .is_some_and(|shown| same_fill(shown, regions))
             });
         #[cfg(test)]
         self.race_point();
@@ -451,6 +457,8 @@ struct Fill {
     channels: [Source; 2],
     /// The tables the state was last updated to; `None` until its first update.
     shown: Option<Arc<Regions>>,
+    /// Local selection changes presentation without cloning hour membership.
+    strategic_styles: Arc<BTreeMap<u32, Style>>,
 }
 
 /// The fill's three layers.
@@ -510,6 +518,7 @@ pub struct View {
     /// The state warmed on the loader for this view's first fill, unless it joins another's.
     spare: Option<Arc<State>>,
     shown: Option<Arc<State>>,
+    strategic_styles: Arc<BTreeMap<u32, Style>>,
 }
 
 impl View {
@@ -521,6 +530,7 @@ impl View {
             base,
             spare: None,
             shown: None,
+            strategic_styles: Arc::new(BTreeMap::new()),
         };
         view.spare = Some(match view.base.recycle() {
             Some(state) => state,
@@ -540,6 +550,27 @@ impl View {
         self.shown.as_ref().map(|state| &state.textures)
     }
 
+    /// Replace this view's local strategic-region styles. Hour geometry remains
+    /// shared; a different selection acquires its own fill through `show`.
+    pub fn set_strategic_styles(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        styles: &BTreeMap<u32, Style>,
+    ) -> io::Result<bool> {
+        if self.strategic_styles.as_ref() != styles {
+            self.strategic_styles = Arc::new(styles.clone());
+        }
+        let regions = self
+            .shown
+            .as_ref()
+            .and_then(|state| state.lock().shown.clone());
+        match regions {
+            Some(regions) => self.show(device, queue, &regions),
+            None => Ok(false),
+        }
+    }
+
     /// Show these tables; `true` when the view now draws a different texture pair.
     pub fn show(
         &mut self,
@@ -548,15 +579,18 @@ impl View {
         regions: &Arc<Regions>,
     ) -> io::Result<bool> {
         if let Some(state) = &self.shown
-            && state
-                .lock()
-                .shown
-                .as_ref()
-                .is_some_and(|shown| same_fill(shown, regions))
+            && {
+                let fill = state.lock();
+                fill.strategic_styles == self.strategic_styles
+                    && fill
+                        .shown
+                        .as_ref()
+                        .is_some_and(|shown| same_fill(shown, regions))
+            }
         {
             return Ok(false);
         }
-        let state = if let Some(state) = self.base.find(regions) {
+        let state = if let Some(state) = self.base.find(regions, &self.strategic_styles) {
             if let Some(spare) = self.spare.take() {
                 self.base.release(spare);
             }
@@ -614,24 +648,53 @@ impl View {
                 }
                 _ => fill.mode.update(device, queue, &empty_layer)?,
             }
-            let navy = |_| self.base.field.navy_neutral;
+            let mode = regions
+                .mode
+                .as_ref()
+                .and_then(|draw| draw.strategic.as_ref());
+            let selected_style = |key| {
+                self.strategic_styles
+                    .get(&key)
+                    .or_else(|| mode.and_then(|mode| mode.styles.get(&key)))
+            };
+            let navy = |key| {
+                selected_style(key).map_or(self.base.field.navy_neutral, |s| {
+                    [s.color[0], s.color[1], s.color[2]]
+                })
+            };
             let attributes = |id| {
+                if mode.is_some_and(|mode| !mode.naval_fx) {
+                    return gradient::Attributes::default();
+                }
                 regions
                     .strategic_attributes
                     .get(&id)
                     .copied()
                     .unwrap_or_default()
             };
+            let style = |key| {
+                let value = selected_style(key);
+                gradient::RegionStyle {
+                    alpha: value.map_or(0, |s| s.color[3]),
+                    pulse: value.is_some_and(|s| s.pulse),
+                    fill: value.map_or(1.0, |s| s.fill),
+                    thickness: None,
+                }
+            };
             let mut layer = Layer::new(
                 gradient::LayerKind::Fixed(self.base.field.strategic_thickness),
-                &self.base.strategic_keys,
+                mode.map_or(&self.base.strategic_keys, |mode| &mode.region_of),
                 &navy,
                 &self.base.field,
             );
             layer.region_opacity = 0;
             layer.no_region_color = self.base.field.navy_neutral;
             layer.region_attributes = Some(&attributes);
+            if mode.is_some() || !self.strategic_styles.is_empty() {
+                layer.region_style = Some(&style);
+            }
             fill.naval.update(device, queue, &layer)?;
+            fill.strategic_styles = Arc::clone(&self.strategic_styles);
             fill.shown = Some(Arc::clone(regions));
             drop(fill);
             state

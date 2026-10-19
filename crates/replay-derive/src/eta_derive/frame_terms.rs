@@ -10,10 +10,12 @@ use crate::{
     directed_war_derive::ReceiverWars,
     frame::DecodedFrame,
     rows::{
-        CountryCounterInputRow, CountryLinkRow, CountryRow, DivisionMovementRow, DivisionRow,
-        DivisionStatusRow, DivisionTemplateIconRow, LexicalTokenRow, ModifierDefinitionRow,
-        MovementDefines as RecordedDefines, OrdersGroupCounterInputRow, ProvinceRow,
-        RaidAirScoreRow, RailCooldownRow, RailEdgeRow, StateRow, StrategicAction, TableSchema,
+        CoreSupplyAccessRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
+        CountryUnitSpeedEntryRow, DivisionMovementRow, DivisionRow, DivisionStatusRow,
+        DivisionTemplateIconRow, LexicalTokenRow, ModifierDefinitionRow,
+        MovementDefines as RecordedDefines, MovementStateTermRow, OrdersGroupCounterInputRow,
+        OwnerTransportSpeedRow, ProvinceRow, RaidAirScoreRow, RailCooldownRow, RailEdgeRow,
+        RiverRelationRow, StateMovementTerms, StateRow, StrategicAction, TableId, TableSchema,
         WeatherProvinceRow, WeatherRegionRow, tables,
     },
 };
@@ -37,9 +39,14 @@ pub const ARMOUR_TYPE: u64 = 4;
 pub trait Geography: SubUnitContent {
     /// The province's one-based terrain index; `None` for a province the content lacks.
     fn terrain_index(&self, province: u32) -> Option<i32>;
-    /// Whether the province is land (its definition's land bit); `None` for a province
-    /// the content lacks.
-    fn land(&self, province: u32) -> Option<bool>;
+    /// Raw definition terrain flags, preserving the distinct land and lake tests;
+    /// `None` for a province the recorded content stack lacks.
+    fn terrain_flags(&self, province: u32) -> Option<u8>;
+    /// Transport edge selection uses the land bit alone.
+    fn land(&self, province: u32) -> Option<bool> {
+        self.terrain_flags(province)
+            .map(|flags| flags & engine_native::province_definition::LAND_FLAG != 0)
+    }
     /// The terrain's own unit adjuster movement for a one-based terrain index.
     fn terrain_movement(&self, index: i32) -> Option<i64>;
     /// The crossing kind of the move `from -> to` (1 sea, 2 river, 3 large river, 4
@@ -48,6 +55,35 @@ pub trait Geography: SubUnitContent {
     /// The province's strategic region id; `None` for a province without one.
     fn region(&self, province: u32) -> Option<u32>;
 }
+
+/// The tables the speed terms and the attrition hover's supply line read, beyond the
+/// division's own Divisions and DivisionMovement rows.
+pub const TABLES: [TableId; 24] = [
+    TableId::Provinces,
+    TableId::States,
+    TableId::DivisionStatus,
+    TableId::DivisionPanelStats,
+    TableId::CountryLinks,
+    TableId::Countries,
+    TableId::CountryCounterInputs,
+    TableId::OrdersGroupCounterInputs,
+    TableId::WeatherProvinces,
+    TableId::WeatherRegions,
+    TableId::ModifierDefinitions,
+    TableId::LexicalTokens,
+    TableId::SimulationFeatures,
+    TableId::WarRelations,
+    TableId::Clock,
+    TableId::RaidAirScores,
+    TableId::RailCooldowns,
+    TableId::RailEdges,
+    TableId::DivisionTemplateIcons,
+    TableId::MovementStateTerms,
+    TableId::CoreSupplyAccess,
+    TableId::CountryUnitSpeedEntries,
+    TableId::RiverRelations,
+    TableId::DivisionTransportSpeeds,
+];
 
 /// The hour's recorded operands of the speed terms ([`SpeedTerms`]) and the attrition
 /// hover's supply line.
@@ -69,6 +105,11 @@ pub struct FrameTerms<'a> {
     templates: Result<&'a [DivisionTemplateIconRow], String>,
     tokens: Result<&'a [LexicalTokenRow], String>,
     rail_edges: Result<&'a [RailEdgeRow], String>,
+    state_terms: Result<&'a [MovementStateTermRow], String>,
+    core_access: Result<&'a [CoreSupplyAccessRow], String>,
+    unit_entries: Result<&'a [CountryUnitSpeedEntryRow], String>,
+    river_relations: Result<&'a [RiverRelationRow], String>,
+    transport_speeds: Result<&'a [OwnerTransportSpeedRow], String>,
     /// Each canonical owner slot's regional scores, built once.
     air_index: std::cell::OnceCell<Result<AirIndex, String>>,
     /// Each canonical slot's country id, built once: a frame derives every mover
@@ -81,44 +122,14 @@ pub struct FrameTerms<'a> {
 /// `[friendly, enemy, impact]` by canonical owner slot and strategic region id.
 type AirIndex = BTreeMap<(u32, u32), [i64; 3]>;
 
-/// Why an arrival time refuses a division in combat.
-const IN_COMBAT: &str =
-    "the division is in combat, and the combat's movement factor is not recorded";
-/// Why an arrival time refuses a move to or from the sea.
-pub const SEA_MOVE: &str =
-    "the route moves to or from the sea, at the owner's transport speed, which is not recorded";
+/// Why an arrival time refuses a move by sea whose transport speed the hour lacks.
+pub const TRANSPORT_NOT_RECORDED: &str = "the division moves by sea at its owner's transport speed, which DivisionTransportSpeeds does not hold for the edge's strategic region";
 /// Why a division with no days out of supply refuses its out-of-supply term under a
 /// supply-days define of zero.
 pub const SUPPLY_DAYS_ZERO: &str = "the supply-days define is zero, so the out-of-supply penalty reads the received supply at zero days out of supply, which is recorded only at its display step";
 /// Why the special-forces share refuses: the template's composition was unreadable when
 /// recorded, so the hour holds none of its entries.
 pub const UNREADABLE_COMPOSITION: &str = "the template's composition was unreadable when recorded, so its special-forces share is unknown";
-
-/// The tables the speed terms and the attrition hover's supply line read, beyond the
-/// division's own Divisions and DivisionMovement rows.
-pub const TABLES: [crate::rows::TableId; 18] = {
-    use crate::rows::TableId::*;
-    [
-        Provinces,
-        States,
-        DivisionStatus,
-        CountryLinks,
-        Countries,
-        CountryCounterInputs,
-        OrdersGroupCounterInputs,
-        WeatherProvinces,
-        WeatherRegions,
-        ModifierDefinitions,
-        LexicalTokens,
-        SimulationFeatures,
-        WarRelations,
-        Clock,
-        RaidAirScores,
-        RailCooldowns,
-        RailEdges,
-        DivisionTemplateIcons,
-    ]
-};
 
 /// Why an arrival time refuses a strategically redeploying division whose redeployment
 /// inputs were not read.
@@ -149,6 +160,11 @@ impl<'a> FrameTerms<'a> {
             templates: complete::<tables::DivisionTemplateIcons>(frame),
             tokens: complete::<tables::LexicalTokens>(frame),
             rail_edges: complete::<tables::RailEdges>(frame),
+            state_terms: complete::<tables::MovementStateTerms>(frame),
+            core_access: complete::<tables::CoreSupplyAccess>(frame),
+            unit_entries: complete::<tables::CountryUnitSpeedEntries>(frame),
+            river_relations: complete::<tables::RiverRelations>(frame),
+            transport_speeds: complete::<tables::DivisionTransportSpeeds>(frame),
             air_index: std::cell::OnceCell::new(),
             country_ids: std::cell::OnceCell::new(),
             layout: std::cell::OnceCell::new(),
@@ -237,6 +253,183 @@ impl<'a> FrameTerms<'a> {
     ) -> Result<bool, String> {
         let template = self.template(division)?;
         Ok(sub_units.sub_unit_types(&template.priority_unit_name)? & ARMOUR_TYPE != 0)
+    }
+
+    /// The owner's raw transport speed in `region` (`DivisionTransportSpeeds`, keyed by
+    /// the division's logical owner reference).
+    fn transport_speed(&self, owner: u32, region: u32) -> Result<i64, String> {
+        let rows = self.transport_speeds.as_ref().map_err(Clone::clone)?;
+        let at = rows
+            .binary_search_by_key(&(owner, region), |row| (row.owner, row.region))
+            .map_err(|_| TRANSPORT_NOT_RECORDED.to_owned())?;
+        rows[at]
+            .speed
+            .ok_or_else(|| "the owner's transport speed was refused when recorded".to_owned())
+    }
+
+    /// The location state's movement terms selected for the division's roster owner and
+    /// owner (`MovementStateTerms`).
+    fn state_terms(
+        &self,
+        state: u32,
+        division: &DivisionRow,
+    ) -> Result<&'a StateMovementTerms, String> {
+        let rows = self.state_terms.as_ref().map_err(Clone::clone)?;
+        let key = (state, division.roster_owner, Self::owner(division));
+        let at = rows
+            .binary_search_by_key(&key, |row| (row.state, row.roster, row.owner))
+            .map_err(|_| {
+                "MovementStateTerms has no row for the division's location state, roster owner and owner"
+                    .to_owned()
+            })?;
+        rows[at].terms.as_ref().ok_or_else(|| {
+            "the location state's movement speed entries were refused when recorded".to_owned()
+        })
+    }
+
+    /// The location state's speed term and attack speed term, effective: its army speed
+    /// plus, by the recorded branch, its controller or enemy army speed; zero for a
+    /// location without a state.
+    fn state_speed(&self, division: &DivisionRow, hostile: bool) -> Result<[i64; 2], String> {
+        use engine_executable::modifier_keys as keys;
+        let state = self.province(division.province)?.state;
+        if state == 0 {
+            return Ok([0; 2]);
+        }
+        let terms = self.state_terms(state, division)?;
+        let branch = match terms.branch & StateMovementTerms::RELATION_MASK {
+            StateMovementTerms::NEITHER => 0,
+            StateMovementTerms::FRIENDLY => {
+                self.effective(keys::ARMY_SPEED_FACTOR_FOR_CONTROLLER, terms.relation_speed)?
+            }
+            StateMovementTerms::ENEMY => {
+                self.effective(keys::ENEMY_ARMY_SPEED_FACTOR, terms.relation_speed)?
+            }
+            other => {
+                return Err(format!(
+                    "MovementStateTerms holds an unknown controller branch {other}"
+                ));
+            }
+        };
+        Ok([
+            self.effective(keys::ARMY_SPEED_FACTOR, terms.army_speed)?
+                .wrapping_add(branch),
+            if hostile {
+                if terms.branch & StateMovementTerms::ATTACK_REFUSED != 0 {
+                    return Err("the location state's hostile-destination attack speed was refused when recorded".into());
+                }
+                self.effective(keys::ARMY_ATTACK_SPEED_FACTOR, terms.attack_speed)?
+            } else {
+                0
+            },
+        ])
+    }
+
+    /// The owner country's effective entries for the template's movement priority
+    /// sub-unit's speed keys (`DivisionTemplateIcons.speed_keys`, from
+    /// `CountryUnitSpeedEntries`), summed in native order with repeats.
+    fn unit_speed(&self, division: &DivisionRow) -> Result<i64, String> {
+        let keys = self
+            .template(division)?
+            .speed_keys
+            .require("DivisionTemplateIcons.speed_keys")?
+            .as_ref()
+            .ok_or(
+                "the template's movement priority sub-unit speed keys were refused when recorded",
+            )?;
+        let owner = Self::owner(division);
+        let mut sum = 0_i64;
+        for &key in keys {
+            let rows = self.unit_entries.as_ref().map_err(Clone::clone)?;
+            let at = rows
+                .binary_search_by_key(&(owner, key), |row| (row.country, row.key))
+                .map_err(|_| {
+                    "CountryUnitSpeedEntries has no row for the owner's sub-unit speed key"
+                        .to_owned()
+                })?;
+            let entry = rows[at]
+                .entry
+                .ok_or("the owner's sub-unit speed entry was refused when recorded")?;
+            sum = sum.wrapping_add(self.effective(key, entry)?);
+        }
+        Ok(sum)
+    }
+
+    /// Whether the division's owner has core supply access at its location
+    /// (`CoreSupplyAccess`).
+    fn core_access(&self, division: &DivisionRow) -> Result<bool, String> {
+        let rows = self.core_access.as_ref().map_err(Clone::clone)?;
+        let key = (Self::owner(division), division.province);
+        let at = rows
+            .binary_search_by_key(&key, |row| (row.owner, row.province))
+            .map_err(|_| {
+                "CoreSupplyAccess has no row for the division's owner and location".to_owned()
+            })?;
+        rows[at]
+            .access
+            .ok_or_else(|| "the owner's core supply access was refused when recorded".to_owned())
+    }
+
+    /// The noncore-supply term of a division not exiled: zero with the recorded bypass
+    /// ([`DivisionStatusRow::MOVE_NONCORE_SUPPLY_BYPASS`]) or the owner's core supply
+    /// access at its location, otherwise the content's noncore supply speed, its air
+    /// form for an air-supplied division ([`DivisionStatusRow::MOVE_NONCORE_AIR`]).
+    fn noncore(
+        &self,
+        division: &DivisionRow,
+        status: &DivisionStatusRow,
+        defines: &Defines,
+    ) -> Result<i64, String> {
+        if status.move_flags & DivisionStatusRow::MOVE_NONCORE_SUPPLY_BYPASS != 0
+            || self.core_access(division)?
+        {
+            return Ok(0);
+        }
+        if status.move_flags & DivisionStatusRow::MOVE_NONCORE_AIR_REFUSED != 0 {
+            return Err(
+                "the division's noncore movement air-supply sign was refused when recorded".into(),
+            );
+        }
+        let air = status.move_flags & DivisionStatusRow::MOVE_NONCORE_AIR != 0;
+        defines.noncore_supply[usize::from(air)].ok_or_else(|| {
+            if air {
+                "the content's air noncore supply speed define failed to load"
+            } else {
+                "the content's ground noncore supply speed define failed to load"
+            }
+            .to_owned()
+        })
+    }
+
+    /// The raw river crossing factor against `controller` of the owner's relation
+    /// towards it (`RiverRelations`), None for no relation or no entry.
+    fn river_relation(&self, owner: u32, controller: u32) -> Result<Option<i64>, String> {
+        let rows = self.river_relations.as_ref().map_err(Clone::clone)?;
+        let at = rows
+            .binary_search_by_key(&(owner, controller), |row| (row.owner, row.controller))
+            .map_err(|_| {
+                "RiverRelations has no row for the owner and the crossing's destination controller"
+                    .to_owned()
+            })?;
+        rows[at].entry.ok_or_else(|| {
+            "the owner's relation river crossing factor was refused when recorded".to_owned()
+        })
+    }
+
+    /// The land combat movement base of a division in combat that is not withdrawing
+    /// ([`super::combat_base`] of `DivisionStatus.combat_movement`).
+    fn combat_base(&self, status: &DivisionStatusRow, defines: &Defines) -> Result<i64, String> {
+        let entry = status
+            .combat_movement
+            .require("DivisionStatus.combat_movement")?
+            .ok_or("the division's combat movement operand was refused when recorded")?;
+        if entry.is_none() {
+            return Ok(0);
+        }
+        let define = defines
+            .combat_movement
+            .ok_or("the content's combat movement speed define failed to load")?;
+        Ok(super::combat_base(entry, define))
     }
 
     /// The strategic redeployment speed of the move `from -> to` before the outer
@@ -354,25 +547,40 @@ impl<'a> FrameTerms<'a> {
         Ok(wars.as_ref().map_err(Clone::clone)?.pointer_active(target))
     }
 
-    /// The division's organisation factor ([`super::organisation_factor`]) from its
-    /// recorded organisation (`Divisions.organisation`) and maximum
-    /// (`DivisionStatus.maximum_organisation`), both at their display steps.
+    /// Exact organisation operands selected by the native movement branch.
+    /// Availability is in the existing movement flags; neither a refused pair
+    /// nor missing exact words fall back to display-stepped values.
     pub fn organisation(
         &self,
         division: &DivisionRow,
         movement: &DivisionMovementRow,
         defines: &Defines,
     ) -> Result<Option<i64>, String> {
-        let maximum = self.status.as_ref().map_err(Clone::clone).and_then(|rows| {
-            rows.binary_search_by_key(&division.id, |row| row.division)
-                .map(|at| rows[at].maximum_organisation)
-                .map_err(|_| format!("DivisionStatus has no row for division {:#x}", division.id))
-        });
-        super::organisation_factor(
-            maximum.map(|maximum| (division.organisation, maximum)),
-            || self.attacking(division, movement),
-            defines,
-        )
+        let row = self.status_row(division.id)?;
+        let current = row
+            .organisation_exact
+            .require("DivisionStatus.organisation_exact")?;
+        let maximum = row
+            .maximum_organisation_exact
+            .require("DivisionStatus.maximum_organisation_exact")?;
+        if row.move_flags & DivisionStatusRow::MOVE_ORGANISATION_REFUSED != 0 {
+            return Err(
+                "the division's exact movement organisation operands were refused when recorded"
+                    .into(),
+            );
+        }
+        if row.move_flags & DivisionStatusRow::MOVE_LOW_ORGANISATION == 0 {
+            return if current.is_none() && maximum.is_none() {
+                Ok(None)
+            } else {
+                Err(
+                    "exact organisation operands were recorded outside their movement branch"
+                        .into(),
+                )
+            };
+        }
+        let operands = current.zip(*maximum).ok_or("the division's low-organisation movement factor needs its missing exact current and maximum organisation")?;
+        super::organisation_factor(Ok(operands), || self.attacking(division, movement), defines)
     }
 
     fn status_row(&self, division: u64) -> Result<&'a DivisionStatusRow, String> {
@@ -384,10 +592,7 @@ impl<'a> FrameTerms<'a> {
 
     /// The country's movement and attrition entries ([`crate::rows::CountryMovementModifiers`]):
     /// a raw country reference's canonical slot's CountryCounterInputs row.
-    fn country_modifiers(
-        &self,
-        raw: u32,
-    ) -> Result<&'a crate::rows::CountryMovementModifiers, String> {
+    fn country_counter(&self, raw: u32) -> Result<&'a crate::rows::CountryCounterInputRow, String> {
         let slot = self.slot(raw)?;
         let ids = self
             .country_ids
@@ -410,7 +615,15 @@ impl<'a> FrameTerms<'a> {
             .binary_search_by_key(&id, |row| row.country)
             .map(|at| &rows[at])
             .map_err(|_| format!("CountryCounterInputs has no row for country {id}"))?;
-        row.movement_modifiers
+        Ok(row)
+    }
+
+    fn country_modifiers(
+        &self,
+        raw: u32,
+    ) -> Result<&'a crate::rows::CountryMovementModifiers, String> {
+        self.country_counter(raw)?
+            .movement_modifiers
             .require("CountryCounterInputs.movement_modifiers")?
             .as_ref()
             .ok_or_else(|| {
@@ -541,10 +754,15 @@ impl<'a> FrameTerms<'a> {
 
     /// The division's selected commander unit block's raw entries
     /// ([`DivisionStatusRow::COMMANDER_KEYS`]), all absent without a commander.
-    fn leader_block(&self, status: &DivisionStatusRow) -> Result<[Option<i64>; 5], String> {
+    fn leader_block(&self, status: &DivisionStatusRow) -> Result<[Option<i64>; 6], String> {
         status
             .commander_modifiers
             .require("DivisionStatus.commander_modifiers")?
+            .map(|entries| {
+                [
+                    entries[0], entries[1], entries[2], None, entries[3], entries[4],
+                ]
+            })
             .ok_or_else(|| {
                 "the division's commander modifier entries were refused when recorded".to_owned()
             })
@@ -708,7 +926,7 @@ impl<'a> FrameTerms<'a> {
                     keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
                     country.special_forces_out_of_supply_factor,
                 )?,
-                leader_value(4, keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR)?,
+                leader_value(5, keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR)?,
             ],
             share: &share,
         };
@@ -723,16 +941,152 @@ impl<'a> FrameTerms<'a> {
         Ok(Some(severity.wrapping_mul(factor) / 100_000))
     }
 
+    /// Current deployed width from the template's effective base and the exact contextual
+    /// country and selected commander width entries, including definition eligibility.
+    pub fn panel_width(&self, division: &DivisionRow) -> Result<i64, String> {
+        use engine_executable::modifier_keys::COMBAT_WIDTH_FACTOR;
+        if division.template == 0 {
+            return Ok(0);
+        }
+        let base = self
+            .template(division)?
+            .base_width
+            .require("DivisionTemplateIcons.base_width")?
+            .ok_or("deployed template width base unavailable")?;
+        self.country_modifiers(Self::owner(division))?;
+        let status = self.status_row(division.id)?;
+        self.leader_block(status)?;
+        let leader_width = *status
+            .commander_width_factor
+            .require("DivisionStatus.commander_width_factor")?;
+        let country_width = *self
+            .country_counter(Self::owner(division))?
+            .combat_width_factor
+            .require("CountryCounterInputs.combat_width_factor")?;
+        let factor = 100_000_i64
+            .wrapping_add(self.effective(COMBAT_WIDTH_FACTOR, country_width)?)
+            .wrapping_add(self.effective(COMBAT_WIDTH_FACTOR, leader_width)?);
+        Ok(base.wrapping_mul(factor) / 100_000)
+    }
+
+    fn panel_stat(&self, division: u64, index: usize) -> Option<i64> {
+        let rows = self.frame.complete::<tables::DivisionPanelStats>().ok()?;
+        rows.binary_search_by_key(&division, |row| row.division)
+            .ok()
+            .and_then(|at| rows[at].panel_stats[index])
+    }
+
+    /// The division panel's current speed, before the movement distance scale. A missing
+    /// route skips terrain and common movement modifiers, as the native display getter does.
+    /// `combat` is the first containing combat's exact base plus tactic movement modifier.
+    pub fn panel_speed(
+        &self,
+        division: &DivisionRow,
+        movement: &DivisionMovementRow,
+        geography: &impl Geography,
+        defines: &Defines,
+        combat: Result<i64, String>,
+    ) -> Result<i64, String> {
+        if movement.naval_transfer != 0 || geography.land(division.province) == Some(false) {
+            let speed = movement
+                .transport_speed
+                .require("DivisionMovement.transport_speed")?
+                .ok_or("deployed regional transport speed unavailable")?;
+            return super::movement_fraction(
+                speed.wrapping_mul(defines.transport_scale) / 100_000,
+                defines.outer_scale,
+            );
+        }
+        let status = self.status_row(division.id)?;
+        let base = self
+            .panel_stat(division.id, 21)
+            .ok_or("deployed maximum speed cache unavailable")?;
+        let to = if movement.path_total as i32 > 0 {
+            *movement
+                .path
+                .first()
+                .ok_or("deployed speed first route province unavailable")?
+        } else {
+            0
+        };
+        if to != 0 || movement.naval_transfer != 0 {
+            let combat = if movement.combat_count == 0 {
+                100_000
+            } else {
+                combat?
+            };
+            return self.with_speed_terms(
+                division,
+                movement,
+                geography,
+                defines,
+                Some(combat),
+                |terms| {
+                    super::movement_fraction(
+                        super::edge_speed(base, division.province, to, terms, defines)?,
+                        defines.outer_scale,
+                    )
+                },
+            );
+        }
+        let maximum = self
+            .panel_stat(division.id, 1)
+            .ok_or("deployed maximum organisation cache unavailable")?
+            .max(100);
+        let org = super::organisation_factor(
+            Ok((division.organisation, maximum)),
+            || self.attacking(division, movement),
+            defines,
+        )?;
+        let recorded = self.recorded_defines()?;
+        let stats = status
+            .movement_stats
+            .require("DivisionStatus.movement_stats")?
+            .as_ref()
+            .ok_or("deployed fuel capacity cache unavailable")?;
+        let capacity = recorded
+            .fuel_capacity_scale
+            .ok_or("fuel capacity scale unavailable")?;
+        let fuel = if stats.fuel_rate.wrapping_mul(capacity) / 100_000 <= 0 {
+            None
+        } else {
+            super::fuel_factor(
+                movement
+                    .fuel
+                    .require("DivisionMovement.fuel")?
+                    .ok_or("deployed current fuel unavailable")?,
+                stats.fuel_rate,
+                capacity,
+                recorded
+                    .out_of_fuel_speed
+                    .ok_or("out of fuel speed unavailable")?,
+            )?
+        };
+        let mut speed = base;
+        for factor in [org, fuel].into_iter().flatten() {
+            speed = speed.wrapping_mul(factor) / 100_000;
+        }
+        super::movement_fraction(
+            speed.max(100_000).wrapping_mul(defines.outer_scale) / 100_000,
+            defines.outer_scale,
+        )
+    }
+
     /// Runs `estimate` with the division's speed terms ([`SpeedTerms`]): the common
-    /// modifier of its country's and selected commander block's terms and armour speed,
-    /// its location's weather, its out-of-supply term (at the template's special-forces
-    /// share) and retreat terms; each edge's terrain, fort, snow, commander terrain,
-    /// river and infrastructure terms; and its organisation and fuel factors. A strategic
-    /// redeployment that no modifier blocks moves at the road or rail speed
-    /// ([`EdgeTerm::Scaled`]) and land edges past a landing at the invasion speed
-    /// ([`EdgeTerm::Fixed`]). A division in combat that is not withdrawing refuses by
-    /// name: the combat's movement factor replaces the modifier's one and is not
-    /// recorded. A missing operand of a term the game applies refuses by name.
+    /// modifier, whose one the land combat movement base replaces for a division in
+    /// combat that is not withdrawing, of its country's and selected commander block's
+    /// terms and armour speed, its location state's terms, its owner's priority sub-unit
+    /// and category entries, its location's weather, its out-of-supply term (at the
+    /// template's special-forces share) with the noncore-supply term, and its retreat
+    /// terms; each edge's terrain, fort, snow, commander terrain, river (with the owner's
+    /// relation's river crossing factor against the destination's controller) and
+    /// infrastructure terms; and its organisation and fuel factors. A naval transfer and
+    /// an edge to or from the sea move at the logical owner's transport speed in the
+    /// source's strategic region times the transport scale ([`EdgeTerm::Scaled`]), a
+    /// strategic redeployment that no modifier blocks at the road or rail speed times the
+    /// movement scale, and land edges past a landing at the invasion speed
+    /// ([`EdgeTerm::Fixed`]). A missing operand of a term the game applies refuses by
+    /// name.
     pub fn with_terms<T>(
         &self,
         division: &DivisionRow,
@@ -741,28 +1095,99 @@ impl<'a> FrameTerms<'a> {
         defines: &Defines,
         estimate: impl FnOnce(&SpeedTerms<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.with_route_terms(
+            division,
+            movement,
+            &movement.path,
+            geography,
+            defines,
+            estimate,
+        )
+    }
+
+    fn with_speed_terms<T>(
+        &self,
+        division: &DivisionRow,
+        movement: &DivisionMovementRow,
+        geography: &impl Geography,
+        defines: &Defines,
+        panel_combat: Option<i64>,
+        estimate: impl FnOnce(&SpeedTerms<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.with_route_terms_inner(
+            division,
+            movement,
+            &movement.path,
+            geography,
+            defines,
+            panel_combat,
+            estimate,
+        )
+    }
+
+    /// The same composition for a prospective route. Organisation and invasion
+    /// selection still follow the division's recorded route; edge admission
+    /// demands the actual first speed query and the non-self edges of `route`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_route_terms<T>(
+        &self,
+        division: &DivisionRow,
+        movement: &DivisionMovementRow,
+        route: &[u32],
+        geography: &impl Geography,
+        defines: &Defines,
+        estimate: impl FnOnce(&SpeedTerms<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.with_route_terms_inner(
+            division, movement, route, geography, defines, None, estimate,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn with_route_terms_inner<T>(
+        &self,
+        division: &DivisionRow,
+        movement: &DivisionMovementRow,
+        route: &[u32],
+        geography: &impl Geography,
+        defines: &Defines,
+        panel_combat: Option<i64>,
+        estimate: impl FnOnce(&SpeedTerms<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
         use engine_executable::modifier_keys as keys;
-        // Without a base speed no term matters.
-        super::base_speed(movement)?;
-        let withdrawing = *movement
-            .withdrawal
-            .require("DivisionMovement.withdrawal")?
-            .as_ref()
-            .ok_or("the division's withdrawal byte was refused when recorded")?
-            != 0;
-        if movement.combat_count != 0 && !withdrawing {
-            return Err(IN_COMBAT.into());
+        if panel_combat.is_none() {
+            super::base_speed(movement)?;
         }
-        // A naval transfer moves at the transport speed.
+        // A naval transfer, and a move to or from the sea, moves at the logical owner's
+        // transport speed in the source's strategic region times the transport scale.
+        let transport = |from: u32| -> Result<EdgeTerm, String> {
+            let region = geography
+                .region(from)
+                .ok_or_else(|| format!("province {from} has no strategic region"))?;
+            Ok(EdgeTerm::Scaled {
+                speed: self.transport_speed(division.logical_owner, region)?,
+                scale: defines.transport_scale,
+            })
+        };
         if movement.naval_transfer != 0 {
-            return Err(SEA_MOVE.into());
+            let edge = |from: u32, _: u32| transport(from);
+            return estimate(&SpeedTerms {
+                modifier: 0,
+                edge: &edge,
+                organisation: None,
+                fuel: None,
+            });
         }
-        // A move to or from the sea moves at the transport speed; past a landing (the
-        // location at sea, the first route province on land) the land edges move at the
-        // invasion speed. Otherwise None: the edge's own speed applies.
-        let invasion = !geography
-            .land(division.province)
+        // Past a landing (neither land nor lake at the actual location, first
+        // route province on land) the
+        // land edges move at the invasion speed. Otherwise None: the edge's own speed
+        // applies.
+        let invasion = geography
+            .terrain_flags(division.province)
             .ok_or_else(|| format!("province {} has no content terrain", division.province))?
+            & (engine_native::province_definition::LAND_FLAG
+                | engine_native::province_definition::LAKE_FLAG)
+            == 0
             && movement
                 .path
                 .first()
@@ -774,11 +1199,42 @@ impl<'a> FrameTerms<'a> {
                     .land(province)
                     .ok_or_else(|| format!("province {province} has no content terrain"))?
                 {
-                    return Err(SEA_MOVE.into());
+                    return transport(from).map(Some);
                 }
             }
             Ok(invasion.then_some(EdgeTerm::Fixed(defines.invasion_speed)))
         };
+        // Sea and invasion edges use only their own speed, so an itinerary
+        // made entirely of those edges does not demand land-speed operands.
+        let mut from = division.province;
+        // Progress subtraction queries the actual first speed even if its
+        // distance is zero (or the requested itinerary omits that self-edge).
+        let mut normal = movement
+            .path
+            .first()
+            .map(|&first| special_edge(division.province, first))
+            .transpose()?
+            .is_some_and(|term| term.is_none());
+        for &to in route {
+            if from != to {
+                normal |= special_edge(from, to)?.is_none();
+            }
+            from = to;
+        }
+        if !normal {
+            let edge = |from, to| {
+                special_edge(from, to)?.ok_or_else(|| {
+                    "the requested edge is outside the division's sea or invasion itinerary"
+                        .to_owned()
+                })
+            };
+            return estimate(&SpeedTerms {
+                modifier: 0,
+                edge: &edge,
+                organisation: None,
+                fuel: None,
+            });
+        }
         // A strategic redeployment that no disable-redeployment modifier blocks moves at
         // the road or rail speed; a blocked one at the ordinary speed.
         if movement.strategic_redeployment != 0 {
@@ -794,7 +1250,10 @@ impl<'a> FrameTerms<'a> {
                         if let Some(term) = special_edge(from, to)? {
                             return Ok(term);
                         }
-                        Ok(EdgeTerm::Scaled(self.rail_speed(from, to, &rail)?))
+                        Ok(EdgeTerm::Scaled {
+                            speed: self.rail_speed(from, to, &rail)?,
+                            scale: defines.outer_scale,
+                        })
                     };
                     return estimate(&SpeedTerms {
                         modifier: 0,
@@ -813,6 +1272,12 @@ impl<'a> FrameTerms<'a> {
                 StrategicAction::Unreached => return Err(STRATEGIC_REDEPLOYMENT.into()),
             }
         }
+        let withdrawing = *movement
+            .withdrawal
+            .require("DivisionMovement.withdrawal")?
+            .as_ref()
+            .ok_or("the division's withdrawal byte was refused when recorded")?
+            != 0;
         self.validate_layout()?;
         let status = self.status_row(division.id)?;
         let recorded = self.recorded_defines()?;
@@ -837,13 +1302,34 @@ impl<'a> FrameTerms<'a> {
                 .get_or_init(|| self.attacking(division, movement))
                 .clone()
         };
+        // In combat and not withdrawing, the land combat movement base replaces the
+        // modifier's one.
+        let combat_base = if movement.combat_count != 0 && !withdrawing {
+            Some(self.combat_base(status, defines)?)
+        } else {
+            None
+        };
+        let hostile = attacking()?;
+        let [state_speed, state_attack_speed] = self.state_speed(division, hostile)?;
+        let exiled = status.move_flags & DivisionStatusRow::MOVE_EXILED != 0;
         let mut modifiers = CommonModifiers {
+            combat_base,
             country_speed: self.effective(keys::ARMY_SPEED_FACTOR, country.army_speed_factor)?,
             leader_speed: leader_value(0, keys::ARMY_SPEED_FACTOR)?,
             country_attack_speed: self.effective(
                 keys::ARMY_ATTACK_SPEED_FACTOR,
                 country.army_attack_speed_factor,
             )?,
+            state_speed,
+            state_attack_speed,
+            unit_speed: self.unit_speed(division)?,
+            // The noncore-supply term is part of the supply step, which an exiled
+            // division bypasses.
+            noncore: if exiled {
+                0
+            } else {
+                self.noncore(division, status, defines)?
+            },
             weather: self.weather(division.province, geography)?,
             armour_speed: [0; 2],
         };
@@ -859,15 +1345,6 @@ impl<'a> FrameTerms<'a> {
         if armour_speed != [0, 0] && commander.is_some() && self.armoured(division, geography)? {
             modifiers.armour_speed = armour_speed;
         }
-        // A hostile move is decided only where an attack speed term is nonzero.
-        let hostile = if modifiers.country_attack_speed != 0
-            || modifiers.weather[1] != 0
-            || modifiers.weather[3] != 0
-        {
-            attacking()?
-        } else {
-            false
-        };
         let acclimatization = if modifiers.weather == [0; 4] {
             0
         } else {
@@ -878,9 +1355,9 @@ impl<'a> FrameTerms<'a> {
         };
         if !hostile {
             modifiers.country_attack_speed = 0;
+            modifiers.state_attack_speed = 0;
         }
-        let exiled = status.move_flags & DivisionStatusRow::MOVE_EXILED != 0;
-        let supply = if exiled || movement.naval_transfer != 0 {
+        let supply = if exiled {
             0
         } else {
             let operands = self.supply_operands(status)?;
@@ -894,7 +1371,7 @@ impl<'a> FrameTerms<'a> {
                         keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
                         country.special_forces_out_of_supply_factor,
                     )?,
-                    leader_value(4, keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR)?,
+                    leader_value(5, keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR)?,
                 ],
                 share: &share,
             };
@@ -917,7 +1394,8 @@ impl<'a> FrameTerms<'a> {
         };
         let air = super::air_term(self.air(division, stats, geography, &recorded)?.as_ref())?;
         let modifier =
-            super::common_modifier(&modifiers, hostile, acclimatization, supply, air, retreat);
+            super::common_modifier(&modifiers, hostile, acclimatization, supply, air, retreat)
+                .wrapping_add(panel_combat.unwrap_or(100_000).wrapping_sub(100_000));
         // A stat block without fuel capacity takes no fuel factor whatever its fuel.
         let capacity_scale = define(recorded.fuel_capacity_scale, "fuel capacity scale")?;
         let fuel = if stats.fuel_rate.wrapping_mul(capacity_scale) / 100_000 <= 0 {
@@ -934,15 +1412,21 @@ impl<'a> FrameTerms<'a> {
                 define(recorded.out_of_fuel_speed, "out-of-fuel speed")?,
             )?
         };
-        let maximum = self
-            .status_row(division.id)
-            .map(|row| row.maximum_organisation);
-        let organisation = super::organisation_factor(
-            maximum.map(|maximum| (division.organisation, maximum)),
-            attacking,
-            defines,
-        )?;
-        let river_leader = leader_value(3, keys::RIVER_CROSSING_FACTOR)?;
+        let organisation = if panel_combat.is_some() {
+            let maximum = self
+                .panel_stat(division.id, 1)
+                .map(|maximum| maximum.max(100))
+                .ok_or_else(|| "deployed maximum organisation cache unavailable".to_owned());
+            super::organisation_factor(
+                maximum.map(|maximum| (division.organisation, maximum)),
+                attacking,
+                defines,
+            )?
+        } else {
+            self.organisation(division, movement, defines)?
+        };
+        let river_leader = leader_value(4, keys::RIVER_CROSSING_FACTOR)?;
+        let owner = Self::owner(division);
         let edge = |from: u32, to: u32| -> Result<EdgeTerm, String> {
             if let Some(term) = special_edge(from, to)? {
                 return Ok(term);
@@ -983,7 +1467,12 @@ impl<'a> FrameTerms<'a> {
                 .ok_or_else(|| format!("route edge {from}->{to} has no content crossing"))?;
             let river = match crossing {
                 1..=3 => Some((
-                    river_leader,
+                    // The owner's relation towards the destination's controller adds its
+                    // river crossing factor against that country.
+                    river_leader.wrapping_add(self.effective(
+                        keys::RIVER_CROSSING_FACTOR_AGAINST,
+                        self.river_relation(owner, self.province(to)?.controller)?,
+                    )?),
                     scalar(stats.river())?,
                     match crossing {
                         2 => defines.river_crossing_two,

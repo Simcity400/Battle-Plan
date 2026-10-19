@@ -37,4 +37,9 @@ Countries/groups, campaign/follow/pin/range. The Current/History switch sits in 
 | File | Responsibility |
 |---|---|
 | [SpecialProjectsWidget.tsx](SpecialProjectsWidget.tsx), [specialProjectsData.ts](specialProjectsData.ts) | Current sections, History lanes, validation and dated lookups; adjacent tests. |
+| [ProjectDetails.tsx](ProjectDetails.tsx), [projectDetailsData.ts](projectDetailsData.ts) | Scientist, assignment, reward, effect and variable details and validation; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [specialProjects.css](specialProjects.css) | Settings and migration, registration, and sizes for the shared National focus cards and rows. |
+
+Current also includes scientists, dated injury recovery and skills/traits; dated primary/supporting facility assignments with native delayed-unassignment operands; and each project's pending ordered reward options, authored output effects, persistent variables and seed. These sections remain visible when no project is running. Independent unknown facts and scoped-effect refusals remain explicit.
+
+The details show dated facility speed factors, specialization progress and each lead/support scientist contribution. Scientist roster visibility derives from the retained role conjunction's own authored origin and observation frame; empty generated-role conjunctions remain visible. Missing Projects observations retain the unavailable state beside independently recorded details. Chosen reward options retain their date, province, progress and optional country/scientist/state context. Pending choices render authored output costs with their other effects.

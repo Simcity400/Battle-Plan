@@ -78,7 +78,24 @@ impl Capacities {
                 .ok_or("economy sizing row count overflow"),
             Outcome::Unavailable { reason } => Err(reason),
         };
-        let resources = ccountry_resources::storage_demand(memory, base, state)?;
+        let mut market_demand = 0_usize;
+        let mut countries = 0_usize;
+        let resources = ccountry_resources::storage_demand_with_country(
+            memory,
+            base,
+            state,
+            |_, resources| {
+                market_demand = market_demand
+                    .checked_add(collector_observers::market_changes::schedule_storage(
+                        memory, base, resources,
+                    )?)
+                    .ok_or("market storage demand overflow")?;
+                countries = countries
+                    .checked_add(1)
+                    .ok_or("market country demand overflow")?;
+                Ok(())
+            },
+        )?;
         for (index, demand) in [6, 7, 8].into_iter().zip(resources) {
             crate::table_capture::grow_capacity(&mut self.rows[index], demand);
         }
@@ -99,6 +116,12 @@ impl Capacities {
         ] {
             crate::table_capture::grow_capacity(&mut self.rows[index], rows(outcome)?);
         }
+        collector_observers::market_changes::presize(
+            market_demand
+                .checked_add(countries)
+                .ok_or("market storage demand overflow")?,
+            countries.max(self.rows[9]),
+        );
         Ok(())
     }
 

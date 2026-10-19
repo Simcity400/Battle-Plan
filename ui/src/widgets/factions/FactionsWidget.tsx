@@ -30,6 +30,7 @@ import { OPTIONS } from './definition';
 import { LEADER_GLYPH, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData';
 import type { FactionOrder, MemberOrder } from './factionsData';
 import './factions.css';
+import FactionDetails from './FactionDetails';
 
 const NO_WARNINGS: string[] = [];
 
@@ -65,6 +66,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], data, at, lastHour), [widget.countries, dashboardTag, data, at, lastHour]);
   const [inView, setInView] = useState<[number, number]>([0, 24]);
+  const [detailWarnings, setDetailWarnings] = useState<string[]>(NO_WARNINGS);
   // Flags follow the visible lanes; name sorting also reads every compared lane.
   const [named, setNamed] = useState<string[]>([]);
   const [sortNames, setSortNames] = useState<string[]>([]);
@@ -88,10 +90,10 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const bandMax = useMemo(() => bandMaxOf(views.map(view => view.counts)), [views]);
 
   useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...factionColours.warnings];
+    const warnings = [...(data?.warnings ?? []), ...factionColours.warnings, ...detailWarnings];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, factionColours.warnings, onDiagnostics]);
+  }, [data, factionColours.warnings, detailWarnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its factions." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -182,6 +184,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
       tooltip={(lane, _span, hour, full) => tooltip(lane.id, hour, full === true)}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     <PreparedKey approximate={approximate} pending={prefix?.pending} />
+    <FactionDetails runtime={runtime} track={track} hour={at} active={active} onDiagnostics={setDetailWarnings} factions={views.filter(view => shownFactions.has(view.id) && view.lifetime.some(span => span.firstHour <= at && at <= span.lastHour)).map(view => ({ id: view.id, name: view.nameAt(at).name ?? UNNAMED_FACTION }))} />
     {menu.menu}
   </div>;
 }

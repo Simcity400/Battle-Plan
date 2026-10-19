@@ -6,7 +6,7 @@ use replay::container::Replay;
 use std::sync::atomic::AtomicBool;
 
 #[test]
-fn an_unprepared_cross_frame_tension_tail_is_pending() {
+fn an_unprepared_cross_frame_tension_tail_has_sampled_totals_and_pending_history() {
     let first = tension_frame(
         100,
         true,
@@ -17,9 +17,9 @@ fn an_unprepared_cross_frame_tension_tail_is_pending() {
     let tail = tension_frame(
         101,
         false,
-        100,
-        &[(9, 10_000)],
-        &[(31, 90, b"Recorded cause", 10_000, 10_000)],
+        200,
+        &[(9, 20_000)],
+        &[(31, 90, b"Recorded cause", 20_000, 20_000)],
     );
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, tail])]).unwrap();
     let root = std::env::temp_dir().join(format!("tension-pending-{}", uuid::Uuid::new_v4()));
@@ -46,10 +46,31 @@ fn an_unprepared_cross_frame_tension_tail_is_pending() {
         &crate::prepared::query::query(&source, &request, None, &flag).unwrap(),
     )
     .unwrap();
-    assert!(
-        reply["data"].is_null(),
-        "an unprepared cross-frame tension tail is pending, never a zero-valued chart"
+    let data = &reply["data"];
+    assert_eq!(data["available"], true);
+    for key in ["world", "sum"] {
+        let summary = &data["summaries"][key];
+        assert_eq!(
+            summary["runs"],
+            serde_json::json!([{"firstHour":100,"lastHour":101,"value":0.1,"breakBefore":true}]),
+            "{key}: the keyframe supplies the approximate cross-frame tail"
+        );
+        assert_eq!(
+            summary["approximate"],
+            serde_json::json!([{"firstHour":100,"lastHour":101}])
+        );
+    }
+    assert_eq!(data["coverage"]["firstHour"], 100);
+    assert_eq!(data["coverage"]["lastHour"], 99);
+    assert_eq!(data["coverage"]["complete"], false);
+    assert_eq!(data["pending"], serde_json::json!([]));
+    assert_eq!(data["exactHours"], serde_json::json!([]));
+    assert_eq!(data["events"], serde_json::json!([]));
+    assert_eq!(
+        data["preparing"],
+        serde_json::json!(["events", "historicalContributors", "identities"])
     );
+    assert!(reply["gate"].is_array());
     crate::prepared::files(&source, None)
         .unwrap()
         .0

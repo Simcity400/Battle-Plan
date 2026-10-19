@@ -20,6 +20,8 @@
 //! | mode | regions | colour | thickness, constant gradient, camera override / outline cutoff |
 //! |---|---|---|---|
 //! | political | controller | the subject-resolved recorded colour | area rule; country defines |
+//! | air | strategic region, land and water | the viewing country's stored superiority weights, or regional active-mission counters at zero weights, through the content's strategic-air colours | strategic-region thickness and channel constants |
+//! | navy | strategic region, sea only | the content's neutral strategic-navy tint, with the viewing country's naval control and gaining-side FX | strategic-region thickness and channel constants |
 //! | factions | controller | the controller's faction colour at `FACTIONS_MEMBER_TRANSPARENCY`, else `FACTIONS_COLOR_NOT_MEMBER` | area rule; faction defines |
 //! | players | controller | the subject-resolved colour, at `PLAYER_MAPMODE_NOT_SELECTED_COUNTRY_TRANSPARENCY` unless a player holds it | area rule; country defines |
 //! | ideology | controller | the ruling party's ideology group colour at `MAP_MODE_IDEOLOGY_COLOR_TRANSPARENCY`, else the subject-resolved colour | area rule; country defines |
@@ -39,6 +41,11 @@
 //! A layer the viewer does not draw leaves its channel empty and is refused by name in
 //! [`ModeFill::warnings`], as are the overlays a mode adds beyond its layers. What each mode
 //! shows of the map's other layers (counters, icons, labels, fog, borders) is [`visibility`].
+//! Air and Navy regional entries, their grids and hover text are viewer counter products;
+//! selection, assignment highlights and ranges stay local to each view. Air-supply regional
+//! summaries alone lack an exact acquisition within the recording cost rules and are refused
+//! by name. The ordinary Air province hover contains detection, selected-wing assignment
+//! feedback and the shared mine summary; the received-damage grids belong to the Air view.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -63,6 +70,7 @@ use super::political::{color_source, inherited_colors};
 mod colour_script;
 pub use colour_script::ColourState;
 pub mod infrastructure;
+pub mod strategic;
 pub mod terrain;
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -242,6 +250,9 @@ pub const POLITICAL: [Source; 2] = [Source::Strategic, Source::Country];
 #[derive(Clone, Debug)]
 pub struct Draw {
     pub channels: [Source; 2],
+    /// The strategic layer's per-mode membership and colours. Its naval FX
+    /// remain the independently derived strategic attributes.
+    pub strategic: Option<strategic::Layer>,
     /// The country layer's variant colouring; `None` keeps the political fill.
     pub country: Option<ModeLayer>,
     /// The mode's own layer.
@@ -256,6 +267,7 @@ pub struct Draw {
 impl PartialEq for Draw {
     fn eq(&self, other: &Self) -> bool {
         self.channels == other.channels
+            && self.strategic == other.strategic
             && self.country == other.country
             && self.layer == other.layer
             && self.second == other.second
@@ -269,6 +281,7 @@ impl Draw {
     fn of(channels: [Source; 2], political: [f32; 2]) -> Self {
         Self {
             channels,
+            strategic: None,
             country: None,
             layer: None,
             second: None,
@@ -580,6 +593,7 @@ pub struct Content {
     /// The terrain mode's layer, built once, or why the content cannot build it.
     terrain: Result<terrain::Built, String>,
     pub infrastructure: infrastructure::Content,
+    pub strategic: strategic::Content,
 }
 
 impl Content {
@@ -593,6 +607,7 @@ impl Content {
         recorded_language: String,
         terrain: Result<terrain::Sources, String>,
         infrastructure: infrastructure::Content,
+        strategic: strategic::Content,
     ) -> io::Result<Self> {
         let defines = ModeDefines::load(defines)?;
         let terrain = terrain.map(|sources| terrain::build(&sources, &defines.terrain));
@@ -610,13 +625,15 @@ impl Content {
             recorded_language,
             terrain,
             infrastructure,
+            strategic,
         })
     }
 
     /// Whose names the map writes in `mode`, far out and close in: the far names show at or
     /// above `NGraphics.DRAW_COUNTRY_NAMES_CUTOFF` and the near ones below it, cross-fading. The
     /// game chooses per mode: faction names in the factions mode, players' names in the players
-    /// mode, strategic region names in the air and navy modes, country names otherwise, and none
+    /// mode, strategic region names in the air and navy modes (admitted by the local pointer
+    /// and strategic-name preference in the name pass), country names otherwise, and none
     /// close in; a scripted mode by its `far_text` and `near_text`, each writing none when it is
     /// not declared.
     pub fn name_layers(&self, mode: &MapMode) -> NameLayers {
@@ -666,7 +683,7 @@ pub enum NameLayer {
     Factions,
     /// No names.
     Nothing,
-    /// The strategic regions' names, which the viewer does not draw: the map carries none.
+    /// Each strategic region's name across its connected provinces.
     StrategicRegions,
     /// Each state's name across its provinces.
     States,
@@ -953,6 +970,7 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
         let country = country_variant(variant, inputs, warnings)?;
         Ok(Draw {
             channels: [built(&country, Country), Empty],
+            strategic: None,
             country,
             layer: None,
             second: None,
@@ -961,6 +979,7 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
     };
     let over_countries = |layer: Option<ModeLayer>| Draw {
         channels: [Country, built(&layer, Mode)],
+        strategic: None,
         country: None,
         layer,
         second: None,
@@ -972,12 +991,19 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
         // resource icons ([`visibility`]).
         Stock::Resources => Draw::of([Country, Empty], political),
         Stock::StrategicNavy | Stock::StrategicAir => {
-            warnings.push(unbuilt(stock).to_owned());
-            match stock {
-                Stock::StrategicNavy => return Ok(refusal(warnings)),
-                Stock::StrategicAir => Draw::of([Strategic, Empty], political),
-                _ => Draw::of([Country, Empty], political),
+            let mut draw = Draw::of(
+                if stock == Stock::StrategicAir {
+                    [Strategic, Empty]
+                } else {
+                    POLITICAL
+                },
+                political,
+            );
+            draw.strategic = Some(inputs.content.strategic.layer(stock, inputs, &mut warnings));
+            if stock == Stock::StrategicAir {
+                warnings.push(unbuilt(stock).to_owned());
             }
+            draw
         }
         // The raid mode draws no layer of its own: the countries alone. Its raid icons and
         // what it hides are [`visibility`] rules; its source stripes belong to the raid creation
@@ -994,6 +1020,7 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
             let layer = diplomacy(inputs, &mut warnings)?;
             Draw {
                 channels: [built(&layer, Mode), Empty],
+                strategic: None,
                 country: None,
                 layer,
                 second: None,
@@ -1004,6 +1031,7 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
             let layer = manpower(inputs, &mut warnings)?;
             Draw {
                 channels: [built(&layer, Mode), Country],
+                strategic: None,
                 country: None,
                 layer,
                 second: None,
@@ -1025,6 +1053,7 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
             };
             Draw {
                 channels: [built(&layer, Mode), Country],
+                strategic: None,
                 country: None,
                 layer,
                 second: None,
@@ -1039,6 +1068,7 @@ fn stock_fill(stock: Stock, inputs: &Inputs) -> io::Result<ModeFill> {
             )?;
             Draw {
                 channels: [built(&layer, Mode), Country],
+                strategic: None,
                 country: None,
                 layer,
                 second: None,
@@ -1064,10 +1094,7 @@ fn unbuilt(stock: Stock) -> &'static str {
             "Supply map mode: its province supply and supply-border layers need each province's distributed supply, which is not recorded; both channels stay empty and the supply hub icons, flow arrows and supply tooltips are not drawn"
         }
         Stock::StrategicAir => {
-            "Air map mode: the strategic regions show without their superiority colours, names, region statistics and range overlays, which are not drawn; the map writes no names"
-        }
-        Stock::StrategicNavy => {
-            "Navy map mode: the political channels show without the naval supremacy colours, strategic region names, region statistics and range overlays, which are not drawn; the map writes no names"
+            "Air-supply regional summary operands are unavailable: exact consumer membership is rebuilt hourly; an extra full scan or synchronous per-consumer observation violates the recording cost rules"
         }
         _ => "This map mode's layer is not drawn",
     }
@@ -1751,7 +1778,13 @@ fn scripted_fill(name: &str, inputs: &Inputs) -> io::Result<ModeFill> {
     };
     let mut warnings = Vec::new();
     let previous = inputs.colour.filter(|state| state.mode == name);
-    let refresh = colour_script::refreshes(previous, mode.update_daily, inputs.frame.hour);
+    let scheduled = colour_script::refreshes(previous, mode.update_daily, inputs.frame.hour);
+    let forced = if scheduled {
+        Ok(false)
+    } else {
+        colour_script::forced_refresh(name, inputs)
+    };
+    let refresh = scheduled || forced.as_ref().is_ok_and(|value| *value);
     let mut kept: [colour_script::LayerState; 2] = Default::default();
     let mut coloured = false;
     let political = inputs.content.defines.country_channel;
@@ -1811,15 +1844,24 @@ fn scripted_fill(name: &str, inputs: &Inputs) -> io::Result<ModeFill> {
             }
             LayerType::Country | LayerType::State | LayerType::StateController => {
                 coloured = true;
-                let borders = colour_script::borders(
-                    name,
-                    side,
-                    layer,
-                    inputs,
-                    previous.map(|state| &state.layers[channel]),
-                    refresh,
-                    &mut warnings,
-                );
+                let borders = if let Err(why) = &forced {
+                    warnings.push(why.clone());
+                    colour_script::LayerState {
+                        borders: BTreeMap::new(),
+                        refusals: vec![why.clone()],
+                        refused: true,
+                    }
+                } else {
+                    colour_script::borders(
+                        name,
+                        side,
+                        layer,
+                        inputs,
+                        previous.map(|state| &state.layers[channel]),
+                        refresh,
+                        &mut warnings,
+                    )
+                };
                 let built_layer = (!borders.refused)
                     .then(|| colour_script::layer(layer, &borders.borders, inputs));
                 kept[channel] = borders;
@@ -1833,13 +1875,6 @@ fn scripted_fill(name: &str, inputs: &Inputs) -> io::Result<ModeFill> {
                 source
             }
         };
-    }
-    if coloured {
-        // The game also refreshes when a script runs `force_update_map_mode`, which recordings
-        // do not hold.
-        warnings.push(format!(
-            "Scripted map mode {name}: force_update_map_mode not recorded; its colour borders refresh on the first hour shown and each day's first hour only"
-        ));
     }
     Ok(ModeFill {
         draw: Some(draw),

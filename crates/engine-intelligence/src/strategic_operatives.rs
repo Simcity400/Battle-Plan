@@ -35,6 +35,8 @@ const _: () = assert!(TRADE_VALUE == PRESSURE_ACCEPTANCE);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
+    /// Acquisition identity for certified auxiliary readers; never recorded.
+    pub native_pointer: usize,
     /// The object's raw owner country reference.
     pub country: u32,
     /// Its index in the manager's vector, the country slot the save keys by.
@@ -63,6 +65,9 @@ pub struct Entry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub outcome: Outcome,
+    /// The already-acquired manager membership for auxiliary bootstrap reads.
+    /// None when the manager is disabled or acquisition failed.
+    pub objects: Option<Array>,
     pub entries_len: usize,
     /// Entries every object needs, including omitted rows.
     pub required_entries: usize,
@@ -117,6 +122,7 @@ pub fn walk_buffer(
         if manager_pointer == 0 {
             return Ok(Walk {
                 outcome: Outcome::Rows { len: 0 },
+                objects: None,
                 entries_len: 0,
                 required_entries: 0,
             });
@@ -193,6 +199,7 @@ pub fn walk_buffer(
                 continue;
             }
             output[len] = Row {
+                native_pointer: object,
                 country: owner,
                 slot,
                 mission_activity,
@@ -205,6 +212,7 @@ pub fn walk_buffer(
             entries_len += count;
         }
         Ok(Walk {
+            objects: Some(objects),
             outcome: if unread_rows == 0 {
                 Outcome::Rows { len }
             } else {
@@ -215,6 +223,7 @@ pub fn walk_buffer(
         })
     })();
     result.unwrap_or_else(|reason| Walk {
+        objects: None,
         outcome: Outcome::Unavailable { reason },
         entries_len: 0,
         required_entries: 0,

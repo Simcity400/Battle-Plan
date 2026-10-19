@@ -3,16 +3,18 @@
 //! Progress follows the native first-edge fraction. Arrival times walk each division's
 //! recorded route natively, each edge at the native land speed ([`edge_speed`]) of its
 //! recorded stat-block base speed and the speed terms the hour records ([`SpeedTerms`]):
-//! the common modifier ([`common_modifier`]) of country, commander, armour, weather,
-//! supply (with the template's special-forces share), enemy air ([`air_term`]) and
-//! retreat terms, each edge's terrain, fort, snow, commander terrain, river and
-//! infrastructure terms ([`edge_operands`]), the low-organisation factor of a hostile
-//! move ([`organisation_factor`]) and the fuel factor ([`fuel_factor`]). A strategic
-//! redeployment that no modifier blocks moves at the road or rail speed instead, and
-//! land edges past a landing at the invasion speed ([`EdgeTerm`]). The game also applies
-//! the location state's speed modifiers, the priority sub-unit's category terms, the
-//! noncore-supply term and a relation's river crossing factor, which the recording does
-//! not hold, so an arrival time drifts from the game wherever those apply.
+//! the common modifier ([`common_modifier`]), whose one a land combat's movement base
+//! replaces ([`combat_base`]), of country, commander, armour, location state, priority
+//! sub-unit and category, weather, supply (with the template's special-forces share and
+//! the noncore-supply term), enemy air ([`air_term`]) and retreat terms, each edge's
+//! terrain, fort, snow, commander terrain, river (with the owner's relation's river
+//! crossing factor against the destination's controller) and infrastructure terms
+//! ([`edge_operands`]), the low-organisation factor of a hostile move
+//! ([`organisation_factor`]) and the fuel factor ([`fuel_factor`]). A move to or from the
+//! sea or in naval transfer moves at the owner's transport speed times the transport
+//! scale, a strategic redeployment that no modifier blocks at the road or rail speed
+//! times the movement scale, and land edges past a landing at the invasion speed
+//! ([`EdgeTerm`]).
 
 use crate::rows::{DivisionMovementRow, RailwayGunCounterInputRow, Recorded};
 use engine_native::{carmy::NormalEdgeOperands, carmy::PreparedNormalSpeed};
@@ -94,6 +96,13 @@ pub struct Defines {
     pub organisation: Option<OrganisationDefines>,
     /// The strategic redeployment speed's defines; None when the content refused them.
     pub rail: Option<RailDefines>,
+    /// `NMilitary.NON_CORE_SUPPLY_SPEED` and `NMilitary.NON_CORE_SUPPLY_AIR_SPEED`
+    /// (fixed5): the noncore-supply term of a ground-supplied and of an air-supplied
+    /// division; each None refuses only the corresponding selected form.
+    pub noncore_supply: [Option<i64>; 2],
+    /// `NMilitary.COMBAT_MOVEMENT_SPEED` (fixed5), the land combat movement base's
+    /// define; None when the content refused it.
+    pub combat_movement: Option<i64>,
 }
 
 /// `NMilitary.STRATEGIC_SPEED_INFRA_BASE`, `STRATEGIC_SPEED_INFRA_MAX`,
@@ -130,38 +139,67 @@ pub struct SpeedTerms<'a> {
 }
 
 /// How the game moves a division over one edge: the normal speed with the edge's
-/// operands ([`edge_operands`]); a speed the outer movement scale multiplies, without
-/// the common modifier, organisation or fuel factors (a strategic redeployment's road
-/// or rail speed); or a fixed speed (a naval invasion's).
+/// operands ([`edge_operands`]); a speed times a scale, without the common modifier,
+/// organisation or fuel factors (the owner's transport speed times the content's
+/// transport scale, or a strategic redeployment's road or rail speed times the outer
+/// movement scale); or a fixed speed (a naval invasion's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeTerm {
     Normal(NormalEdgeOperands),
-    Scaled(i64),
+    Scaled { speed: i64, scale: i64 },
     Fixed(i64),
 }
 
 /// The effective modifier values the common term adds, each zero where the game finds
 /// no entry: the country's and the selected commander block's army speed, their armour
 /// speed (for a division with a commander whose priority sub-unit is armour), the
-/// country's attack speed (added only for a hostile move), and the location's province
-/// and region weather speed and attack speed entries.
+/// country's attack speed (added only for a hostile move), the location state's speed
+/// and attack speed terms, the priority sub-unit's and its categories' speed entries,
+/// the noncore-supply term, and the location's province and region weather speed and
+/// attack speed entries.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CommonModifiers {
+    /// The land combat movement base ([`combat_base`]) of a division in combat that is
+    /// not withdrawing, which replaces the modifier's one; None for any other division.
+    pub combat_base: Option<i64>,
     pub country_speed: i64,
     pub leader_speed: i64,
     /// The country's and the commander block's armour speed, each added on its own.
     pub armour_speed: [i64; 2],
     pub country_attack_speed: i64,
+    /// The location state's army speed plus its controller or enemy army speed entry,
+    /// selected for the division's roster owner.
+    pub state_speed: i64,
+    /// The location state's attack speed entry (added only for a hostile move).
+    pub state_attack_speed: i64,
+    /// The owner country's entries for the template's priority sub-unit and each of its
+    /// categories, summed in native order with repeats.
+    pub unit_speed: i64,
+    /// The noncore-supply term: the content's noncore supply speed for a division whose
+    /// owner lacks core supply access at its location, zero otherwise.
+    pub noncore: i64,
     /// Province speed, province attack speed, region speed, region attack speed.
     pub weather: [i64; 4],
 }
 
-/// The division's common movement modifier: one, plus the country's and commander's
-/// army speed and armour speed, the country's attack speed for a hostile move (`attacking`), each weather
-/// entry times the acclimatization factor (the attack speed entries only for a hostile
-/// move), the out-of-supply term ([`supply_term`]), the enemy air term ([`air_term`])
-/// and the retreat or withdrawal term ([`retreat_term`]), each sum the native wrapping
-/// one.
+/// The land combat movement base that replaces the common modifier's one for a division
+/// in combat that is not withdrawing: the combat movement define plus the first land
+/// combat's movement modifier (`entry`), in the native fixed5 arithmetic; zero where the
+/// division's first matching combat is naval or none matches (`entry` None).
+pub fn combat_base(entry: Option<i64>, combat_movement: i64) -> i64 {
+    entry.map_or(0, |modifier| {
+        movement_product(combat_movement, MOVEMENT_ONE).wrapping_add(modifier)
+    })
+}
+
+/// The division's common movement modifier: one (or the combat base where set), plus
+/// the country's and commander's army speed and armour speed, the location state's
+/// speed term, the priority sub-unit and category speed entries, the noncore-supply
+/// term, the country's and the location state's attack speed for a hostile move
+/// (`attacking`), each weather entry times the acclimatization factor (the attack speed
+/// entries only for a hostile move), the out-of-supply term ([`supply_term`]), the enemy
+/// air term ([`air_term`]) and the retreat or withdrawal term ([`retreat_term`]), each
+/// sum the native wrapping one.
 pub fn common_modifier(
     modifiers: &CommonModifiers,
     attacking: bool,
@@ -170,13 +208,20 @@ pub fn common_modifier(
     air: i64,
     retreat: i64,
 ) -> i64 {
-    let mut value = MOVEMENT_ONE
+    let mut value = modifiers
+        .combat_base
+        .unwrap_or(MOVEMENT_ONE)
         .wrapping_add(modifiers.country_speed)
         .wrapping_add(modifiers.leader_speed)
         .wrapping_add(modifiers.armour_speed[0])
-        .wrapping_add(modifiers.armour_speed[1]);
+        .wrapping_add(modifiers.armour_speed[1])
+        .wrapping_add(modifiers.state_speed)
+        .wrapping_add(modifiers.unit_speed)
+        .wrapping_add(modifiers.noncore);
     if attacking {
-        value = value.wrapping_add(modifiers.country_attack_speed);
+        value = value
+            .wrapping_add(modifiers.country_attack_speed)
+            .wrapping_add(modifiers.state_attack_speed);
     }
     for (index, entry) in modifiers.weather.into_iter().enumerate() {
         if index % 2 == 0 || attacking {
@@ -387,8 +432,9 @@ pub struct EdgeTerms {
     pub leader_terrain: i64,
     /// The destination state's movement infrastructure term.
     pub infrastructure: i64,
-    /// For a crossing of kind 1 to 3: the summed river crossing factors, the stat
-    /// block's river movement and the crossing's define (zero for kind 1).
+    /// For a crossing of kind 1 to 3: the summed river crossing factors (the commander
+    /// block's and the owner's relation's against the destination's controller), the
+    /// stat block's river movement and the crossing's define (zero for kind 1).
     pub river: Option<(i64, i64, i64)>,
 }
 
@@ -553,7 +599,8 @@ pub fn railway_gun_first_edge(
 /// The native land speed of the edge `from -> to`: the stat-block base speed times the
 /// common modifier plus the edge's terms, times the organisation and fuel factors,
 /// floored at 1 km/h (100000) and then scaled by the content's movement scale, each
-/// product the native wrapping fixed5 one.
+/// product the native wrapping fixed5 one; a scaled edge's speed times its scale, and a
+/// fixed edge's speed.
 pub fn edge_speed(
     base_speed: i64,
     from: u32,
@@ -570,7 +617,7 @@ pub fn edge_speed(
             outer_scale: defines.outer_scale,
         }
         .evaluate(edge),
-        EdgeTerm::Scaled(speed) => movement_product(speed, defines.outer_scale),
+        EdgeTerm::Scaled { speed, scale } => movement_product(speed, scale),
         EdgeTerm::Fixed(speed) => speed,
     })
 }

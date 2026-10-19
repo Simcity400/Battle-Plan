@@ -20,10 +20,32 @@ enum Node {
     TrackNames,
     Mtth,
     Modifier(modifiers::Node),
+    Unit(crate::technology::units::Node),
     Effect,
 }
 
 fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: &KeyNames) {
+    let registry = crate::technology::units::Registry {
+        units: names
+            .sub_units
+            .as_ref()
+            .map(|units| {
+                units
+                    .registered()
+                    .map(|name| name.to_ascii_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        categories: names
+            .sub_units
+            .as_ref()
+            .map(|units| units.categories().clone())
+            .unwrap_or_default(),
+        terrains: names.effects.terrains.clone(),
+        equipment: names.effects.equipment.clone(),
+    };
+    let mut undecided = Vec::new();
+    let mut refused = Vec::new();
     // Tracks, grand doctrines, and sub-doctrines share base fields while
     // name fields retain their distinct consumption rules.
     let read = native::read(
@@ -98,9 +120,32 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: 
                 &mut Vec::new(),
             )
             .map(Node::Modifier),
+            (Node::Definition | Node::Reward | Node::Milestone, Some(key))
+                if registry.units.contains(key) || registry.categories.contains(key) =>
+            {
+                Shape::Object(Node::Unit(crate::technology::units::Node::Stats))
+            }
+            (Node::Unit(node), _) => registry
+                .shape(node, field, &mut undecided, &mut refused)
+                .map(Node::Unit),
+            (Node::Definition | Node::Reward | Node::Milestone, _) if kind != 2 => {
+                modifiers::shape(
+                    modifiers::Node::Modifier,
+                    field,
+                    &|key| modifiers::registered(key, Some(names)),
+                    &mut undecided,
+                )
+                .map(Node::Modifier)
+            }
             _ => Shape::Skip,
         },
     );
+    database
+        .notes
+        .extend(undecided.iter().map(|why| format!("{source}: {why}")));
+    database
+        .notes
+        .extend(refused.iter().map(|why| format!("{source}: {why}")));
     database
         .notes
         .extend(read.misreads.iter().map(|note| format!("{source}: {note}")));
@@ -114,7 +159,7 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: 
         *gap = Some(format!("{source}: doctrine tactic sources unread: {why}"));
     }
     for item in &read.items {
-        super::sources::append(&mut database.tactic_sources, item, kind);
+        super::sources::append(&mut database.tactic_sources, item, kind, names);
     }
     let destination = match kind {
         0 => &mut database.grand,
@@ -257,6 +302,35 @@ mod tests {
         assert_eq!(db.grand[&Token::c_str(b"grand")].value, b"grand_name");
         assert_eq!(db.sub[&Token::c_str(b"sub")].value, b"sub_name");
         assert_eq!(db.tracks[&Token::c_str(b"track")].value, b"track_name");
+    }
+
+    #[test]
+    fn doctrine_rewards_keep_mod_unit_stats_modifiers_effects_and_costs() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let mut units = crate::unit_leader::SubUnits::default();
+        units.read(
+            b"sub_units={mod_unit={}} sub_unit_categories={mod_category}",
+            "synthetic units",
+        );
+        let names = KeyNames {
+            sub_units: Some(units),
+            ..Default::default()
+        };
+        let mut db = Database::default();
+        append(&mut db, br#"mod_sub={xp_cost=73 xp_type=army description=MOD_DESC
+            modifier={army_org_factor=0.1} effect={add_political_power=2}
+            rewards={mod_reward={mastery=1.25 mod_unit={max_organisation=2} mod_category={default_morale=0.05}}}}
+            MOD_SUB={rewards={second={mastery=2}}}"#, "synthetic doctrine", 1, &names);
+        let definition = &db.tactic_sources.sub[&Token::c_str(b"mod_sub")];
+        assert_eq!(definition.xp_cost, 7_300_000);
+        assert_eq!(definition.xp_type, b"army");
+        assert!(definition.benefits.prose.is_some());
+        assert_eq!(definition.benefits.effects.len(), 1);
+        assert_eq!(definition.benefits.modifiers.values.len(), 1);
+        assert_eq!(definition.rewards.len(), 2);
+        assert_eq!(definition.rewards[0].mastery, 125_000);
+        assert_eq!(definition.rewards[0].token, b"mod_reward");
+        assert_eq!(definition.rewards[0].benefits.units.len(), 2);
     }
 
     #[test]

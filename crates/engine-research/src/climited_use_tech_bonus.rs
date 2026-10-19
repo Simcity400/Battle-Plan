@@ -6,6 +6,10 @@ use crate::{Memory, read, research_inputs::Text};
 pub const VTABLE_RVA: usize = 0x0295_e470;
 pub const NAME: usize = 0x10;
 pub const ID: usize = 0x30;
+pub const USES: usize = 0x08;
+pub const CLAIMS: usize = 0x0c;
+pub const TECHNOLOGIES: usize = 0x38;
+pub const CATEGORIES: usize = 0x50;
 pub const AHEAD_REDUCTION: usize = 0x68;
 pub const SPEED_BONUS: usize = 0x70;
 

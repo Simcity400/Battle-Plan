@@ -62,6 +62,21 @@ fn a_site_marks_its_country_in_the_tables_it_reaches() {
     );
 }
 
+#[test]
+fn design_modifier_marks_have_an_independent_consumer_and_cover_accumulator_reset() {
+    let domain = Domain::enabled(5_001);
+    let owner = country(5_000);
+    let pointer = owner.as_ptr() as usize;
+    let epoch = take(&domain, Table::Designs).0;
+    let visibility = take(&domain, Table::Visibility).0;
+    drop(domain.notify(site("recalculate_modifiers"), pointer, 0));
+    assert_eq!(take(&domain, Table::Visibility), (visibility, vec![5_000]));
+    assert_eq!(take(&domain, Table::Designs), (epoch, vec![5_000]));
+    assert_eq!(take(&domain, Table::Designs), (epoch, vec![]));
+    drop(domain.forward(Forward::ResetCountry, pointer, 0));
+    assert_eq!(take(&domain, Table::Designs).1, vec![5_000]);
+}
+
 /// A receiver that names no country, or a site that writes countries it
 /// does not name, moves the epoch of its own tables only.
 #[test]
@@ -220,14 +235,22 @@ fn faction_sharing_base_marks_the_faction_only_when_it_changed() {
     put(&mut group[..], 0x48, faction.as_ptr() as u64);
     let address = group.as_ptr() as usize;
     let epoch = take(&domain, Table::Research).0;
+    let certificate = domain.sharing.sequence(address).unwrap();
     let base = Cell::new(Some([1_u8; 16]));
     assert_eq!(domain.rebase(address, &|_: usize| base.get(), || 7), 7);
     assert_eq!(take(&domain, Table::Research), (epoch, vec![]));
+    assert_eq!(domain.sharing.sequence(address), Some(certificate));
     domain.rebase(address, &|_: usize| base.get(), || {
         base.set(Some([2; 16]));
+        assert!(domain.sharing.quiet().is_none());
+        assert!(domain.sharing.sequence(address).is_none());
         0
     });
     assert_eq!(take(&domain, Table::Research), (epoch, vec![3, 5]));
+    let changed = domain.sharing.sequence(address).unwrap();
+    assert_ne!(changed, certificate);
+    assert_eq!(take(&domain, Table::Research), (epoch, vec![]));
+    assert_eq!(domain.sharing.sequence(address), Some(changed));
     base.set(None);
     domain.rebase(address, &|_: usize| base.get(), || 0);
     assert_eq!(take(&domain, Table::Research), (epoch, vec![3, 5]));
@@ -519,6 +542,20 @@ fn the_callbacks_follow_the_site_order() {
             "weather_remove_province_modifier",
             "weather_expiry_rebuild",
             "research_progress",
+            "set_recruitment_target",
+            "set_recruitment_ratio",
+            "add_exile_manpower",
+            "restore_exile_manpower",
+            "use_exile_manpower",
+            "set_exile_manpower_cap",
+            "add_exile_legitimacy",
+            "set_exile_legitimacy",
+            "exile_equipment_legitimacy",
+            "refresh_wing_crews",
+            "refresh_ship_crews",
+            "remove_ship_crews",
+            "add_sent_expeditionary",
+            "remove_sent_expeditionary",
         ]
     );
     assert_eq!(names[SYNC_RESEARCH_SLOTS], "sync_research_slots");
@@ -534,9 +571,11 @@ fn intel_network_writes_count_while_politics_forwards_the_reset() {
     let country = country(5);
     let first = country.as_ptr() as usize;
     assert_eq!(domain.intel_network_writes(), Some(0));
+    assert_eq!(domain.intel_network_resets(), Some(0));
     drop(domain.forward(Forward::ResetCountry, first, 0));
     drop(domain.forward(Forward::Ideas, 0, 0));
     assert_eq!(domain.intel_network_writes(), Some(1));
+    assert_eq!(domain.intel_network_resets(), Some(1));
     let running = std::cell::Cell::new(None);
     assert_eq!(
         domain.grow_intel_network(|| {
@@ -547,8 +586,12 @@ fn intel_network_writes_count_while_politics_forwards_the_reset() {
     );
     assert_eq!(running.get(), Some(2));
     assert_eq!(domain.intel_network_writes(), Some(3));
+    // Growth retains national payloads; lifetime invalidation reuses the
+    // already-counted resets and adds no callback counter.
+    assert_eq!(domain.intel_network_resets(), Some(1));
     domain.forwarders[Forwarder::Politics as usize].store(false, Ordering::SeqCst);
     assert_eq!(domain.intel_network_writes(), None);
+    assert_eq!(domain.intel_network_resets(), None);
 }
 
 /// A write of the appearance, counter or visibility inputs marks only its own set, and
@@ -569,6 +612,7 @@ fn appearance_counter_and_visibility_writers_mark_only_their_set() {
         Table::Appearance,
         Table::Counters,
         Table::Visibility,
+        Table::UnitSpeeds,
     ];
     let epochs: Vec<Option<u64>> = tables.iter().map(|&table| take(&domain, table).0).collect();
     assert!(epochs.iter().all(Option::is_some));
@@ -596,9 +640,12 @@ fn appearance_counter_and_visibility_writers_mark_only_their_set() {
         drop(domain.notify(site(name), first, 0));
         marked(&[Table::Appearance]);
     }
+    domain.write(Table::UnitSpeeds, 4);
+    marked(&[Table::UnitSpeeds]);
+    // Every counter writer marks the unit speed set too.
     for name in ["add_army", "remove_army", "refresh_neighbors"] {
         drop(domain.notify(site(name), first, 0));
-        marked(&[Table::Counters]);
+        marked(&[Table::Counters, Table::UnitSpeeds]);
     }
     drop(domain.notify(site("recalculate_modifiers"), first, 0));
     marked(&[
@@ -606,15 +653,20 @@ fn appearance_counter_and_visibility_writers_mark_only_their_set() {
         Table::Research,
         Table::Counters,
         Table::Visibility,
+        Table::UnitSpeeds,
     ]);
     drop(domain.forward(Forward::ResetCountry, first, 0));
     marked(&tables);
-    // The MIO policy reload names no country: the counter set's epoch moves
-    // alone.
+    // The MIO policy reload names no country: the counter and unit speed
+    // sets' epochs move alone.
     drop(domain.notify(site("reload_mio_policies"), 0, 0));
     for (&table, &epoch) in tables.iter().zip(&epochs) {
         let moved = take(&domain, table).0 != epoch;
-        assert_eq!(moved, table == Table::Counters, "{table:?}");
+        assert_eq!(
+            moved,
+            matches!(table, Table::Counters | Table::UnitSpeeds),
+            "{table:?}"
+        );
     }
     domain.write_every(Table::Appearance);
     assert_ne!(take(&domain, Table::Appearance).0, epochs[5]);
@@ -742,11 +794,16 @@ fn a_set_observes_with_the_forwarders_of_its_writers() {
             Table::Focus as usize,
             Table::Projects as usize,
             Table::Counters as usize,
+            Table::UnitSpeeds as usize,
         ]
     );
     for forwarder in [Forwarder::Raid, Forwarder::Opinions, Forwarder::AdvisorPool] {
         let sets: Vec<usize> = (0..SETS).filter(|&set| forwarder.reaches(set)).collect();
-        assert_eq!(sets, [Table::Counters as usize], "{forwarder:?}");
+        assert_eq!(
+            sets,
+            [Table::Counters as usize, Table::UnitSpeeds as usize],
+            "{forwarder:?}"
+        );
     }
 }
 
@@ -863,4 +920,130 @@ fn visibility_waits_only_for_the_country_reset_forwarder_and_poisoning_is_local(
     assert!(domain.poisoned(Table::Visibility));
     assert!(!domain.poisoned(Table::Counters));
     assert_eq!(take(&domain, Table::Visibility).0, None);
+}
+
+#[test]
+fn occupation_exile_writers_mark_only_diplomacy_and_preserve_source_certificates() {
+    let watches = crate::watch_registry::WatchRegistry::enabled(64);
+    let diplomacy = 101;
+    let unrelated_diplomacy = 202;
+    let country_source = 303;
+    let relation_source = 404;
+    let state_source = 505;
+    let unaffected = [
+        unrelated_diplomacy,
+        country_source,
+        relation_source,
+        state_source,
+    ];
+    let held = unaffected.map(|receiver| watches.sequence(receiver).unwrap());
+    let epoch = watches.quiet().unwrap().0;
+    for receiver in [
+        occupation_exile_receiver(10, diplomacy),
+        occupation_exile_receiver(11, diplomacy),
+        occupation_exile_receiver(12, diplomacy),
+        occupation_exile_receiver(sites::ADD_EXILE_LEGITIMACY, diplomacy),
+        occupation_exile_receiver(sites::SET_EXILE_LEGITIMACY, diplomacy),
+        occupation_exile_receiver(sites::EXILE_EQUIPMENT_LEGITIMACY, diplomacy),
+        occupation_forward_receiver(Forward::DiplomacyReset, diplomacy),
+    ] {
+        let before = watches.sequence(diplomacy).unwrap();
+        let receiver = receiver.expect("exile writer must identify its diplomacy");
+        assert_eq!(receiver, diplomacy);
+        drop(watches.notify(receiver));
+        assert_ne!(watches.sequence(diplomacy).unwrap(), before);
+        assert_eq!(watches.quiet().unwrap().0, epoch);
+        assert_eq!(
+            unaffected.map(|receiver| watches.sequence(receiver).unwrap()),
+            held
+        );
+    }
+    for index in [
+        sites::ADD_EXILE_LEGITIMACY,
+        sites::SET_EXILE_LEGITIMACY,
+        sites::EXILE_EQUIPMENT_LEGITIMACY,
+    ] {
+        let (site, receiver, _) = &sites::MUTATIONS[index];
+        assert!(matches!(
+            receiver,
+            engine_mutations::country_input_mutations::Receiver::DiplomacyStatus
+        ));
+        assert!(
+            engine_occupation::cresistance::changes::SITES
+                .iter()
+                .all(|owned| owned.rva != site.rva)
+        );
+    }
+    assert_eq!(
+        occupation_exile_receiver(sites::ADD_EXILE_MANPOWER, diplomacy),
+        None
+    );
+    assert_eq!(occupation_exile_receiver(9, diplomacy), None);
+    assert_eq!(occupation_exile_receiver(13, diplomacy), None);
+    assert_eq!(
+        occupation_forward_receiver(Forward::RulingParty, diplomacy),
+        None
+    );
+}
+
+#[test]
+fn faction_accumulator_certificates_cover_recalculation_and_reset_without_consuming_visibility() {
+    let domain = Domain::enabled(64);
+    let country = country(5);
+    let pointer = country.as_ptr() as usize;
+    let before = domain.accumulator.sequence(pointer).unwrap();
+    let marks = domain.notify(site("recalculate_modifiers"), pointer, 0);
+    assert!(domain.accumulator.sequence(pointer).is_none());
+    drop(marks);
+    let changed = domain.accumulator.sequence(pointer).unwrap();
+    assert_ne!(before, changed);
+    let marks = domain.forward(Forward::ResetCountry, pointer, 0);
+    assert!(domain.accumulator.quiet().is_none());
+    drop(marks);
+    assert_ne!(domain.accumulator.sequence(pointer), Some(changed));
+    let _ = domain.accumulator.sequence(pointer);
+    assert_eq!(take(&domain, Table::Visibility).1, vec![5]);
+    domain.forwarders[Forwarder::Politics as usize].store(false, Ordering::SeqCst);
+    domain.apply();
+    assert!(domain.accumulator.quiet().is_none());
+}
+
+#[test]
+fn research_mismatch_keeps_numeric_diagnostics_in_first_last_and_status() {
+    let domain = Domain::enabled(64);
+    let detail = ResearchMismatch {
+        previous_counts: Some([4, 2, 10]),
+        current_counts: [4, 2, 11],
+        previous_modifier_counts: Some([0; RESEARCH_MODIFIER_KINDS]),
+        current_modifier_counts: std::array::from_fn(|kind| u64::from(kind == 31)),
+        modifier_identity_differences: (1 << 25) | (1 << 31),
+        modifier_value_differences: (1 << 30) | (1 << 31),
+        take_available: true,
+        certified: true,
+        force_full: false,
+        selection_force_full: true,
+    };
+    collector_test_support::with_allocations_denied(|| {
+        domain.research_mismatch(
+            Mismatch {
+                country: 40,
+                field: "ResearchModifiers row count",
+            },
+            detail,
+        );
+    });
+    let held = domain.mismatches(Table::Research);
+    assert_eq!(held.first.unwrap().research, Some(detail));
+    assert_eq!(held.last, held.first);
+    let json = serde_json::to_value(held.first.unwrap()).unwrap();
+    assert_eq!(json["research"]["current_modifier_counts"][31], 1);
+    assert_eq!(
+        json["research"]["previous_counts"],
+        serde_json::json!([4, 2, 10])
+    );
+    assert_eq!(
+        json["research"]["modifier_value_differences"],
+        (1_u32 << 30) | (1_u32 << 31)
+    );
+    assert!(domain.poisoned(Table::Research));
 }

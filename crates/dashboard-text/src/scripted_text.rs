@@ -49,6 +49,7 @@ pub const TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::CountryLinks,
     replay_data::rows::TableId::CountryRetiredCharacters,
     replay_data::rows::TableId::CountryResources,
+    replay_data::rows::TableId::CountryStabilityInputs,
     replay_data::rows::TableId::CountryWars,
     replay_data::rows::TableId::DynamicModifiers,
     replay_data::rows::TableId::FactionAdvisors,
@@ -56,7 +57,9 @@ pub const TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::Factions,
     replay_data::rows::TableId::Focus,
     replay_data::rows::TableId::GlobalSavedEventTargets,
+    replay_data::rows::TableId::AdvisorRoles,
     replay_data::rows::TableId::HiredAdvisors,
+    replay_data::rows::TableId::HumanControllers,
     replay_data::rows::TableId::IntelligenceAgencies,
     replay_data::rows::TableId::InvasionPreparations,
     replay_data::rows::TableId::LandTheatres,
@@ -69,6 +72,7 @@ pub const TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::PartyLeaders,
     replay_data::rows::TableId::PoliticalParties,
     replay_data::rows::TableId::Politics,
+    replay_data::rows::TableId::Players,
     replay_data::rows::TableId::PowerBalanceMembers,
     replay_data::rows::TableId::PowerBalanceModifierBreakdowns,
     replay_data::rows::TableId::PowerBalances,
@@ -76,8 +80,10 @@ pub const TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::ProvinceBuildings,
     replay_data::rows::TableId::ProvinceNames,
     replay_data::rows::TableId::Provinces,
+    replay_data::rows::TableId::RaidCountryInputs,
     replay_data::rows::TableId::RelationOpinions,
     replay_data::rows::TableId::ResearchTechnologies,
+    replay_data::rows::TableId::ResearchModifiers,
     replay_data::rows::TableId::ReservedCountryNaming,
     replay_data::rows::TableId::ResourceDefinitions,
     replay_data::rows::TableId::ScriptFlags,
@@ -89,9 +95,12 @@ pub const TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::StateDynamicModifiers,
     replay_data::rows::TableId::StateResourceInputs,
     replay_data::rows::TableId::StateResources,
+    replay_data::rows::TableId::StateResistance,
     replay_data::rows::TableId::States,
     replay_data::rows::TableId::Subjects,
     replay_data::rows::TableId::TechnologyDefinitions,
+    replay_data::rows::TableId::TechSharingGroups,
+    replay_data::rows::TableId::TechSharingMembers,
     replay_data::rows::TableId::UnitLeaderTraits,
     replay_data::rows::TableId::UnitLeaders,
     replay_data::rows::TableId::WarRelations,
@@ -108,6 +117,7 @@ pub use entries::{
 mod properties;
 pub mod random;
 pub mod recorded_names;
+mod state_properties;
 
 // Nesting backstop: each scripted entry restarts text processing at
 // depth zero, independently of the content recursion limit.
@@ -825,6 +835,14 @@ impl<'a> ScriptedText<'a> {
         self.expand_in(text, &scopes)
     }
 
+    /// A faction screen's localisation environment, with the selected country
+    /// as its event country and the explicit faction as its faction property.
+    pub fn expand_faction(&self, text: &str, faction: u64) -> Result<String, String> {
+        let scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(self.root))]);
+        self.expand_in_description(text, &scopes, 0, None, None, Some(Some(faction)))
+            .0
+    }
+
     /// Organisation name before expansion: the localised text and the fresh
     /// organisation/owner-FROM scope pair. Neither depends on the root, and
     /// text without `[` expands to itself.
@@ -1237,10 +1255,13 @@ impl<'a> ScriptedText<'a> {
                     let Some(faction) = faction else {
                         return Ok(object);
                     };
-                    let raw = self.scopes.faction_first_raw(faction)?;
+                    let raw = self
+                        .scopes
+                        .faction_first_raw(faction)
+                        .map_err(|why| why.to_string())?;
                     // Text keeps the actual Country0 object; event-scope clearing
                     // is a separate operation and is not applied here.
-                    let country = self.scopes.raw_slot(raw)?;
+                    let country = self.scopes.raw_slot(raw).map_err(|why| why.to_string())?;
                     return Ok(Object::Country(country));
                 }
             }
@@ -1255,10 +1276,18 @@ impl<'a> ScriptedText<'a> {
                 if named(segment, "FactionLeader") {
                     // Promotion keeps the context when the
                     // country has no faction.
-                    return Ok(match self.scopes.faction_leader_raw(slot)? {
-                        Some(raw) => Object::Country(self.scopes.raw_slot(raw)?),
-                        None => object,
-                    });
+                    return Ok(
+                        match self
+                            .scopes
+                            .faction_leader_raw(slot)
+                            .map_err(|why| why.to_string())?
+                        {
+                            Some(raw) => Object::Country(
+                                self.scopes.raw_slot(raw).map_err(|why| why.to_string())?,
+                            ),
+                            None => object,
+                        },
+                    );
                 }
             }
             Object::State(state) => {
@@ -1270,7 +1299,7 @@ impl<'a> ScriptedText<'a> {
                     return self.state_country(id, named(segment, "Owner"));
                 }
                 if named(segment, "Occupied") {
-                    return Err("Occupied: a state's occupier promotion is not implemented".into());
+                    return state.map_or(Ok(object), |id| self.state_occupied(id));
                 }
             }
             Object::Character(id) => {
@@ -1310,7 +1339,11 @@ impl<'a> ScriptedText<'a> {
         //    state ID. Each is found, proven absent, or refused.
         if self.scopes.country(segment).is_some() {
             // Resolve a country tag as a script scope.
-            return self.scopes.resolve_tag(segment).map(Object::Country);
+            return self
+                .scopes
+                .resolve_tag(segment)
+                .map(Object::Country)
+                .map_err(|why| why.to_string());
         }
         // Then the tag alias database: resolve in a default scope, with
         // ROOT, FROM and PREV itself, set with clearing to the local
@@ -1386,13 +1419,16 @@ impl<'a> ScriptedText<'a> {
     ) -> Result<Object, String> {
         let mut graph = scopes.targets.borrow().clone();
         graph.scopes = scopes.scopes.borrow().clone();
-        if let Some(target) =
-            crate::triggers::event_tooltip_target(&graph, active, name.as_bytes())?
+        if let Some(target) = crate::triggers::event_tooltip_target(&graph, active, name.as_bytes())
+            .map_err(|why| why.to_string())?
         {
             return self.event_object(target, name);
         }
         use crate::triggers::saved_event_targets::{Reader, Selected};
-        let selected = self.scopes.saved_selection(name.as_bytes(), Reader::Text)?;
+        let selected = self
+            .scopes
+            .saved_selection(name.as_bytes(), Reader::Text)
+            .map_err(|why| why.to_string())?;
         match selected {
             Selected::Missing | Selected::Caller => Ok(Object::Event),
             Selected::State(id) => {
@@ -1409,7 +1445,8 @@ impl<'a> ScriptedText<'a> {
             }
             Selected::Country(raw) => self
                 .scopes
-                .saved_country(raw, name.as_bytes())?
+                .saved_country(raw, name.as_bytes())
+                .map_err(|why| why.to_string())?
                 .map(Object::Country)
                 .ok_or_else(|| {
                     format!("saved event target {name}: country {raw} has no recorded object")
@@ -1452,6 +1489,10 @@ impl<'a> ScriptedText<'a> {
                     (Some(_), None) => Some("NULL".to_owned()),
                     (Some(&"GetID"), Some(id)) => Some(id.to_string()),
                     (Some(&"GetName"), Some(id)) => Some(self.state_name(id)?),
+                    (Some(&"GetContinent"), Some(id)) => Some(self.state_continent(id)?),
+                    (Some(&"GetCapitalVictoryPointName"), Some(id)) => {
+                        Some(self.state_capital_victory_point_name(id)?)
+                    }
                     (Some(entry), Some(id)) => {
                         return Err(format!(
                             "{entry} of state {id}: the victory-point/continent text selector is not implemented"
@@ -2118,7 +2159,7 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn faction_name_unrecorded(&self, slot: u32) -> Result<String, String> {
-        let Some(faction) = self.scopes.faction(slot)? else {
+        let Some(faction) = self.scopes.faction(slot).map_err(|why| why.to_string())? else {
             return self.localise(NO_FACTION);
         };
         self.faction_name_by_id(faction)

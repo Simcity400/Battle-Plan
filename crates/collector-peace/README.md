@@ -5,3 +5,5 @@ Peace capture: the peace conference observer (`peace_settlements`), its hourly t
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-peace` and `cargo clippy -p collector-peace --all-targets -- -D warnings` for its synthetic checks.
+
+Finalizer hook failure affects PeaceSettlements. PeaceBids polls resident conference history independently and retains its own successful samples while the finalizer family is refused.

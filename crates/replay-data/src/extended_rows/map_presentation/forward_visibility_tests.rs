@@ -1,9 +1,4 @@
 use super::*;
-use crate::FORMAT_VERSION;
-use crate::format::FormatVersion;
-use crate::rows::compatibility::{
-    EFFECT_INPUTS_FORMAT, RECORDER_INPUTS_FORMAT, WIDGET_CAPTURE_FORMAT,
-};
 use crate::value::{EncodeValue, Value};
 
 fn complete_inputs() -> ReverseZeroVisibilityInputs {
@@ -38,6 +33,19 @@ fn counter_row() -> CountryCounterInputRow {
         zero_subject: Some(ZeroSubjectInputs::default()).into(),
         pride_name: Some(vec![0xff, 0, b'P']).into(),
         forward_visibility: Some(complete_inputs()).into(),
+        air_modifiers: Some([
+            Some(i64::MIN),
+            None,
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(i64::MAX),
+        ])
+        .into(),
         ..Default::default()
     }
 }
@@ -60,11 +68,11 @@ fn delta_round_trip(before: &CountryCounterInputRow, after: &CountryCounterInput
     let table = TableId::CountryCounterInputs;
     let delta = after.delta(Some(before)).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 16);
-    assert_eq!(table.mask_width(), 3);
+    assert_eq!(table.mask_width(), 5);
     let mut bytes = Vec::new();
     // An equal previous key gives a single zero key-difference byte.
     encode_delta(table, &delta, delta.key, &mut bytes).unwrap();
-    assert_eq!(&bytes[..4], &[0, 0, 0, 1]);
+    assert_eq!(&bytes[..6], &[0, 0, 0, 1, 0, 0]);
     let mut expected = Vec::new();
     after
         .forward_visibility
@@ -72,7 +80,7 @@ fn delta_round_trip(before: &CountryCounterInputRow, after: &CountryCounterInput
         .encode(&mut expected)
         .unwrap();
     assert_eq!(delta.values, expected);
-    assert_eq!(&bytes[4..], expected);
+    assert_eq!(&bytes[6..], expected);
     let mut input = Decoder::new(&bytes);
     let decoded = decode_delta(table, delta.key, &mut input).unwrap();
     input.finish().unwrap();
@@ -82,7 +90,7 @@ fn delta_round_trip(before: &CountryCounterInputRow, after: &CountryCounterInput
 #[test]
 fn forward_visibility_snapshot_preserves_independent_skips_and_raw_native_bits() {
     assert_eq!(ReverseZeroVisibilityInputs::STRUCT_FIELDS, 4);
-    assert_eq!(CountryCounterInputRow::SCHEMA.len(), 21);
+    assert_eq!(CountryCounterInputRow::SCHEMA.len(), 35);
     assert!(matches!(CountryCounterInputRow::SCHEMA[16], Kind::Opaque));
     let before = counter_row();
     let mut inputs = vec![None, Some(ReverseZeroVisibilityInputs::default())];
@@ -221,98 +229,29 @@ fn forward_visibility_codec_rejects_tags_truncation_and_inexact_opaque_framing()
 }
 
 #[test]
-fn forward_visibility_historical_prefixes_keep_original_masks_and_clear_new_suffixes() {
-    let table = TableId::CountryCounterInputs;
-    let field = table
-        .last_change()
-        .appended
-        .iter()
-        .find(|field| field.name == "forward_visibility")
-        .unwrap();
-    assert_eq!(field.index, 16);
-    assert_eq!(
-        field.introduced,
-        crate::rows::compatibility::POLITICAL_FORMAT
-    );
-    let row = counter_row();
-    for (version, expected_fields) in [
-        (RECORDER_INPUTS_FORMAT, 9),
-        (EFFECT_INPUTS_FORMAT, 11),
-        (WIDGET_CAPTURE_FORMAT, 11),
-    ] {
-        let format = FormatVersion::read(version).unwrap();
-        let fields = format.fields(table);
-        assert_eq!(fields, expected_fields);
-        assert_eq!(fields.div_ceil(8), 2);
-        let bytes = snapshot(&row);
-        let mut input = Decoder::new(&bytes);
-        for kind in &CountryCounterInputRow::SCHEMA[..fields] {
-            kind.decode(&mut input).unwrap();
-        }
-        let prefix = &bytes[..bytes.len() - input.remaining()];
-        let mut input = Decoder::new(prefix);
-        input.format = version;
-        input.recorded_fields = fields;
-        let historical = CountryCounterInputRow::decode_fields(row.key(), &mut input).unwrap();
-        input.finish().unwrap();
-        assert_eq!(historical.forward_visibility, Recorded::NotRecorded);
-        assert_eq!(historical.attack, Recorded::NotRecorded);
-        assert_eq!(historical.directed_wars, Recorded::NotRecorded);
-        assert_eq!(historical.attack_modifiers, Recorded::NotRecorded);
-        assert_eq!(historical.recorded_fields_bytes().unwrap(), prefix.len());
-        assert_eq!(
-            historical.not_recorded_fields(),
-            full_mask(CountryCounterInputRow::SCHEMA.len()) ^ full_mask(fields)
-        );
-        assert!(
-            format
-                .field_gaps(table)
-                .any(|reason| reason.contains("forward_visibility not recorded"))
-        );
-        assert!(historical.encode_fields(&mut Vec::new()).is_err());
-        assert!(historical.delta(None).is_err());
-
-        let insert = row.delta(None).unwrap().unwrap();
-        let mut input = Decoder::new(&insert.values);
-        for kind in &CountryCounterInputRow::SCHEMA[..fields] {
-            kind.decode_change(&mut input).unwrap();
-        }
-        let values = &insert.values[..insert.values.len() - input.remaining()];
-        let mut bytes = Vec::new();
-        table.encode_key(row.key(), row.key(), &mut bytes).unwrap();
-        bytes.extend_from_slice(&full_mask(fields).to_le_bytes()[..fields.div_ceil(8)]);
-        bytes.extend_from_slice(values);
-        let mut input = Decoder::new(&bytes);
-        input.format = version;
-        let delta = decode_delta(table, row.key(), &mut input).unwrap();
-        input.finish().unwrap();
-        assert_eq!(delta.recorded_fields, fields);
-        assert_eq!(delta.format, version);
-        assert_eq!(
-            delta.apply::<CountryCounterInputRow>(None).unwrap(),
-            historical
-        );
-        // Full insert numeric differences have zero origins. Zero those four
-        // baseline numbers before using insertion to witness suffix clearing.
-        let current_baseline = CountryCounterInputRow {
-            pride_of_the_fleet: 0,
-            owned_state_count: 0,
-            controlled_state_count: 0,
-            first_division: 0,
-            ..row.clone()
-        };
-        assert_eq!(delta.apply(Some(current_baseline)).unwrap(), historical);
-        assert!(encode_delta(table, &delta, delta.key, &mut Vec::new()).is_err());
-    }
-    let current = FormatVersion::read(FORMAT_VERSION).unwrap();
-    assert_eq!(current.fields(table), CountryCounterInputRow::SCHEMA.len());
-    assert!(
-        !current
-            .field_gaps(table)
-            .any(|reason| reason.contains("forward_visibility"))
-    );
+fn forward_visibility_and_combat_gate_keep_independent_current_mask_bits() {
+    let before = CountryCounterInputRow {
+        air_combat_modifiers_known: true.into(),
+        air_attack_factor: Some(i64::MIN).into(),
+        air_defence_factor: Some(i64::MAX).into(),
+        ..counter_row()
+    };
+    snapshot(&before);
+    let after = CountryCounterInputRow {
+        forward_visibility: None.into(),
+        air_combat_modifiers_known: false.into(),
+        ..before.clone()
+    };
+    let delta = after.delta(Some(&before)).unwrap().unwrap();
+    assert_eq!(delta.mask, (1 << 16) | (1 << 33));
+    let mut bytes = Vec::new();
+    encode_delta(TableId::CountryCounterInputs, &delta, delta.key, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    let decoded = decode_delta(TableId::CountryCounterInputs, delta.key, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.apply(Some(before)).unwrap(), after);
+    snapshot(&after);
 }
-
 #[test]
 fn forward_visibility_distinguishes_historical_missing_refused_and_present_skips() {
     let row = counter_row();

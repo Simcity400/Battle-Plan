@@ -65,6 +65,126 @@ pub const DIVISION_CLASS: u32 = 0;
 pub const TASK_FORCE_CLASS: u32 = 1;
 /// Unit class of a railway gun.
 pub const RAILWAY_GUN_CLASS: u32 = 13;
+/// Signed fixed5 movement word of a land or border-war combat: the land
+/// movement speed of a division on its attacking side, not withdrawing, starts
+/// from the combat movement speed define plus this word.
+pub const MOVEMENT_MODIFIER: usize = 0xb8;
+
+/// What the land movement speed reads of one combat in a division's combat
+/// list: the combat's [`MOVEMENT_MODIFIER`] for a land or border-war combat,
+/// `None` for a naval one, and its attacking side's unit pointers, appended to
+/// `attackers` in native order. Land, border-war and naval combats share the
+/// side and unit-list layout; the attacking side must point back to its
+/// combat. On a refusal `attackers` keeps only what it held before.
+pub fn movement_combat(
+    memory: &impl Memory,
+    base: usize,
+    combat: usize,
+    attackers: &mut Vec<usize>,
+) -> Result<Option<i64>, &'static str> {
+    let start = attackers.len();
+    let result = movement_combat_side(memory, base, combat, attackers).and_then(|side| {
+        side.complete?;
+        movement_combat_word(memory, combat, side.land)
+    });
+    if result.is_err() {
+        attackers.truncate(start);
+    }
+    result
+}
+
+/// A readable attacking-side prefix and the verdict for the remaining slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MovementCombatSide {
+    pub land: bool,
+    pub complete: Result<(), &'static str>,
+}
+
+/// Read only the authenticated attacking membership. The movement word is
+/// demanded separately, only when a division first matches this side.
+pub fn movement_combat_side(
+    memory: &impl Memory,
+    base: usize,
+    combat: usize,
+    attackers: &mut Vec<usize>,
+) -> Result<MovementCombatSide, &'static str> {
+    let start = attackers.len();
+    let result = (|| {
+        let field = |object: usize, offset: usize| {
+            object
+                .checked_add(offset)
+                .and_then(|address| read::<u64>(memory, address))
+                .ok_or("movement combat field unreadable")
+        };
+        let rva = |rva: usize| base.checked_add(rva).map(|p| p as u64);
+        let vtable = Some(field(combat, 0)?);
+        let land =
+            if vtable == rva(VTABLE_RVA) || vtable == rva(cland_border_war_combat::VTABLE_RVA) {
+                true
+            } else if vtable == rva(cnaval_combat::VTABLE_RVA) {
+                false
+            } else {
+                return Err("movement combat identity mismatch");
+            };
+        let side = field(combat, ATTACKER)? as usize;
+        let side_vtable = Some(field(side, 0)?);
+        if ![
+            cland_combatant::VTABLE_RVA,
+            cland_border_war_combatant::VTABLE_RVA,
+            crate::cnaval_combatant::VTABLE_RVA,
+        ]
+        .iter()
+        .any(|&known| rva(known) == side_vtable)
+            || field(side, cland_combatant::COMBAT)? != combat as u64
+        {
+            return Err("movement combat side identity mismatch");
+        }
+        let units = side
+            .checked_add(cland_combatant::UNITS)
+            .and_then(|address| Array::read(memory, address, 8))
+            .ok_or("movement combat side units invalid")?;
+        crate::allocation::reserve(attackers, units.count as usize)
+            .map_err(|_| "movement combat allocation failed")?;
+        for index in 0..units.count {
+            let at = units
+                .element(index, 8)
+                .ok_or("movement combat side unit index invalid")?;
+            match field(at, 0) {
+                Ok(pointer) => attackers.push(pointer as usize),
+                Err(reason) => {
+                    return Ok(MovementCombatSide {
+                        land,
+                        complete: Err(reason),
+                    });
+                }
+            }
+        }
+        Ok(MovementCombatSide {
+            land,
+            complete: Ok(()),
+        })
+    })();
+    if result.is_err() {
+        attackers.truncate(start);
+    }
+    result
+}
+/// The movement word of an already authenticated, selected combat side.
+pub fn movement_combat_word(
+    memory: &impl Memory,
+    combat: usize,
+    land: bool,
+) -> Result<Option<i64>, &'static str> {
+    if !land {
+        return Ok(None);
+    }
+    combat
+        .checked_add(MOVEMENT_MODIFIER)
+        .and_then(|address| read::<i64>(memory, address))
+        .map(Some)
+        .ok_or("movement combat modifier unreadable")
+}
+
 /// CLandCombat progress getter vtable slot.
 pub const PROGRESS_VTABLE_SLOT: usize = 0xc8;
 /// Combat progress getter uses both side organisation sums.

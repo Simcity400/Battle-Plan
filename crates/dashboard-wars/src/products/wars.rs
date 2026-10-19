@@ -4,6 +4,8 @@ pub mod block;
 mod labels;
 mod naming;
 mod native;
+mod participation;
+pub use participation::{WarContributionCountry, WarContributionGroup};
 pub mod prepared;
 mod published;
 #[cfg(any(test, feature = "test-support"))]
@@ -177,16 +179,17 @@ pub struct WarsReply {
     pub capitulations_unobserved: Vec<HourSpan>,
     pub warnings: Vec<String>,
 }
-/// The native war groups one viewpoint sees at a single requested hour past
-/// the wars' prepared prefix, read from that hour's frame alone. Sides, names
-/// and casualty counters are the hour's operands; app continuity, start,
-/// join and capitulation history need earlier hours, so ids are transient
+/// The native war groups and contributions one viewpoint sees at a single
+/// requested hour, read independently of preparation from that hour's frame
+/// alone. Sides, names and casualty counters are the hour's operands; app
+/// continuity, start, join and capitulation history need earlier hours, so ids are transient
 /// (`@<hour>:<index>`), every bound is a "by" bound and no capitulation is
 /// listed.
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WarsAtHour {
     pub hour: i32,
+    pub contributions: Vec<WarContributionGroup>,
     /// At least one overview operand table was recorded at the hour; false
     /// at an unrecorded hour.
     pub available: bool,
@@ -221,6 +224,8 @@ impl Product for Wars {
             WarTimeline::decl(),
             WarsReply::decl(),
             WarsAtHour::decl(),
+            WarContributionGroup::decl(),
+            WarContributionCountry::decl(),
         ]
     }
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
@@ -1008,6 +1013,7 @@ pub(crate) fn at_hour(
     }
     Ok(WarsAtHour {
         hour,
+        contributions: participation::read(&frame, view, cat),
         available: reply.available,
         wars: reply.wars,
         warnings: reply.warnings,

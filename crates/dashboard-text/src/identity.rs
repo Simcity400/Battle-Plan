@@ -10,8 +10,26 @@ pub fn character_script_token<'a>(
     lexical: &'a [replay_data::rows::LexicalTokenRow],
 ) -> Option<&'a str> {
     let token = u32::try_from(character.name_token_id).ok()?;
-    let index = lexical.binary_search_by_key(&token, |row| row.token).ok()?;
-    std::str::from_utf8(&lexical[index].literal).ok()
+    let index = crate::triggers::refusal::reference(
+        lexical.binary_search_by_key(&token, |row| row.token).ok(),
+        token != 0,
+        || {
+            crate::triggers::refusal::missing_reference(
+                replay_data::rows::TableId::LexicalTokens,
+                None,
+            )
+        },
+    )?;
+    crate::triggers::refusal::reference(
+        std::str::from_utf8(&lexical[index].literal).ok(),
+        token != 0,
+        || {
+            crate::triggers::refusal::missing_reference(
+                replay_data::rows::TableId::LexicalTokens,
+                None,
+            )
+        },
+    )
 }
 
 /// The template a recorded character holds, from its Characters row's
@@ -28,14 +46,22 @@ pub fn built_template(
         ));
     }
     let token = character.template_tag;
-    let lexical = lexical.ok_or_else(|| {
-        format!("character {id}'s template tag token {token} is not spelled: LexicalTokens is incomplete")
+    let lexical = crate::triggers::refusal::reference(lexical, token != 0,
+        || crate::triggers::refusal::missing_reference(replay_data::rows::TableId::LexicalTokens, None))
+        .ok_or_else(|| format!("character {id}'s template tag token {token} is not spelled: LexicalTokens is incomplete"))?;
+    let index = crate::triggers::refusal::reference(
+        lexical.binary_search_by_key(&token, |row| row.token).ok(),
+        token != 0,
+        || {
+            crate::triggers::refusal::missing_reference(
+                replay_data::rows::TableId::LexicalTokens,
+                None,
+            )
+        },
+    )
+    .ok_or_else(|| {
+        format!("character {id}'s template tag token {token} has no LexicalTokens row")
     })?;
-    let index = lexical
-        .binary_search_by_key(&token, |row| row.token)
-        .map_err(|_| {
-            format!("character {id}'s template tag token {token} has no LexicalTokens row")
-        })?;
     let tag = std::str::from_utf8(&lexical[index].literal)
         .map_err(|_| format!("character {id}'s template tag token {token} is not UTF-8"))?;
     Ok(installed_content_core::characters::BuiltTemplate {
@@ -188,11 +214,22 @@ impl Look {
         frame: &replay_frame::frame::DecodedFrame,
         row: &replay_data::rows::CountryRow,
     ) -> Option<Self> {
-        let appearance = frame
-            .complete::<replay_data::rows::tables::CountryAppearance>()
-            .ok()?
-            .iter()
-            .find(|appearance| appearance.country == row.id)?;
+        let appearances = crate::triggers::refusal::FrameInputs::trigger_table::<
+            replay_data::rows::tables::CountryAppearance,
+        >(frame)
+        .ok()?;
+        let appearance = crate::triggers::refusal::reference(
+            appearances
+                .iter()
+                .find(|appearance| appearance.country == row.id),
+            row.id != 0,
+            || {
+                crate::triggers::refusal::missing_reference(
+                    replay_data::rows::TableId::CountryAppearance,
+                    Some(crate::triggers::Store::Country(row.canonical_slot)),
+                )
+            },
+        )?;
         Self::read_with_appearance(frame, row, appearance)
     }
 

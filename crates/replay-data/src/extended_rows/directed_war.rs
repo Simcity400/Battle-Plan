@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use crate::{
         codec::Decoder,
-        rows::{Fields, Recorded, RowCodec},
+        rows::{Recorded, RowCodec},
         value::Value,
     };
     fn packet() -> DirectedWars {
@@ -237,34 +237,32 @@ mod tests {
         input.finish().unwrap();
     }
     #[test]
-    fn historical_prefix_has_not_recorded_not_refused_or_false() {
-        let row = CountryCounterInputRow {
+    fn current_directed_wars_clear_without_changing_air_combat_columns() {
+        let before = CountryCounterInputRow {
             country: 10,
             directed_wars: Recorded::Value(Some(packet())),
+            air_combat_modifiers_known: true.into(),
+            air_attack_factor: Some(i64::MIN).into(),
+            air_defence_factor: Some(i64::MAX).into(),
             ..Default::default()
         };
-        let mut bytes = Vec::new();
-        row.encode_fields(&mut bytes).unwrap();
-        let format =
-            crate::format::FormatVersion::read(crate::rows::compatibility::EFFECT_INPUTS_FORMAT)
-                .unwrap();
-        let fields = format.fields(TableId::CountryCounterInputs);
-        assert_eq!(fields, 11);
-        let mut consumed = Decoder::new(&bytes);
-        for kind in &CountryCounterInputRow::SCHEMA[..fields] {
-            kind.decode(&mut consumed).unwrap();
+        let after = CountryCounterInputRow {
+            directed_wars: Recorded::Value(None),
+            ..before.clone()
+        };
+        for row in [&before, &after] {
+            let mut bytes = Vec::new();
+            row.encode_fields(&mut bytes).unwrap();
+            let mut input = Decoder::new(&bytes);
+            assert_eq!(
+                CountryCounterInputRow::decode_fields(row.key(), &mut input).unwrap(),
+                *row
+            );
+            input.finish().unwrap();
         }
-        let prefix = &bytes[..bytes.len() - consumed.remaining()];
-        let mut input = Decoder::new(prefix);
-        input.format = format.version();
-        input.recorded_fields = fields;
-        let old = CountryCounterInputRow::decode_fields(row.key(), &mut input).unwrap();
-        input.finish().unwrap();
-        assert_eq!(old.directed_wars, Recorded::NotRecorded);
-        assert_eq!(old.country, row.country);
-        assert_eq!(old.neighbors, row.neighbors);
-        assert_eq!(old.forward_visibility, Recorded::NotRecorded);
-        assert_eq!(old.attack, Recorded::NotRecorded);
-        assert!(old.encode_fields(&mut Vec::new()).is_err());
+        let delta = after.delta(Some(&before)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1 << 18);
+        assert_eq!(delta.apply(Some(before)).unwrap(), after);
+        assert_eq!(after.not_recorded_fields(), 0);
     }
 }

@@ -511,26 +511,50 @@ fn side_requests(
 /// One preorder node: its native child count, its display span in the
 /// caller's text arena (leaves with a nonzero value only) and its effective
 /// value for each of [`KEYS`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RawNode {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawNode<const N: usize = { KEYS.len() }> {
     pub children: u32,
     pub name: [usize; 2],
-    pub values: [i64; KEYS.len()],
+    pub values: [i64; N],
+}
+impl<const N: usize> Default for RawNode<N> {
+    fn default() -> Self {
+        Self {
+            children: 0,
+            name: [0; 2],
+            values: [0; N],
+        }
+    }
 }
 
 /// The definition operands of [`KEYS`], read once per capture.
 #[derive(Clone, Copy, Debug)]
-pub struct Definitions {
-    operands: [modifier_definition::Operands; KEYS.len()],
+pub struct Definitions<const N: usize = { KEYS.len() }> {
+    keys: [u32; N],
+    operands: [modifier_definition::Operands; N],
 }
 
 impl Definitions {
     pub fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
-        let mut operands = [modifier_definition::Operands::default(); KEYS.len()];
-        for (slot, &key) in operands.iter_mut().zip(&KEYS) {
+        Self::requested(memory, base, KEYS)
+    }
+}
+impl<const N: usize> Definitions<N> {
+    /// The demanded sorted keys only. Unrelated modifiers and their nonzero
+    /// leaf names are never read for a narrower consumer.
+    pub fn requested(
+        memory: &impl Memory,
+        base: usize,
+        keys: [u32; N],
+    ) -> Result<Self, &'static str> {
+        if !keys.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err("naval tree requested keys repeat or are out of order");
+        }
+        let mut operands = [modifier_definition::Operands::default(); N];
+        for (slot, &key) in operands.iter_mut().zip(&keys) {
             *slot = modifier_definition::operands(memory, base, key)?;
         }
-        Ok(Self { operands })
+        Ok(Self { keys, operands })
     }
 }
 
@@ -546,11 +570,11 @@ pub struct Frame {
 /// leaves to `text`, in modifier formatting preorder, with no depth or node
 /// limit. Only an ancestor cycle or a null child is invalid; repeated siblings
 /// are separate native occurrences. Worker-only: the arenas grow.
-pub fn capture_tree(
+pub fn capture_tree<const N: usize>(
     memory: &impl Memory,
     root: usize,
-    definitions: &Definitions,
-    nodes: &mut Vec<RawNode>,
+    definitions: &Definitions<N>,
+    nodes: &mut Vec<RawNode<N>>,
     text: &mut Vec<u8>,
     stack: &mut Vec<Frame>,
 ) -> Result<(), &'static str> {
@@ -591,18 +615,40 @@ pub fn capture_tree(
     }
 }
 
-fn capture_node(
+/// A hover gated by its effective root does not read children or labels when
+/// that root is zero. An empty span proves the hover's sources are absent.
+pub fn capture_nonzero_tree<const N: usize>(
+    memory: &impl Memory,
+    root: usize,
+    definitions: &Definitions<N>,
+    nodes: &mut Vec<RawNode<N>>,
+    text: &mut Vec<u8>,
+    stack: &mut Vec<Frame>,
+) -> Result<(), &'static str> {
+    let mut raw = [modifier_accumulator::Value::default(); N];
+    modifier_accumulator::lookup_many_at(memory, root, &definitions.keys, &mut raw)?;
+    if raw
+        .into_iter()
+        .zip(definitions.operands)
+        .all(|(value, operands)| !value.present || operands.effective(value.raw) == 0)
+    {
+        return Ok(());
+    }
+    capture_tree(memory, root, definitions, nodes, text, stack)
+}
+
+fn capture_node<const N: usize>(
     memory: &impl Memory,
     address: usize,
-    definitions: &Definitions,
-    nodes: &mut Vec<RawNode>,
+    definitions: &Definitions<N>,
+    nodes: &mut Vec<RawNode<N>>,
     text: &mut Vec<u8>,
 ) -> Result<Array, &'static str> {
     let children = Array::read(memory, at(address, 0x18)?, 8)
         .ok_or("naval modifier children unreadable or invalid")?;
-    let mut raw = [modifier_accumulator::Value::default(); KEYS.len()];
-    modifier_accumulator::lookup_many_at(memory, address, &KEYS, &mut raw)?;
-    let mut values = [0_i64; KEYS.len()];
+    let mut raw = [modifier_accumulator::Value::default(); N];
+    modifier_accumulator::lookup_many_at(memory, address, &definitions.keys, &mut raw)?;
+    let mut values = [0_i64; N];
     for ((value, raw), operands) in values.iter_mut().zip(raw).zip(definitions.operands) {
         if raw.present {
             *value = operands.effective(raw.raw);
@@ -630,6 +676,30 @@ fn capture_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_hover_root_reads_no_children_or_labels() {
+        let bytes = vec![0_u8; 0x110];
+        let memory = crate::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let definitions = Definitions {
+            keys: [modifier_keys::CONVOY_ESCORT_EFFICIENCY],
+            operands: [modifier_definition::Operands::default()],
+        };
+        let (mut nodes, mut text, mut stack) = (Vec::new(), Vec::new(), Vec::new());
+        capture_nonzero_tree(
+            &memory,
+            0x100,
+            &definitions,
+            &mut nodes,
+            &mut text,
+            &mut stack,
+        )
+        .unwrap();
+        assert!(nodes.is_empty() && text.is_empty() && stack.is_empty());
+    }
 
     #[test]
     fn keys_are_sorted_and_name_each_kind_once() {
@@ -706,6 +776,7 @@ mod tests {
             bytes: &bytes,
         };
         let definitions = Definitions {
+            keys: KEYS,
             operands: [modifier_definition::Operands::default(); KEYS.len()],
         };
         let (mut nodes, mut text, mut stack) = (Vec::new(), Vec::new(), Vec::new());
@@ -727,6 +798,24 @@ mod tests {
         assert_eq!(nodes[1].values[positioning], 5_000);
         assert_eq!(&text[nodes[1].name[0]..][..nodes[1].name[1]], b"Alpha");
         assert_eq!(nodes[2].name[1], 0);
+        // A narrow consumer does not read unrelated nonzero leaf labels.
+        let narrow = Definitions {
+            keys: [modifier_keys::CONVOY_ESCORT_EFFICIENCY],
+            operands: [modifier_definition::Operands::default()],
+        };
+        let (mut narrow_nodes, mut narrow_text) = (Vec::new(), Vec::new());
+        capture_tree(
+            &memory,
+            0x100,
+            &narrow,
+            &mut narrow_nodes,
+            &mut narrow_text,
+            &mut stack,
+        )
+        .unwrap();
+        assert_eq!(narrow_nodes.len(), 3);
+        assert!(narrow_nodes.iter().all(|node| node.values == [0]));
+        assert!(narrow_text.is_empty());
         // A child that points back at an ancestor is refused.
         put(&mut bytes, 0x808, &0xf0_u64.to_le_bytes());
         let memory = SliceMemory {

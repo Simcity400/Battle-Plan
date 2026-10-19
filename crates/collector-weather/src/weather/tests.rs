@@ -134,7 +134,7 @@ fn direct(memory: &impl Memory, capacities: &Capacities) -> Captured {
 
 fn fixed_job() -> WeatherJob {
     WeatherJob {
-        log: RawLog::new(16, 48 * 1024),
+        log: RawLog::new(20, 48 * 1024),
         worker_growth: false,
         regions: DensePayload::new(512 * sweather_per_region::RECORD_BYTES),
         provinces: DensePayload::new(20_000 * sweather_per_province::RECORD_BYTES),
@@ -156,6 +156,74 @@ fn split(memory: &impl Memory, capacities: &Capacities) -> (Captured, WeatherJob
     assert_eq!(captured.finish_owned_capture(), [0; N]);
     captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
     (captured, job)
+}
+
+#[test]
+fn air_forecast_derives_updated_direction_and_acquires_only_held_direction() {
+    let mut bytes = fixture();
+    // The common fixture deliberately keeps nonboolean suspension bytes for
+    // the raw-flags test; this branch needs an ordinary completed update.
+    put(
+        &mut bytes,
+        0x2000 + cweather_manager::SUSPEND_FLAGS,
+        &[0, 0],
+    );
+    let capacities = Capacities {
+        rows: [4, 4],
+        ..Default::default()
+    };
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let (updated, job) = split(&memory, &capacities);
+    assert!(
+        !job.log
+            .spans
+            .iter()
+            .any(|span| span.addr == 0x2000 + cweather_manager::DAYLIGHT_DIRECTION)
+    );
+    assert_eq!(
+        weather_display_row(&updated).daylight,
+        rows::Recorded::Value(Some(rows::WeatherDaylight {
+            updated: true,
+            held: None,
+            held_feather: None
+        }))
+    );
+    put(
+        &mut bytes,
+        0x2000 + cweather_manager::SUSPEND_FLAGS,
+        &[0, 1],
+    );
+    for (index, value) in [i64::MIN, -3, i64::MAX].into_iter().enumerate() {
+        put(
+            &mut bytes,
+            0x2000 + cweather_manager::DAYLIGHT_DIRECTION + index * 8,
+            &value.to_le_bytes(),
+        );
+    }
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let (held, job) = split(&memory, &capacities);
+    assert_eq!(
+        job.log
+            .spans
+            .iter()
+            .filter(|span| span.addr == 0x2000 + cweather_manager::DAYLIGHT_DIRECTION)
+            .count(),
+        1
+    );
+    assert_eq!(
+        weather_display_row(&held).daylight,
+        rows::Recorded::Value(Some(rows::WeatherDaylight {
+            updated: false,
+            held: Some([i64::MIN, -3, i64::MAX]),
+            held_feather: None
+        }))
+    );
 }
 
 fn assert_matches(split: &Captured, direct: &Captured) {
@@ -210,6 +278,11 @@ fn acquisition_keeps_native_snow_display_bytes_and_raw_flags() {
             })),
             // The typed fixture path reads no modifier: a refusal, never zero.
             modifiers: rows::Recorded::Value(None),
+            daylight: rows::Recorded::Value(Some(rows::WeatherDaylight {
+                updated: false,
+                held: Some([0, 0, 0]),
+                held_feather: None,
+            })),
         }]
     );
 }
@@ -726,12 +799,28 @@ impl AttackWeatherMemory {
         let root = 0x3000 + sweather_per_region::MODIFIERS;
         const VALUES: usize = 0x4a00;
         put(&mut bytes, root, &(VALUES as u64).to_le_bytes());
-        put(&mut bytes, root + 8, &3_u32.to_le_bytes());
-        put(&mut bytes, root + 12, &3_u32.to_le_bytes());
+        put(&mut bytes, root + 8, &7_u32.to_le_bytes());
+        put(&mut bytes, root + 12, &7_u32.to_le_bytes());
         for (index, key, raw) in [
-            (0, 0x2b_u32, -25_000_i64),
-            (1, 0xad, -9_007_199_254_740_993),
-            (2, 0x1dd, 150_001),
+            (0, 1_u32, -12_345_i64),
+            (
+                1,
+                engine_executable::modifier_keys::NAVAL_DETECTION,
+                -99_999,
+            ),
+            (2, 0x2b, -25_000),
+            (
+                3,
+                engine_executable::modifier_keys::AIR_ATTACK_FACTOR,
+                i64::MIN,
+            ),
+            (
+                4,
+                engine_executable::modifier_keys::AIR_DEFENCE_FACTOR,
+                i64::MAX,
+            ),
+            (5, 0xad, -9_007_199_254_740_993),
+            (6, 0x1dd, 150_001),
         ] {
             let address = VALUES + index * entry::STRIDE;
             put(&mut bytes, address, &[0; entry::STRIDE]);
@@ -880,6 +969,84 @@ fn projected_weather_regions(captured: &Captured) -> Vec<rows::WeatherRegionRow>
 }
 
 #[test]
+fn regional_map_terms_select_the_same_complete_accumulator_bytes() {
+    let source = AttackWeatherMemory::new(None);
+    let address = 0x3000 + sweather_per_region::MODIFIERS;
+    let former = [
+        1,
+        engine_executable::modifier_keys::ARMY_SPEED_FACTOR,
+        engine_executable::modifier_keys::ARMY_ATTACK_FACTOR,
+        engine_executable::modifier_keys::BREAKTHROUGH_FACTOR,
+        engine_executable::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
+    ];
+    let mut former_values = [engine_native::modifier_accumulator::Value::default(); 5];
+    engine_native::modifier_accumulator::lookup_many_at(
+        &source,
+        address,
+        &former,
+        &mut former_values,
+    )
+    .unwrap();
+    let former_reads = source.reads.take();
+    let mut values = [engine_native::modifier_accumulator::Value::default(); COMBAT_KEYS.len()];
+    engine_native::modifier_accumulator::lookup_many_at(
+        &source,
+        address,
+        &COMBAT_KEYS,
+        &mut values,
+    )
+    .unwrap();
+    assert_eq!(source.reads.take(), former_reads);
+    assert_eq!(values[1].raw, -99_999);
+    assert_eq!(values[3].raw, i64::MIN);
+    assert_eq!(values[4].raw, i64::MAX);
+}
+
+#[test]
+fn regional_map_terms_distinguish_known_empty_from_refused_accumulator() {
+    let mut source = AttackWeatherMemory::new(None);
+    let address = 0x3000 + sweather_per_region::MODIFIERS;
+    put(&mut source.bytes, address + 12, &0_u32.to_le_bytes());
+    let mut job = WeatherJob::new();
+    let context = WeatherCopyContext {
+        base: 0,
+        game_state: 0x1000,
+    };
+    assert!(copy_weather_refresh_growing(&source, context, &mut job).raw_ok);
+    let mut captured = Captured::with_capacities(&Capacities {
+        rows: [2; N],
+        ..Default::default()
+    });
+    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
+    let known = projected_weather_regions(&captured).remove(0);
+    assert_eq!(
+        known.map_modifiers_known,
+        replay_data::rows::Recorded::Value(true)
+    );
+    assert_eq!(
+        (known.naval_detection, known.air_attack, known.air_defence),
+        (None.into(), None.into(), None.into())
+    );
+
+    source.fault_once.set(Some(address));
+    assert!(copy_weather_refresh_growing(&source, context, &mut job).raw_ok);
+    captured.decode_weather_payload(0, &job, 0, &mut Default::default(), &mut [0; N]);
+    let refused = projected_weather_regions(&captured).remove(0);
+    assert_eq!(
+        refused.map_modifiers_known,
+        replay_data::rows::Recorded::Value(false)
+    );
+    assert_eq!(
+        (
+            refused.naval_detection,
+            refused.air_attack,
+            refused.air_defence
+        ),
+        (None.into(), None.into(), None.into())
+    );
+}
+
+#[test]
 fn weather_regions_record_raw_combat_entries_and_no_witness() {
     // A fixed fixture has no combat storage: the regions are refused, and
     // neither path reads the modifier accumulator or its definitions.
@@ -947,6 +1114,23 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
             army_attack_speed_factor: None,
         }))
     );
+    assert_eq!(
+        projected_weather_regions(&captured)[0].air_detection,
+        rows::Recorded::Value(Some(Some(-12_345)))
+    );
+    assert_eq!(copied_rows[0].air_detection, rows::Recorded::Value(None));
+    assert_eq!(
+        copied_rows[0].map_modifiers_known,
+        replay_data::rows::Recorded::Value(false)
+    );
+    let region = projected_weather_regions(&captured).remove(0);
+    assert_eq!(
+        region.map_modifiers_known,
+        replay_data::rows::Recorded::Value(true)
+    );
+    assert_eq!(region.naval_detection, Some(-99_999).into());
+    assert_eq!(region.air_attack, Some(i64::MIN).into());
+    assert_eq!(region.air_defence, Some(i64::MAX).into());
     // The province's raw accumulator, every entry, comes from the same copy; an absent
     // key is absent, distinct from a refused read.
     let views = captured.tables();

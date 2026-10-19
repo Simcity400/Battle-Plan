@@ -571,6 +571,55 @@ pub fn lookup_many_at_keeping(
     Ok(())
 }
 
+/// One native sorted-key lookup. Unlike a complete snapshot, this reads only
+/// search keys and the matching value; an unrelated entry's unreadable value
+/// cannot refuse the requested operand.
+pub fn lookup_requested_at(
+    memory: &impl Memory,
+    address: usize,
+    key: u32,
+) -> Result<Value, &'static str> {
+    if let Some(result) = memory.modifier_accumulator_value(address, key) {
+        return result;
+    }
+    // Native lookup consumes data and signed count, never allocation capacity.
+    let data = read::<u64>(memory, address).ok_or("modifier accumulator data unreadable")? as usize;
+    let count = address
+        .checked_add(COUNT)
+        .and_then(|at| read::<i32>(memory, at))
+        .ok_or("modifier accumulator count unreadable")?;
+    if count < 0 {
+        return Err("modifier accumulator count negative");
+    }
+    let array = Array {
+        data,
+        count: count as u32,
+    };
+    let (mut first, mut end) = (0, array.count);
+    while first < end {
+        let mid = first + (end - first) / 2;
+        let entry = array
+            .element(mid, modifier_entry::STRIDE)
+            .ok_or("modifier accumulator entry address overflow")?;
+        let found = entry
+            .checked_add(modifier_entry::KEY)
+            .and_then(|at| read::<u32>(memory, at))
+            .ok_or("modifier accumulator search key unreadable")?;
+        match key.cmp(&found) {
+            std::cmp::Ordering::Less => end = mid,
+            std::cmp::Ordering::Greater => first = mid + 1,
+            std::cmp::Ordering::Equal => {
+                return entry
+                    .checked_add(modifier_entry::VALUE)
+                    .and_then(|at| read::<i64>(memory, at))
+                    .map(|raw| Value { raw, present: true })
+                    .ok_or("modifier accumulator selected value unreadable");
+            }
+        }
+    }
+    Ok(Value::default())
+}
+
 pub fn lookup(memory: &impl Memory, country: usize, key: u32) -> Result<Value, &'static str> {
     let mut values = [Value::default()];
     lookup_many(memory, country, &[key], &mut values)?;
@@ -673,6 +722,26 @@ pub fn requested_operand_at(
     address: usize,
     key: u32,
 ) -> Result<RequestedOperand, &'static str> {
+    requested_operand(memory, base, address, key, None)
+}
+
+/// Native requested-key probes with eligibility/clamp metadata shared across a tree walk.
+pub fn requested_effective_memo(
+    memory: &impl Memory,
+    base: usize,
+    address: usize,
+    key: u32,
+    memo: &crate::modifier_definition::DefinitionMemo,
+) -> Result<i64, &'static str> {
+    requested_operand(memory, base, address, key, Some(memo)).map(|operand| operand.effective)
+}
+fn requested_operand(
+    memory: &impl Memory,
+    base: usize,
+    address: usize,
+    key: u32,
+    memo: Option<&crate::modifier_definition::DefinitionMemo>,
+) -> Result<RequestedOperand, &'static str> {
     let data =
         read::<u64>(memory, address).ok_or("strategic action modifier data unreadable")? as usize;
     let count = address
@@ -714,14 +783,19 @@ pub fn requested_operand_at(
         return Ok(RequestedOperand::default());
     }
     let mut raw = None;
-    let effective = crate::modifier_definition::effective_lazy(memory, base, key, || {
+    let get = || {
         let value = first
             .checked_add(modifier_entry::VALUE)
             .and_then(|p| read::<i64>(memory, p))
             .ok_or("strategic action modifier value unreadable")?;
         raw = Some(value);
         Ok(value)
-    })?;
+    };
+    let effective = if let Some(memo) = memo {
+        crate::modifier_definition::effective_lazy_memo(memory, base, key, get, memo)?
+    } else {
+        crate::modifier_definition::effective_lazy(memory, base, key, get)?
+    };
     Ok(RequestedOperand {
         raw,
         present: true,
@@ -731,3 +805,94 @@ pub fn requested_operand_at(
 
 #[cfg(test)]
 mod tests;
+
+/// One raw native getter key, without copying or validating unrelated entries.
+/// The owning writer certificate supplies the sorted-array lifetime.
+pub fn lookup_key_at(
+    memory: &impl Memory,
+    address: usize,
+    key: u32,
+) -> Result<Value, &'static str> {
+    let data = read::<u64>(memory, address)
+        .and_then(|v| usize::try_from(v).ok())
+        .ok_or("modifier point data unavailable")?;
+    let count = address
+        .checked_add(COUNT)
+        .and_then(|at| read::<i32>(memory, at))
+        .filter(|v| *v >= 0)
+        .ok_or("modifier point count unavailable")? as usize;
+    let mut first = 0usize;
+    let mut remaining = count;
+    while remaining != 0 {
+        let half = remaining / 2;
+        let index = first + half;
+        let at = index
+            .checked_mul(modifier_entry::STRIDE)
+            .and_then(|off| data.checked_add(off))
+            .ok_or("modifier point address overflow")?;
+        let found = read::<u32>(memory, at).ok_or("modifier point key unavailable")?;
+        if found < key {
+            first = index + 1;
+            remaining -= half + 1;
+        } else {
+            remaining = half;
+        }
+    }
+    if first == count {
+        return Ok(Value::default());
+    }
+    let at = first
+        .checked_mul(modifier_entry::STRIDE)
+        .and_then(|off| data.checked_add(off))
+        .ok_or("modifier point address overflow")?;
+    if read::<u32>(memory, at).ok_or("modifier point key unavailable")? != key {
+        return Ok(Value::default());
+    }
+    let raw = at
+        .checked_add(modifier_entry::VALUE)
+        .and_then(|at| read::<i64>(memory, at))
+        .ok_or("modifier point value unavailable")?;
+    Ok(Value { raw, present: true })
+}
+#[cfg(test)]
+mod point_tests {
+    use super::*;
+    #[test]
+    fn one_of_five_thousand_keys_does_not_read_the_unselected_payloads() {
+        struct Counted {
+            bytes: Vec<u8>,
+            reads: std::cell::Cell<usize>,
+        }
+        impl Memory for Counted {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                self.reads.set(self.reads.get() + 1);
+                crate::memory::SliceMemory {
+                    base: 0,
+                    bytes: &self.bytes,
+                }
+                .copy(at, out)
+            }
+        }
+        let mut bytes = vec![0; 64 + 5000 * modifier_entry::STRIDE];
+        bytes[16..24].copy_from_slice(&64u64.to_le_bytes());
+        bytes[16 + COUNT..16 + COUNT + 4].copy_from_slice(&5000i32.to_le_bytes());
+        for index in 0..5000 {
+            let at = 64 + index * modifier_entry::STRIDE;
+            bytes[at..at + 4].copy_from_slice(&(index as u32 * 2 + 1).to_le_bytes());
+            bytes[at + 8..at + 16].copy_from_slice(&(-17i64).to_le_bytes());
+        }
+        let memory = Counted {
+            bytes,
+            reads: std::cell::Cell::new(0),
+        };
+        assert_eq!(
+            lookup_key_at(&memory, 16, 4001).unwrap(),
+            Value {
+                raw: -17,
+                present: true
+            }
+        );
+        assert!(memory.reads.get() < 20);
+        assert_eq!(lookup_key_at(&memory, 16, 4000).unwrap(), Value::default());
+    }
+}

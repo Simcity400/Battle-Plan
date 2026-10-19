@@ -217,6 +217,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
         TableId::CountryAppearance,
         TableId::LexicalTokens,
         TableId::VariantDefinitions,
+        TableId::VariantChanges,
         TableId::VariantModules,
         TableId::VariantUpgrades,
         TableId::ProductionLines,

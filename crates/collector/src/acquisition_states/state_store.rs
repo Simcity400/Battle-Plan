@@ -55,9 +55,13 @@ impl Held {
         self.fractions.clear();
     }
 
-    fn names(&self, index: usize) -> [&[u8]; 2] {
+    fn names(&self, index: usize) -> ([&[u8]; 2], Option<bool>, Option<i32>) {
         let row = &self.rows[index];
-        [row.custom_name, row.owner_name].map(|span| &self.names[span.start..][..span.len])
+        (
+            [row.custom_name, row.owner_name].map(|span| &self.names[span.start..][..span.len]),
+            row.single_controller,
+            row.best_vp_index,
+        )
     }
 
     fn measure(&self) -> usize {
@@ -138,6 +142,16 @@ impl StateStore {
     /// As of the last capture, so the game thread need not measure.
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.bytes
+    }
+
+    /// Scripted-only operands are read only while their optional writer
+    /// certificate can be taken. An unavailable observer refuses them.
+    pub(super) fn scripted(&self, id: u32) -> (bool, bool) {
+        if self.hour.complete && self.hour.epoch.is_some() {
+            crate::scripted_maps::state(id)
+        } else {
+            (false, false)
+        }
     }
 
     #[cfg(test)]
@@ -284,6 +298,7 @@ impl StateStore {
             };
             *row = cstate::Row {
                 manpower_available: self.manpower[index].available,
+                manpower_locked: self.manpower[index].locked,
                 population: self.manpower[index].population,
                 category,
                 ..self.held.rows[index]
@@ -311,13 +326,14 @@ impl StateStore {
             return None;
         }
         let held = &self.held;
-        let walk = cstate::read_names_carried(
+        let walk = cstate::read_names_carried_scripted(
             memory,
             game_state,
             census,
             rows,
             engine_native::walk::Buffer::for_worker(names, growing),
             |index| (!reread[index]).then(|| held.names(index)),
+            crate::scripted_maps::state,
         );
         if walk.outcome != census {
             return None;
@@ -360,6 +376,8 @@ impl StateStore {
                 && fresh.continent == held.continent
                 && fresh.movement_infrastructure == held.movement_infrastructure
                 && text(fresh, names) == text(held, &self.held.names)
+                && fresh.single_controller == held.single_controller
+                && fresh.best_vp_index == held.best_vp_index
                 && fractions
                     .and_then(|rows| rows.get(index))
                     .map(|row| row.fraction)

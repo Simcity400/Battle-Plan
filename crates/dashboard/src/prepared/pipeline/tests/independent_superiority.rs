@@ -111,6 +111,9 @@ fn air_frame(branch: u64, hour: i32) -> DecodedFrame {
         friendly,
         enemy,
         impact: Default::default(),
+        friendly_missions: 0,
+        enemy_missions: 0,
+        air_spotting_scale: Some(0),
     };
     let a = if (150..=160).contains(&hour) {
         100_000 + i64::from(hour) * 100
@@ -809,6 +812,8 @@ fn cached_air_reply_refreshes_labels_when_language_changes_without_a_publication
         fixture.replace(&Replay::from_records(CAMPAIGN.into(), &[wire]).unwrap());
         let source = fixture.source("air-reply-language");
         let flag = AtomicBool::new(false);
+        // Moment regions need accepted hours before presentation can be cached.
+        run(&source, Some(&content), &flag, |_| {}).unwrap();
         let request = crate::transport::ProductRequest {
             source_id: source.key().source_id.clone(),
             revision: source.key().revision.clone(),

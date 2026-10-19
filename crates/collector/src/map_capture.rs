@@ -27,15 +27,14 @@ static AIR_WING_NAME_FAILURES: [std::sync::atomic::AtomicU64;
     [const { std::sync::atomic::AtomicU64::new(0) }; cair_wing::NameFailure::REASONS.len()];
 static AIR_WING_TRANSPORT_REFUSED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-static AIR_WING_TRANSPORT_BYTES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static AIR_WING_OPTIONAL_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn air_wing_name_data() -> impl serde::Serialize {
     let refused = AIR_WING_NAMES_REFUSED.load(std::sync::atomic::Ordering::Relaxed);
     crate::status::status!({
         "refused": refused,
         "transport_fields_refused": AIR_WING_TRANSPORT_REFUSED.load(std::sync::atomic::Ordering::Relaxed),
-        "transport_source_bytes": AIR_WING_TRANSPORT_BYTES.load(std::sync::atomic::Ordering::Relaxed),
+        "optional_source_bytes": AIR_WING_OPTIONAL_BYTES.load(std::sync::atomic::Ordering::Relaxed),
         "refusals": crate::status::map(std::iter::once(("air wing name guarded read or arena refusal", refused)).filter(|(_, count)| *count != 0)),
         "worker_name_refusals": crate::status::map(cair_wing::NameFailure::REASONS.into_iter().zip(
             AIR_WING_NAME_FAILURES.iter().map(|count| count.load(std::sync::atomic::Ordering::Relaxed))
@@ -197,6 +196,8 @@ impl MapCapacities {
 /// Fleets, task forces and ships. Walked inside the ShipModels job, whose
 /// details the ships seed, so the game thread never runs the census.
 pub struct ShipCensus {
+    crew: crate::crew_store::CrewStore,
+    pub management: collector_naval_management::forces::Captured,
     pub fleets: CaptureRows<cfleet::Row>,
     pub fleet_names: Vec<u8>,
     pub task_forces: CaptureRows<ctask_force::Row>,
@@ -208,6 +209,8 @@ pub struct ShipCensus {
 impl ShipCensus {
     fn new(rows: &[usize]) -> Self {
         Self {
+            crew: Default::default(),
+            management: Default::default(),
             fleets: CaptureRows::new(rows[0]),
             fleet_names: Vec::new(),
             task_forces: CaptureRows::new(rows[1]),
@@ -220,6 +223,7 @@ impl ShipCensus {
         Self::new(&[0; 3])
     }
     fn reset(&mut self) {
+        self.management = Default::default();
         self.fleets.reset();
         self.fleet_names.clear();
         self.task_forces.reset();
@@ -227,7 +231,15 @@ impl ShipCensus {
         self.ticks = [0; 3];
     }
     fn allocated_bytes(&self) -> usize {
-        self.fleet_names.capacity()
+        self.crew.allocated_bytes()
+            + self
+                .management
+                .tables
+                .iter()
+                .filter_map(|table| table.as_ref().ok())
+                .map(|rows| rows.allocated_bytes())
+                .sum::<usize>()
+            + self.fleet_names.capacity()
             + self.fleets.allocated_bytes()
             + self.task_forces.allocated_bytes()
             + self.ships.allocated_bytes()
@@ -242,8 +254,12 @@ impl ShipCensus {
         let tables = [TableId::Fleets, TableId::TaskForces, TableId::Ships];
         let mut reads = crate::read_accounting::table(tables[0]);
         let begin = qpc();
+        self.crew.begin(self.ships.rows.len());
         models.begin_sources();
-        let naval = cfleet::walk_timed_growing_with_names(
+        let management = std::cell::RefCell::new(
+            collector_naval_management::forces::Session::begin(memory, base, state),
+        );
+        let naval = cfleet::walk_timed_growing_with_management(
             memory,
             base,
             state,
@@ -254,9 +270,20 @@ impl ShipCensus {
                 reads.select(tables[phase]);
                 qpc() as u64
             },
-            |pointer, row| models.visit_source_growing(pointer, row),
+            |pointer, row| {
+                let crew = self
+                    .crew
+                    .read(memory, pointer, row.id, cship::ACQUIRED_MANPOWER);
+                row.acquired_manpower = crew.map(|value| value[0]);
+                row.required_manpower = crew.map(|value| value[1]);
+                models.visit_source_growing(pointer, row);
+                management.borrow_mut().ship(pointer, row);
+            },
             &mut self.fleet_names,
+            |visit| management.borrow_mut().visit(visit),
         );
+        self.crew.finish();
+        self.management = management.into_inner().finish(naval.capture);
         models.finish_sources(naval.capture.ships);
         self.fleets.outcome = naval.capture.fleets;
         self.task_forces.outcome = naval.capture.task_forces;
@@ -267,6 +294,7 @@ impl ShipCensus {
             .saturating_sub(self.ticks[1]);
     }
     pub fn fail(&mut self, reason: &'static str) {
+        self.management.tables = std::array::from_fn(|_| Err(reason));
         let outcome = Outcome::Unavailable { reason };
         self.fleets.outcome = outcome;
         self.task_forces.outcome = outcome;
@@ -710,10 +738,8 @@ impl MapCaptured {
             job.transport.failures as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-        AIR_WING_TRANSPORT_BYTES.fetch_add(
-            job.transport_raw_bytes,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        AIR_WING_OPTIONAL_BYTES
+            .fetch_add(job.optional_raw_bytes, std::sync::atomic::Ordering::Relaxed);
         if len > self.air_wings.rows.len() {
             // The allocating wing worker already owns complete storage.
             // Park the old frame allocation in its job for off-thread reuse.

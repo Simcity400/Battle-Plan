@@ -5,6 +5,7 @@
 //! holds. Whatever the recording cannot reach is refused by name with the
 //! missing input, never guessed. The viewer and the dashboard both reach it
 //! (the viewer depends on the dashboard), behind [`RecordedScopes::resolve`].
+use crate::triggers::Failure;
 
 use installed_content_core::{scope::Keyword, scope::Names, scope::Scope, scope::ScopeKind};
 use installed_content_core::{tag_aliases::TagAlias, tag_aliases::TagAliases};
@@ -54,13 +55,14 @@ pub enum Unresolved {
     /// A recorded input the scope needs is missing or incomplete (a table
     /// the hour lacks, a link CountryLinks does not hold) or not recorded at
     /// all: a refusal, naming the input.
-    Missing(String),
+    Missing(Failure),
 }
 
 impl std::fmt::Display for Unresolved {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Nothing(what) | Self::Missing(what) => f.write_str(what),
+            Self::Nothing(what) => f.write_str(what),
+            Self::Missing(what) => std::fmt::Display::fmt(what, f),
         }
     }
 }
@@ -86,8 +88,27 @@ impl Context {
     }
 }
 
-/// Character script tokens to their ids with their countries' slots.
-type CharactersByToken = BTreeMap<String, Vec<(u32, Option<u32>)>>;
+/// Country joins retain an unresolved source until an absent lookup needs it.
+#[derive(Clone, Debug, Default)]
+struct CountryValues {
+    values: BTreeMap<u32, i32>,
+    unresolved: Option<Failure>,
+}
+impl CountryValues {
+    fn get(&self, slot: u32) -> Result<Option<i32>, Failure> {
+        if let Some(value) = self.values.get(&slot) {
+            return Ok(Some(*value));
+        }
+        if let Some(failure) = &self.unresolved {
+            failure.reached();
+            return Err(failure.clone());
+        }
+        Ok(None)
+    }
+}
+
+/// Character script tokens to their ids with their countries' raw references.
+type CharactersByToken = BTreeMap<String, Vec<(u32, u32)>>;
 
 /// The recorded facts scopes resolve through, read from one hour. Each map is
 /// built from the hour's tables when a query first needs it.
@@ -106,20 +127,20 @@ pub struct RecordedScopes {
     /// State id to raw owner and controller links (`States`).
     states: OnceLock<BTreeMap<u32, (u32, u32)>>,
     /// Canonical slot to capital state (`Politics.capital`).
-    capitals: OnceLock<BTreeMap<u32, i32>>,
+    capitals: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
     /// Canonical slot to raw overlord link (`CountryAppearance.overlord`).
-    overlords: OnceLock<BTreeMap<u32, i32>>,
+    overlords: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
     faction_members_complete: bool,
     /// Character script token, folded as the lexer folds a token (the
-    /// lookup is by token ID), to its ids with their countries' slots
+    /// lookup is by token ID), to its ids with their countries' raw references
     /// (`Characters.name_token_id` through `LexicalTokens`).
-    characters: OnceLock<CharactersByToken>,
+    characters: OnceLock<crate::triggers::refusal::Resolved<CharactersByToken>>,
     /// Whether `Characters` and `LexicalTokens` are complete, so a token
     /// no row has names no live character.
     characters_complete: bool,
     /// Canonical slot to owned state count
     /// (`CountryCounterInputs.owned_state_count`).
-    owned: OnceLock<BTreeMap<u32, i32>>,
+    owned: OnceLock<crate::triggers::refusal::Resolved<CountryValues>>,
     /// Exact recorded original-tag buckets and physical country-array order.
     original_tags: OriginalTagLists,
     /// The content's tag alias database.
@@ -151,7 +172,10 @@ fn view_rows<T: TableSchema>(view: Option<&SharedView>) -> &[T::Row] {
         Some(TableView::Complete(rows) | TableView::Truncated { rows, .. }) => {
             rows.rows::<T>().unwrap_or_default()
         }
-        _ => &[],
+        _ => {
+            crate::triggers::refusal::missing_reference(T::ID, None).resolution_failed();
+            &[]
+        }
     })
 }
 
@@ -272,7 +296,7 @@ impl std::hash::Hash for ScopeKey {
 impl RecordedScopes {
     /// The digest `query` reads in this hour's scopes.
     pub fn reread(&self, query: &Query) -> u64 {
-        match query {
+        crate::triggers::inputs::resolved_digest(|| match query {
             Query::SavedTarget(name) => {
                 crate::triggers::inputs::digest_debug(&self.saved_target_unrecorded(name))
             }
@@ -329,7 +353,7 @@ impl RecordedScopes {
             Query::Roster => crate::triggers::inputs::digest(
                 &self.roster_unrecorded().map(Iterator::collect::<Vec<u32>>),
             ),
-        }
+        })
     }
 }
 
@@ -402,6 +426,33 @@ impl RecordedScopes {
         }
     }
 
+    fn input<T: TableSchema>(
+        &self,
+        field: &str,
+        scope: Option<crate::triggers::Store>,
+        message: impl Into<String>,
+    ) -> Failure {
+        let complete = self.views.as_deref().is_some_and(|views| {
+            use replay_data::rows::TableId;
+            let view = match T::ID {
+                TableId::Countries => &views.countries,
+                TableId::CountryLinks => &views.links,
+                TableId::States => &views.states,
+                TableId::Politics => &views.politics,
+                TableId::CountryAppearance => &views.appearance,
+                TableId::CountryCounterInputs => &views.counters,
+                TableId::Characters => &views.characters,
+                TableId::LexicalTokens => &views.lexical,
+                TableId::FactionMembers => &views.faction_members,
+                TableId::GlobalSavedEventTargets => &views.saved_targets,
+                _ => unreachable!("scope input table"),
+            };
+            matches!(&**view, TableView::Complete(_))
+        });
+        let (field, scope) = if complete { (field, scope) } else { ("", None) };
+        Failure::input(T::ID, field, scope, message)
+    }
+
     fn rows<T: TableSchema>(&self, view: impl Fn(&Views) -> &SharedView) -> &[T::Row] {
         view_rows::<T>(self.views.as_deref().map(view))
     }
@@ -456,51 +507,87 @@ impl RecordedScopes {
         })
     }
 
-    fn capitals(&self) -> &BTreeMap<u32, i32> {
-        self.capitals.get_or_init(|| {
-            let links = self.links();
-            self.rows::<tables::Politics>(|views| &views.politics)
-                .iter()
-                .filter_map(|row| Some((*links.get(&row.country)?, row.capital)))
-                .collect()
+    fn country_values<T: TableSchema>(
+        &self,
+        view: impl Fn(&Views) -> &SharedView,
+        value: impl Fn(&T::Row) -> (u32, i32),
+    ) -> crate::triggers::refusal::Resolved<CountryValues> {
+        crate::triggers::refusal::Resolved::new(|| {
+            crate::triggers::refusal::deferred(|| {
+                let mut out = CountryValues::default();
+                for row in self.rows::<T>(view) {
+                    let (raw, value) = value(row);
+                    match self.slot(raw) {
+                        Some(slot) => {
+                            out.values.insert(slot, value);
+                        }
+                        None => {
+                            out.unresolved.get_or_insert_with(|| {
+                                self.input::<tables::CountryLinks>(
+                                    "canonical_slot",
+                                    None,
+                                    format!("{:?} country {raw} has no CountryLinks row", T::ID),
+                                )
+                            });
+                        }
+                    }
+                }
+                out
+            })
         })
     }
 
-    fn overlords(&self) -> &BTreeMap<u32, i32> {
-        self.overlords.get_or_init(|| {
-            let links = self.links();
-            self.rows::<tables::CountryAppearance>(|views| &views.appearance)
-                .iter()
-                .filter_map(|row| Some((*links.get(&row.country)?, row.overlord)))
-                .collect()
-        })
+    fn capitals(&self) -> &CountryValues {
+        self.capitals
+            .get_or_init(|| {
+                self.country_values::<tables::Politics>(
+                    |views| &views.politics,
+                    |row| (row.country, row.capital),
+                )
+            })
+            .value()
     }
 
-    fn owned(&self) -> &BTreeMap<u32, i32> {
-        self.owned.get_or_init(|| {
-            let links = self.links();
-            self.rows::<tables::CountryCounterInputs>(|views| &views.counters)
-                .iter()
-                .filter_map(|row| Some((*links.get(&row.country)?, row.owned_state_count)))
-                .collect()
-        })
+    fn overlords(&self) -> &CountryValues {
+        self.overlords
+            .get_or_init(|| {
+                self.country_values::<tables::CountryAppearance>(
+                    |views| &views.appearance,
+                    |row| (row.country, row.overlord),
+                )
+            })
+            .value()
+    }
+
+    fn owned(&self) -> &CountryValues {
+        self.owned
+            .get_or_init(|| {
+                self.country_values::<tables::CountryCounterInputs>(
+                    |views| &views.counters,
+                    |row| (row.country, row.owned_state_count),
+                )
+            })
+            .value()
     }
 
     fn characters(&self) -> &CharactersByToken {
-        self.characters.get_or_init(|| {
-            let links = self.links();
-            let lexical = self.rows::<tables::LexicalTokens>(|views| &views.lexical);
-            let mut by_token = CharactersByToken::new();
-            for row in self.rows::<tables::Characters>(|views| &views.characters) {
-                if let Some(token) = crate::identity::character_script_token(row, lexical) {
+        self.characters
+            .get_or_init(|| {
+                crate::triggers::refusal::Resolved::new(|| {
+                    let lexical = self.rows::<tables::LexicalTokens>(|views| &views.lexical);
+                    let mut by_token = CharactersByToken::new();
+                    for row in self.rows::<tables::Characters>(|views| &views.characters) {
+                        if let Some(token) = crate::identity::character_script_token(row, lexical) {
+                            by_token
+                                .entry(token.to_ascii_lowercase())
+                                .or_default()
+                                .push((row.id, row.country));
+                        }
+                    }
                     by_token
-                        .entry(token.to_ascii_lowercase())
-                        .or_default()
-                        .push((row.id, links.get(&row.country).copied()));
-                }
-            }
-            by_token
-        })
+                })
+            })
+            .value()
     }
 
     fn faction_members(&self) -> &[FactionMemberRow] {
@@ -516,8 +603,8 @@ impl RecordedScopes {
     pub(crate) fn saved_target(
         &self,
         name: &[u8],
-    ) -> Result<Option<&replay_data::rows::GlobalSavedEventTargetRow>, String> {
-        crate::triggers::inputs::query_debug(
+    ) -> Result<Option<&replay_data::rows::GlobalSavedEventTargetRow>, Failure> {
+        crate::triggers::inputs::query_debug_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::SavedTarget(name.to_vec())),
             || self.saved_target_unrecorded(name),
         )
@@ -526,15 +613,19 @@ impl RecordedScopes {
     fn saved_target_unrecorded(
         &self,
         name: &[u8],
-    ) -> Result<Option<&replay_data::rows::GlobalSavedEventTargetRow>, String> {
+    ) -> Result<Option<&replay_data::rows::GlobalSavedEventTargetRow>, Failure> {
         if !self.saved_targets_complete {
-            return Err(format!(
-                "saved event target {}: GlobalSavedEventTargets {}",
-                String::from_utf8_lossy(name),
-                self.gaps
-                    .get("GlobalSavedEventTargets")
-                    .map(String::as_str)
-                    .unwrap_or("is not recorded")
+            return Err(self.input::<tables::GlobalSavedEventTargets>(
+                "",
+                None,
+                format!(
+                    "saved event target {}: GlobalSavedEventTargets {}",
+                    String::from_utf8_lossy(name),
+                    self.gaps
+                        .get("GlobalSavedEventTargets")
+                        .map(String::as_str)
+                        .unwrap_or("is not recorded")
+                ),
             ));
         }
         Ok(self.saved_targets().iter().find(|r| r.name == name))
@@ -544,8 +635,8 @@ impl RecordedScopes {
         &self,
         name: &[u8],
         reader: crate::triggers::saved_event_targets::Reader,
-    ) -> Result<crate::triggers::saved_event_targets::Selected, String> {
-        crate::triggers::inputs::query_debug(
+    ) -> Result<crate::triggers::saved_event_targets::Selected, Failure> {
+        crate::triggers::inputs::query_debug_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::SavedSelection(name.to_vec(), reader)),
             || self.saved_selection_unrecorded(name, reader),
         )
@@ -555,29 +646,30 @@ impl RecordedScopes {
         &self,
         name: &[u8],
         reader: crate::triggers::saved_event_targets::Reader,
-    ) -> Result<crate::triggers::saved_event_targets::Selected, String> {
+    ) -> Result<crate::triggers::saved_event_targets::Selected, Failure> {
         use crate::triggers::saved_event_targets::{Selected, select};
         Ok(self
             .saved_target(name)?
             .map_or(Selected::Missing, |r| select(r, reader)))
     }
 
-    pub(crate) fn saved_country(&self, raw: i32, name: &[u8]) -> Result<Option<u32>, String> {
-        crate::triggers::inputs::query(
+    pub(crate) fn saved_country(&self, raw: i32, name: &[u8]) -> Result<Option<u32>, Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::SavedCountry(raw, name.to_vec())),
             || self.saved_country_unrecorded(raw, name),
         )
     }
 
-    fn saved_country_unrecorded(&self, raw: i32, name: &[u8]) -> Result<Option<u32>, String> {
+    fn saved_country_unrecorded(&self, raw: i32, name: &[u8]) -> Result<Option<u32>, Failure> {
         if raw <= 0 {
             return Ok(None);
         }
-        self.slot(raw as u32).map(Some).ok_or_else(|| {
+        self.slot(raw as u32).map(Some).ok_or_else(|| -> Failure {
             format!(
                 "saved event target {}: country reference {raw} is not in CountryLinks",
                 String::from_utf8_lossy(name)
             )
+            .into()
         })
     }
 
@@ -585,27 +677,30 @@ impl RecordedScopes {
     /// member, or the first member when none owns a state. The caller accepts
     /// only an owning result, so a nonowning member or an empty bucket keeps
     /// the own country.
-    pub fn resolve_tag(&self, tag: &str) -> Result<u32, String> {
-        crate::triggers::inputs::query(
+    pub fn resolve_tag(&self, tag: &str) -> Result<u32, Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::ResolveTag(tag.to_owned())),
             || self.resolve_tag_unrecorded(tag),
         )
     }
 
-    fn resolve_tag_unrecorded(&self, tag: &str) -> Result<u32, String> {
+    fn resolve_tag_unrecorded(&self, tag: &str) -> Result<u32, Failure> {
         if let Some(refusal) = self.alias(tag) {
-            return Err(refusal);
+            return Err(refusal.into());
         }
-        let slot = self
-            .country(tag)
-            .ok_or_else(|| format!("country {tag} has no recorded Countries row"))?;
+        let slot = self.country(tag).ok_or_else(|| -> Failure {
+            format!("country {tag} has no recorded Countries row").into()
+        })?;
         if self.owned_states(slot)? >= 1 {
             return Ok(slot);
         }
-        let raw = *self
-            .raw_ids()
-            .get(&slot)
-            .ok_or_else(|| format!("country slot {slot} has no own raw tag"))?;
+        let raw = *self.raw_ids().get(&slot).ok_or_else(|| -> Failure {
+            self.input::<tables::Countries>(
+                "id",
+                Some(crate::triggers::Store::Country(slot)),
+                format!("country slot {slot} has no own raw tag"),
+            )
+        })?;
         let canonical = self.raw_slot(raw)?;
         for &member in self.original_tags.bucket(canonical)? {
             let member = self.raw_slot(member)?;
@@ -615,11 +710,13 @@ impl RecordedScopes {
                 let raw = if member == 0 {
                     0
                 } else {
-                    *self
-                        .raw_ids()
-                        .get(&member)
-                        .ok_or_else(|| format!("country slot {member} has no own raw tag"))?
-                        as i32
+                    *self.raw_ids().get(&member).ok_or_else(|| -> Failure {
+                        self.input::<tables::Countries>(
+                            "id",
+                            Some(crate::triggers::Store::Country(member)),
+                            format!("country slot {member} has no own raw tag"),
+                        )
+                    })? as i32
                 };
                 return Ok(if raw > 0 { member } else { slot });
             }
@@ -629,37 +726,46 @@ impl RecordedScopes {
 
     /// A known zero reference resolves to the separately authenticated reserved
     /// country. Missing positive links cannot be inferred to map to zero.
-    pub(crate) fn raw_slot(&self, raw: u32) -> Result<u32, String> {
-        crate::triggers::inputs::query(
+    pub(crate) fn raw_slot(&self, raw: u32) -> Result<u32, Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::RawSlot(raw)),
             || self.raw_slot_unrecorded(raw),
         )
     }
 
-    fn raw_slot_unrecorded(&self, raw: u32) -> Result<u32, String> {
+    fn raw_slot_unrecorded(&self, raw: u32) -> Result<u32, Failure> {
         if raw == 0 {
             return Ok(0);
         }
-        self.slot(raw)
-            .ok_or_else(|| format!("country raw reference {raw} is not in CountryLinks"))
+        self.slot(raw).ok_or_else(|| -> Failure {
+            self.input::<tables::CountryLinks>(
+                "canonical_slot",
+                None,
+                format!("country raw reference {raw} is not in CountryLinks"),
+            )
+        })
     }
 
     /// Country iterators retain only signed-positive own tag words
     /// after resolving a raw reference.
-    pub(crate) fn positive_country(&self, raw: u32) -> Result<Option<u32>, String> {
-        crate::triggers::inputs::query(
+    pub(crate) fn positive_country(&self, raw: u32) -> Result<Option<u32>, Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::PositiveCountry(raw)),
             || self.positive_country_unrecorded(raw),
         )
     }
 
-    fn positive_country_unrecorded(&self, raw: u32) -> Result<Option<u32>, String> {
+    fn positive_country_unrecorded(&self, raw: u32) -> Result<Option<u32>, Failure> {
         let slot = self.raw_slot(raw)?;
         let own = if slot == 0 {
             0
         } else {
-            *self.raw_ids().get(&slot).ok_or_else(|| {
-                format!("country slot {slot} has no Countries row for its own raw tag")
+            *self.raw_ids().get(&slot).ok_or_else(|| -> Failure {
+                self.input::<tables::Countries>(
+                    "id",
+                    Some(crate::triggers::Store::Country(slot)),
+                    format!("country slot {slot} has no Countries row for its own raw tag"),
+                )
             })?
         };
         Ok(((own as i32) > 0).then_some(slot))
@@ -667,14 +773,14 @@ impl RecordedScopes {
 
     /// Original-tag bucket selected by a positive tag word, before appending
     /// that word. Nonpositive words do not demand the snapshot.
-    pub(crate) fn original_bucket(&self, selected: i32) -> Result<&[u32], String> {
-        crate::triggers::inputs::query(
+    pub(crate) fn original_bucket(&self, selected: i32) -> Result<&[u32], Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::OriginalBucket(selected)),
             || self.original_bucket_unrecorded(selected),
         )
     }
 
-    fn original_bucket_unrecorded(&self, selected: i32) -> Result<&[u32], String> {
+    fn original_bucket_unrecorded(&self, selected: i32) -> Result<&[u32], Failure> {
         if selected <= 0 {
             return Ok(&[]);
         }
@@ -687,14 +793,14 @@ impl RecordedScopes {
     /// at run time by its targets and
     /// triggers, which are not evaluated yet.
     pub fn alias(&self, tag: &str) -> Option<String> {
-        crate::triggers::inputs::query(
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Alias(tag.to_owned())),
             || self.alias_unrecorded(tag),
         )
     }
 
     fn alias_unrecorded(&self, tag: &str) -> Option<String> {
-        if self.slots().contains_key(tag) {
+        if self.country(tag).is_some() {
             return None;
         }
         if self.aliases.get(tag).is_some() {
@@ -714,14 +820,14 @@ impl RecordedScopes {
     /// recorded country tag: the alias database is checked after the
     /// country tags.
     pub fn alias_entry(&self, tag: &str) -> Option<&TagAlias> {
-        crate::triggers::inputs::query_debug(
+        crate::triggers::inputs::query_debug_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::AliasEntry(tag.to_owned())),
             || self.alias_entry_unrecorded(tag),
         )
     }
 
     fn alias_entry_unrecorded(&self, tag: &str) -> Option<&TagAlias> {
-        if self.slots().contains_key(tag) {
+        if self.country(tag).is_some() {
             return None;
         }
         self.aliases.get(tag)
@@ -729,19 +835,23 @@ impl RecordedScopes {
 
     /// Every captured canonical country, in slot order. This canonical
     /// roster is distinct from the physical native array with alias occurrences.
-    pub fn roster(&self) -> Result<impl Iterator<Item = u32> + '_, String> {
-        let roster = crate::triggers::inputs::query(
+    pub fn roster(&self) -> Result<impl Iterator<Item = u32> + '_, Failure> {
+        let roster = crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Roster),
             || self.roster_unrecorded().map(Iterator::collect::<Vec<u32>>),
         );
         roster.map(Vec::into_iter)
     }
 
-    fn roster_unrecorded(&self) -> Result<impl Iterator<Item = u32> + '_, String> {
+    fn roster_unrecorded(&self) -> Result<impl Iterator<Item = u32> + '_, Failure> {
         if !self.countries_complete {
-            return Err(format!(
-                "the country roster is not complete: {}",
-                self.gaps.get("Countries").cloned().unwrap_or_default()
+            return Err(self.input::<tables::Countries>(
+                "",
+                None,
+                format!(
+                    "the country roster is not complete: {}",
+                    self.gaps.get("Countries").cloned().unwrap_or_default()
+                ),
             ));
         }
         Ok(self.tags().keys().copied())
@@ -749,29 +859,32 @@ impl RecordedScopes {
 
     /// A country's owned state count, or why it is not
     /// recorded.
-    pub fn owned_states(&self, slot: u32) -> Result<i32, String> {
-        crate::triggers::inputs::query(
+    pub fn owned_states(&self, slot: u32) -> Result<i32, Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::OwnedStates(slot)),
             || self.owned_states_unrecorded(slot),
         )
     }
 
-    fn owned_states_unrecorded(&self, slot: u32) -> Result<i32, String> {
+    fn owned_states_unrecorded(&self, slot: u32) -> Result<i32, Failure> {
         if slot == 0 {
             return self.original_tags.reserved_owned_states();
         }
-        self.owned().get(&slot).copied().ok_or_else(|| {
-            format!(
-                "the owned state count (CountryCounterInputs.owned_state_count) of {} is not recorded: {}",
-                self.describe(Target::Country(slot)),
-                self.gaps.get("CountryCounterInputs").cloned().unwrap_or_default()
-            )
-        })
+        if let Some(count) = self.owned().get(slot)? {
+            return Ok(count);
+        }
+        if let Some(raw) = self.raw_ids().get(&slot) {
+            self.raw_slot(*raw)?;
+        }
+        Err(self.input::<tables::CountryCounterInputs>("owned_state_count", Some(crate::triggers::Store::Country(slot)), format!(
+            "the owned state count (CountryCounterInputs.owned_state_count) of {} is not recorded: {}",
+            self.describe(Target::Country(slot)), self.gaps.get("CountryCounterInputs").cloned().unwrap_or_default()
+        )))
     }
 
     /// Exact recorded original-tag buckets and physical country-array order.
     pub fn original_tags(&self) -> &OriginalTagLists {
-        crate::triggers::inputs::query_debug(
+        crate::triggers::inputs::query_debug_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::OriginalTags),
             || self.original_tags_unrecorded(),
         )
@@ -783,49 +896,72 @@ impl RecordedScopes {
 
     /// A country's tag.
     pub fn tag(&self, slot: u32) -> Option<&str> {
-        crate::triggers::inputs::query(
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Tag(slot)),
             || self.tag_unrecorded(slot),
         )
     }
 
     fn tag_unrecorded(&self, slot: u32) -> Option<&str> {
-        self.tags().get(&slot).map(String::as_str)
+        crate::triggers::refusal::reference(
+            self.tags().get(&slot).map(String::as_str),
+            slot != 0,
+            || {
+                self.input::<tables::Countries>(
+                    "",
+                    Some(crate::triggers::Store::Country(slot)),
+                    "country tag is not recorded",
+                )
+            },
+        )
     }
 
     /// A country's canonical slot by tag.
     pub fn country(&self, tag: &str) -> Option<u32> {
-        crate::triggers::inputs::query(
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Country(tag.to_owned())),
             || self.country_unrecorded(tag),
         )
     }
 
     fn country_unrecorded(&self, tag: &str) -> Option<u32> {
-        self.slots().get(tag).copied()
+        let found = self.slots().get(tag).copied();
+        crate::triggers::refusal::membership(found.is_some(), self.countries_complete, || {
+            self.input::<tables::Countries>("", None, "country-tag membership is not complete")
+        });
+        found
     }
 
     /// A raw country link's canonical slot.
     pub fn slot(&self, link: u32) -> Option<u32> {
-        crate::triggers::inputs::query(
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Slot(link)),
             || self.slot_unrecorded(link),
         )
     }
 
     fn slot_unrecorded(&self, link: u32) -> Option<u32> {
-        self.links().get(&link).copied()
+        let slot = self.links().get(&link).copied();
+        if slot.is_none() && link != 0 {
+            self.input::<tables::CountryLinks>(
+                "canonical_slot",
+                None,
+                format!("country raw reference {link} has no CountryLinks row"),
+            )
+            .resolution_failed();
+        }
+        slot
     }
 
     /// The actual country's faction. Country0 uses its recorded faction field.
-    pub(crate) fn faction(&self, slot: u32) -> Result<Option<u64>, String> {
-        crate::triggers::inputs::query(
+    pub(crate) fn faction(&self, slot: u32) -> Result<Option<u64>, Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Faction(slot)),
             || self.faction_unrecorded(slot),
         )
     }
 
-    fn faction_unrecorded(&self, slot: u32) -> Result<Option<u64>, String> {
+    fn faction_unrecorded(&self, slot: u32) -> Result<Option<u64>, Failure> {
         if slot == 0 {
             return self.original_tags.reserved_faction();
         }
@@ -837,9 +973,13 @@ impl RecordedScopes {
             return Ok(Some(member.faction));
         }
         if !self.faction_members_complete {
-            return Err(format!(
-                "the faction of country slot {slot} is unknown: FactionMembers {}",
-                self.gaps["FactionMembers"]
+            return Err(self.input::<tables::FactionMembers>(
+                "",
+                None,
+                format!(
+                    "the faction of country slot {slot} is unknown: FactionMembers {}",
+                    self.gaps["FactionMembers"]
+                ),
             ));
         }
         if let Some(row) = self
@@ -847,44 +987,48 @@ impl RecordedScopes {
             .iter()
             .find(|row| row.country != 0 && self.slot(row.country).is_none())
         {
-            return Err(format!(
+            return Err(self.input::<tables::CountryLinks>("canonical_slot", None, format!(
                 "the faction of country slot {slot} is unknown: a FactionMembers row's country link {} resolves to no country: CountryLinks {}",
                 row.country, self.gaps["CountryLinks"]
-            ));
+            )));
         }
         Ok(None)
     }
 
     /// The exact first member's own raw country word (ordinal zero).
     /// Literal raw0 is an authenticated Country0 member, never a null placeholder.
-    pub(crate) fn faction_first_raw(&self, faction: u64) -> Result<u32, String> {
-        crate::triggers::inputs::query(
+    pub(crate) fn faction_first_raw(&self, faction: u64) -> Result<u32, Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::FactionFirstRaw(faction)),
             || self.faction_first_raw_unrecorded(faction),
         )
     }
 
-    fn faction_first_raw_unrecorded(&self, faction: u64) -> Result<u32, String> {
+    fn faction_first_raw_unrecorded(&self, faction: u64) -> Result<u32, Failure> {
         self.faction_members()
             .iter()
             .find(|row| row.faction == faction && row.ordinal == 0)
             .map(|row| row.country)
-            .ok_or_else(|| {
-                format!(
-                    "faction {faction} has no first member: FactionMembers {}",
-                    self.gaps["FactionMembers"]
+            .ok_or_else(|| -> Failure {
+                self.input::<tables::FactionMembers>(
+                    "",
+                    None,
+                    format!(
+                        "faction {faction} has no first member: FactionMembers {}",
+                        self.gaps["FactionMembers"]
+                    ),
                 )
             })
     }
 
-    pub(crate) fn faction_leader_raw(&self, slot: u32) -> Result<Option<u32>, String> {
-        crate::triggers::inputs::query(
+    pub(crate) fn faction_leader_raw(&self, slot: u32) -> Result<Option<u32>, Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::FactionLeaderRaw(slot)),
             || self.faction_leader_raw_unrecorded(slot),
         )
     }
 
-    fn faction_leader_raw_unrecorded(&self, slot: u32) -> Result<Option<u32>, String> {
+    fn faction_leader_raw_unrecorded(&self, slot: u32) -> Result<Option<u32>, Failure> {
         self.faction(slot)?
             .map(|faction| self.faction_first_raw(faction))
             .transpose()
@@ -892,22 +1036,23 @@ impl RecordedScopes {
 
     /// Existing scalar API: retain its ordinary link resolution. Scope and text
     /// select their distinct literal-zero behavior through faction_leader_raw.
-    pub fn faction_leader(&self, slot: u32) -> Result<Option<u32>, String> {
-        crate::triggers::inputs::query(
+    pub fn faction_leader(&self, slot: u32) -> Result<Option<u32>, Failure> {
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::FactionLeader(slot)),
             || self.faction_leader_unrecorded(slot),
         )
     }
 
-    fn faction_leader_unrecorded(&self, slot: u32) -> Result<Option<u32>, String> {
+    fn faction_leader_unrecorded(&self, slot: u32) -> Result<Option<u32>, Failure> {
         let Some(raw) = self.faction_leader_raw(slot)? else {
             return Ok(None);
         };
-        self.slot(raw).map(Some).ok_or_else(|| {
+        self.slot(raw).map(Some).ok_or_else(|| -> Failure {
             format!(
                 "the faction leader link {raw} resolves to no country: CountryLinks {}",
                 self.gaps["CountryLinks"]
             )
+            .into()
         })
     }
 
@@ -920,7 +1065,7 @@ impl RecordedScopes {
         quoted: bool,
         context: &Context,
     ) -> Result<Target, Unresolved> {
-        crate::triggers::inputs::query_debug(
+        crate::triggers::inputs::query_debug_resolved(
             || {
                 crate::triggers::inputs::Key::Scopes(Query::ResolveText(
                     text.to_owned(),
@@ -949,7 +1094,7 @@ impl RecordedScopes {
     /// `StateResistance.country` (the occupied country's original tag) would
     /// answer; it is refused as unrecorded until a consumer needs it.
     pub fn resolve(&self, scope: &Scope, context: &Context) -> Result<Target, Unresolved> {
-        crate::triggers::inputs::query_debug(
+        crate::triggers::inputs::query_debug_resolved(
             || {
                 crate::triggers::inputs::Key::Scopes(Query::Resolve(
                     ScopeKey(scope.clone()),
@@ -970,9 +1115,10 @@ impl RecordedScopes {
                 if self.states().contains_key(&id) {
                     Ok(Target::State(id))
                 } else {
-                    Err(Missing(format!(
-                        "state {id} has no recorded States row: {}",
-                        gap("States")
+                    Err(Missing(self.input::<tables::States>(
+                        "",
+                        Some(crate::triggers::Store::State(id)),
+                        format!("state {id} has no recorded States row: {}", gap("States")),
                     )))
                 }
             }
@@ -986,13 +1132,24 @@ impl RecordedScopes {
                         "character {token}: the scope has no country, which the game requires"
                     )));
                 };
+                if self
+                    .views
+                    .as_deref()
+                    .is_some_and(|views| !matches!(&*views.lexical, TableView::Complete(_)))
+                {
+                    return Err(Missing(self.input::<tables::LexicalTokens>(
+                        "",
+                        None,
+                        "character lookup lacks its LexicalTokens input",
+                    )));
+                }
                 let found = self
                     .characters()
                     .get(&token.to_ascii_lowercase())
                     .and_then(|found| {
                         found
                             .iter()
-                            .find(|(_, owner)| *owner == Some(country))
+                            .find(|(_, owner)| self.slot(*owner) == Some(country))
                             .map(|(id, _)| Target::Character(*id))
                     });
                 found.ok_or_else(|| {
@@ -1003,7 +1160,11 @@ impl RecordedScopes {
                     if self.characters_complete {
                         Nothing(why)
                     } else {
-                        Missing(format!("{why} in the recording: {}", gap("Characters")))
+                        Missing(self.input::<tables::Characters>(
+                            "",
+                            Some(crate::triggers::Store::Country(country)),
+                            format!("{why} in the recording: {}", gap("Characters")),
+                        ))
                     }
                 })
             }
@@ -1017,12 +1178,13 @@ impl RecordedScopes {
                 };
                 self.resolve(then, &context)
             }
-            Scope::Variable(name) => Err(Missing(format!(
-                "var:{name}: runtime script variables are not recorded"
-            ))),
-            Scope::EventTarget { name, .. } => Err(Missing(format!(
-                "event_target:{name}: saved targets resolve in the trigger evaluator"
-            ))),
+            Scope::Variable(name) => Err(Missing(
+                format!("var:{name}: runtime script variables are not recorded").into(),
+            )),
+            Scope::EventTarget { name, .. } => Err(Missing(
+                format!("event_target:{name}: saved targets resolve in the trigger evaluator")
+                    .into(),
+            )),
             // Generic prefix accepted by the parser, with no matching resolver
             // case: only script variables handle the global_event_target: prefix.
             Scope::Prefixed { prefix, value }
@@ -1030,9 +1192,9 @@ impl RecordedScopes {
             {
                 Err(Nothing(format!("{prefix}:{value}: invalid context scope")))
             }
-            Scope::Prefixed { prefix, value } => Err(Missing(format!(
-                "{prefix}:{value}: {prefix} scopes are not recorded"
-            ))),
+            Scope::Prefixed { prefix, value } => Err(Missing(
+                format!("{prefix}:{value}: {prefix} scopes are not recorded").into(),
+            )),
             Scope::ZeroNumber(text) => Err(Nothing(format!(
                 "{text}: the event target reader keeps a zero number as a scope that names nothing"
             ))),
@@ -1054,9 +1216,13 @@ impl RecordedScopes {
                 return Err(Nothing(format!("{name}: {of} has no {what}")));
             };
             self.slot(link).map(Target::Country).ok_or_else(|| {
-                Missing(format!(
-                    "{name}: {of}'s {what} link {link} has no CountryLinks row: {}",
-                    self.gaps.get("CountryLinks").cloned().unwrap_or_default()
+                Missing(self.input::<tables::CountryLinks>(
+                    "canonical_slot",
+                    None,
+                    format!(
+                        "{name}: {of}'s {what} link {link} has no CountryLinks row: {}",
+                        self.gaps.get("CountryLinks").cloned().unwrap_or_default()
+                    ),
                 ))
             })
         };
@@ -1068,10 +1234,10 @@ impl RecordedScopes {
             Keyword::Owner | Keyword::Controller => match this()? {
                 Target::State(id) => {
                     let (owner, controller) = self.states().get(&id).copied().ok_or_else(|| {
-                        Missing(format!(
+                        Missing(self.input::<tables::States>("", Some(crate::triggers::Store::State(id)), format!(
                             "{name}: state {id} has no recorded States row: {}",
                             self.gaps["States"]
-                        ))
+                        )))
                     })?;
                     let link = if keyword == Keyword::Owner {
                         owner
@@ -1083,16 +1249,16 @@ impl RecordedScopes {
                 other => Err(Missing(format!(
                     "{name} of {}: only a state's owner and controller are recorded (States)",
                     self.describe(other)
-                ))),
+                ).into())),
             },
             Keyword::CapitalScope => match this()? {
                 Target::Country(slot) => {
-                    let capital = self.capitals().get(&slot).copied().ok_or_else(|| {
-                        Missing(format!(
+                    let capital = self.capitals().get(slot).map_err(Missing)?.ok_or_else(|| {
+                        Missing(self.input::<tables::Politics>("capital", Some(crate::triggers::Store::Country(slot)), format!(
                             "{name}: {} has no recorded Politics row: {}",
                             self.describe(Target::Country(slot)),
                             self.gaps["Politics"]
-                        ))
+                        )))
                     })?;
                     u32::try_from(capital)
                         .ok()
@@ -1108,16 +1274,16 @@ impl RecordedScopes {
                 other => Err(Missing(format!(
                     "{name} of {}: only a country's capital is recorded (Politics.capital)",
                     self.describe(other)
-                ))),
+                ).into())),
             },
             Keyword::Overlord => match this()? {
                 Target::Country(slot) => {
-                    let overlord = self.overlords().get(&slot).copied().ok_or_else(|| {
-                        Missing(format!(
+                    let overlord = self.overlords().get(slot).map_err(Missing)?.ok_or_else(|| {
+                        Missing(self.input::<tables::CountryAppearance>("overlord", Some(crate::triggers::Store::Country(slot)), format!(
                             "{name}: {} has no recorded CountryAppearance row: {}",
                             self.describe(Target::Country(slot)),
                             self.gaps["CountryAppearance"]
-                        ))
+                        )))
                     })?;
                     country(
                         overlord.into(),
@@ -1128,7 +1294,7 @@ impl RecordedScopes {
                 other => Err(Missing(format!(
                     "{name} of {}: only a country's overlord is recorded (CountryAppearance.overlord)",
                     self.describe(other)
-                ))),
+                ).into())),
             },
             // This fallback has no country-presence gate. Known
             // clearing state/character/empty scopes ask actual Country0's faction.
@@ -1149,24 +1315,24 @@ impl RecordedScopes {
                 } else {
                     // Positive raw aliases remain country carriers, even at slot0.
                     self.slot(raw).map(Target::Country).ok_or_else(|| {
-                        Missing(format!(
+                        Missing(self.input::<tables::CountryLinks>("canonical_slot", None, format!(
                             "{name}: faction leader link {raw} has no CountryLinks row: {}",
                             self.gaps["CountryLinks"]
-                        ))
+                        )))
                     })
                 }
             }
             Keyword::Occupied | Keyword::Character | Keyword::Operation | Keyword::Opponent => {
                 Err(Missing(format!(
                     "{name}: this scope is set by the running script and is not recorded"
-                )))
+                ).into()))
             }
         }
     }
 
     /// A target as a message names it.
     pub fn describe(&self, target: Target) -> String {
-        crate::triggers::inputs::query(
+        crate::triggers::inputs::query_resolved(
             || crate::triggers::inputs::Key::Scopes(Query::Describe(target)),
             || self.describe_unrecorded(target),
         )
@@ -1188,13 +1354,32 @@ impl Names for RecordedScopes {
     /// A recorded country's tag, or a tag alias, which then
     /// resolves to a named refusal ([`Self::alias`]).
     fn is_country(&self, tag: &str) -> bool {
-        self.slots().contains_key(tag) || self.alias(tag).is_some()
+        self.country(tag).is_some() || self.alias(tag).is_some()
     }
 
     /// A live character's token; load-time classification reads the
     /// content's templates instead.
     fn is_character(&self, token: &str) -> bool {
-        self.characters().contains_key(&token.to_ascii_lowercase())
+        let found = self.characters().contains_key(&token.to_ascii_lowercase());
+        for (complete, table) in [
+            (
+                self.views
+                    .as_deref()
+                    .is_some_and(|views| matches!(&*views.characters, TableView::Complete(_))),
+                tables::Characters::ID,
+            ),
+            (
+                self.views
+                    .as_deref()
+                    .is_some_and(|views| matches!(&*views.lexical, TableView::Complete(_))),
+                tables::LexicalTokens::ID,
+            ),
+        ] {
+            crate::triggers::refusal::membership(found, complete, || {
+                crate::triggers::refusal::missing_reference(table, None)
+            });
+        }
+        found
     }
 
     /// Recognized keyword prefixes; any other keyword prefix parses
@@ -1682,7 +1867,12 @@ pub mod tests {
         let scopes = RecordedScopes::read(&frame, Arc::default());
         assert_eq!(
             scopes.resolve_text("capital_scope", false, &Context::country(1)),
-            Err(Unresolved::Missing("capital_scope: country GER has no recorded Politics row: the table is unavailable: not sampled".into()))
+            Err(Unresolved::Missing(Failure::input(
+                replay_data::rows::TableId::Politics,
+                "",
+                None,
+                "capital_scope: country GER has no recorded Politics row: the table is unavailable: not sampled"
+            )))
         );
     }
 

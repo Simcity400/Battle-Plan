@@ -609,6 +609,26 @@ fn project(
             }
         }
         SourceRow::Fact(mut fact) => {
+            if let Some(index) = fact.row.item {
+                let mut item = metadata
+                    .facts
+                    .0
+                    .feed
+                    .items
+                    .get(index as usize)
+                    .ok_or_else(|| crate::invalid("Event feed script item identity differs"))?
+                    .clone();
+                if let Some(catalogue) = catalogue {
+                    super::super::script_presentation(
+                        builder,
+                        catalogue,
+                        fact.row.kind,
+                        &mut item,
+                        fact.script.as_ref(),
+                    )?;
+                }
+                fact.row.item = Some(builder.item(item)?);
+            }
             if let Some(info) = fact.nuke_type.and_then(|kind| {
                 metadata
                     .nukes

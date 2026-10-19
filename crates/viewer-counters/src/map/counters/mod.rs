@@ -114,9 +114,12 @@ use {
     viewer_foundation::map::text,
 };
 
+mod air_grid;
+mod air_missions;
 mod base_windows;
 /// How many base icon families the counters draw, one pool view each.
-pub const BASE_FAMILIES: usize = base_windows::FAMILIES;
+pub use base_windows::View as BaseView;
+mod air_volunteers;
 mod bases;
 pub mod combat_markers;
 pub mod faction_pings;
@@ -130,9 +133,12 @@ pub mod land_windows;
 mod naval;
 mod naval_hovers;
 mod naval_markers;
+mod naval_mine_badges;
 mod naval_mission_inputs;
 mod naval_missions;
 mod naval_port_hovers;
+mod naval_regional;
+mod naval_repairs;
 pub type MissionMemo = Recent<(replay_data::BranchId, replay_data::Hour, u32), MissionIcons>;
 pub mod naval_windows;
 pub mod type_tint;
@@ -263,6 +269,8 @@ pub struct CounterDefines {
     pub facility_cutoff: f32,
     /// `NMapIcons.HOME_BASE_MAP_ICON_SCALE_DEFAULT`, the naval base button's scale.
     pub naval_base_scale: f32,
+    /// Selected home bases use the content's highlighted button scale.
+    pub naval_base_highlighted_scale: f32,
     /// `NGraphics.NAVAL_MISSION_ICONS_DISTANCE_CUTOFF` (strict).
     pub naval_mission_cutoff: f32,
     /// `NGraphics.LAND_COMBAT_DISTANCE_CUTOFF`.
@@ -305,6 +313,9 @@ impl CounterDefines {
             naval_base_cutoff: number("NAVALBASE_ICON_DISTANCE_CUTOFF")?,
             facility_cutoff: number("FACILITY_DISTANCE_CUTOFF")?,
             naval_base_scale: defines.number("NMapIcons", "HOME_BASE_MAP_ICON_SCALE_DEFAULT")?
+                as f32,
+            naval_base_highlighted_scale: defines
+                .number("NMapIcons", "HOME_BASE_MAP_ICON_SCALE_HIGHLIGHTED")?
                 as f32,
             land_combat_cutoff: number("LAND_COMBAT_DISTANCE_CUTOFF")?,
             naval_combat_cutoff: number("NAVAL_COMBAT_DISTANCE_CUTOFF")?,
@@ -356,6 +367,7 @@ impl CounterDefines {
         naval_base_cutoff: 900.0,
         facility_cutoff: 900.0,
         naval_base_scale: 1.0,
+        naval_base_highlighted_scale: 1.2,
         naval_mission_cutoff: 1500.0,
         land_combat_cutoff: 1500.0,
         naval_combat_cutoff: 1500.0,
@@ -365,7 +377,7 @@ impl CounterDefines {
         // headquarters, facilities, land and naval combats, naval results and missions, capitals,
         // rocket sites, gun emplacements, strategic locations, adjacency rules and resources.
         priorities: Priorities::uniform([
-            10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 5, 3, 3, 10, 3, 10,
+            10, 11, 5, 3, 3, 3, 3, 20, 20, 19, 13, 13, 5, 3, 3, 10, 3, 10,
         ]),
         groups: GroupDefines::VANILLA,
         split_selected_limit: 12,
@@ -576,9 +588,9 @@ impl Layouts {
 
 /// The flags of one [`FlagSet`], indexed through the content stack.
 ///
-/// `GFX_mapicon_unit_large_flag_stripe` carries no `texturefile` at all — the
+/// `GFX_mapicon_unit_large_flag_stripe` carries no `texturefile` at all â€” the
 /// shipped `.gfx` says "Texture file is ste in code to proper flag" ( section
-/// 6.5) — so the flag is not a sprite the loader can resolve. The engine builds
+/// 6.5) â€” so the flag is not a sprite the loader can resolve. The engine builds
 /// its flag atlases before drawing. Counter flags
 /// acquire every candidate before their frame; combat retains lazy decoding.
 /// The medium set also takes [`MEDIUM_FLAG_OVERLAY`].
@@ -670,6 +682,7 @@ impl ActionContent {
 
 /// The layouts, the sprite sheets they name and the flag atlas.
 pub struct CounterAssets {
+    air_sortie_defines: Result<viewer_foundation::map::aircraft_count::SortieDefines, String>,
     pub layouts: Layouts,
     /// The naval counter, the naval combat icon, its convoy addition, the port window and the
     /// other natively drawn map-icon windows, read by the shared native reader
@@ -927,6 +940,10 @@ impl CounterAssets {
         });
         Ok(Self {
             layouts,
+            air_sortie_defines: viewer_foundation::map::aircraft_count::SortieDefines::load(
+                defines,
+            )
+            .map_err(|e| e.to_string()),
             windows,
             sheets,
             land_action,
@@ -1188,7 +1205,10 @@ impl CounterAssets {
 pub struct CounterContent {
     /// Shared authored terrain and combat widths.
     pub terrain: Arc<TerrainContent>,
+    /// Authored wing capacities, independent of terrain/attrition defines.
+    pub wing_types: Result<Arc<installed_content_core::unit_leader::SubUnits>, String>,
     mission_content: Result<naval_mission_inputs::Content, String>,
+    pub recorded_labels: Option<Arc<viewer_foundation::naval_labels::RecordedLabels>>,
     pub port_mission_defines: viewer_foundation::map::port_mission_defines::Defines,
     /// `(province, unit-stack type)` to world position. Every type is kept because
     /// the combat icon reads the attacker's own slot. The game checks that a unit's
@@ -1204,6 +1224,7 @@ pub struct CounterContent {
     /// `map/buildings.txt` record whose bucket holds a type of the kind owns
     /// one ([`SiteSlots::site_icons`]).
     pub site_icons: Arc<[BTreeMap<u32, building_facts::SiteIcon>; building_facts::ICON_KINDS]>,
+    pub air_base_first_provinces: Arc<building_facts::FirstProvinces>,
     /// First is_port building slot in province order.
     ports: BTreeMap<u32, [f32; 3]>,
     /// The naval-HQ and special-facility icons' templates and anchor records.
@@ -1221,6 +1242,9 @@ pub struct CounterContent {
     /// Icon positions for every region [`CounterContent::place_region_icons`] could
     /// build; empty until it runs.
     region_icons: BTreeMap<u32, [f32; 3]>,
+    region_names: BTreeMap<u32, String>,
+    ground_crew_defines: Result<(i64, i64), String>,
+    volunteer_air_defines: Result<air_volunteers::Defines, String>,
     /// Provinces with no `Standstill` anchor, authored or default, stated
     /// once; filled by [`CounterContent::seed_default_anchors`].
     pub missing_standstill: Vec<u32>,
@@ -1310,6 +1334,7 @@ impl CounterContent {
             ]
             .map(|kind| sites.site_icons(kind).clone()),
         );
+        let air_base_first_provinces = Arc::new(sites.first_provinces().clone());
         let building_icons = BuildingIconContent::load(
             &definitions,
             &building_slots,
@@ -1341,20 +1366,23 @@ impl CounterContent {
             region_provinces.insert(id, members);
         }
         let (terrain, default_map) = installed_content_core::terrain::read(layers)?;
+        let wing_types = installed_content_core::unit_leader::sub_units(layers)
+            .map(Arc::new)
+            .map_err(|error| error.to_string());
         let attrition = viewer_foundation::map::counter_attrition::Content::read(
             defines,
             &terrain,
-            installed_content_core::unit_leader::sub_units(layers)
-                .map(Arc::new)
-                .map_err(|error| error.to_string()),
+            wing_types.clone(),
         )
         .map(Arc::new)
         .map_err(|error| error.to_string());
         let mission_content =
-            naval_mission_inputs::Content::read(terrain.clone(), regions, defines)
+            naval_mission_inputs::Content::read(terrain.clone(), layers, regions, defines)
                 .map_err(|error| error.to_string());
         Ok(Self {
+            wing_types,
             mission_content,
+            recorded_labels: None,
             port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
                 defines,
             ),
@@ -1375,6 +1403,7 @@ impl CounterContent {
             stack_scales,
             default_anchors: Arc::new(BTreeMap::new()),
             site_icons,
+            air_base_first_provinces,
             ports,
             building_icons,
             kinds: Arc::new(
@@ -1387,6 +1416,19 @@ impl CounterContent {
             region_of: Arc::new(region_of),
             region_provinces,
             region_icons: BTreeMap::new(),
+            region_names: regions
+                .iter()
+                .map(|(&id, region)| (id, region.name_key.clone()))
+                .collect(),
+            volunteer_air_defines: air_volunteers::Defines::read(defines)
+                .map_err(|e| e.to_string()),
+            ground_crew_defines: (|| {
+                Ok((
+                    defines.fixed5("NAir", "AIR_MORE_GROUND_CREWS_COST")?,
+                    defines.fixed5("NAir", "AIR_MORE_GROUND_CREWS_BOOST")?,
+                ))
+            })()
+            .map_err(|error: io::Error| error.to_string()),
             missing_standstill: Vec::new(),
             map: MapSize::of(map),
             aggression: Arc::new(defines.fixed5_array("NNavy", "AGGRESSION_SETTINGS_VALUES")?),
@@ -1607,6 +1649,8 @@ pub struct CounterInputs<'a> {
     /// The content stack's localisation in the viewer's language, which a natively laid-out
     /// window's authored text key is shown through.
     pub localisation: &'a installed_content_localisation::localisation::Localisation,
+    /// Language of cached names in this recording.
+    pub recorded_language: &'a str,
     pub map: &'a MapData,
     pub camera: Camera,
     /// The frame in device pixels, which the projection uses.
@@ -1624,6 +1668,11 @@ pub struct CounterInputs<'a> {
     pub display: &'a CounterDisplay,
     /// This view's local selection, never a captured game UI operand.
     pub selected: &'a BTreeSet<Unit>,
+    /// Selected air wings, which gate the strategic base's numeric text.
+    pub selected_air: &'a [u64],
+    pub selected_air_bases: &'a [u64],
+    /// Viewer-local fleet selection, distinct from selected task forces.
+    pub selected_fleets: &'a [u64],
     /// The local pointer's active counter window, identified by one bound member.
     pub hovered: Option<Unit>,
     /// The host view's shared province schedule.
@@ -1829,6 +1878,70 @@ impl CounterInputs<'_> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct AirMissionHover {
+    pub region: u32,
+    pub mission: Option<usize>,
+    pub rect: [f32; 4],
+    pub layer: u64,
+    pub text: Arc<viewer_foundation::tooltip_text::Tooltip>,
+}
+impl AirMissionHover {
+    pub fn contains(&self, point: [f32; 2]) -> bool {
+        viewer_foundation::map::gui_resources::contains(self.rect, point)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavalMissionHit {
+    pub region: u32,
+    pub mission: u32,
+    pub rect: [f32; 4],
+    pub layer: u64,
+    pub text: Option<Arc<viewer_foundation::tooltip_text::Tooltip>>,
+}
+
+impl NavalMissionHit {
+    pub fn contains(&self, point: [f32; 2]) -> bool {
+        viewer_foundation::map::gui_resources::contains(self.rect, point)
+    }
+}
+
+/// Regional naval controls retain their simulation identity for the hover product.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavalRegionalControl {
+    Combat(usize),
+    Results(usize),
+    Mines,
+    Accidents,
+    Convoy(u64),
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavalRegionalHover {
+    pub region: u32,
+    pub control: NavalRegionalControl,
+    pub rect: [f32; 4],
+    pub layer: u64,
+    pub hit: Option<viewer_foundation::map::native_gui::HitGeometry>,
+    pub supported: bool,
+    pub text: Option<Arc<viewer_foundation::tooltip_text::Tooltip>>,
+}
+impl NavalRegionalHover {
+    pub fn contains(&self, point: [f32; 2]) -> bool {
+        self.hit.as_ref().map_or_else(
+            || viewer_foundation::map::gui_resources::contains(self.rect, point),
+            |hit| hit.contains(point),
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AirGridHover {
+    pub family: IconFamily,
+    pub members: Option<Arc<Vec<u64>>>,
+    pub text: Arc<viewer_foundation::tooltip_text::Tooltip>,
+}
+
 /// What one frame of icons drew, for reporting.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CounterReport {
@@ -1836,6 +1949,14 @@ pub struct CounterReport {
     pub unit_hits: Vec<viewer_foundation::map::counter_hovers::unit_hits::Hit>,
     /// Actual drawn base buttons, at their content-defined native priorities.
     pub base_hits: Vec<viewer_foundation::map::counter_hovers::unit_hits::Blocker>,
+    /// Radar base-hit index to province; the range manager follows the hovered icon.
+    pub radar_hits: BTreeMap<usize, u32>,
+    pub air_base_hits: BTreeMap<usize, (u32, i32)>,
+    pub air_grid_hits: BTreeMap<usize, AirGridHover>,
+    pub air_mission_hits: Vec<AirMissionHover>,
+    pub naval_mission_hits: Vec<NavalMissionHit>,
+    pub naval_region_hovers: Vec<NavalRegionalHover>,
+    pub regional_naval_unit_hits: BTreeSet<usize>,
     pub combat_hits: Vec<Hit>,
     /// Naval tooltip observers, including progress icons without click callbacks.
     pub naval_marker_hovers: Vec<Hit>,
@@ -2227,6 +2348,13 @@ impl CounterReport {
         let Self {
             unit_hits,
             base_hits,
+            radar_hits,
+            air_base_hits,
+            air_grid_hits,
+            air_mission_hits,
+            naval_mission_hits,
+            naval_region_hovers,
+            regional_naval_unit_hits,
             combat_hits,
             naval_marker_hovers,
             land_hovers,
@@ -2298,6 +2426,14 @@ impl CounterReport {
         } = source;
         self.unit_hits.clone_from(unit_hits);
         self.base_hits.clone_from(base_hits);
+        self.radar_hits.clone_from(radar_hits);
+        self.air_base_hits.clone_from(air_base_hits);
+        self.air_grid_hits.clone_from(air_grid_hits);
+        self.air_mission_hits.clone_from(air_mission_hits);
+        self.naval_mission_hits.clone_from(naval_mission_hits);
+        self.naval_region_hovers.clone_from(naval_region_hovers);
+        self.regional_naval_unit_hits
+            .clone_from(regional_naval_unit_hits);
         self.combat_hits.clone_from(combat_hits);
         if self.counter_flag_gaps != *counter_flag_gaps {
             self.counter_flag_gaps.clone_from(counter_flag_gaps);
@@ -2452,6 +2588,7 @@ pub struct CounterFrame {
     /// Base, naval-HQ and facility glyphs, drawn before the victory-point labels.
     pub bases: Batch,
     native_bases: base_windows::PreparedBases,
+    native_air: air_missions::Prepared,
     /// Priority 3 port items; the columns of priority-10 counters are laid out per frame by
     /// [`PreparedCounters::draw`].
     pub counters: Batch,
@@ -2559,6 +2696,17 @@ pub struct HourTables {
 }
 
 impl HourTables {
+    /// Camera-independent regional source products, with complete ledger coverage.
+    pub fn naval_dominance_sources(
+        &self,
+    ) -> Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap> {
+        self.missions
+            .naval_dominance_sources
+            .clone()
+            .unwrap_or_else(|| {
+                Arc::new(Err("naval dominance source preparation unavailable".into()))
+            })
+    }
     pub fn vision(&self) -> &Arc<Vision> {
         &self.vision
     }
@@ -2734,9 +2882,11 @@ pub fn hour_tables(
                 .collect();
             let mut icons =
                 MissionIcons::read(frame, &vision, &links, &country_ids, &native, &forces)?;
-            if icons.regions.values().flatten().any(|entry| {
-                engine_native::naval_mission_inputs::MISSION_KINDS.contains(&entry.kind)
-            }) {
+            icons.naval_dominance_sources = Some(Arc::new(Ok(BTreeMap::new())));
+            if frame
+                .complete::<tables::NavalMissionLedgers>()
+                .map_or(true, |rows| !rows.is_empty())
+            {
                 let world =
                     dashboard_text::triggers::World::new(frame, reads.trigger_content.facts())
                         .map_err(|error| error.to_string());
@@ -2857,6 +3007,7 @@ pub fn prepare_cached(
 
     faction_pings(inputs, &tables.pings, &mut out);
     bases(inputs, frame, tables, &mut out)?;
+    out.native_air = air_missions::Prepared::read(inputs, frame, &tables.vision)?;
     // `counter_ideology`'s frame per logical owner, decided once an hour.
     let ideologies = Mutex::new(BTreeMap::new());
     let ideology = |slot: u32| {
@@ -2877,7 +3028,6 @@ pub fn prepare_cached(
         country_ids: &tables.country_ids,
         aggression: &inputs.content.aggression,
         ideology: &ideology,
-        coarse: coarse(inputs),
     };
     let naval = NavalContext::read(units_shown(inputs, tables.peace_conference), frame, sources)?;
     // The naval map-icon windows' plan names every task force the hour holds: a counter at sea
@@ -2895,6 +3045,26 @@ pub fn prepare_cached(
         )?),
         None => None,
     };
+    if inputs.visibility.priorities == PriorityTable::StrategicAir
+        && let (Some(land), Some(naval)) = (&prepared_land, &naval)
+    {
+        let census = air_grid::Census::new(frame);
+        for flotilla in &land.flotillas {
+            if flotilla.owner == tables.vision.ours() {
+                out.naval.carrier_sea.insert(
+                    flotilla.source,
+                    census.as_ref().map_err(Clone::clone).and_then(|census| {
+                        census.carrier(
+                            inputs,
+                            naval.ship_inputs.as_ref(),
+                            &flotilla.members,
+                            tables.vision.ours(),
+                        )
+                    }),
+                );
+            }
+        }
+    }
     out.report.grouping_gaps = grouping_gaps.into_inner();
     port_counters(
         inputs,
@@ -2922,6 +3092,15 @@ pub fn prepare_cached(
         &mut out,
     )?;
     naval_missions(inputs, &tables.missions, &mut out)?;
+    naval_regional::prepare(
+        inputs,
+        frame,
+        &tables.vision,
+        &owner,
+        naval.as_ref().ok_or(sources),
+        &tables.countries,
+        &mut out,
+    )?;
     out.report.perspective = Arc::clone(&tables.vision);
     out.report.eta = tables.movement.eta.clone();
     Ok(PreparedCounters {
@@ -2979,7 +3158,7 @@ impl PreparedCounters {
         time: f32,
         naval: &mut naval_windows::Windows,
         pings: &mut PoolView,
-        bases: &mut [PoolView; base_windows::FAMILIES],
+        bases: &mut BaseView,
         land_combats: &mut land_windows::View,
     ) -> io::Result<()> {
         let Self { fixed, land, drawn } = self;
@@ -3052,6 +3231,9 @@ impl PreparedCounters {
             )?;
         }
         batch.quads.extend_from_slice(&fixed.counters.quads);
+        fixed
+            .native_air
+            .draw(inputs, time, &mut naval.air_missions, combats, report);
         missing_owners.sort_unstable();
         missing_owners.dedup();
         let tags = land.as_ref().map(|land| &land.countries.tags);

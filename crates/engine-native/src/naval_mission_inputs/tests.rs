@@ -128,6 +128,8 @@ fn task_force_row_keeps_every_efficiency_operand() {
     assert_eq!(
         row,
         Operands {
+            stat_block: STATS,
+            location: PROVINCE,
             id: 77,
             kind: ESCORT,
             mission_owner: 9,
@@ -137,7 +139,12 @@ fn task_force_row_keeps_every_efficiency_operand() {
                 value(5_000),
                 Value::default(),
                 Value::default(),
-                value(-1_000)
+                Value::default(),
+                Value::default(),
+                Value::default(),
+                value(-1_000),
+                Value::default(),
+                Value::default()
             ],
             leader: (9 << 32) | 4713,
             headquarters: 2,
@@ -158,7 +165,7 @@ fn task_force_row_keeps_every_efficiency_operand() {
     put_u64(&mut docked, TASK + cunit::LOCATION, 0_u64);
     put_u32(&mut docked, TASK + LOCAL_MODIFIERS + 8, u32::MAX);
     let row = read_row(&docked, &mut [0; 2]).unwrap();
-    assert_eq!((row.region, row.local), (0, [Value::default(); 4]));
+    assert_eq!((row.region, row.local), (0, [Value::default(); 9]));
     // A location that is no province is refused.
     let mut stray = bytes;
     put_u64(&mut stray, PROVINCE, 1_u64);
@@ -407,7 +414,7 @@ fn headquarters_sum_only_a_kind_two_unit_leaders_four_sources() {
         base: 0,
         bytes: &bytes,
     };
-    let mut out = [[Value::default(); 4]; 4];
+    let mut out = [[Value::default(); 9]; 4];
     assert_eq!(
         headquarters_modifiers(&memory, 0, (5 << 32) | 73, &resolve, &mut out),
         Ok(())
@@ -445,7 +452,7 @@ fn leader_modifiers_need_a_navy_leader() {
         base: 0,
         bytes: &bytes,
     };
-    let mut out = [Value::default(); 4];
+    let mut out = [Value::default(); 9];
     assert_eq!(leader_modifiers(&memory, 0, 1, &resolve, &mut out), Ok(()));
     assert_eq!(
         out[TASK_FORCE_KEYS
@@ -587,7 +594,7 @@ fn region_weather_reads_the_indexed_record_or_nothing_outside_the_array() {
         bytes: &bytes,
     };
     let weather = cweather_manager::Reader::new(&memory, 0, STATE).unwrap();
-    let mut out = [Value::default(); 4];
+    let mut out = [Value::default(); 9];
     region_weather(&memory, &weather, 1, &mut out).unwrap();
     assert_eq!(
         out,
@@ -598,10 +605,143 @@ fn region_weather_reads_the_indexed_record_or_nothing_outside_the_array() {
             },
             Value::default(),
             Value::default(),
+            Value::default(),
+            Value::default(),
+            Value::default(),
+            Value::default(),
+            Value::default(),
             Value::default()
         ]
     );
     // A region past the weather array has no object and contributes nothing.
     region_weather(&memory, &weather, 2, &mut out).unwrap();
-    assert_eq!(out, [Value::default(); 4]);
+    assert_eq!(out, [Value::default(); 9]);
+}
+
+#[test]
+fn regional_raiding_packet_is_kind_and_activation_demanded() {
+    use std::cell::RefCell;
+    struct Trace<'a> {
+        memory: SliceMemory<'a>,
+        reads: RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Trace<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((at, out.len()));
+            self.memory.copy(at, out)
+        }
+    }
+    let mut bytes = task_force();
+    let mission = TASK + MISSION;
+    let mut resolver = crate::creference_registry::ScopedResolver::new(0);
+    let trace = Trace {
+        memory: SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        reads: Default::default(),
+    };
+    assert_eq!(
+        read_raiding_grid(&trace, 0, visit(ESCORT), &mut resolver),
+        None
+    );
+    assert!(trace.reads.borrow().is_empty());
+    assert_eq!(
+        read_raiding_grid(&trace, 0, visit(RAIDING), &mut resolver),
+        Some(RaidingGrid::default())
+    );
+    assert_eq!(
+        *trace.reads.borrow(),
+        vec![(mission + cnaval_mission::IS_IN_REGIONS, 1)]
+    );
+    bytes[mission + cnaval_mission::IS_IN_REGIONS] = 7;
+    put_u64(&mut bytes, mission + RAID_SPOTTING, (-50_001_i64) as u64);
+    put_ptr(&mut bytes, mission + RAID_REGION, REGION);
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        read_raiding_grid(&memory, 0, visit(RAIDING), &mut resolver),
+        Some(RaidingGrid {
+            active: 7,
+            region: Some(44),
+            spotting: Some(-50_001),
+            targets: Some([Some(false); 2]),
+            ..Default::default()
+        })
+    );
+}
+
+#[test]
+fn active_raider_spotting_refusal_preserves_region_and_target_observations() {
+    struct DenySpotting<'a>(SliceMemory<'a>);
+    impl Memory for DenySpotting<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            if at == TASK + MISSION + RAID_SPOTTING {
+                false
+            } else {
+                self.0.copy(at, out)
+            }
+        }
+    }
+    let mut bytes = task_force();
+    bytes[TASK + MISSION + cnaval_mission::IS_IN_REGIONS] = 1;
+    put_ptr(&mut bytes, TASK + MISSION + RAID_REGION, REGION);
+    let row = read_raiding_grid(
+        &DenySpotting(SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        }),
+        0,
+        visit(RAIDING),
+        &mut crate::creference_registry::ScopedResolver::new(0),
+    )
+    .unwrap();
+    assert_eq!(row.spotting, None);
+    assert_eq!(row.region, Some(44));
+    assert_eq!(row.targets, Some([Some(false); 2]));
+}
+
+#[test]
+fn original_selector_observations_keep_first_fault_and_successful_prefix() {
+    struct Deny<'a> {
+        memory: SliceMemory<'a>,
+        at: usize,
+    }
+    impl Memory for Deny<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            at != self.at && self.memory.copy(at, out)
+        }
+    }
+    let bytes = task_force();
+    for (denied, stats, location) in [
+        (
+            TASK + cunit::STAT_BLOCK,
+            Some(Err("original task-force stat selector unreadable")),
+            None,
+        ),
+        (TASK + UNDERWAY, Some(Ok(STATS)), Some(Ok(PROVINCE))),
+    ] {
+        let memory = Deny {
+            memory: SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            at: denied,
+        };
+        let mut selectors = OriginalSelectors::default();
+        let result = read_task_force_transport_observed_buffer_with_stats(
+            &memory,
+            0,
+            visit(2),
+            crate::walk::Buffer::Fixed(&mut []),
+            &mut None,
+            &mut None,
+            &mut selectors,
+        );
+        assert!(result.is_err());
+        assert_eq!(selectors.stats, stats);
+        assert_eq!(selectors.location, location);
+    }
 }

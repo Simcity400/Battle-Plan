@@ -87,7 +87,13 @@ pub fn choices(frame: &DecodedFrame) -> io::Result<Vec<FlagChoice>> {
     Ok(links
         .into_iter()
         .filter_map(|(raw, slot)| {
-            let country = countries.get(&slot)?;
+            let country =
+                crate::triggers::refusal::reference(countries.get(&slot), slot != 0, || {
+                    crate::triggers::refusal::missing_reference(
+                        replay_data::rows::TableId::Countries,
+                        Some(crate::triggers::Store::Country(slot)),
+                    )
+                })?;
             // Atlas population tests the object's own country reference.
             if (country.id as i32) <= 0 {
                 return None;

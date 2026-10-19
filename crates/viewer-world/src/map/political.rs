@@ -65,7 +65,7 @@ pub struct Regions {
     pub country_colors: HashMap<u32, [u8; 3]>,
     /// Limitations at this hour, in the same style as `document::Palette`.
     pub warnings: Vec<String>,
-    /// Political naval attributes indexed by strategic region id.
+    /// Political naval attributes indexed by the strategic layer's nonzero region keys.
     pub strategic_attributes: BTreeMap<u32, super::gradient::Attributes>,
     /// What the map mode draws in the two channels; `None` draws the political channels.
     pub mode: Option<Arc<super::map_mode::Draw>>,
@@ -446,7 +446,15 @@ pub fn build_with_naval(
 ) -> io::Result<PoliticalLayers> {
     let mut layers = build(map, frame)?;
     let regions = Arc::make_mut(&mut layers.regions);
-    regions.strategic_attributes = naval.attributes;
+    regions.strategic_attributes = naval
+        .attributes
+        .into_iter()
+        .map(|(id, attributes)| {
+            id.checked_add(1)
+                .map(|key| (key, attributes))
+                .ok_or_else(|| invalid("strategic region id exceeds the region key range"))
+        })
+        .collect::<io::Result<_>>()?;
     regions.warnings.extend(naval.warnings);
     regions.warnings.extend(mode.warnings);
     regions.mode = mode.draw.map(Arc::new);

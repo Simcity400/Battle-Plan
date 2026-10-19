@@ -206,7 +206,9 @@ pub(super) fn status(
         .cloned()
         .collect();
     let evaluator = Evaluator::new(&context.world, Some(context));
-    let base = evaluator.mean_time_to_happen("base weight", &base_fields, Scopes::combat())?;
+    let base = evaluator
+        .mean_time_to_happen("base weight", &base_fields, Scopes::combat())
+        .map_err(|why| why.to_string())?;
     let scoped = evaluator.mean_time_to_happen("base weight", &fields, Scopes::combat());
     append(
         "base weight",
@@ -220,7 +222,7 @@ pub(super) fn status(
     if !scoped.as_ref().is_ok_and(|scoped| *scoped == base) {
         append(
             "scope weight",
-            scoped.and_then(|scoped| {
+            scoped.map_err(|why| why.to_string()).and_then(|scoped| {
                 builtin(
                     icons,
                     loc,

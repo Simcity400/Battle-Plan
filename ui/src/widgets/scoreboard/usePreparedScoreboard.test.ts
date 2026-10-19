@@ -5,14 +5,16 @@ import { createServer } from 'vite';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { PreparationReply, PreparationRequest } from '../../shell/preparation/contract';
 import type { ScoreboardPreparedParams, ScoreboardPreparedReply } from '../../generated/dashboard';
+import { preparedRefreshMs } from '../../dashboard/preparedSeries.ts';
 
 test('the actual scoreboard hook bounds 5000-country requests and retains cell errors across index publications', { timeout: 15_000 }, async () => {
   const states: unknown[] = [];
   const dependencies: (readonly unknown[])[] = [];
   const cleanups: (() => void)[] = [];
   const effects = new Map<number, () => void | (() => void)>();
-  let cursor = 0, effectCursor = 0;
+  let cursor = 0, effectCursor = 0, clock = 0;
   const harness = {
+    now: () => clock,
     useState(initial: unknown) {
       const index = cursor++;
       if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial;
@@ -33,7 +35,10 @@ test('the actual scoreboard hook bounds 5000-country requests and retains cell e
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';
         if (!path.endsWith('/widgets/scoreboard/preparedScoreboard.ts')) return;
-        return (await readFile(id, 'utf8')).replace("import { useEffect, useState } from 'react';", 'const { useEffect, useState } = globalThis.__scoreboardHookFixture;');
+        return (await readFile(id, 'utf8'))
+          .replace("import { useEffect, useState } from 'react';", 'const { useEffect, useState } = globalThis.__scoreboardHookFixture;')
+          .replace("import { preparedSeriesQuery } from '../../dashboard/preparedSeries.ts';", `import { preparedSeriesQuery as query } from '../../dashboard/preparedSeries.ts';
+const preparedSeriesQuery = (...args) => query(...args, globalThis.__scoreboardHookFixture.now);`);
       } }] });
   try {
     const { usePreparedScoreboard, preparedScoreboardRows } = await vite.ssrLoadModule('/ui/src/widgets/scoreboard/preparedScoreboard.ts');
@@ -113,7 +118,7 @@ test('the actual scoreboard hook bounds 5000-country requests and retains cell e
     assert.match(state.error, /did not supply/);
     assert.equal(queries.length, stopped + 2, 'an explicit retry issues one index and one cell request');
 
-    let through = -1, cellReads = 0;
+    let through = -1, cellReads = 0, refreshes = 0;
     let notifyStatus = () => {};
     const statuses: { request: PreparationRequest; resolve: (reply: PreparationReply) => void }[] = [];
     const preparingClient = {
@@ -136,6 +141,8 @@ test('the actual scoreboard hook bounds 5000-country requests and retains cell e
       if (!statuses.length) await new Promise<void>(resolve => { notifyStatus = resolve; });
       const next = statuses.shift()!;
       through = lastHour;
+      // Advance the query's existing clock seam to the next permitted publication.
+      clock += preparedRefreshMs(refreshes++);
       next.resolve({ ...next.request, state: 'preparing', sections: [], backgroundEnabled: true, bytes: '0', error: null,
         coverage: { '1': { firstHour: 0, lastHour, complete: false } } });
       await settle(); state = draw();

@@ -31,6 +31,7 @@ regions={0={region=0 temperature=-90071992547.40993
     };
     *frame.tables[TableId::WeatherProvinces.index()] =
         TableView::Complete(TableRows::WeatherProvinces(vec![WeatherProvinceRow {
+            daylight: replay_data::rows::Recorded::Value(None),
             id: 0,
             snow: 9_007_199_254_740_993,
             permanent_snow: 4_000_000,
@@ -90,7 +91,16 @@ regions={0={region=0 temperature=-90071992547.40993
     );
     assert!(report.coverage_line().contains(": incomplete;"));
     assert!(report.outcome().is_err());
-    assert_eq!(report.limitations.len(), 5);
+    assert_eq!(report.limitations.len(), 7);
+    assert!(report.limitations.values().flatten().any(|field| field ==
+        "WeatherRegions.map_modifiers_known, naval_detection, air_attack, air_defence: runtime only"));
+    assert!(
+        report
+            .limitations
+            .values()
+            .flatten()
+            .any(|field| field == "WeatherProvinces.daylight: runtime only")
+    );
     assert!(report.limitations.contains_key(
         "the weather manager writer omits the stored day/night array; held clocks require a matched native read witness, and updated clocks are the hour's derivation from content (`recorder derived` compares it with recorded clocks)"
     ));

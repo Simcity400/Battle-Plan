@@ -76,6 +76,8 @@ pub const WITHDRAWING: usize = 0x19b;
 /// nonnegative. Preserve other negative values; omission proves negativity
 /// rather than a particular sentinel. Invasion-source distance is separate.
 pub const HQ_DISTANCE: usize = 0x1c4;
+/// Province paired with the stored headquarters communication distance.
+pub const HQ_NEAREST_FRONT: usize = 0x1c8;
 /// Signed distance selected for a kind-3 primary HQ root. Serialization
 /// emits it only when nonnegative; omission proves negativity rather than
 /// a particular sentinel.
@@ -444,6 +446,7 @@ pub struct CounterInputsRow {
     pub border_war_presence: Option<u8>,
     /// Distinct from `HQ_DISTANCE`; unknown negative values remain exact signed words.
     pub invasion_source_distance: Option<i32>,
+    pub hq_nearest_front: Option<i32>,
 }
 
 /// Reads each root of a complete registry census after re-authenticating its identity.
@@ -577,6 +580,7 @@ fn counter_inputs(
                     leader_enroute_days: None,
                     border_war_presence: None,
                     invasion_source_distance: None,
+                    hq_nearest_front: None,
                 };
             }
         }
@@ -616,6 +620,12 @@ fn counter_inputs(
             row.hq_distance = record.get::<i32>(HQ_DISTANCE).or_else(|| {
                 root.pointer
                     .checked_add(HQ_DISTANCE)
+                    .and_then(|address| read(memory, address))
+            });
+            // Already present between the two distance words in this suffix.
+            row.hq_nearest_front = record.get::<i32>(HQ_NEAREST_FRONT).or_else(|| {
+                root.pointer
+                    .checked_add(HQ_NEAREST_FRONT)
                     .and_then(|address| read(memory, address))
             });
             row.border_war_presence = record

@@ -241,7 +241,11 @@ impl Renderer<'_, '_, '_> {
         let Some(kind) = kind else {
             return Ok(String::new());
         };
-        let token = self.context.world()?.token_of(kind.name.as_bytes())?;
+        let token = self
+            .context
+            .world()?
+            .token_of(kind.name.as_bytes())
+            .map_err(|why| why.to_string())?;
         let buildings = self
             .context
             .text
@@ -325,7 +329,8 @@ impl Renderer<'_, '_, '_> {
         let state = match field(children(item), "state") {
             Some(state) => self
                 .evaluator()?
-                .scoped_state_id(scalar_operand(state)?, scopes)? as u32,
+                .scoped_state_id(scalar_operand(state)?, scopes)
+                .map_err(|why| why.to_string())? as u32,
             None => match scopes.this {
                 Scope::State(state) => state,
                 _ => NULL_STATE,
@@ -372,13 +377,15 @@ impl Renderer<'_, '_, '_> {
         let receiver = match field(children(item), "receiver") {
             Some(receiver) => self
                 .evaluator()?
-                .scoped_country(scalar_operand(receiver)?, scopes)?,
+                .scoped_country(scalar_operand(receiver)?, scopes)
+                .map_err(|why| why.to_string())?,
             None => None,
         };
         let state = match field(children(item), "state") {
             Some(state) => self
                 .evaluator()?
-                .scoped_state_id(scalar_operand(state)?, scopes)? as u32,
+                .scoped_state_id(scalar_operand(state)?, scopes)
+                .map_err(|why| why.to_string())? as u32,
             None => 0,
         };
         if self.valid_state(state)?.is_none() {
@@ -458,8 +465,8 @@ impl Renderer<'_, '_, '_> {
                 };
                 let state = self
                     .evaluator()?
-                    .scoped_state_id(scalar_operand(state)?, scopes)?
-                    as u32;
+                    .scoped_state_id(scalar_operand(state)?, scopes)
+                    .map_err(|why| why.to_string())? as u32;
                 if self.valid_state(state)?.is_none() {
                     return Ok(String::new());
                 }
@@ -687,7 +694,8 @@ impl Renderer<'_, '_, '_> {
         if let Some(scoped) = scoped {
             let state = self
                 .evaluator()?
-                .scoped_state_id(scalar_operand(scoped)?, scopes)? as u32;
+                .scoped_state_id(scalar_operand(scoped)?, scopes)
+                .map_err(|why| why.to_string())? as u32;
             return Ok(self.valid_state(state)?.map(|row| row.id));
         }
         if self.valid_state(plain as u32)?.is_some() {
@@ -723,7 +731,11 @@ impl Renderer<'_, '_, '_> {
         {
             return Ok(0); // name lookup returns the native null resource.
         }
-        let token = self.context.world()?.token_of(name.as_bytes())?;
+        let token = self
+            .context
+            .world()?
+            .token_of(name.as_bytes())
+            .map_err(|why| why.to_string())?;
         self.context
             .text
             .frame()

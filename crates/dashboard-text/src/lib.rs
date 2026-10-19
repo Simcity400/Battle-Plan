@@ -24,6 +24,7 @@ pub mod party_names;
 pub mod scope;
 pub mod scripted_text;
 pub mod state_resources;
+pub mod template_facts;
 pub mod triggers;
 pub mod unit_names;
 pub mod variant_names;
@@ -32,3 +33,5 @@ pub use dashboard_core::invalid;
 #[cfg(test)]
 pub(crate) use dashboard_core::test_fixtures;
 pub(crate) use dashboard_core::{dto::*, map_settings, transport};
+
+pub mod stability;

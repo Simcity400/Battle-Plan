@@ -1,2 +1,10 @@
 .factions-widget { height: 100%; min-height: 0; overflow: auto; padding: var(--space-1) 0 var(--space-2); }
 .factions-widget > .chart-legend { padding-bottom: var(--space-2); }
+.faction-details { padding: var(--space-2); border-top: 1px solid var(--border); }
+.faction-details > summary { cursor: pointer; margin-bottom: var(--space-2); }
+.faction-manifest { margin-top: var(--space-2); }
+.faction-goal-list { max-height: 24rem; overflow: auto; }
+.faction-goal { display: grid; gap: var(--space-1); padding: var(--space-2) 0; }
+.faction-goal p, .faction-manifest p { margin: 0; white-space: pre-wrap; }
+
+.faction-detail-coverage { color: var(--muted); font-size: var(--type-xs); }

@@ -10,6 +10,7 @@ use super::{
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
+    pub accident_reports: BTreeMap<Vec<u8>, Vec<super::naval_accidents::Report>>,
     /// The entire container is omitted precisely when its count is zero.
     pub sunk_convoys: Vec<SunkConvoy>,
     /// `history.sunk_ship` entries are emitted in increasing vector position.
@@ -178,6 +179,56 @@ pub struct OrdersGroup {
     /// Stored HQ distance, written as `hq_distance_to_naval_invasion_source`
     /// only when nonnegative.
     pub invasion_source_distance: Option<i32>,
+    /// Emitted only when nonnegative, independently of distance.
+    pub hq_nearest_front: Option<i32>,
+    pub target_template: Option<u64>,
+    pub hq_deployed: bool,
+    pub hq_queued: bool,
+    pub hq_deployment: Option<HqDeployment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HqDeployment {
+    pub country: Vec<u8>,
+    pub priority: i32,
+    pub equipment: super::production::Pool,
+    pub required: Vec<(Vec<u8>, Decimal)>,
+    pub assembled_manpower: i32,
+    pub requested_manpower: i32,
+    pub order: i32,
+    pub requisitioned: bool,
+}
+
+fn hq_deployment(items: &[Item]) -> io::Result<HqDeployment> {
+    let required = required_block(items, b"hq_requested_equipment")?
+        .iter()
+        .map(|entry| {
+            let token = entry
+                .key
+                .as_ref()
+                .ok_or_else(|| invalid("headquarters requirement lacks a definition key"))?;
+            Ok((token.clone(), Decimal::parse(scalar(&entry.value)?)?))
+        })
+        .collect::<io::Result<_>>()?;
+    Ok(HqDeployment {
+        country: required_bytes(items, b"country")?,
+        priority: bytes(items, b"priority")?
+            .map(|value| integer(&value))
+            .transpose()?
+            .unwrap_or(1),
+        equipment: super::production::parse_pool(required_block(
+            items,
+            b"hq_assembled_equipment",
+        )?)?,
+        required,
+        assembled_manpower: integer(&required_bytes(items, b"hq_assembled_manpower")?)?,
+        requested_manpower: integer(&required_bytes(items, b"hq_requested_manpower")?)?,
+        order: integer(&required_bytes(items, b"hq_deploy_order")?)?,
+        requisitioned: boolean(
+            field(items, b"hq_requisitioned_from_army")?
+                .ok_or_else(|| invalid("headquarters requisition flag missing"))?,
+        )?,
+    })
 }
 
 fn railways(items: &[Item]) -> io::Result<Option<BTreeMap<u32, Railway>>> {
@@ -287,6 +338,23 @@ fn orders_groups(theatre: &[Item]) -> io::Result<Vec<OrdersGroup>> {
                             Ok(value)
                         }
                     })
+                    .transpose()?,
+                hq_nearest_front: bytes(fields, b"hq_nearest_front_province_id")?
+                    .map(|value| integer::<i32>(&value))
+                    .transpose()?,
+                target_template: field(fields, b"target_template")?
+                    .map(typed_handle)
+                    .transpose()?,
+                hq_deployed: field(fields, b"deployed")?
+                    .map(boolean)
+                    .transpose()?
+                    .unwrap_or(false),
+                hq_queued: field(fields, b"deploy_queued")?
+                    .map(boolean)
+                    .transpose()?
+                    .unwrap_or(false),
+                hq_deployment: field(fields, b"hq_deploy_distributable")?
+                    .map(|value| hq_deployment(block(value)?))
                     .transpose()?,
                 invasion_source_distance: bytes(fields, b"hq_distance_to_naval_invasion_source")?
                     .map(|value| integer::<i32>(&value))
@@ -595,7 +663,7 @@ fn country_list(items: &[Item], key: &[u8]) -> io::Result<Vec<Vec<u8>>> {
         .collect()
 }
 
-fn sunk_ship(items: &[Item]) -> io::Result<SunkShip> {
+pub(crate) fn sunk_ship(items: &[Item]) -> io::Result<SunkShip> {
     let assist = field(items, b"assist")?.map(boolean).transpose()?;
     if assist == Some(false) {
         return Err(invalid("sunk ship writer omits an unset assist flag"));
@@ -659,6 +727,7 @@ pub(super) fn parse_with_countries(
         supremacy_regions: supremacy_regions(items)?,
         railways: railways(items)?,
         theatre_countries: theatre_countries(countries)?,
+        accident_reports: super::naval_accidents::parse(countries)?,
         ..Default::default()
     };
     if let Some(value) = field(items, b"sunk_convoys_history")? {

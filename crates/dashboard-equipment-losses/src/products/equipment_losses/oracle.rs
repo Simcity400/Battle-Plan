@@ -1,7 +1,7 @@
 //! Recording scan retained only as the loss parity oracle.
 use super::*;
 
-pub(super) const SELECTED: [TableId; 18] = [
+pub(super) const SELECTED: [TableId; 19] = [
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,
@@ -15,6 +15,7 @@ pub(super) const SELECTED: [TableId; 18] = [
     TableId::SunkConvoys,
     TableId::LendLeaseEquipment,
     TableId::VariantDefinitions,
+    TableId::VariantChanges,
     TableId::LexicalTokens,
     TableId::CountryAppearance,
     TableId::VariantModules,

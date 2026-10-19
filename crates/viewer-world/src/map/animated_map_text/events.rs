@@ -286,8 +286,10 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn text(&self, key: &[u8], args: &[(&str, Argument<'_>)]) -> Vec<u8> {
-        self.localisation.localise_bytes(key, args)
+    fn text(&self, key: &[u8], args: &[(&str, Argument<'_>)]) -> Result<Vec<u8>, String> {
+        self.localisation
+            .localise_bytes(key, args)
+            .map_err(|error| error.to_string())
     }
 
     /// The event's text for this viewer, or `None` when the game would not
@@ -301,7 +303,7 @@ impl<'a> Context<'a> {
                 (
                     unit.anchor_province,
                     Style::CombatLoss,
-                    self.text(FAKE_DIVISION_REVEALED, &[]),
+                    self.text(FAKE_DIVISION_REVEALED, &[])?,
                 )
             }
             MapEventPayload::RailwayGunOverrun(unit) => {
@@ -311,13 +313,13 @@ impl<'a> Context<'a> {
                 (
                     unit.anchor_province,
                     Style::CombatLoss,
-                    self.text(RAILWAY_GUN_OVERRUN, &[]),
+                    self.text(RAILWAY_GUN_OVERRUN, &[])?,
                 )
             }
             MapEventPayload::CriticalShoreBombardment(critical) => (
                 critical.province,
                 Style::SiegeInfo,
-                self.text(CRITICAL_BOMBARDMENT, &[]),
+                self.text(CRITICAL_BOMBARDMENT, &[])?,
             ),
             MapEventPayload::GeneralCaptured(capture) => {
                 let viewer = self.viewer()?;
@@ -330,7 +332,7 @@ impl<'a> Context<'a> {
                 (
                     capture.province,
                     Style::SiegeInfo,
-                    self.text(GENERAL_CAPTURED, &[]),
+                    self.text(GENERAL_CAPTURED, &[])?,
                 )
             }
             MapEventPayload::ParadropLanding(paradrop) => {
@@ -342,7 +344,7 @@ impl<'a> Context<'a> {
                 } else {
                     PARADROP_LANDED
                 };
-                (paradrop.province, Style::SiegeInfo, self.text(key, &[]))
+                (paradrop.province, Style::SiegeInfo, self.text(key, &[])?)
             }
             MapEventPayload::ResistanceActivity(activity) => {
                 let viewer = self.viewer()?;
@@ -355,12 +357,13 @@ impl<'a> Context<'a> {
                     return Ok(None);
                 }
                 // The game shows nothing for an activity whose text is empty.
-                let text = self.text(&activity.key, &[]);
+                let text = self.text(&activity.key, &[])?;
                 if text.is_empty() {
                     return Ok(None);
                 }
                 (activity.province, Style::SiegeInfo, text)
             }
+            MapEventPayload::ScriptedMapRefresh(_) => return Ok(None),
             MapEventPayload::BuildingDamage(building) => {
                 if !self.same(self.viewer()?, building.controller)? {
                     return Ok(None);
@@ -384,7 +387,7 @@ impl<'a> Context<'a> {
                     self.text(
                         building_key(building.reason),
                         &[(BUILDING_ARGUMENT, Argument::Text(&name))],
-                    ),
+                    )?,
                 )
             }
         };
@@ -502,8 +505,12 @@ impl Prepared {
             let mut in_flight = false;
             for family in MapEventFamily::ALL {
                 let health = row.health(family);
-                in_flight |= health.faults.contains(MapEventFault::InFlight);
                 coverage[family.index()] = table_complete && health.complete;
+                // Scripted refresh coverage belongs to the colour-layer consumer.
+                if family == MapEventFamily::ScriptedMapRefresh {
+                    continue;
+                }
+                in_flight |= health.faults.contains(MapEventFault::InFlight);
                 if !coverage[family.index()] {
                     coverage_refusals.push(format!(
                         "map text {} coverage unknown ({}; {} refused)",

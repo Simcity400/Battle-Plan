@@ -13,13 +13,11 @@ use std::{
 
 use engine_native::cbuilding_template;
 use installed_content_core::map::ProvinceKind;
-use replay_data::{
-    rows::AIR_MISSION_BASE_EQUIPMENT_FLAGS, rows::AIR_MISSION_FOREIGN_TARGET_FLAG,
-    rows::AIR_MISSION_LAY_MINES, rows::AirBaseRow, rows::AirWingRow, rows::BuildingRow,
-    rows::DivisionMovementRow, rows::DivisionRow, rows::LandCombatRow, rows::LandCombatSideRow,
-    rows::NavalBaseRow, rows::NavalCombatDetailsRow, rows::NavalCombatRow, rows::NavalMineLevelRow,
-    rows::ProvinceRow, rows::ProvinceUnitOrderRow, rows::StateRow, rows::TableSchema,
-    rows::TaskForceRow, rows::tables,
+use replay_data::rows::{
+    AIR_MISSION_BASE_EQUIPMENT_FLAGS, AIR_MISSION_FOREIGN_TARGET_FLAG, AIR_MISSION_LAY_MINES,
+    AirBaseRow, AirWingRow, BuildingRow, DivisionMovementRow, DivisionRow, LandCombatRow,
+    LandCombatSideRow, NavalBaseRow, NavalCombatDetailsRow, NavalCombatRow, ProvinceRow,
+    ProvinceUnitOrderRow, StateRow, TableSchema, TaskForceRow, tables,
 };
 use replay_frame::frame::DecodedFrame;
 
@@ -1132,32 +1130,28 @@ impl<'a> NavalCombatTargetSources<'a> {
     }
 }
 
-/// The effective country's raw recorded mines in the mission region, compared with the content
-/// cap. The table is targeted, so a missing pair is Unknown, not zero.
+/// Air mine targets use the same complete sparse Navy vector as Navy map mode.
 pub struct MineTargetSources<'a> {
-    levels: Option<&'a [NavalMineLevelRow]>,
-    links: &'a BTreeMap<u32, u32>,
+    levels: Option<super::naval_mine_levels::Levels<'a>>,
 }
-
 impl<'a> MineTargetSources<'a> {
     pub fn read(frame: &'a DecodedFrame, links: &'a BTreeMap<u32, u32>) -> io::Result<Self> {
         Ok(Self {
-            levels: complete::<tables::NavalMineLevels>(frame)?,
-            links,
+            levels: super::naval_mine_levels::Levels::read(frame, links).ok(),
         })
     }
-
-    /// `maximum_raw` is the loader-clamped content cap; the comparison is
-    /// the native one for any value.
+    /// Unknown certification or an index outside the native vector refuses.
     pub fn admit(&self, wing: &AirWingRow, region: u32, maximum_raw: i64) -> Option<bool> {
         if region == 0 {
             return None;
         }
-        let country = canonical(effective_raw(wing), self.links).filter(|&country| country != 0)?;
-        let level = find(self.levels?, (country, region), |row| {
-            (row.country, row.region)
-        })?;
-        Some(level.raw_mines < maximum_raw)
+        Some(
+            self.levels
+                .as_ref()?
+                .amount(effective_raw(wing), region)
+                .ok()?
+                < maximum_raw,
+        )
     }
 }
 

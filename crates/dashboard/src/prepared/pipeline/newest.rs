@@ -299,7 +299,7 @@ impl Family<'_> {
         }
         let names = self.names;
         reports.begin(names, self.branches.len());
-        let started = Instant::now();
+        let started = super::start_timing(timings);
         for &branch in &self.branches {
             check_cancel(cancelled)?;
             #[cfg(test)]
@@ -328,7 +328,7 @@ impl Family<'_> {
             });
         }
         reports.update(names, |family| family.finished = true);
-        count(timings, names.timing, started.elapsed(), 1);
+        super::finish_timing(timings, started, names.timing, false);
         Ok(())
     }
 }
@@ -384,7 +384,12 @@ pub(super) fn jobs<'a>(
                 proven.diagnose_reported(phase.replay, workers, phase.cancelled, &mut report)?;
             if let Some(timings) = timings.as_mut() {
                 let family = timings.entry("newest.land.diagnostics").or_default();
-                family.observe += started.elapsed();
+                // Naming has its own row in the report, when any block was named.
+                family.observe += started.elapsed().saturating_sub(if report.naming > 0 {
+                    report.naming_took
+                } else {
+                    std::time::Duration::ZERO
+                });
                 family.calls += 1;
             }
             if let Some(diagnosed) = diagnosed {

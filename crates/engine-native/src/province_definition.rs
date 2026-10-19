@@ -24,6 +24,12 @@ pub const PIXEL_COUNT: usize = 0xc0;
 pub const ID: usize = 0xc4;
 /// Province-definition terrain flag byte.
 pub const TERRAIN_FLAGS: usize = 0xd2;
+/// The [`TERRAIN_FLAGS`] bit set for a land province; clear, the province is
+/// sea, and the land movement speed moves a leg to or from it at the owner's
+/// transport speed.
+pub const LAND_FLAG: u8 = 1;
+/// The lake bit; invasion selection requires both land and lake bits clear.
+pub const LAKE_FLAG: u8 = 2;
 /// Signed i32 port sea-zone ID identifying the sea province reached by a
 /// land port. Construction clears it. Authored port slots store their seventh
 /// field even below one; path-edge classification compares it with the sea neighbour.

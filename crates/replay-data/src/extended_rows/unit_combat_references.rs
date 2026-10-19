@@ -57,10 +57,15 @@ pub struct UnitCombatReferences {
     pub sample_hour: PacketHour,
     /// Native order including repeats. A present empty vector is known zero.
     pub entries: Vec<UnitCombatReference>,
+    /// Optional diagnostic native first-edge speed at this packet's held boundary.
+    /// Empty in ordinary recordings, encoding no bytes. A present None is a
+    /// refused native sample; a present speed compares exactly with playback.
+    pub speed_witness: Witnessed<Option<i64>>,
 }
 value_struct!(UnitCombatReferences {
     sample_hour: PacketHour,
-    entries: Vec<UnitCombatReference>
+    entries: Vec<UnitCombatReference>,
+    speed_witness: Witnessed<Option<i64>>
 });
 opaque_value!(Option<UnitCombatReferences>);
 

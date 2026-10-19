@@ -47,13 +47,36 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-pub const N: usize = 3;
+pub const N: usize = 3 + crate::history_capture::N;
 pub const TABLES: [TableId; N] = [
     TableId::CombatLogEquipment,
     TableId::CombatLogState,
     TableId::LendLeaseEquipment,
+    TableId::CombatLogGroups,
+    TableId::CombatLogMonths,
+    TableId::CombatLogManpower,
+    TableId::CombatLogTemplates,
+    TableId::CombatLogReferences,
+    TableId::CombatLogBattles,
+    TableId::CombatLogEnemyEquipment,
+    TableId::CombatLogBattleSides,
+    TableId::CombatLogBattleEquipment,
+    TableId::CombatLogBattleModifiers,
+    TableId::CombatLogBattleCountries,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
+    "combat log group walk and retained writer operands (charged to CombatLogEquipment)",
+    0,
+    &[0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
+)];
+
+/// Detach worker, after capture jobs and native writers have quiesced. Static
+/// Rust owners are not dropped by DLL unloading; release the retained cache
+/// explicitly. In-flight owned snapshots keep their independent Arc lifetime.
+pub fn release_retained_history() {
+    with_store(|store| store.retained = crate::history_capture::State::new());
+    crate::history_capture::release_conversion();
+}
 
 /// The sample before the daily prune: the hourly update runs the daily
 /// update, including the Combat Log prune, at raw hour `% 24 == 23`,
@@ -81,6 +104,7 @@ struct Final {
 /// contended; only the capture takes it, and the game thread only raises
 /// [`FORGET`].
 struct Store {
+    retained: crate::history_capture::State,
     signal: Option<i64>,
     /// The last sample hour the store was brought to.
     hour: Option<i32>,
@@ -91,6 +115,7 @@ struct Store {
 }
 
 impl Store {
+    #[cfg(test)]
     fn last_read(&self, country: u32) -> i32 {
         self.read_hour
             .binary_search_by_key(&country, |&(owner, _)| owner)
@@ -124,6 +149,7 @@ impl Store {
 }
 
 const EMPTY_STORE: Store = Store {
+    retained: crate::history_capture::State::new(),
     signal: None,
     hour: None,
     finals: Vec::new(),
@@ -233,6 +259,7 @@ impl Capacities {
 }
 
 pub struct Captured {
+    retained: crate::history_capture::Captured,
     rows: CaptureRows<native::Row>,
     lend_lease: CaptureRows<lend_lease::Row>,
     viewing: Result<i32, &'static str>,
@@ -257,12 +284,14 @@ impl Captured {
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.lend_lease
             .fail(super::failed_capture(TABLES[2], hour, force_full, reason));
+        self.retained.fail(reason);
         // The state is read every hour, so a failed job loses it.
         self.viewing = Err(reason);
     }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
         Self {
+            retained: crate::history_capture::Captured::new(),
             rows: CaptureRows::new(0),
             lend_lease: CaptureRows::new(0),
             viewing: Err(VIEWING_UNREAD),
@@ -276,6 +305,7 @@ impl Captured {
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
+            retained: crate::history_capture::Captured::new(),
             rows: CaptureRows::new(capacity.rows),
             lend_lease: CaptureRows::new(capacity.lend_lease),
             viewing: Err(VIEWING_UNREAD),
@@ -290,6 +320,7 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
+        self.retained.fail("combat log history acquisition pending");
         self.rows.reset();
         self.lend_lease.reset();
         self.viewing = Err(VIEWING_UNREAD);
@@ -362,7 +393,9 @@ impl Captured {
             };
             0
         };
-        [log_cost, state_cost, lend_lease_cost]
+        let mut costs = [0; N];
+        costs[..3].copy_from_slice(&[log_cost, state_cost, lend_lease_cost]);
+        costs
     }
 
     /// Bring the shared store to this sample: a new session starts it afresh,
@@ -379,6 +412,7 @@ impl Captured {
             store.read_hour.clear();
         }
         store.hour = Some(hour);
+        store.retained.begin(self.signal, force_full);
         let forget = take_forget();
         if forget {
             for (_, last) in &mut store.read_hour {
@@ -437,10 +471,11 @@ impl Captured {
             };
         }
         let selection = &self.selection;
-        let history = &*store;
+        let read_hour = &store.read_hour;
+        let retained = &mut store.retained;
         let visited = &mut self.visited;
         visited.clear();
-        let outcome = native::walk_prepared_growing(
+        let outcome = native::walk_prepared_growing_observed(
             memory,
             base,
             game_state,
@@ -456,7 +491,10 @@ impl Captured {
                         .map_err(|_| "collector allocation failed")?;
                 }
                 visited.push(country);
-                let last = history.last_read(country);
+                let last = read_hour
+                    .binary_search_by_key(&country, |&(owner, _)| owner)
+                    .map(|index| read_hour[index].1)
+                    .unwrap_or(NEVER);
                 Ok(Some(if force_full || needs_all(last, hour) {
                     native::Months::All
                 } else {
@@ -465,7 +503,20 @@ impl Captured {
             },
             &mut self.rows.rows,
             &mut self.memo,
+            &mut |country, pointer, ordinal, bytes| {
+                if let Err(reason) =
+                    retained.seed_group(memory, base, country, pointer, ordinal, bytes)
+                {
+                    retained.refuse(reason);
+                }
+                Ok(())
+            },
         );
+        if let Err(reason) = retained.finish(memory, base, matches!(outcome, Outcome::Rows { .. }))
+        {
+            retained.refuse(reason);
+        }
+        retained.snapshot(&mut self.retained);
         let Outcome::Rows { len } = outcome else {
             return outcome;
         };
@@ -504,17 +555,19 @@ impl Captured {
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
-        [
+        let ordinary = [
             self.rows.outcome,
             match self.viewing {
                 Ok(_) => Outcome::Rows { len: 1 },
                 Err(reason) => Outcome::Unavailable { reason },
             },
             self.lend_lease.outcome,
-        ]
+        ];
+        let retained = self.retained.outcomes();
+        std::array::from_fn(|i| if i < 3 { ordinary[i] } else { retained[i - 3] })
     }
 
-    pub fn tables(&self) -> [TableView; N] {
+    fn ordinary_tables(&self) -> [TableView; 3] {
         let state = self.viewing.map(|viewing_country_raw| CombatLogStateRow {
             viewing_country_raw,
             prune_observed: u8::from(self.prune_observed),
@@ -557,6 +610,30 @@ impl Captured {
             ),
         ]
     }
+    /// Production conversion shares unchanged certified snapshots directly with
+    /// the encoder. It allocates no collection per retained entity per hour.
+    pub fn table_inputs(&self) -> [replay_frame::frame::TableInput; N] {
+        let mut ordinary = self.ordinary_tables().into_iter();
+        let mut retained = self.retained.inputs().into_iter();
+        std::array::from_fn(|i| {
+            if i < 3 {
+                replay_frame::frame::TableInput::Sampled(ordinary.next().unwrap())
+            } else {
+                retained.next().unwrap()
+            }
+        })
+    }
+    pub fn tables(&self) -> [TableView; N] {
+        let mut ordinary = self.ordinary_tables().into_iter();
+        let mut retained = self.retained.tables().into_iter();
+        std::array::from_fn(|i| {
+            if i < 3 {
+                ordinary.next().unwrap()
+            } else {
+                retained.next().unwrap()
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -597,7 +674,7 @@ mod tests {
         let mut captured = Captured::with_capacities(&Capacities::default());
         for hour in 0..24 {
             captured.capture(&memory, 0, 0x1000, hour, false);
-            let [log, state, lend_lease] = captured.outcomes();
+            let [log, state, lend_lease, ..] = captured.outcomes();
             assert_eq!(state, Outcome::Rows { len: 1 }, "{hour}");
             let skipped = lend_lease
                 == Outcome::Unavailable {
@@ -611,7 +688,13 @@ mod tests {
                 "{hour}"
             );
         }
-        let [_, TableView::Complete(TableRows::CombatLogState(rows)), _] = captured.tables() else {
+        let [
+            _,
+            TableView::Complete(TableRows::CombatLogState(rows)),
+            _,
+            ..,
+        ] = captured.tables()
+        else {
             panic!("complete state");
         };
         assert_eq!(
@@ -635,7 +718,13 @@ mod tests {
         };
         let mut captured = Captured::with_capacities(&Capacities::default());
         captured.capture(&memory, 0, 0x1000, 5, false);
-        let [_, TableView::Complete(TableRows::CombatLogState(rows)), _] = captured.tables() else {
+        let [
+            _,
+            TableView::Complete(TableRows::CombatLogState(rows)),
+            _,
+            ..,
+        ] = captured.tables()
+        else {
             panic!("complete state");
         };
         assert_eq!(
@@ -972,6 +1061,7 @@ mod tests {
             TableView::Complete(TableRows::CombatLogEquipment(rows)),
             TableView::Complete(TableRows::CombatLogState(state)),
             TableView::Complete(TableRows::LendLeaseEquipment(lend)),
+            ..,
         ] = captured.tables()
         else {
             panic!("complete tables");

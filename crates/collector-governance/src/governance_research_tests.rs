@@ -440,7 +440,7 @@ struct Research {
 }
 
 /// Independent reference: the engine walks, country by country in census
-/// order, each into fresh fixed buffers sized for this fixture's population,
+/// order, each into fresh buffers grown from the observed inventory demand,
 /// and every per-country outcome must be complete.
 fn reference(world: &World) -> Research {
     let countries = ccountry::Reader::new(world, BASE, GAME_STATE).expect("census readable");
@@ -459,7 +459,7 @@ fn reference(world: &World) -> Research {
         visited.push((country.canonical_slot, country.id, country.pointer));
         let mut inputs = vec![research_inputs::Row::default(); FIRST.slots.len()];
         let mut bonuses = vec![research_inputs::BonusRow::default(); FIRST.bonuses.len()];
-        let mut modifiers = vec![research_modifiers::Row::default(); 20];
+        let mut modifiers = Vec::new();
         let (input_outcome, bonus_outcome) = research_inputs::walk_country(
             world,
             BASE,
@@ -475,14 +475,16 @@ fn reference(world: &World) -> Research {
         let Outcome::Rows { len: bonus_len } = bonus_outcome else {
             panic!("country {} bonuses: {bonus_outcome:?}", country.id);
         };
-        let modifier_outcome = research_modifiers::walk_country(
+        let modifier_outcome = research_modifiers::grants::walk_country_with_applied(
             world,
             BASE,
             &countries,
             country,
             modifier_context,
             &inputs[..input_len],
-            &mut modifiers,
+            0,
+            &bonuses[..bonus_len],
+            engine_native::walk::Buffer::Growing(&mut modifiers),
         );
         let Outcome::Rows { len: modifier_len } = modifier_outcome else {
             panic!("country {} modifiers: {modifier_outcome:?}", country.id);
@@ -595,7 +597,7 @@ fn reference_world_has_distinct_rows_for_both_countries() {
             .filter(|r| r.country == country)
             .count()
     };
-    assert_eq!((count(1), count(3)), (20, 15));
+    assert_eq!((count(1), count(3)), (23, 18));
     let speed = |country| {
         expected
             .modifiers
@@ -624,14 +626,30 @@ fn reference_world_has_distinct_rows_for_both_countries() {
 
 /// Test A: the loaned part produces exactly the independent per-country walk.
 #[test]
-fn research_part_rows_match_independent_per_country_walks() {
+fn gap_research_grants_research_part_rows_match_independent_per_country_walks() {
     let world = World::new();
     let expected = reference(&world);
     let captured = loaned_only(&world);
     let actual = research(&captured);
     assert_eq!(actual.inputs.len(), 4);
     assert_eq!(actual.bonuses.len(), 2);
-    assert_eq!(actual.modifiers.len(), 35);
+    assert_eq!(actual.modifiers.len(), 41);
+    assert_eq!(
+        actual
+            .modifiers
+            .iter()
+            .filter(|row| row.kind == research_modifiers::Kind::GrantCounter)
+            .count(),
+        2
+    );
+    assert_eq!(
+        actual
+            .modifiers
+            .iter()
+            .filter(|row| row.kind == research_modifiers::Kind::GrantUses)
+            .count(),
+        2
+    );
     for country in [FIRST.id, SECOND.id] {
         assert!(actual.inputs.iter().any(|r| r.slot.country == country));
         assert!(actual.bonuses.iter().any(|r| r.country == country));
@@ -643,6 +661,201 @@ fn research_part_rows_match_independent_per_country_walks() {
     for view in research_tables(&captured) {
         assert!(matches!(view, TableView::Complete(_)), "{view:?}");
     }
+}
+
+#[test]
+fn gap_research_grants_uncertified_hourly_fallback_does_not_read_inventory_counters() {
+    struct Uncertified<'a> {
+        world: &'a World,
+        counters: std::cell::Cell<usize>,
+    }
+    impl Memory for Uncertified<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if [FIRST.origin, SECOND.origin].iter().any(|origin| {
+                address == origin + STATUS + engine_research::ctechnology_status::NEXT_BONUS_ID
+            }) {
+                self.counters.set(self.counters.get() + 1);
+                return false;
+            }
+            self.world.copy(address, destination)
+        }
+    }
+    let world = World::new();
+    let memory = Uncertified {
+        world: &world,
+        counters: Default::default(),
+    };
+    let mut captured = captured();
+    let mut part = captured.take_research();
+    part.capture_changed(
+        &memory,
+        context(1, false),
+        &mut SliceFingerprints::new(),
+        &Domain::new(),
+    );
+    assert!(!part.changed.certified);
+    captured.restore_research(part);
+    let actual = research(&captured);
+    assert_eq!(memory.counters.get(), 0);
+    assert!(
+        actual
+            .modifiers
+            .iter()
+            .all(|row| row.index != research_modifiers::grants::INVENTORY_INDEX)
+    );
+    assert_eq!(actual.modifiers.len(), 35);
+}
+
+#[test]
+fn gap_research_grants_fingerprints_invalidate_for_every_inventory_kind() {
+    use research_modifiers::{Kind, Row};
+    for kind in [
+        Kind::GrantCounter,
+        Kind::SpeedGrant,
+        Kind::CostGrant,
+        Kind::GrantUses,
+        Kind::GrantTechnology,
+        Kind::GrantCategory,
+    ] {
+        let original = Row {
+            kind,
+            index: research_modifiers::grants::INVENTORY_INDEX,
+            raw: 12,
+            auxiliary: 34,
+            count: 2,
+            ..Default::default()
+        };
+        let before = research_digest(&[], &[], std::slice::from_ref(&original));
+        for field in 0..3 {
+            let mut changed = original.clone();
+            match field {
+                0 => changed.raw += 1,
+                1 => changed.auxiliary += 1,
+                _ => changed.count += 1,
+            }
+            assert_ne!(
+                before,
+                research_digest(&[], &[], &[changed]),
+                "{kind:?} field {field}"
+            );
+        }
+    }
+}
+
+#[test]
+fn seed_then_bitmap_installation_keeps_grant_inventory_shape_and_certificate() {
+    use crate::country_input_changes::{Changes, Mismatch};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Installing {
+        installed: AtomicBool,
+        domain: Domain,
+    }
+    impl Changes for Installing {
+        fn take(&self, table: Table, visit: &mut dyn FnMut(usize)) -> Option<u64> {
+            self.installed
+                .load(Ordering::Relaxed)
+                .then(|| self.domain.take(table, visit))
+                .flatten()
+        }
+        fn mismatch(&self, table: Table, at: Mismatch) {
+            self.domain.mismatch(table, at);
+        }
+        fn every(&self, _: Table) -> bool {
+            true
+        }
+    }
+    let world = World::new();
+    let changes = Installing {
+        installed: AtomicBool::new(false),
+        domain: Domain::enabled(64),
+    };
+    let mut fingerprints = SliceFingerprints::new();
+    let mut captured = captured();
+    let mut part = captured.take_research();
+    let mut baseline = None;
+    for (hour, forced, installed, certified) in [
+        (0, true, false, false),
+        (1, false, true, false),
+        (2, false, true, true),
+    ] {
+        changes.installed.store(installed, Ordering::Relaxed);
+        part.capture_changed(&world, context(hour, forced), &mut fingerprints, &changes);
+        assert_eq!(part.changed.certified, certified, "hour {hour}");
+        assert_eq!(part.changed.mismatches, 0, "hour {hour}");
+        let rows = part.modifiers.rows[..part.modifiers.outcome.len()].to_vec();
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.kind == research_modifiers::Kind::GrantCounter)
+                .count(),
+            2
+        );
+        if let Some(expected) = &baseline {
+            assert_eq!(&rows, expected, "hour {hour}");
+        } else {
+            baseline = Some(rows);
+        }
+        assert!(!changes.domain.poisoned(Table::Research));
+    }
+    assert_eq!(part.changed.verified, 2);
+}
+
+#[test]
+fn research_diagnostics_keep_all_list_counts_and_each_modifier_kind_separate() {
+    use research_modifiers::{Kind, Row};
+    let initial = [
+        Row {
+            kind: Kind::GrantCounter,
+            raw: 7,
+            ..Default::default()
+        },
+        Row {
+            kind: Kind::GrantUses,
+            raw: 3,
+            ..Default::default()
+        },
+    ];
+    let before = research_digest(&[], &[], &initial);
+    let mut changed = initial.to_vec();
+    changed[0].source_id = 8;
+    changed[1].raw = 2;
+    changed.push(Row {
+        kind: Kind::SpeedGrant,
+        ..Default::default()
+    });
+    let mut after = research_digest(&[], &[], &changed);
+    // The integrated sharing roster has wire kind 31. A separate count and
+    // identity/value pair must survive simultaneous grant differences.
+    let roster = MODIFIER_GROUPS + 31 * 3;
+    after[0] = 4;
+    after[1] = 2;
+    after[2] += 1;
+    after[roster] = 1;
+    after[roster + 1] ^= 1;
+    after[roster + 2] ^= 1;
+    let (field, detail) = research_mismatch(Some(&before), &after, true, true, false, true);
+    assert_eq!(field, "ResearchInputs row count");
+    assert_eq!(detail.previous_counts, Some([0, 0, 2]));
+    assert_eq!(detail.current_counts, [4, 2, 4]);
+    let old = detail.previous_modifier_counts.unwrap();
+    let new = detail.current_modifier_counts;
+    assert_eq!(
+        (
+            old[Kind::SpeedGrant as usize],
+            new[Kind::SpeedGrant as usize]
+        ),
+        (0, 1)
+    );
+    assert_eq!((old[31], new[31]), (0, 1));
+    assert_eq!(
+        detail.modifier_identity_differences,
+        (1 << Kind::GrantCounter as u32) | (1 << Kind::SpeedGrant as u32) | (1 << 31)
+    );
+    assert_eq!(
+        detail.modifier_value_differences,
+        (1 << Kind::GrantUses as u32) | (1 << Kind::SpeedGrant as u32) | (1 << 31)
+    );
+    assert!(detail.take_available && detail.certified && detail.selection_force_full);
+    assert!(!detail.force_full);
 }
 
 /// Test B: a family capture with the part loaned, in either completion

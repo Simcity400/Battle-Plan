@@ -113,6 +113,12 @@ impl Changes for Watches {
 
 /// The hooks' domain.
 pub struct Observer;
+/// A real observer without offered storage, isolated by its caller's test process.
+#[cfg(any(test, feature = "test-support"))]
+pub fn unsized_observer_for_tests() -> Observer {
+    WATCHES.registry.set_enabled(true);
+    Observer
+}
 impl Changes for Observer {
     fn quiet(&self) -> Option<(u64, u64)> {
         WATCHES.quiet()
@@ -143,15 +149,18 @@ pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the deployment statuses the
-/// latest walk visited. Nothing is offered before a walk visited them: a
-/// later larger table waits for an invalidating hour, while the first
-/// installs at once.
-pub fn presize() {
-    let countries = COUNTRIES.load(Ordering::Relaxed);
+/// Off-thread live sizing for the deployment statuses, before any capture
+/// has visited them. The host's existing country census supplies demand.
+pub fn prepare(countries: usize) {
     if countries != 0 {
         WATCHES.registry.offer(countries);
     }
+}
+
+/// Off-thread growth from capture demand. The existing boundary installs
+/// offered storage; unchanged demand allocates nothing.
+pub fn presize() {
+    prepare(COUNTRIES.load(Ordering::Relaxed));
 }
 
 /// Off the game thread: free a replaced watch table.
@@ -238,7 +247,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "local_subunit_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -261,6 +270,10 @@ impl Hooks {
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             WATCHES.registry.set_enabled(false);
+            collector_certificates::content_changes::enabled(
+                collector_certificates::content_changes::Writer::Equipment,
+                false,
+            );
         }
         // One census and suspension for the whole family, shared with the
         // other families in a runtime round (`hook::shared`): a thread at any
@@ -274,6 +287,10 @@ impl Hooks {
         WATCHES
             .registry
             .set_enabled(enabled && !self.hooks.is_empty());
+        collector_certificates::content_changes::enabled(
+            collector_certificates::content_changes::Writer::Equipment,
+            enabled && !self.hooks.is_empty(),
+        );
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
@@ -314,7 +331,17 @@ macro_rules! callback {
             let _notification = WATCHES.notify(receiver(MUTATIONS[$site].1, first, third), $site);
             let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
-            timing.original(|| unsafe { original(first, second, third, fourth) })
+            timing.original(|| unsafe {
+                if $site == 5 {
+                    collector_certificates::content_changes::invoke(
+                        collector_certificates::content_changes::Writer::Equipment,
+                        [first, second, third, fourth],
+                        original,
+                    )
+                } else {
+                    original(first, second, third, fourth)
+                }
+            })
         }
     };
 }

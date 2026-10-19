@@ -30,6 +30,8 @@ export function validateArmySizeReply(value: unknown): ArmySizeReply {
     || value.series.some(series => series.identities !== undefined && (!isOrderedSpans(series.identities)
       || series.identities.some(identity => !unsigned32(identity.slot) || !unsigned32(identity.countryId))))
     || value.types.some(type => typeof type.name !== 'string')
+    || (value.templateSections !== undefined && (!Array.isArray(value.templateSections)
+      || !value.templateSections.every(section => typeof section === 'string')))
     || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')) {
     throw new Error('The army size reply is malformed.');
   }

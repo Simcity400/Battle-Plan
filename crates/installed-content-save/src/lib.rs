@@ -1,5 +1,5 @@
 //! Text-save values for the oracle. The shared Clausewitz parser owns syntax;
-//! this crate interprets only the state fields the recorder currently captures.
+//! this crate projects the state fields used by recording comparisons.
 
 pub mod air;
 pub mod characters;
@@ -11,18 +11,25 @@ pub mod counter_inputs;
 mod countries;
 pub mod country_rosters;
 pub mod economy;
+pub mod faction_accounts;
+pub mod faction_companions;
+pub mod faction_goals;
 pub mod governance;
 pub mod intel;
+pub mod naval_accidents;
 pub mod naval_history;
 pub mod naval_launch;
+pub mod naval_management;
 pub mod naval_missions;
 pub mod plans;
 pub mod production;
 pub mod projects;
 pub mod saved_event_targets;
+pub mod script_events;
 pub mod session;
 mod units;
 pub mod war_goals;
+pub mod war_participation;
 pub mod weather;
 
 pub use control::{ProvinceControl, StateControl, StateControlEmission};
@@ -32,9 +39,9 @@ pub use countries::{
 };
 
 pub use units::{
-    Acclimatization, AirWing, ArmyOrder, Division, DivisionName, DivisionPresentation,
-    DivisionTemplate, Fleet, IntelEntry, LandCombat, NavalCombat, NavalCombatParticipant,
-    RailwayGun, Ship, TaskForce,
+    Acclimatization, AirWing, ArmyOrder, Division, DivisionHistory, DivisionHistoryEntry,
+    DivisionName, DivisionPresentation, DivisionTemplate, DivisionTemplateSettings, Fleet, IntelEntry, LandCombat,
+    NavalCombat, NavalCombatParticipant, RailwayGun, Ship, TaskForce,
 };
 use units::{
     parse_air_wings, parse_division, parse_division_templates, parse_fleet, parse_land_combat,
@@ -204,6 +211,9 @@ pub struct Country {
     pub war_support: Option<Decimal>,
     /// The manpower writer emits manpower.current only when the signed residual is nonzero.
     pub manpower_residual: i32,
+    pub recruitment_ratio: Option<i64>,
+    pub exile_manpower: Option<i32>,
+    pub exile_manpower_cap: Option<i32>,
     /// Serialized stockpile entries, not an assumed equivalent of a live cache.
     pub convoy_equipment: Option<Vec<EquipmentAmount>>,
     pub instances_counter: Option<u32>,
@@ -279,6 +289,7 @@ pub struct State {
     /// The pool writer emits manpower_pool.available. The state writer omits
     /// the whole pool when total <= 0, so omission cannot prove available is zero.
     pub manpower_available: Option<i32>,
+    pub manpower_locked: Option<i32>,
     /// The pool writer's `total`, the state's population: `None` when the
     /// pool is omitted (which certifies only a nonpositive population),
     /// `Some(None)` for a pool written without it.
@@ -373,6 +384,8 @@ pub struct CountryIntelRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WarRelation {
+    /// Stored directional ledgers; presence stays explicit for oracle coverage.
+    pub participation: [Option<war_participation::Ledger>; 2],
     pub first_goals: Vec<u64>,
     pub second_goals: Vec<u64>,
     /// Enclosing `countries.<tag>`, retained independently of the explicit first.
@@ -397,6 +410,8 @@ pub struct WarRelation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Faction {
+    pub goals: faction_goals::Status,
+    pub companions: faction_companions::Snapshot,
     /// Full native reference: type low u32, id high u32; only both zero is null.
     pub id: u64,
     /// The faction writer emits the name only for a nonzero stored length;
@@ -473,8 +488,10 @@ pub struct Save {
     /// One first-owned entry per ordered country pair, not a grouped war ID.
     pub war_relations: Vec<WarRelation>,
     pub war_goals: BTreeMap<u64, war_goals::WarGoal>,
+    pub wargoal_countries: BTreeMap<Vec<u8>, war_goals::CountryInventory>,
     /// Every saved `cached_sum`; a pair without one held an exact zero opinion.
     pub relation_opinions: Vec<RelationOpinion>,
+    pub war_delivery_histories: Vec<war_participation::DeliveryHistory>,
     /// Every typed relation block except `war_relation`, which has its own table.
     pub relation_tuples: Vec<RelationTuple>,
     /// Per-country positional intel list, indexed by the target's canonical
@@ -485,6 +502,7 @@ pub struct Save {
     /// This projection does not relax the full parser's duplicate-country rule.
     pub country_naval_launch: Vec<naval_launch::CountryNavalLaunchOccurrence>,
     pub factions: BTreeMap<u64, Faction>,
+    pub faction_accounts: Option<faction_accounts::Accounts>,
     /// The saving client's viewing country tag (`player`). The writer uses
     /// the viewed country when signed-positive, else the fallback country.
     /// Every game save has it; only synthetic fixtures omit it.
@@ -494,6 +512,7 @@ pub struct Save {
     pub players: Vec<Player>,
     pub land_combats: BTreeMap<u64, LandCombat>,
     pub fleets: BTreeMap<u64, Fleet>,
+    pub naval_management: naval_management::Pack,
     pub task_forces: BTreeMap<u64, TaskForce>,
     pub ships: BTreeMap<u64, Ship>,
     pub army_orders: BTreeMap<(u64, u32), ArmyOrder>,
@@ -630,6 +649,30 @@ fn parse_country(tag: &[u8], items: &[Item]) -> io::Result<Country> {
             .map(|value| integer(&value))
             .transpose()?
             .unwrap_or(0),
+        recruitment_ratio: field(items, b"manpower")?
+            .map(block)
+            .transpose()?
+            .map(|fields| bytes(fields, b"ratio"))
+            .transpose()?
+            .flatten()
+            .map(|value| integer(&value))
+            .transpose()?,
+        exile_manpower: field(items, b"manpower")?
+            .map(block)
+            .transpose()?
+            .map(|fields| bytes(fields, b"exile_manpower"))
+            .transpose()?
+            .flatten()
+            .map(|value| integer(&value))
+            .transpose()?,
+        exile_manpower_cap: field(items, b"manpower")?
+            .map(block)
+            .transpose()?
+            .map(|fields| bytes(fields, b"max_exile_manpower"))
+            .transpose()?
+            .flatten()
+            .map(|value| integer(&value))
+            .transpose()?,
         convoy_equipment: convoy_equipment(items)?,
         instances_counter: bytes(items, b"instances_counter")?
             .map(|bytes| integer(&bytes))
@@ -831,7 +874,16 @@ fn parse_war_relation(
             "war relation saves end_date only when it is after start_date",
         ));
     }
+    let participation = |key: &[u8]| -> io::Result<Option<war_participation::Ledger>> {
+        field(items, key)?
+            .map(|value| war_participation::parse(block(value)?))
+            .transpose()
+    };
     Ok(WarRelation {
+        participation: [
+            participation(b"war_score_first_vs_second")?,
+            participation(b"war_score_second_vs_first")?,
+        ],
         first_goals: war_goals::references(items, b"first_wargoals")?,
         second_goals: war_goals::references(items, b"second_wargoals")?,
         roster_owner: roster_owner.to_vec(),
@@ -997,6 +1049,8 @@ fn parse_faction(items: &[Item]) -> io::Result<Faction> {
         })
         .transpose()?;
     Ok(Faction {
+        goals: faction_goals::parse(items)?,
+        companions: faction_companions::parse(items)?,
         id,
         name: bytes(items, b"name")?,
         members,
@@ -1213,8 +1267,10 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
     let mut plans = plans::Tables::default();
     let mut war_relations = Vec::new();
     let mut war_goals = BTreeMap::new();
+    let mut wargoal_countries = BTreeMap::new();
     let mut war_pairs = BTreeSet::new();
     let mut relation_opinions = Vec::new();
+    let mut war_delivery_histories = Vec::new();
     let mut relation_tuples = Vec::new();
     let mut country_intel: BTreeMap<Vec<u8>, Vec<CountryIntelRecord>> = BTreeMap::new();
     for item in country_view.required()? {
@@ -1225,6 +1281,7 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
             .ok_or_else(|| invalid("country has no tag"))?;
         let country_items = block(&item.value)?;
         war_goals::objects(country_items, &mut war_goals)?;
+        wargoal_countries.insert(tag.to_vec(), war_goals::inventory(country_items)?);
         for item in country_items
             .iter()
             .filter(|item| item.key.as_deref() == Some(b"division_template_id"))
@@ -1336,6 +1393,12 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
                         return Err(invalid("duplicate ordered war relation pair in save"));
                     }
                     war_relations.push(war);
+                }
+                if let Some(history) = field(record, b"lend_lease_to_allies_history")? {
+                    war_delivery_histories.push(
+                        war_participation::parse_delivery_history(tag, target, block(history)?)
+                            .map_err(context)?,
+                    );
                 }
                 if let Some(sum) = field(record, b"cached_sum")? {
                     relation_opinions.push(RelationOpinion {
@@ -1455,6 +1518,14 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
                     manpower_available: field(state, b"manpower_pool")?
                         .map(|value| integer(&required_bytes(block(value)?, b"available")?))
                         .transpose()?,
+                    manpower_locked: field(state, b"manpower_pool")?
+                        .map(|value| {
+                            bytes(block(value)?, b"locked")?
+                                .map(|value| integer(&value))
+                                .transpose()
+                        })
+                        .transpose()?
+                        .flatten(),
                     population: field(state, b"manpower_pool")?
                         .map(|value| {
                             bytes(block(value)?, b"total")?
@@ -1531,7 +1602,9 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
         division_template_owners,
         war_relations,
         war_goals,
+        wargoal_countries,
         relation_opinions,
+        war_delivery_histories,
         relation_tuples,
         country_intel,
         country_naval_launch: naval_launch::parse_country_occurrences(required_block(
@@ -1539,10 +1612,13 @@ fn parse_items(items: &[Item], country_view: CountriesView<'_>) -> io::Result<Sa
             b"countries",
         )?)?,
         factions,
+        faction_accounts: faction_accounts::parse(items)?,
         player: bytes(items, b"player")?,
         players: parse_players(items)?,
         land_combats,
         fleets,
+        naval_management: naval_management::parse_with_countries(items, country_view)
+            .map_err(|error| pack_error("naval management", error))?,
         task_forces,
         ships,
         army_orders,

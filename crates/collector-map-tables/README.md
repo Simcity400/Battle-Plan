@@ -5,3 +5,5 @@ The ordinary map part's single-file tables: the battle-sound list (BattleSounds:
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-map-tables` and `cargo clippy -p collector-map-tables --all-targets -- -D warnings` for its synthetic checks.
+
+The naval-base census also supplies authenticated bases to the naval-management observer. It publishes shared repair-priority, dockyard-allocation and ordered-queue tables beside NavalBases; unchanged bases cause no additional repair read.

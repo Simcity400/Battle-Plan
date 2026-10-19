@@ -271,6 +271,10 @@ pub struct World<'a, M: Memory> {
 }
 
 impl<'a, M: Memory> World<'a, M> {
+    /// Acquisition-only authenticated world identity, never a replay key.
+    pub fn state_pointer(&self) -> usize {
+        self.state
+    }
     pub fn new(memory: &'a M, base: usize) -> Result<Self, &'static str> {
         let state = state(memory, base)?;
         Ok(Self {

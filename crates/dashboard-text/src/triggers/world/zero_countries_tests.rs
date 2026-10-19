@@ -234,7 +234,7 @@ fn empty_reserved_group_and_positive_invasion() -> DecodedFrame {
 fn assert_reserved_empty(world: &World<'_>) {
     let reserved = world.slot(900).unwrap();
     assert_eq!(reserved, 0);
-    assert!(world.invasion_orders(reserved).unwrap().is_empty());
+    assert!(world.complete_invasion_orders(reserved).unwrap().is_empty());
     let trigger = installed_content_core::triggers::read(
         b"has_naval_invasion_against_state = 64",
         &installed_content_core::key_names::KeyNames::default(),
@@ -285,11 +285,11 @@ fn certified_empty_reserved_groups_ignore_unavailable_order_tables() {
         };
         with_world(&frame, |world| {
             assert_reserved_empty(&world);
-            let reason = world.invasion_orders(1).err().unwrap();
+            let reason = world.complete_invasion_orders(1).err().unwrap();
             assert!(reason.contains(&format!("{unavailable:?}")), "{reason}");
             // The reached owner's cached refusal cannot change an empty one.
             assert_reserved_empty(&world);
-            assert!(world.invasion_orders(2).unwrap().is_empty());
+            assert!(world.complete_invasion_orders(2).unwrap().is_empty());
         });
         // A nonzero certificate still needs the complete group roster.
         *frame.tables[TableId::OrdersGroups.index()] = TableView::Unavailable {
@@ -298,7 +298,7 @@ fn certified_empty_reserved_groups_ignore_unavailable_order_tables() {
         with_world(&frame, |world| {
             assert!(
                 world
-                    .invasion_orders(0)
+                    .complete_invasion_orders(0)
                     .err()
                     .unwrap()
                     .contains("OrdersGroups")
@@ -318,10 +318,10 @@ fn empty_primary_roots_ignore_unavailable_order_payloads() {
         };
         with_world(&frame, |world| {
             assert_reserved_empty(&world);
-            let reason = world.invasion_orders(1).err().unwrap();
+            let reason = world.complete_invasion_orders(1).err().unwrap();
             assert!(reason.contains(&format!("{unavailable:?}")), "{reason}");
             assert_reserved_empty(&world);
-            assert!(world.invasion_orders(2).unwrap().is_empty());
+            assert!(world.complete_invasion_orders(2).unwrap().is_empty());
         });
     }
     let mut frame = empty_reserved_group_and_positive_invasion();
@@ -372,14 +372,14 @@ fn empty_primary_roots_ignore_unavailable_order_payloads() {
         assert_reserved_empty(&world);
         assert!(
             world
-                .invasion_orders(1)
+                .complete_invasion_orders(1)
                 .err()
                 .unwrap()
                 .contains("country 999")
         );
         assert!(
             world
-                .invasion_orders(2)
+                .complete_invasion_orders(2)
                 .err()
                 .unwrap()
                 .contains("country 999")
@@ -404,15 +404,15 @@ fn reserved_theatre_group_faults_stay_with_their_owner() {
         }],
     );
     with_world(&frame, |world| {
-        assert!(world.invasion_orders(1).unwrap().is_empty());
+        assert!(world.complete_invasion_orders(1).unwrap().is_empty());
         assert!(
             world
-                .invasion_orders(0)
+                .complete_invasion_orders(0)
                 .err()
                 .unwrap()
                 .contains("group 0x1e")
         );
-        assert!(world.invasion_orders(2).unwrap().is_empty());
+        assert!(world.complete_invasion_orders(2).unwrap().is_empty());
     });
 }
 
@@ -459,12 +459,12 @@ fn reserved_invasions_use_certified_roster_and_keep_unknown_positive_owners_unkn
         }],
     );
     with_world(&frame, |world| {
-        let orders = world.invasion_orders(0).unwrap();
+        let orders = world.complete_invasion_orders(0).unwrap();
         assert_eq!(orders.len(), 1);
         assert_eq!(orders[0].key, (30, 40));
         assert_eq!(orders[0].active, 1);
         assert_eq!(orders[0].path, &[17]);
-        assert!(world.invasion_orders(1).unwrap().is_empty());
+        assert!(world.complete_invasion_orders(1).unwrap().is_empty());
     });
     set::<tables::LandTheatres>(
         &mut frame,
@@ -501,15 +501,15 @@ fn reserved_invasions_use_certified_roster_and_keep_unknown_positive_owners_unkn
         ],
     );
     with_world(&frame, |world| {
-        assert_eq!(world.invasion_orders(0).unwrap().len(), 1);
+        assert_eq!(world.complete_invasion_orders(0).unwrap().len(), 1);
         assert!(
             world
-                .invasion_orders(1)
+                .complete_invasion_orders(1)
                 .err()
                 .unwrap()
                 .contains("group 0x32")
         );
-        assert!(world.invasion_orders(2).unwrap().is_empty());
+        assert!(world.complete_invasion_orders(2).unwrap().is_empty());
     });
     set::<tables::LandTheatres>(
         &mut frame,
@@ -529,10 +529,10 @@ fn reserved_invasions_use_certified_roster_and_keep_unknown_positive_owners_unkn
         ],
     );
     with_world(&frame, |world| {
-        assert_eq!(world.invasion_orders(0).unwrap().len(), 1);
+        assert_eq!(world.complete_invasion_orders(0).unwrap().len(), 1);
         assert!(
             world
-                .invasion_orders(1)
+                .complete_invasion_orders(1)
                 .err()
                 .unwrap()
                 .contains("country 999")
@@ -552,27 +552,29 @@ fn reserved_invasion_certificate_never_substitutes_zero_for_refusal() {
     ] {
         theatres(&mut frame, count);
         with_world(&frame, |world| {
-            assert!(world.invasion_orders(0).is_err());
-            assert!(world.invasion_orders(1).unwrap().is_empty());
+            assert!(world.complete_invasion_orders(0).is_err());
+            assert!(world.complete_invasion_orders(1).unwrap().is_empty());
         });
     }
     theatres(&mut frame, Recorded::Value(Some(0)));
-    with_world(&frame, |world| assert!(world.invasion_orders(0).is_err()));
+    with_world(&frame, |world| {
+        assert!(world.complete_invasion_orders(0).is_err())
+    });
     set::<tables::LandTheatres>(&mut frame, Vec::new());
     *frame.tables[tables::OrdersGroups::ID.index()] = TableView::Unavailable {
         reason: "unused empty roster".into(),
     };
     with_world(&frame, |world| {
-        assert!(world.invasion_orders(0).unwrap().is_empty())
+        assert!(world.complete_invasion_orders(0).unwrap().is_empty())
     });
     *frame.tables[tables::LandTheatres::ID.index()] = TableView::Unavailable {
         reason: "unrelated positive theatre read refused".into(),
     };
     with_world(&frame, |world| {
-        assert!(world.invasion_orders(0).unwrap().is_empty());
+        assert!(world.complete_invasion_orders(0).unwrap().is_empty());
         assert!(
             world
-                .invasion_orders(1)
+                .complete_invasion_orders(1)
                 .err()
                 .unwrap()
                 .contains("LandTheatres")

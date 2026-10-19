@@ -240,6 +240,13 @@ pub fn compare_scientists(
             return Err(invalid("duplicate recorded scientist character id"));
         }
     }
+    let daily = if report.full_refresh()
+        || report.refresh_is_current(replay_data::rows::TableId::ScientistDaily, frame.hour)
+    {
+        Some(complete::<tables::ScientistDaily>(frame)?)
+    } else {
+        None
+    };
     let mut skills = BTreeMap::<u32, Vec<_>>::new();
     for row in complete::<tables::ScientistSkills>(frame)? {
         let records = skills.entry(row.character).or_default();
@@ -266,6 +273,39 @@ pub fn compare_scientists(
             continue;
         };
         compared += 1;
+        if let Some(daily) = daily {
+            match daily
+                .iter()
+                .find(|row| row.character == id && row.country == actual.country)
+            {
+                Some(observation) => {
+                    if let Some(injury) = report.recorded(
+                        &observation.injury_days,
+                        "ScientistDaily.injury_days",
+                        format!("{label}.injury days"),
+                    ) {
+                        match injury {
+                            Some(days) => equal(
+                                report,
+                                format!("{label}.injury days"),
+                                (*days > 0).then_some(*days),
+                                saved.injury_days,
+                            ),
+                            None => report.difference(
+                                format!("{label}.injury days"),
+                                "capture refused",
+                                saved.injury_days,
+                            ),
+                        }
+                    }
+                }
+                None => report.difference(
+                    format!("{label}.daily observation"),
+                    "absent or different owner",
+                    "present",
+                ),
+            }
+        }
         if let Some(active) = report.recorded(
             &actual.active,
             "Scientists.active",
@@ -594,6 +634,50 @@ fn compare_programs(
             row.unread_rewards,
             saved.unread_rewards,
         );
+        if let Some(assignments) = report.recorded(
+            &row.assignments,
+            "ProjectPrograms.assignments",
+            format!("{label}.assignments"),
+        ) {
+            match assignments {
+                Some(assignments) => equal(
+                    report,
+                    format!("{label}.assignments"),
+                    Some(
+                        assignments
+                            .iter()
+                            .map(|assignment| {
+                                (
+                                    assignment.scientist,
+                                    assignment.target,
+                                    assignment.current,
+                                    assignment.timed != 0,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    Some(
+                        saved
+                            .assignments
+                            .iter()
+                            .map(|assignment| {
+                                (
+                                    assignment.scientist,
+                                    assignment.target,
+                                    assignment.current,
+                                    assignment.timed,
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+                None => report.difference(
+                    format!("{label}.assignments"),
+                    "capture refused",
+                    &saved.assignments,
+                ),
+            }
+        }
         count += 1;
     }
     for id in expected.keys() {
@@ -602,7 +686,6 @@ fn compare_programs(
         }
     }
     report.compared("ProjectPrograms", count);
-    report.limitation("program scientist is the primary reference only; the separately saved scientist history/list and timers are outside this table", "ProjectPrograms");
     Ok(())
 }
 
@@ -684,6 +767,63 @@ fn compare_projects(
             0 => equal(report, format!("{label}.phase_progress"), row.state.phase_progress, saved.prototype_phase_progress.raw),
             2 => equal(report, format!("{label}.phase_progress"), row.state.phase_progress, saved.stopping_phase_progress.raw),
             _ => report.limitation("project serializer saves prototype and stopping progress only; active first/third simple-state progress has no saved counterpart", label.clone()),
+        }
+        if let Some(runtime) =
+            report.recorded(&row.runtime, "Projects.runtime", format!("{label}.runtime"))
+        {
+            if runtime.pending_known {
+                compare_optional_token(
+                    report,
+                    &format!("{label}.pending reward"),
+                    tokens,
+                    runtime.pending_reward,
+                    saved.pending_reward.as_deref(),
+                );
+            } else {
+                report.difference(
+                    format!("{label}.pending reward"),
+                    "capture refused",
+                    &saved.pending_reward,
+                );
+            }
+            if let Some(variables) = &runtime.variables {
+                equal(
+                    report,
+                    format!("{label}.variable seed"),
+                    variables.seed,
+                    saved.variables.seed.unwrap_or(1),
+                );
+                let mut actual = variables
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        (
+                            installed_content_core::parser::c_string(&entry.name),
+                            entry.value_raw,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let mut expected = saved
+                    .variables
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.name.as_slice(), entry.value.raw))
+                    .collect::<Vec<_>>();
+                actual.sort();
+                expected.sort();
+                equal(report, format!("{label}.variables"), actual, expected);
+                if saved.variables.reserved_entries != 0 {
+                    return Err(invalid(
+                        "project variable reserved-name collision cannot establish complete coverage",
+                    ));
+                }
+            } else {
+                report.difference(
+                    format!("{label}.variables"),
+                    "capture refused",
+                    &saved.variables,
+                );
+            }
         }
         count += 1;
     }

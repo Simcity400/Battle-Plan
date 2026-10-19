@@ -100,7 +100,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             FormattedLocalization::Token(token) => self
                 .context
                 .world()?
-                .token_of(token)?
+                .token_of(token)
+                .map_err(|why| why.to_string())?
                 .map(|token| BoundResult::Token(token as i32))
                 .ok_or_else(|| {
                     format!(
@@ -159,7 +160,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         {
             return Ok(None);
         }
-        let Some(token) = self.context.world()?.token_of(ideology)? else {
+        let Some(token) = self
+            .context
+            .world()?
+            .token_of(ideology)
+            .map_err(|why| why.to_string())?
+        else {
             return Ok(None);
         };
         Ok(found.find(|role| role.ideology as u32 == token))
@@ -330,7 +336,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if name.is_empty() {
             // Search only the active roster, without a current-character fallback.
             if let Some(token) = operand(item, "token")
-                && let Some(token) = self.context.world()?.token_of(token)?
+                && let Some(token) = self
+                    .context
+                    .world()?
+                    .token_of(token)
+                    .map_err(|why| why.to_string())?
             {
                 let world = self.context.world()?;
                 let characters = self.character_table::<tables::Characters>()?;
@@ -928,7 +938,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(token) = self
             .context
             .world()?
-            .token_of(item.value.scalar().unwrap_or_default())?
+            .token_of(item.value.scalar().unwrap_or_default())
+            .map_err(|why| why.to_string())?
         else {
             return Ok(String::new());
         };

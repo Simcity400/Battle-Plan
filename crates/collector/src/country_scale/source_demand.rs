@@ -61,6 +61,15 @@ impl Demand {
         let factions = engine_native::cfaction::walk(memory, base, state, &mut [], &mut []);
         let faction_rows =
             table_demand::rows(factions.outcome).map(|rows| (rows, factions.required_bytes));
+        if let Ok(accounts) = engine_native::cfaction_system::accounts(memory, base, state) {
+            crate::faction_companion_changes::demand_accounts(accounts.count as usize * 2 + 1);
+        }
+        if let Ok((owners, _)) = faction_rows {
+            crate::country_input_changes::sharing_demand(owners);
+            crate::faction_goal_changes::demand(owners);
+            crate::faction_companion_changes::demand(owners);
+            crate::variable_changes::Observer.demand_embedded(owners);
+        }
         Ok(Some(Self {
             countries: FAILURES[1].observe(indexed(cgame_state::COUNTRIES, 8)),
             links: FAILURES[2].observe(links),

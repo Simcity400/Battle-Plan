@@ -26,9 +26,51 @@
 //! enabled ([`Forwarder`]); anything unobserved (disabled, poisoned, an epoch
 //! change, a running writer) yields no token, and the walk reads afresh.
 use crate::watch_registry::{Notification, WatchRegistry};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 static WARS: WatchRegistry = WatchRegistry::new();
+pub type ParticipationObserver = fn(Site, usize, usize);
+static PARTICIPATION: AtomicUsize = AtomicUsize::new(0);
+
+/// The participation owner installs this before admitting capture and removes
+/// it before releasing its state. Shared hook owners retain their callbacks
+/// through native quiescence. Notifications never allocate or wait.
+pub fn observe_participation(observer: Option<ParticipationObserver>) {
+    PARTICIPATION.store(observer.map_or(0, |f| f as usize), Ordering::SeqCst);
+}
+
+/// Names the exact status or diplomacy root on both sides of its writer,
+/// while the enclosing war-domain notification excludes acquisition.
+pub struct ParticipationChange {
+    observer: Option<ParticipationObserver>,
+    site: Site,
+    receiver: usize,
+    diplomacy: usize,
+}
+pub fn participation_change(site: Site, receiver: usize, diplomacy: usize) -> ParticipationChange {
+    let pointer = PARTICIPATION.load(Ordering::SeqCst);
+    let observer: Option<ParticipationObserver> = if pointer == 0 {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute::<usize, ParticipationObserver>(pointer) })
+    };
+    if let Some(observer) = observer {
+        observer(site, receiver, diplomacy);
+    }
+    ParticipationChange {
+        observer,
+        site,
+        receiver,
+        diplomacy,
+    }
+}
+impl Drop for ParticipationChange {
+    fn drop(&mut self) {
+        if let Some(observer) = self.observer {
+            observer(self.site, self.receiver, self.diplomacy);
+        }
+    }
+}
 
 /// The families whose patches forward here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,6 +261,42 @@ pub fn status() -> impl serde::Serialize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn participation_lifetime_forwarding_names_the_receiver_before_and_after_without_allocation() {
+        static CALLS: [AtomicUsize; Site::ALL.len()] =
+            [const { AtomicUsize::new(0) }; Site::ALL.len()];
+        fn observe(site: Site, receiver: usize, diplomacy: usize) {
+            assert_eq!((receiver, diplomacy), (0x12300, 0x45600));
+            CALLS[site as usize].fetch_add(1, Ordering::Relaxed);
+        }
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                observe_participation(None);
+            }
+        }
+        let _restore = Restore;
+        observe_participation(Some(observe));
+        for site in [
+            Site::StatusConstruct,
+            Site::StatusReset,
+            Site::StatusLoad,
+            Site::RelationSlot,
+            Site::DiplomacyReset,
+            Site::ReplaceRelation,
+        ] {
+            collector_test_support::with_allocations_denied(|| {
+                let change = participation_change(site, 0x12300, 0x45600);
+                assert_eq!(CALLS[site as usize].load(Ordering::Relaxed), 1);
+                drop(change);
+                assert_eq!(CALLS[site as usize].load(Ordering::Relaxed), 2);
+            });
+        }
+        observe_participation(None);
+        drop(participation_change(Site::StatusLoad, 0, 0));
+        assert_eq!(CALLS[Site::StatusLoad as usize].load(Ordering::Relaxed), 2);
+    }
 
     /// The domain needs every forwarder, and each forwarded writer moves the
     /// token at its entry and refuses it until its return.

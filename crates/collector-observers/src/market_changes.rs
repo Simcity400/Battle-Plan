@@ -1,0 +1,1830 @@
+//! Dedicated market writers and exact lend-lease occurrences. Callbacks use
+//! prepared event storage only; no shared equipment primitive is patched.
+use crate::{
+    event_ledger::{Event, EventLedger},
+    hook::{Hook, Registers, Tap},
+    watch_registry::{Notification, WatchRegistry},
+};
+use engine_native::{Memory, read};
+use engine_production::market_mutations as native;
+use engine_resources::clend_lease_exchange as lease;
+use replay_data::rows::MarketEventRow;
+use std::{
+    ops::Range,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+};
+
+pub mod held;
+pub const AMENDMENT: u8 = 0;
+pub const SCHEDULE: u8 = 2;
+pub const DELIVERED: u8 = 3;
+pub const LOST: u8 = 4;
+pub const FUEL: u8 = 5;
+pub const REMOVED: u8 = 6;
+pub const DELIVERY_DATE: u8 = 7;
+pub const INVENTORY: u8 = 8;
+pub const PRICES: usize = 0;
+pub const SUBSIDIES: usize = 1;
+pub const AUTOMATION: usize = 2;
+const COMMAND_COUNTRY: usize = 0x28;
+pub const ONCE_APPLIED: u8 = 9;
+pub const REQUEST_CREATED: u8 = 10;
+pub const CONTRACT_CREATED: u8 = 11;
+pub const CONTRACT_REMOVED: u8 = 12;
+pub const AMENDMENT_COST: u8 = 19;
+pub const CONTRACT_DELIVERED: u8 = 20;
+pub const CONTRACT_PAYMENT: u8 = 21;
+pub const POOL_VALUE: u8 = 22;
+pub const POOL_END: u8 = 23;
+pub const INVENTORY_MODE: u8 = 0;
+pub const DELIVERED_MODE: u8 = 1;
+pub const LOST_MODE: u8 = 2;
+pub const ONCE_MODE: u8 = 3;
+pub const ROUTE_MODE: u8 = 4;
+pub const ROUTE_BEGIN: u8 = 24;
+pub const ROUTE_ITEM: u8 = 25;
+pub const ROUTE_TEMPLATE: u8 = 26;
+pub const ROUTE_END: u8 = 27;
+pub const CONTRACT_STATE: u8 = 28;
+pub const ROUTE_POLICY: u8 = 29;
+pub const ROUTE_OPERAND: u8 = 30;
+pub const FINAL_BEGIN: u8 = 31;
+pub const FINAL_ITEM: u8 = 32;
+pub const FINAL_END: u8 = 33;
+pub const DELIVERY_UNAVAILABLE: u8 = 34;
+const COUNTRY_RESET: u8 = 5;
+const ADMISSION: u8 = 2;
+const HOLDER_MARK: u8 = 3;
+const FINAL_CONTRACT: u8 = 4;
+const AGREEMENT_MARK: u8 = 2;
+const CONTRACT_MARK: u8 = 1;
+const INVENTORY_MARK: u8 = 0;
+const READ_DELIVERED: u8 = 1;
+const READ_SUNK: u8 = 2;
+const READ_ONCE: u8 = 4;
+const READ_ROUTE: u8 = 1;
+const READ_RUNTIME: u8 = 2;
+const READ_PURCHASE_TOTAL: u8 = 4;
+const DERIVED_TOTAL: u8 = 0x80;
+/// Installed patch owners, shared with the collector's overlap inventory.
+/// Nested pool operations use their delivery/rebuild owners. Draft-action resets
+/// only prepare local action terms and are never observed.
+pub const OBSERVED_SITES: [usize; 25] = [
+    0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 29, 30,
+];
+static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+std::thread_local! {
+    static DEPTH: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};
+}
+static VARIABLES_WATCH: WatchRegistry = WatchRegistry::marking();
+static VARIABLES_FORWARDED: AtomicBool = AtomicBool::new(false);
+pub fn variable_write(at: usize) -> Notification<'static> {
+    VARIABLES_WATCH.notify(at)
+}
+pub fn variables_uncertified() {
+    VARIABLES_WATCH.poison();
+}
+pub fn observe_variables(enabled: bool) {
+    VARIABLES_FORWARDED.store(enabled, Ordering::SeqCst);
+    refresh_coverage();
+}
+std::thread_local! { static CONTRACT_DELIVERY: std::cell::Cell<Option<MarketEventRow>> = const { std::cell::Cell::new(None) }; }
+const STOCKPILE_POOL: usize = 0x38;
+const STOCKPILE_COUNTRY: usize = 0x20;
+
+impl Event for MarketEventRow {
+    fn set_id(&mut self, id: u64) {
+        self.id = id;
+    }
+}
+static LEDGER: EventLedger<MarketEventRow> = EventLedger::new();
+// Watch registries reserve zero for an empty slot. Keep every country ID,
+// including the null country, distinct and aligned for the address hash.
+fn country_receiver(owner: u32) -> usize {
+    (owner as usize + 1) << 3
+}
+static RESET_WATCH: WatchRegistry = WatchRegistry::marking();
+static WATCHES: [WatchRegistry; 3] = [const { WatchRegistry::marking() }; 3];
+static BASE: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL: [AtomicUsize; native::SITES.len()] =
+    [const { AtomicUsize::new(0) }; native::SITES.len()];
+static ENABLED: AtomicBool = AtomicBool::new(false);
+static RESET_FORWARDED: AtomicBool = AtomicBool::new(false);
+static UNHOOKED: OnceLock<String> = OnceLock::new();
+static PUBLICATION_FAILURE: OnceLock<String> = OnceLock::new();
+static FLIGHTS: AtomicUsize = AtomicUsize::new(0);
+static OCCURRENCE: AtomicU64 = AtomicU64::new(0);
+static AMENDMENTS: AtomicU64 = AtomicU64::new(0);
+static AMENDMENT_ITEMS: AtomicU64 = AtomicU64::new(0);
+static FINAL_SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
+static FINAL_ITEMS: AtomicU64 = AtomicU64::new(0);
+static DELIVERY_AMOUNT_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static AMENDMENT_TIMES: std::sync::Mutex<
+    Option<collector_extended_support::distribution::Distribution>,
+> = std::sync::Mutex::new(None);
+static REPLACEMENT_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static SCHEDULE_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static CONTRACT_DEMAND: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active() -> usize {
+    FLIGHTS.load(Ordering::SeqCst)
+        + VARIABLES_WATCH.active()
+        + RESET_WATCH.active()
+        + WATCHES.iter().map(WatchRegistry::active).sum::<usize>()
+}
+pub fn capacity() -> usize {
+    LEDGER
+        .demand()
+        .max(REPLACEMENT_DEMAND.load(Ordering::Acquire))
+}
+pub fn restore_sequence(previous: Option<u64>) -> Result<(), &'static str> {
+    LEDGER.restore_sequence(previous)?;
+    let next = previous
+        .map_or(Some(0), |id| id.checked_add(1))
+        .ok_or("market occurrence identity exhausted")?;
+    OUTPUT_SEQUENCE.fetch_max(next, Ordering::AcqRel);
+    OCCURRENCE.fetch_max(next, Ordering::AcqRel);
+    Ok(())
+}
+/// Count only live agreement schedule headers inside the existing resource
+/// sizing census. This is not run by a callback or an hourly roster pass.
+pub fn schedule_storage(
+    memory: &impl Memory,
+    base: usize,
+    resources: usize,
+) -> Result<usize, &'static str> {
+    let list = engine_native::cpdx_array::Array::read(memory, resources + lease::OUTGOING, 8)
+        .ok_or("market sizing exchange list unreadable")?;
+    let mut demand = 0_usize;
+    for index in 0..list.count {
+        let pointer = read::<u64>(
+            memory,
+            list.element(index, 8)
+                .ok_or("market sizing exchange address overflow")?,
+        )
+        .ok_or("market sizing exchange unreadable")? as usize;
+        lease::identity(memory, base, pointer)?;
+        // Rare schedule replacement and complete final cumulative snapshots,
+        // plus fixed identity marks; ordinary transfer size is irrelevant.
+        demand = demand
+            .checked_add(12)
+            .ok_or("market sizing demand overflow")?;
+        for offset in [lease::DELIVERED, lease::SUNK] {
+            let entries =
+                engine_native::cequipment_variant_pool::entries(memory, base, pointer + offset)?;
+            demand = demand
+                .checked_add(entries.count as usize)
+                .ok_or("market sizing demand overflow")?;
+        }
+        for offset in [
+            lease::MONTHLY_NEED,
+            lease::PERCENTAGE_NEED,
+            lease::ONCE_NEED,
+        ] {
+            let entries =
+                engine_native::cequipment_variant_pool::entries(memory, base, pointer + offset)?;
+            demand = demand
+                .checked_add(entries.count as usize)
+                .ok_or("market sizing demand overflow")?;
+        }
+    }
+    Ok(demand)
+}
+pub fn presize(demand: usize, countries: usize) {
+    SCHEDULE_DEMAND.fetch_max(demand, Ordering::Release);
+    prepare_events();
+    VARIABLES_WATCH.offer(countries);
+    VARIABLES_WATCH.collect();
+    RESET_WATCH.offer(countries);
+    RESET_WATCH.collect();
+    for watch in &WATCHES {
+        watch.offer(countries);
+        watch.collect();
+    }
+}
+fn prepare_events() {
+    match SCHEDULE_DEMAND
+        .load(Ordering::Acquire)
+        .checked_add(CONTRACT_DEMAND.load(Ordering::Acquire))
+    {
+        Some(demand) => LEDGER.prepare(demand.max(capacity())),
+        None => failure("market event storage demand overflow"),
+    }
+}
+/// Existing contract census provides a holder count through this sizing call.
+/// Ordinary market transfers produce fixed marks, independent of item count.
+pub fn contract_storage(_items: usize, _in_transit: usize) -> Option<usize> {
+    Some(10)
+}
+pub fn prepare_contract_events(demand: usize) {
+    CONTRACT_DEMAND.fetch_max(demand, Ordering::Release);
+    prepare_events();
+}
+pub fn mark_stranded() {
+    LEDGER.mark_stranded();
+}
+pub fn lost_drain() {
+    LEDGER.lost_drain();
+}
+pub fn lost_output(count: usize) {
+    LEDGER.lost_output(count);
+}
+pub fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, invalidate: bool) {
+    LEDGER.boundary(clock);
+    // Recover current state before the existing economy census runs. The
+    // occurrence interval keeps its own loss verdict through the later drain.
+    let invalidate = invalidate || LEDGER.interval_incomplete() || held::recovery_requested();
+    for watch in &WATCHES {
+        watch.boundary(invalidate);
+    }
+    VARIABLES_WATCH.boundary(invalidate);
+    RESET_WATCH.boundary(invalidate);
+    if invalidate {
+        held::invalidate();
+    } else if RESET_WATCH.take(|_| {}).is_none() {
+        held::refuse("market reset certificate unavailable");
+    }
+}
+fn refresh_coverage() {
+    let enabled = ENABLED.load(Ordering::SeqCst)
+        && RESET_FORWARDED.load(Ordering::SeqCst)
+        && VARIABLES_FORWARDED.load(Ordering::SeqCst);
+    VARIABLES_WATCH.set_enabled(enabled);
+    RESET_WATCH.set_enabled(enabled);
+    for watch in &WATCHES {
+        watch.set_enabled(enabled);
+    }
+}
+pub fn observe_resets(enabled: bool) {
+    RESET_FORWARDED.store(enabled, Ordering::SeqCst);
+    refresh_coverage();
+}
+/// The existing country-reset patch owner holds these guards over its original.
+pub struct CountryReset {
+    _marks: [Option<Notification<'static>>; 4],
+    owner: Option<u32>,
+}
+impl Drop for CountryReset {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner {
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let result = country_reset_completed(&memory, BASE.load(Ordering::Relaxed), owner);
+            if let Err(reason) = result {
+                failure(reason);
+            }
+        }
+    }
+}
+fn country_reset_completed(
+    memory: &impl Memory,
+    base: usize,
+    owner: u32,
+) -> Result<(), &'static str> {
+    let event = root(
+        memory,
+        base,
+        lease::Identity {
+            id: 0,
+            giver: owner,
+            receiver: 0,
+        },
+        AMENDMENT_COST,
+    )?;
+    append(MarketEventRow {
+        mode: COUNTRY_RESET,
+        ..event
+    })
+}
+pub fn country_reset(country: usize) -> CountryReset {
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let owner = read::<u32>(&memory, country.wrapping_add(engine_native::ccountry::ID));
+    if ENABLED.load(Ordering::SeqCst) && owner.is_none() {
+        failure("market country reset identity unreadable");
+    }
+    CountryReset {
+        _marks: std::array::from_fn(|domain| {
+            owner.map(|id| {
+                if domain == 3 {
+                    RESET_WATCH.notify(country_receiver(id))
+                } else {
+                    WATCHES[domain].notify(country_receiver(id))
+                }
+            })
+        }),
+        owner: owner.filter(|_| ENABLED.load(Ordering::SeqCst)),
+    }
+}
+pub fn drain_growing(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static str> {
+    if !ENABLED.load(Ordering::SeqCst)
+        || !RESET_FORWARDED.load(Ordering::SeqCst)
+        || !VARIABLES_FORWARDED.load(Ordering::SeqCst)
+        || UNHOOKED.get().is_some()
+    {
+        return Err("market writer coverage incomplete (see market_changes status)");
+    }
+    let count = LEDGER.drain_growing(output)?;
+    let mut times = AMENDMENT_TIMES
+        .lock()
+        .map_err(|_| "market amendment timing storage poisoned")?;
+    for row in output
+        .iter()
+        .filter(|row| row.kind == AMENDMENT_COST && row.mode == 0)
+    {
+        if let Some(ns) =
+            crate::hook_timing::ticks_to_ns(row.amount_raw as u64, crate::hook_timing::tsc_hz())
+        {
+            times.get_or_insert_with(Default::default).record_ns(ns);
+        }
+    }
+    output.retain(|row| {
+        row.kind != AMENDMENT_COST
+            || matches!(
+                row.mode,
+                HOLDER_MARK | FINAL_CONTRACT | COUNTRY_RESET | ADMISSION
+            )
+    });
+    Ok(count)
+}
+fn failure(reason: &'static str) {
+    LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
+    LEDGER.refuse(reason);
+}
+fn append(event: MarketEventRow) -> Result<(), &'static str> {
+    LEDGER.attempt();
+    let token = LEDGER.claim((event.occurrence as usize, event.kind as usize))?;
+    LEDGER.complete(token, Ok(Some(event)))
+}
+fn root(
+    memory: &impl Memory,
+    base: usize,
+    identity: lease::Identity,
+    kind: u8,
+) -> Result<MarketEventRow, &'static str> {
+    let state = read::<u64>(
+        memory,
+        base.checked_add(engine_native::cgame_state::SINGLETON_RVA)
+            .ok_or("market game address overflow")?,
+    )
+    .filter(|p| *p != 0)
+    .ok_or("market game state unreadable")? as usize;
+    let hour = read(
+        memory,
+        state
+            .checked_add(engine_native::cgame_state::CURRENT_HOUR)
+            .ok_or("market clock address overflow")?,
+    )
+    .ok_or("market clock unreadable")?;
+    let occurrence = OCCURRENCE
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_add(1))
+        .map_err(|_| "market occurrence identity exhausted")?;
+    Ok(MarketEventRow {
+        occurrence,
+        hour,
+        agreement: identity.id,
+        country: identity.giver,
+        receiver: identity.receiver,
+        kind,
+        ..Default::default()
+    })
+}
+fn scalar<T: engine_native::memory::Raw>(
+    memory: &impl Memory,
+    at: usize,
+    offset: usize,
+) -> Result<T, &'static str> {
+    read(
+        memory,
+        at.checked_add(offset)
+            .ok_or("market operand address overflow")?,
+    )
+    .ok_or("market writer operand unreadable")
+}
+fn replacement(memory: &impl Memory, base: usize, at: usize) -> Result<(), &'static str> {
+    let started = unsafe {
+        std::arch::x86_64::_mm_lfence();
+        std::arch::x86_64::_rdtsc()
+    };
+    let identity = lease::identity(memory, base, at)?;
+    let mut event = root(memory, base, identity, AMENDMENT)?;
+    event.date = scalar(memory, at, lease::ACTIVE_SINCE)?;
+    event.amount_raw = scalar(memory, at, lease::FUEL_DAILY)?;
+    event.auxiliary_raw = scalar(memory, at, lease::FUEL_PERCENTAGE)?;
+    let offsets = [
+        lease::MONTHLY_NEED,
+        lease::PERCENTAGE_NEED,
+        lease::ONCE_NEED,
+    ];
+    let sources = offsets.map(|offset| {
+        at.checked_add(offset)
+            .ok_or("market schedule address overflow")
+    });
+    let sources = [sources[0]?, sources[1]?, sources[2]?];
+    let count = lease::schedules(
+        memory,
+        base,
+        sources,
+        |header| {
+            let count = header
+                .counts
+                .into_iter()
+                .try_fold(0_usize, |a, n| a.checked_add(n as usize))
+                .ok_or("market schedule size overflow")?;
+            REPLACEMENT_DEMAND.fetch_max(count.saturating_add(2), Ordering::Release);
+            let mut first = event;
+            first.flags = header
+                .allow_zero
+                .into_iter()
+                .enumerate()
+                .fold(0, |flags, (i, zero)| flags | (u8::from(zero) << i));
+            first.ordinal = u32::try_from(count)
+                .map_err(|_| "market schedule size exceeds occurrence framing")?;
+            append(first)
+        },
+        |item| {
+            append(MarketEventRow {
+                kind: SCHEDULE,
+                mode: item.mode,
+                ordinal: item.ordinal,
+                variant: item.variant,
+                amount_raw: item.amount_raw,
+                auxiliary_raw: 0,
+                ..event
+            })
+        },
+    )?;
+    let ticks = unsafe {
+        std::arch::x86_64::_mm_lfence();
+        std::arch::x86_64::_rdtsc()
+    }
+    .saturating_sub(started);
+    append(MarketEventRow {
+        kind: AMENDMENT_COST,
+        mode: 0,
+        amount_raw: ticks as i64,
+        auxiliary_raw: count as i64,
+        ..event
+    })?;
+    AMENDMENTS.fetch_add(1, Ordering::Relaxed);
+    AMENDMENT_ITEMS.fetch_add(count as u64, Ordering::Relaxed);
+    Ok(())
+}
+/// Only the selected holder's identity is read; no operand pool is traversed.
+fn mark_holder(
+    event: MarketEventRow,
+    pointer: usize,
+    domain: u8,
+    demand: u8,
+) -> Result<(), &'static str> {
+    append(MarketEventRow {
+        kind: AMENDMENT_COST,
+        mode: HOLDER_MARK,
+        flags: domain,
+        ordinal: u32::from(demand),
+        total_raw: pointer as i64,
+        ..event
+    })
+}
+fn equipment(
+    memory: &impl Memory,
+    base: usize,
+    delivered: bool,
+    destination: usize,
+    _source: usize,
+) -> Result<(), &'static str> {
+    let pointer = destination
+        .checked_sub(if delivered {
+            lease::DELIVERED
+        } else {
+            lease::SUNK
+        })
+        .ok_or("market delivery destination invalid")?;
+    let event = root(
+        memory,
+        base,
+        lease::identity(memory, base, pointer)?,
+        if delivered { DELIVERED } else { LOST },
+    )?;
+    mark_holder(
+        event,
+        pointer,
+        AGREEMENT_MARK,
+        if delivered { READ_DELIVERED } else { READ_SUNK },
+    )
+}
+fn inventory(
+    memory: &impl Memory,
+    base: usize,
+    _site: usize,
+    destination: usize,
+    _source: usize,
+    _amount: usize,
+) -> Result<(), &'static str> {
+    let stockpile = destination
+        .checked_sub(STOCKPILE_POOL)
+        .ok_or("market stockpile operand invalid")?;
+    let owner = scalar(memory, stockpile, STOCKPILE_COUNTRY)?;
+    let event = root(
+        memory,
+        base,
+        lease::Identity {
+            giver: owner,
+            ..Default::default()
+        },
+        INVENTORY,
+    )?;
+    mark_holder(event, stockpile, INVENTORY_MARK, 0)
+}
+/// Rare amendment/removal boundary only. Preserve complete final cumulative
+/// pools before native code resets or destroys them; storage is preallocated.
+fn final_pools(memory: &impl Memory, base: usize, pointer: usize) -> Result<(), &'static str> {
+    let event = root(
+        memory,
+        base,
+        lease::identity(memory, base, pointer)?,
+        FINAL_BEGIN,
+    )?;
+    let offsets = [lease::DELIVERED, lease::SUNK];
+    let headers = offsets.map(|offset| {
+        engine_native::cequipment_variant_pool::entries(memory, base, pointer + offset)
+    });
+    let headers = [headers[0]?, headers[1]?];
+    let mut flags = 0;
+    let mut count = 0_usize;
+    for (mode, header) in headers.iter().enumerate() {
+        flags |= u8::from(
+            scalar::<u8>(
+                memory,
+                pointer + offsets[mode],
+                engine_native::cequipment_variant_pool::ALLOW_ZERO,
+            )? != 0,
+        ) << mode;
+        count = count
+            .checked_add(header.count as usize)
+            .ok_or("market final pool demand overflow")?;
+    }
+    REPLACEMENT_DEMAND.fetch_max(count.saturating_add(2), Ordering::Release);
+    append(MarketEventRow { flags, ..event })?;
+    for (mode, header) in headers.into_iter().enumerate() {
+        for ordinal in 0..header.count {
+            let item = engine_native::equipment_entry::read(
+                memory,
+                base,
+                header
+                    .element(ordinal, engine_native::equipment_entry::STRIDE)
+                    .ok_or("market final entry address overflow")?,
+                ordinal,
+            )?;
+            append(MarketEventRow {
+                kind: FINAL_ITEM,
+                mode: mode as u8,
+                ordinal,
+                variant: item.variant_handle,
+                amount_raw: item.amount_raw,
+                ..event
+            })?;
+        }
+    }
+    append(MarketEventRow {
+        kind: FINAL_END,
+        ..event
+    })?;
+    FINAL_SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
+    FINAL_ITEMS.fetch_add(count as u64, Ordering::Relaxed);
+    Ok(())
+}
+/// Native cumulative delivery cost and agreed total suffice to derive the
+/// whole-unit delivered manifest on the worker, including terminal contracts.
+fn contract_final(
+    memory: &impl Memory,
+    pointer: usize,
+    event: MarketEventRow,
+) -> Result<(), &'static str> {
+    append(MarketEventRow {
+        mode: FINAL_CONTRACT,
+        flags: u8::from(
+            scalar::<u8>(
+                memory,
+                pointer + engine_production::market_ledger::DRAFT,
+                engine_production::market_ledger::DEFINITION_COST_VALID,
+            )? != 0,
+        ),
+        ordinal: scalar::<i32>(
+            memory,
+            pointer,
+            engine_production::cpurchase_contract::COMPLETED,
+        )? as u32,
+        amount_raw: scalar(
+            memory,
+            pointer,
+            engine_production::cpurchase_contract::EQUIPMENT_PROGRESS,
+        )?,
+        auxiliary_raw: scalar(
+            memory,
+            pointer + engine_production::market_ledger::DRAFT,
+            engine_production::market_ledger::DEFINITION_TOTAL_COST,
+        )?,
+        ..event
+    })
+}
+/// Active removal precedes deferred destruction and native reference retirement.
+/// A destructor of an already retired holder cannot name an active contract.
+fn contract_removing(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    destructor: bool,
+) -> Result<(), &'static str> {
+    let id: u64 = scalar(
+        memory,
+        pointer,
+        engine_production::cpurchase_contract::ID_TYPE,
+    )?;
+    // The retired ID marker can also be a live contract's ID. Native removal
+    // clears registration after retiring the handle, before deferred cleanup.
+    if id >> 32 == u64::from(native::RETIRED_REFERENCE_ID)
+        && scalar::<u8>(
+            memory,
+            pointer,
+            engine_production::cpurchase_contract::REGISTERED,
+        )? == 0
+    {
+        return if destructor {
+            Ok(())
+        } else {
+            Err("market removal contract identity invalid")
+        };
+    }
+    if id as u32 != engine_production::cpurchase_contract::TYPE || id >> 32 == 0 {
+        return Err("market removal contract identity invalid");
+    }
+    let event = root(
+        memory,
+        base,
+        lease::Identity {
+            id,
+            giver: scalar(
+                memory,
+                pointer,
+                engine_production::cpurchase_contract::SELLER,
+            )?,
+            receiver: scalar(
+                memory,
+                pointer,
+                engine_production::cpurchase_contract::BUYER,
+            )?,
+        },
+        AMENDMENT_COST,
+    )?;
+    contract_final(memory, pointer, event)?;
+    append(MarketEventRow {
+        kind: CONTRACT_REMOVED,
+        flags: 1,
+        ..event
+    })
+}
+/// Serialized identity is assigned after worker-derived rows join the interval.
+pub fn publish(events: &mut Vec<MarketEventRow>) -> Result<(), &'static str> {
+    events.retain(|row| {
+        row.kind != AMENDMENT_COST && (row.kind < FINAL_BEGIN || row.kind == DELIVERY_UNAVAILABLE)
+    });
+    for event in events {
+        OUTPUT_SEQUENCE.fetch_max(event.occurrence, Ordering::AcqRel);
+        event.id = OUTPUT_SEQUENCE
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+            .map_err(|_| "market output identity exhausted")?;
+    }
+    Ok(())
+}
+fn contract_root(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    kind: u8,
+) -> Result<MarketEventRow, &'static str> {
+    let identity = lease::Identity {
+        id: scalar(
+            memory,
+            pointer,
+            engine_production::cpurchase_contract::ID_TYPE,
+        )?,
+        giver: scalar(
+            memory,
+            pointer,
+            engine_production::cpurchase_contract::SELLER,
+        )?,
+        receiver: scalar(
+            memory,
+            pointer,
+            engine_production::cpurchase_contract::BUYER,
+        )?,
+    };
+    root(memory, base, identity, kind)
+}
+/// Births retain identity only. The private pointer is consumed by the worker
+/// after removals, so short-lived holders never need a definition read.
+fn contract_created(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    request: bool,
+) -> Result<(), &'static str> {
+    let event = contract_root(
+        memory,
+        base,
+        pointer,
+        if request {
+            REQUEST_CREATED
+        } else {
+            CONTRACT_CREATED
+        },
+    )?;
+    append(event)?;
+    append(MarketEventRow {
+        kind: AMENDMENT_COST,
+        mode: ADMISSION,
+        flags: u8::from(!request),
+        total_raw: pointer as i64,
+        ..event
+    })
+}
+struct DeliveryScope(Option<MarketEventRow>);
+impl Drop for DeliveryScope {
+    fn drop(&mut self) {
+        CONTRACT_DELIVERY.with(|slot| slot.set(self.0));
+    }
+}
+fn owner_of_status(memory: &impl Memory, status: usize) -> Result<u32, &'static str> {
+    let country: u64 = scalar(
+        memory,
+        status,
+        engine_production::market_ledger::COUNTRY_BACKLINK,
+    )?;
+    scalar(memory, country as usize, engine_native::ccountry::ID)
+}
+
+type Native = unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize, usize) -> usize;
+fn run(site: usize, args: [usize; 6]) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::MarketChanges);
+    FLIGHTS.fetch_add(1, Ordering::SeqCst);
+    let original: Native = unsafe { std::mem::transmute(ORIGINAL[site].load(Ordering::Acquire)) };
+    if !ENABLED.load(Ordering::SeqCst) {
+        let result = timing
+            .original(|| unsafe { original(args[0], args[1], args[2], args[3], args[4], args[5]) });
+        FLIGHTS.fetch_sub(1, Ordering::SeqCst);
+        return result;
+    }
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let base = BASE.load(Ordering::Relaxed);
+    let domain = match site {
+        11 => Some(PRICES),
+        12..=14 => Some(SUBSIDIES),
+        15 => Some(AUTOMATION),
+        _ => None,
+    };
+    let notification = domain.and_then(|domain| {
+        let owner = if site == 15 {
+            scalar(&memory, args[0], COMMAND_COUNTRY)
+        } else {
+            owner_of_status(&memory, args[0])
+        };
+        match owner {
+            Ok(owner) => Some(WATCHES[domain].notify(country_receiver(owner))),
+            Err(reason) => {
+                WATCHES[domain].poison();
+                failure(reason);
+                None
+            }
+        }
+    });
+    let observing_event = domain.is_none() && site != 22 && site != 23;
+    let depth = if observing_event {
+        DEPTH.with(|slot| {
+            let previous = slot.get();
+            slot.set(previous + 1);
+            previous
+        })
+    } else {
+        0
+    };
+    if observing_event && depth == 0 {
+        LEDGER.enter();
+    }
+    let registered = if site == 17 {
+        read::<u64>(&memory, args[1]).map(|p| p as usize)
+    } else {
+        None
+    };
+    let _delivery_scope = if site == 21 {
+        match contract_root(&memory, base, args[0], CONTRACT_DELIVERED) {
+            Ok(event) => Some(DeliveryScope(CONTRACT_DELIVERY.with(|slot| {
+                let previous = slot.get();
+                slot.set(Some(event));
+                previous
+            }))),
+            Err(reason) => {
+                failure(reason);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    // Save identity before native completion can destroy the contract. A nested
+    // removal witness clears this worker mark before any pointer is read.
+    if matches!(site, 21 | 24 | 25)
+        && let Err(reason) =
+            contract_root(&memory, base, args[0], CONTRACT_STATE).and_then(|event| {
+                mark_holder(
+                    event,
+                    args[0],
+                    CONTRACT_MARK,
+                    READ_RUNTIME
+                        | if site == 21 {
+                            READ_PURCHASE_TOTAL
+                        } else if site == 25 {
+                            READ_ROUTE
+                        } else {
+                            0
+                        },
+                )
+            })
+    {
+        failure(reason);
+    }
+    if (site == 0 || site == 3)
+        && let Err(reason) = final_pools(&memory, base, args[0])
+    {
+        failure(reason);
+    }
+    if site == 20 || site == native::CONTRACT_REMOVAL_SITE {
+        let pointer = if site == 20 { args[0] } else { args[1] };
+        if let Err(reason) = contract_removing(&memory, base, pointer, site == 20) {
+            failure(reason);
+        }
+    }
+    if site == 19 {
+        let pointer = args[1];
+        let witness =
+            contract_root(&memory, base, pointer, CONTRACT_REMOVED).and_then(|mut event| {
+                event.flags = u8::from(site == 20);
+                append(event)
+            });
+        if let Err(reason) = witness {
+            failure(reason);
+        }
+    }
+    if site == 3 {
+        let witness = lease::identity(&memory, base, args[0])
+            .and_then(|identity| root(&memory, base, identity, REMOVED))
+            .and_then(append);
+        if let Err(reason) = witness {
+            failure(reason);
+        }
+    }
+    let result = timing
+        .original(|| unsafe { original(args[0], args[1], args[2], args[3], args[4], args[5]) });
+    let captured = match site {
+        0 => replacement(&memory, base, args[0]),
+        5 | 6 => equipment(&memory, base, site == 5, args[0], args[1]),
+        7..=10 => inventory(&memory, base, site, args[0], args[1], args[2]),
+        16 => (|| {
+            let pointer = args[0]
+                .checked_sub(lease::ONCE_NEED)
+                .ok_or("lend-lease once operand invalid")?;
+            let event = root(
+                &memory,
+                base,
+                lease::identity(&memory, base, pointer)?,
+                ONCE_APPLIED,
+            )?;
+            mark_holder(event, pointer, AGREEMENT_MARK, READ_ONCE)
+        })(),
+        17 => registered
+            .ok_or("market registered contract operand unreadable")
+            .and_then(|pointer| contract_created(&memory, base, pointer, false)),
+        18 => contract_created(&memory, base, result, true),
+        23 => CONTRACT_DELIVERY
+            .with(|slot| slot.get())
+            .ok_or("market payment has no native contract scope")
+            .and_then(|event| {
+                append(MarketEventRow {
+                    kind: CONTRACT_PAYMENT,
+                    amount_raw: args[1] as i64,
+                    ..event
+                })
+            }),
+        _ => Ok(()),
+    };
+    if let Err(reason) = captured {
+        failure(reason);
+    }
+    drop(notification);
+    if observing_event && depth == 0 {
+        LEDGER.leave();
+    }
+    if observing_event {
+        DEPTH.with(|slot| slot.set(depth));
+    }
+    FLIGHTS.fetch_sub(1, Ordering::SeqCst);
+    result
+}
+/// The operand is the exact signed native ADD delta. Zero stores do no
+/// guarded read, event append, allocation, identity walk or timer sampling.
+fn fuel_store(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    amount: i64,
+    lost: bool,
+) -> Result<(), &'static str> {
+    if amount == 0 {
+        return Ok(());
+    }
+    let event = root(memory, base, lease::identity(memory, base, pointer)?, FUEL)?;
+    append(MarketEventRow {
+        mode: u8::from(lost),
+        amount_raw: if lost { 0 } else { amount },
+        auxiliary_raw: if lost { amount } else { 0 },
+        ..event
+    })
+}
+unsafe extern "system-unwind" fn fuel_write(registers: &Registers, tag: usize) {
+    let amount = registers.rax as i64;
+    if amount == 0 || !ENABLED.load(Ordering::SeqCst) {
+        return;
+    }
+    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::MarketChanges);
+    FLIGHTS.fetch_add(1, Ordering::SeqCst);
+    let outer = DEPTH.with(|slot| slot.get() == 0);
+    if outer {
+        LEDGER.enter();
+    }
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    if let Err(reason) = fuel_store(
+        &memory,
+        BASE.load(Ordering::Acquire),
+        registers.rsi,
+        amount,
+        tag == native::FUEL_LOST_SITE,
+    ) {
+        failure(reason);
+    }
+    if outer {
+        LEDGER.leave();
+    }
+    FLIGHTS.fetch_sub(1, Ordering::SeqCst);
+}
+macro_rules! callback {
+    ($name:ident, $index:expr) => {
+        unsafe extern "system-unwind" fn $name(
+            a: usize,
+            b: usize,
+            c: usize,
+            d: usize,
+            e: usize,
+            f: usize,
+        ) -> usize {
+            run($index, [a, b, c, d, e, f])
+        }
+    };
+}
+callback!(amendment, 0);
+callback!(removal, 3);
+
+callback!(delivered, 5);
+callback!(lost, 6);
+callback!(reserve, 7);
+callback!(release, 8);
+callback!(returned, 9);
+callback!(committed, 10);
+callback!(once_applied, 16);
+callback!(contract_registered, 17);
+callback!(contract_removed, 30);
+callback!(request_created, 18);
+callback!(request_removed, 19);
+callback!(contract_destroyed, 20);
+callback!(contract_delivery, 21);
+callback!(contract_payment, 23);
+callback!(contract_daily, 24);
+callback!(route_rebuild, 25);
+callback!(prices, 11);
+callback!(grant, 12);
+callback!(subsidy_use, 13);
+callback!(subsidy_return, 14);
+callback!(automation, 15);
+
+fn site_failure(index: usize, phase: &str, reason: impl std::fmt::Display) -> String {
+    format!(
+        "market_changes {}: {phase}: {reason}",
+        native::SITES[index].name
+    )
+}
+
+fn verify_sites(memory: &impl Memory, base: usize) -> Result<(), String> {
+    for &index in &OBSERVED_SITES {
+        let site = &native::SITES[index];
+        if read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+            return Err(site_failure(index, "sentinel", "unreadable or differs"));
+        }
+    }
+    Ok(())
+}
+
+// Publication reports a batch outcome, not a failing member. Name the complete
+// participating set without attributing a batch failure to an arbitrary site.
+fn publication_failure(phase: &str, reason: impl std::fmt::Display) -> String {
+    let sites = OBSERVED_SITES
+        .map(|index| native::SITES[index].name)
+        .join(", ");
+    format!("market_changes [{sites}]: {phase}: {reason}")
+}
+
+fn remember_publication_failure(phase: &str, reason: impl std::fmt::Display) -> &'static str {
+    PUBLICATION_FAILURE
+        .get_or_init(|| publication_failure(phase, reason))
+        .as_str()
+}
+
+pub struct Hooks {
+    hooks: Vec<Hook>,
+    taps: Vec<Tap>,
+}
+impl Hooks {
+    /// # Safety
+    /// The host verified the executable and exclusively owns these dedicated sites.
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+        BASE.store(base, Ordering::Release);
+        let callbacks = [
+            amendment as *const () as usize,
+            0, // draft-action resets are not game-state writers
+            0,
+            removal as *const () as usize,
+            0, // delivered fuel uses the reached native store tap
+            delivered as *const () as usize,
+            lost as *const () as usize,
+            reserve as *const () as usize,
+            release as *const () as usize,
+            returned as *const () as usize,
+            committed as *const () as usize,
+            prices as *const () as usize,
+            grant as *const () as usize,
+            subsidy_use as *const () as usize,
+            subsidy_return as *const () as usize,
+            automation as *const () as usize,
+            once_applied as *const () as usize,
+            contract_registered as *const () as usize,
+            request_created as *const () as usize,
+            request_removed as *const () as usize,
+            contract_destroyed as *const () as usize,
+            contract_delivery as *const () as usize,
+            0,
+            contract_payment as *const () as usize,
+            contract_daily as *const () as usize,
+            route_rebuild as *const () as usize,
+            0,
+            0,
+            0,
+            0, // lost fuel uses the reached native store tap
+            contract_removed as *const () as usize,
+        ];
+        let install = || -> Result<(Vec<Hook>, Vec<Tap>), String> {
+            verify_sites(memory, base)?;
+            let mut hooks = Vec::with_capacity(OBSERVED_SITES.len() - 2);
+            let mut taps = Vec::with_capacity(2);
+            for &index in &OBSERVED_SITES {
+                let site = &native::SITES[index];
+                if index == native::FUEL_SENT_SITE || index == native::FUEL_LOST_SITE {
+                    taps.push(
+                        unsafe { Tap::new(base + site.rva, fuel_write, index, site.sentinel) }
+                            .map_err(|reason| site_failure(index, "tap construction", reason))?,
+                    );
+                    continue;
+                }
+                if callbacks[index] == 0 {
+                    return Err(site_failure(
+                        index,
+                        "observer selection",
+                        "no game-state callback",
+                    ));
+                }
+                let hook = if site.call_target.is_some() {
+                    unsafe { Hook::new_call(base + site.rva, callbacks[index], site.sentinel) }
+                } else {
+                    unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                }
+                .map_err(|reason| site_failure(index, "hook construction", reason))?;
+                ORIGINAL[index].store(
+                    site.call_target
+                        .map_or_else(|| hook.trampoline(), |rva| base + rva),
+                    Ordering::Release,
+                );
+                hooks.push(hook);
+            }
+            Ok((hooks, taps))
+        };
+        match install() {
+            Ok((hooks, taps)) => Self { hooks, taps },
+            Err(reason) => {
+                let _ = UNHOOKED.set(reason);
+                Self {
+                    hooks: Vec::new(),
+                    taps: Vec::new(),
+                }
+            }
+        }
+    }
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        if enabled && let Some(reason) = UNHOOKED.get() {
+            return Err(reason.as_str());
+        }
+        if !enabled {
+            ENABLED.store(false, Ordering::SeqCst);
+            refresh_coverage();
+        }
+        let ready = match crate::hook::shared::attach_outcome() {
+            Some(outcome) => {
+                outcome.map_err(|reason| remember_publication_failure("publication", reason))?
+            }
+            None => {
+                let mut hooks = crate::hook::shared::publication_storage_attach(
+                    self.hooks.len() + self.taps.len(),
+                    enabled,
+                )
+                .map_err(|reason| remember_publication_failure("publication storage", reason))?;
+                hooks.extend(self.hooks.iter_mut());
+                hooks.extend(self.taps.iter_mut().map(Tap::publication_hook));
+                Hook::set_enabled_batch_attach(&mut hooks, enabled)
+                    .map_err(|reason| remember_publication_failure("publication", reason))?
+            }
+        };
+        if !ready {
+            return Ok(false);
+        }
+        ENABLED.store(
+            enabled && self.hooks.len() + self.taps.len() == OBSERVED_SITES.len(),
+            Ordering::SeqCst,
+        );
+        refresh_coverage();
+        Ok(true)
+    }
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.hooks
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .chain(self.taps.iter().flat_map(Tap::executable_ranges))
+    }
+}
+pub fn status() -> impl serde::Serialize {
+    let times = AMENDMENT_TIMES
+        .lock()
+        .ok()
+        .and_then(|times| times.as_ref().and_then(|times| times.status().ok()));
+    crate::status::status!({
+        "enabled": ENABLED.load(Ordering::SeqCst), "unhooked": UNHOOKED.get(),
+        "forwarded_variables": VARIABLES_FORWARDED.load(Ordering::SeqCst), "forwarded_resets": RESET_FORWARDED.load(Ordering::SeqCst), "active": active(),
+        "writer_sites": OBSERVED_SITES.len(), "delivery_amount_refusals": DELIVERY_AMOUNT_REFUSALS.load(Ordering::Relaxed), "final_snapshots": FINAL_SNAPSHOTS.load(Ordering::Relaxed), "final_items": FINAL_ITEMS.load(Ordering::Relaxed),
+        "amendments": AMENDMENTS.load(Ordering::Relaxed), "amendment_items": AMENDMENT_ITEMS.load(Ordering::Relaxed),
+        "amendment_callback": times, "events": LEDGER.events.load(Ordering::Relaxed),
+        "refusals": LEDGER.refusals.load(Ordering::Relaxed), "overflow": LEDGER.overflow.load(Ordering::Relaxed),
+        "lost_events": LEDGER.lost_events.load(Ordering::Relaxed), "lost_events_unknown": LEDGER.lost_events_unknown.load(Ordering::Relaxed),
+        "entry_demand": capacity(), "prices": WATCHES[PRICES].status(), "subsidies": WATCHES[SUBSIDIES].status(), "automation": WATCHES[AUTOMATION].status()
+    })
+}
+
+/// Synthetic owned-census support; no native addresses escape into recordings.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use super::*;
+    pub(super) static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub struct Session(std::sync::MutexGuard<'static, ()>);
+    impl Default for Session {
+        fn default() -> Self {
+            let guard = SERIAL.lock().unwrap();
+            LEDGER.reset();
+            ENABLED.store(true, Ordering::SeqCst);
+            observe_resets(true);
+            observe_variables(true);
+            presize(16, 16);
+            held::invalidate();
+            Self(guard)
+        }
+    }
+    impl Session {
+        pub fn seed(&self, rows: [replay_data::rows::TableRows; 3]) {
+            held::test_census(rows);
+        }
+        pub fn lose_interval(&self) {
+            LEDGER.lost_output(1);
+        }
+        pub fn emit(&self, row: MarketEventRow) {
+            append(row).unwrap();
+        }
+        pub fn create_contract(&self, memory: &impl Memory, pointer: usize) {
+            contract_created(memory, 0, pointer, false).unwrap();
+        }
+        pub fn remove_contract(&self, memory: &impl Memory, pointer: usize) {
+            assert!(OBSERVED_SITES.contains(&native::CONTRACT_REMOVAL_SITE));
+            contract_removing(memory, 0, pointer, false).unwrap();
+        }
+        pub fn destroy_contract(
+            &self,
+            memory: &impl Memory,
+            pointer: usize,
+        ) -> Result<(), &'static str> {
+            contract_removing(memory, 0, pointer, true)
+        }
+        pub fn reset_country(&self, memory: &impl Memory, owner: u32) {
+            let _reset = RESET_WATCH.notify(country_receiver(owner));
+            let _domains: [_; 3] =
+                std::array::from_fn(|i| WATCHES[i].notify(country_receiver(owner)));
+            country_reset_completed(memory, 0, owner).unwrap();
+        }
+        pub fn automation(&self, owner: u32) {
+            drop(WATCHES[AUTOMATION].notify(country_receiver(owner)));
+        }
+        pub fn contract_delivery(&self, memory: &impl Memory, pointer: usize) {
+            let event = contract_root(memory, 0, pointer, CONTRACT_STATE).unwrap();
+            mark_holder(event, pointer, CONTRACT_MARK, READ_PURCHASE_TOTAL).unwrap();
+        }
+    }
+    impl Drop for Session {
+        fn drop(&mut self) {
+            let _ = &self.0;
+            ENABLED.store(false, Ordering::SeqCst);
+            observe_resets(false);
+            observe_variables(false);
+            held::invalidate();
+            LEDGER.reset();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn country_receiver_keys_cover_zero_and_the_full_native_id_domain() {
+        let _session = test_support::Session::default();
+        boundary(
+            Some(engine_native::cgame_state::Clock {
+                hour: 1,
+                ..Default::default()
+            }),
+            false,
+        );
+        for owner in [0, 1, 5000, u32::MAX] {
+            let key = country_receiver(owner);
+            assert_ne!(key, 0);
+            assert_eq!(((key >> 3) - 1) as u32, owner);
+            RESET_WATCH.register(key).unwrap();
+            drop(RESET_WATCH.notify(key));
+        }
+        let mut owners = Vec::new();
+        RESET_WATCH
+            .take(|key| owners.push(((key >> 3) - 1) as u32))
+            .unwrap();
+        owners.sort_unstable();
+        assert_eq!(owners, [0, 1, 5000, u32::MAX]);
+    }
+    #[test]
+    fn contract_removal_copies_only_fixed_scalars_without_allocation() {
+        let _session = test_support::Session::default();
+        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+            hour: 1,
+            ..Default::default()
+        }));
+        assert!(
+            LEDGER
+                .drain_growing(&mut Vec::new())
+                .unwrap_err()
+                .contains("partial")
+        );
+        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+            hour: 2,
+            ..Default::default()
+        }));
+        const POINTER: usize = 0x100;
+        struct FixedOperands {
+            identity: Option<u64>,
+            registered: Option<u8>,
+            reads: std::cell::Cell<usize>,
+        }
+        impl Memory for FixedOperands {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                self.reads.set(self.reads.get() + 1);
+                let value: u64 = if at == POINTER + engine_production::cpurchase_contract::ID_TYPE {
+                    let Some(identity) = self.identity else {
+                        return false;
+                    };
+                    identity
+                } else if at == POINTER + engine_production::cpurchase_contract::REGISTERED {
+                    let Some(registered) = self.registered else {
+                        return false;
+                    };
+                    u64::from(registered)
+                } else if at == POINTER + engine_production::cpurchase_contract::SELLER {
+                    5000
+                } else if at == POINTER + engine_production::cpurchase_contract::BUYER {
+                    0
+                } else if at == engine_native::cgame_state::SINGLETON_RVA {
+                    0x1000
+                } else if at == 0x1000 + engine_native::cgame_state::CURRENT_HOUR {
+                    2
+                } else if at
+                    == POINTER
+                        + engine_production::market_ledger::DRAFT
+                        + engine_production::market_ledger::DEFINITION_COST_VALID
+                {
+                    1
+                } else if at == POINTER + engine_production::cpurchase_contract::COMPLETED {
+                    3
+                } else if at == POINTER + engine_production::cpurchase_contract::EQUIPMENT_PROGRESS
+                {
+                    50_000
+                } else if at
+                    == POINTER
+                        + engine_production::market_ledger::DRAFT
+                        + engine_production::market_ledger::DEFINITION_TOTAL_COST
+                {
+                    100_000
+                } else {
+                    panic!("removal callback walked a pool or definition");
+                };
+                out.copy_from_slice(&value.to_le_bytes()[..out.len()]);
+                true
+            }
+        }
+        let operands = |identity, registered| FixedOperands {
+            identity,
+            registered,
+            reads: std::cell::Cell::new(0),
+        };
+        let identity = (17_u64 << 32) | u64::from(engine_production::cpurchase_contract::TYPE);
+        let memory = operands(Some(identity), Some(1));
+        crate::test_support::with_allocations_denied(|| {
+            contract_removing(&memory, 0, POINTER, false)
+        })
+        .unwrap();
+        assert_eq!(memory.reads.get(), 9);
+        let retired = (u64::from(native::RETIRED_REFERENCE_ID) << 32) | 17;
+        let memory = operands(Some(retired), Some(0));
+        crate::test_support::with_allocations_denied(|| {
+            contract_removing(&memory, 0, POINTER, true)
+        })
+        .unwrap();
+        assert_eq!(memory.reads.get(), 2);
+
+        // A registered holder whose ID equals the marker still has one final
+        // witness. The same words describe the retired holder of the type ID.
+        let marker_identity = (u64::from(native::RETIRED_REFERENCE_ID) << 32)
+            | u64::from(engine_production::cpurchase_contract::TYPE);
+        let memory = operands(Some(marker_identity), Some(1));
+        crate::test_support::with_allocations_denied(|| {
+            contract_removing(&memory, 0, POINTER, true)
+        })
+        .unwrap();
+        assert_eq!(memory.reads.get(), 10);
+        let memory = operands(Some(marker_identity), Some(0));
+        crate::test_support::with_allocations_denied(|| {
+            contract_removing(&memory, 0, POINTER, true)
+        })
+        .unwrap();
+        assert_eq!(memory.reads.get(), 2);
+
+        for identity in [
+            0,
+            (17_u64 << 32) | u64::from(native::RETIRED_REFERENCE_ID),
+            (17_u64 << 32) | u64::from(engine_production::cpurchase_contract::TYPE + 1),
+            retired,
+            marker_identity,
+        ] {
+            let memory = operands(Some(identity), Some(0));
+            assert_eq!(
+                crate::test_support::with_allocations_denied(|| {
+                    contract_removing(&memory, 0, POINTER, false)
+                }),
+                Err("market removal contract identity invalid")
+            );
+        }
+        for identity in [
+            0,
+            (17_u64 << 32) | u64::from(native::RETIRED_REFERENCE_ID),
+            (17_u64 << 32) | u64::from(engine_production::cpurchase_contract::TYPE + 1),
+        ] {
+            let memory = operands(Some(identity), Some(0));
+            assert_eq!(
+                crate::test_support::with_allocations_denied(|| {
+                    contract_removing(&memory, 0, POINTER, true)
+                }),
+                Err("market removal contract identity invalid")
+            );
+        }
+        for destructor in [false, true] {
+            let memory = operands(Some(retired), Some(1));
+            assert_eq!(
+                crate::test_support::with_allocations_denied(|| {
+                    contract_removing(&memory, 0, POINTER, destructor)
+                }),
+                Err("market removal contract identity invalid")
+            );
+            for identity in [None, Some(retired)] {
+                let memory = operands(identity, None);
+                assert_eq!(
+                    crate::test_support::with_allocations_denied(|| {
+                        contract_removing(&memory, 0, POINTER, destructor)
+                    }),
+                    Err("market writer operand unreadable")
+                );
+            }
+        }
+        let mut events = Vec::new();
+        assert_eq!(LEDGER.drain_growing(&mut events), Ok(4));
+        assert_eq!(
+            (events[0].kind, events[0].mode),
+            (AMENDMENT_COST, FINAL_CONTRACT)
+        );
+        assert_eq!(events[1].kind, CONTRACT_REMOVED);
+        assert_eq!(events[0].agreement, events[1].agreement);
+        assert_eq!(events[0].agreement, identity);
+        assert_eq!(events[2].agreement, marker_identity);
+        assert_eq!(events[3].agreement, marker_identity);
+        assert_eq!(
+            (events[2].kind, events[2].mode),
+            (AMENDMENT_COST, FINAL_CONTRACT)
+        );
+        assert_eq!(events[3].kind, CONTRACT_REMOVED);
+        assert_eq!(
+            (
+                events[0].amount_raw,
+                events[0].auxiliary_raw,
+                events[0].ordinal
+            ),
+            (50_000, 100_000, 3)
+        );
+    }
+    #[test]
+    fn every_sentinel_refusal_names_its_family_and_exact_site() {
+        struct Sentinels {
+            refused: usize,
+            unreadable: bool,
+        }
+        impl Memory for Sentinels {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                let index = native::SITES
+                    .iter()
+                    .position(|site| site.rva == at)
+                    .unwrap();
+                if index == self.refused {
+                    out.fill(0);
+                    return !self.unreadable;
+                }
+                out.copy_from_slice(&native::SITES[index].sentinel);
+                true
+            }
+        }
+        for refused in OBSERVED_SITES {
+            for unreadable in [false, true] {
+                let reason = verify_sites(
+                    &Sentinels {
+                        refused,
+                        unreadable,
+                    },
+                    0,
+                )
+                .unwrap_err();
+                assert_eq!(
+                    reason,
+                    format!(
+                        "market_changes {}: sentinel: unreadable or differs",
+                        native::SITES[refused].name
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn construction_and_publication_errors_keep_site_names_and_underlying_cause() {
+        for index in OBSERVED_SITES {
+            for phase in ["hook construction", "tap construction"] {
+                let reason = site_failure(index, phase, "synthetic native refusal");
+                assert_eq!(
+                    reason,
+                    format!(
+                        "market_changes {}: {phase}: synthetic native refusal",
+                        native::SITES[index].name
+                    )
+                );
+            }
+        }
+        for phase in ["publication", "publication storage"] {
+            let reason = publication_failure(phase, "synthetic batch refusal");
+            assert!(reason.starts_with("market_changes ["));
+            assert!(reason.ends_with(&format!("]: {phase}: synthetic batch refusal")));
+            for index in OBSERVED_SITES {
+                assert!(reason.contains(native::SITES[index].name));
+            }
+            for nested in [1, 2, 22, 26, 27, 28] {
+                assert!(!reason.contains(native::SITES[nested].name));
+            }
+        }
+    }
+
+    #[test]
+    fn local_draft_resets_and_nested_pool_copies_have_no_patch_owner() {
+        assert_eq!(OBSERVED_SITES.len(), 25);
+        for nested in [1, 2, 22, 26, 27, 28] {
+            assert!(!OBSERVED_SITES.contains(&nested));
+        }
+        for owner in [0, 3, 5, 6, 16, 21, 24, 25, native::CONTRACT_REMOVAL_SITE] {
+            assert!(OBSERVED_SITES.contains(&owner));
+        }
+    }
+    #[test]
+    fn writer_coverage_never_reads_local_draft_reset_sites() {
+        struct GameWriters;
+        impl Memory for GameWriters {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                for index in [1, 2] {
+                    assert_ne!(
+                        at,
+                        native::SITES[index].rva,
+                        "local draft reset was observed"
+                    );
+                }
+                let Some(site) = native::SITES.iter().find(|site| site.rva == at) else {
+                    return false;
+                };
+                output.copy_from_slice(&site.sentinel[..output.len()]);
+                true
+            }
+        }
+        verify_sites(&GameWriters, 0).unwrap();
+    }
+    #[test]
+    fn fuel_taps_observe_only_reached_signed_add_operands() {
+        for (index, offset) in [
+            (native::FUEL_SENT_SITE, lease::FUEL_SENT),
+            (native::FUEL_LOST_SITE, lease::FUEL_SUNK),
+        ] {
+            let site = &native::SITES[index];
+            // ADD [RSI + field], RAX: the tap takes the exchange and delta
+            // directly from the native operands, before the seven-byte store.
+            assert_eq!(&site.sentinel[..3], &[0x48, 0x01, 0x86]);
+            assert_eq!(
+                u32::from_le_bytes(site.sentinel[3..7].try_into().unwrap()) as usize,
+                offset
+            );
+            assert!(site.call_target.is_none());
+        }
+        assert!(
+            native::SITES
+                .iter()
+                .all(|site| site.name != "fuel_transfer")
+        );
+    }
+    #[test]
+    fn quiet_fuel_stores_do_no_guarded_reads_or_allocation() {
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("quiet fuel store read native memory");
+            }
+        }
+        crate::test_support::with_allocations_denied(|| {
+            for lost in [false, true] {
+                fuel_store(&NoReads, usize::MAX, usize::MAX, 0, lost).unwrap();
+            }
+        });
+    }
+    #[test]
+    fn market_amendment_stream_and_removal_witness_use_only_prepared_storage() {
+        let _serial = test_support::SERIAL.lock().unwrap();
+        use engine_native::{
+            ccountry::synthetic::World, cequipment_variant as variant,
+            cequipment_variant_pool as pool,
+        };
+        struct Memory<'a>(&'a World);
+        impl engine_native::Memory for Memory<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == engine_native::cgame_state::SINGLETON_RVA && output.len() == 8 {
+                    output.copy_from_slice(&(self.0.game_state() as u64).to_le_bytes());
+                    true
+                } else {
+                    self.0.memory().copy(address, output)
+                }
+            }
+        }
+        let mut world = World::new(0, 5000, 0x20);
+        world.u32(
+            world.game_state() + engine_native::cgame_state::CURRENT_HOUR,
+            77,
+        );
+        let resources = world.alloc(0x30);
+        world.u64(
+            resources,
+            engine_resources::ccountry_resources::VTABLE_RVA as u64,
+        );
+        world.u32(
+            resources + engine_resources::ccountry_resources::OWNER,
+            5000,
+        );
+        let exchange = world.alloc(lease::SIZE);
+        world.u64(exchange, lease::VTABLE_RVA as u64);
+        world.u64(exchange + lease::HANDLE, (17_u64 << 32) | 9001);
+        world.u64(exchange + lease::GIVER_RESOURCES, resources as u64);
+        world.u32(exchange + lease::RECEIVER, 4999);
+        let model = world.alloc(16);
+        world.u64(model, variant::VTABLE_RVA as u64);
+        world.u64(model + 8, (31_u64 << 32) | variant::REFERENCE_TYPE as u64);
+        for offset in [
+            lease::MONTHLY_NEED,
+            lease::PERCENTAGE_NEED,
+            lease::ONCE_NEED,
+        ] {
+            let items = world.alloc(5000 * 16);
+            for index in 0..5000 {
+                world.u64(items + index * 16, model as u64);
+                world.u64(items + index * 16 + 8, index as u64);
+            }
+            world.u64(exchange + offset, pool::VTABLE_RVA as u64);
+            world.array(exchange + offset + pool::ITEMS, items, 5000);
+        }
+        LEDGER.reset();
+        LEDGER.prepare(30030);
+        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+            hour: 76,
+            ..Default::default()
+        }));
+        assert_eq!(
+            LEDGER.drain_growing(&mut Vec::new()),
+            Err("event ledger first/branch/recovery interval is partial")
+        );
+        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+            hour: 77,
+            ..Default::default()
+        }));
+        let memory = Memory(&world);
+        crate::test_support::with_allocations_denied(|| {
+            replacement(&memory, 0, exchange).unwrap();
+            append(
+                root(
+                    &memory,
+                    0,
+                    lease::identity(&memory, 0, exchange).unwrap(),
+                    REMOVED,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        });
+        assert_eq!(LEDGER.events.load(Ordering::Relaxed), 15003);
+        assert_eq!(LEDGER.overflow.load(Ordering::Relaxed), 0);
+        assert_eq!(LEDGER.lost_events_unknown.load(Ordering::Relaxed), 0);
+        // Births need identity and the existing clock only. Any attempt to
+        // walk pools, prices, subsidy targets or trigger text fails this reader.
+        const CONTRACT: usize = 0x100;
+        // Use a stack-only reader under the allocation denial as well.
+        struct StackBirth;
+        impl engine_native::Memory for StackBirth {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                let value = if at == CONTRACT + engine_production::cpurchase_contract::ID_TYPE {
+                    17_u64
+                } else if at == CONTRACT + engine_production::cpurchase_contract::SELLER {
+                    5000
+                } else if at == CONTRACT + engine_production::cpurchase_contract::BUYER {
+                    4999
+                } else if at == engine_native::cgame_state::SINGLETON_RVA {
+                    0x1000
+                } else if at == 0x1000 + engine_native::cgame_state::CURRENT_HOUR {
+                    77
+                } else {
+                    panic!("birth callback read a definition");
+                };
+                output.copy_from_slice(&value.to_le_bytes()[..output.len()]);
+                true
+            }
+        }
+        crate::test_support::with_allocations_denied(|| {
+            contract_created(&StackBirth, 0, CONTRACT, true).unwrap();
+            contract_created(&StackBirth, 0, CONTRACT, false).unwrap();
+        });
+        let mut events = Vec::new();
+        LEDGER.drain_growing(&mut events).unwrap();
+        let births: Vec<_> = events
+            .iter()
+            .filter(|row| matches!(row.kind, REQUEST_CREATED | CONTRACT_CREATED))
+            .collect();
+        assert_eq!(births.len(), 2);
+        assert!(
+            births
+                .iter()
+                .all(|row| row.country == 5000 && row.receiver == 4999 && row.agreement == 17)
+        );
+        assert!(events.iter().all(|row| !(13..=18).contains(&row.kind)));
+        // Ordinary transfer callbacks must ignore even an unreadable operand.
+        // Identical identity/clock work is sufficient for a 5,000-entry source.
+        struct Counted<'a> {
+            memory: Memory<'a>,
+            reads: std::cell::Cell<usize>,
+        }
+        impl engine_native::Memory for Counted<'_> {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                self.reads.set(self.reads.get() + 1);
+                self.memory.copy(at, output)
+            }
+        }
+        let counted = Counted {
+            memory: Memory(&world),
+            reads: std::cell::Cell::new(0),
+        };
+        for destination in [lease::DELIVERED, lease::SUNK] {
+            counted.reads.set(0);
+            crate::test_support::with_allocations_denied(|| {
+                equipment(
+                    &counted,
+                    0,
+                    destination == lease::DELIVERED,
+                    exchange + destination,
+                    usize::MAX,
+                )
+                .unwrap()
+            });
+            assert!(
+                counted.reads.get() <= 8,
+                "transfer callback walked an operand pool"
+            );
+        }
+        let stockpile = world.alloc(0x78);
+        world.u32(stockpile + STOCKPILE_COUNTRY, 5000);
+        let counted = Counted {
+            memory: Memory(&world),
+            reads: std::cell::Cell::new(0),
+        };
+        for site in 7..=10 {
+            counted.reads.set(0);
+            crate::test_support::with_allocations_denied(|| {
+                inventory(&counted, 0, site, stockpile + STOCKPILE_POOL, usize::MAX, 0).unwrap()
+            });
+            assert_eq!(
+                counted.reads.get(),
+                3,
+                "inventory callback read source/destination items"
+            );
+        }
+        // The only full copies here are the explicitly approved rare boundaries.
+        for offset in [lease::DELIVERED, lease::SUNK] {
+            let items = world.alloc(5000 * 16);
+            for index in 0..5000 {
+                world.u64(items + index * 16, model as u64);
+                world.u64(items + index * 16 + 8, index as u64);
+            }
+            world.u64(exchange + offset, pool::VTABLE_RVA as u64);
+            world.array(exchange + offset + pool::ITEMS, items, 5000);
+        }
+        crate::test_support::with_allocations_denied(|| {
+            final_pools(&Memory(&world), 0, exchange).unwrap();
+            append(
+                root(
+                    &Memory(&world),
+                    0,
+                    lease::identity(&Memory(&world), 0, exchange).unwrap(),
+                    REMOVED,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        });
+        LEDGER.drain_growing(&mut events).unwrap();
+        assert_eq!(
+            events.iter().filter(|row| row.kind == FINAL_ITEM).count(),
+            10_000
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|row| row.kind == AMENDMENT_COST && row.mode == HOLDER_MARK)
+                .count(),
+            6
+        );
+        publish(&mut events).unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|row| row.kind != AMENDMENT_COST && row.kind < FINAL_BEGIN)
+        );
+        assert!(events.windows(2).all(|pair| pair[0].id < pair[1].id));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, REMOVED);
+        let previous = events.last().unwrap().id;
+        restore_sequence(Some(previous)).unwrap();
+        events.clear();
+        events.push(root(&StackBirth, 0, lease::Identity::default(), REQUEST_CREATED).unwrap());
+        publish(&mut events).unwrap();
+        assert!(events[0].id > previous);
+        assert!(events[0].occurrence > previous);
+    }
+}

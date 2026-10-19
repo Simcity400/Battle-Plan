@@ -4,6 +4,14 @@ The boundary between HOI4's native memory and the recorder. Its public paths exp
 
 Shared rules and checks live in [AGENTS.md](../../AGENTS.md).
 
+The faction upgrade companion composes the native faction readers with stored
+modifier reads. It retains selected minimum upgrades, research-sharing operands,
+doctrine folder order, advisor-slot ownership and character references,
+spymaster dates and both slot modifier blocks. Research, doctrine, minimum
+upgrades and individual advisor slots have independent demand and failure
+boundaries. Its caller supplies an authenticated faction and writer-driven
+demand; it never starts a census.
+
 ## Source map
 
 | Area | Start here |
@@ -173,3 +181,13 @@ A relation status's opinion is written at run time only by opinion recalculation
 A province's name override is written at run time only by the rename and reset effects, a strategic navy's region access modes only by region-access assignment and the navy reset, the world tension total, sources and aggregates only by writers that end in world tension total recalculation, and a country's dynamic modifier entries only by the container's add, renew, remove and daily update (with the value recalculation and clear of the naval tree family's country sites): the nine hookable functions in [world_input_mutations.rs](../engine-mutations/src/world_input_mutations.rs). [`naval_mission_inputs::fleet_leader`](../engine-native/src/naval_mission_inputs.rs) and [`naval_mission_inputs::headquarters_sources`](../engine-native/src/naval_mission_inputs.rs) authenticate the objects a fleet leader's and a headquarters commander's mission modifiers come from without reading the accumulators.
 
 Campaign clock text uses the native stored string length. `read_clock_prepared` reads fresh bytes into caller-prepared storage without allocation; a storage shortage or native string fault remains explicit.
+
+Modifier breakdown acquisition can request several printed keys in one preorder. It shares child headers and nonzero-leaf labels while probing only the demanded values, including native feature eligibility. Occupation source capture uses this path for a changed accumulator and carries it under its writer certificate.
+Shared modifier-source acquisition preserves raw sparse keys, preorder child occurrences and recorded display labels for demanded certified country/commander roots. Playback applies recorded modifier eligibility and clamping.
+The projects facade exports daily facility scalar-source readers; acquired object pointers remain private to native observation and are never recorded.
+
+The passive template headquarters context reader consumes authenticated orders-group roots and exposes retained deployment operands through template_hq_context.
+
+The passive template headquarters context reader consumes authenticated orders-group roots and exposes retained deployment operands through template_hq_context.
+The `naval_management` facade exposes standing repair/refit/reinforcement controls and ordered lists for authenticated naval census objects. It neither walks another roster nor invokes native getters.
+`decision_runtime` exposes the selected retained decision readers and pass/candidate operands from engine-decisions through the shared engine API.

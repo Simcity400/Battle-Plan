@@ -1221,69 +1221,16 @@ impl<'a, M: Memory> Reader<'a, M> {
         controller: Result<Option<u32>, &'static str>,
     ) -> Result<i64, &'static str> {
         let raw = controller?.ok_or("risk targeted spotting actual location absent")?;
-        let slot = self.country_slot(raw)?;
-        let diplomacy =
-            field::<u64>(self.memory, roster.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
-        auth(
-            self.memory,
-            self.base,
-            diplomacy,
-            crate::cdiplomacy_status::VTABLE_RVA,
-        )?;
-        if field::<u64>(self.memory, diplomacy, crate::cdiplomacy_status::COUNTRY)?
-            != roster.pointer as u64
-        {
-            return Err("risk targeted spotting diplomacy owner mismatch");
-        }
-        let matrix = Array::read(
-            self.memory,
-            add(diplomacy, crate::cdiplomacy_status::RELATIONS)?,
-            8,
-        )
-        .ok_or("risk targeted spotting relation matrix invalid")?;
-        let status = matrix
-            .element(slot, 8)
-            .and_then(|at| read::<u64>(self.memory, at))
-            .filter(|pointer| *pointer != 0)
-            .ok_or("risk targeted spotting relation slot absent or unreadable")?
-            as usize;
-        auth(
-            self.memory,
-            self.base,
-            status,
-            crate::crelation_status::VTABLE_RVA,
-        )?;
-        if field::<u64>(
-            self.memory,
-            status,
-            crate::crelation_status::DIPLOMACY_STATUS,
-        )? != diplomacy as u64
-        {
-            return Err("risk targeted spotting relation owner mismatch");
-        }
-        let target = field::<u32>(self.memory, status, crate::crelation_status::TARGET_COUNTRY)?;
-        if self.country_slot(target)? != slot {
-            return Err("risk targeted spotting relation target mismatch");
-        }
-        let address = add(status, crate::crelation_status::MODIFIER + 0x10)?;
-        let values = self.values(address, &[TARGETED_SPOTTING_KEY])?;
-        self.effective(TARGETED_INDEX, values[0])
-    }
-
-    fn country_slot(&self, raw: u32) -> Result<u32, &'static str> {
-        if raw == 0 {
-            return Ok(0);
-        }
-        match self
+        let countries = self
             .countries
             .as_ref()
             .ok_or("risk original country resolver unavailable")?
-        {
-            Ok(countries) => countries.link(raw).map(|slot| slot.unwrap_or(0)),
-            Err(reason) => Err(*reason),
-        }
+            .as_ref()
+            .map_err(|reason| *reason)?;
+        let value =
+            mission::targeted_spotting::raw(self.memory, self.base, countries, roster, raw)?;
+        self.effective(TARGETED_INDEX, value)
     }
-
     fn stats(&mut self, task: usize) -> Result<usize, &'static str> {
         let stats = field::<u64>(self.memory, task, cunit::STAT_BLOCK)? as usize;
         self.stat_view = gather(self.memory, stats, STAT_FIELDS);

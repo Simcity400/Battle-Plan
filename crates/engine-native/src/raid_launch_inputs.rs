@@ -52,6 +52,9 @@ use crate::{
     walk::Outcome,
 };
 
+mod volunteer_air;
+pub use volunteer_air::VolunteerAir;
+
 /// The modifier keys the launch gate reads, in [`CountryRow::modifiers`] order.
 /// Each getter passes a compiled-in index, so these are fixed built-in keys
 /// (`modifier_keys`), checked once per attachment by the fixed layout
@@ -133,6 +136,8 @@ const RESERVATION: usize = 8;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CountryRow {
     pub canonical_slot: u32,
+    /// Uncapped whole-plane stockpile sum for demanded volunteer senders.
+    pub volunteer_stockpile_planes: Option<i32>,
     /// Effective modifier values for each of [`MODIFIER_KEYS`]; `None` for a
     /// key the walk was not given. The command power and ace columns are
     /// [`CommandPowerRow`]'s; the conversion leaves them out.
@@ -305,6 +310,14 @@ pub struct AceRow {
     pub range: i64,
     /// Effective key 5 on its type definition's modifiers.
     pub type_range: i64,
+    /// Raw night/weather entries from the same complete range accumulator read.
+    pub normalization: Option<[Option<i64>; 2]>,
+    pub fuel_modifier: Option<[Option<i64>; 1]>,
+    /// Living ace raw speed, attack and defence from the same complete copy.
+    pub combat_modifiers: Option<[Option<i64>; 3]>,
+    pub type_speed_modifier_raw: Option<i64>,
+    /// Bit zero proves the living type copy, bits one/two are positive attack/defence.
+    pub type_combat_flags: u8,
 }
 
 pub struct Buffers<'a> {
@@ -443,6 +456,101 @@ fn effective(
         return Ok(0);
     }
     effective_memo(memory, base, key, value.raw, memo)
+}
+
+/// Effective range and raw normalization, fuel and combat entries.
+type AceRangeTerms = (i64, [Option<i64>; 2], [Option<i64>; 1], [Option<i64>; 3]);
+
+/// Project normalization entries from the complete raw range read, without
+/// another accumulator lookup or metadata demand.
+fn ace_range_with_normalization(
+    memory: &impl Memory,
+    base: usize,
+    accumulator: usize,
+    key: u32,
+    memo: &DefinitionMemo,
+) -> Result<AceRangeTerms, &'static str> {
+    let mut range = [modifier_accumulator::Value::default()];
+    let mut normalization = [None; 2];
+    let mut fuel = [None; 1];
+    let mut combat = [None; 3];
+    modifier_accumulator::lookup_many_at_keeping(
+        memory,
+        accumulator,
+        &[key],
+        &mut range,
+        &mut |bytes| {
+            for row in bytes.chunks_exact(crate::modifier_entry::STRIDE) {
+                let key = u32::from_le_bytes(row[..4].try_into().unwrap());
+                if let Some(index) = [0x105, 0x106].iter().position(|&wanted| wanted == key) {
+                    normalization[index] = Some(i64::from_le_bytes(row[8..16].try_into().unwrap()));
+                }
+                if key == crate::modifier_keys::AIR_FUEL_CONSUMPTION_FACTOR {
+                    fuel[0] = Some(i64::from_le_bytes(row[8..16].try_into().unwrap()));
+                }
+                if let Some(index) = ACE_COMBAT_KEYS.iter().position(|&wanted| wanted == key) {
+                    combat[index] = Some(i64::from_le_bytes(row[8..16].try_into().unwrap()));
+                }
+            }
+        },
+    )?;
+    let value = range[0];
+    let effective = if value.present {
+        effective_memo(memory, base, key, value.raw, memo)?
+    } else {
+        0
+    };
+    Ok((effective, normalization, fuel, combat))
+}
+
+const ACE_COMBAT_KEYS: [u32; 3] = [
+    crate::modifier_keys::AIR_MAXIMUM_SPEED_FACTOR,
+    crate::modifier_keys::AIR_ATTACK_FACTOR,
+    crate::modifier_keys::AIR_DEFENCE_FACTOR,
+];
+
+#[derive(Clone, Copy)]
+struct AceTypeTerms {
+    range: i64,
+    speed: Option<i64>,
+    flags: u8,
+}
+
+/// One original type-range copy also supplies the raw combat predicates.
+fn ace_type_terms(
+    memory: &impl Memory,
+    base: usize,
+    accumulator: usize,
+    key: u32,
+    memo: &DefinitionMemo,
+) -> Result<AceTypeTerms, &'static str> {
+    let mut range = [modifier_accumulator::Value::default()];
+    let mut combat = [None; 3];
+    modifier_accumulator::lookup_many_at_keeping(
+        memory,
+        accumulator,
+        &[key],
+        &mut range,
+        &mut |bytes| {
+            for row in bytes.chunks_exact(crate::modifier_entry::STRIDE) {
+                let key = u32::from_le_bytes(row[..4].try_into().unwrap());
+                if let Some(index) = ACE_COMBAT_KEYS.iter().position(|&wanted| wanted == key) {
+                    combat[index] = Some(i64::from_le_bytes(row[8..16].try_into().unwrap()));
+                }
+            }
+        },
+    )?;
+    Ok(AceTypeTerms {
+        range: if range[0].present {
+            effective_memo(memory, base, key, range[0].raw, memo)?
+        } else {
+            0
+        },
+        speed: combat[0],
+        flags: 1
+            | (u8::from(combat[1].is_some_and(|value| value > 0)) << 1)
+            | (u8::from(combat[2].is_some_and(|value| value > 0)) << 2),
+    })
 }
 
 /// Pointers, rows and records copied per guarded call.
@@ -654,6 +762,7 @@ fn stockpiles(
     essentials: &[Essential],
     archetypes: &mut Bounded,
     output: &mut crate::walk::Buffer<'_, ArchetypeRow>,
+    mut volunteer_air: Option<&mut VolunteerAir>,
 ) -> Result<(), &'static str> {
     let module = |rva: usize| {
         base.checked_add(rva)
@@ -734,6 +843,9 @@ fn stockpiles(
         let mut next = 0;
         while next < len {
             let pool = pools[next]?;
+            if let Some(air) = volunteer_air.as_deref_mut() {
+                air.begin(memory, slots[next], countries[next]);
+            }
             if pool.count as usize > STOCK_ROWS {
                 // A long pool reads alone, in chunks.
                 let mut first = 0;
@@ -744,6 +856,9 @@ fn stockpiles(
                         .ok_or("stockpile allocation address overflow")?;
                     if !memory.copy(address, &mut rows[..count * ROW]) {
                         return Err("equipment allocation unreadable");
+                    }
+                    if let Some(air) = volunteer_air.as_deref_mut() {
+                        air.add(memory, base, slots[next], &rows[..count * ROW]);
                     }
                     emit(
                         &rows[..count * ROW],
@@ -779,6 +894,12 @@ fn stockpiles(
                     return Err("equipment allocation unreadable");
                 }
                 let bytes = spans[index].1;
+                if let Some(air) = volunteer_air.as_deref_mut() {
+                    if index != 0 {
+                        air.begin(memory, slots[next + index], countries[next + index]);
+                    }
+                    air.add(memory, base, slots[next + index], &rows[at..at + bytes]);
+                }
                 emit(
                     &rows[at..at + bytes],
                     slots[next + index],
@@ -991,7 +1112,7 @@ fn sliced(
         module(cstrategic_air::VTABLE_RVA)?,
     );
     // Ace type ranges, shared across countries.
-    let mut type_ranges = Shared::<i64>::new();
+    let mut type_ranges = Shared::<AceTypeTerms>::new();
     let mut list = [0_usize; BATCH];
     let humans = array(
         memory,
@@ -1151,6 +1272,7 @@ fn sliced(
                 &mut buffers.countries,
                 CountryRow {
                     canonical_slot: slot,
+                    volunteer_stockpile_planes: None,
                     modifiers,
                     autonomous: flag,
                     reservations_start: start,
@@ -1197,11 +1319,15 @@ fn sliced(
                 let definition =
                     usize::try_from(u64::from_le_bytes(record[25..33].try_into().unwrap()))
                         .map_err(|_| "ace type unreadable")?;
-                let type_range = if definition == 0 {
-                    0
+                let type_terms = if definition == 0 {
+                    AceTypeTerms {
+                        range: 0,
+                        speed: None,
+                        flags: 1,
+                    }
                 } else {
                     type_ranges.get_or(definition, || {
-                        effective(
+                        ace_type_terms(
                             memory,
                             base,
                             definition
@@ -1212,22 +1338,39 @@ fn sliced(
                         )
                     })?
                 };
+                let wing = u64::from_le_bytes(record[16..24].try_into().unwrap());
+                let accumulator = ace
+                    .checked_add(cace::MODIFIERS)
+                    .ok_or("ace modifier address overflow")?;
+                let key = air_range.ok_or("air_range_factor key not given")?;
+                let (range, normalization, fuel_modifier, combat_modifiers) = if record[24] != 0 {
+                    let (range, terms, fuel, combat) =
+                        ace_range_with_normalization(memory, base, accumulator, key, memo)?;
+                    (range, Some(terms), Some(fuel), Some(combat))
+                } else {
+                    (
+                        effective(memory, base, accumulator, key, memo)?,
+                        None,
+                        None,
+                        None,
+                    )
+                };
                 rows.aces.push(
                     &mut buffers.aces,
                     AceRow {
                         ace: u64::from_le_bytes(record[8..16].try_into().unwrap()),
                         canonical_slot: slot,
-                        wing: u64::from_le_bytes(record[16..24].try_into().unwrap()),
+                        wing,
                         alive: record[24],
-                        range: effective(
-                            memory,
-                            base,
-                            ace.checked_add(cace::MODIFIERS)
-                                .ok_or("ace modifier address overflow")?,
-                            air_range.ok_or("air_range_factor key not given")?,
-                            memo,
-                        )?,
-                        type_range,
+                        range,
+                        normalization,
+                        fuel_modifier,
+                        combat_modifiers,
+                        type_range: type_terms.range,
+                        type_speed_modifier_raw: (record[24] != 0)
+                            .then_some(type_terms.speed)
+                            .flatten(),
+                        type_combat_flags: if record[24] != 0 { type_terms.flags } else { 0 },
                     },
                 )?;
             }
@@ -1541,8 +1684,20 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    buffers: Buffers<'_>,
+    selected: &dyn Fn(u32) -> bool,
+) -> Walk {
+    walk_with_volunteer_air(memory, base, game_state, buffers, selected, None)
+}
+
+/// The same census with independently certified volunteer stockpile demand.
+pub fn walk_with_volunteer_air(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
     mut buffers: Buffers<'_>,
     selected: &dyn Fn(u32) -> bool,
+    mut volunteer_air: Option<&mut VolunteerAir>,
 ) -> Walk {
     buffers.memo.clear();
     let mut archetypes = Bounded::default();
@@ -1558,6 +1713,7 @@ pub fn walk(
                     buffers.essentials,
                     &mut archetypes,
                     &mut buffers.archetypes,
+                    volunteer_air.as_deref_mut(),
                 )
             }),
             sliced(
@@ -1573,6 +1729,13 @@ pub fn walk(
         ),
         Err(reason) => (Err(reason), Err(reason)),
     };
+    if stockpile.is_ok()
+        && let Some(air) = volunteer_air.as_deref()
+    {
+        for row in &mut buffers.countries[..rows.countries.len] {
+            row.volunteer_stockpile_planes = air.total(row.canonical_slot);
+        }
+    }
     let archetypes = match stockpile {
         Ok(()) => archetypes.outcome(),
         Err(reason) => Outcome::Unavailable { reason },
@@ -1900,6 +2063,91 @@ pub(crate) mod tests {
     /// A launch key the running game does not register by name leaves its
     /// value `None`, never zero; the aces, which read `air_range_factor`,
     /// are unknown without it, with the name.
+    #[test]
+    fn ace_normalization_projects_raw_words_without_changing_range_reads() {
+        let mut world = fixture();
+        world.accumulator(
+            ACE + cace::MODIFIERS,
+            0x12_000,
+            &[
+                (crate::modifier_keys::AIR_MAXIMUM_SPEED_FACTOR, i64::MIN),
+                (AIR_RANGE, 10_000),
+                (crate::modifier_keys::AIR_ATTACK_FACTOR, -47),
+                (crate::modifier_keys::AIR_DEFENCE_FACTOR, i64::MAX),
+                (0x105, i64::MIN),
+                (0x106, -123_456),
+                (crate::modifier_keys::AIR_FUEL_CONSUMPTION_FACTOR, i64::MAX),
+                (0x400, 77),
+            ],
+        );
+        let memory = Counted::new(world);
+        let memo = DefinitionMemo::default();
+        let old = effective(&memory, 0, ACE + cace::MODIFIERS, AIR_RANGE, &memo).unwrap();
+        let cost = (memory.guards.get(), memory.bytes.get());
+        memory.reset();
+        memo.clear();
+        let (range, raw, fuel, combat) =
+            ace_range_with_normalization(&memory, 0, ACE + cace::MODIFIERS, AIR_RANGE, &memo)
+                .unwrap();
+        assert_eq!(range, old);
+        assert_eq!(raw, [Some(i64::MIN), Some(-123_456)]);
+        assert_eq!(fuel, [Some(i64::MAX)]);
+        assert_eq!(combat, [Some(i64::MIN), Some(-47), Some(i64::MAX)]);
+        assert_eq!((memory.guards.get(), memory.bytes.get()), cost);
+        let living = run_selected(&memory.inner, 2, &|_| false);
+        assert_eq!(living.ace.normalization, Some(raw));
+        assert_eq!(living.ace.fuel_modifier, Some(fuel));
+        assert_eq!(living.ace.combat_modifiers, Some(combat));
+        let mut world = memory.inner;
+        world.u64(ACE + cace::ASSIGNED_WING_REFERENCE, 0);
+        assert_eq!(
+            run_selected(&world, 2, &|_| false).ace.normalization,
+            Some(raw)
+        );
+        world.bytes(ACE + cace::ALIVE, &[0]);
+        assert_eq!(run_selected(&world, 2, &|_| false).ace.normalization, None);
+        assert_eq!(run_selected(&world, 2, &|_| false).ace.fuel_modifier, None);
+        assert_eq!(
+            run_selected(&world, 2, &|_| false).ace.combat_modifiers,
+            None
+        );
+    }
+
+    #[test]
+    fn ace_type_combat_projection_reuses_range_copy_and_keeps_direct_positive_gates() {
+        let mut world = fixture();
+        world.accumulator(
+            ACE_TYPE + ACE_TYPE_MODIFIERS,
+            0x13_000,
+            &[
+                (crate::modifier_keys::AIR_MAXIMUM_SPEED_FACTOR, i64::MIN),
+                (AIR_RANGE, 5_000),
+                (crate::modifier_keys::AIR_ATTACK_FACTOR, -1),
+                (crate::modifier_keys::AIR_DEFENCE_FACTOR, 1),
+            ],
+        );
+        let memory = Counted::new(world);
+        let memo = DefinitionMemo::default();
+        let old = effective(&memory, 0, ACE_TYPE + ACE_TYPE_MODIFIERS, AIR_RANGE, &memo).unwrap();
+        let cost = (memory.guards.get(), memory.bytes.get());
+        memory.reset();
+        memo.clear();
+        let terms =
+            ace_type_terms(&memory, 0, ACE_TYPE + ACE_TYPE_MODIFIERS, AIR_RANGE, &memo).unwrap();
+        assert_eq!(terms.range, old);
+        assert_eq!(terms.speed, Some(i64::MIN));
+        assert_eq!(terms.flags, 5);
+        assert_eq!((memory.guards.get(), memory.bytes.get()), cost);
+        let living = run_selected(&memory.inner, 2, &|_| false);
+        assert_eq!(living.ace.type_speed_modifier_raw, Some(i64::MIN));
+        assert_eq!(living.ace.type_combat_flags, 5);
+        let mut world = memory.inner;
+        world.bytes(ACE + cace::ALIVE, &[0]);
+        let dead = run_selected(&world, 2, &|_| false);
+        assert_eq!(dead.ace.type_speed_modifier_raw, None);
+        assert_eq!(dead.ace.type_combat_flags, 0);
+    }
+
     #[test]
     fn a_key_left_out_leaves_its_value_unknown() {
         let mut keys = KEYS;

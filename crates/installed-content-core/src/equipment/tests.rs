@@ -1,6 +1,49 @@
 use super::*;
 
 #[test]
+fn designer_families_follow_recursive_archetypes_and_each_types_own_defaults() {
+    let database = read(&[(
+        "families.txt",
+        "equipment_modules={m={add_equipment_type=cas}} equipments={root={is_archetype=yes type=armor} middle={is_archetype=yes archetype=root type=infantry} leaf={archetype=middle type=convoy default_modules={s=m}}}",
+    )]);
+    assert!(database.lost.is_none(), "{:?}", database.lost);
+    assert_eq!(
+        database.designer_families(database.named("leaf").unwrap()),
+        [true, true, true]
+    );
+    assert_eq!(
+        database.designer_families(database.named("root").unwrap()),
+        [true, false, false]
+    );
+}
+
+#[test]
+fn module_slot_rules_follow_skipped_duplicates_aliases_inheritance_and_generated_removal() {
+    let database = read(&[(
+        "slots.txt",
+        "equipments={root={is_archetype=yes module_slots={main={required=yes allowed_module_categories={a b a}} alias=main}} child={archetype=root module_slots=inherit module_slots={main={required=no allowed_module_categories={ignored}}}}} duplicate_archetypes={no_slots={archetype=root module_slots=none}}",
+    )]);
+    assert!(database.lost.is_none(), "{:?}", database.lost);
+    let root = database.named("root").unwrap();
+    let child = database.named("child").unwrap();
+    assert_eq!(root.module_slot_rules.len(), root.module_slots.len());
+    assert!(root.module_slot_rules[0].required);
+    assert_eq!(
+        root.module_slot_rules[0].categories,
+        [b"a".to_vec(), b"b".to_vec(), b"a".to_vec()]
+    );
+    assert_eq!(root.module_slot_rules[0], root.module_slot_rules[1]);
+    assert_eq!(child.module_slot_rules, root.module_slot_rules);
+    assert!(
+        database
+            .named("no_slots")
+            .unwrap()
+            .module_slot_rules
+            .is_empty()
+    );
+}
+
+#[test]
 fn category_names_invert_the_table_and_refuse_unknown_bits() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("equipment category checks require BATTLE_PLAN_GAME_DIR");
@@ -652,6 +695,27 @@ fn a_redefinition_is_reset_and_read_again() {
     assert_eq!(database.named("a").unwrap().model_priority, 1);
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn air_map_frames_keep_signed_scans_and_reset_instead_of_inheriting() {
+    let database = load_one(
+        "equipments = {
+            planes = { is_archetype = yes air_map_icon_frame = 17 carrier_capable = yes }
+            child = { parent = planes }
+            signed = { air_map_icon_frame = -7 air_map_icon_frame = invalid }
+            reset = { air_map_icon_frame = 22 carrier_capable = yes }
+            reset = { parent = planes }
+        }",
+    );
+    assert_eq!(named(&database, "planes").air_map_icon_frame, 17);
+    assert_eq!(named(&database, "child").air_map_icon_frame, 0);
+    assert_eq!(named(&database, "signed").air_map_icon_frame, -7);
+    assert_eq!(named(&database, "reset").air_map_icon_frame, 0);
+    assert!(named(&database, "planes").carrier_capable);
+    assert!(!named(&database, "child").carrier_capable);
+    assert!(!named(&database, "reset").carrier_capable);
+}
+
 /// Rereading a generated type clears its generated flag, allowing it to
 /// participate in a later duplication pass.
 #[test]
@@ -928,5 +992,160 @@ fn stat_metadata_covers_the_index_order() {
     assert_eq!(
         stat_metadata()[77],
         ("build_cost_ic", "STAT_COMMON_BUILD_COST_IC", false)
+    );
+}
+
+#[test]
+fn saved_validation_requires_explicit_dependency_but_allows_required_default_modules() {
+    let database = read(&[(
+        "rules.txt",
+        "equipment_modules={basic={category=turret} advanced={category=turret allowed_module_categories={gun_slot={heavy}}} light={category=light} heavy={category=heavy}} equipments={hull={is_archetype=yes module_slots={turret_slot={required=yes allowed_module_categories={turret}} gun_slot={required=yes allowed_module_categories={light}}} default_modules={turret_slot=basic gun_slot=light}}}",
+    )]);
+    let hull = database.named("hull").unwrap();
+    let empty = [Assignment {
+        slot: b"gun_slot",
+        module: b"",
+        active: false,
+    }];
+    assert!(
+        database
+            .validate_modules(hull, &empty)
+            .unwrap()
+            .failures
+            .iter()
+            .any(|failure| failure.contains("required slot gun_slot"))
+    );
+    assert!(database.permitted_role_mask(hull, &empty).is_ok());
+    assert!(
+        database
+            .validate_modules(hull, &[])
+            .unwrap()
+            .failures
+            .is_empty()
+    );
+    let gun = Assignment {
+        slot: b"gun_slot",
+        module: b"heavy",
+        active: true,
+    };
+    let failed = database.validate_modules(hull, &[gun]).unwrap();
+    assert!(failed.failures[0].contains("no installed dependency"));
+    let rows = [
+        Assignment {
+            slot: b"turret_slot",
+            module: b"advanced",
+            active: true,
+        },
+        Assignment {
+            slot: b"gun_slot",
+            module: b"heavy",
+            active: true,
+        },
+    ];
+    assert!(
+        database
+            .validate_modules(hull, &rows)
+            .unwrap()
+            .failures
+            .is_empty()
+    );
+    let inactive = [Assignment {
+        slot: b"turret_slot",
+        module: b"advanced",
+        active: false,
+    }];
+    assert!(
+        database
+            .validate_modules(hull, &inactive)
+            .unwrap()
+            .failures
+            .iter()
+            .any(|failure| failure.contains("required slot turret_slot"))
+    );
+}
+
+#[test]
+fn count_validation_uses_present_explicit_keys_with_child_override_and_native_comparison_mapping() {
+    let database = read(&[(
+        "counts.txt",
+        "equipment_modules={a={category=c} b={category=d}} equipments={root={is_archetype=yes module_count_limit={category=c count<2} module_count_limit={category=missing count<0}} child={archetype=root module_count_limit={category=c count<3}} lower={archetype=root module_count_limit={category=c count=1}} equal={archetype=root module_count_limit={category=c count>2}}}",
+    )]);
+    let rows = [
+        Assignment {
+            slot: b"one",
+            module: b"a",
+            active: true,
+        },
+        Assignment {
+            slot: b"two",
+            module: b"a",
+            active: false,
+        },
+    ];
+    assert_eq!(
+        database
+            .validate_modules(database.named("root").unwrap(), &rows)
+            .unwrap()
+            .failures
+            .len(),
+        1
+    );
+    for name in ["child", "lower", "equal"] {
+        assert!(
+            database
+                .validate_modules(database.named(name).unwrap(), &rows)
+                .unwrap()
+                .failures
+                .is_empty(),
+            "{name}"
+        );
+    }
+    assert!(
+        database
+            .validate_modules(database.named("root").unwrap(), &[])
+            .unwrap()
+            .failures
+            .is_empty()
+    );
+}
+#[test]
+fn role_masks_keep_allow_add_forbid_override_and_exact_category_restrictions_separate() {
+    let mut database = read(&[(
+        "roles.txt",
+        "equipment_modules={a={category=gun allow_equipment_type=1152921504606846976 add_equipment_type=2305843009213693952 forbid_equipment_type=4611686018427387904 forbid_equipment_type_exact_match=1152921504606846976} b={category=turret forbid_equipment_type_exact_match_for_category={gun=2305843009213693952}}} equipments={root={is_archetype=yes module_slots={main={} other={}}}}",
+    )]);
+    database.equipment[0].category = 4_611_686_018_427_387_904;
+    let rows = [
+        Assignment {
+            slot: b"main",
+            module: b"a",
+            active: true,
+        },
+        Assignment {
+            slot: b"other",
+            module: b"b",
+            active: true,
+        },
+    ];
+    let kind = database.named("root").unwrap();
+    let first = 1_152_921_504_606_846_976;
+    let second = 2_305_843_009_213_693_952;
+    assert_eq!(
+        database.permitted_role_mask(kind, &rows).unwrap(),
+        first | second
+    );
+    assert!(!database.role_permitted(kind, &rows, first).unwrap());
+    assert!(!database.role_permitted(kind, &rows, second).unwrap());
+    assert!(
+        database
+            .role_permitted(kind, &rows, first | second)
+            .unwrap()
+    );
+    database.equipment[0].type_override = b"main".to_vec();
+    assert_eq!(
+        database
+            .permitted_role_mask(database.named("root").unwrap(), &rows)
+            .unwrap(),
+        second
     );
 }

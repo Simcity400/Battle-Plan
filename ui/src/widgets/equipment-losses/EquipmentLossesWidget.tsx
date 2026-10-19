@@ -1,3 +1,4 @@
+import CombatLogDetails from '../land-battles/CombatLogDetails';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
@@ -48,7 +49,7 @@ import './equipmentLosses.css';
 
 const ROOT = { id: 'all', label: 'All losses' }, NO_WARNINGS: string[] = [];
 const rowKey = (row: LossRow) => row.id;
-export default function EquipmentLossesWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
+function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const [localDrill, setLocalDrill] = useState<{ owner: unknown; state: DrillState } | null>(null);
   const [picked, setPicked] = useState<readonly string[] | null | undefined>(undefined);
   const anchor = useRef<HTMLDivElement>(null), menu = useContextMenu('Equipment loss actions');
@@ -237,3 +238,5 @@ export default function EquipmentLossesWidget({ widget, runtime, active, country
       pinLosses(widget, track, tag, detailView.hour, following, view.from, selected ? [...selected] : null, selectedCountry)) : undefined}
     anchor={anchor} main={main}>{detail}</DrillHost>}{menu.menu}</div>;
 }
+
+export default function EquipmentLossesWidget(props: WidgetProps) { return <><OriginalEquipmentLossesWidget {...props} /><CombatLogDetails {...props} view="equipment" /></>; }

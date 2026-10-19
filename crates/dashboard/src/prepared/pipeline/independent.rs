@@ -236,6 +236,8 @@ pub(super) struct Block<'a> {
     /// The family's share of the shared block reader, when it declares its
     /// tables ([`Own::shared_tables`]).
     pub shared: Option<shared::Lease<'a>>,
+    #[cfg(test)]
+    read_hook_family: Option<&'static str>,
 }
 
 impl Block<'_> {
@@ -250,6 +252,19 @@ impl Block<'_> {
         visit: impl FnMut(Arc<replay_frame::frame::RecordedFrame>, &DecodedFrame) -> io::Result<()>,
         check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
+        #[cfg(test)]
+        let mut visit = visit;
+        #[cfg(test)]
+        let visit = |raw, frame: &DecodedFrame| {
+            if let Some(name) = self.read_hook_family {
+                let changes =
+                    crate::prepared::frame_changes::FrameChanges::alone(frame, self.replay.format);
+                if !test_observation(name, frame, &changes)? {
+                    return Ok(());
+                }
+            }
+            visit(raw, frame)
+        };
         shared::read_alone(
             self.replay,
             self.index,
@@ -271,6 +286,19 @@ impl Block<'_> {
         visit: impl FnMut(Arc<replay_frame::frame::RecordedFrame>, &DecodedFrame) -> io::Result<()>,
         check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
+        #[cfg(test)]
+        let mut visit = visit;
+        #[cfg(test)]
+        let visit = |raw, frame: &DecodedFrame| {
+            if let Some(name) = self.read_hook_family {
+                let changes =
+                    crate::prepared::frame_changes::FrameChanges::alone(frame, self.replay.format);
+                if !test_observation(name, frame, &changes)? {
+                    return Ok(());
+                }
+            }
+            visit(raw, frame)
+        };
         shared::read_alone(
             self.replay,
             self.index,
@@ -1445,6 +1473,29 @@ pub(super) fn prepare(
     #[cfg(test)]
     {
         knobs.refusals = lanes::test_refusals();
+        if let Some(hook) = TEST_OBSERVATION_HOOK.with(|hook| hook.borrow().clone()) {
+            let previous = knobs.hook.take();
+            knobs.hook = Some(std::sync::Arc::new(move |name, frame| {
+                if let Some(previous) = &previous {
+                    match previous(name, frame) {
+                        prepass::Fault::Continue => {}
+                        fault => return fault,
+                    }
+                }
+                let changes = crate::prepared::frame_changes::FrameChanges::alone(
+                    frame,
+                    replay_data::format::FormatVersion::CURRENT,
+                );
+                match hook(name, frame, &changes) {
+                    lanes::Fault::Continue => prepass::Fault::Continue,
+                    lanes::Fault::Skip => prepass::Fault::Skip,
+                    lanes::Fault::Disconnect | lanes::Fault::Error => prepass::Fault::Error,
+                    lanes::Fault::Panic => prepass::Fault::Panic,
+                }
+            }));
+            // A hook may target an otherwise quiet hour of its family's read.
+            knobs.alone = true;
+        }
     }
     let at_once = !one_after_another();
     // The families observing every block hour by hour read each block once,
@@ -1806,13 +1857,13 @@ pub(super) fn prepare(
             }
         }
     }
-    // The work beside the families counts its own rows as the caller's, as
-    // when it ran before them, and its commits' as the families'. Its errors
-    // follow theirs.
+    // The work beside the families runs on workers too. Its own rows and
+    // commits are worker time; the phase already counts caller time outside
+    // the walk. Its errors follow the families'.
     for ran in besides {
         match ran {
             Ok((result, own_timings, own_workers, counts)) => {
-                lanes::merge(timings, own_timings);
+                lanes::merge(workers, own_timings);
                 lanes::merge(workers, own_workers);
                 counts.add();
                 if let Err(error) = result {
@@ -1963,6 +2014,8 @@ fn prepare_family(
                 index,
                 source: phase.source,
                 context: phase.context,
+                #[cfg(test)]
+                read_hook_family: (!laned).then_some(name),
                 shared: member
                     .as_ref()
                     .map(|member| shared::Lease { member, block }),
@@ -2222,6 +2275,8 @@ fn lead<'m, 's>(
             for queued in queued {
                 match writer.adopt_all(queued.staged) {
                     Ok(()) => members.push((queued.ticket, (queued.name, queued.publication))),
+                    // Pending metadata is not an accepted batch. A refusal
+                    // leaves that family's pending or accepted progress intact.
                     Err(error) => refused.push((queued.ticket, Err(error))),
                 }
             }
@@ -2477,11 +2532,9 @@ pub(super) fn sections(rows: &mut [Section], state: &Checkpoint, total: usize) {
 #[derive(Default)]
 struct Counts {
     #[cfg(test)]
-    notes: BTreeMap<&'static str, usize>,
-    #[cfg(test)]
     kept: BTreeMap<&'static str, (usize, usize)>,
     #[cfg(test)]
-    economy: BTreeMap<&'static str, economy::Counts>,
+    notes: BTreeMap<&'static str, usize>,
     #[cfg(test)]
     naval_saves: Vec<usize>,
     #[cfg(test)]
@@ -2495,11 +2548,9 @@ impl Counts {
     fn take() -> Self {
         Self {
             #[cfg(test)]
-            notes: prepass::notes(),
-            #[cfg(test)]
             kept: dashboard_base::prepared::kept::counts(),
             #[cfg(test)]
-            economy: economy::all_counts(),
+            notes: prepass::notes(),
             #[cfg(test)]
             naval_saves: windowed::take_naval_saves(),
             #[cfg(test)]
@@ -2515,7 +2566,6 @@ impl Counts {
         {
             prepass::add_notes(&self.notes);
             dashboard_base::prepared::kept::add_counts(&self.kept);
-            economy::add_counts(&self.economy);
             windowed::add_naval_saves(self.naval_saves);
             country_groups::prepared::add_counts(self.groups);
             crate::products::military_air_ledger::prepared::add_counts(self.air_ledger);
@@ -2527,7 +2577,12 @@ impl Counts {
 #[cfg(test)]
 #[derive(Clone)]
 struct TestContext {
-    refusals: Vec<(&'static str, i32)>,
+    presentation: Option<(usize, usize)>,
+    observation_hook: Option<lanes::Hook>,
+    prepass: prepass::TestContext,
+    lanes: lanes::TestContext,
+    research_fallback: Vec<i32>,
+    sampled_fallback: bool,
     reload: bool,
     batch_blocks: Option<usize>,
     registry: TestRegistry,
@@ -2565,7 +2620,12 @@ impl TestRegistry {
 impl TestContext {
     fn capture() -> Self {
         Self {
-            refusals: lanes::test_refusals(),
+            presentation: crate::products::politics_ledger::prepared::test_presentation(),
+            observation_hook: TEST_OBSERVATION_HOOK.with(|hook| hook.borrow().clone()),
+            prepass: prepass::TestContext::capture(),
+            lanes: lanes::TestContext::capture(),
+            research_fallback: crate::products::research::prepared::block::forced_fallback_hours(),
+            sampled_fallback: sampled::test_fallback(),
             reload: super::RELOAD_FLUSHED.with(std::cell::Cell::get),
             batch_blocks: super::TEST_BATCH_BLOCKS.with(std::cell::Cell::get),
             registry: test_registry(),
@@ -2574,17 +2634,38 @@ impl TestContext {
 
     /// Install the settings on this thread for as long as the guard lives.
     fn install(self) -> impl Drop {
-        struct Installed;
-        impl Drop for Installed {
-            fn drop(&mut self) {
-                lanes::set_test_refusals(Vec::new());
-            }
+        struct Installed<P, L, R, S, A, O> {
+            _prepass: P,
+            _presentation: L,
+            _research: R,
+            _sampled: S,
+            _lanes: A,
+            _observation: O,
         }
-        lanes::set_test_refusals(self.refusals);
+        impl<P, L, R, S, A, O> Drop for Installed<P, L, R, S, A, O> {
+            fn drop(&mut self) {}
+        }
+        let presentation = crate::products::politics_ledger::prepared::install_test_presentation(
+            self.presentation,
+        );
+        let prepass = self.prepass.install();
+        let observation = install_observation_hook(self.observation_hook);
+        let lanes = self.lanes.install();
+        let research = crate::products::research::prepared::block::install_forced_fallback(
+            self.research_fallback,
+        );
+        let sampled = sampled::install_test_fallback(self.sampled_fallback);
         super::RELOAD_FLUSHED.with(|flag| flag.set(self.reload));
         super::TEST_BATCH_BLOCKS.with(|blocks| blocks.set(self.batch_blocks));
         self.registry.install();
-        Installed
+        Installed {
+            _prepass: prepass,
+            _presentation: presentation,
+            _research: research,
+            _sampled: sampled,
+            _lanes: lanes,
+            _observation: observation,
+        }
     }
 }
 
@@ -2638,6 +2719,7 @@ type OnPublish = Option<Arc<dyn Fn(&str, usize) + Send + Sync>>;
 
 #[cfg(test)]
 thread_local! {
+    static TEST_OBSERVATION_HOOK: std::cell::RefCell<Option<lanes::Hook>> = const { std::cell::RefCell::new(None) };
     static TEST_GROUPING: std::cell::Cell<Grouping> = const { std::cell::Cell::new(Grouping::Natural) };
     static TEST_PUBLISHED: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
     static TEST_HOURLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -2646,6 +2728,34 @@ thread_local! {
     static TEST_ONE_AFTER_ANOTHER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_NEWEST_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_ON_PUBLISH: std::cell::RefCell<OnPublish> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn test_observation(
+    name: &'static str,
+    frame: &DecodedFrame,
+    changes: &crate::prepared::frame_changes::FrameChanges,
+) -> io::Result<bool> {
+    let hook = TEST_OBSERVATION_HOOK.with(|hook| hook.borrow().clone());
+    match hook.map(|hook| hook(name, frame, changes)) {
+        None | Some(lanes::Fault::Continue) => Ok(true),
+        Some(lanes::Fault::Skip) => Ok(false),
+        Some(lanes::Fault::Error | lanes::Fault::Disconnect) => {
+            Err(io::Error::other("Injected independent observation error"))
+        }
+        Some(lanes::Fault::Panic) => panic!("Injected independent observation panic"),
+    }
+}
+
+#[cfg(test)]
+fn install_observation_hook(hook: Option<lanes::Hook>) -> impl Drop {
+    struct Reset(Option<lanes::Hook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_OBSERVATION_HOOK.with(|value| *value.borrow_mut() = self.0.take());
+        }
+    }
+    Reset(TEST_OBSERVATION_HOOK.with(|value| value.replace(hook)))
 }
 
 /// Run `run` with every family prepared hour by hour, as before.

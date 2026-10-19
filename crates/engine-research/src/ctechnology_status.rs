@@ -25,6 +25,8 @@ pub const RESEARCH_SLOTS_COUNT: usize = 0xac;
 pub const LIMITED_BONUSES: usize = 0xe8;
 /// Limited-use cost-reduction pointer array.
 pub const COST_REDUCTIONS: usize = 0x100;
+/// Shared signed grant ID counter, serialized independently of the rosters.
+pub const NEXT_BONUS_ID: usize = 0x13c;
 /// Owning-country backlink; must match the authenticated country.
 pub const COUNTRY: usize = 0x130;
 /// Stored doctrine-level cache used by triggers and border-war power.

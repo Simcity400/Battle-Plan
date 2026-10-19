@@ -77,7 +77,10 @@ impl Renderer<'_, '_, '_> {
         }
         // Divisions supplies the Army existence witness.
         let world = self.context.world()?;
-        let owner = world.unit(reference)?.logical_owner; // Use the unit's logical owner rather than its roster owner.
+        let owner = world
+            .unit(reference)
+            .map_err(|why| format!("Divisions lacks UNIT {reference:#x}; {why}"))?
+            .logical_owner; // Use the unit's logical owner rather than its roster owner.
         let country = if owner == 0 {
             0 // Only raw zero maps directly to reserved country zero.
         } else {
@@ -89,7 +92,10 @@ impl Renderer<'_, '_, '_> {
             return Err("reserved country-zero division-template roster is not recorded".into());
         }
         let template = string_field(children(item), "division_template")?; // Read the authored template string.
-        if !world.has_template(country, template.as_bytes())? {
+        if !world
+            .has_template(country, template.as_bytes())
+            .map_err(|why| why.to_string())?
+        {
             return Ok(String::new()); // An absent template precedes the unit-name read.
         }
         let name = self.unit_name(reference)?;
@@ -133,7 +139,10 @@ impl Renderer<'_, '_, '_> {
         if reference == 0 {
             return Ok(String::new());
         }
-        self.context.world()?.unit(reference)?; // Resolve the Army before evaluating the operand.
+        self.context
+            .world()?
+            .unit(reference)
+            .map_err(|why| format!("Divisions lacks UNIT {reference:#x}; {why}"))?; // Resolve the Army before evaluating the operand.
         let value = if scope_selector(item).is_some() {
             0 // Read selectors before assigning the default-zero operand.
         } else {
@@ -192,10 +201,12 @@ impl Renderer<'_, '_, '_> {
             if token == 0 {
                 return Ok(None);
             }
-            let literal =
-                self.context.world()?.token(token)?.ok_or_else(|| {
-                    format!("LexicalTokens lacks equipment variable token {token}")
-                })?;
+            let literal = self
+                .context
+                .world()?
+                .token(token)
+                .map_err(|why| why.to_string())?
+                .ok_or_else(|| format!("LexicalTokens lacks equipment variable token {token}"))?;
             return Ok(database.get(literal));
         }
         Ok(cached) // Resolve the token using signed division.
@@ -458,7 +469,8 @@ impl Renderer<'_, '_, '_> {
         let producer = match field(fields, "producer") {
             Some(value) => self
                 .evaluator()?
-                .scoped_country(scalar_operand(value)?, scopes)?,
+                .scoped_country(scalar_operand(value)?, scopes)
+                .map_err(|why| why.to_string())?,
             None => None,
         };
         let Some(index) = self.units_equipment_type(fields, &["type"], scopes)? else {
@@ -489,7 +501,8 @@ impl Renderer<'_, '_, '_> {
                     "AvailableEquipmentVariants references an absent VariantDefinitions row",
                 )?;
                 let token = world
-                    .token(variant.equipment_token)?
+                    .token(variant.equipment_token)
+                    .map_err(|why| why.to_string())?
                     .ok_or("LexicalTokens lacks the available variant equipment token")?;
                 if database.get(token) == Some(index) {
                     selected = Some(variant);
@@ -641,7 +654,8 @@ impl Renderer<'_, '_, '_> {
                     self.evaluator()?
                         .scoped_country(scalar_operand(item)?, scopes)
                 })
-                .transpose()?;
+                .transpose()
+                .map_err(|why| why.to_string())?;
             let Some(index) = index else { continue };
             if producer == Some(None) {
                 continue; // Invalid explicit producer.
@@ -693,7 +707,8 @@ impl Renderer<'_, '_, '_> {
                     "AvailableEquipmentVariants references an absent VariantDefinitions row",
                 )?;
                 let token = world
-                    .token(variant.equipment_token)?
+                    .token(variant.equipment_token)
+                    .map_err(|why| why.to_string())?
                     .ok_or("LexicalTokens lacks the available variant equipment token")?;
                 let at = database
                     .get(token)
@@ -943,7 +958,8 @@ impl Renderer<'_, '_, '_> {
                     "AvailableEquipmentVariants references an absent VariantDefinitions row",
                 )?;
                 let token = world
-                    .token(variant.equipment_token)?
+                    .token(variant.equipment_token)
+                    .map_err(|why| why.to_string())?
                     .ok_or("LexicalTokens lacks the available variant equipment token")?;
                 if database.get(token) != Some(kind.family) || variant_version(variant)? != 0 {
                     continue;
@@ -1047,7 +1063,8 @@ impl Renderer<'_, '_, '_> {
             for value in children(body) {
                 let Some(country) = self
                     .evaluator()?
-                    .scoped_country(scalar_operand(value)?, scopes)?
+                    .scoped_country(scalar_operand(value)?, scopes)
+                    .map_err(|why| why.to_string())?
                 else {
                     continue;
                 };
@@ -1361,7 +1378,8 @@ impl Renderer<'_, '_, '_> {
         let country = match field(children(item), "creator") {
             Some(creator) => self
                 .evaluator()?
-                .scoped_country(scalar_operand(creator)?, scopes)?,
+                .scoped_country(scalar_operand(creator)?, scopes)
+                .map_err(|why| why.to_string())?,
             None => match scopes.this {
                 Scope::Country(country) | Scope::CountryLeader { country, .. }
                     if (country as i32) > 0 =>
@@ -1415,7 +1433,8 @@ impl Renderer<'_, '_, '_> {
             }
         }
         let result = (|| {
-            let copied = crate::triggers::event_scopes::project(&self.graph.borrow(), at)?;
+            let copied = crate::triggers::event_scopes::project(&self.graph.borrow(), at)
+                .map_err(|why| why.to_string())?;
             self.units_create_in(item, copied, scopes)
         })();
         let mut graph = self.graph.borrow_mut();
@@ -1443,7 +1462,8 @@ impl Renderer<'_, '_, '_> {
             match field(children(item), "owner") {
                 Some(owner) => Ok(self
                     .evaluator()?
-                    .scoped_country(scalar_operand(owner)?, scopes)?
+                    .scoped_country(scalar_operand(owner)?, scopes)
+                    .map_err(|why| why.to_string())?
                     .unwrap_or(0)),
                 None => Ok(0), // The selector fallback defaults to zero.
             }
@@ -1504,7 +1524,10 @@ impl Renderer<'_, '_, '_> {
         let enemy = parser::read_bool_field(fields, "allow_spawning_on_enemy_provs", false);
         let score = field(fields, "country_score");
         let provinces = if score.is_some() {
-            world.state_order(state)?.to_vec()
+            world
+                .state_order(state)
+                .map_err(|why| why.to_string())?
+                .to_vec()
         } else {
             world
                 .provinces()
@@ -1566,9 +1589,9 @@ impl Renderer<'_, '_, '_> {
             if access {
                 return Ok(true);
             }
-            if let Some(faction) = world.faction(controller)?
+            if let Some(faction) = world.faction(controller).map_err(|why| why.to_string())?
                 && faction != 0
-                && world.faction(owner)? == Some(faction)
+                && world.faction(owner).map_err(|why| why.to_string())? == Some(faction)
             {
                 return Ok(true);
             }
@@ -1670,7 +1693,7 @@ impl Renderer<'_, '_, '_> {
                                 )
                             })();
                             self.graph.borrow_mut().scopes.truncate(at);
-                            let value = result?;
+                            let value = result.map_err(|why| why.to_string())?;
                             controller_scores.insert(controller, value);
                             value
                         }

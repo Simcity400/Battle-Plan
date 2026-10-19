@@ -222,6 +222,7 @@ fn run(memory: &impl Memory, captured: &mut Captured) -> Observation {
         memory,
         IMAGE,
         GS,
+        0,
         captured.buffers(),
         &enabled,
         Slices {

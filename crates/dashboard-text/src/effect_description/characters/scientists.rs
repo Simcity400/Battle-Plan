@@ -157,7 +157,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .push(EventScope::of(EventObject::Character(character.id)));
             at
         };
-        let selected = self.evaluator()?.event_scopes(at)?;
+        let selected = self
+            .evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())?;
         self.char_native_line(
             b"SPECIAL_PROJECT_INJURE_SCIENTIST_FOR_DAYS",
             &[("DAYS", Argument::Int32(days))],

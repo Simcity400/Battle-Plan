@@ -21,13 +21,13 @@ function fixture(): UnitLeadersData {
     people: [{ characterId: 9, token: 'mod_character', name: 'A modded commander', portraitHour: 100, portraitReference: '21474841193' }],
     roles: [{ owner: 'country with spaces', category: 1, rank: 'Mod rank', kind: 1, maximumSkill: 12, attributeNames: ['Attack', 'Defence', 'Planning', 'Logistics'] }],
     traits: [{ token: 'extra_trait', name: 'Mod trait', icon: null, missing: null }],
-    leaders: [{ reference: '21474841193', runs: [{ firstHour: 101, lastHour: 106, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], traits: [0] } }],
+    leaders: [{ reference: '21474841193', runs: [{ firstHour: 101, lastHour: 106, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [0] } }],
       traitGains: [{ hour: 101, token: 0, date: 'gained' }], commands: [], battleStarts: [], battleStartReadHours: [], unknownBattleStarts: [], partialFrom: null }],
     observed: [{ firstHour: 100, lastHour: 106, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
     resultsMissing: 'Battle results not recorded', navyCommandsMissing: 'Navy commands not recorded', warnings: [] };
 }
 function wire(data: UnitLeadersData) {
-  return { ...data, leaders: data.leaders.map(l => ({ ...l, runs: l.runs.map(r => [r.firstHour, r.lastHour, r.value.person, r.value.role, r.value.skill, r.value.components, r.value.traits]),
+  return { ...data, leaders: data.leaders.map(l => ({ ...l, runs: l.runs.map(r => [r.firstHour, r.lastHour, r.value.person, r.value.role, r.value.skill, r.value.components, r.value.traits, r.value.progress]),
     traitGains: l.traitGains.map(g => [g.hour, g.token, g.date === 'heldBefore' ? 0 : g.date === 'gained' ? 1 : 2]) })) };
 }
 /** The first leader as a leaderboard sends it: visible hours instead of battle records. */

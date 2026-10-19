@@ -10,6 +10,8 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+replay-derive.workspace = true
+engine-executable.workspace = true
 engine-native.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true

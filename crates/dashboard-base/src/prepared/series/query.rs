@@ -29,6 +29,7 @@ pub struct SummaryCache {
     folds: BTreeMap<Vec<u8>, Arc<Fold>>,
     blobs: BTreeMap<([u64; 3], u64), Arc<Cached>>,
     tables: BTreeMap<[u64; 3], Arc<Option<Table>>>,
+    // Each text binds its kind and ordered page identities to the retained bytes.
     texts: BTreeMap<TextKey, Arc<Vec<u8>>>,
     events: BTreeMap<([u64; 3], u64, u64), Arc<Value>>,
     values: BTreeMap<ValueKey, Arc<Retained>>,

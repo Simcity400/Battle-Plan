@@ -394,7 +394,7 @@ pub(super) struct Accumulator {
     /// Targets proved launchable, and those undecided with why.
     pub launchable: u32,
     pub open: u32,
-    pub reasons: BTreeSet<String>,
+    pub reasons: BTreeSet<dashboard_text::triggers::Failure>,
     pub unknown: bool,
 }
 
@@ -503,7 +503,7 @@ pub fn allowed_types(
         if let Some(reason) = &missing {
             allowed = match allowed {
                 Eval::Unknown(mut why) => {
-                    why.insert(reason.clone());
+                    why.insert(reason.clone().into());
                     Eval::Unknown(why)
                 }
                 _ => Eval::unknown(reason.clone()),
@@ -519,7 +519,11 @@ pub fn allowed_types(
                     index,
                     Eval::Unknown(
                         why.into_iter()
-                            .map(|reason| format!("raid type {}'s allowed: {reason}", kind.name))
+                            .map(|reason| {
+                                reason.context(|reason| {
+                                    format!("raid type {}'s allowed: {reason}", kind.name)
+                                })
+                            })
                             .collect(),
                     ),
                 );
@@ -613,7 +617,10 @@ fn shown_types(
     match gate {
         Eval::False => return Shown::Done((Ok(Vec::new()), Eval::False)),
         Eval::Unknown(reasons) => {
-            return Shown::Done((Err(reasons.into_iter().collect()), Eval::False));
+            return Shown::Done((
+                Err(reasons.into_iter().map(|why| why.to_string()).collect()),
+                Eval::False,
+            ));
         }
         Eval::True => {}
     }
@@ -670,7 +677,9 @@ fn shown_types(
         match result {
             Eval::True => shown.push(index),
             Eval::False => {}
-            Eval::Unknown(reasons) => unknown.extend(reasons),
+            Eval::Unknown(reasons) => {
+                unknown.extend(reasons.into_iter().map(|why| why.to_string()))
+            }
         }
     }
     Shown::Launch {
@@ -870,7 +879,7 @@ fn building_matches(
                 .map_or(&[], Vec::as_slice)
         };
         let is_coastal = provinces.iter().try_fold(false, |coastal, &province| {
-            Ok::<_, String>(coastal || world.coastal(province)?)
+            Ok::<_, String>(coastal || world.coastal(province).map_err(|why| why.to_string())?)
         });
         result = result.and(|| match is_coastal {
             Ok(value) => Eval::from_bool(value),
@@ -887,7 +896,8 @@ fn building_level(world: &World<'_>, scope: &RaidScope) -> Result<i32, String> {
             scope.building_flags & 1 != 0,
             scope.building_location,
             scope.building_type,
-        )?
+        )
+        .map_err(|why| why.to_string())?
         .map_or(0, i32::from))
 }
 
@@ -901,7 +911,7 @@ mod tests {
         let count = |launchable, open| Accumulator {
             launchable,
             open,
-            reasons: BTreeSet::from(["path".to_owned()]),
+            reasons: BTreeSet::from(["path".into()]),
             ..Accumulator::default()
         };
         assert_eq!(count(0, 0).tint(), Eval::False);

@@ -528,6 +528,7 @@ pub fn invalidate() {
     if !STAGING_OWNER.get() {
         return;
     }
+    crate::event_feed_observer::decisions::political_balance_lost();
     EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 fn failed(reason: &'static str) {
@@ -708,8 +709,7 @@ pub unsafe fn release() {
 #[inline(always)]
 #[allow(clippy::too_many_arguments)] // Fixed native writer operands, no replay row.
 fn power_record(
-    country: u32,
-    instance: u32,
+    owner: native::Owner,
     currency: PowerCurrency,
     operation: PowerOperation,
     cause: PowerCause,
@@ -719,7 +719,16 @@ fn power_record(
     requested: Option<i64>,
     identity: Identity,
 ) -> Record {
-    let mut raw = Record::base(Kind::Power, country, instance);
+    if currency == PowerCurrency::Political && before != after {
+        crate::event_feed_observer::decisions::political_balance(
+            owner.pointer,
+            owner.country,
+            owner.instance,
+            before,
+            after,
+        );
+    }
+    let mut raw = Record::base(Kind::Power, owner.country, owner.instance);
     raw.currency = currency;
     raw.operation = operation;
     raw.cause = cause;
@@ -732,8 +741,7 @@ fn power_record(
 #[inline(always)]
 #[allow(clippy::too_many_arguments)] // Fixed native writer operands.
 fn power(
-    country: u32,
-    instance: u32,
+    owner: native::Owner,
     currency: PowerCurrency,
     operation: PowerOperation,
     cause: PowerCause,
@@ -745,7 +753,7 @@ fn power(
 ) {
     append_record(
         power_record(
-            country, instance, currency, operation, cause, site, before, after, requested, identity,
+            owner, currency, operation, cause, site, before, after, requested, identity,
         ),
         identity.keys,
     );
@@ -783,8 +791,7 @@ fn fixture_record(event: &Event) -> Record {
     };
     let mut raw = match event.kind {
         Kind::Power => power_record(
-            event.country,
-            event.instance,
+            owner,
             event.currency,
             event.operation,
             event.cause,
@@ -1411,8 +1418,7 @@ fn flush(force: bool) {
     };
     if after != pending.before || force && !pending.emitted {
         let record = power_record(
-            pending.owner.country,
-            pending.owner.instance,
+            pending.owner,
             pending.currency,
             pending.operation,
             pending.cause,
@@ -2082,6 +2088,9 @@ unsafe extern "system-unwind" fn entry_body(
     // Covers the original in flight, whether or not this family records;
     // dropped after it returns.
     let _status = forwarded_status(index, a);
+    if index == RESET_COUNTRY_ENTRY {
+        crate::event_feed_observer::reset_delayed_country(a);
+    }
     // Country appearance reset rewrites every country input field of its
     // country, and focus selection and cancellation its focus rows
     // ([`crate::country_input_changes`]).
@@ -2132,6 +2141,25 @@ unsafe extern "system-unwind" fn entry_body(
         DAILY_HOUR.set(operand_hour());
     }
     CONTEXT.set(context);
+    // These native entries already own their patches. Forward their actual
+    // executions independently of whether any currency payment is emitted.
+    match scope {
+        Scope::Decision if caller != engine_decisions::cdecision::MISSION_COMPLETION_RETURN_RVA => {
+            crate::script_event_observer::decision(
+                replay_data::event_feed_rows::EventFeedSource::DecisionSelected,
+                a,
+                b,
+                None,
+            )
+        }
+        Scope::DecisionTimeout => crate::script_event_observer::decision(
+            replay_data::event_feed_rows::EventFeedSource::DecisionTimeoutEffect,
+            a,
+            b,
+            Some(c),
+        ),
+        _ => {}
+    }
     let result = timing.original(|| unsafe { original(a, b, c, d, fifth) });
     if let Some(owner) = DAILY.get() {
         // Only these exact native returns guarantee RDX is the live cost output.
@@ -2511,8 +2539,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                 && let Some(before) = balance(owner, PowerCurrency::Political)
             {
                 power(
-                    owner.country,
-                    owner.instance,
+                    owner,
                     PowerCurrency::Political,
                     PowerOperation::Set,
                     PowerCause::ScriptEffect,
@@ -2549,8 +2576,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                     });
                 append_operands(
                     power_record(
-                        owner.country,
-                        owner.instance,
+                        owner,
                         PowerCurrency::Command,
                         PowerOperation::Subtract,
                         PowerCause::AbilityUpkeep,
@@ -2796,6 +2822,11 @@ impl Hooks {
             };
         }
         unsafe { Self::install(memory, base) }.unwrap_or_else(|reason| {
+            crate::hook::installation::refused(
+                crate::hook::installation::Kind::Construction,
+                None,
+                &reason,
+            );
             let _ = UNHOOKED.set(reason);
             Self {
                 entries: Vec::new(),
@@ -2806,7 +2837,7 @@ impl Hooks {
     unsafe fn install(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let sites = entry_sites();
         for site in sites.iter().chain(TAPS.iter()) {
-            if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
                 COUNTERS[2].fetch_add(1, Ordering::Relaxed);
                 return Err(format!("politics {} sentinel differs", site.name));
             }
@@ -2822,6 +2853,10 @@ impl Hooks {
         for (index, site) in TAPS.into_iter().enumerate() {
             taps.push(unsafe { Tap::new(base + site.rva, tap, index, site.sentinel) }?);
         }
+        taps.push(
+            unsafe { crate::script_event_observer::targeted_selection_tap(memory, base) }
+                .map_err(str::to_owned)?,
+        );
         Ok(Self { entries, taps })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
@@ -3040,8 +3075,7 @@ pub fn bench_daily_country(country: u32, receivers: &[usize]) {
             let _active = Call::enter();
             append_operands(
                 power_record(
-                    country,
-                    0,
+                    owner,
                     currency,
                     PowerOperation::Add,
                     PowerCause::DailyGain,
@@ -3059,8 +3093,7 @@ pub fn bench_daily_country(country: u32, receivers: &[usize]) {
             let identity = upkeep_identity(*receiver);
             append_operands(
                 power_record(
-                    country,
-                    0,
+                    owner,
                     PowerCurrency::Command,
                     PowerOperation::Add,
                     PowerCause::AbilityUpkeep,

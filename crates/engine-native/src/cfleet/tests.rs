@@ -112,6 +112,75 @@ fn original_counter_borrower_receives_same_prefix_without_an_extra_native_read()
 }
 
 #[test]
+fn fleet_observer_token_precedes_the_original_region_header_without_extra_reads() {
+    use std::cell::Cell;
+    struct HeaderRace<'a> {
+        original: OriginalCounterMemory<'a>,
+        sequence: Cell<u64>,
+    }
+    impl Memory for HeaderRace<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let copied = self.original.copy(address, output);
+            if copied && address == FLEET + MISSION_REGIONS {
+                self.sequence.set(self.sequence.get() + 1);
+            }
+            copied
+        }
+    }
+    let bytes = original_counter_fixture();
+    let original = || OriginalCounterMemory {
+        bytes: &bytes,
+        fail_once_at: None,
+        failed: Cell::new(false),
+        reads: Default::default(),
+    };
+    let legacy = original();
+    let mut old_fleets = vec![];
+    let mut old_rosters = vec![];
+    let mut old_tasks = vec![];
+    let expected = walk_counter_inputs_with_port_observed_growing(
+        &legacy,
+        0,
+        GS,
+        &mut old_fleets,
+        &mut old_rosters,
+        (&mut old_tasks, None, None, None),
+        |_, _| {},
+        |_, _, _| {},
+    );
+    let memory = HeaderRace {
+        original: original(),
+        sequence: Cell::new(1),
+    };
+    let mut fleets = vec![];
+    let mut rosters = vec![];
+    let mut tasks = vec![];
+    let mut observed = vec![];
+    let actual = walk_counter_inputs_with_port_and_fleet_observed_growing(
+        &memory,
+        0,
+        GS,
+        &mut fleets,
+        &mut rosters,
+        (&mut tasks, None, None, None),
+        |_, _| {},
+        |_, _, _| {},
+        |_, _| memory.sequence.get(),
+        |pointer, id, header, before| {
+            observed.push((pointer, id, header.count, before, memory.sequence.get()))
+        },
+    );
+    assert_eq!(actual, expected);
+    assert_eq!(fleets, old_fleets);
+    assert_eq!(tasks, old_tasks);
+    assert_eq!(rosters, old_rosters);
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].0, FLEET);
+    assert_eq!((observed[0].3, observed[0].4), (1, 2));
+    assert_eq!(*memory.original.reads.borrow(), *legacy.reads.borrow());
+}
+
+#[test]
 fn growing_counters_follow_a_native_roster_larger_than_the_old_chosen_limit() {
     let mut bytes = original_counter_fixture();
     let count = 65_537_usize;
@@ -640,6 +709,8 @@ fn naval_graph_preserves_handles_aliases_and_full_signed_scalars() {
     assert_eq!(
         ships[0],
         cship::Row {
+            acquired_manpower: None,
+            required_manpower: None,
             roster_ordinal: 0,
             id: (12_u64 << 32) | 51,
             task_force: tasks[0].id,
@@ -2156,4 +2227,61 @@ fn a_short_run_reads_each_remaining_ship_alone_at_most_once() {
             );
         }
     }
+}
+
+#[test]
+fn certified_fleet_region_payload_keeps_occurrences_and_authenticates_each_reference() {
+    let mut bytes = vec![0_u8; 0x1000];
+    let region = 0x400;
+    put64(
+        &mut bytes,
+        region,
+        crate::cstrategic_region::VTABLE_RVA as u64,
+    );
+    put32(&mut bytes, region + crate::cstrategic_region::ID, 7);
+    let other = 0x600;
+    put64(
+        &mut bytes,
+        other,
+        crate::cstrategic_region::VTABLE_RVA as u64,
+    );
+    put32(&mut bytes, other + crate::cstrategic_region::ID, 3);
+    for (at, pointer) in [region, other, region].into_iter().enumerate() {
+        put64(&mut bytes, 0x100 + at * 8, pointer as u64);
+    }
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        read_mission_regions(
+            &memory,
+            0,
+            Array {
+                data: 0x100,
+                count: 3
+            }
+        ),
+        Ok(vec![3, 7, 7])
+    );
+    assert_eq!(
+        read_mission_regions(&memory, 0, Array { data: 0, count: 0 }),
+        Ok(Vec::new())
+    );
+    put64(&mut bytes, region, 0);
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        read_mission_regions(
+            &memory,
+            0,
+            Array {
+                data: 0x100,
+                count: 3
+            }
+        ),
+        Err("strategic region vtable mismatch")
+    );
 }

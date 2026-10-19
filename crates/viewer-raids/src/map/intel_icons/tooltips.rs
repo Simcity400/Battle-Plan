@@ -183,10 +183,184 @@ pub(super) fn operative<'h, 'f>(
         });
         text.line(false, 1, "OPERATIVE_INTEL_NETWORK_GAIN", gain);
     }
+    if matches!(variant, BUILD_NETWORK | QUIET_NETWORK) {
+        let summary = (|| -> Result<String, String> {
+            let target = country.ok_or("the mission's target country has no CountryLinks row")?;
+            let rows = shared
+                .tables
+                .network_summaries
+                .as_ref()
+                .map_err(Clone::clone)?;
+            let row = rows
+                .iter()
+                .find(|summary| {
+                    hour.slot(summary.owner_country) == Some(hour.ours)
+                        && hour.slot(summary.target_country) == Some(target)
+                })
+                .ok_or("the mission has no recorded national network cache")?;
+            Ok(network_cache_text(row))
+        })();
+        text.line(true, 2, "national network cache", summary);
+    }
     for line in secondary(variant) {
         text.refuse(line, UNESTABLISHED.into());
     }
+    if variant == PROPAGANDA {
+        let detail = (|| -> Result<String, String> {
+            let target = country.ok_or("the mission's target country has no CountryLinks row")?;
+            let rows = shared.tables.propaganda.as_ref().map_err(Clone::clone)?;
+            propaganda_history_text(rows, target)
+        })();
+        text.line(true, 2, "recent propaganda effort", detail);
+    }
+    if let Some(target) = country {
+        let detail = (|| -> Result<String, String> {
+            let contributions = shared.tables.contributions.as_ref().map_err(Clone::clone)?;
+            let sources = shared.tables.sources.as_ref().map_err(Clone::clone)?;
+            let selected: Vec<_> = contributions
+                .iter()
+                .filter(|row| {
+                    hour.slot(row.owner) == Some(hour.ours)
+                        && row.ordinal != u32::MAX
+                        && u32::try_from(row.target)
+                            .ok()
+                            .and_then(|raw| hour.slot(raw))
+                            == Some(target)
+                })
+                .collect();
+            let selected_sources: Vec<_> = sources
+                .iter()
+                .filter(|row| {
+                    hour.slot(row.owner) == Some(hour.ours)
+                        && row.pool != u32::MAX
+                        && row.ordinal != u32::MAX
+                        && u32::try_from(row.target)
+                            .ok()
+                            .and_then(|raw| hour.slot(raw))
+                            == Some(target)
+                })
+                .collect();
+            source_values_text(&selected, &selected_sources)
+        })();
+        text.line(true, 2, "recorded intel sources", detail);
+    }
     text
+}
+
+/// Source contributions are independent cached four-lane values; do not add
+/// them to produce a new headline or replace the observed UI estimate.
+pub(super) fn source_values_text(
+    contributions: &[&replay_data::rows::IntelContributionRow],
+    sources: &[&replay_data::rows::IntelSourceRow],
+) -> Result<String, String> {
+    use std::fmt::Write;
+    let mut text = "Recorded intel sources (civilian / army / navy / air)".to_owned();
+    let lanes = |values: [i64; 4]| {
+        values
+            .map(|raw| {
+                let magnitude = raw.unsigned_abs();
+                format!(
+                    "{}{}.{:05}",
+                    if raw < 0 { "-" } else { "" },
+                    magnitude / 100_000,
+                    magnitude % 100_000
+                )
+            })
+            .join(" / ")
+    };
+    for row in contributions {
+        let family = match row.kind {
+            0 => "Allied",
+            1 => "Cryptology",
+            2 => "Static contribution",
+            3 => "Dynamic contribution",
+            4 => "Prior-day dynamic contribution",
+            5 => "Pending dynamic",
+            6 => "Dynamic accumulator",
+            other => return Err(format!("unknown intel contribution family {other}")),
+        };
+        let _ = write!(
+            text,
+            "\n{family}, pool {}, entry {}: {}",
+            row.pool,
+            row.ordinal,
+            lanes([row.civilian, row.army, row.navy, row.air])
+        );
+    }
+    for row in sources {
+        let _ = write!(
+            text,
+            "\nStatic pool {}, source {}, entry {}: {}",
+            row.pool,
+            row.source,
+            row.ordinal,
+            lanes([row.civilian, row.army, row.navy, row.air])
+        );
+    }
+    if contributions.is_empty() && sources.is_empty() {
+        text.push_str("\nNo held keyed entries for this target; dense zero entries are omitted.");
+    }
+    Ok(text)
+}
+
+pub(super) fn propaganda_history_text(
+    rows: &[replay_data::rows::PropagandaEffortRow],
+    slot: u32,
+) -> Result<String, String> {
+    use replay_data::rows::PropagandaEffortRow;
+    let (stability, war_support) = PropagandaEffortRow::weekly_drift(rows, slot)
+        .ok_or("the target has no recorded propaganda history")?;
+    let percentage = |raw: i64| {
+        let scaled = (i128::from(raw).abs() * 100 * 100_000 + 16_384) / 32_768;
+        format!(
+            "{}{}.{:05}%",
+            if raw < 0 { "-" } else { "" },
+            scaled / 100_000,
+            scaled % 100_000
+        )
+    };
+    let begin = rows.partition_point(|row| row.slot < slot);
+    let end = rows.partition_point(|row| row.slot <= slot);
+    let mut text = format!(
+        "Recorded propaganda history\nWeekly stability drift: {}\nWeekly war support drift: {}",
+        percentage(stability),
+        percentage(war_support)
+    );
+    for (ordinal, row) in rows[begin..end - 1].iter().enumerate() {
+        use std::fmt::Write;
+        let _ = write!(
+            text,
+            "\nEffort {}: stability {}, war support {}",
+            ordinal + 1,
+            percentage(row.stability),
+            percentage(row.war_support)
+        );
+    }
+    Ok(text)
+}
+
+/// Replay detail for the independently retained national cache. State values
+/// never stand in for it; integer formatting retains every fixed5 digit.
+pub(super) fn network_cache_text(row: &replay_data::rows::IntelNetworkSummaryRow) -> String {
+    let fixed = |value: i64| {
+        let amount = value.unsigned_abs();
+        format!(
+            "{}{}.{:05}",
+            if value < 0 { "-" } else { "" },
+            amount / 100_000,
+            amount % 100_000
+        )
+    };
+    format!(
+        "Recorded national network cache\nNetwork order: {}\nCovered core states: {}\nCovered controlled states: {}\nCovered owned worth: {}\nControlled strength sum: {}\nCore strength sum: {}\nMaximum state strength: {}",
+        u64::from(row.ordinal) + 1,
+        row.covered_core_states,
+        row.covered_controlled_states,
+        row.covered_worth,
+        fixed(row.controlled_strength_sum),
+        fixed(row.core_strength_sum),
+        fixed(row.max_state_strength),
+    )
 }
 
 /// The breakdown lines after a mission's first, which this hover refuses by name.

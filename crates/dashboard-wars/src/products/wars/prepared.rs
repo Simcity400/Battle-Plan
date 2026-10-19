@@ -608,14 +608,13 @@ pub fn query(
     Ok(serde_json::to_value(reply)?)
 }
 
-/// The groups at each requested read hour after `through`, the wars'
-/// prepared prefix's last hour, each from its hour's frame alone
+/// The groups and contributions at each requested read hour, independently
+/// of preparation's progress, each from its hour's frame alone
 /// ([`super::at_hour`]); an hour outside the branch or in a recorded gap is
 /// unavailable.
 pub fn current(
     source: &Source,
     value: &Value,
-    through: i32,
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<WarsAtHour>> {
@@ -632,12 +631,7 @@ pub fn current(
         .ok_or_else(|| invalid("Wars branch is not in this recording"))?;
     let (first, last) = branch_bounds(source.replay_ref(), start);
     let requested: Requested = serde_json::from_value(value.clone())?;
-    let hours: BTreeSet<i32> = requested
-        .reads
-        .iter()
-        .map(|read| read.hour)
-        .filter(|&hour| hour > through)
-        .collect();
+    let hours: BTreeSet<i32> = requested.reads.iter().map(|read| read.hour).collect();
     if hours.is_empty() {
         return Ok(Vec::new());
     }
@@ -647,11 +641,16 @@ pub fn current(
         .map(|options| catalogue::catalogue(source, options))
         .transpose()?;
     let mut current = Vec::with_capacity(hours.len());
+    let tables: Vec<_> = TABLES
+        .iter()
+        .copied()
+        .chain([TableId::WarParticipation, TableId::WarLendLeaseHistories])
+        .collect();
     for hour in hours {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let frame = if (first..=last).contains(&hour) {
             dashboard_base::prepared::query::progressive::frame_at(
-                source, branch, hour, TABLES, cancelled,
+                source, branch, hour, &tables, cancelled,
             )?
         } else {
             None
@@ -665,6 +664,7 @@ pub fn current(
             )?,
             None => WarsAtHour {
                 hour,
+                contributions: Vec::new(),
                 available: false,
                 wars: Vec::new(),
                 warnings: Vec::new(),

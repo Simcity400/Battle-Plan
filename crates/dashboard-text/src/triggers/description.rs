@@ -48,7 +48,8 @@ pub fn describe<'a>(
     .and(&evaluator.units(items), scopes, false, 0, 1);
     let ended = evaluator.end_description(scopes);
     match (result, ended) {
-        (Err(why), _) | (_, Err(why)) => Err(why),
+        (Err(why), _) => Err(why),
+        (_, Err(why)) => Err(why.to_string()),
         (Ok(text), Ok(())) => Ok(text),
     }
 }
@@ -94,7 +95,9 @@ impl<'a> Formatter<'_, '_, 'a> {
     // The bare combat event has no carried country;
     // a promoted country clears Combat, retaining linked scopes.
     fn graph(&self, scopes: Scopes) -> Result<EventScopes, String> {
-        let mut graph = EventScopes::new(vec![EventScope::of(event_object(scopes.this)?)]);
+        let mut graph = EventScopes::new(vec![EventScope::of(
+            event_object(scopes.this).map_err(|why| why.to_string())?,
+        )]);
         for (index, (value, unknown)) in [
             (Some(scopes.root), scopes.unknown.root),
             (scopes.from, scopes.unknown.from),
@@ -110,7 +113,9 @@ impl<'a> Formatter<'_, '_, 'a> {
                     Link::Itself
                 } else {
                     let to = graph.scopes.len();
-                    graph.scopes.push(EventScope::of(event_object(value)?));
+                    graph.scopes.push(EventScope::of(
+                        event_object(value).map_err(|why| why.to_string())?,
+                    ));
                     Link::Scope(to)
                 }
             } else {
@@ -200,13 +205,13 @@ impl<'a> Formatter<'_, '_, 'a> {
             let start = text.len();
             let result = (|| -> Result<(), String> {
                 match unit {
-                    Unit::Unknown(why) => return Err(why.clone()),
+                    Unit::Unknown(why) => return Err(why.clone().to_string()),
                     Unit::Chain(chain) => {
                         // Check each limit and only
                         // describe the first selected branch, as a conjunction.
                         for branch in chain {
                             if let Some(why) = &branch.refused {
-                                return Err(why.clone());
+                                return Err(why.clone().to_string());
                             }
                             let selected = self.evaluator.all(&branch.limit, scopes).decided()?;
                             if selected {
@@ -242,7 +247,9 @@ impl<'a> Formatter<'_, '_, 'a> {
                                             self.and(
                                                 &self.evaluator.units(body),
                                                 scopes,
-                                                inverted == trigger_boolean(item)?,
+                                                inverted
+                                                    == trigger_boolean(item)
+                                                        .map_err(|why| why.to_string())?,
                                                 indent,
                                                 if mode == 2 { 2 } else { 0 },
                                             )
@@ -328,8 +335,10 @@ impl<'a> Formatter<'_, '_, 'a> {
                 // Own text can read scoped operands before Check; an unknown
                 // limit can select a body whose TLS effects we cannot follow.
                 // Preserve later pure siblings, refuse dependent temp reads.
-                self.evaluator
-                    .taint_temps(format!("trigger tooltip session is uncertain: {why}"));
+                self.evaluator.taint_temps(
+                    crate::triggers::Failure::from(why.clone())
+                        .context(|why| format!("trigger tooltip session is uncertain: {why}")),
+                );
                 *self.refusals.borrow_mut().entry(why).or_default() += 1;
             }
         }
@@ -353,7 +362,8 @@ impl<'a> Formatter<'_, '_, 'a> {
         // Enter the context scope and format its target heading.
         let entered = self
             .evaluator
-            .enter_scope(parsed, scopes)?
+            .enter_scope(parsed, scopes)
+            .map_err(|why| why.to_string())?
             .ok_or_else(|| format!("trigger scope {} resolves no target", key_text(item)))?;
         let heading = match parsed {
             Parsed::Keyword(
@@ -432,21 +442,27 @@ impl<'a> Formatter<'_, '_, 'a> {
         };
         let operand = installed_content_core::parser::c_string(item.value.scalar().unwrap_or_default());
         let key = match name.as_str() {
-            "is_attacker" => Some(if trigger_boolean(item)? != inverted {
-                b"IS_ATTACKER".as_slice()
-            } else {
-                b"IS_NOT_ATTACKER"
-            }),
-            "frontage_full" => Some(if trigger_boolean(item)? != inverted {
-                b"TRIGGER_IS_FRONTAGE_FULL".as_slice()
-            } else {
-                b"TRIGGER_IS_NOT_FRONTAGE_FULL"
-            }),
-            "has_reserves" => Some(if trigger_boolean(item)? != inverted {
-                b"TRIGGER_HAS_RESERVES".as_slice()
-            } else {
-                b"TRIGGER_DOES_NOT_HAVE_RESERVES"
-            }),
+            "is_attacker" => Some(
+                if trigger_boolean(item).map_err(|why| why.to_string())? != inverted {
+                    b"IS_ATTACKER".as_slice()
+                } else {
+                    b"IS_NOT_ATTACKER"
+                },
+            ),
+            "frontage_full" => Some(
+                if trigger_boolean(item).map_err(|why| why.to_string())? != inverted {
+                    b"TRIGGER_IS_FRONTAGE_FULL".as_slice()
+                } else {
+                    b"TRIGGER_IS_NOT_FRONTAGE_FULL"
+                },
+            ),
+            "has_reserves" => Some(
+                if trigger_boolean(item).map_err(|why| why.to_string())? != inverted {
+                    b"TRIGGER_HAS_RESERVES".as_slice()
+                } else {
+                    b"TRIGGER_DOES_NOT_HAVE_RESERVES"
+                },
+            ),
             _ => None,
         };
         if let Some(key) = key {
@@ -477,7 +493,8 @@ impl<'a> Formatter<'_, '_, 'a> {
                 let fixed = name != "skill_advantage";
                 let value = self
                     .evaluator
-                    .required(operand, item.quoted(), fixed, scopes)?;
+                    .required(operand, item.quoted(), fixed, scopes)
+                    .map_err(|why| why.to_string())?;
                 // These own methods take the greater wording only for >
                 // normally or < under inversion; equality uses the other arm.
                 let greater = item.operator
@@ -518,7 +535,8 @@ impl<'a> Formatter<'_, '_, 'a> {
                 // Format the comparison with its evaluated prefix in mode1.
                 let value = self
                     .evaluator
-                    .required(operand, item.quoted(), false, scopes)?;
+                    .required(operand, item.quoted(), false, scopes)
+                    .map_err(|why| why.to_string())?;
                 let value = ((value / 100_000) as i32).to_string();
                 let comparison = match (item.operator, inverted) {
                     (Operator::Greater, false) => b"TRIGGER_MORE_THAN".as_slice(),
@@ -638,12 +656,14 @@ impl<'a> Formatter<'_, '_, 'a> {
                 let token = self
                     .evaluator
                     .world
-                    .token_of(operand)?
+                    .token_of(operand)
+                    .map_err(|why| why.to_string())?
                     .ok_or("tactic operand is absent from LexicalTokens")?;
                 let stored = self
                     .evaluator
                     .world
-                    .token(token)?
+                    .token(token)
+                    .map_err(|why| why.to_string())?
                     .ok_or("tactic token has no LexicalTokens literal")?;
                 let resolved = (self.tactic_name)(stored)?; // Resolve a named tactic or the null tactic.
                 let label = self.localised(&resolved, &[])?;
@@ -666,7 +686,8 @@ impl<'a> Formatter<'_, '_, 'a> {
                 }
                 let country = self
                     .evaluator
-                    .country_operand(item, scopes)?
+                    .country_operand(item, scopes)
+                    .map_err(|why| why.to_string())?
                     .ok_or("tag description resolves null country")?;
                 let label = self.text.country_marked_name(country)?;
                 self.scoped(

@@ -20,3 +20,7 @@
 **Files:** [GeneralCareerWidget.tsx](GeneralCareerWidget.tsx) resolves selection/time; [CareerView.tsx](CareerView.tsx) renders the shared [timeline](../../charts/timeline/README.md); `choicesData.ts` validates choices and `CareerView.test.ts` covers behavior. `definition.ts` and `index.ts` declare settings and registration. Shared leader data lives with [Generals](../generals/README.md).
 
 Shared framework conventions: [widgets](../README.md).
+
+Current details include exact commander residual XP, its content-derived next-skill requirement and the complete ordered trait-training list. Repeated training entries remain separate; unavailable progress and no traits in training have different labels.
+
+The career facts show runtime trait-training overrides as signed percentage-point modifiers, preserving their complete native order and repetitions separately from XP progress.

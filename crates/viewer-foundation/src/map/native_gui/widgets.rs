@@ -1495,7 +1495,8 @@ impl<'a> Walk<'a> {
                 let bytes = self
                     .resources
                     .localisation()
-                    .localise_bytes(&text_box.text, &[]);
+                    .localise_bytes(&text_box.text, &[])
+                    .map_err(|error| Refusal::new(path, RefusalKind::Reader, error.to_string()))?;
                 let text: Option<String> =
                     native_text::decode(&bytes).map(|text| text.into_iter().collect());
                 (

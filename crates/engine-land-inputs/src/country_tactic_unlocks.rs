@@ -76,6 +76,9 @@ pub struct Buffers<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capture {
     pub outcome: Outcome,
+    /// Same-pass doctrine table for companion acquisition; never serialized.
+    pub status_data: usize,
+    pub status_count: u32,
     pub required_rows: usize,
     pub required_unlocks: usize,
     /// Database table slots (`registry_slots` of the entries including the
@@ -302,6 +305,8 @@ fn capture_buffer(
     mut list: crate::walk::Buffer<'_, u8>,
 ) -> Capture {
     let mut capture = Capture {
+        status_data: 0,
+        status_count: 0,
         outcome: Outcome::Rows { len: 0 },
         required_rows: 0,
         required_unlocks: 0,
@@ -312,6 +317,8 @@ fn capture_buffer(
     let mut unstored = false;
     let result = (|| {
         let observed = roots(memory, base, game)?;
+        capture.status_data = observed.doctrine.data;
+        capture.status_count = observed.doctrine.count;
         prove_ends(memory, observed.entries)?;
         capture.required_registry = registry_slots(observed.entries.count);
         capture.required_list = list_bytes(observed.entries.count)?;

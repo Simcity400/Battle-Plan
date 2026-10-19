@@ -12,6 +12,11 @@ pub const DEFINITION: usize = 0x10;
 pub const COUNTRY_TARGET: usize = 0x20;
 /// Numeric target, u32, requiring definition-specific interpretation.
 pub const NUMERIC_TARGET: usize = 0x24;
+/// Instance-relative selector view passed to authored effect execution.
+pub const SELECTOR_VIEW: usize = 0x18;
+/// Target-selector view passed to authored effect functions.
+pub const SELECTOR_COUNTRY: usize = 0x08;
+pub const SELECTOR_NUMERIC: usize = 0x0c;
 /// Lifecycle code, i32.
 pub const STATE: usize = 0x28;
 /// Ignore byte accepting zero or one.

@@ -398,6 +398,12 @@ fn border_marker_event_native_effects_or_title_follow_option_count() {
         let text = event_description(
             &event, false, &describe, &mut graph, &render, &NoIcons, &loc,
         );
+        assert_eq!(text.body, "Event Text TITLE");
+        assert!(text.refused.is_empty());
+        event.titles[1].value = installed_content_core::parser::Value::Scalar(b"OTHER_TITLE".to_vec());
+        let text = event_description(
+            &event, false, &describe, &mut graph, &render, &NoIcons, &loc,
+        );
         assert!(text.body.is_empty());
         assert!(
             text.refused
@@ -406,6 +412,7 @@ fn border_marker_event_native_effects_or_title_follow_option_count() {
                 .unwrap()
                 .contains("high-resolution seed")
         );
+        assert_eq!(calls.get(), 5);
     });
 }
 

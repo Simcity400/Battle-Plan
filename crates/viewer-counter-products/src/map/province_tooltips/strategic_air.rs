@@ -1,0 +1,459 @@
+//! Air mode's province hover: detection, selected-wing assignment feedback and
+//! the shared regional mine summary, with independent named input failures.
+//! Received-damage grids belong to the Air view rather than this map hover.
+mod selection;
+use super::{Arg, Context, Tooltip, line};
+use replay_data::rows::tables;
+use std::{cell::OnceCell, collections::BTreeMap};
+use viewer_foundation::map::{
+    air_detection as detection, air_range::FrameSources, visibility::Relations,
+};
+
+/// The native pool-location query returns this region with a valid value
+/// when the base or its host's location does not resolve.
+const UNRESOLVED_BASE_REGION: u32 = 0xaa;
+
+fn keyed<T, K: Ord>(rows: &[T], key: K, field: impl FnMut(&T) -> K) -> Option<&T> {
+    rows.binary_search_by_key(&key, field)
+        .ok()
+        .map(|index| &rows[index])
+}
+
+fn fraction(value: i64, count: usize, empty: i64) -> i64 {
+    if count == 0 {
+        empty
+    } else if !viewer_foundation::map::air_range::finite(value) {
+        0xffff_ffff
+    } else {
+        value
+            .wrapping_mul(100_000)
+            .wrapping_div((count as i64).wrapping_mul(100_000))
+    }
+}
+
+fn radar_contribution(covered: i64, share: i64) -> i64 {
+    covered.wrapping_mul(share).wrapping_mul(100_000) / 100_000
+}
+
+pub(super) fn append(context: &Context<'_>, selected: &[u64], out: &mut Tooltip) {
+    let Some(&region) = context.content.region_of.get(&context.province.id) else {
+        return;
+    };
+    let text = detection_text(context, region);
+    line(out, "regional Air detection", 0, text);
+    if !selected.is_empty() {
+        line(
+            out,
+            "selected Air regional assignment",
+            0,
+            selection::text(context, region, selected),
+        );
+    }
+    super::strategic_navy::merge_sections(
+        context,
+        out,
+        super::naval_mines::build(context.content, context.frame, context.vision, region, true),
+        1,
+    );
+}
+
+fn detection_text(context: &Context<'_>, region: u32) -> Result<String, String> {
+    if let Some(raw) = detection::console_override(context.frame, context.vision.ours())? {
+        if !engine_executable::executable_tables::is_initialized() {
+            return Err("Air detection console prefix needs verified executable metadata".into());
+        }
+        let prefix = engine_executable::executable_tables::get()
+            .auxiliary
+            .air_detection_override_prefix;
+        let amount = installed_content_core::fixed5::fixed5_to_string(raw.wrapping_mul(100), 0);
+        return Ok(format!("{prefix}{amount}%\n"));
+    }
+    replay_derive::fixed_layout::validate_recording(
+        context.frame,
+        replay_derive::fixed_layout::AIR_MAP,
+    )?;
+    let content = &context.content.province_hover;
+    let defines = *content.air_detection.as_ref().map_err(Clone::clone)?;
+    let range = *content.air_range.as_ref().map_err(Clone::clone)?;
+    let region_definition = context
+        .content
+        .strategic_regions
+        .get(&region)
+        .ok_or("strategic region content is missing")?;
+    let members = &region_definition.provinces;
+    let provinces = context
+        .frame
+        .complete::<tables::Provinces>()
+        .map_err(|e| e.to_string())?;
+    let ours = context.vision.ours();
+    let movement = context
+        .content
+        .movement
+        .as_ref()
+        .ok_or("Air occupation needs the content province terrain flags")?;
+    let (mut land, mut owned) = (0_usize, 0_i64);
+    for &id in members {
+        if movement
+            .map
+            .terrain(id)
+            .ok_or("Air region province terrain is unavailable")?
+            .flags
+            & 1
+            == 0
+        {
+            continue;
+        }
+        land += 1;
+        let province =
+            keyed(provinces, id, |row| row.id).ok_or("Air region controller is unavailable")?;
+        owned += i64::from(context.slot(province.controller)? == ours);
+    }
+    let occupation = fraction(owned.wrapping_mul(100_000), land, 0);
+    let countries = detection::Countries::read(context.frame)?;
+    let radar = radar(context, region, members.len(), provinces)?;
+    let weather_rows = context
+        .frame
+        .complete::<tables::WeatherProvinces>()
+        .map_err(|e| e.to_string())?;
+    let mut night = 0_i64;
+    for &id in members {
+        let row = keyed(weather_rows, id, |row| row.id)
+            .ok_or("Air region province night record is unavailable")?;
+        let clock = super::clock::resolve(
+            row,
+            |province| {
+                context
+                    .reads
+                    .updated_clock(province, context.frame.hour)
+                    .map_err(str::to_owned)
+            },
+            || {
+                context
+                    .frame
+                    .complete::<tables::SimulationFeatures>()
+                    .map_err(|e| e.to_string())?
+                    .first()
+                    .ok_or("simulation features absent")?
+                    .weather_suspend
+                    .require("SimulationFeatures.weather_suspend")
+                    .copied()
+            },
+        )?;
+        night = night.wrapping_add(clock.night);
+    }
+    let mean_night = fraction(night, members.len(), 0xffff_ffff);
+    let weather = context
+        .frame
+        .complete::<tables::WeatherRegions>()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .find(|row| row.id == region)
+        .map(|row| {
+            let raw = row
+                .air_detection
+                .require("WeatherRegions.air_detection")?
+                .as_ref()
+                .ok_or("regional Air detection accumulator was unreadable")?;
+            effective(context.frame, 1, *raw)
+        })
+        .transpose()?;
+    let wings = context
+        .frame
+        .complete::<tables::AirWings>()
+        .map_err(|e| e.to_string())?;
+    let registry = OnceCell::new();
+    let sources = FrameSources::new(context.frame);
+    let mut missions = Vec::new();
+    for registration in context
+        .frame
+        .complete::<tables::AirRegionalMissions>()
+        .map_err(|e| e.to_string())?
+    {
+        let wing = keyed(wings, registration.wing, |row| row.id)
+            .ok_or("registered Air mission wing is unavailable")?;
+        if wing.mission_region != Some(region) || context.slot(wing.owner)? != ours {
+            continue;
+        }
+        let inputs = context
+            .frame
+            .complete::<tables::AirMissionInputs>()
+            .map_err(|e| e.to_string())?;
+        let input = keyed(inputs, wing.id, |row| row.wing)
+            .ok_or("registered Air mission inputs are unavailable")?;
+        let Some(execution) = detection::Execution::read(input)? else {
+            continue;
+        };
+        if execution.aircraft == 0 {
+            continue;
+        }
+        let registry = registry
+            .get_or_init(|| {
+                viewer_foundation::map::air_registry_sources::AirRegistrySources::read(
+                    context.frame,
+                )
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "Air detection base registry is incomplete".to_owned())
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let base = registry.bases.get(&wing.air_base);
+        let mut base_region = UNRESOLVED_BASE_REGION;
+        let mut carrier_mission = false;
+        if let Some(base) = base {
+            let province = if let Some(state) = base.state {
+                match base.province {
+                    Some(province) => Some(province),
+                    None => context
+                        .content
+                        .air_base_first_provinces
+                        .get(&(state, base.kind as usize))
+                        .copied()
+                        .transpose()
+                        .map_err(str::to_owned)?,
+                }
+            } else {
+                let ships = context
+                    .frame
+                    .complete::<tables::Ships>()
+                    .map_err(|e| e.to_string())?;
+                let force = match keyed(ships, base.host, |row| row.id) {
+                    Some(ship) => {
+                        let forces = context
+                            .frame
+                            .complete::<tables::TaskForces>()
+                            .map_err(|e| e.to_string())?;
+                        keyed(forces, ship.task_force, |row| row.id)
+                    }
+                    None => None,
+                };
+                if let Some(force) = force {
+                    carrier_mission = force.mission != 0;
+                    let province = keyed(provinces, force.province, |row| row.id)
+                        .ok_or("Air carrier province is unavailable")?;
+                    let terrain = movement
+                        .map
+                        .terrain(province.id)
+                        .ok_or("Air carrier terrain flags are unavailable")?;
+                    if terrain.flags & 1 != 0 {
+                        u32::try_from(province.port_sea).ok().filter(|&id| id != 0)
+                    } else {
+                        Some(province.id)
+                    }
+                } else {
+                    None
+                }
+            };
+            if let Some(province) = province {
+                base_region = *context
+                    .content
+                    .region_of
+                    .get(&province)
+                    .ok_or("Air pool-base strategic region is unavailable")?;
+            }
+        }
+        let home = base_region == region;
+        let normalized = input
+            .normalization
+            .require("AirMissionInputs.normalization")?
+            .as_ref()
+            .ok_or("executing Air mission normalization packet is unavailable")?;
+        let (night, weather) = detection::wing_normalization(
+            wing,
+            normalized,
+            carrier_mission,
+            range,
+            &countries,
+            &sources,
+        )?;
+        missions.push(detection::Mission {
+            execution,
+            home,
+            night,
+            weather,
+        });
+    }
+    let result = detection::derive(
+        defines,
+        countries.detection(ours)?,
+        occupation,
+        radar,
+        mean_night,
+        weather,
+        missions,
+    );
+    context.loc(
+        "AIR_DETECTION_IN_REGION_DETAILS",
+        &[
+            ("TOT", Arg::Fixed5(result.total)),
+            ("BASE", Arg::Fixed5(result.occupation)),
+            ("RAD", Arg::Fixed5(result.radar)),
+            ("AIR", Arg::Fixed5(result.aircraft)),
+            ("DETECT_RED", Arg::Fixed5(result.environmental_factor)),
+            ("NIGHT", Arg::Fixed5(result.night)),
+            ("WEA", Arg::Fixed5(result.weather)),
+        ],
+    )
+}
+
+fn effective(
+    frame: &replay_frame::frame::DecodedFrame,
+    key: u32,
+    raw: Option<i64>,
+) -> Result<i64, String> {
+    if raw.is_none() {
+        return Ok(0);
+    }
+    let definition = frame
+        .complete::<tables::ModifierDefinitions>()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .find(|row| row.index == key)
+        .ok_or("regional Air modifier metadata is unavailable")?;
+    let features = match frame.complete::<tables::SimulationFeatures>() {
+        Ok([row]) => Some(row.dlc_mask),
+        _ => None,
+    };
+    replay_derive::naval_mission_derive::effective(definition, features, raw).map_err(str::to_owned)
+}
+
+/// The native regional radar counts are rebuilt by grouping the same covered
+/// province IDs. Controller share follows the host state's controller writers.
+fn radar(
+    context: &Context<'_>,
+    region: u32,
+    count: usize,
+    provinces: &[replay_data::rows::ProvinceRow],
+) -> Result<i64, String> {
+    let relations = OnceCell::new();
+    let countries: BTreeMap<_, _> = context
+        .frame
+        .complete::<tables::CountryCounterInputs>()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(|row| context.slot(row.country).map(|slot| (slot, row)))
+        .collect::<Result<_, _>>()?;
+    let mut strength = 0_i64;
+    for group in context
+        .frame
+        .complete::<tables::RadarCoverage>()
+        .map_err(|e| e.to_string())?
+    {
+        let covered = group
+            .provinces
+            .iter()
+            .filter(|province| context.content.region_of.get(province) == Some(&region))
+            .count() as i64;
+        if covered == 0 {
+            continue;
+        }
+        let owner = context.slot(group.country)?;
+        if owner != context.vision.ours() {
+            if owner == 0
+                || countries
+                    .get(&owner)
+                    .ok_or("radar owner's controlled-state count is unavailable")?
+                    .controlled_state_count
+                    <= 0
+            {
+                continue;
+            }
+            let relations = relations
+                .get_or_init(|| {
+                    Relations::read(context.frame, &context.links)
+                        .and_then(|relations| {
+                            relations.with_attaches(context.frame, &context.links)
+                        })
+                        .map_err(str::to_owned)
+                })
+                .as_ref()
+                .map_err(Clone::clone)?;
+            if !relations.allied_for_fog(context.vision.ours(), owner) {
+                continue;
+            }
+        }
+        let Some(state) = group.state else {
+            return Err("radar coverage has no host-state controller-share witness".into());
+        };
+        let members = context
+            .content
+            .province_hover
+            .members
+            .get(&state)
+            .ok_or("radar host state's provinces are unavailable")?;
+        let mut controlled = 0_i64;
+        for province in members {
+            controlled += i64::from(
+                context.slot(
+                    keyed(provinces, *province, |row| row.id)
+                        .ok_or("radar host controller is unavailable")?
+                        .controller,
+                )? == owner,
+            );
+        }
+        let share = fraction(controlled.wrapping_mul(100_000), members.len(), 0xffff_ffff);
+        strength = strength.wrapping_add(radar_contribution(covered, share));
+    }
+    Ok(fraction(strength, count, 100_000).clamp(0, 100_000))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_regions_and_guarded_sums_keep_each_native_fraction_default() {
+        assert_eq!(fraction(0, 0, 0), 0);
+        assert_eq!(fraction(0, 0, 100_000), 100_000);
+        assert_eq!(fraction(0, 0, 0xffff_ffff), 0xffff_ffff);
+        assert_eq!(fraction(100_001, 3, 0), 33_333);
+        assert_eq!(fraction(-100_001, 3, 0), -33_333);
+        for invalid in [i64::MIN, i64::MIN + 1, i64::MAX] {
+            assert_eq!(fraction(invalid, 3, 0), 0xffff_ffff);
+        }
+        // The native multiply/divide pair cannot be cancelled for a large
+        // covered list and the controller fraction's empty-state sentinel.
+        assert_eq!(radar_contribution(30_000, 0xffff_ffff), -55_618_421_887_095);
+    }
+
+    #[test]
+    fn absent_weather_key_needs_no_metadata_but_present_disabled_value_needs_its_gate() {
+        use replay_data::rows::*;
+        use replay_frame::{frame::Metrics, frame::TableView};
+        let mut frame = replay_frame::frame::DecodedFrame {
+            branch: 1,
+            hour: 1,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "unreached".into(),
+                }
+                .into()
+            }),
+        };
+        assert_eq!(effective(&frame, 1, None).unwrap(), 0);
+        assert!(effective(&frame, 1, Some(-50_000)).is_err());
+        let rows = TableRows::ModifierDefinitions(vec![ModifierDefinitionRow {
+            index: 1,
+            feature_selector: 4,
+            eligibility: 1,
+            ..Default::default()
+        }]);
+        let index = rows.table().index();
+        frame.tables[index] = TableView::Complete(rows).into();
+        assert!(effective(&frame, 1, Some(-50_000)).is_err());
+        let rows = TableRows::SimulationFeatures(vec![SimulationFeatureRow {
+            dlc_mask: 0,
+            ..Default::default()
+        }]);
+        let index = rows.table().index();
+        frame.tables[index] = TableView::Complete(rows).into();
+        assert_eq!(effective(&frame, 1, Some(-50_000)).unwrap(), 0);
+        let rows = TableRows::SimulationFeatures(vec![SimulationFeatureRow {
+            dlc_mask: 4,
+            ..Default::default()
+        }]);
+        let index = rows.table().index();
+        frame.tables[index] = TableView::Complete(rows).into();
+        assert_eq!(effective(&frame, 1, Some(-50_000)).unwrap(), -50_000);
+    }
+}

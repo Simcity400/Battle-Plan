@@ -45,6 +45,8 @@ static LOG_SWAP: Mutex<LogSwap> = Mutex::new(LogSwap {
 static LOG: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
 static LOG_CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static LOG_REQUIRED: AtomicUsize = AtomicUsize::new(0);
+static OBSERVER_WORDS: AtomicUsize = AtomicUsize::new(0);
+static BASE_WORDS: AtomicUsize = AtomicUsize::new(0);
 static LOG_SWAPS: AtomicU64 = AtomicU64::new(0);
 static RESIZING: AtomicBool = AtomicBool::new(false);
 
@@ -101,8 +103,28 @@ pub(crate) fn presize(words: usize) {
     unless_foreign(
         || (),
         || {
-            LOG_REQUIRED.fetch_max(words, Ordering::Relaxed);
+            BASE_WORDS.fetch_max(words, Ordering::Relaxed);
+            LOG_REQUIRED.fetch_max(
+                words.saturating_add(OBSERVER_WORDS.load(Ordering::Relaxed)),
+                Ordering::Relaxed,
+            );
             engine_allocation::advisory(prepare_storage);
+        },
+    );
+}
+
+/// Existing active-side census supplies its observed operand demand. Sizing
+/// consumes this hint off-thread; there is no additional native walk.
+pub(crate) fn observe_observer_rows(rows: usize) {
+    unless_foreign(
+        || (),
+        || {
+            let words = rows.saturating_mul(11);
+            OBSERVER_WORDS.fetch_max(words, Ordering::Relaxed);
+            LOG_REQUIRED.fetch_max(
+                BASE_WORDS.load(Ordering::Relaxed).saturating_add(words),
+                Ordering::Relaxed,
+            );
         },
     );
 }
@@ -154,6 +176,8 @@ fn release_owned() -> Result<(), &'static str> {
         LOG.store(ptr::null_mut(), Ordering::SeqCst);
         LOG_CAPACITY.store(0, Ordering::Release);
         LOG_REQUIRED.store(0, Ordering::Relaxed);
+        BASE_WORDS.store(0, Ordering::Relaxed);
+        OBSERVER_WORDS.store(0, Ordering::Relaxed);
         CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::SeqCst);
         std::mem::take(&mut *swap)
     };
@@ -904,7 +928,32 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         match native::LossesPlan::read(&memory, base, combat) {
-            Ok(plan) => append(plan.words, |put| plan.copy(&memory, base, put)),
+            Ok(plan) => {
+                append(plan.words, |put| plan.copy(&memory, base, put));
+                let (handle, sides) = plan.observer_sources();
+                for (side, pointer) in sides.into_iter().enumerate() {
+                    if let Err(reason) = engine_land_inputs::combat_log_events::observer(
+                        &memory,
+                        base,
+                        pointer,
+                        &mut |fact| {
+                            append(11, |put| {
+                                put(9);
+                                put(handle);
+                                put(side as u64);
+                                put(fact.kind);
+                                put(fact.item);
+                                for value in fact.values {
+                                    put(value);
+                                }
+                                Ok(())
+                            });
+                        },
+                    ) {
+                        refusal(reason);
+                    }
+                }
+            }
             Err(reason) => refusal(reason),
         }
         match native::HistoryPlan::read(&memory, base, combat) {
@@ -1330,6 +1379,11 @@ pub struct Hooks {
 impl Hooks {
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
         let hooks = unsafe { Self::install(memory, base) }.unwrap_or_else(|reason| {
+            crate::hook::installation::refused(
+                crate::hook::installation::Kind::Construction,
+                None,
+                &reason,
+            );
             let _ = UNHOOKED.set(reason);
             Vec::new()
         });
@@ -1385,7 +1439,7 @@ impl Hooks {
             ),
         ];
         for (_, rva, sentinel, _) in sites {
-            if engine_native::read::<[u8; 16]>(memory, base + rva) != Some(sentinel) {
+            if !crate::hook::installation::sentinel(memory, base + rva, sentinel) {
                 return Err(format!("land event sentinel differs at RVA {rva:x}"));
             }
         }
@@ -1424,6 +1478,11 @@ impl Hooks {
             Err(reason) if enabled && reason == crate::hook::BYTE_VERIFICATION_FAILURE => {
                 // Preflight certified every member disabled/flushed without writing.
                 self.refused = true;
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Publication,
+                    None,
+                    &reason,
+                );
                 let _ = UNHOOKED.set(format!("land hook family enable refused: {reason}"));
                 return Ok(true);
             }
@@ -1498,9 +1557,15 @@ pub fn status() -> impl serde::Serialize {
 fn verify_leader_taps(memory: &impl Memory, base: usize) -> Result<[[u8; 16]; 2], String> {
     let mut sentinels = [[0; 16]; 2];
     for (n, &rva) in native::DISPATCH_LEADER_CALLS.iter().enumerate() {
+        crate::hook::installation::site(base + rva);
         let sentinel = engine_native::read::<[u8; 16]>(memory, base + rva)
             .filter(|bytes| bytes[..6] == native::DISPATCH_LEADER_CALL_SENTINEL)
             .ok_or_else(|| {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Sentinel,
+                    Some(base + rva),
+                    "land event leader-call sentinel differs",
+                );
                 format!(
                     "land event call tap {} sentinel differs at RVA {rva:x}",
                     native::DISPATCH_LEADER_CALL_NAMES[n]

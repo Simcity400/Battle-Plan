@@ -171,7 +171,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .ok_or("unit leader tooltip token is not scalar")?,
         );
         let country = self.current_country(scopes)?;
-        let Some(token) = self.context.world()?.token_of(operand)? else {
+        let Some(token) = self
+            .context
+            .world()?
+            .token_of(operand)
+            .map_err(|why| why.to_string())?
+        else {
             return Ok(String::new());
         };
         let mut character = self.military_roster_character(
@@ -189,7 +194,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = character.filter(|character| !character.token.is_empty()) else {
             return Ok(String::new());
         };
-        let Some(leader) = Tables::read(self.context.text.frame()).unit_leader(character.id)?
+        let Some(leader) = Tables::read(self.context.text.frame())
+            .unit_leader(character.id)
+            .map_err(|why| why.to_string())?
         else {
             return Ok(String::new());
         };
@@ -247,7 +254,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             let Some(character) = self.effect_character(Scope::Character(id as u32))? else {
                 return Ok(String::new());
             };
-            Tables::read(self.context.text.frame()).unit_leader(character.id)?
+            Tables::read(self.context.text.frame())
+                .unit_leader(character.id)
+                .map_err(|why| why.to_string())?
         } else {
             self.effect_unit_leader(scopes)?
         };
@@ -300,7 +309,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(character) = self.effect_character_target(operand, scopes)? else {
             return Ok(String::new());
         };
-        let Some(leader) = Tables::read(self.context.text.frame()).unit_leader(character.id)?
+        let Some(leader) = Tables::read(self.context.text.frame())
+            .unit_leader(character.id)
+            .map_err(|why| why.to_string())?
         else {
             return Ok(String::new());
         };
@@ -309,7 +320,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             1 => self.char_native_text(b"cc_leader", &[], scopes, false)?,
             2 => self.char_native_text(b"navy_leader", &[], scopes, false)?,
             3 => {
-                let key = format!("operative_skill_{}", leader.skill()?);
+                let key = format!(
+                    "operative_skill_{}",
+                    leader.skill().map_err(|why| why.to_string())?
+                );
                 self.localised(
                     if self.context.localisation.get(&key).is_some() {
                         key.as_bytes()
@@ -371,7 +385,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         }
         // A null Army is empty; missing Divisions cannot prove null.
-        self.context.world()?.unit(reference)?;
+        self.context
+            .world()?
+            .unit(reference)
+            .map_err(|why| why.to_string())?;
         let amount = self.scoped_value(item.value.scalar().unwrap_or_default(), scopes)?;
         self.char_native_text(
             b"ADD_DIVISIONAL_COMMANDER_XP",
@@ -393,7 +410,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         if reference == 0 {
             return Ok(String::new());
         }
-        self.context.world()?.unit(reference)?;
+        self.context
+            .world()?
+            .unit(reference)
+            .map_err(|why| why.to_string())?;
         let name = self.unit_name(reference)?;
         self.char_native_text(
             b"EFFECT_ADD_HISTORY_ENTRY_UNIT_EFFECT",
@@ -416,7 +436,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         }
         let world = self.context.world()?;
-        let raid = world.raid(reference)?;
+        let raid = world.raid(reference).map_err(|why| why.to_string())?;
         let army_resolved = raid.unit != 0
             && match world
                 .frame()
@@ -461,7 +481,10 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             return Ok(String::new());
         }
         // Missing Divisions cannot prove that Army resolution is null.
-        self.context.world()?.unit(reference)?;
+        self.context
+            .world()?
+            .unit(reference)
+            .map_err(|why| why.to_string())?;
         let name = self.unit_name(reference)?;
         self.char_native_text(
             b"ADD_UNIT_MEDAL_DIV_EFFECT",

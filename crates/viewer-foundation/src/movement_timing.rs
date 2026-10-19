@@ -192,6 +192,11 @@ impl MovementContent {
                     speed: rail.speed,
                     maximum_level: rail.maximum_level,
                 }),
+                noncore_supply: defines
+                    .noncore_supply
+                    .each_ref()
+                    .map(|value| value.as_ref().ok().copied()),
+                combat_movement: defines.combat_movement.as_ref().ok().copied(),
             },
             rail: defines.rail,
             task_force_terrain: Err("fresh task force terrain content is unavailable".into()),
@@ -352,10 +357,8 @@ impl Geography for MovementContent {
         self.map.terrain(province).map(|terrain| terrain.index)
     }
 
-    fn land(&self, province: u32) -> Option<bool> {
-        self.map
-            .terrain(province)
-            .map(|terrain| terrain.flags & 1 != 0)
+    fn terrain_flags(&self, province: u32) -> Option<u8> {
+        self.map.terrain(province).map(|terrain| terrain.flags)
     }
 
     fn terrain_movement(&self, index: i32) -> Option<i64> {

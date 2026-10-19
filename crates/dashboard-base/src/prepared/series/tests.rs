@@ -8,6 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::{fs, path::PathBuf};
 
+/// Committed payload bytes by section name and range.
+pub type PublishedPayloads = BTreeMap<(String, u64), Vec<u8>>;
+
 pub struct Fixture {
     pub store: store::Store,
     pub key: store::SourceKey,
@@ -58,7 +61,7 @@ impl Fixture {
     /// Every committed payload by section and range: the store's listing of
     /// its manifest names them, and each is opened through one verified
     /// session of the real store reader.
-    pub fn payloads(&self) -> BTreeMap<(String, u64), Vec<u8>> {
+    pub fn payloads(&self) -> PublishedPayloads {
         let listing = store::Listing::open(&self.directory.join("manifest"))
             .unwrap()
             .unwrap();
@@ -98,8 +101,8 @@ impl Fixture {
 /// Names each differing section and range with its first differing offset,
 /// rather than dumping the payloads.
 pub fn assert_payloads_equal(
-    actual: &BTreeMap<(String, u64), Vec<u8>>,
-    expected: &BTreeMap<(String, u64), Vec<u8>>,
+    actual: &PublishedPayloads,
+    expected: &PublishedPayloads,
     label: &str,
 ) {
     let keys: BTreeSet<_> = actual.keys().chain(expected.keys()).collect();
@@ -1994,8 +1997,8 @@ fn saved_continuations_read_back_every_float_exactly() {
 
 /// Each accumulator's saved state and its published payload.
 #[cfg(test)]
-fn published(accumulator: &mut Accumulator) -> (Value, BTreeMap<(String, u64), Vec<u8>>) {
-    let state = serde_json::to_value(&*accumulator).unwrap();
+fn published(accumulator: &mut Accumulator) -> (Vec<u8>, PublishedPayloads) {
+    let state = serde_json::to_vec(&*accumulator).unwrap();
     let fixture = Fixture::new();
     let mut writer = fixture.writer();
     accumulator

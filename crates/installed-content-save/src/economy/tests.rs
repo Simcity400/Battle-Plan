@@ -379,18 +379,21 @@ fn temp_nodes_require_anonymous_blocks_and_mandatory_typed_fields() {
 fn purchase_parser_preserves_full_typed_id_and_rejects_duplicate_identity() {
     let contract = br#"purchase_contract={
         id={id=4294967295 type=81}
-        contract_definition={contract_draft={seller=GER buyer=D01 speed=-1}}
+        contract_definition={contract_draft={seller=GER buyer=D01 speed=-1 equipments={} subsidies={}}
+            prices={} price_levels={levels={}}}
         delivery_route_handler={
             convoy_client={length=4 type=2 equipments={} id={id=90649 type=4713}
                 convoys_subscriber={convoys=1 total=2} country="INS"
                 efficiency=1 efficiency_due_to_lost_convoys=0.96728 request=1}
             efficiency=-0.00001 sunk_convoys=2.88504 days=-2147483648}
         contract_delivery_state={factory_cic_progress=90071992547.40993 equipment_transfer_progress=0 collected=-1}
-        contract_meta={completed=3}
+        days=1 variables={}
+        contract_meta={completed=3 cic=0 convoys=0 efficiency_due_to_lost_convoys=1
+            history={factory_cic_progress=0 equipment_transfer_progress=0 collected=0}}
     }"#;
     let mut input = b"countries={} equipment_market={contracts={".to_vec();
     input.extend_from_slice(contract);
-    input.extend_from_slice(b"}}");
+    input.extend_from_slice(b"} requests={0}}");
     let parsed = parse(&parser::parse(&input).unwrap().items).unwrap();
     let purchases = parsed.purchases.unwrap();
     let id = (u64::from(u32::MAX) << 32) | 81;
@@ -408,9 +411,9 @@ fn purchase_parser_preserves_full_typed_id_and_rejects_duplicate_identity() {
     );
     assert_eq!(purchases[&id].route_days, i32::MIN);
     assert_eq!(purchases[&id].completed_deliveries, 3);
-    input.truncate(input.len() - 2);
+    input.truncate(input.len() - b"} requests={0}}".len());
     input.extend_from_slice(contract);
-    input.extend_from_slice(b"}}");
+    input.extend_from_slice(b"} requests={0}}");
     assert!(parse(&parser::parse(&input).unwrap().items).is_err());
 }
 

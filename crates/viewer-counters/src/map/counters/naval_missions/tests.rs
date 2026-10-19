@@ -613,6 +613,46 @@ fn kinds(count: usize) -> Vec<MissionEntry> {
 }
 
 #[test]
+fn mission_click_footprints_follow_the_composed_entry_buttons() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let res = Res::new();
+    let mut harness = Harness::new(SYNTHETIC_MISSION_GUI);
+    let entries = kinds(2);
+    harness.frame(&res, &[(7, Some(&entries), [100, 200])], 0.0);
+    let (origin, icon) = harness.laid(&res, &entries).remove(0);
+    assert_eq!(
+        icon.hits
+            .iter()
+            .filter(|(_, control, _)| *control
+                == super::super::naval_mission_inputs::hover::Control::Button)
+            .map(|(kind, _, _)| *kind)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    for (kind, control, rect) in &icon.hits {
+        if *control != super::super::naval_mission_inputs::hover::Control::Button {
+            continue;
+        }
+        let sprite = MISSION_SPRITES.iter().find(|(id, _)| id == kind).unwrap().1;
+        let button = icon
+            .items
+            .iter()
+            .flatten()
+            .find(|part| {
+                part.path.ends_with(".button")
+                    && matches!(&part.kind,
+                native_gui::PartKind::Sprite { sprite: found, .. } if name(found) == sprite)
+            })
+            .unwrap();
+        let native_gui::PartKind::Sprite { geometry, .. } = &button.kind else {
+            panic!()
+        };
+        let [x, y, w, h] = geometry.rect;
+        assert_eq!(*rect, [x + origin[0] as f32, y + origin[1] as f32, w, h]);
+    }
+}
+
+#[test]
 fn f3_fading_strike_and_invasion_keep_last_unknown_count_until_rewritten() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -2079,7 +2119,7 @@ fn political_mode_keeps_the_empty_grids_and_hides_the_counted_containers() {
         assert!(!drawn.iter().any(|path| path.contains(name)), "{name}");
     }
     // Every grid holds its (empty) items where the game would add them.
-    for (name, _, _) in GRIDS {
+    for name in ["unit_grid", "enemy_unit_grid", "enemy_convoy_grid"] {
         assert!(
             icon.layout
                 .holders
@@ -2090,35 +2130,81 @@ fn political_mode_keeps_the_empty_grids_and_hides_the_counted_containers() {
     }
 }
 
-/// The modes that fill a grid or count a container name the inputs no recording holds.
+/// Navy mode's children are no longer rejected by their names: the regional
+/// preparation supplies each grid and independently counted badge.
 #[test]
-fn naval_modes_name_the_inputs_they_need() {
+fn naval_mode_accepts_prepared_grids_and_independent_badge_counts() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let windows = windows_of(SYNTHETIC_MISSION_GUI);
-    let windows = MissionWindows::find(&windows).unwrap();
-    let refused = |windows: &MissionWindows<'_>, mode| {
-        let mut root = Instance::construct(windows.root, VIEWPORT, &Res::new()).unwrap();
-        content_calls(windows, mode, &mut root)
-            .err()
-            .map(|refusals| refusals[0].to_string())
-    };
-    let reason = refused(&windows, 5).expect("mode 5 fills the own unit grid");
-    assert!(reason.contains("unit_grid") && reason.contains("own task forces"));
-    let reason = refused(&windows, NAVAL_UI_MODE).expect("the naval map mode fills the grids");
-    assert!(reason.contains("unit_grid"), "{reason}");
-    let grids = SYNTHETIC_MISSION_GUI.find("gridBoxType").unwrap()
-        ..SYNTHETIC_MISSION_GUI
-            .find("# synthetic status controls")
-            .unwrap();
-    let mut without_grids = SYNTHETIC_MISSION_GUI.to_owned();
-    without_grids.replace_range(grids, "");
-    let windows = windows_of(&without_grids);
-    let windows = MissionWindows::find(&windows).unwrap();
-    let reason =
-        refused(&windows, NAVAL_UI_MODE).expect("the naval map mode counts the containers");
-    assert!(reason.contains("mine values"), "{reason}");
-    assert_eq!(refused(&windows, DRAWN_UI_MODE), None);
+    let res = Res::new();
+    let mut harness = Harness::new(SYNTHETIC_MISSION_GUI);
+    harness.windows.missions.mode = NAVAL_UI_MODE;
+    harness
+        .windows
+        .missions
+        .badge_counts
+        .insert(1, [Ok(2), Err("result countries unavailable".into())]);
+    let entries = kinds(1);
+    harness.frame(&res, &[(1, Some(&entries), [0, 0])], 0.0);
+    let laid = harness.laid(&res, &entries).remove(0).1;
+    let paths: Vec<_> = laid
+        .layout
+        .parts
+        .iter()
+        .map(|part| part.path.as_str())
+        .collect();
+    assert!(
+        paths
+            .iter()
+            .any(|path| path.contains("ongoing_combat_container")),
+        "{paths:?}"
+    );
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path.contains("combat_results_container"))
+    );
+    assert_eq!(
+        harness
+            .report
+            .naval_mission_gaps
+            .get("combat_results_container: result countries unavailable"),
+        Some(&1)
+    );
+    harness
+        .windows
+        .missions
+        .badge_counts
+        .insert(1, [Ok(0), Ok(0)]);
+    harness.frame(&res, &[(1, Some(&entries), [0, 0])], 0.0);
+    assert!(
+        !harness.laid(&res, &entries)[0]
+            .1
+            .layout
+            .parts
+            .iter()
+            .any(|part| part.path.contains("ongoing_combat_container"))
+    );
+    harness
+        .windows
+        .missions
+        .badge_counts
+        .insert(1, [Ok(3), Ok(0)]);
+    harness.frame(&res, &[(1, Some(&entries), [0, 0])], 0.0);
+    assert!(
+        harness.laid(&res, &entries)[0]
+            .1
+            .layout
+            .parts
+            .iter()
+            .any(|part| part.path.contains("ongoing_combat_container")
+                && part.path.ends_with("marker"))
+    );
+    for mode in [0, 2, 5] {
+        let windows = MissionWindows::find(&harness.native).unwrap();
+        let mut root = Instance::construct(windows.root, VIEWPORT, &res).unwrap();
+        assert!(content_calls(&windows, mode, &mut root).is_ok());
+    }
 }
 
 /// Absent mission windows are named; undrawn entries are counted under their reasons;

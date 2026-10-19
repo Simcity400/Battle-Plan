@@ -743,7 +743,7 @@ impl MoveWorld for Moves<'_, '_> {
         if b == 0 {
             return self.native_relations()?.zero_at_war(a);
         }
-        self.world.at_war(a, b)
+        self.world.at_war(a, b).map_err(|why| why.to_string())
     }
 
     fn military_access(&self, a: Country, b: Country) -> Fact<bool> {
@@ -803,11 +803,15 @@ impl MoveWorld for Moves<'_, '_> {
     }
 
     fn faction(&self, country: Country) -> Fact<Option<u64>> {
-        self.world.faction(country)
+        self.world.faction(country).map_err(|why| why.to_string())
     }
 
     fn overlord(&self, country: Country) -> Fact<Country> {
-        Ok(self.world.overlord(country)?.unwrap_or(0))
+        Ok(self
+            .world
+            .overlord(country)
+            .map_err(|why| why.to_string())?
+            .unwrap_or(0))
     }
 
     /// A missing `CountryWars` row means the byte is 0.

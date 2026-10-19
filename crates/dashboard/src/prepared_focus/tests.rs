@@ -1,8 +1,7 @@
-use super::art::art_at;
 use super::*;
 use crate::products::Product;
 use crate::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame, scale_tag};
-use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::FocusRow, rows::TableRows};
+use replay_data::rows::{FocusRow, TableRows};
 use std::sync::Arc;
 
 impl FocusAccumulator {
@@ -119,6 +118,14 @@ fn focus_frame(branch: u64, hour: i32) -> DecodedFrame {
     *frame.tables[TableId::CompletedFocuses.index()] =
         TableView::Complete(TableRows::CompletedFocuses(completed));
     frame
+}
+
+/// Every tag the fixture actually records, including both sides of its
+/// identity change. The fifth slot never holds `scale_tag(4)`.
+fn focus_tags() -> impl Iterator<Item = String> {
+    (0..4)
+        .map(|index| String::from_utf8(scale_tag(index)).unwrap())
+        .chain(["NEW".to_owned(), "OLD".to_owned()])
 }
 
 /// Branch 1's hours 100 through 190 without 136 and 137, in blocks of 12.
@@ -427,8 +434,7 @@ fn sampled_focus_has_the_prepared_order_and_values_without_invented_dates() {
     let prepared = prepared(scenario());
     let flag = AtomicBool::new(false);
     for hour in [100, 119, 130, 138, 149, 159, 176, 190] {
-        for index in 0..5 {
-            let tag = String::from_utf8(scale_tag(index)).unwrap();
+        for tag in focus_tags() {
             let exact = prepared.hour(&tag, hour);
             let sampled = sampled_hour(&prepared.source, 1, &tag, hour, &flag).unwrap();
             assert_eq!(sampled.is_some(), exact.is_some(), "{tag} at {hour}");
@@ -836,8 +842,10 @@ fn a_shared_tag_is_the_higher_country_id() {
 fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_tokens() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use super::art::art_at;
     use crate::catalogue::texture_tests::{png_bytes, texture_catalogue};
     use installed_content_image::Rgba8Image;
+    use replay_data::rows::{CountryLinkRow, CountryRow};
     let definitions = format!(
         "focus_tree={{{} focus={{id=a_static text=static_title icon=GFX_mod_true}} focus={{id=b_refused text=static_title icon=GFX_missing}}}}",
         (0..12)
@@ -902,21 +910,7 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
             let mut decoded = crate::test_fixtures::source(1, hour, Some(1));
             for table in TableId::ALL {
                 // Unused singleton inputs keep their named unavailable state.
-                if matches!(
-                    table,
-                    TableId::Clock
-                        | TableId::Campaign
-                        | TableId::EventFeedHistory
-                        | TableId::AirSortieModifierMetadata
-                        | TableId::CombatLogState
-                        | TableId::ReservedCountryNaming
-                        | TableId::LocalPlayer
-                        | TableId::SimulationFeatures
-                        | TableId::SunkShips
-                        | TableId::WorldTension
-                        | TableId::GameScoreMultipliers
-                        | TableId::MapEvents
-                ) {
+                if table.key_bits() == 0 {
                     continue;
                 }
                 if matches!(

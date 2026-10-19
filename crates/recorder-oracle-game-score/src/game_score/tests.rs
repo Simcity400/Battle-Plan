@@ -167,6 +167,10 @@ fn game_score_wings_compare_zero_missing_and_extra_without_inventing_cached_stat
     saved.air_wings.insert(
         11,
         installed_content_save::AirWing {
+            government_in_exile_tag: None,
+            manpower: None,
+
+            reinforcement_setting: Some(0),
             id: 11,
             owner: b"GER".to_vec(),
             country_override: b"GER".to_vec(),
@@ -176,7 +180,10 @@ fn game_score_wings_compare_zero_missing_and_extra_without_inventing_cached_stat
             name: Some(Vec::new()),
             mission_region: None,
             mission_active: None,
+            stop_training_at_max_xp: false,
             region_change_penalty: None,
+            transfer_progress: None,
+            transferring_to: None,
             pool_ordinal: 0,
         },
     );

@@ -137,6 +137,10 @@ struct Values {
 }
 
 /// One hour of a block's facts after its first, in hour order.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Block facts retain observed frames inline without a per-hour allocation."
+)]
 enum Hour {
     /// An hour the extract observed.
     Observed {
@@ -541,6 +545,8 @@ struct Follow {
     seen: Vec<Option<Option<i64>>>,
     /// Each extract country's carried gap-recovery flag.
     at_least: Vec<bool>,
+    /// The extract's first supplying read, whose agreement is already carried.
+    first_read: u64,
     /// The carried read sequence and generation less the extract's.
     read: u64,
     generation: u64,
@@ -619,6 +625,7 @@ impl Follow {
             offsets,
             seen,
             at_least,
+            first_read: first.read,
             read: scan.read.wrapping_sub(first.read),
             generation: scan.generation.wrapping_sub(first.generation),
         })
@@ -772,10 +779,20 @@ impl Follow {
                     .as_ref()
                     .and_then(|relative| relative.get(index).copied())
                     .unwrap_or(Some(0));
+                let total = self.unknown(index, country.unknown.total, moved);
+                let seen = held.unknown.seen || country.unknown.seen;
+                // The first read has already run against the carried pairs. If
+                // no later read touches this country, its agreement stays that
+                // read's, rather than the extract's initially unseen pairs'.
+                let agreement = if country.touched == self.first_read {
+                    std::mem::take(&mut held.unknown)
+                } else {
+                    country.unknown
+                };
                 held.unknown = Unknown {
-                    total: self.unknown(index, country.unknown.total, moved),
-                    seen: held.unknown.seen || country.unknown.seen,
-                    ..country.unknown
+                    total,
+                    seen,
+                    ..agreement
                 };
                 held.touched = country.touched.wrapping_add(self.read);
             }
@@ -1095,6 +1112,61 @@ mod bytes_tests {
         let mut bytes = HeldBytes::default();
         bytes.heap(&scan);
         bytes.total()
+    }
+
+    #[test]
+    fn carrying_a_quiet_country_keeps_its_first_carried_agreement() {
+        use super::super::super::test_fixtures::{casualty_frame, research_replay};
+        let replay = research_replay(vec![casualty_frame(100, None, 0)]);
+        for touched in [1, 2] {
+            let moved = if touched == 1 { 0 } else { 3 };
+            let mut state = Prepared::new(&replay, 1);
+            state.builder.scan.read = 6;
+            state.builder.scan.countries.push(Country {
+                unknown: Unknown {
+                    total: Some(7),
+                    seen: true,
+                    present: true,
+                    delta: Some(0),
+                    valid: true,
+                    ..Default::default()
+                },
+                touched: 5,
+                ..Default::default()
+            });
+            let mut block = Prepared::new(&replay, 1);
+            block.builder.scan.read = 2;
+            block.builder.scan.relative = Some(vec![Some(moved)]);
+            block.builder.scan.countries.push(Country {
+                unknown: Unknown {
+                    total: None,
+                    seen: true,
+                    present: true,
+                    delta: (touched == 2).then_some(3),
+                    valid: true,
+                    new_max: if touched == 1 { 11 } else { 0 },
+                    ..Default::default()
+                },
+                touched,
+                ..Default::default()
+            });
+            let follow = Follow {
+                hour: 100,
+                countries: vec![0],
+                offsets: vec![(0, 0)],
+                seen: vec![Some(Some(7))],
+                at_least: vec![false],
+                first_read: 1,
+                read: 4,
+                generation: 0,
+            };
+            follow.carry(&mut state, block).unwrap();
+            let unknown = &state.builder.scan.countries[0].unknown;
+            assert_eq!(unknown.total, Some(7 + moved));
+            assert!(unknown.seen && unknown.present && unknown.valid);
+            assert_eq!(unknown.new_max, 0);
+            assert_eq!(unknown.delta, Some(if touched == 1 { 0 } else { 3 }));
+        }
     }
 
     const COSMETIC: usize = 1024;

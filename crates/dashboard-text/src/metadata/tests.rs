@@ -810,7 +810,7 @@ fn supplying_read_batches_match_each_tables_own_read_rule() {
     use replay_frame::frame::Metrics;
     let versions = [
         FormatVersion::CURRENT,
-        FormatVersion::read(FormatVersion::CURRENT.version() - 1).unwrap(),
+        FormatVersion::read(replay_data::rows::compatibility::CADENCE_FORMAT - 1).unwrap(),
     ];
     for format in versions {
         for hour in [-1, 0, 4, 17, 23, replay_data::cadence::STAGGER_PERIOD] {
@@ -874,11 +874,12 @@ fn a_slot_hour_reads_its_tables_even_when_another_table_is_charged() {
 #[test]
 fn a_recording_dates_tables_by_the_cadence_of_its_format() {
     use replay_data::format::FormatVersion;
-    let previous = FormatVersion::read(FormatVersion::CURRENT.version() - 1).unwrap();
+    let previous =
+        FormatVersion::read(replay_data::rows::compatibility::CADENCE_FORMAT - 1).unwrap();
     let day = 1000 * replay_data::cadence::STAGGER_PERIOD;
     let untimed = replay_frame::frame::Metrics::default();
-    // WorldTension and Projects were read daily in the previous format and are
-    // read every hour now.
+    // WorldTension and Projects were read daily before the cadence change.
+    // Later unrelated format additions do not move that boundary.
     for (table, slot) in [(TableId::WorldTension, 18), (TableId::Projects, 4)] {
         for hour in day..day + replay_data::cadence::STAGGER_PERIOD {
             assert_eq!(
@@ -1530,6 +1531,24 @@ fn link_tags_projected_matches_native_bytes_unchanged_inputs_aliases_and_recover
             .update_projected(Some(&countries), Some(&links))
             .unwrap()
     );
+}
+
+#[test]
+fn filtered_metadata_country_joins_record_their_source_once() {
+    let country = replay_data::rows::CountryRow {
+        id: 999,
+        canonical_slot: 1,
+        tag: b"SYN".to_vec(),
+        ..Default::default()
+    };
+    let (_, refusals) = crate::triggers::refusal::capture(|| {
+        assert!(super::link_slot(&[], 999).is_none());
+        assert!(super::mapped_slot(&country, &[]).is_err());
+        super::tagged_countries_indexed(&[country], &std::collections::HashMap::new());
+        assert!(super::LinkTags::default().get(999).is_none());
+    });
+    assert_eq!(refusals.len(), 1);
+    assert!(refusals.first().unwrap().contains("CountryLinks"));
 }
 
 /// The independent scalar rule: a timed slot mate dates the slot except for

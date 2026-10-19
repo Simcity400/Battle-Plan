@@ -42,3 +42,5 @@ Country, campaign/follow/pin/range, playback style, Show after the playhead, gov
 | [preparedParty.ts](preparedParty.ts), [PartyEventList.tsx](PartyEventList.tsx) | Viewport/reached queries, source ownership and complete event paging. |
 | [partyParity.ts](partyParity.ts) | "Party history values" and "Stability party markers" browser models. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [rulingParty.css](rulingParty.css) | Options, registration and layout. |
+
+`country-people` adds reached election interval/next date and governments in exile, including host, legitimacy, manpower pool/cap and leader resources. Exile cards retain their supplying dates and share the widget country and hour.

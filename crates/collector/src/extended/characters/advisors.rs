@@ -13,6 +13,8 @@ use crate::sampled_verify::Check;
 use engine_allocation::{default_vec, owned_vec, reserve, reserve_exact, resize, vec};
 use std::cell::Cell;
 #[cfg(feature = "advisor_profile")]
+const DIAGNOSTIC_SLOTS: usize = 5;
+#[cfg(feature = "advisor_profile")]
 pub(crate) mod profile;
 
 pub(crate) trait Changes {
@@ -69,7 +71,7 @@ struct Section {
     /// sentinels; roster passes trace the roster, views and sentinels.
     census: bool,
     #[cfg(feature = "advisor_profile")]
-    diagnostic: [u64; 5],
+    diagnostic: [u64; DIAGNOSTIC_SLOTS],
     current: Owned,
     previous: Owned,
     valid: bool,
@@ -104,7 +106,7 @@ impl Section {
             geometry: (0, 0),
             census: false,
             #[cfg(feature = "advisor_profile")]
-            diagnostic: [0; 5],
+            diagnostic: [0; DIAGNOSTIC_SLOTS],
             current: Owned::new(rows, bytes, characters),
             previous: Owned::new(rows, bytes, characters),
             valid: false,
@@ -1899,7 +1901,7 @@ struct Counted<'a, M> {
     memory: &'a M,
     bytes: Cell<u64>,
     #[cfg(feature = "advisor_profile")]
-    plan: Cell<[u64; 5]>,
+    plan: Cell<[u64; DIAGNOSTIC_SLOTS]>,
 }
 impl<'a, M> Counted<'a, M> {
     fn new(memory: &'a M) -> Self {
@@ -1907,7 +1909,7 @@ impl<'a, M> Counted<'a, M> {
             memory,
             bytes: Cell::new(0),
             #[cfg(feature = "advisor_profile")]
-            plan: Cell::new([0; 5]),
+            plan: Cell::new([0; DIAGNOSTIC_SLOTS]),
         }
     }
 }

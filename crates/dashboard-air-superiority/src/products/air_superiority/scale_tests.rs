@@ -289,6 +289,9 @@ fn fixture(scenario: Scenario) -> Fixture {
                         friendly: values[side],
                         enemy: values[side ^ 1],
                         impact: Default::default(),
+                        friendly_missions: 0,
+                        enemy_missions: 0,
+                        air_spotting_scale: Some(0),
                     });
                 }
             }
@@ -298,6 +301,9 @@ fn fixture(scenario: Scenario) -> Fixture {
                 friendly: 0,
                 enemy: 0,
                 impact: Default::default(),
+                friendly_missions: 0,
+                enemy_missions: 0,
+                air_spotting_scale: Some(0),
             });
         }
         for index in 0..neutral_count {
@@ -307,6 +313,9 @@ fn fixture(scenario: Scenario) -> Fixture {
                 friendly: 0,
                 enemy: 0,
                 impact: Default::default(),
+                friendly_missions: 0,
+                enemy_missions: 0,
+                air_spotting_scale: Some(0),
             });
         }
         rows.sort_by_key(|row| (row.country, row.region));

@@ -206,19 +206,36 @@ fn observer_timing_table_is_filled_only_in_measured_mode() {
 
     let mut fixture = Fixture::new(&recording());
     let source = fixture.source("observer-timing");
-    let (_, timing) = run_measured(
-        &source,
-        None,
-        &AtomicBool::new(false),
-        true,
-        Duration::ZERO,
-        |_| {},
-    )
+    // Exercise both research timing paths. Shared-read counters may be zero;
+    // their accounting is checked by the shared-reader tests.
+    let sequential: prepass::Hook = Arc::new(|family, frame| {
+        if family == "research" && frame.branch == 2 {
+            prepass::Fault::Error
+        } else {
+            prepass::Fault::Continue
+        }
+    });
+    let (_, timing) = independent::shared::with_test_unshared(|| {
+        prepass::with_test_prepass(2, Some(sequential), || {
+            run_measured(
+                &source,
+                None,
+                &AtomicBool::new(false),
+                true,
+                Duration::ZERO,
+                |_| {},
+            )
+        })
+    })
     .unwrap();
     let families = timing.families.expect("measured call sites fill the table");
-    assert_eq!(families["naval.observe"].calls, 2);
-    assert_eq!(families["naval.observe_details"].calls, 2);
+    // Naval preparation is timed once on its own worker, outside the walk.
+    assert_eq!(families["independent.naval"].calls, 1);
+    assert!(!families.contains_key("naval.observe"));
+    assert!(!families.contains_key("naval.observe_details"));
     assert_eq!(families["store_commit"].calls, 1);
+    assert_eq!(families["research.fold"].calls, 1);
+    assert_eq!(families["research.read"].calls, 1);
     assert!(families.values().all(|family| family.calls > 0));
     for name in [
         // The politics ledger is prepared on its own beside the walk.
@@ -581,6 +598,7 @@ fn assert_forces(source: &Source, context: &crate::products::LoadContext) {
                     .count()
                 {
                     let params = ArmySizeParams {
+                        template_at: None,
                         branch_id: "1".into(),
                         tags: if top.is_some() {
                             Vec::new()
@@ -1343,6 +1361,7 @@ fn prepared_army_top_first_page_reads_prepared_ranks_at_5000_countries() {
     let flag = AtomicBool::new(false);
     run(&source, None, &flag, |_| {}).unwrap();
     let params = ArmySizeParams {
+        template_at: None,
         branch_id: "1".into(),
         tags: Vec::new(),
         top: Some(10),
@@ -2195,7 +2214,9 @@ fn one_branch_batches_many_replay_blocks_into_shared_measure_files() {
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("1");
     let flag = AtomicBool::new(false);
-    let mut commits = 0;
+    let mut commits = Vec::new();
+    // Inspect the walk's publication boundaries directly: status callbacks
+    // also report independently committed newest windows.
     // The hourly walk reports its position as it reads; how many blocks one
     // read covers depends on how fast the walk runs, so only its end is fixed.
     let mut walked = std::collections::BTreeSet::new();
@@ -2213,24 +2234,32 @@ fn one_branch_batches_many_replay_blocks_into_shared_measure_files() {
                     walked.insert(map.done.parse::<usize>().unwrap());
                 }
             },
-            |_| {
-                commits += 1;
+            |cursor| {
+                commits.push(cursor);
                 Ok(())
             },
         )
     })
     .unwrap();
+    assert_eq!(
+        commits.first(),
+        Some(&1),
+        "the first block publishes a view"
+    );
+    assert_eq!(commits.last(), Some(&replay.index.len()));
+    assert!(commits.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(commits.iter().all(|&cursor| cursor <= replay.index.len()));
     assert_eq!(walked.last(), Some(&replay.index.len()), "{walked:?}");
     assert_eq!(result.new_blocks, replay.index.len());
     assert!(
-        commits < replay.index.len(),
+        commits.len() < replay.index.len(),
         "publication still follows each replay block"
     );
     let (store, key) = super::super::files(&source, None).unwrap();
     for section in ["measure-pp-1", "measure-cp-1"] {
         assert_eq!(
             store.range_count(&key, section).unwrap(),
-            Some(commits as u64)
+            Some(commits.len() as u64)
         );
     }
     // A catalogue is its base plus a short chain of patches.
@@ -2396,22 +2425,6 @@ fn prepared_combat_queries_wait_for_coverage_and_resume_only_the_appended_tail()
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("combat-prefix");
     let flag = AtomicBool::new(false);
-    assert!(
-        run_checked(
-            &source,
-            None,
-            &flag,
-            |_| {},
-            |next| {
-                if next == 2 {
-                    flag.store(true, Ordering::Release);
-                }
-                Ok(())
-            }
-        )
-        .is_err()
-    );
-    flag.store(false, Ordering::Release);
     let query = |source: &Source, branch: &str, product: &str| {
         let request = crate::transport::ProductRequest {
             source_id: source.key().source_id.clone(),
@@ -2430,8 +2443,54 @@ fn prepared_combat_queries_wait_for_coverage_and_resume_only_the_appended_tail()
         "naval-battles-manifest",
         "division-log-manifest",
     ] {
-        assert_eq!(query(&source, "2", product), serde_json::Value::Null);
+        let mut expected = serde_json::json!({
+            "windows": [{"firstHour": 20, "lastHour": 21}],
+            "available": false,
+            "contentWarnings": [],
+            "coverage": {"schema": SCHEMA, "firstHour": 20, "lastHour": 19, "complete": false},
+            "pending": [{"firstHour": 20, "lastHour": 21}],
+        });
+        if product == "division-log-manifest" {
+            expected["lossesAvailable"] = serde_json::json!(false);
+            expected["templates"] = serde_json::json!([]);
+        } else {
+            expected["unavailable"] = serde_json::Value::Null;
+            expected["approximate"] = serde_json::json!([]);
+            expected["warningsComplete"] = serde_json::json!(false);
+        }
+        assert_eq!(query(&source, "2", product), expected, "{product}");
     }
+    // Independent families can publish ahead of the walk. Cold replies are
+    // checked before work; cancellation constrains the walk's accepted prefix.
+    let interrupted = run_checked(
+        &source,
+        None,
+        &flag,
+        |_| {},
+        |next| {
+            if next == 2 {
+                flag.store(true, Ordering::Release);
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(interrupted.kind(), io::ErrorKind::Interrupted);
+    flag.store(false, Ordering::Release);
+    let (store, key) = super::super::files(&source, None).unwrap();
+    assert_eq!(
+        checkpoint(&store, &key, None)
+            .unwrap()
+            .unwrap()
+            .0
+            .cursor
+            .next_block,
+        1
+    );
+    let covered = coverage(&source, None, 1, &flag).unwrap().unwrap();
+    assert_eq!((covered.first_hour, covered.last_hour), (10, 11));
+    assert!(covered.complete);
+    assert!(coverage(&source, None, 2, &flag).unwrap().is_none());
     assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 1);
     let context = LoadContext { content: None };
     let compare = |source: &Source, branch: &str| {
@@ -2465,21 +2524,27 @@ fn prepared_combat_queries_wait_for_coverage_and_resume_only_the_appended_tail()
             )
             .unwrap()
         );
-        assert_eq!(
-            query(source, branch, "division-log-manifest"),
-            serde_json::to_value(
-                DivisionLogManifest::load(
-                    source,
-                    &BranchParams {
-                        branch_id: branch.into()
-                    },
-                    &context,
-                    &flag
-                )
-                .unwrap()
+        let mut expected = serde_json::to_value(
+            DivisionLogManifest::load(
+                source,
+                &BranchParams {
+                    branch_id: branch.into(),
+                },
+                &context,
+                &flag,
             )
-            .unwrap()
-        );
+            .unwrap(),
+        )
+        .unwrap();
+        let windows = source.block_windows(branch.parse().unwrap());
+        expected["coverage"] = serde_json::json!({
+            "schema": SCHEMA,
+            "firstHour": windows.first().unwrap().first_hour,
+            "lastHour": windows.last().unwrap().last_hour,
+            "complete": true,
+        });
+        expected["pending"] = serde_json::json!([]);
+        assert_eq!(query(source, branch, "division-log-manifest"), expected);
     };
     compare(&source, "1");
     compare(&source, "2");
@@ -2799,6 +2864,8 @@ fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_
         )
         .unwrap();
         let mut data = actual["data"].clone();
+        assert_eq!(data["coverage"]["complete"], true);
+        assert_eq!(data["pending"], serde_json::json!([]));
         for field in [
             "bands",
             "summaries",
@@ -2806,6 +2873,7 @@ fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_
             "navigation",
             "identities",
             "coverage",
+            "pending",
         ] {
             data.as_object_mut().unwrap().remove(field);
         }
@@ -3039,21 +3107,18 @@ fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_c
 fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countries() {
     use crate::products::{
         LoadContext, Product,
-        wars::{Wars, WarsParams, test_fixtures::scaled_recorded},
+        wars::{
+            Wars, WarsAtHour, WarsParams,
+            test_fixtures::{at_hour, scaled_recorded},
+        },
     };
     let flag = AtomicBool::new(false);
-    let old = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(
-            1,
-            vec![scaled_recorded(100, 3), scaled_recorded(101, 3)],
-        )],
-    )
-    .unwrap();
+    let mut frames = vec![scaled_recorded(100, 3), scaled_recorded(101, 3)];
+    let old = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
     let mut fixture = Fixture::new(&old);
     let source = fixture.source("wars-1");
     run(&source, None, &flag, |_| {}).unwrap();
-    let compare = |source: &Source| {
+    let compare = |source: &Source, frames: &[DecodedFrame]| {
         for viewpoint_tag in [None, Some("mod-1"), Some("mod-2")] {
             let params = WarsParams {
                 branch_id: "1".into(),
@@ -3071,21 +3136,31 @@ fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countr
             .unwrap();
             let expected =
                 Wars::load(source, &params, &LoadContext { content: None }, &flag).unwrap();
-            assert_eq!(
-                actual["data"],
-                serde_json::to_value(expected).unwrap(),
-                "view {viewpoint_tag:?}"
-            );
+            let mut expected = serde_json::to_value(expected).unwrap();
+            let current: Vec<_> = (100..=106)
+                .map(
+                    |hour| match frames.iter().find(|frame| frame.hour == hour) {
+                        Some(frame) => at_hour(frame, viewpoint_tag).unwrap(),
+                        None => WarsAtHour {
+                            hour,
+                            contributions: Vec::new(),
+                            available: false,
+                            wars: Vec::new(),
+                            warnings: Vec::new(),
+                        },
+                    },
+                )
+                .collect();
+            expected["current"] = serde_json::to_value(current).unwrap();
+            assert_eq!(actual["data"], expected, "view {viewpoint_tag:?}");
         }
     };
-    compare(&source);
+    compare(&source, &frames);
+    let appended = vec![scaled_recorded(102, 3), scaled_recorded(103, 3)];
     let middle = old
-        .append(&[continuation_records(
-            &old,
-            1,
-            vec![scaled_recorded(102, 3), scaled_recorded(103, 3)],
-        )])
+        .append(&[continuation_records(&old, 1, appended.clone())])
         .unwrap();
+    frames.extend(appended);
     fixture.replace(&middle);
     let source = fixture.source("wars-2");
     assert!(
@@ -3103,18 +3178,16 @@ fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countr
     );
     flag.store(false, Ordering::Release);
     assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 1);
-    compare(&source);
+    compare(&source, &frames);
+    let appended = vec![scaled_recorded(105, 5000), scaled_recorded(106, 5000)];
     let grown = middle
-        .append(&[continuation_records(
-            &middle,
-            1,
-            vec![scaled_recorded(105, 5000), scaled_recorded(106, 5000)],
-        )])
+        .append(&[continuation_records(&middle, 1, appended.clone())])
         .unwrap();
+    frames.extend(appended);
     fixture.replace(&grown);
     let source = fixture.source("wars-3");
     assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 1);
-    compare(&source);
+    compare(&source, &frames);
     let (store, key) = super::super::files(&source, None).unwrap();
     // A catalogue is its base plus a short chain of patches.
     assert!(
@@ -3475,6 +3548,9 @@ fn air_superiority_unprepared_regional_spans_remain_pending_without_a_frame_samp
                     friendly: i64::from(hour),
                     enemy: 1,
                     impact: Default::default(),
+                    friendly_missions: 0,
+                    enemy_missions: 0,
+                    air_spotting_scale: Some(0),
                 },
             ]));
         frame

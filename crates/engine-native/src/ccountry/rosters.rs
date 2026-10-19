@@ -140,9 +140,13 @@ pub struct RosterDemand {
     pub leaders: usize,
 }
 
-pub(super) type Spans = ([RosterSpan; 3], [RosterSpan; 2]);
+pub(super) type Spans = ([RosterSpan; 3], [RosterSpan; 2], Option<RosterSpan>);
+
+/// Raw sent-expeditionary references, in native order.
+pub const SENT_EXPEDITIONARIES: usize = 0x2f8;
 
 pub struct CounterRosters<'a> {
+    pub capture_sent_expeditionaries: bool,
     pub states: Buffer<'a, u32>,
     pub leaders: Buffer<'a, u64>,
     pub state_len: usize,
@@ -269,8 +273,14 @@ impl CounterRosters<'_> {
             array(memory, country.pointer, CORE_STATES)?,
         ];
         let leaders = leader_arrays(memory, base, country)?;
+        let sent = self
+            .capture_sent_expeditionaries
+            .then(|| array(memory, country.pointer, SENT_EXPEDITIONARIES).ok())
+            .flatten();
         let mut state_count = 0;
-        let mut leader_count = 0;
+        let sent_count = sent.map_or(0, |source| source.count);
+        let mut leader_count = sent_count as usize;
+        add(&mut self.required.leaders, sent_count)?;
         for source in states {
             add(&mut state_count, source.count)?;
             add(&mut self.required.states, source.count)?;
@@ -339,7 +349,30 @@ impl CounterRosters<'_> {
                 },
             )?;
         }
-        Ok((state_spans, leader_spans))
+        let sent_span = sent.and_then(|sent| {
+            let start = self.leader_len;
+            let copied = cpdx_array::pointer_pages(
+                memory,
+                sent,
+                "sent expeditionary references unreadable",
+                |_, page| {
+                    for &reference in page {
+                        self.leaders[self.leader_len] = reference as u64;
+                        self.leader_len += 1;
+                    }
+                    Ok(())
+                },
+            );
+            if copied.is_err() {
+                self.leader_len = start;
+                return None;
+            }
+            Some(RosterSpan {
+                start,
+                count: sent.count as usize,
+            })
+        });
+        Ok((state_spans, leader_spans, sent_span))
     }
 }
 
@@ -351,6 +384,7 @@ impl CounterRosters<'_> {
 pub struct CarriedRosters<'a> {
     pub states: [&'a [u32]; 3],
     pub leaders: [&'a [u64]; 2],
+    pub sent_expeditionaries: Option<&'a [u64]>,
     pub neighbors: &'a [u32],
     /// `None`: the country had no production status ([`POLICY_STATUS_NULL`]).
     pub policies: Option<&'a [u32]>,
@@ -361,6 +395,7 @@ pub struct CarriedRosters<'a> {
 pub struct CarriedSpans {
     pub states: [RosterSpan; 3],
     pub leaders: [RosterSpan; 2],
+    pub sent_expeditionaries: Option<RosterSpan>,
     pub neighbors: RosterSpan,
     pub policies: Option<RosterSpan>,
 }
@@ -401,7 +436,8 @@ impl CarriedRosters<'_> {
             .leaders
             .iter()
             .map(|entries| entries.len())
-            .sum::<usize>();
+            .sum::<usize>()
+            .checked_add(self.sent_expeditionaries.map_or(0, <[u64]>::len))?;
         let policies = self.policies.map_or(0, <[u32]>::len);
         room(&mut rosters.states, rosters.state_len, states)?;
         room(&mut rosters.leaders, rosters.leader_len, leaders)?;
@@ -431,6 +467,9 @@ impl CarriedRosters<'_> {
         for (span, entries) in spans.leaders.iter_mut().zip(self.leaders) {
             *span = place(&mut rosters.leaders, &mut rosters.leader_len, entries);
         }
+        spans.sent_expeditionaries = self
+            .sent_expeditionaries
+            .map(|entries| place(&mut rosters.leaders, &mut rosters.leader_len, entries));
         spans.neighbors = place(
             &mut effects.neighbors,
             &mut effects.neighbor_len,

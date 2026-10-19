@@ -678,6 +678,16 @@ impl HistoryScan {
         self.witnesses.tag(hour, country)
     }
 
+    /// Canonical slot of a captured scope reference at the exact occurrence hour.
+    /// A missing fresh identity read remains unavailable, including aliases.
+    pub fn native_scope_slot(
+        &self,
+        hour: i32,
+        country: replay_data::event_feed_rows::EventFeedCountry,
+    ) -> Option<u32> {
+        self.witnesses.scope_slot(hour, country)
+    }
+
     pub fn observe(&mut self, frame: &DecodedFrame) {
         self.observe_with_counts(frame, false, None, |_, _, _| {});
     }

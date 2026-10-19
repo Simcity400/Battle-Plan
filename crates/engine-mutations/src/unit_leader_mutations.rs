@@ -11,9 +11,10 @@
 //! - Skill definition (`cunit_leader::SKILL`) changes through level
 //!   selection. Status, valid byte, level, required experience and category
 //!   belong to the shared skill definition, written only at construction and
-//!   database load. Experience addition changes unrecorded experience
-//!   (`cunit_leader::EXPERIENCE`) and reaches level-up only past its
-//!   threshold.
+//!   database load. Residual experience changes through ordinary and unchecked
+//!   additions and the daily progress update. Trait progress changes through
+//!   addition, daily update, removal, eligibility pruning and completion.
+//!   These writers share the leader certificate; loads start a new epoch.
 //! - Category (`cunit_leader::CATEGORY`) has its own setter.
 //! - Army attack, defense, planning and logistics components
 //!   (`carmy_leader::ATTACK`, `DEFENSE`, `PLANNING`, `LOGISTICS`) have four
@@ -53,7 +54,16 @@ const SET_NAME_RVA: usize = 0xc1_6fb0;
 /// The writers, in callback order. Each takes its leader in RCX, except the
 /// two exile sites, which name none. A detour forwards RCX..R9 and returns
 /// RAX unchanged.
-pub const MUTATIONS: [MutationSite; 23] = [
+const EXPERIENCE_ADD_UNCHECKED_RVA: usize = 0xbffcb0;
+const DAILY_PROGRESS_RVA: usize = 0xc10480;
+const TRAIT_PROGRESS_ADD_RVA: usize = 0xc05680;
+const TRAIT_PROGRESS_REMOVE_RVA: usize = 0xc05960;
+const TRAIT_PROGRESS_PRUNE_RVA: usize = 0xc131a0;
+const TRAIT_FACTOR_SET_RVA: usize = 0xbff6f0;
+const TRAIT_FACTOR_REMOVE_RVA: usize = 0xc13ba0;
+const TRAIT_PROGRESS_COMPLETE_RVA: usize = 0xc0ee20;
+
+pub const MUTATIONS: [MutationSite; 32] = [
     // The five-byte R8B spill to its home slot relocates.
     site(
         "formation",
@@ -190,6 +200,78 @@ pub const MUTATIONS: [MutationSite; 23] = [
         [
             0x48, 0x83, 0xec, 0x28, 0x48, 0x83, 0xb9, 0x40, 0x10, 0x00, 0x00, 0x00, 0x0f, 0x85,
             0xed, 0x00,
+        ],
+    ),
+    site(
+        "experience_add",
+        engine_native::cunit_leader::ADD_EXPERIENCE_RVA,
+        [
+            0x48, 0x89, 0x5c, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x01, 0x91, 0x68,
+            0x0e, 0x00,
+        ],
+    ),
+    site(
+        "experience_add_unchecked",
+        EXPERIENCE_ADD_UNCHECKED_RVA,
+        [
+            0x48, 0x01, 0x91, 0x68, 0x0e, 0x00, 0x00, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
+            0xcc, 0xcc,
+        ],
+    ),
+    site(
+        "daily_progress",
+        DAILY_PROGRESS_RVA,
+        [
+            0x40, 0x53, 0x55, 0x57, 0x41, 0x54, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x38,
+            0x48, 0x8b,
+        ],
+    ),
+    site(
+        "trait_progress_add",
+        TRAIT_PROGRESS_ADD_RVA,
+        [
+            0x48, 0x89, 0x5c, 0x24, 0x18, 0x44, 0x89, 0x4c, 0x24, 0x20, 0x48, 0x89, 0x54, 0x24,
+            0x10, 0x55,
+        ],
+    ),
+    site(
+        "trait_progress_remove",
+        TRAIT_PROGRESS_REMOVE_RVA,
+        [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+            0x18, 0x57,
+        ],
+    ),
+    site(
+        "trait_progress_prune",
+        TRAIT_PROGRESS_PRUNE_RVA,
+        [
+            0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48,
+            0x8d, 0xac,
+        ],
+    ),
+    site(
+        "trait_progress_complete",
+        TRAIT_PROGRESS_COMPLETE_RVA,
+        [
+            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x48, 0x83, 0xec,
+            0x20, 0x8b,
+        ],
+    ),
+    site(
+        "trait_factor_set",
+        TRAIT_FACTOR_SET_RVA,
+        [
+            0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+            0x41, 0x57,
+        ],
+    ),
+    site(
+        "trait_factor_remove",
+        TRAIT_FACTOR_REMOVE_RVA,
+        [
+            0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec,
+            0x90, 0x01,
         ],
     ),
 ];

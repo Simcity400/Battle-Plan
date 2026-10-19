@@ -40,20 +40,21 @@ use replay_frame::{frame::TableInput, frame::TableView};
 use std::mem::size_of;
 use std::sync::{Arc, Weak};
 
-pub const N: usize = 5;
+pub const N: usize = 6;
 pub const TABLES: [TableId; N] = [
     TableId::Characters,
     TableId::CountryLeaderRoles,
     TableId::AdvisorRoles,
     TableId::UnitLeaders,
     TableId::UnitLeaderTraits,
+    TableId::UnitLeaderTraitExperience,
 ];
 
 /// The first table in each group carries its full QPC cost.
 /// Companion slots are zero: their shared traversal has one
 /// measured cost, not an invented allocation of time between its outputs.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("character roster and unit leaders", 0, &[0, 3]),
+    ("character roster and unit leaders", 0, &[0, 3, 5]),
     ("country leader roles", 1, &[1]),
     ("advisor roles", 2, &[2]),
     ("unit leader traits", 4, &[4]),
@@ -142,6 +143,9 @@ struct LeaderRow {
     codename_reason: Option<&'static str>,
     formation_reference: Option<u64>,
     formation_reason: Option<&'static str>,
+    training: (usize, usize),
+    training_factors: (usize, usize),
+    training_reason: Option<&'static str>,
 }
 
 pub struct Captured {
@@ -151,6 +155,7 @@ pub struct Captured {
     advisors: Buffer<cadvisor::Row>,
     units: Buffer<LeaderRow>,
     traits: Buffer<cunit_leader::TraitRow>,
+    training_outcome: Outcome,
     /// Tables acquired by independent raw jobs, including terminal failures.
     /// The typed walk handles only the remaining tables; the decode worker
     /// merges successful parts before publication. Preserved across reset
@@ -188,10 +193,10 @@ struct Held {
 /// Disjoint table owners. Part zero supplies the current portrait census;
 /// role and trait acquisition can run concurrently on the same stopped world.
 pub(crate) const PART_MASKS: [[bool; N]; 4] = [
-    [true, false, false, true, false],
-    [false, true, false, false, false],
-    [false, false, true, false, false],
-    [false, false, false, false, true],
+    [true, false, false, true, false, true],
+    [false, true, false, false, false, false],
+    [false, false, true, false, false, false],
+    [false, false, false, false, true, false],
 ];
 pub(crate) const PARTS: usize = PART_MASKS.len();
 
@@ -337,6 +342,9 @@ impl Captured {
             advisors: Buffer::new(capacities, 2),
             units: Buffer::new(capacities, 3),
             traits: Buffer::new(capacities, 4),
+            training_outcome: Outcome::Unavailable {
+                reason: "unit leader training not captured",
+            },
             raw_active: [false; N],
             active: [false; N],
             fallback_jobs: std::array::from_fn(|_| None),
@@ -494,6 +502,7 @@ impl Captured {
             self.advisors.rows.outcome,
             self.units.rows.outcome,
             self.traits.rows.outcome,
+            self.training_outcome,
         ]
     }
 
@@ -505,6 +514,7 @@ impl Captured {
             self.leaders_table(),
             self.advisors_table(),
             self.traits_table(),
+            self.training_table(),
         )
     }
 
@@ -547,7 +557,15 @@ impl Captured {
             |row, bytes| valid(bytes, row.token_start, row.token_len),
             || self.traits_table(),
         );
-        self.convert_tables(TableInput::Sampled, characters, leaders, advisors, traits)
+        let training = self.training_input(&mut reuse.shadow.training);
+        self.convert_tables(
+            TableInput::Sampled,
+            characters,
+            leaders,
+            advisors,
+            traits,
+            training,
+        )
     }
 
     fn characters_table(&self) -> TableView {
@@ -651,6 +669,101 @@ impl Captured {
         )
     }
 
+    fn training_input(&self, cache: &mut Option<((u64, u64), Weak<TableRows>)>) -> TableInput {
+        let key = self
+            .held
+            .units
+            .filter(|(_, result)| matches!(result.outcome, Outcome::Rows { .. }))
+            .map(|(key, _)| key);
+        if let Some(key) = key
+            && let Some((previous, output)) = cache
+            && *previous == key
+            && let Some(output) = output.upgrade()
+        {
+            return TableInput::SharedComplete(output);
+        }
+        match self.training_table() {
+            TableView::Complete(rows) => {
+                let output = Arc::new(rows);
+                *cache = key.map(|key| (key, Arc::downgrade(&output)));
+                TableInput::SharedComplete(output)
+            }
+            view => {
+                *cache = None;
+                TableInput::Sampled(view)
+            }
+        }
+    }
+
+    fn training_outcome(&self) -> Outcome {
+        let outcome = self.units.rows.outcome;
+        let Some(rows) = self.units.rows.rows.get(..outcome.len()) else {
+            return Outcome::Unavailable {
+                reason: "unit leader training source rows invalid",
+            };
+        };
+        if let Outcome::Unavailable { .. } = outcome {
+            return outcome;
+        }
+        if let Some(reason) = rows.iter().find_map(|row| row.training_reason) {
+            return Outcome::Unavailable { reason };
+        }
+        let len = rows
+            .iter()
+            .map(|row| (row.training.1 + row.training_factors.1) / 16)
+            .sum();
+        match outcome {
+            Outcome::Truncated { unread_rows, .. } => Outcome::Truncated { len, unread_rows },
+            _ => Outcome::Rows { len },
+        }
+    }
+
+    fn training_table(&self) -> TableView {
+        let rows = &self.units.rows.rows[..self.units.rows.outcome.len()];
+        if let Outcome::Unavailable { reason } = self.units.rows.outcome {
+            return unavailable(reason);
+        }
+        if let Some(reason) = rows.iter().find_map(|row| row.training_reason) {
+            return unavailable(reason);
+        }
+        let bytes = &self.units.bytes.first[..self.units.bytes.len];
+        if rows.iter().any(|row| {
+            [row.training, row.training_factors]
+                .iter()
+                .any(|&(start, len)| !valid(bytes, start, len) || len % 16 != 0)
+        }) {
+            return unavailable("unit leader training span invalid");
+        }
+        let count = rows
+            .iter()
+            .map(|row| (row.training.1 + row.training_factors.1) / 16)
+            .sum();
+        let mut output = owned_vec(engine_allocation::vec(count));
+        for row in rows {
+            for (list, (start, len)) in [(0, row.training), (1, row.training_factors)] {
+                for (ordinal, entry) in bytes[start..start + len].chunks_exact(16).enumerate() {
+                    output.push(replay_data::rows::UnitLeaderTraitExperienceRow {
+                        leader_reference: leader_reference(row.native.id),
+                        list,
+                        ordinal: ordinal as u32,
+                        token_id: i32::from_le_bytes(entry[..4].try_into().unwrap()),
+                        definition_ordinal: i32::from_le_bytes(entry[4..8].try_into().unwrap()),
+                        experience: i64::from_le_bytes(entry[8..].try_into().unwrap()),
+                    });
+                }
+            }
+        }
+        // Scalar truncation means the missing leaders' progress is unknown too.
+        let outcome = match self.units.rows.outcome {
+            Outcome::Truncated { unread_rows, .. } => Outcome::Truncated {
+                len: output.len(),
+                unread_rows,
+            },
+            _ => Outcome::Rows { len: output.len() },
+        };
+        table::<tables::UnitLeaderTraitExperience, _>(outcome, &output, Clone::clone)
+    }
+
     fn convert_tables<T>(
         &self,
         wrap: impl Fn(TableView) -> T,
@@ -658,6 +771,7 @@ impl Captured {
         leaders: T,
         advisors: T,
         traits: T,
+        training: T,
     ) -> [T; N] {
         [
             characters,
@@ -676,6 +790,7 @@ impl Captured {
                 leader_row,
             )),
             traits,
+            training,
         ]
     }
 }
@@ -1104,6 +1219,7 @@ impl Family<'_> {
             self.advisors.result(),
             self.units.result(),
             self.traits.result(),
+            self.units.result(),
         ]
     }
 
@@ -1214,6 +1330,8 @@ impl Family<'_> {
             |row, offset| {
                 relocate(&mut row.text_a_start, offset)
                     && relocate(&mut row.text_b_start, offset)
+                    && relocate(&mut row.training.0, offset)
+                    && relocate(&mut row.training_factors.0, offset)
                     && row.codename.as_mut().is_none_or(|name| {
                         relocate(&mut name.custom.0, offset) && relocate(&mut name.group.0, offset)
                     })
@@ -1491,6 +1609,67 @@ fn read_unit(
     } else {
         (None, None)
     };
+    let training_start = names.len;
+    let mut training_reason = None;
+    if matches!(
+        native.kind,
+        cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY
+    ) {
+        let result = cunit_leader::visit_trait_progress(
+            memory,
+            base,
+            pointer,
+            |token, definition, experience| {
+                names.required = names.required.saturating_add(16);
+                if let Some(end) = names
+                    .len
+                    .checked_add(16)
+                    .filter(|&end| end <= names.bytes.len())
+                {
+                    names.bytes[names.len..names.len + 4].copy_from_slice(&token.to_le_bytes());
+                    names.bytes[names.len + 4..names.len + 8]
+                        .copy_from_slice(&definition.to_le_bytes());
+                    names.bytes[names.len + 8..end].copy_from_slice(&experience.to_le_bytes());
+                    names.len = end;
+                } else {
+                    training_reason.get_or_insert("unit leader training byte capacity exhausted");
+                }
+            },
+        );
+        if let Err(reason) = result {
+            training_reason = Some(reason);
+        }
+    }
+    let training = (training_start, names.len - training_start);
+    let factors_start = names.len;
+    if matches!(
+        native.kind,
+        cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY
+    ) && let Err(reason) =
+        cunit_leader::visit_trait_factors(memory, base, pointer, |token, definition, factor| {
+            names.required = names.required.saturating_add(16);
+            if let Some(end) = names
+                .len
+                .checked_add(16)
+                .filter(|&end| end <= names.bytes.len())
+            {
+                names.bytes[names.len..names.len + 4].copy_from_slice(&token.to_le_bytes());
+                names.bytes[names.len + 4..names.len + 8]
+                    .copy_from_slice(&definition.to_le_bytes());
+                names.bytes[names.len + 8..end].copy_from_slice(&factor.to_le_bytes());
+                names.len = end;
+            } else {
+                training_reason
+                    .get_or_insert("unit leader training factor byte capacity exhausted");
+            }
+        })
+    {
+        training_reason.get_or_insert(reason);
+    }
+    let training_factors = (factors_start, names.len - factors_start);
+    if training_reason.is_some() {
+        names.len = training_start;
+    }
     let fits = matches!(text.outcome, Outcome::Rows { len: 1 });
     let formation =
         cunit_leader::read_formation_reference(memory, pointer, native.kind, native.category);
@@ -1506,6 +1685,9 @@ fn read_unit(
             codename_reason,
             formation_reference: formation.unwrap_or(None),
             formation_reason: formation.err(),
+            training,
+            training_factors,
+            training_reason,
         };
     }
     ReadResult {
@@ -1719,7 +1901,7 @@ fn leader_row(row: &LeaderRow, bytes: &[u8]) -> UnitLeaderRow {
         character_type: native.character_type,
         character_id: native.character_id,
         category: native.category,
-        experience: replay_data::rows::RetiredI64::default(),
+        experience: native.experience,
         kind: native.kind,
         skill_status: native.skill_status,
         skill_valid: native.skill_valid,
@@ -1790,9 +1972,10 @@ pub(super) fn ability_row(row: &active_ability_record::Row, bytes: &[u8]) -> Act
 const MASK_CHARACTERS: u32 = 0x01;
 const MASK_LEADERS: u32 = 0x02;
 const MASK_ADVISORS: u32 = 0x04;
-const MASK_UNITS: u32 = 0x08;
+const MASK_UNITS: u32 = 0x08 | MASK_TRAINING;
 const MASK_TRAITS: u32 = 0x10;
-const MASK_ALL: u32 = 0x1f;
+const MASK_TRAINING: u32 = 0x20;
+const MASK_ALL: u32 = 0x3f;
 const MASK_COUNTRY: u32 = MASK_CHARACTERS | MASK_LEADERS | MASK_ADVISORS;
 const MASK_UNIT_LINK: u32 = MASK_UNITS | MASK_TRAITS;
 /// Identity-fallback spans feed only the trait vector: the units outcome is
@@ -2012,7 +2195,17 @@ pub(crate) fn copy_characters(
 }
 
 impl Captured {
+    #[cfg(test)]
     fn install_family(&mut self, active: [bool; N], results: [ReadResult; N]) {
+        self.install_carried_family(active, results, false);
+    }
+
+    fn install_carried_family(
+        &mut self,
+        active: [bool; N],
+        results: [ReadResult; N],
+        training_unchanged: bool,
+    ) {
         if active[0] {
             self.held.characters = None;
         }
@@ -2037,6 +2230,9 @@ impl Captured {
         }
         if active[3] {
             self.units.primary(results[3]);
+            if !training_unchanged {
+                self.training_outcome = self.training_outcome();
+            }
         }
         if active[4] {
             self.traits.primary(results[4]);
@@ -2050,6 +2246,10 @@ impl Captured {
     }
 
     pub(crate) fn fail_character_tables(&mut self, active: [bool; N], reason: &'static str) {
+        if active[3] || active[5] {
+            self.training_outcome = Outcome::Unavailable { reason };
+            self.raw_active[5] = false;
+        }
         macro_rules! fail {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 if active[$index] {
@@ -2092,6 +2292,13 @@ impl Captured {
     #[cfg(test)]
     pub(crate) fn fail_characters_capture(&mut self, active: [bool; N], reason: &'static str) {
         self.active = active;
+        self.training_outcome = Outcome::Unavailable {
+            reason: if active[5] {
+                reason
+            } else {
+                replay_data::cadence::SKIPPED_REASON
+            },
+        };
         macro_rules! fail {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 self.$field.rows.outcome = Outcome::Unavailable {
@@ -2147,10 +2354,14 @@ impl Captured {
                 });
         }
         if job.active[3] {
+            // A full refresh reads current rows without rebuilding the quiet
+            // carry. Its old layout cannot identify the newly read training.
             self.held.units = job
                 .unit_carry
                 .table_key(quiet::census_generation(job))
-                .filter(|_| matches!(self.units.rows.outcome, Outcome::Rows { .. }))
+                .filter(|_| {
+                    job.roster.quiet && matches!(self.units.rows.outcome, Outcome::Rows { .. })
+                })
                 .map(|key| {
                     (
                         key,
@@ -2396,7 +2607,7 @@ impl Captured {
             .filter(|_| {
                 job.roster.quiet
                     && job.unit_carry.certified()
-                    && decoded == [false, false, false, true, false]
+                    && decoded == [false, false, false, true, false, true]
             })
             .filter(|&(key, _)| {
                 job.unit_carry.table_key(quiet::census_generation(job)) == Some(key)
@@ -2411,7 +2622,7 @@ impl Captured {
             .filter(|_| {
                 job.census_capture
                     && job.trait_carry.certified()
-                    && decoded == [false, false, false, false, true]
+                    && decoded == [false, false, false, false, true, false]
             })
             .filter(|&(key, _)| job.trait_carry.table_key(job.census_generation) == Some(key))
             .filter(|_| fresh_traits_unchanged(job))
@@ -2466,7 +2677,7 @@ impl Captured {
                 job.carry.active.then_some(&job.carry),
             )
         };
-        self.install_family(decoded, results);
+        self.install_carried_family(decoded, results, held_units.is_some());
         if republish {
             // A frame that published these rows last still holds them.
             let result = if self.held.characters == quiet_rows {

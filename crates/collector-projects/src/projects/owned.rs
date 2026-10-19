@@ -41,6 +41,7 @@ pub struct ProjectsJob {
     /// Program status per canonical census entry, in census order.
     pub(super) statuses: Vec<usize>,
     pub(super) pointers: Vec<usize>,
+    pub(super) assignment_references: Vec<u64>,
     pub(super) worker_growth: bool,
     pub(super) capacity_charge: crate::raw_memory::Charge,
 }
@@ -64,6 +65,7 @@ pub(super) struct CensusEntry {
 #[derive(Clone, Copy)]
 pub(super) struct ProjectCensus<'a> {
     pub(super) links: &'a Array,
+    pub(super) game_state: usize,
     pub(super) countries: &'a Array,
     pub(super) vtable: u64,
     /// Slots below this were read; a failed census stops at it.
@@ -81,6 +83,7 @@ impl ProjectsJob {
             census: Vec::new(),
             statuses: Vec::new(),
             pointers: Vec::new(),
+            assignment_references: Vec::new(),
             worker_growth: true,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
@@ -96,6 +99,7 @@ impl ProjectsJob {
         self.census.clear();
         self.statuses.clear();
         self.pointers.clear();
+        self.assignment_references.clear();
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -115,6 +119,7 @@ impl ProjectsJob {
             let _ =
                 crate::allocation::reserve_raw(&mut self.statuses, countries, "project statuses");
             let _ = engine_allocation::reserve(&mut self.pointers, 1);
+            let _ = engine_allocation::reserve(&mut self.assignment_references, 1);
         });
         self.update_capacity_charge();
     }
@@ -134,7 +139,8 @@ impl ProjectsJob {
         self.capacity_charge.set(Capacity {
             auxiliary_vectors: vector_bytes(&self.census)
                 + vector_bytes(&self.statuses)
-                + vector_bytes(&self.pointers),
+                + vector_bytes(&self.pointers)
+                + vector_bytes(&self.assignment_references),
             ..Default::default()
         });
     }
@@ -470,6 +476,7 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Pro
     }
     let mut complete = read_to == countries.count;
     let shared = ProjectCensus {
+        game_state,
         links: &links,
         countries: &countries,
         vtable,
@@ -502,6 +509,7 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Pro
         &job.statuses,
         complete,
         &mut job.pointers,
+        &mut job.assignment_references,
     );
     if job.log.overflowed {
         return;
@@ -842,6 +850,7 @@ pub(super) fn copy_program_row(
     base: usize,
     census: ProjectCensus<'_>,
     pointer: usize,
+    references: &mut Vec<u64>,
 ) -> bool {
     let expected = match base.checked_add(nproject_cprogram::VTABLE_RVA) {
         Some(expected) => expected as u64,
@@ -953,7 +962,93 @@ pub(super) fn copy_program_row(
     if building_len != 0 && span(log, memory, Some(source), building_len, M_PROGRAMS).is_none() {
         return false;
     }
-    copy_resolve(log, memory, census, owner, M_PROGRAMS).is_some()
+    let Some(owner_pointer) = copy_resolve(log, memory, census, owner, M_PROGRAMS) else {
+        return false;
+    };
+    // Share the exact child reader with typed acquisition. The logger stages
+    // owned bytes only; decode never follows the native assignment collection.
+    struct AssignmentCopy<'a, M> {
+        memory: &'a M,
+        log: std::cell::RefCell<&'a mut RawLog<2>>,
+    }
+    impl<M: Memory> Memory for AssignmentCopy<'_, M> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            let mut log = self.log.borrow_mut();
+            let Some(start) = log.take(self.memory, address, destination.len(), M_PROGRAMS) else {
+                return false;
+            };
+            destination.copy_from_slice(&log.bytes[start..start + destination.len()]);
+            true
+        }
+    }
+    let primary = pool_u64(log, spans[2]);
+    let copy = AssignmentCopy {
+        memory,
+        log: std::cell::RefCell::new(log),
+    };
+    references.clear();
+    let assignments = nproject_cprogram::assignments(&copy, pointer, primary, |assignment| {
+        if references.len() == references.capacity() {
+            if copy.log.borrow().worker_growth_enabled() {
+                engine_allocation::reserve(references, 1)
+                    .map_err(|_| "program reference scratch allocation failed")?;
+            } else {
+                return Err("program reference scratch insufficient");
+            }
+        }
+        references.push(assignment.scientist);
+        Ok(())
+    });
+    if assignments.is_ok() {
+        let log = copy.log.borrow();
+        let active_project = if log.bytes[spans[3]] == 0 {
+            None
+        } else {
+            let address = at(nproject_cprogram::ACTIVE_PROJECT_HANDLE).unwrap();
+            log.spans
+                .iter()
+                .rev()
+                .find(|span| span.addr == address && span.len == 4 && span.ok)
+                .map(|span| pool_u32(&log, span.start as usize))
+        };
+        let row = nproject_cprogram::Row {
+            id,
+            owner,
+            province: pool_u32(&log, spans[0] + 4),
+            scientist: primary,
+            active_project,
+            ..Default::default()
+        };
+        drop(log);
+        let _ = engine_projects::program_details::observe(
+            &copy,
+            base,
+            census.game_state,
+            pointer,
+            &row,
+            || {
+                // The complete shared census already authenticated this owner's
+                // status. Reuse its staged pointer without another native read.
+                let log = copy.log.borrow();
+                let address = owner_pointer
+                    .checked_add(ccountry::PROGRAM_STATUS)
+                    .ok_or("facility status address overflow")?;
+                let span = log
+                    .spans
+                    .iter()
+                    .rev()
+                    .find(|span| span.addr == address && span.len == 8 && span.ok)
+                    .ok_or("facility status missing from shared census")?;
+                let status = usize::try_from(pool_u64(&log, span.start as usize))
+                    .map_err(|_| "facility status pointer invalid")?;
+                Ok((owner_pointer, status))
+            },
+            references.len(),
+            |index| references[index],
+            |_| Ok(()),
+        );
+    }
+    true
 }
 
 /// Mirror of `nproject_cprogram::walk`'s read set across the shared census.
@@ -961,6 +1056,10 @@ pub(super) fn copy_program_row(
 /// row reads — so a row failure must not skip later countries' census
 /// spans: the replay censuses everything before decoding the first row. An
 /// incomplete census or status list ends the walk before its rows.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The two-phase native read order shares separate pointer and reference scratch without changing their ownership."
+)]
 fn copy_programs(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -969,6 +1068,7 @@ fn copy_programs(
     statuses: &[usize],
     complete: bool,
     pointers: &mut Vec<usize>,
+    references: &mut Vec<u64>,
 ) {
     // Phase 1: pointer census. Only census-span failures abort the walk;
     // row failures below never reach back into this phase.
@@ -1028,7 +1128,7 @@ fn copy_programs(
     // Phase 2: row reads in census order (a superset of the walk's sorted
     // deduplicated order; duplicates record identical spans harmlessly).
     for &pointer in pointers.iter() {
-        if !copy_program_row(log, memory, base, shared, pointer) {
+        if !copy_program_row(log, memory, base, shared, pointer, references) {
             return;
         }
         if log.overflowed {

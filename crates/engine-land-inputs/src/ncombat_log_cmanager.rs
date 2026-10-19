@@ -365,6 +365,7 @@ pub fn walk_prepared<T>(
         select,
         Buffer::Fixed(rows),
         memo,
+        &mut |_, _, _, _| Ok(()),
     )
 }
 
@@ -388,6 +389,34 @@ pub fn walk_prepared_growing<T>(
         select,
         Buffer::Growing(rows),
         memo,
+        &mut |_, _, _, _| Ok(()),
+    )
+}
+
+/// Shares already authenticated group objects with an initial-history consumer.
+/// The callback adds no registry walk and must gate supplemental reads itself.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_prepared_growing_observed<T>(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    state: &mut T,
+    prepare: impl FnMut(&mut T, usize) -> Result<(), &'static str>,
+    select: impl FnMut(&mut T, u32) -> Result<Option<Months>, &'static str>,
+    rows: &mut Vec<Row>,
+    memo: &mut VariantMemo,
+    visit_group: &mut impl FnMut(u32, usize, u32, &[u8]) -> Result<(), &'static str>,
+) -> Outcome {
+    walk_prepared_buffer(
+        memory,
+        base,
+        game_state,
+        state,
+        prepare,
+        select,
+        Buffer::Growing(rows),
+        memo,
+        visit_group,
     )
 }
 
@@ -401,6 +430,7 @@ fn walk_prepared_buffer<T>(
     mut select: impl FnMut(&mut T, u32) -> Result<Option<Months>, &'static str>,
     rows: Buffer<'_, Row>,
     memo: &mut VariantMemo,
+    visit_group: &mut impl FnMut(u32, usize, u32, &[u8]) -> Result<(), &'static str>,
 ) -> Outcome {
     memo.clear();
     memo.worker_growth |= rows.is_growing();
@@ -415,7 +445,15 @@ fn walk_prepared_buffer<T>(
             return Ok(());
         };
         let (start, unread) = (output.len, output.unread_rows);
-        read_groups(memory, vtables, country, groups, months, &mut output)?;
+        read_groups_observed(
+            memory,
+            vtables,
+            country,
+            groups,
+            months,
+            &mut output,
+            visit_group,
+        )?;
         // A country is stored whole or not at all: rows of a country that
         // did not fit are withdrawn and counted unread, so a merge by
         // country never takes a partial read for a complete one.
@@ -516,17 +554,25 @@ fn for_each_manager<M: Memory, T>(
     Ok(())
 }
 
-fn read_groups(
+#[allow(clippy::too_many_arguments)]
+fn read_groups_observed(
     memory: &impl Memory,
     vtables: &Vtables,
     country: u32,
     groups: Array,
     months: Months,
     output: &mut Output<'_>,
+    visit: &mut impl FnMut(u32, usize, u32, &[u8]) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
-    for_each_group(memory, vtables, groups, |bytes, reference| {
-        read_group(memory, vtables, country, bytes, reference, months, output)
-    })
+    for_each_group(
+        memory,
+        vtables,
+        groups,
+        |pointer, ordinal, bytes, reference| {
+            visit(country, pointer, ordinal, bytes)?;
+            read_group(memory, vtables, country, bytes, reference, months, output)
+        },
+    )
 }
 
 /// Reads one authenticated group log's arrays (`bytes` is its whole copy).
@@ -575,7 +621,7 @@ fn for_each_group(
     memory: &impl Memory,
     vtables: &Vtables,
     groups: Array,
-    mut visit: impl FnMut(&[u8], u64) -> Result<(), &'static str>,
+    mut visit: impl FnMut(usize, u32, &[u8], u64) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let mut pointer_bytes = [0_u8; BATCH * 8];
     let mut pointers = [0_usize; BATCH];
@@ -612,7 +658,7 @@ fn for_each_group(
             if reference as u32 != corders_group::REFERENCE_TYPE {
                 return Err("combat log group reference is not an orders group");
             }
-            visit(bytes, reference)?;
+            visit(pointers[index], first + index as u32, bytes, reference)?;
         }
         first += count as u32;
     }
@@ -817,7 +863,7 @@ pub fn countries_with_deleted_groups(
         |_, _| Ok(()),
         |_, memory, vtables, country, groups| {
             let mut deleted = false;
-            for_each_group(memory, vtables, groups, |_, reference| {
+            for_each_group(memory, vtables, groups, |_, _, _, reference| {
                 if !deleted && resolver.resolve(memory, base, reference)?.is_none() {
                     deleted = true;
                 }
@@ -870,7 +916,7 @@ pub fn deleted_logs(
         memo: &mut memo,
     };
     let mut resolver = crate::creference_registry::HeaderResolver::default();
-    for_each_group(memory, &vtables, groups, |bytes, reference| {
+    for_each_group(memory, &vtables, groups, |_, _, bytes, reference| {
         if resolver.resolve(memory, base, reference)?.is_some() {
             return Ok(());
         }

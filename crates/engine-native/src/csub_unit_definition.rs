@@ -1,6 +1,6 @@
-//! Subunit-definition cache selected as the army stat block. The i64
-//! operands are established, but cache writer/thread coverage is incomplete.
-//! Other inherited widths must be established before adding readers.
+//! Subunit-definition operands selected as the army stat block. Readers retain
+//! exact native words; the caller owns the active-stat writer certificate and
+//! the parked acquisition boundary.
 
 /// Primary vtable.
 pub const VTABLE_RVA: usize = 0x0277_3ba8;
@@ -8,6 +8,8 @@ pub const VTABLE_RVA: usize = 0x0277_3ba8;
 pub const DEFENSE: usize = 0xa8;
 /// CSubUnitDefinition cached breakthrough, i64/100000.
 pub const BREAKTHROUGH: usize = 0xb0;
+/// Effective definition combat width, before contextual country/commander factors.
+pub const COMBAT_WIDTH: usize = 0x58;
 /// CSubUnitDefinition cached hardness, i64/100000.
 pub const HARDNESS: usize = 0xb8;
 /// CSubUnitDefinition cached soft attack, i64/100000.
@@ -305,6 +307,15 @@ pub fn requirement(
 pub const AIR_FLAGS: usize = 0x5a8;
 /// Category dword and flags consumed by category selection, separate from sprite frame.
 pub const CATEGORY: usize = 0x5b0;
+/// The sub-unit's own modifier key, u32 (zero is none): the land movement speed
+/// adds the owner country's accumulator entry for it when the sub-unit is a
+/// division's movement priority sub-unit.
+pub const SPEED_MODIFIER_KEY: usize = 0x5d8;
+/// Vector of the sub-unit's category pointers, 8-byte elements in content order.
+pub const CATEGORIES: usize = 0x508;
+/// A sub-unit category's modifier key, u32 (zero is none): the land movement
+/// speed adds the owner country's accumulator entry for it, once per listing.
+pub const CATEGORY_MODIFIER_KEY: usize = 0x60;
 
 pub(crate) fn template_category(
     memory: &impl crate::Memory,
@@ -792,11 +803,41 @@ pub const MOVEMENT_ADJUSTERS: [usize; 3] = [0x358, 0x380, 0x3d0];
 /// scaled by a define.
 pub const MOVEMENT_FUEL_RATE: usize = 0x120;
 
+/// Native stat selectors and their deployed active-cache scalar words.
+/// This is the panel's cache, independent of template designer reconstruction.
+pub const PANEL_CACHE_FIELDS: [(u8, usize); 23] = [
+    (0x3d, MAXIMUM_STRENGTH),
+    (0x3c, MAXIMUM_ORGANISATION),
+    (0, 0xa0),
+    (6, 0xd0),
+    (0xb, 0xf8),
+    (0x41, 0x2a8),
+    (0x42, 0x2b0),
+    (9, 0xe8),
+    (0xe, 0x110),
+    (4, SOFT_ATTACK),
+    (5, HARD_ATTACK),
+    (0x30, MOVEMENT_AIR_DEFENSE),
+    (1, DEFENSE),
+    (2, BREAKTHROUGH),
+    (0x3f, 0x298),
+    (0x40, 0x2a0),
+    (8, 0xe0),
+    (7, 0xd8),
+    (0xf, 0x118),
+    (0x43, TRANSPORT_WEIGHT),
+    (0x45, 0x2c8),
+    (3, HARDNESS),
+    (0x3e, MAXIMUM_SPEED),
+];
+
 /// A stat block's attack operands: the attack of each terrain adjuster entry in
 /// array order (entry `i` serves terrain database index `i + 1`) and the
 /// scalars, each an exact fixed5 word.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AttackStats {
+    /// Deployed panel scalar cache, in PANEL_CACHE_FIELDS order.
+    pub panel: [Option<i64>; 23],
     pub terrain: Vec<i64>,
     pub river: [i64; 2],
     pub fort: [i64; 2],
@@ -822,6 +863,18 @@ pub fn capture_attack_stats(
     terrain: &mut Vec<i64>,
     movement_terrain: &mut Vec<i64>,
 ) -> Result<AttackStats, &'static str> {
+    capture_attack_stats_holding(memory, base, stats, terrain, movement_terrain, None)
+}
+
+/// The same read reusing the status pass's raw maxima of this exact stat block.
+pub fn capture_attack_stats_holding(
+    memory: &impl crate::Memory,
+    base: usize,
+    stats: usize,
+    terrain: &mut Vec<i64>,
+    movement_terrain: &mut Vec<i64>,
+    maxima: Option<DivisionMaxima>,
+) -> Result<AttackStats, &'static str> {
     movement_identity(memory, base, stats)?;
     let mut span = [0_u8; ATTACK_SPAN];
     let at = stats
@@ -846,6 +899,41 @@ pub fn capture_attack_stats(
     ];
     if memory.copy_scattered(words, &mut [&mut fuel_rate, &mut air_defense]) != 2 {
         return Err("stat block movement operands unreadable");
+    }
+    // Reuse the anti-air word already acquired above; acquire only missing
+    // scalar words of this new/dirty cache in one guarded scattered copy.
+    let mut panel_bytes = [[0_u8; 8]; 22];
+    let mut panel_addresses = [0_usize; 22];
+    let mut next = 0;
+    for (index, (_, offset)) in PANEL_CACHE_FIELDS.iter().enumerate() {
+        if index != 11 {
+            panel_addresses[next] = stats
+                .checked_add(*offset)
+                .ok_or("stat block address overflow")?;
+            next += 1;
+        }
+    }
+    let maxima = maxima.filter(|maxima| maxima.pointer == stats);
+    let mut destinations = panel_bytes.each_mut().map(|bytes| &mut bytes[..]);
+    if maxima.is_some() {
+        destinations[0] = &mut [];
+        destinations[1] = &mut [];
+    }
+    let complete = memory.copy_scattered(panel_addresses, &mut destinations);
+    let mut panel = [None; 23];
+    panel[11] = Some(i64::from_le_bytes(air_defense));
+    let mut next = 0;
+    for (index, value) in panel.iter_mut().enumerate() {
+        if index != 11 {
+            if next < complete {
+                *value = Some(i64::from_le_bytes(panel_bytes[next]));
+            }
+            next += 1;
+        }
+    }
+    if let Some(maxima) = maxima {
+        panel[0] = Some(maxima.strength);
+        panel[1] = Some(maxima.organisation);
     }
     let header = MOVEMENT_TERRAIN_ADJUSTERS - ATTACK_NIGHT;
     let array = crate::cpdx_array::Array::from_header(
@@ -895,6 +983,7 @@ pub fn capture_attack_stats(
         .all(|&adjuster| word(adjuster) as u64 == expected)
         .then(|| MOVEMENT_ADJUSTERS.map(|adjuster| word(adjuster + UNIT_ADJUSTER_MOVEMENT)));
     Ok(AttackStats {
+        panel,
         terrain: std::mem::take(terrain),
         river: [word(ATTACK_RIVER), word(ATTACK_RIVER + 8)],
         fort: [word(ATTACK_FORT), word(ATTACK_FORT + 8)],
@@ -955,6 +1044,67 @@ mod attack_tests {
             );
         }
         bytes
+    }
+
+    #[test]
+    fn deployed_cache_reuses_raw_maxima_without_reading_their_words_again() {
+        struct Guard<'a>(SliceMemory<'a>);
+        impl crate::Memory for Guard<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                assert!(
+                    !(STATS + MAXIMUM_ORGANISATION..STATS + MAXIMUM_STRENGTH + 8)
+                        .contains(&address),
+                    "raw maxima reread"
+                );
+                crate::Memory::copy(&self.0, address, output)
+            }
+        }
+        let bytes = memory(0);
+        let view = Guard(SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        });
+        let held = DivisionMaxima {
+            pointer: STATS,
+            strength: 1,
+            organisation: -2,
+            ..Default::default()
+        };
+        let stats = capture_attack_stats_holding(
+            &view,
+            BASE,
+            STATS,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            Some(held),
+        )
+        .unwrap();
+        assert_eq!(&stats.panel[..2], &[Some(1), Some(-2)]);
+    }
+
+    #[test]
+    fn deployed_cache_keeps_every_raw_panel_word() {
+        let mut bytes = memory(0);
+        for (index, &(_, offset)) in PANEL_CACHE_FIELDS.iter().enumerate() {
+            put(
+                &mut bytes,
+                STATS + offset,
+                &(i64::MIN + index as i64).to_le_bytes(),
+            );
+        }
+        let view = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let stats =
+            capture_attack_stats(&view, BASE, STATS, &mut Vec::new(), &mut Vec::new()).unwrap();
+        for (index, value) in stats.panel.iter().enumerate() {
+            assert_eq!(
+                *value,
+                Some(i64::MIN + index as i64),
+                "panel scalar {index}"
+            );
+        }
     }
 
     #[test]

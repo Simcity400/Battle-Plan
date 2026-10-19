@@ -31,7 +31,9 @@
 //! difference is a missed write, which poisons the set
 //! ([`Changes::mismatch`]), and the fresh rows are published. Under
 //! `counter_verify` every country is read every hour and each unmarked one
-//! compared. Only rows without a read refusal are held (a native null
+//! compared. A sent-reference refusal carries independently and its availability
+//! recovery is not a missed writer. Other required read refusals prevent holding
+//! the row (a native null
 //! production status is not a refusal), and only from a complete walk and
 //! relation pass under a take that returned an epoch: a failed or incomplete
 //! read, or a failed job, holds nothing, so the next hour reads every
@@ -244,6 +246,10 @@ impl CounterStore {
         };
     }
 
+    pub(super) fn has_certificate(&self) -> bool {
+        self.hour.epoch.is_some()
+    }
+
     /// The walk offers `country` once its identity is confirmed: its row
     /// from the held read, with its rosters placed in the hour's arenas, or
     /// `None` to read it.
@@ -334,6 +340,10 @@ impl CounterStore {
                 span(&held.states, core)?,
             ],
             leaders: [span(&held.leaders, army)?, span(&held.leaders, navy)?],
+            sent_expeditionaries: match row.sent_expeditionaries {
+                Some(source) => Some(span(&held.leaders, source)?),
+                None => None,
+            },
             neighbors: span(&held.neighbors, row.neighbors?)?,
             policies: match row.mio_policies {
                 Some(policies) => Some(span(&held.policies, policies)?),
@@ -344,6 +354,7 @@ impl CounterStore {
         Some(CounterInputsRow {
             state_rosters: Some(spans.states),
             leader_rosters: Some(spans.leaders),
+            sent_expeditionaries: spans.sent_expeditionaries,
             neighbors: Some(spans.neighbors),
             mio_policies: spans.policies,
             ..row
@@ -525,6 +536,11 @@ fn clean(row: &CounterInputsRow, relation: &RelationRow) -> bool {
         && row.neighbors.is_some()
         && row.attack_modifiers.is_some()
         && row.movement_modifiers.is_some()
+        && row.recruitment_modifiers.is_some()
+        && row.air_modifiers.is_some()
+        && row.air_combat_modifiers.is_some()
+        && row.mines_effect_reduction.is_some()
+        && row.naval_detection.is_some()
         && relation.co_reason.is_none()
         && relation.zero_reason.is_none()
         && relation.zero_subject_reason.is_none()
@@ -543,6 +559,9 @@ fn within(capture: &Captured, row: &CounterInputsRow, relation: &RelationRow) ->
             .iter()
             .all(|span| valid_span(&capture.states, span.start, span.count))
     });
+    let sent = row
+        .sent_expeditionaries
+        .is_none_or(|span| valid_span(&capture.leaders, span.start, span.count));
     let leaders = row.leader_rosters.is_some_and(|spans| {
         spans
             .iter()
@@ -557,7 +576,7 @@ fn within(capture: &Captured, row: &CounterInputsRow, relation: &RelationRow) ->
     let co_belligerents = relation
         .co_belligerents
         .is_some_and(|span| valid_span(&capture.co_belligerents, span.start, span.count));
-    states && leaders && neighbors && policies && co_belligerents
+    states && sent && leaders && neighbors && policies && co_belligerents
 }
 
 /// The first recorded field in which a fresh read differs from the held
@@ -573,8 +592,23 @@ fn difference(
     if row.pride_of_the_fleet != old.pride_of_the_fleet {
         return Some("pride_of_the_fleet");
     }
+    if row.recruitment_modifiers != old.recruitment_modifiers {
+        return Some("recruitment_modifiers");
+    }
     if row.attack_modifiers != old.attack_modifiers {
         return Some("attack_modifiers");
+    }
+    if row.mines_effect_reduction != old.mines_effect_reduction {
+        return Some("mines_effect_reduction");
+    }
+    if row.naval_detection != old.naval_detection {
+        return Some("naval_detection");
+    }
+    if row.air_modifiers != old.air_modifiers {
+        return Some("air_modifiers");
+    }
+    if row.air_combat_modifiers != old.air_combat_modifiers {
+        return Some("air_combat_modifiers");
     }
     if row.movement_modifiers != old.movement_modifiers {
         return Some("movement_modifiers");
@@ -597,6 +631,16 @@ fn difference(
         if fresh_list(&capture.states, fresh) != held_list(&held.states, previous) {
             return Some(name);
         }
+    }
+    // Refusal or recovery changes availability, not a proved stored value.
+    if let (Some(fresh), Some(previous)) = (
+        row.sent_expeditionaries
+            .and_then(|range| arena_list(&capture.leaders, range)),
+        old.sent_expeditionaries
+            .and_then(|range| span(&held.leaders, range)),
+    ) && fresh != previous
+    {
+        return Some("sent_expeditionaries");
     }
     for (list, name) in ["army_leaders", "navy_leaders"].into_iter().enumerate() {
         let fresh = row

@@ -380,6 +380,9 @@ fn walk_reads_map_only_at_checkpoints_and_never_rereads_folded_army_rows() {
     all_tables(|| measured(&source));
     let expected = payloads(&source, None);
     clear(&source);
+    // Count the walk's own checkpoint reads, without retained sections from
+    // the all-table oracle or another preparation reader serving them.
+    source.replay_ref().cache_decoded_sections(false);
     let (_, decodes) = table_decodes(|| measured(&source));
     assert_same(&payloads(&source, None), &expected);
     for table in [

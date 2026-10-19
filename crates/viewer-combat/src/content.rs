@@ -20,6 +20,10 @@ use viewer_foundation::{
 };
 
 pub struct Content {
+    pub attrition: std::sync::OnceLock<
+        Result<viewer_foundation::map::counter_attrition::PanelContent, String>,
+    >,
+    pub medals: std::sync::OnceLock<Result<installed_content_core::unit_medals::Medals, String>>,
     pub assets: Arc<Assets>,
     pub localisation: Arc<Localisation>,
     pub recorded_language: String,

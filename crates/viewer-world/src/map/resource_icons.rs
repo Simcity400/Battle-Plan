@@ -247,26 +247,52 @@ pub fn anchor_provinces(
                 format!("resource icon state {state}: province {province} has no centroid")
             })?;
             let x = points.first().map_or(x, |first: &[f32; 2]| {
-                viewer_foundation::map::unit_pose::unwrap(x, first[0], width)
+                unwrap_anchor_x(x as i32, first[0] as i32, width as i32) as f32
             });
             points.push([x, z]);
         }
         if points.is_empty() {
             continue;
         }
-        let mean = [0, 1].map(|axis| {
-            (points.iter().map(|p| p[axis]).sum::<f32>() / points.len() as f32).round()
-        });
-        let distance = |p: [f32; 2]| (p[0] - mean[0]).powi(2) + (p[1] - mean[1]).powi(2);
+        let mut mean =
+            [0, 1].map(|axis| points.iter().map(|p| p[axis]).sum::<f32>() / points.len() as f32);
+        mean[0] = normalize_anchor_x(mean[0], width);
+        let mean = mean.map(|value| (value + 0.5) as i32);
+        let distance = |p: [f32; 2]| {
+            let dx = (normalize_anchor_x(p[0], width) as i32).wrapping_sub(mean[0]);
+            let dz = (p[1] as i32).wrapping_sub(mean[1]);
+            dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz))
+        };
         let mut best = 0;
         for i in 1..points.len() {
-            if distance(points[i]) < distance(points[best]) {
+            if distance(points[best]) < 0 || distance(points[i]) < distance(points[best]) {
                 best = i;
             }
         }
         anchors.insert(state, provinces[best]);
     }
     Ok(anchors)
+}
+
+fn unwrap_anchor_x(mut x: i32, reference: i32, width: i32) -> i32 {
+    while reference.wrapping_sub(x).wrapping_abs() > width / 2 {
+        x = x.wrapping_add(if reference.wrapping_sub(x) < 0 {
+            width.wrapping_neg()
+        } else {
+            width
+        });
+    }
+    x
+}
+
+fn normalize_anchor_x(x: f32, width: f32) -> f32 {
+    if x < 0.0 {
+        x + width
+    } else if x >= width {
+        x - width
+    } else {
+        x
+    }
 }
 
 /// One hour's resource icons, placed for the camera.

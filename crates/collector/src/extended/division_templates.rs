@@ -2,7 +2,10 @@
 //! inputs, the stored 3D-model inputs and the saved model choices of one
 //! walk, whose sub-unit definitions resolve through caller-owned slots that
 //! grow off-thread, and the names and categories derived from the same walk
-//! ([`dictionary`]).
+//! ([`dictionary`]). Each walked template's movement speed keys
+//! (DivisionTemplateIcons.speed_keys, [`engine_native::carmy::movement_speed_keys`])
+//! are read after the walk from its template object; a refused read is that
+//! row's None, counted in [`speed_key_data`].
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -10,19 +13,37 @@ use crate::{
 };
 use engine_allocation::{copy_vec, owned_vec};
 use engine_native::{Memory, creferenced_division_template as native, walk::Outcome};
-use replay_data::{
-    rows::DivisionTemplateIconRow, rows::DivisionTemplateRow, rows::Recorded, rows::TableId,
-    rows::TemplateDisplayName, rows::TemplateGrids, rows::TemplateNameValue, rows::TemplateSubunit,
-    rows::tables,
+use replay_data::rows::{
+    CountryTemplateStateRow, DivisionTemplateIconRow, DivisionTemplateRow,
+    GarrisonTemplateSelection, Recorded, TableId, TemplateCell, TemplateDisplayName, TemplateGrid,
+    TemplateGrids, TemplateLayout, TemplateNameValue, TemplateSettings, TemplateSubunit, tables,
 };
-use replay_frame::{frame::TableInput, frame::TableView};
+use replay_frame::frame::{TableInput, TableView};
 
-pub const N: usize = 2;
-pub const TABLES: [TableId; N] = [TableId::DivisionTemplates, TableId::DivisionTemplateIcons];
+pub const N: usize = 3;
+pub const TABLES: [TableId; N] = [
+    TableId::DivisionTemplates,
+    TableId::DivisionTemplateIcons,
+    TableId::CountryTemplateState,
+];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("division template dictionary and country census", 0, &[0]),
     ("division template counter and model inputs", 1, &[1]),
+    ("country template configuration", 2, &[2]),
 ];
+
+/// Cumulative DivisionTemplateIcons.speed_keys reads and refusals.
+static SPEED_KEY_COUNTS: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
+pub(crate) fn speed_key_data() -> impl serde::Serialize {
+    use std::sync::atomic::Ordering::Relaxed;
+    crate::status::status!({
+        "reads": SPEED_KEY_COUNTS[0].load(Relaxed),
+        "refusals": SPEED_KEY_COUNTS[1].load(Relaxed),
+        "scope": "cumulative DivisionTemplateIcons.speed_keys reads of the movement priority sub-unit's and its categories' modifier keys, one per walked template each hour; a refusal is that row's None",
+    })
+}
 
 /// Distinct failure reasons one hour's summary keeps by name; the rest are
 /// counted together.
@@ -63,6 +84,7 @@ pub struct Capacities {
     counts: usize,
     variants: usize,
     icon_rows: usize,
+    country_rows: usize,
     icon_bytes: usize,
     name_bytes: usize,
     /// The sub-unit database's length, for the hourly walk's two copies.
@@ -81,21 +103,12 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
+        let countries = engine_native::ccountry::Reader::new(memory, base, state)?
+            .count()
+            .saturating_sub(1) as usize;
+        crate::table_capture::grow_capacity(&mut self.country_rows, countries);
         let daily = native::walk(memory, base, state, &mut [], &mut [], &mut []);
-        let icons = native::walk_icons(
-            memory,
-            base,
-            state,
-            &mut [],
-            &mut [],
-            &mut [],
-            &mut [],
-            native::DefinitionSlots {
-                database: &mut [],
-                globals: &mut [],
-                locals: &mut [],
-            },
-        );
+        let icons = native::icon_capacity(memory, base, state);
         let demand = |outcome| match outcome {
             Outcome::Rows { len } => Ok(len),
             Outcome::Truncated { len, unread_rows } => len
@@ -103,15 +116,22 @@ impl Capacities {
                 .ok_or("template row demand overflow"),
             Outcome::Unavailable { reason } => Err(reason),
         };
-        let rows = demand(daily.outcome)?;
-        let icon_rows = demand(icons.outcome)?;
+        let rows = demand(daily.outcome);
+        let icon_rows = demand(icons.outcome);
+        // This sizing pass runs on the loader before hook publication and
+        // on existing sizing workers. Offer both certificate domains before
+        // the first boundary, including country-only demand if templates fail.
+        crate::template_changes::prepare(icon_rows.as_ref().copied().unwrap_or(0), countries);
+        crate::local_subunit_changes::prepare(countries);
+        let rows = rows?;
+        let icon_rows = icon_rows?;
         for (capacity, required) in [
             (&mut self.rows, rows),
             (&mut self.bytes, daily.required_bytes),
             (&mut self.icon_rows, icon_rows),
             (&mut self.icon_bytes, icons.required_bytes),
             (&mut self.name_bytes, daily.required_name_bytes),
-            (&mut self.counts, icons.required_counts),
+            (&mut self.counts, icons.required_counts.saturating_mul(2)),
             (&mut self.variants, icons.required_variants),
             (&mut self.database, icons.required_database),
             (&mut self.locals, icons.required_locals),
@@ -129,6 +149,13 @@ struct Preacquired {
     force: bool,
     ticks: Option<[u64; N]>,
 }
+#[derive(Default, Clone)]
+struct CountryRow {
+    garrison_priority: Option<i32>,
+    state: engine_deployment::cdeployment_status::TemplateState,
+    garrisons: Option<std::sync::Arc<Vec<GarrisonTemplateSelection>>>,
+    garrison_failure: Option<&'static str>,
+}
 pub struct Captured {
     preacquired: Option<Preacquired>,
     rows: CaptureRows<native::Row>,
@@ -136,15 +163,24 @@ pub struct Captured {
     counts: Arena<native::SubunitCount>,
     variants: Arena<u64>,
     icon_rows: CaptureRows<native::IconRow>,
+    country_rows: CaptureRows<CountryRow>,
+    country_cache: countries::Store,
+    country_snapshot: Option<std::sync::Arc<replay_data::rows::TableRows>>,
     icon_bytes: Arena<u8>,
     name_bytes: Arena<u8>,
     sample_hour: Option<i32>,
     /// The dictionary's held name keys, kept across hours.
     keys: dictionary::KeyStore,
+    held: held::Store,
     model_failures: ModelFailures,
     database: Arena<usize>,
     globals: Arena<native::GlobalSlot>,
     locals: Arena<native::LocalSlot>,
+    /// The hour's movement speed keys of every walked template, in walk order.
+    speed_keys: Vec<u32>,
+    /// Each walked template's span of `speed_keys`, by template, ascending;
+    /// `None` is its counted refusal.
+    speed_spans: Vec<(u64, Option<(usize, usize)>)>,
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
@@ -155,6 +191,10 @@ impl Captured {
         // A failed capture has no rows of its own to count.
         self.model_failures = ModelFailures::default();
         self.keys.forget();
+        self.held.forget();
+        self.country_cache.forget();
+        self.country_snapshot = None;
+        self.country_rows.fail(Outcome::Unavailable { reason });
     }
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
@@ -165,6 +205,7 @@ impl Captured {
             counts: 0,
             variants: 0,
             icon_rows: 0,
+            country_rows: 0,
             icon_bytes: 0,
             name_bytes: 0,
             database: 0,
@@ -180,14 +221,20 @@ impl Captured {
             counts: Arena::new(capacity.counts),
             variants: Arena::new(capacity.variants),
             icon_rows: CaptureRows::new(capacity.icon_rows),
+            country_rows: CaptureRows::new(capacity.country_rows),
+            country_cache: countries::Store::default(),
+            country_snapshot: None,
             icon_bytes: Arena::new(capacity.icon_bytes),
             name_bytes: Arena::new(capacity.name_bytes),
             sample_hour: None,
             keys: dictionary::KeyStore::default(),
+            held: held::Store::default(),
             model_failures: ModelFailures::default(),
             database: Arena::new(capacity.database),
             globals: Arena::new(capacity.database),
             locals: Arena::new(capacity.locals),
+            speed_keys: Vec::new(),
+            speed_spans: Vec::new(),
         }
     }
     pub fn reset(&mut self) {
@@ -197,6 +244,7 @@ impl Captured {
         self.counts.reset();
         self.variants.reset();
         self.icon_rows.reset();
+        self.country_rows.reset();
         self.icon_bytes.reset();
         self.name_bytes.reset();
         self.sample_hour = None;
@@ -204,6 +252,8 @@ impl Captured {
         self.database.reset();
         self.globals.reset();
         self.locals.reset();
+        self.speed_keys.clear();
+        self.speed_spans.clear();
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -211,12 +261,17 @@ impl Captured {
             + self.counts.allocated_bytes()
             + self.variants.allocated_bytes()
             + self.icon_rows.allocated_bytes()
+            + self.country_rows.allocated_bytes()
+            + self.country_cache.allocated_bytes()
             + self.icon_bytes.allocated_bytes()
             + self.name_bytes.allocated_bytes()
             + self.keys.allocated_bytes()
+            + self.held.allocated_bytes()
             + self.database.allocated_bytes()
             + self.globals.allocated_bytes()
             + self.locals.allocated_bytes()
+            + self.speed_keys.capacity() * size_of::<u32>()
+            + self.speed_spans.capacity() * size_of::<(u64, Option<(usize, usize)>)>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
@@ -224,6 +279,7 @@ impl Captured {
         self.counts.grow(&mut capacity.counts);
         self.variants.grow(&mut capacity.variants);
         self.icon_rows.grow(&mut capacity.icon_rows);
+        self.country_rows.grow(&mut capacity.country_rows);
         self.icon_bytes.grow(&mut capacity.icon_bytes);
         self.name_bytes.grow(&mut capacity.name_bytes);
         let mut globals = capacity.database;
@@ -264,7 +320,14 @@ impl Captured {
             );
             return [0; N];
         }
-        self.capture_original(memory, base, state, hour, force)
+        self.capture_original(
+            memory,
+            base,
+            state,
+            hour,
+            force,
+            &crate::template_changes::Observer,
+        )
     }
     pub(crate) fn capture_preacquired(
         &mut self,
@@ -274,7 +337,14 @@ impl Captured {
         hour: i32,
         force: bool,
     ) {
-        let ticks = self.capture_original(memory, base, state, hour, force);
+        let ticks = self.capture_original(
+            memory,
+            base,
+            state,
+            hour,
+            force,
+            &crate::template_changes::Observer,
+        );
         self.preacquired = Some(Preacquired {
             base,
             state,
@@ -324,22 +394,58 @@ impl Captured {
         self.fail_preacquired(base, state, hour, force, reason);
         [0; N]
     }
+    #[allow(clippy::too_many_arguments)]
     fn capture_original(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
         hour: i32,
-        _force: bool,
+        force: bool,
+        changes: &dyn crate::template_changes::Changes,
     ) -> [u64; N] {
         self.reset();
+        if force {
+            self.held.forget();
+            self.country_cache.forget();
+            self.country_snapshot = None;
+        }
+        self.country_cache.begin();
+        self.held.begin(changes);
         self.sample_hour = Some(hour);
         // The counter/model inputs, each composition grid's entries and the
         // demanded display-name inputs every hour.
+        let mut country_ticks = 0_u64;
         let icons = {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let start = qpc();
-            let walk = native::walk_icons_with_names_growing(
+            let mut country_len = 0;
+            let mut country_failure = None;
+            let country_rows = &mut self.country_rows.rows;
+            let country_cache = &mut self.country_cache;
+            let context_failures = &mut self.model_failures;
+            let mut countries = |country| {
+                if country_failure.is_some() {
+                    return;
+                }
+                let start = qpc();
+                let _reads = crate::read_accounting::table(TABLES[2]);
+                let result = (|| {
+                    let row = country_cache.read(memory, base, state, country, changes)?;
+                    if let Some(reason) = row.garrison_failure {
+                        context_failures.add(reason);
+                    }
+                    engine_native::walk::Buffer::Growing(&mut *country_rows)
+                        .ensure(country_len + 1)?;
+                    country_rows[country_len] = row;
+                    country_len += 1;
+                    Ok::<(), &'static str>(())
+                })();
+                country_ticks += qpc().saturating_sub(start).max(0) as u64;
+                country_failure = result.err();
+            };
+            let mut details = held::Demand::new(&mut self.held, changes);
+            let walk = native::walk_icons_with_selected_details_growing(
                 memory,
                 base,
                 state,
@@ -353,7 +459,16 @@ impl Captured {
                     locals: &mut self.locals.first,
                 },
                 &mut self.name_bytes.first,
+                &mut countries,
+                &mut details,
             );
+            self.country_rows.outcome = match (walk.outcome, country_failure) {
+                (Outcome::Unavailable { reason }, _) | (_, Some(reason)) => {
+                    Outcome::Unavailable { reason }
+                }
+                _ => Outcome::Rows { len: country_len },
+            };
+            crate::template_changes::record_countries(country_len);
             self.icon_rows.outcome = walk.outcome;
             self.icon_bytes.len = walk.bytes_len;
             self.icon_bytes.required = walk.required_bytes;
@@ -367,12 +482,54 @@ impl Captured {
             self.globals.required = walk.required_database;
             self.locals.required = walk.required_locals;
             if let Some(rows) = self.icon_rows.rows.get(..walk.outcome.len()) {
-                for reason in rows.iter().filter_map(|row| row.model_failure) {
-                    self.model_failures.add(reason);
+                if matches!(walk.outcome, Outcome::Rows { .. }) {
+                    self.held.prune(rows);
+                }
+                self.held.finish(
+                    changes,
+                    rows,
+                    &self.counts.first[..self.counts.len],
+                    &self.variants.first[..self.variants.len],
+                    &self.icon_bytes.first[..self.icon_bytes.len],
+                );
+                for row in rows {
+                    if matches!(self.held.values(row).1, Recorded::Value(None)) {
+                        self.model_failures
+                            .add("template details writer certificate unavailable");
+                    }
+                    if let Some(reason) = row
+                        .model_failure
+                        .or(row.equipment_failure)
+                        .or(row.details_failure)
+                    {
+                        self.model_failures.add(reason);
+                    }
                 }
             }
+            self.capture_speed_keys(memory, base);
             qpc().saturating_sub(start).max(0) as u64
         };
+        let country_native_ticks = country_ticks;
+        self.country_cache.finish();
+        if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
+            self.country_cache.prune();
+        }
+        if !matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
+            self.country_snapshot = None;
+        }
+        if let Outcome::Rows { len } = self.country_rows.outcome
+            && (self.country_cache.changed
+                || self
+                    .country_snapshot
+                    .as_ref()
+                    .is_none_or(|rows| rows.len() != len))
+        {
+            let start = qpc();
+            if let TableView::Complete(rows) = self.country_state() {
+                self.country_snapshot = Some(std::sync::Arc::new(rows));
+            }
+            country_ticks += qpc().saturating_sub(start).max(0) as u64;
+        }
         // The dictionary, from the same walk.
         let _reads = crate::read_accounting::table(TABLES[0]);
         let start = qpc();
@@ -392,26 +549,81 @@ impl Captured {
             self.icon_rows.outcome,
             names,
             &mut self.keys,
-            &crate::template_changes::Observer,
+            changes,
             crate::sampled_verify::current_burned_in(crate::template_changes::VERIFY),
             &mut self.rows.rows,
             &mut self.bytes.first,
         );
         self.bytes.len = self.bytes.first.len();
         self.bytes.required = self.bytes.len;
-        [qpc().saturating_sub(start).max(0) as u64, icons]
+        [
+            qpc().saturating_sub(start).max(0) as u64,
+            icons.saturating_sub(country_native_ticks),
+            country_ticks,
+        ]
     }
+    /// DivisionTemplateIcons.speed_keys of every walked template, read from
+    /// its template object after the walk.
+    fn capture_speed_keys(&mut self, memory: &impl Memory, base: usize) {
+        self.speed_keys.clear();
+        self.speed_spans.clear();
+        let rows = self
+            .icon_rows
+            .rows
+            .get(..self.icon_rows.outcome.len())
+            .unwrap_or(&[]);
+        let mut counts = [0_u64; 2];
+        if engine_allocation::reserve(&mut self.speed_spans, rows.len()).is_err() {
+            // No span to publish: every row refuses.
+            counts[1] = rows.len() as u64;
+        } else {
+            for row in rows {
+                let start = self.speed_keys.len();
+                let span = engine_native::carmy::movement_speed_keys(
+                    memory,
+                    base,
+                    row.pointer,
+                    &mut self.speed_keys,
+                )
+                .ok()
+                .map(|()| (start, self.speed_keys.len() - start));
+                counts[usize::from(span.is_none())] += 1;
+                self.speed_spans.push((row.template, span));
+            }
+            self.speed_spans.sort_unstable_by_key(|entry| entry.0);
+        }
+        for (total, count) in SPEED_KEY_COUNTS.iter().zip(counts) {
+            total.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// The template's speed keys this hour; `None` is its refusal.
+    fn speed_keys(&self, template: u64) -> Option<Vec<u32>> {
+        let at = self
+            .speed_spans
+            .binary_search_by_key(&template, |entry| entry.0)
+            .ok()?;
+        let (start, len) = self.speed_spans[at].1?;
+        let keys = self.speed_keys.get(start..start.checked_add(len)?)?;
+        Some(owned_vec(copy_vec(keys)))
+    }
+
     /// This hour's rows whose model inputs failed, by reason.
     pub(crate) fn model_failures(&self) -> ModelFailures {
         self.model_failures
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.rows.outcome, self.icon_rows.outcome]
+        [
+            self.rows.outcome,
+            self.icon_rows.outcome,
+            self.country_rows.outcome,
+        ]
     }
     #[cfg(test)]
-    pub fn tables(&self) -> [TableView; N] {
-        self.table_inputs().map(|input| match input {
+    pub fn tables(&self) -> [TableView; 2] {
+        let [dictionary, icons, _] = self.table_inputs();
+        [dictionary, icons].map(|input| match input {
             TableInput::Sampled(view) => view,
             _ => unreachable!("template conversion returns sampled views"),
         })
@@ -427,7 +639,33 @@ impl Captured {
             _ => None,
         };
         let icons = self.icons(names);
-        [TableInput::Sampled(dictionary), TableInput::Sampled(icons)]
+        [
+            TableInput::Sampled(dictionary),
+            TableInput::Sampled(icons),
+            if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
+                self.country_snapshot
+                    .as_ref()
+                    .map(|rows| TableInput::SharedComplete(std::sync::Arc::clone(rows)))
+                    .unwrap_or_else(|| TableInput::Sampled(self.country_state()))
+            } else {
+                TableInput::Sampled(self.country_state())
+            },
+        ]
+    }
+
+    fn country_state(&self) -> TableView {
+        table::<tables::CountryTemplateState, _>(
+            self.country_rows.outcome,
+            &self.country_rows.rows,
+            |r| CountryTemplateStateRow {
+                country: r.state.country,
+                selected_staff: r.state.selected_staff,
+                next_hq_order: r.state.next_hq_order,
+                lock_all: r.state.lock_all,
+                garrison_priority: Recorded::Value(r.garrison_priority),
+                garrisons: Recorded::Value(r.garrisons.clone()),
+            },
+        )
     }
 
     fn templates(&self) -> TableView {
@@ -477,7 +715,9 @@ impl Captured {
                 || span(bytes, r.model_entity).is_none()
                 || span(counts, r.counts).is_none()
                 || r.grids.iter().any(|grid| span(counts, *grid).is_none())
+                || r.cells.iter().any(|grid| span(counts, *grid).is_none())
                 || span(variants, r.excluded_variants).is_none()
+                || span(variants, r.forbidden_equipment).is_none()
         }) {
             return unavailable("template icon row spans outside captured arenas");
         }
@@ -495,8 +735,26 @@ impl Captured {
         };
         table::<tables::DivisionTemplateIcons, _>(outcome, &self.icon_rows.rows, |r| {
             let [regiments, support, regimental_support] = r.grids;
+            let (layout, settings) = self.held.values(r);
             DivisionTemplateIconRow {
+                manpower_exile: Recorded::Value(r.manpower_exile),
                 template: r.template,
+                base_width: Recorded::Value(
+                    (r.model_failure.is_none())
+                        .then(|| {
+                            span(counts, r.counts)?.iter().try_fold(0_i64, |sum, unit| {
+                                Some(
+                                    sum.wrapping_add(
+                                        i64::from(unit.count)
+                                            .wrapping_mul(100_000)
+                                            .wrapping_mul(unit.width?)
+                                            / 100_000,
+                                    ),
+                                )
+                            })
+                        })
+                        .flatten(),
+                ),
                 priority_unit: r.priority_unit,
                 priority_unit_name: owned_vec(copy_vec(span(bytes, r.priority_unit_name).unwrap())),
                 custom_icon: r.custom_icon,
@@ -521,6 +779,9 @@ impl Captured {
                     support: entries(support),
                     regimental_support: entries(regimental_support),
                 }),
+                layout,
+                settings,
+                speed_keys: Recorded::Value(self.speed_keys(r.template)),
             }
         })
     }
@@ -577,7 +838,9 @@ fn span<T>(arena: &[T], range: native::Span) -> Option<&[T]> {
     arena.get(range.start..range.start.checked_add(range.len)?)
 }
 
+mod countries;
 mod dictionary;
+mod held;
 
 #[cfg(test)]
 mod tests;

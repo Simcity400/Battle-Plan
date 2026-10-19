@@ -29,6 +29,8 @@ own dates, and starts, boundaries, unknowns and holder replacements take ordinar
 observation. State reads after observation inspect a materialized current key;
 a carried value uses its authenticated continuity proof instead.
 
+Displayed stability, war support and command-power arithmetic is shared through replay-data's `country_stability`; the product re-exports it as `formula`. The occupation hover uses the same stability calculation.
+
 Experience publishes its ten channels when a held read starts or changes.
 Gain changes still update the scan's complete daily intervals; extending the
 same held read carries its channels through the accepted frontier without

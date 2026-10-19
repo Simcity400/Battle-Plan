@@ -64,3 +64,7 @@ the prepared history, and root coverage/pending fields keep mounted requests
 following preparation. Other history requests answer their prepared prefix.
 Country-filtered requests wait for complete identity history to resolve selected
 native holders and their aliases, including transfers and reused tags.
+
+Leader runs include exact residual experience and every ordered training entry. Required experience and trait names resolve through recorded content. Changed experience or progress starts a new visible run, including in prepared histories; unavailable training differs from an empty vector.
+
+Career progress includes a separate ordered runtime training-factor override list. Missing acquisition is distinct from a complete empty list; lexical/content names resolve through the recording's stack.

@@ -156,9 +156,24 @@ pub fn effective_memo(
     effective_observed_memo(memory, base, key, raw, memo).map(|(value, _)| value)
 }
 
+/// Requested-key evaluation with pass-local metadata and lazy raw-value access.
+pub(crate) fn effective_lazy_memo(
+    memory: &impl Memory,
+    base: usize,
+    key: u32,
+    raw: impl FnOnce() -> Result<i64, &'static str>,
+    memo: &DefinitionMemo,
+) -> Result<i64, &'static str> {
+    let flags = memo.flags(memory, base, key)?;
+    match flags {
+        Some(flags) => Ok(apply(Some(flags), raw()?)),
+        None => Ok(0),
+    }
+}
+
 /// The effective value and the metadata that enabled and clamped it, from
 /// the same observation. Disabled keys retain no clamp-flags read.
-pub(crate) fn effective_observed_memo(
+pub fn effective_observed_memo(
     memory: &impl Memory,
     base: usize,
     key: u32,

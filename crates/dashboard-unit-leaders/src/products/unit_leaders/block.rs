@@ -1,7 +1,7 @@
 //! Unit leaders prepared on their own, block by block. A pre-pass worker
 //! reads a block alone, only at the hours a field leaders read changes
 //! ([`FAMILY`]'s fields): every field the scan reads of its own tables (all
-//! of a leader but its retired experience; the combat details' sides, whose
+//! of a leader, including residual XP and complete training; the combat details' sides, whose
 //! commanders it reads; a formation's leader, name and kind, a mission's
 //! leader and a task force's fleet; the countries' slots and tags), and of
 //! the shared trigger tables the fields their declared reads read
@@ -46,8 +46,8 @@
 //! preparation observes it.
 
 use super::{
-    Commanders, Content, battle_tables, experience_field, land_commanders, naval_commanders,
-    prepared::Prepared, read_mask,
+    Commanders, Content, battle_tables, land_commanders, naval_commanders, prepared::Prepared,
+    read_mask,
 };
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_base::prepared::kept::{note_frames, note_observed};
@@ -65,13 +65,10 @@ use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatSideDetails, rows::NavalCombatDetailsRow,
     rows::NavalCombatSideDetails, rows::NavalMissionTaskForceRow, rows::ProvinceRow,
     rows::RowCodec, rows::StateRow, rows::TableId, rows::TableRows, rows::TableSchema,
-    rows::TaskForceRow, rows::UnitLeaderRow, rows::WarRelationRow, rows::full_mask, rows::tables,
+    rows::TaskForceRow, rows::WarRelationRow, rows::full_mask, rows::tables,
 };
 use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::SharedView, frame::TableView};
-use std::{
-    any::Any, cell::Cell, collections::BTreeMap, io, marker::PhantomData, ops::Range,
-    sync::LazyLock,
-};
+use std::{any::Any, collections::BTreeMap, io, marker::PhantomData, ops::Range, sync::LazyLock};
 
 /// What the family watches of a table.
 #[derive(Clone, Copy)]
@@ -82,8 +79,6 @@ enum Watch {
     Keys,
     /// These fields.
     Named(&'static [&'static str]),
-    /// Every field but the leaders' retired experience.
-    Leaders,
 }
 
 /// Which runs read a table ([`bound`]).
@@ -117,12 +112,7 @@ enum Keep {
 /// quiet and blocks fall back, never what is published.
 const POLICY: &[(TableId, Watch, Keep, Reach)] = &[
     // The scan's own tables.
-    (
-        TableId::UnitLeaders,
-        Watch::Leaders,
-        Keep::Reduced,
-        Reach::Every,
-    ),
+    (TableId::UnitLeaders, Watch::All, Keep::Whole, Reach::Every),
     (TableId::Characters, Watch::All, Keep::Whole, Reach::Every),
     (
         TableId::CharacterPortraits,
@@ -138,6 +128,12 @@ const POLICY: &[(TableId, Watch, Keep, Reach)] = &[
     ),
     (
         TableId::UnitLeaderTraits,
+        Watch::All,
+        Keep::Whole,
+        Reach::Every,
+    ),
+    (
+        TableId::UnitLeaderTraitExperience,
         Watch::All,
         Keep::Whole,
         Reach::Every,
@@ -498,10 +494,6 @@ fn watched(table: TableId) -> io::Result<TableFields> {
         Watch::All => TableFields::all(table),
         Watch::Keys => TableFields::keys(table),
         Watch::Named(names) => TableFields::named(table, names)?,
-        Watch::Leaders => TableFields {
-            fields: full_mask(table.schema().len()) & !experience_field(),
-            ..TableFields::all(table)
-        },
     })
 }
 
@@ -611,8 +603,8 @@ impl TableChanges for Changes {
 
 /// What a kept frame's rows may differ from the hour's whole frame by: the
 /// fields a reduced table does not keep, and every dropped table; the
-/// leaders' experience only when a kept leader had any.
-fn reduction(experience: bool) -> Changes {
+/// omitted fields of reduced tables.
+fn reduction() -> Changes {
     let fields = |table: TableId, kept: &[&str]| {
         let all = full_mask(table.schema().len());
         let kept = kept.iter().fold(0, |mask, name| {
@@ -627,9 +619,6 @@ fn reduction(experience: bool) -> Changes {
         let change = match (policy(table).1, table) {
             (Keep::Whole, _) => None,
             (Keep::Dropped, _) => Some(Change::Any),
-            (Keep::Reduced, TableId::UnitLeaders) => {
-                experience.then(|| Change::Fields(experience_field()))
-            }
             (Keep::Reduced, TableId::Countries) => Some(fields(table, &["canonical_slot", "tag"])),
             (Keep::Reduced, TableId::CountryCounterInputs) => {
                 Some(fields(table, &["owned_state_count"]))
@@ -787,7 +776,6 @@ impl<T: TableSchema> Reducer<T> {
 
 #[derive(Default)]
 struct Reducers {
-    leaders: Reducer<tables::UnitLeaders>,
     countries: Reducer<tables::Countries>,
     counters: Reducer<tables::CountryCounterInputs>,
     provinces: Reducer<tables::Provinces>,
@@ -803,7 +791,6 @@ impl Reducers {
     /// `table` changed where leaders watch it.
     fn changed(&mut self, table: TableId) {
         let stale = match table {
-            TableId::UnitLeaders => &mut self.leaders.stale,
             TableId::Countries => &mut self.countries.stale,
             TableId::CountryCounterInputs => &mut self.counters.stale,
             TableId::Provinces => &mut self.provinces.stale,
@@ -843,8 +830,6 @@ struct BlockExtract {
     deadline: Option<i32>,
     reducers: Reducers,
     dropped: BTreeMap<TableId, SharedView>,
-    /// Whether a kept leader had experience, which kept frames do not keep.
-    experience: bool,
     frames: usize,
     work: Work,
 }
@@ -864,7 +849,6 @@ fn start(format: FormatVersion, selection: &'static Selection) -> Box<dyn Extrac
         deadline: None,
         reducers: Reducers::default(),
         dropped: BTreeMap::new(),
-        experience: false,
         frames: 0,
         work: Work::default(),
     })
@@ -1026,24 +1010,6 @@ impl BlockExtract {
     fn reduce(&mut self, frame: &DecodedFrame) -> DecodedFrame {
         let mut kept = frame.clone();
         let reducers = &mut self.reducers;
-        let had = Cell::new(false);
-        let reduced = reducers.leaders.apply(&mut kept, |row: &UnitLeaderRow| {
-            if row.experience != Default::default() {
-                had.set(true);
-            }
-            UnitLeaderRow {
-                experience: Default::default(),
-                ..row.clone()
-            }
-        });
-        // Kept as last reduced: whether a leader has experience now.
-        if !reduced
-            && !self.experience
-            && let Ok(rows) = frame.complete::<tables::UnitLeaders>()
-        {
-            had.set(rows.iter().any(|row| row.experience != Default::default()));
-        }
-        self.experience |= had.get();
         if reducers
             .countries
             .apply(&mut kept, |row: &CountryRow| CountryRow {
@@ -1408,7 +1374,7 @@ impl Extract for BlockExtract {
             return Err(io::Error::other("Leader block has no hours"));
         }
         let unread = self.selection.unread.clone();
-        let mut reduction = reduction(self.experience);
+        let mut reduction = reduction();
         reduction.merge(&unread);
         Ok(Box::new(BlockFacts {
             reduction,

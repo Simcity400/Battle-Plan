@@ -288,6 +288,8 @@ impl Captured {
         use crate::raid_changes::Family;
         let _reads = crate::read_accounting::table(TABLES[0]);
         self.reset();
+        self.buffers.recruitment_enabled =
+            stores.is_none() && cfg!(any(test, feature = "test-support"));
         let full = force_full || stores.is_none();
         self.states.reset(hour, full);
         self.countries.reset(hour, full);
@@ -348,6 +350,7 @@ impl Captured {
             let changes = stores.changes;
             let states = &mut self.states;
             let epoch = changes.take(Family::States, &mut |id| states.mark(id as u32));
+            self.buffers.recruitment_enabled = epoch.is_some();
             states.certify(stores.states, epoch, stores.verify);
             // A country mark is its raw link; an unresolved one certifies
             // nothing.
@@ -518,6 +521,10 @@ impl Captured {
             table::<tables::StateResourceInputs, _>(self.outcomes[0], &buffers.inputs, |row| {
                 rows::StateResourceInputRow {
                     state: row.state,
+                    local_manpower: rows::Recorded::Value(row.recruitment.map(|v| v[0])),
+                    local_noncore_manpower: rows::Recorded::Value(row.recruitment.map(|v| v[1])),
+                    recruitment_add: rows::Recorded::Value(row.recruitment.map(|v| v[2])),
+                    recruitment_factor: rows::Recorded::Value(row.recruitment.map(|v| v[3])),
                     gate: row.gate,
                     global_factor: row.global_factor,
                     origin: row.origin,
@@ -690,6 +697,11 @@ fn state_hashes(
                     u64::from(input.origin),
                     level,
                     input.infrastructure_modifier as u64,
+                    u64::from(input.recruitment.is_some()),
+                    input.recruitment.map_or(0, |v| v[0] as u64),
+                    input.recruitment.map_or(0, |v| v[1] as u64),
+                    input.recruitment.map_or(0, |v| v[2] as u64),
+                    input.recruitment.map_or(0, |v| v[3] as u64),
                 ],
             ),
         ));

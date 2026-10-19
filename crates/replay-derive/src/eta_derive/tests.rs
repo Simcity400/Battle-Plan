@@ -81,6 +81,8 @@ fn defines() -> Defines {
             penalty: -80_000,
         }),
         rail: None,
+        noncore_supply: [Some(-50_000), Some(-25_000)],
+        combat_movement: Some(33_000),
     }
 }
 
@@ -540,7 +542,7 @@ fn the_common_modifier_adds_country_commander_weather_supply_and_retreat_terms()
         leader_speed: 5_000,
         country_attack_speed: 20_000,
         weather: [-30_000, -10_000, -20_000, -40_000],
-        armour_speed: [0; 2],
+        ..Default::default()
     };
     // Acclimatization 0.5 halves each weather entry; a peaceful move takes no attack
     // speed entry.
@@ -580,6 +582,81 @@ fn the_common_modifier_adds_country_commander_weather_supply_and_retreat_terms()
     };
     // 4 km/h * (0.9 - 0.3) = 2.4, fuel 0.5: 1.2 km/h.
     assert_eq!(edge_speed(400_000, 1, 2, &terms, &defines()), Ok(120_000));
+}
+
+/// The location state's speed term, the priority sub-unit and category entries and the
+/// noncore-supply term join every move; the state's attack speed only a hostile one.
+#[test]
+fn the_common_modifier_adds_state_unit_and_noncore_terms() {
+    let modifiers = CommonModifiers {
+        state_speed: -20_000,
+        state_attack_speed: 30_000,
+        unit_speed: 15_000,
+        noncore: -50_000,
+        ..Default::default()
+    };
+    assert_eq!(
+        common_modifier(&modifiers, false, 0, 0, 0, 0),
+        100_000 - 20_000 + 15_000 - 50_000
+    );
+    assert_eq!(
+        common_modifier(&modifiers, true, 0, 0, 0, 0),
+        100_000 - 20_000 + 15_000 - 50_000 + 30_000
+    );
+}
+
+/// A land combat's movement base replaces the modifier's one: the combat movement define
+/// plus the combat's own movement modifier; a naval (or unmatched) combat starts it at
+/// zero.
+#[test]
+fn the_combat_base_replaces_the_common_modifiers_one() {
+    assert_eq!(combat_base(Some(-13_000), 33_000), 20_000);
+    assert_eq!(combat_base(None, 33_000), 0);
+    let modifiers = CommonModifiers {
+        combat_base: Some(combat_base(Some(-13_000), 33_000)),
+        country_speed: 10_000,
+        ..Default::default()
+    };
+    assert_eq!(common_modifier(&modifiers, false, 0, 0, 0, 0), 30_000);
+    let naval = CommonModifiers {
+        combat_base: Some(combat_base(None, 33_000)),
+        country_speed: 10_000,
+        ..Default::default()
+    };
+    assert_eq!(common_modifier(&naval, false, 0, 0, 0, 0), 10_000);
+    // A 0.2 modifier: 4 km/h becomes 0.8 km/h, floored at 1 km/h.
+    let terms = SpeedTerms {
+        modifier: 20_000,
+        ..PLAIN
+    };
+    assert_eq!(edge_speed(400_000, 1, 2, &terms, &defines()), Ok(100_000));
+}
+
+/// A scaled edge is its speed times its own scale (the transport scale for a move by sea,
+/// the outer scale for a strategic redeployment), with no common modifier, organisation
+/// or fuel factor and no floor; a fixed edge is its speed.
+#[test]
+fn a_scaled_edge_multiplies_its_speed_by_its_own_scale() {
+    let transport = |_: u32, _: u32| {
+        Ok(EdgeTerm::Scaled {
+            speed: 300_000,
+            scale: 50_000,
+        })
+    };
+    let terms = SpeedTerms {
+        modifier: 0,
+        edge: &transport,
+        organisation: Some(10_000),
+        fuel: Some(10_000),
+    };
+    // The outer scale (1.0) does not apply: 3 km/h times 0.5.
+    assert_eq!(edge_speed(400_000, 1, 2, &terms, &defines()), Ok(150_000));
+    let fixed = |_: u32, _: u32| Ok(EdgeTerm::Fixed(70_000));
+    let terms = SpeedTerms {
+        edge: &fixed,
+        ..terms
+    };
+    assert_eq!(edge_speed(400_000, 1, 2, &terms, &defines()), Ok(70_000));
 }
 
 #[test]

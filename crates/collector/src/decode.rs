@@ -80,13 +80,8 @@ pub const RELATIONS: [TableId; 2] = [TableId::RelationOpinions, TableId::Relatio
 /// Characters family in calibration/report order: [characters, leaders,
 /// advisors, units, traits]. Cadence selects the active tables.
 /// ActiveAbilities is separate.
-pub const CHARACTERS: [TableId; 5] = [
-    TableId::Characters,
-    TableId::CountryLeaderRoles,
-    TableId::AdvisorRoles,
-    TableId::UnitLeaders,
-    TableId::UnitLeaderTraits,
-];
+pub const CHARACTERS: [TableId; crate::extended::characters::N] =
+    crate::extended::characters::TABLES;
 
 /// The raw-copied project tables in calibration/report order: [programs,
 /// breakthroughs]. Sliced and hourly project tables stay game-side typed.
@@ -313,27 +308,12 @@ pub struct DecodeJob {
 static RELATIONS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static RELATIONS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static RELATIONS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static CHARACTERS_COPY_NS: [AtomicU64; 5] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static CHARACTERS_DECODE_NS: [AtomicU64; 5] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static CHARACTERS_RAW_BYTES: [AtomicU64; 5] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
+static CHARACTERS_COPY_NS: [AtomicU64; CHARACTERS.len()] =
+    [const { AtomicU64::new(0) }; CHARACTERS.len()];
+static CHARACTERS_DECODE_NS: [AtomicU64; CHARACTERS.len()] =
+    [const { AtomicU64::new(0) }; CHARACTERS.len()];
+static CHARACTERS_RAW_BYTES: [AtomicU64; CHARACTERS.len()] =
+    [const { AtomicU64::new(0) }; CHARACTERS.len()];
 static PROJECTS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static PROJECTS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
 static PROJECTS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
@@ -521,6 +501,9 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 static STOP: AtomicBool = AtomicBool::new(false);
 static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static WORKER_ID: AtomicU32 = AtomicU32::new(0);
+
+mod failure;
+pub(crate) use failure::{HookGuard as PanicHook, first as panic_failure};
 
 /// Registered before hook installation, joined before final DLL quiescence.
 pub fn worker_id() -> u32 {
@@ -941,6 +924,7 @@ fn decode_loop() {
         match shared.decode_queue.pop() {
             Some(job) => process_owned_job(shared, job, &mut air_bases_memo),
             None => {
+                failure::stage("idle retirement", None);
                 let _phase = crate::allocation::enter(crate::allocation::Phase::Decode);
                 crate::allocation::attempted_hour(None);
                 reclaim_payloads();
@@ -949,6 +933,7 @@ fn decode_loop() {
         }
     }
     let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
+    failure::stage("worker retirement", None);
     crate::allocation::attempted_hour(None);
     reclaim_payloads();
 }
@@ -957,8 +942,23 @@ fn decode_loop() {
 /// family to its pool. Dropping this envelope without recycling used to
 /// allocate a fresh payload on the game thread on every subsequent hour.
 fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
+    let failure_scope = failure::Scope::frame(failure::Frame {
+        index: job.index,
+        seq: job.seq,
+        hour: job.hour,
+        force_full: job.force_full,
+        load_signal: None,
+        world_generation: None,
+    });
     let _phase = crate::allocation::enter(crate::allocation::Phase::Decode);
     let frame = unsafe { &*shared.frames[job.index].load(Ordering::Acquire) };
+    failure::Scope::identity(
+        frame
+            .clock
+            .as_ref()
+            .map(|clock| clock.play_session_started_at),
+        frame.world_generation,
+    );
     if let Some(clock) = frame.clock.as_ref() {
         crate::allocation::set_context(crate::allocation::Context {
             campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
@@ -972,11 +972,13 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     // Enqueue follows the callback's failed-payload retirement. Drain after
     // taking this frame, before publication lets the spool thread return its
     // lease. Draining before the queue pop permits one slot to retire twice.
+    failure::stage("frame retirement", None);
     reclaim_payloads();
     if !crate::allocation::failed() {
         process_job(shared, &mut job, air_bases_memo);
     }
 
+    failure::stage("release payloads", None);
     if let Some(payload) = job.relations_payload.take() {
         release_relations_job(payload);
     }
@@ -1041,13 +1043,18 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     if let Some(payload) = job.capitulation_payload.take() {
         release_capitulation_job(payload);
     }
-    if publish_ready(
+    failure::stage("publish ready", None);
+    let published = publish_ready(
         &shared.ready,
         job.index,
         &shared.completed[job.index],
         job.game_elapsed,
         crate::allocation::failed,
-    ) {
+    );
+    // No frame reference or diagnostic lease survives its ready publication.
+    drop(failure_scope);
+    failure::stage("after ready handoff", None);
+    if published {
         shared.wake_spool();
     }
     crate::allocation::attempted_hour(None);
@@ -1124,7 +1131,7 @@ pub fn start_worker() -> Result<(), &'static str> {
                     unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
                     Ordering::Release,
                 );
-                decode_loop();
+                failure::worker(decode_loop);
             })
             .map_err(|_| "cannot start decode worker")?,
     );
@@ -1275,11 +1282,13 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
 /// Decode one FIFO item and hand its pooled frame to the spool ready queue
 /// in FIFO hour order. Skip items forward without touching typed rows.
 fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBasesMemo) {
+    failure::stage("missing payload verdicts", None);
     if !job.air_bases_refresh || job.air_bases_payload.is_none() {
         air_bases_memo.invalidate();
     }
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     fail_missing_payloads(frame, job);
+    failure::stage("air copies", None);
     frame.extended.decode_air_copies();
     LAST_SEQ.store(job.seq, Ordering::Relaxed);
     LAST_HOUR.store(job.hour as u64, Ordering::Relaxed);
@@ -1290,6 +1299,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.relations_refresh
         && let Some(payload) = job.relations_payload.as_ref()
     {
+        failure::stage("relations", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
         frame
@@ -1303,16 +1313,18 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
-    for (refresh, payload) in job
+    for (part, (refresh, payload)) in job
         .characters_refresh
         .iter()
         .zip(&mut job.characters_payload)
+        .enumerate()
     {
         let Some(payload) = payload.as_mut().filter(|_| *refresh) else {
             continue;
         };
+        failure::stage("characters", Some(part));
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-        let mut decode_ticks = [0; 5];
+        let mut decode_ticks = [0; CHARACTERS.len()];
         let characters = frame.extended.characters_pilot();
         let before_bytes = characters.allocated_bytes();
         characters.decode_characters_payload(shared.base, payload, &mut decode_ticks);
@@ -1331,6 +1343,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.projects_refresh
         && let Some(payload) = job.projects_payload.as_ref()
     {
+        failure::stage("projects", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; PROJECTS.len()];
         frame.extended.projects_pilot().decode_projects_payload(
@@ -1348,6 +1361,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.lexical_refresh
         && let Some(payload) = job.lexical_payload.as_ref()
     {
+        failure::stage("lexical", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
         let lexical = frame.extended.lexical_pilot();
@@ -1368,6 +1382,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.divisions_refresh
         && let Some(payload) = job.divisions_payload.as_mut()
     {
+        failure::stage("divisions", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 6];
         let before_bytes = frame.extended.allocated_bytes();
@@ -1394,6 +1409,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.air_wing_refresh
         && let Some(payload) = job.air_wing_payload.as_mut()
     {
+        failure::stage("air_wing", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
         crate::extended::air::decode_air_payload(
@@ -1416,6 +1432,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.air_stats_refresh
         && let Some(payload) = job.air_stats_payload.as_ref()
     {
+        failure::stage("air_stats", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
         crate::extended::air::decode_air_stats_payload(
@@ -1434,6 +1451,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.naval_refresh
         && let Some(payload) = job.naval_payload.as_ref()
     {
+        failure::stage("naval", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 9];
         frame
@@ -1449,6 +1467,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.players_refresh
         && let Some(payload) = job.players_payload.as_ref()
     {
+        failure::stage("players", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
         frame
@@ -1464,6 +1483,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.session_refresh
         && let Some(payload) = job.session_payload.as_ref()
     {
+        failure::stage("session", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 3];
         frame.extended.session_pilot().decode_session_payload(
@@ -1481,6 +1501,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.production_rest_refresh
         && let Some(payload) = job.production_rest_payload.as_ref()
     {
+        failure::stage("production_rest", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 8];
         frame
@@ -1502,6 +1523,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.construction_rest_refresh
         && let Some(payload) = job.construction_rest_payload.as_ref()
     {
+        failure::stage("construction_rest", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 10];
         let construction = frame.extended.construction_rest_pilot();
@@ -1526,6 +1548,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.economy_rest_refresh
         && let Some(payload) = job.economy_rest_payload.as_ref()
     {
+        failure::stage("economy_rest", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; crate::extended::economy::N];
         frame
@@ -1542,6 +1565,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.air_bases_refresh
         && let Some(payload) = job.air_bases_payload.as_ref()
     {
+        failure::stage("air_bases", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 3];
         let report = frame.extended.decode_air_bases_payload(
@@ -1581,6 +1605,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.supremacy_refresh
         && let Some(payload) = job.supremacy_payload.as_ref()
     {
+        failure::stage("supremacy", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
         frame.extended.supremacy_pilot().decode_supremacy_payload(
@@ -1598,6 +1623,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.sunk_refresh
         && let Some(payload) = job.sunk_payload.as_ref()
     {
+        failure::stage("sunk", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
         frame
@@ -1614,6 +1640,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.radar_refresh
         && let Some(payload) = job.radar_payload.as_ref()
     {
+        failure::stage("radar", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
         frame
@@ -1630,6 +1657,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.intel_refresh
         && let Some(payload) = job.intel_payload.as_ref()
     {
+        failure::stage("intel", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
         frame
@@ -1646,6 +1674,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.weather_refresh
         && let Some(payload) = job.weather_payload.as_ref()
     {
+        failure::stage("weather", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
         let mut tracker = shared
@@ -1669,6 +1698,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.capitulation_refresh
         && let Some(payload) = job.capitulation_payload.as_ref()
     {
+        failure::stage("capitulation", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 1];
         frame
@@ -1682,6 +1712,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+    failure::stage("division presentation", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     for (total, ticks) in DIVISION_PRESENTATION_DECODE_NS
         .iter()
@@ -1697,6 +1728,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
 /// The spool thread is still consuming, so handoffs make progress.
 /// `drained` receives the count of queued jobs decoded so far, after each.
 pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
+    let _failure = failure::Scope::worker("decode detach drain");
     STOP.store(true, Ordering::Release);
     let (worker, mut error) = match WORKER.lock() {
         Ok(mut slot) => (slot.take(), None),
@@ -1710,7 +1742,7 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
         crate::worker_sampler::stop_before_thread_exit();
     }
     if let Some(handle) = worker
-        && handle.join().is_err()
+        && let Err(payload) = handle.join()
     {
         crate::equipment_destruction::lost_drain();
         crate::naval_result_sources::lost_drain();
@@ -1718,38 +1750,44 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
         crate::building_bombing::lost_drain();
         crate::nuclear_strikes::lost_drain();
         crate::land_events::fail("land decode worker panicked");
-        error = Some("decode worker panicked; its in-flight frame may be incomplete");
+        error = Some(failure::joined(
+            payload,
+            "decode worker panicked; its in-flight frame may be incomplete",
+        ));
     }
     WORKER_ID.store(0, Ordering::Release);
     let shared_ptr = sampling::SHARED.load(Ordering::Acquire);
     if shared_ptr.is_null() {
         STOP.store(false, Ordering::Release);
-        return error.map_or(Ok(()), Err);
+        return panic_failure().or(error).map_or(Ok(()), Err);
     }
     let shared = unsafe { &*shared_ptr };
     // The joined worker drops its memo. Drain owns one fresh entry and cannot
     // race or retain references into worker/ready-queue storage.
     let mut air_bases_memo = AirBasesMemo::default();
-    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut count = 0;
         while let Some(job) = shared.decode_queue.pop() {
             process_owned_job(shared, job, &mut air_bases_memo);
             count += 1;
+            failure::stage("drain progress", None);
             drained(count);
         }
-    }))
-    .is_err()
-    {
+    })) {
         crate::equipment_destruction::lost_drain();
         crate::naval_result_sources::lost_drain();
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
         crate::nuclear_strikes::lost_drain();
         crate::land_events::fail("land decode detach drain panicked");
-        error = Some("decode detach drain panicked; queued frames remain incomplete");
+        let reason = failure::joined(
+            payload,
+            "decode detach drain panicked; queued frames remain incomplete",
+        );
+        error.get_or_insert(reason);
     }
     STOP.store(false, Ordering::Release);
-    error.map_or(Ok(()), Err)
+    panic_failure().or(error).map_or(Ok(()), Err)
 }
 
 /// Additive calibration snapshot. Every counter is monotonic since attach.
@@ -1959,9 +1997,9 @@ pub struct Calibration {
     pub relations_copy_ns: [u64; 2],
     pub relations_decode_ns: [u64; 2],
     pub relations_raw_bytes: [u64; 2],
-    pub characters_copy_ns: [u64; 5],
-    pub characters_decode_ns: [u64; 5],
-    pub characters_raw_bytes: [u64; 5],
+    pub characters_copy_ns: [u64; CHARACTERS.len()],
+    pub characters_decode_ns: [u64; CHARACTERS.len()],
+    pub characters_raw_bytes: [u64; CHARACTERS.len()],
     pub projects_copy_ns: [u64; 2],
     pub projects_decode_ns: [u64; 2],
     pub projects_raw_bytes: [u64; 2],

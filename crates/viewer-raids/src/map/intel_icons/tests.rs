@@ -8,6 +8,55 @@ use replay_data::{
 };
 use viewer_foundation::map::{native_resources::Context, sprites::Batch, test_support::gui};
 
+#[test]
+fn propaganda_history_hover_uses_recorded_order_and_independent_drift() {
+    use replay_data::rows::PropagandaEffortRow as Row;
+    let rows = [
+        Row {
+            slot: 7,
+            country: 101,
+            sequence: 12,
+            stability: 32768,
+            war_support: -16384,
+            derived_drift: 0,
+        },
+        Row {
+            slot: 7,
+            country: 101,
+            sequence: u64::MAX,
+            stability: -8192,
+            war_support: 65536,
+            derived_drift: 0,
+        },
+    ];
+    let text = tooltips::propaganda_history_text(&rows, 7).unwrap();
+    assert!(text.contains("Weekly stability drift: -25.00000%"));
+    assert!(text.contains("Weekly war support drift: 200.00000%"));
+    assert!(text.contains("Effort 1: stability 100.00000%, war support -50.00000%"));
+    assert!(tooltips::propaganda_history_text(&rows, 8).is_err());
+}
+
+#[test]
+fn national_network_cache_detail_uses_recorded_aggregates_without_float_rounding() {
+    let row = replay_data::rows::IntelNetworkSummaryRow {
+        covered_core_states: 17,
+        covered_controlled_states: 29,
+        covered_worth: -1,
+        controlled_strength_sum: i64::MIN,
+        core_strength_sum: -1,
+        max_state_strength: i64::MAX,
+        ..Default::default()
+    };
+    let text = tooltips::network_cache_text(&row);
+    assert!(text.contains("Network order: 1"));
+    assert!(text.contains("Covered core states: 17"));
+    assert!(text.contains("Covered controlled states: 29"));
+    assert!(text.contains("Covered owned worth: -1"));
+    assert!(text.contains("Controlled strength sum: -92233720368547.75808"));
+    assert!(text.contains("Core strength sum: -0.00001"));
+    assert!(text.contains("Maximum state strength: 92233720368547.75807"));
+}
+
 fn defines() -> IntelDefines {
     IntelDefines {
         cutoff: 90_000_000,
@@ -479,13 +528,16 @@ fn state(kinds: &[EntryKind]) -> Arc<IntelIcons> {
 }
 
 /// One operation entry with `writes`, drawn into `view`.
-fn drawn_into(view: &mut IntelView, writes: Vec<Write>) -> Vec<IntelHit> {
+fn drawn_into(
+    view: &mut IntelView,
+    windows: &viewer_foundation::map::native_windows::NativeWindows,
+    writes: Vec<Write>,
+) -> Vec<IntelHit> {
     let mut resources = gui::fixture();
     resources.physical = Some([2048, 1152]);
-    let windows = gui::windows(GUI);
     let context = Context {
         resources: &resources,
-        windows: &windows,
+        windows,
         viewport: [2048, 1152],
         time: Some(0.0),
     };
@@ -512,10 +564,14 @@ fn a_withheld_child_shows_again_when_a_later_write_sets_it() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut view = IntelView::default();
+    // Retained visibility belongs to one registry binding; a new registry
+    // recreates every window instead of exercising the next frame's writes.
+    let windows = gui::windows(GUI);
     let top = 308.0 + 14.0 + 5.0;
     let icon = [262.0 + 115.0 + 1.0, top];
     let withheld = drawn_into(
         &mut view,
+        &windows,
         vec![
             Write::Withheld("operation_icon", "an input is absent".into()),
             Write::Frame("operation_icon", 1),
@@ -523,12 +579,16 @@ fn a_withheld_child_shows_again_when_a_later_write_sets_it() {
         ],
     );
     assert_eq!(title(&withheld, icon), None);
-    let recovered = drawn_into(&mut view, vec![Write::Frame("operation_icon", 1)]);
+    let recovered = drawn_into(&mut view, &windows, vec![Write::Frame("operation_icon", 1)]);
     assert_eq!(title(&recovered, icon), Some("0".into()));
     // The game's own hide stays.
-    let hidden = drawn_into(&mut view, vec![Write::Shown("operation_icon", false)]);
+    let hidden = drawn_into(
+        &mut view,
+        &windows,
+        vec![Write::Shown("operation_icon", false)],
+    );
     assert_eq!(title(&hidden, icon), None);
-    let framed = drawn_into(&mut view, vec![Write::Frame("operation_icon", 1)]);
+    let framed = drawn_into(&mut view, &windows, vec![Write::Frame("operation_icon", 1)]);
     assert_eq!(title(&framed, icon), None);
 }
 
@@ -865,5 +925,42 @@ fn a_nonterminal_operation_at_zero_remaining_days_has_the_finished_entry_present
         entry
             .writes
             .contains(&Write::Shown("operation_completed_overlay", true))
+    );
+}
+
+#[test]
+fn intel_sources_hover_keeps_keyed_zero_duplicate_occurrences_and_prior_day_separate() {
+    use replay_data::rows::IntelContributionRow;
+    let rows = [
+        IntelContributionRow {
+            kind: 4,
+            pool: 17,
+            ordinal: 2,
+            civilian: -1,
+            ..Default::default()
+        },
+        IntelContributionRow {
+            kind: 4,
+            pool: 17,
+            ordinal: 3,
+            ..Default::default()
+        },
+        IntelContributionRow {
+            kind: 5,
+            pool: 17,
+            ordinal: 0,
+            navy: 300_000,
+            ..Default::default()
+        },
+    ];
+    let text = super::tooltips::source_values_text(&rows.iter().collect::<Vec<_>>(), &[]).unwrap();
+    assert!(text.contains(
+        "Prior-day dynamic contribution, pool 17, entry 2: -0.00001 / 0.00000 / 0.00000 / 0.00000"
+    ));
+    assert!(text.contains(
+        "Prior-day dynamic contribution, pool 17, entry 3: 0.00000 / 0.00000 / 0.00000 / 0.00000"
+    ));
+    assert!(
+        text.contains("Pending dynamic, pool 17, entry 0: 0.00000 / 0.00000 / 3.00000 / 0.00000")
     );
 }

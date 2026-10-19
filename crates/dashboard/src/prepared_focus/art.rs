@@ -407,6 +407,8 @@ type EventArtReply = (Vec<artwork::ResolvedArt>, Vec<String>);
 /// Each completion's art at its own hour, for `requests` of (hour, tag,
 /// token), as the event feed shows it, with the content's standing warnings;
 /// the content's refusal when it does not load.
+// I/O failure and content refusal are separate; successful art also carries standing warnings.
+#[allow(clippy::type_complexity)]
 pub(crate) fn event_art(
     source: &Source,
     content: &ContentOptions,

@@ -760,3 +760,92 @@ fn reserve_sources_join_the_recorded_country_and_commander_trees() {
     assert!(sources.country.unwrap_err().contains("refused at capture"));
     assert_eq!(sources.commander.unwrap().unwrap().0, "Rommel");
 }
+
+#[test]
+fn division_experience_hover_uses_localized_levels_and_exact_progress() {
+    let loc: Localisation = [
+        ("UNIT_LEVEL_7", "Custom rank"),
+        (
+            "EXP_TOOLTIP_ARMY",
+            "Rank $NUMBER$ $LEVEL$ $COMBAT$ progress $EXP|%0$",
+        ),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect();
+    let text = division_experience_tooltip(
+        &NoIcons,
+        &loc,
+        installed_content_core::unit_leader::DivisionExperienceProgress {
+            level: 7,
+            next_level_fraction: 25_000,
+            combat_bonus: -12_500,
+        },
+    )
+    .unwrap();
+    assert!(text.contains("Rank 8 Custom rank"), "{text}");
+    assert!(text.contains("25%"), "{text}");
+    assert!(text.contains("-12%"), "{text}");
+}
+
+#[test]
+fn both_conversion_products_resolve_country_specific_template_name_keys() {
+    use replay_data::{
+        rows::CountryLinkRow, rows::CountryRow, rows::DivisionTemplateIconRow,
+        rows::DivisionTemplateRow, rows::TableId, rows::TableRows,
+    };
+    use replay_frame::{frame::Metrics, frame::TableView};
+    let loc: Localisation = [
+        ("KEY".into(), "Generic".into()),
+        ("AAA_KEY".into(), "Country name".into()),
+    ]
+    .into_iter()
+    .collect();
+    let mut frame = DecodedFrame {
+        branch: 1,
+        hour: 0,
+        tables: std::array::from_fn(|_| {
+            TableView::Unavailable {
+                reason: "fixture".into(),
+            }
+            .into()
+        }),
+        metrics: Metrics::default(),
+    };
+    for rows in [
+        TableRows::DivisionTemplates(vec![DivisionTemplateRow {
+            template: 7,
+            name_key: Recorded::Value(b"KEY".to_vec()),
+            ..Default::default()
+        }]),
+        TableRows::DivisionTemplateIcons(vec![DivisionTemplateIconRow {
+            template: 7,
+            country: 9,
+            ..Default::default()
+        }]),
+        TableRows::CountryLinks(vec![CountryLinkRow {
+            id: 9,
+            canonical_slot: 3,
+        }]),
+        TableRows::Countries(vec![CountryRow {
+            id: 9,
+            canonical_slot: 3,
+            tag: b"AAA".to_vec(),
+            ..Default::default()
+        }]),
+    ] {
+        let index = rows.table().index();
+        frame.tables[index] = TableView::Complete(rows).into();
+    }
+    assert_eq!(
+        template_display_name(&loc, &frame, 7).unwrap(),
+        "Country name"
+    );
+    let TableView::Complete(TableRows::DivisionTemplates(rows)) =
+        &mut *frame.tables[TableId::DivisionTemplates.index()]
+    else {
+        panic!()
+    };
+    rows[0].name = b"Literal".to_vec();
+    assert_eq!(template_display_name(&loc, &frame, 7).unwrap(), "Literal");
+}

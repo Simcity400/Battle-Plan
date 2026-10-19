@@ -54,6 +54,9 @@ pub fn compare(
     complete &= report.attempt("Variants", |report| {
         compare_variants(frame, &saved.production, links, tokens, report)
     });
+    complete &= report.attempt("DesignCountryTemplates", |report| {
+        compare_design_templates(frame, &saved.production, links, tokens, report)
+    });
     complete &= report.attempt("ArmyUpgrades", |report| {
         compare_army_upgrades(frame, &saved.production, links, report)
     });
@@ -69,6 +72,9 @@ pub fn compare(
     complete &= report.attempt("IndustrialOrganisations", |report| {
         compare_organisations(frame, &saved.production, links, tokens, report)
     });
+    complete &= report.attempt("IndustrialOrganisationDetails", |report| {
+        mios::compare(frame, &saved.production, links, tokens, report)
+    });
     // The output census is self-checked along the branch (`compare_line_output`).
     complete &= report.attempt("producer ProductionLineOutput", |report| {
         compare_line_output_countries(frame, &saved.production, links, report)
@@ -82,6 +88,82 @@ pub fn compare(
     } else {
         Err(invalid("one or more production comparisons failed"))
     }
+}
+
+fn compare_design_templates(
+    frame: &DecodedFrame,
+    saved: &production::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    tokens: &TokenNames<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let countries = saved
+        .countries
+        .as_ref()
+        .ok_or_else(|| invalid("save lacks design discount owners"))?;
+    let demanded: BTreeSet<_> = complete::<tables::VariantDefinitions>(frame)?
+        .iter()
+        .map(|row| row.creator_link)
+        .collect();
+    let actual = complete::<tables::DesignCountryTemplates>(frame)?;
+    let mut seen = BTreeSet::new();
+    for row in actual {
+        if !demanded.contains(&row.country) || !seen.insert(row.country) {
+            return Err(invalid(
+                "design discount owner roster differs from saved design demand",
+            ));
+        }
+        if row.failure != 0 {
+            return Err(invalid(format!(
+                "design discount country {} acquisition failed ({})",
+                row.country, row.failure
+            )));
+        }
+        let tag = required_country_tag(row.country, links)?;
+        let expected = countries
+            .get(tag)
+            .and_then(|country| country.production.as_ref())
+            .ok_or_else(|| invalid("saved design discount country production absent"))?;
+        let entries = row
+            .entries()
+            .map(|(uses, factor, equipment)| {
+                Ok((
+                    uses,
+                    factor,
+                    equipment
+                        .iter()
+                        .map(|token| {
+                            tokens
+                                .get(token)
+                                .copied()
+                                .map(installed_content_core::parser::c_string)
+                                .map(<[u8]>::to_vec)
+                                .ok_or_else(|| {
+                                    invalid(format!(
+                                        "design discount token {token} has no spelling"
+                                    ))
+                                })
+                        })
+                        .collect::<io::Result<Vec<_>>>()?,
+                ))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        equal(
+            report,
+            format!("country {tag:?}.design_discounts"),
+            entries,
+            expected
+                .design_templates
+                .iter()
+                .map(|entry| (entry.uses, entry.factor.raw, entry.equipment.clone()))
+                .collect(),
+        );
+    }
+    if seen != demanded {
+        return Err(invalid("design discount demanded country absent"));
+    }
+    report.compared("DesignCountryTemplates", actual.len());
+    Ok(())
 }
 
 /// The game serializes the entire array, including inactive occurrences.
@@ -246,7 +328,7 @@ fn compare_organisations(
     let mut history = BTreeMap::new();
     for row in complete::<tables::IndustrialOrganisationHistory>(frame)? {
         if history
-            .insert((row.organisation, row.variant), row.units)
+            .insert((row.organisation, row.variant), row)
             .is_some()
         {
             return Err(invalid("duplicate organisation history key"));
@@ -307,9 +389,18 @@ fn compare_organisations(
             for entry in &expected.history {
                 let label = format!("{label}.history {}", entry.variant);
                 match history.remove(&(expected.id, entry.variant)) {
-                    Some(units) => {
+                    Some(actual) => {
                         history_matched += 1;
-                        equal(report, format!("{label}.units"), units, entry.units);
+                        equal(report, format!("{label}.units"), actual.units, entry.units);
+                        equal(
+                            report,
+                            format!("{label}.design_date"),
+                            actual.design_hour,
+                            entry
+                                .design_date
+                                .map(|date| date.engine_hour())
+                                .transpose()?,
+                        );
                     }
                     None => report.difference(label, "absent", "present"),
                 }
@@ -328,12 +419,10 @@ fn compare_organisations(
     }
     report.compared("IndustrialOrganisations", matched);
     report.compared("IndustrialOrganisationHistory", history_matched);
-    report.limitation(
-        "each history slot's date is saved but not recorded",
-        "IndustrialOrganisationHistory",
-    );
     Ok(())
 }
+
+mod mios;
 
 mod line_output;
 #[cfg(test)]

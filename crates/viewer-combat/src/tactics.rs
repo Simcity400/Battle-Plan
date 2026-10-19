@@ -953,7 +953,9 @@ impl Context<'_> {
         let full = super::land_details::total_width(self.detail, *terrain, directions)
             .wrapping_sub(used)
             <= 0;
-        trigger_boolean(item).map(|desired| desired == full)
+        trigger_boolean(item)
+            .map(|desired| desired == full)
+            .map_err(|why| why.to_string())
     }
 
     /// The fixed5 share of the side's full ordered unit roster whose recorded
@@ -1031,11 +1033,9 @@ impl Context<'_> {
             return Ok(0);
         }
         // Check the weight object's modifiers in the tactic scope.
-        let mut weight = Evaluator::new(&self.world, Some(self)).mean_time_to_happen(
-            "base weight",
-            &definition.blocks("base"),
-            Scopes::combat(),
-        )?;
+        let mut weight = Evaluator::new(&self.world, Some(self))
+            .mean_time_to_happen("base weight", &definition.blocks("base"), Scopes::combat())
+            .map_err(|why| why.to_string())?;
         let inputs = &self.detail.tactic_inputs;
         for preference in 0..3 {
             if inputs.preferred_tactic_ids[self.side][preference] != candidate.tactic_id {
@@ -1075,8 +1075,8 @@ impl Context<'_> {
 /// The combat side the tactic scope is, for the shared
 /// evaluator.
 impl Combat for Context<'_> {
-    fn country(&self) -> Result<u32, String> {
-        self.country_slot()
+    fn country(&self) -> Result<u32, dashboard_text::triggers::Failure> {
+        self.country_slot().map_err(Into::into)
     }
 
     fn trigger(&self, name: &str, item: &Item, this: Scope, evaluator: &Evaluator) -> Option<Eval> {
@@ -1087,8 +1087,8 @@ impl Combat for Context<'_> {
             })
     }
 
-    fn category_share(&self, mask: u64) -> Result<i64, String> {
-        Context::category_share(self, mask)
+    fn category_share(&self, mask: u64) -> Result<i64, dashboard_text::triggers::Failure> {
+        Context::category_share(self, mask).map_err(Into::into)
     }
 }
 

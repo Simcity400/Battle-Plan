@@ -257,6 +257,37 @@ fn value(item: &Item, unheld: &mut Unheld) -> Option<Modifier> {
 }
 
 impl Modifiers {
+    /// Assignment copies tooltip keys by the native table's copy insertion
+    /// order. Numeric entries and hidden identities retain their stored values.
+    pub fn copied(&self) -> Self {
+        Self {
+            values: self.values.clone(),
+            hidden: self.hidden.clone(),
+            tooltips: self.tooltips.copied(),
+            children: self.children.iter().map(Self::copied).collect(),
+            unheld: self.unheld.clone(),
+        }
+    }
+
+    /// The native empty test includes tooltip/child presence and eligible
+    /// stored keys. A present zero still makes the object nonempty.
+    pub fn effectively_empty(
+        &self,
+        eligible: &mut impl FnMut(&str) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        if !self.tooltips.is_empty() || !self.children.is_empty() {
+            return Ok(false);
+        }
+        if let Some(reason) = self.unheld.cause() {
+            return Err(format!("modifier emptiness: {reason} (count: 1)"));
+        }
+        for value in &self.values {
+            if eligible(&value.name)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
     /// One entry of a modifier block as dispatched.
     pub fn read(&mut self, item: &Item) {
         match item.keyword().map(|keyword| keyword.folded()).as_deref() {

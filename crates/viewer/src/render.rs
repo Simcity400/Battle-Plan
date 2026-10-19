@@ -556,7 +556,9 @@ fn dump_frame(
     request: Request<'_>,
 ) -> io::Result<()> {
     // Province owners, icon manager, then draw; a hidden interface still steps.
-    let sprites = overlay.present(request.animation_time)?;
+    overlay.present(request.animation_time)?;
+    scene.set_air_assignment(queue, overlay.prepared().province_stripes());
+    let sprites = overlay.shown();
     scene.render(
         device,
         queue,

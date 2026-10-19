@@ -44,6 +44,8 @@ fn effect_rosters_preserve_order_at_5000_countries_and_fail_independently() {
     let mut neighbors = vec![0; 15_000];
     let mut policies = vec![0; 10_000];
     let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
         states: Buffer::Fixed(&mut states),
         leaders: Buffer::Fixed(&mut leaders),
         state_len: 0,
@@ -194,6 +196,8 @@ fn five_native_order_rosters_scale_to_5000_countries_without_fabricating_handles
     let mut states = vec![0; 45_000];
     let mut leaders = vec![0; 30_000];
     let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
         states: Buffer::Fixed(&mut states),
         leaders: Buffer::Fixed(&mut leaders),
         state_len: 0,
@@ -242,6 +246,8 @@ fn a_short_arena_and_invalid_leaders_preserve_country_scalars() {
     let mut states = [0; 17];
     let mut leaders = [0; 12];
     let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
         states: Buffer::Fixed(&mut states),
         leaders: Buffer::Fixed(&mut leaders),
         state_len: 0,
@@ -321,6 +327,8 @@ fn absent_arenas_preserve_all_scalar_rows_at_5000_countries() {
     let (world, _) = fixture(5_000);
     let mut rows = vec![CounterInputsRow::default(); 5_000];
     let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
         states: Buffer::Fixed(&mut []),
         leaders: Buffer::Fixed(&mut []),
         state_len: 0,
@@ -362,6 +370,8 @@ fn observed_empty_and_null_character_rosters_are_present_empty_spans() {
     let world = World::new(0x4000_0000, 1, 0x1100);
     let mut rows = [CounterInputsRow::default()];
     let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
         states: Buffer::Fixed(&mut []),
         leaders: Buffer::Fixed(&mut []),
         state_len: 0,
@@ -409,6 +419,8 @@ fn a_short_member_copy_cannot_publish_empty_rosters_and_demand_never_follows_mem
     );
     let mut rows = [CounterInputsRow::default()];
     let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
         states: Buffer::Fixed(&mut [0; 9]),
         leaders: Buffer::Fixed(&mut [0; 6]),
         state_len: 0,
@@ -447,6 +459,8 @@ fn growing_rosters_keep_the_first_5000_country_capture_and_later_mod_sized_heade
     let mut capture = |world: &World| {
         let memory = world.memory();
         let mut rosters = CounterRosters {
+            capture_sent_expeditionaries: true,
+
             states: Buffer::Growing(&mut states),
             leaders: Buffer::Growing(&mut leaders),
             state_len: 0,
@@ -556,6 +570,8 @@ fn counter_walk(memory: &impl Memory, world: &World) -> (Outcome, Vec<CounterInp
     let (mut states, mut leaders) = (vec![0; 4_000], vec![0; 4_000]);
     let (mut neighbors, mut policies) = (vec![0; 4_000], vec![0; 4_000]);
     let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
         states: Buffer::Fixed(&mut states),
         leaders: Buffer::Fixed(&mut leaders),
         state_len: 0,
@@ -662,6 +678,8 @@ fn a_page_of_leaders_reads_their_identities_in_one_guarded_batch() {
     let mut rows = [CounterInputsRow::default(); 1];
     let (mut states, mut leaders) = ([0; 16], [0; 70]);
     let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
         states: Buffer::Fixed(&mut states),
         leaders: Buffer::Fixed(&mut leaders),
         state_len: 0,
@@ -689,4 +707,127 @@ fn a_page_of_leaders_reads_their_identities_in_one_guarded_batch() {
     );
     let guards = counted.guards.get();
     assert!(guards < 60, "{guards} guarded calls");
+}
+
+#[test]
+fn manpower_sent_expeditionaries_keep_raw_reference_order_at_5000_countries() {
+    let (mut world, _) = fixture(5_000);
+    for country in 1..=5_000 {
+        let entries = world.alloc(32);
+        let refs = [u64::MAX, 0, (u64::from(country) << 32) | 4713, u64::MAX];
+        for (index, reference) in refs.into_iter().enumerate() {
+            world.u64(entries + index * 8, reference);
+        }
+        world.array(world.object(country) + SENT_EXPEDITIONARIES, entries, 4);
+    }
+    let mut rows = vec![CounterInputsRow::default(); 5_000];
+    let mut states = vec![0; 45_000];
+    let mut leaders = vec![0; 50_000];
+    let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
+        states: Buffer::Fixed(&mut states),
+        leaders: Buffer::Fixed(&mut leaders),
+        state_len: 0,
+        leader_len: 0,
+        required: Default::default(),
+    };
+    assert_eq!(
+        walk_counter_inputs_with_rosters(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters
+        ),
+        Outcome::Rows { len: 5_000 }
+    );
+    for row in rows {
+        let span = row.sent_expeditionaries.unwrap();
+        assert_eq!(
+            &rosters.leaders[span.start..span.start + span.count],
+            &[u64::MAX, 0, (u64::from(row.country) << 32) | 4713, u64::MAX]
+        );
+    }
+}
+
+#[test]
+fn manpower_unreadable_expeditionary_references_keep_state_and_leader_rosters() {
+    let (mut world, _) = fixture(2);
+    world.array(world.object(1) + SENT_EXPEDITIONARIES, 0xdead_beef, 1);
+    let mut rows = [CounterInputsRow::default(); 2];
+    let mut states = [0; 18];
+    let mut leaders = [0; 13];
+    let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+        states: Buffer::Fixed(&mut states),
+        leaders: Buffer::Fixed(&mut leaders),
+        state_len: 0,
+        leader_len: 0,
+        required: Default::default(),
+    };
+    assert_eq!(
+        walk_counter_inputs_with_rosters(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters
+        ),
+        Outcome::Rows { len: 2 }
+    );
+    assert!(rows[0].state_rosters.is_some());
+    assert!(rows[0].leader_rosters.is_some());
+    assert_eq!(rows[0].sent_expeditionaries, None);
+    assert_eq!(rows[0].roster_reason, None);
+    assert_eq!(rows[1].sent_expeditionaries.unwrap().count, 0);
+}
+
+#[test]
+fn manpower_without_a_certificate_reads_no_sent_reference_header() {
+    let (world, _) = fixture(2);
+    struct NoSent<'a> {
+        memory: crate::memory::SliceMemory<'a>,
+        forbidden: [usize; 2],
+    }
+    impl Memory for NoSent<'_> {
+        fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
+            assert!(
+                !self.forbidden.contains(&address),
+                "uncertified sent-reference read"
+            );
+            self.memory.copy(address, bytes)
+        }
+    }
+    let memory = NoSent {
+        memory: world.memory(),
+        forbidden: [
+            world.object(1) + SENT_EXPEDITIONARIES,
+            world.object(2) + SENT_EXPEDITIONARIES,
+        ],
+    };
+    let mut rows = [CounterInputsRow::default(); 2];
+    let mut states = [0; 18];
+    let mut leaders = [0; 12];
+    let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: false,
+        states: Buffer::Fixed(&mut states),
+        leaders: Buffer::Fixed(&mut leaders),
+        state_len: 0,
+        leader_len: 0,
+        required: Default::default(),
+    };
+    assert_eq!(
+        walk_counter_inputs_with_rosters(
+            &memory,
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters
+        ),
+        Outcome::Rows { len: 2 }
+    );
+    assert!(rows.iter().all(|row| row.sent_expeditionaries.is_none()
+        && row.state_rosters.is_some()
+        && row.leader_rosters.is_some()));
 }

@@ -33,6 +33,9 @@ pub(crate) struct Reinforce {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct LandDefines {
+    pub(crate) combat_speed: i64,
+    pub(crate) experience: Option<installed_content_core::unit_leader::DivisionExperience>,
+    pub(crate) experience_refusal: Option<String>,
     /// `COMBAT_{GOOD,SOME}_PIERCING` then `COMBAT_{GOOD,SOME}_ARMOR`, narrowed
     /// to f32 as the define registry stores them.
     pub(crate) armour_icons: [f32; 4],
@@ -83,7 +86,12 @@ impl LandDefines {
                     .into(),
             ));
         }
+        let experience = installed_content_core::unit_leader::DivisionExperience::read(defines);
+        let experience_refusal = experience.as_ref().err().map(ToString::to_string);
         Ok(Self {
+            combat_speed: military("COMBAT_MOVEMENT_SPEED")?.max(0),
+            experience: experience.ok(),
+            experience_refusal,
             armour_icons: [
                 float("NInterface", "COMBAT_GOOD_PIERCING")?,
                 float("NInterface", "COMBAT_SOME_PIERCING")?,

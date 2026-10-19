@@ -2,7 +2,7 @@ import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { describeRun } from '../../charts/timeline/runState.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
-import type { HourSpan, WarCasualtyRun, WarObservation, WarParticipantRun, WarTimeline } from '../../generated/dashboard';
+import type { HourSpan, WarCasualtyRun, WarObservation, WarParticipantRun, WarTimeline, WarContributionGroup } from '../../generated/dashboard';
 import { labelObservationAt, sideLabel } from './warsData.ts';
 
 type Country = CountryLabel;
@@ -54,6 +54,8 @@ export interface WarTooltipInput {
   participant?: { tag: string; run: WarParticipantRun | null; capitulations?: readonly number[] };
   /** The prepared prefix's last hour while the hours after it are still being prepared. */
   preparedThrough?: number | null;
+  contributions?: WarContributionGroup | null;
+  contributionsPending?: boolean;
 }
 
 export function warTooltip(input: WarTooltipInput): TooltipContent {
@@ -79,6 +81,21 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
     rows.unshift({ label: 'Side', value: side });
     rows.push({ label: 'Joined', value: run ? `${run.joinedBy ? 'by ' : ''}${day(run.firstHour)}` : outside },
       { label: 'Left', value: run ? endLabel(run, run.leftBy, until, branchLast, unobserved, day, true, through) : outside });
+    if (run && !absent) {
+      const contribution = input.contributions?.participants.find(row => row.tag === participant.tag);
+      if (contribution) {
+        rows.push({ label: 'Participation', value: `${formatAmount(BigInt(contribution.participation) * 100n, 5, 5)}%` },
+          { label: 'Participation score', value: formatAmount(contribution.score, 5, 5) });
+        const components = [
+          ['Equipment damage', contribution.equipmentDamage], ['Occupation', contribution.occupation],
+          ['Air damage', contribution.airDamage], ['Strategic bombing', contribution.strategicBombing],
+          ['Ship damage', contribution.shipDamage], ['Convoy damage', contribution.convoyDamage],
+          ['Casualties contribution', contribution.casualties], ['Unknown casualties contribution', contribution.unknownCasualties],
+          ['Lend-lease sent', contribution.lendLeaseSent], ['Lend-lease received', contribution.lendLeaseReceived],
+        ];
+        for (const [label, raw] of components) rows.push({ label, value: formatAmount(raw, 5, 5) });
+      } else rows.push({ label: 'Participation', value: input.contributionsPending ? 'Loading…' : 'Not recorded' });
+    }
     const events = participant.capitulations ?? war.capitulations.filter(cap => cap.tag === participant.tag).map(cap => cap.hour);
     const caps = run ? events.filter(at => at <= until && run.firstHour <= at && at <= run.lastHour) : [];
     for (const cap of caps) rows.push({ label: 'Capitulated', value: day(cap) });
@@ -89,10 +106,15 @@ export function warTooltip(input: WarTooltipInput): TooltipContent {
     rows.push(...casualtyRows(absent ? null : losses, sides, absent ?? (input.lossesPending ? 'Loading…' : undefined)));
     if (!absent && observation) for (const [index, tags] of [observation.viewpointSide, observation.opposingSide].entries()) {
       rows.push({ label: sides[index], divider: true });
-      for (const tag of new Set(tags)) rows.push({ label: country(tag).name, countryFlag: country(tag), indent: true, short: true });
+      for (const tag of new Set(tags)) {
+        const score = input.contributions?.participants.find(row => row.tag === tag);
+        rows.push({ label: country(tag).name, countryFlag: country(tag), indent: true, short: true,
+          ...(score ? { value: `${formatAmount(BigInt(score.participation) * 100n, 5, 5)}% · ${formatAmount(score.score, 5, 5)}` } : {}) });
+      }
     }
   }
   const notes = [
+    !absent ? input.contributions?.reason : null,
     losses && !participant && !absent ? `Casualties as recorded ${day(losses[0])} – ${day(losses[1])}.` : null,
     missingCaps ? 'Some capitulations may be missing.' : null,
   ].filter(Boolean).join(' ');

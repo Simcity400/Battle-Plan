@@ -104,11 +104,43 @@ fn compare_pack(
     attempt!("TimedIdeas", compare_timed_ideas);
     attempt!("Focus", compare_focus);
     attempt!("CompletedFocuses", compare_completed_focuses);
+    complete &= report.attempt("governance doctrines", |report| {
+        doctrines::compare_doctrines(frame, pack, links, tokens, report)
+    });
     complete &= report.attempt("governance Research", |report| {
         compare_research(frame, pack, links, tokens, report)
     });
-    if frame.complete::<tables::ResearchModifiers>().is_ok() {
-        report.limitation("research modifier operands and sources have synthetic coverage, but no fresh-save or live-rate oracle validation", "ResearchModifiers");
+    if let Ok(rows) = frame.complete::<tables::ResearchModifiers>() {
+        report.limitation("research modifier operands and sources outside the separately compared grant inventory have synthetic coverage, but no fresh-save or live-rate oracle validation", "ResearchModifiers");
+        let mut rosters = BTreeMap::<u32, Vec<_>>::new();
+        for row in rows
+            .iter()
+            .filter(|row| row.kind == replay_data::rows::ResearchModifierRow::SHARING_ROSTER)
+        {
+            required_country_tag(row.country, links)?;
+            rosters.entry(row.country).or_default().push(row);
+        }
+        for (owner, rows) in &rosters {
+            let counts: Vec<_> = rows.iter().filter(|row| row.raw == -1).collect();
+            if counts.len() != 1
+                || counts
+                    .first()
+                    .is_some_and(|row| row.count as usize + 1 != rows.len())
+                || rows.iter().any(|row| {
+                    row.index != u32::MAX
+                        || row.technology_handle != 0
+                        || (row.raw != -1 && u32::try_from(row.raw).is_err())
+                })
+            {
+                report.difference(
+                    format!("ResearchModifiers sharing roster {owner}"),
+                    "invalid count/identity witness",
+                    "one count witness and its native group IDs",
+                );
+            }
+        }
+        report.compared("ResearchModifiers.SharingRoster self-check", rosters.len());
+        report.limitation("the country technology-status sharing roster is not serialized; the global sharing members cannot certify this separate roster. Count/identity checks need matched native observations for membership, including an idle country", "ResearchModifiers.SharingRoster");
     }
     if frame.complete::<tables::ResearchInputs>().is_ok()
         || frame.complete::<tables::ResearchAppliedBonuses>().is_ok()
@@ -271,6 +303,18 @@ fn compare_politics(
             Some(row.original_capital),
             country.original_capital,
         );
+        if let Some(&interval) = report.recorded(
+            &row.election_interval,
+            "Politics.election_interval",
+            &subject,
+        ) {
+            equal(
+                report,
+                format!("{subject}.election_frequency"),
+                Some(interval),
+                saved.election_frequency,
+            );
+        }
         // The country writer writes both elections operands unconditionally;
         // an older recording holds no value.
         if let Recorded::Value(has_elections) = row.has_elections {
@@ -1054,6 +1098,7 @@ fn compare_tactic_unlocks(
     Ok(())
 }
 
+mod doctrines;
 mod sharing;
 use sharing::{compare_sharing, compare_sharing_groups};
 

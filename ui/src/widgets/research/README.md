@@ -46,3 +46,9 @@ Country and campaign/follow/pin; Whole campaign is the default. View (Columns or
 Lane indexes are built once per immutable history reply. Playback selects revealed row prefixes by binary search, retaining unchanged rows; assignments, held runs and latest progress use indexed lookups. Columns use named native ordered lists on their shared scroll surface. Fitting histories keep native flow and grid stretching; overflowing histories mount the measured viewport rows. Authored padding and opening offsets remain part of row geometry and keyboard scrolling. Tab and Shift+Tab traverse every interactive history row across adjacent slots; opening and closing markers keep their places without becoming keyboard stops. Full histories are clipped when the time breakdown opens, keeping earlier work and hiding future observations.
 
 Parity builds expose complete Columns rows, markers, offsets and exact current slot reads/progress without starting artwork or explanation work. List uses the shared table's complete model. Ordinary builds expose no model provider.
+
+Research history and Active research share an expandable Doctrines panel at the
+shown country/hour. It requests the interactive `doctrines` product only while
+open, shows choices, mastery/bank, effective and unit daily gains, commander
+contributions, completions, rewards and stored bonuses, and merges its counted
+diagnostics with the research widget's. Fixed5 mastery uses exact integer text.

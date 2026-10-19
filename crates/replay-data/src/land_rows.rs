@@ -22,6 +22,23 @@ pub struct LandSideLosses {
 value_struct!(LandSideLosses { manpower: i32, equipment: Vec<LandEquipmentLoss> });
 opaque_value!([LandSideLosses; 2]);
 
+/// Terminal supplemental observer operand; aggregate losses use `losses`.
+/// Kinds have the same meanings as CombatLogObserverKind.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LandTerminalObserver {
+    pub attacker: bool,
+    pub kind: u8,
+    pub item: u64,
+    pub values: [u64; 5],
+}
+value_struct!(LandTerminalObserver {
+    attacker: bool,
+    kind: u8,
+    item: u64,
+    values: [u64; 5]
+});
+opaque_value!(Vec<LandTerminalObserver>);
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DivisionManpowerContributor {
     pub country: u32,
@@ -107,6 +124,7 @@ pub struct LandCombatResultsRow {
     pub history_tags: [Vec<u8>; 2],
     /// Attacker then defender, after combat finalization's pending-damage flush.
     pub losses: [LandSideLosses; 2],
+    pub observers: Vec<LandTerminalObserver>,
 }
 typed_codec!(
     LandCombatResultsRow,
@@ -127,7 +145,8 @@ typed_codec!(
         10 => (on_action_winners): Opaque,
         11 => (history_countries): Opaque,
         12 => (history_tags): Opaque,
-        13 => (losses): Opaque
+        13 => (losses): Opaque,
+        14 => (observers): Opaque
     },
     |r| {
         if r.winners > 3 { Err(invalid("land winner mask invalid")) } else { Ok(()) }

@@ -7,6 +7,9 @@ use std::{
     io,
 };
 
+/// Native nonlocalized prefix used only by the simulation console override.
+const AIR_DETECTION_OVERRIDE_PREFIX: u32 = 0x0296_5e50;
+
 const CATEGORY_START: u32 = 0x00f7_31b0;
 const CATEGORY_END: u32 = 0x00f7_33b8;
 const CATEGORY_ZERO_CASE: u32 = 0x00f7_334c;
@@ -20,6 +23,8 @@ const AI_START: u32 = 0x0149_7260;
 const AI_END: u32 = 0x0149_7e9a;
 const MISSION_START: u32 = 0x00fa_efe0;
 const MISSION_END: u32 = 0x00fa_f0cf;
+const EQUIPMENT_MISSION_SELECT: u32 = 0x00ff_ef2c;
+const EQUIPMENT_MISSION_RESULT: u32 = 0x00ff_f06a;
 const EXECUTION_START: u32 = 0x0149_8240;
 const EXECUTION_END: u32 = 0x0149_8297;
 const ORDER_START: u32 = 0x0065_5a7a;
@@ -58,12 +63,14 @@ const RULE_DIGEST: &str = "1b72c6a717f7942fa0de6a3f12bec1986fa0c83c0246f634beed9
 
 #[derive(Debug)]
 pub struct AuxiliaryTables {
+    pub air_detection_override_prefix: &'static str,
     pub rules: Vec<(&'static str, &'static str, bool, bool)>,
     pub equipment_categories: Vec<(u32, u64, &'static str)>,
     pub category_names: Vec<(&'static str, u64)>,
     pub stat_metadata: Vec<(&'static str, &'static str, bool)>,
     pub ai_strategy_types: Vec<(&'static str, u32)>,
     pub missions: Vec<(&'static str, u32)>,
+    pub equipment_missions: Vec<(&'static str, u32)>,
     pub execution_types: Vec<(&'static str, u32)>,
     pub order_types: Vec<(&'static str, u32)>,
     pub selectors: Vec<(&'static str, u32)>,
@@ -132,17 +139,22 @@ impl AuxiliaryTables {
         }
         let ai_strategy_types = enum_projection(image, keywords, AI_START, AI_END)?;
         let missions = enum_projection(image, keywords, MISSION_START, MISSION_END)?;
+        let equipment_missions = equipment_mission_projection(image, keywords)?;
         let execution_types = enum_projection(image, keywords, EXECUTION_START, EXECUTION_END)?;
         let order_types = order_projection(image, keywords)?;
         let selectors = selector_projection(image, keywords)?;
         let rules = rule_projection(image, keywords)?;
         let tables = Self {
+            air_detection_override_prefix: leak_string(
+                image.string(AIR_DETECTION_OVERRIDE_PREFIX)?,
+            ),
             rules,
             equipment_categories,
             category_names,
             stat_metadata,
             ai_strategy_types,
             missions,
+            equipment_missions,
             execution_types,
             order_types,
             selectors,
@@ -210,6 +222,36 @@ impl AuxiliaryTables {
             .collect::<String>();
         verify_digest("power balance rules", text.as_bytes(), RULE_DIGEST)
     }
+}
+
+/// Decode the equipment reader's keyword branch without its parser or error
+/// reporting. The synthetic return stops at the native branch's result join.
+fn equipment_mission_projection(
+    image: &PeImage,
+    keywords: &KeywordTables,
+) -> io::Result<Vec<(&'static str, u32)>> {
+    let mut dispatch = Dispatch::new(image, EQUIPMENT_MISSION_SELECT, EQUIPMENT_MISSION_RESULT)?;
+    let mut terminal = Instruction::new();
+    terminal.set_code(iced_x86::Code::Retnq);
+    dispatch
+        .code
+        .insert(image.base + u64::from(EQUIPMENT_MISSION_RESULT), terminal);
+    let mut rows = Vec::new();
+    let mut bits = BTreeSet::new();
+    for &(token, name) in &keywords.names {
+        let value = dispatch.select(Register::R8D, token, false)?.0 as u32;
+        if value != 0 {
+            if !value.is_power_of_two() || !bits.insert(value) {
+                return Err(invalid("equipment missions: duplicate or non-single bit"));
+            }
+            rows.push((name, value));
+        }
+    }
+    if bits.len() != 18 || bits.iter().fold(0, |mask, bit| mask | bit) != (1 << 18) - 1 {
+        return Err(invalid("equipment missions: incomplete native bit domain"));
+    }
+    rows.sort_unstable_by_key(|row| row.0);
+    Ok(rows)
 }
 
 fn boolean(value: bool) -> &'static str {
@@ -979,6 +1021,12 @@ mod tests {
     }
 
     #[test]
+    fn air_detection_override_prefix_is_read_from_the_verified_installation() {
+        let tables = tables();
+        assert!(!tables.auxiliary.air_detection_override_prefix.is_empty());
+        assert!(tables.auxiliary.air_detection_override_prefix.is_ascii());
+    }
+    #[test]
     fn enum_validity_accepts_immediate_and_low_byte_register_sources() {
         let immediate = [
             0xc7, 0x01, 7, 0, 0, 0, 0xc6, 0x41, 4, 1, 0x48, 0x89, 0xc8, 0xc3,
@@ -1066,6 +1114,18 @@ mod tests {
         let tables = tables();
         tables.auxiliary.verify().unwrap();
         assert_eq!(tables.auxiliary.missions.len(), 9);
+    }
+    #[test]
+    fn equipment_mission_masks_are_complete_and_distinct_from_ai_orders() {
+        let tables = tables();
+        let missions = &tables.auxiliary.equipment_missions;
+        assert_eq!(missions.len(), 18);
+        assert_eq!(
+            missions.iter().fold(0, |mask, (_, bit)| mask | bit),
+            (1 << 18) - 1
+        );
+        assert!(missions.iter().all(|(_, bit)| bit.is_power_of_two()));
+        assert_ne!(missions, &tables.auxiliary.missions);
     }
     #[test]
     fn ai_execution_type_digest() {

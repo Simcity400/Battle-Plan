@@ -81,6 +81,104 @@ fn fixture() -> Fixture {
     memory
 }
 
+#[test]
+fn unused_template_retains_historical_naming_group_and_refuses_a_broken_group() {
+    let mut memory = fixture();
+    let mut rows = [IconRow::default(); 1];
+    memory.word(
+        0x5000 + crate::cname_group_member::TEMPLATE_NAME_GROUP,
+        0xa000,
+    );
+    memory.word(0xa000, crate::cname_group_member::GROUP_VTABLE_RVA as u64);
+    memory.text(0xa000 + crate::cname_group_member::GROUP_KEY, b"MOD_NAMES");
+    let (walk, bytes, _, _) = icons_all(&memory, &mut rows);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+    let group = rows[0].names_group.unwrap();
+    assert_eq!(&bytes[group.start..group.start + group.len], b"MOD_NAMES");
+    memory.word(0xa000, 0);
+    let (walk, _, _, _) = icons_all(&memory, &mut rows);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+    assert!(!rows[0].details_fresh);
+    assert_eq!(
+        rows[0].details_failure,
+        Some("template naming group identity mismatch")
+    );
+    assert!(rows[0].model_failure.is_none());
+}
+
+#[test]
+fn template_extension_fault_preserves_existing_icon_and_model_inputs() {
+    struct ExtensionFault(Fixture);
+    impl Memory for ExtensionFault {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            address != 0x5000 + GRID_DIMENSIONS && self.0.copy(address, output)
+        }
+    }
+    let mut healthy = [IconRow::default(); 1];
+    let (expected, _, _, _) = icons_all(&fixture(), &mut healthy);
+    let memory = ExtensionFault(fixture());
+    let mut rows = [IconRow::default(); 1];
+    let mut bytes = [0; 64];
+    let mut counts = [SubunitCount::default(); 64];
+    let mut variants = [0; 8];
+    let walked = walk_icons(
+        &memory,
+        0,
+        0x1000,
+        &mut rows,
+        &mut bytes,
+        &mut counts,
+        &mut variants,
+        TestSlots::default().slots(),
+    );
+    assert_eq!(walked.outcome, expected.outcome);
+    assert!(!rows[0].details_fresh);
+    assert_eq!(
+        rows[0].details_failure,
+        Some("template extension operands unreadable")
+    );
+    assert_eq!(rows[0].custom_icon, healthy[0].custom_icon);
+    assert_eq!(rows[0].representative, healthy[0].representative);
+    assert_eq!(rows[0].model_failure, None);
+    assert!(rows[0].cells.iter().all(|span| span.len == 0));
+}
+
+#[test]
+fn template_extension_demand_skips_prefix_tail_forbidden_payload_and_spatial_copy() {
+    let mut memory = fixture();
+    // The undemanded pointer must never be followed, even though its header
+    // is already part of the ordinary icon record.
+    memory.array(0x5000 + FORBIDDEN_EQUIPMENT, u64::MAX - 8, 1);
+    let (mut rows, mut bytes, mut counts, mut variants, mut names) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut database = vec![0; 4];
+    let mut globals = vec![GlobalSlot::default(); 8];
+    let mut locals = vec![LocalSlot::default(); 8];
+    let walked = walk_icons_with_selected_details_growing(
+        &memory,
+        0,
+        0x1000,
+        &mut rows,
+        &mut bytes,
+        &mut counts,
+        &mut variants,
+        DefinitionSlots {
+            database: &mut database,
+            globals: &mut globals,
+            locals: &mut locals,
+        },
+        &mut names,
+        &mut |_| {},
+        &mut |_: u32, _: usize, _: u64, _: u32| false,
+    );
+    assert_eq!(walked.outcome, Outcome::Rows { len: 1 });
+    assert!(!rows[0].details_fresh);
+    assert!(rows[0].cells.iter().all(|cells| cells.len == 0));
+    assert!(rows[0].equipment_failure.is_none());
+    assert!(!memory.1.borrow().iter().any(|&(at, _)|
+        at == 0x5000 + GRID_DIMENSIONS || at == 0x5000 + UNIT_TYPE_OVERRIDE + 4));
+}
+
 /// Owned storage for [`walk_icons`]'s definition lookups.
 struct TestSlots {
     database: Vec<usize>,
@@ -110,7 +208,7 @@ type IconAll = (IconWalk, Vec<u8>, Vec<SubunitCount>, Vec<u64>);
 
 fn icons_all(memory: &Fixture, rows: &mut [IconRow]) -> IconAll {
     let (mut bytes, mut counts, mut variants) =
-        (vec![0; 64], vec![Default::default(); 8], vec![0; 8]);
+        (vec![0; 64], vec![Default::default(); 64], vec![0; 8]);
     let walk = walk_icons(
         memory,
         0,
@@ -153,7 +251,8 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
     let mut rows = [IconRow::default(); 2];
     let (walk, bytes, counts, variants) = icons_all(&memory, &mut rows);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
-    // The fixed fields come in two spans, and each definition is
+    // The fixed icon fields come in two spans, with two additional demanded
+    // extension spans and the fallback grid header. Each definition is
     // authenticated once although the fallback, priority and grouped
     // entries all name it. The name is not read.
     let reads = memory.1.borrow();
@@ -162,7 +261,7 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
             .iter()
             .filter(|(at, _)| (0x5000..0x5240).contains(at))
             .count(),
-        2 + 1 // Plus the fallback's regiment grid header.
+        2 + 2 + 1
     );
     assert!(!reads.iter().any(|(at, _)| *at == 0x5000 + NAME));
     for definition in [0x7000, 0x7800] {
@@ -186,6 +285,7 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
     assert_eq!(row.model_entity, Span { start: 8, len: 12 });
     assert_eq!(row.model_category, Some(1 << 5));
     let local = SubunitCount {
+        width: Some(0),
         token: 777,
         local: true,
         count: 0,
@@ -195,6 +295,7 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
         counts,
         [
             SubunitCount {
+                width: Some(0),
                 token: 777,
                 local: false,
                 count: 2
@@ -202,10 +303,18 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
             SubunitCount { count: -1, ..local },
             // The regiment grid's one occupied cell; its other is empty.
             SubunitCount {
+                width: Some(0),
                 token: 777,
                 local: false,
                 count: 1
             },
+            SubunitCount {
+                width: Some(0),
+                token: 777,
+                local: false,
+                count: 1
+            },
+            SubunitCount::default(),
         ]
     );
     assert_eq!(row.counts, Span { start: 0, len: 2 });
@@ -213,8 +322,8 @@ fn hourly_rows_keep_the_counter_choice_and_the_stored_model_results() {
         row.grids,
         [
             Span { start: 2, len: 1 },
-            Span { start: 3, len: 0 },
-            Span { start: 3, len: 0 }
+            Span { start: 5, len: 0 },
+            Span { start: 5, len: 0 }
         ]
     );
     assert_eq!(variants, [0x0000_0009_0000_0046]);
@@ -243,8 +352,9 @@ fn every_grid_is_read_and_counted_per_cell() {
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(rows[0].model_failure, None);
     // Budgeted at one entry a cell.
-    assert_eq!(walk.required_counts, 8);
+    assert_eq!(walk.required_counts, 16);
     let entry = |token, local, count| SubunitCount {
+        width: Some(0),
         token,
         local,
         count,
@@ -363,6 +473,7 @@ fn the_representative_falls_back_to_the_priority_unit_and_an_absent_category_sta
     assert_eq!(
         rows[0].representative,
         SubunitCount {
+            width: Some(0),
             token: 777,
             local: false,
             count: 0
@@ -373,11 +484,21 @@ fn the_representative_falls_back_to_the_priority_unit_and_an_absent_category_sta
     // Only the regiment grid's entry: no grouped entries, no variants.
     assert_eq!(
         counts,
-        [SubunitCount {
-            token: 777,
-            local: false,
-            count: 1
-        }]
+        [
+            SubunitCount {
+                width: Some(0),
+                token: 777,
+                local: false,
+                count: 1
+            },
+            SubunitCount {
+                width: Some(0),
+                token: 777,
+                local: false,
+                count: 1
+            },
+            SubunitCount::default()
+        ]
     );
     assert_eq!(rows[0].counts.len, 0);
     assert!(variants.is_empty());
@@ -408,7 +529,7 @@ fn capacity_omits_whole_rows_and_bad_identity_never_becomes_empty() {
         );
         assert_eq!((result.bytes_len, result.counts_len), (0, 0));
         // One grouped entry and the regiment grid's two cells.
-        assert_eq!((result.required_bytes, result.required_counts), (8, 3));
+        assert_eq!((result.required_bytes, result.required_counts), (8, 5));
     }
     let result = walk(
         &memory,
@@ -473,7 +594,7 @@ fn fallback_preserves_native_real_count_wrap_and_rejects_zero_tokens() {
         }
         let mut rows = [IconRow::default(); 1];
         // The row's grid entries are budgeted at one a cell.
-        let mut counts = vec![SubunitCount::default(); count as usize];
+        let mut counts = vec![SubunitCount::default(); count as usize * 2];
         let walk = walk_icons(
             &memory,
             0,
@@ -490,8 +611,9 @@ fn fallback_preserves_native_real_count_wrap_and_rejects_zero_tokens() {
         assert_eq!(rows[0].priority_unit, expected);
         // The grid's count does not wrap with the fallback's.
         assert_eq!(
-            counts[..walk.counts_len],
+            counts[..rows[0].grids[0].len],
             [SubunitCount {
+                width: Some(0),
                 token: 777,
                 local: false,
                 count: count as i32
@@ -527,7 +649,7 @@ fn model_fixture() -> Fixture {
 fn icons_with(memory: &Fixture, database: usize, locals: usize) -> (IconAll, IconRow) {
     let mut rows = [IconRow::default(); 1];
     let (mut bytes, mut counts, mut variants) =
-        (vec![0; 64], vec![SubunitCount::default(); 8], vec![0; 8]);
+        (vec![0; 64], vec![SubunitCount::default(); 64], vec![0; 8]);
     let walk = walk_icons(
         memory,
         0,
@@ -619,7 +741,7 @@ fn a_failed_row_rolls_back_and_the_next_row_starts_where_it_began() {
     memory.word(0x8300, 0x7000);
     let mut rows = [IconRow::default(); 2];
     let (mut bytes, mut counts, mut variants) =
-        (vec![0; 64], vec![SubunitCount::default(); 8], vec![0; 8]);
+        (vec![0; 64], vec![SubunitCount::default(); 64], vec![0; 8]);
     let walk = walk_icons(
         &memory,
         0,
@@ -645,7 +767,7 @@ fn a_failed_row_rolls_back_and_the_next_row_starts_where_it_began() {
     assert_eq!(good.excluded_variants, Span { start: 0, len: 1 });
     assert_eq!(&bytes[..walk.bytes_len], b"infantryinfantry");
     assert_eq!(good.grids[0], Span { start: 2, len: 1 });
-    assert_eq!((walk.counts_len, walk.variants_len), (3, 1));
+    assert_eq!((walk.counts_len, walk.variants_len), (5, 1));
     // Every definition is read once, however many templates name it.
     assert_eq!(
         (reads_of(&memory, 0x7000), reads_of(&memory, 0x7800)),
@@ -679,7 +801,7 @@ fn a_row_without_room_still_asks_for_its_model_inputs() {
             walk.required_counts,
             walk.required_variants
         ),
-        (8, 2 + 2, 1)
+        (8, 2 + 4, 1)
     );
 }
 
@@ -710,6 +832,7 @@ fn a_bad_exclusion_or_model_string_fails_only_that_row_s_model() {
     for fault in 0..2 {
         let mut memory = model_fixture();
         memory.put(0x5000 + FORMATION_DIVISION_COUNT, &i32::MIN.to_le_bytes());
+        memory.put(0x5000 + ORIGIN_TYPE, &2_i32.to_le_bytes());
         match fault {
             // An excluded pointer that names no variant.
             0 => memory.word(0x8100, 0x7000),
@@ -725,6 +848,7 @@ fn a_bad_exclusion_or_model_string_fails_only_that_row_s_model() {
         assert!(row.model_failure.is_some(), "fault {fault}");
         assert_eq!(row.priority_unit, 777);
         assert_eq!(row.formation_division_count, Some(i32::MIN));
+        assert!(row.manpower_exile);
         // The partial model reads are rolled back.
         assert_eq!(bytes, b"infantry");
         assert!(counts.is_empty() && variants.is_empty());
@@ -770,7 +894,7 @@ fn icon_rows_do_not_read_the_template_name_and_gather_every_grid_header() {
         assert!(
             !reads
                 .iter()
-                .any(|(at, _)| *at == 0x5000 + grid && grid != ICON_SPAN)
+                .any(|(at, _)| *at == 0x5000 + grid && grid != REGIMENT_DATA)
         );
         assert!(
             reads
@@ -824,7 +948,7 @@ fn a_walk_reads_a_shared_priority_name_once_and_gathers_literal_headers() {
     let (mut rows, mut bytes, mut counts, mut variants, mut names) = (
         [IconRow::default(); 2],
         vec![0; 64],
-        vec![Default::default(); 8],
+        vec![Default::default(); 64],
         vec![0; 8],
         vec![0; 64],
     );
@@ -857,8 +981,137 @@ fn a_walk_reads_a_shared_priority_name_once_and_gathers_literal_headers() {
         assert_eq!(at(template + NAME), 1);
         let span = reads
             .iter()
-            .position(|read| *read == (template + ICON_SPAN, ICON_SPAN_END - ICON_SPAN))
+            .position(|read| {
+                *read
+                    == (
+                        template + REGIMENT_DATA,
+                        UNIT_TYPE_OVERRIDE + 4 - REGIMENT_DATA,
+                    )
+            })
             .unwrap();
         assert_eq!(reads[span + 1], (template + NAME, msvc_string::STRIDE));
     }
+}
+
+#[test]
+fn manpower_exile_predicate_reuses_the_icon_record_and_survives_model_refusal() {
+    for origin in [i32::MIN, -1, 0, 1, 2, 3, i32::MAX] {
+        let mut memory = fixture();
+        memory.put(0x5000 + ORIGIN_TYPE, &origin.to_le_bytes());
+        memory.1.borrow_mut().clear();
+        let mut rows = [IconRow::default(); 1];
+        assert_eq!(
+            icons_all(&memory, &mut rows).0.outcome,
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(rows[0].manpower_exile, origin == 2);
+        let reads = memory.1.borrow();
+        assert!(!reads.iter().any(|(at, _)| *at == 0x5000 + ORIGIN_TYPE));
+        assert!(
+            reads.iter().any(
+                |&(at, len)| at <= 0x5000 + ORIGIN_TYPE && at + len >= 0x5000 + ORIGIN_TYPE + 4
+            )
+        );
+    }
+}
+
+#[test]
+fn spatial_cells_keep_holes_dimensions_null_objects_and_native_settings() {
+    let mut memory = fixture();
+    memory.put(0x5000 + GRID_DIMENSIONS, &(2_u32 | (3 << 16)).to_le_bytes());
+    memory.array(0x5000 + REGIMENT_DATA, 0x6000, 6);
+    for (index, definition) in [0x7000, 0, 0x7800, 0x9000, 0, 0x7000]
+        .into_iter()
+        .enumerate()
+    {
+        memory.word(0x6000 + index * 8, definition);
+    }
+    memory.put(0x5000 + PRIORITY, &(-9_i32).to_le_bytes());
+    memory.0[0x5000 + IS_ARMY_HQ] = 7;
+    memory.0[0x5000 + LOCKED] = 2;
+    memory.0[0x5000 + OBSOLETE_FLAGS] = 4;
+    memory.0[0x5000 + FORCE_ALLOW_RECRUITING] = 3;
+    memory.0[0x5000 + EQUIPMENT_NICHE] = 254;
+    memory.0[0x5000 + ROLE_PRESENT] = 2;
+    memory.put(0x5000 + ROLE, &4294967294_u32.to_le_bytes());
+    memory.put(0x5000 + AI_ROLE, &11_u32.to_le_bytes());
+    memory.put(0x5000 + AI_ROLE_FALLBACK, &u32::MAX.to_le_bytes());
+    memory.put(0x5000 + TOTAL_MANPOWER, &(-6_000_i32).to_le_bytes());
+    memory.put(0x5000 + COMMAND_POWER_COST, &(-1234567_i64).to_le_bytes());
+    memory.put(0x5000 + TRAINING_TIME, &(-44_i32).to_le_bytes());
+    memory.0[0x5000 + ALLOW_NEW_EQUIPMENT] = 2;
+    memory.0[0x5000 + ALLOW_FOREIGN_EQUIPMENT] = 5;
+    memory.word(0x5000 + PARENT, 0xfeed_beef_0000_0034);
+    memory.0[0x5000 + DIVISION_CAP_PRESENT] = 1;
+    memory.put(0x5000 + DIVISION_CAP, &(-11_i32).to_le_bytes());
+    memory.array(0x5000 + FORBIDDEN_EQUIPMENT, 0x8100, 2);
+    memory.word(0x8100, 0x8200);
+    memory.word(0x8108, 0x8200);
+    memory.word(0x8200, crate::cequipment_type::VTABLE_RVA as u64);
+    memory.put(0x8208, &4294967294_u32.to_le_bytes());
+    let mut rows = [IconRow::default(); 1];
+    let (walk, _, counts, variants) = icons_all(&memory, &mut rows);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+    let row = rows[0];
+    assert_eq!(row.model_failure, None);
+    assert_eq!(row.grid_dimensions[0], 2 | (3 << 16));
+    let cells = &counts[row.cells[0].start..row.cells[0].start + row.cells[0].len];
+    assert_eq!(
+        cells
+            .iter()
+            .map(|cell| (cell.token, cell.local, cell.count))
+            .collect::<Vec<_>>(),
+        [
+            (777, false, 1),
+            (0, false, 0),
+            (777, true, 1),
+            (0, false, 1),
+            (0, false, 0),
+            (777, false, 1)
+        ]
+    );
+    assert_eq!(row.settings.priority, -9);
+    assert_eq!(
+        (
+            row.settings.is_army_hq,
+            row.settings.locked,
+            row.settings.obsolete
+        ),
+        (7, 2, 4)
+    );
+    assert_eq!(row.settings.force_allow_recruiting, 3);
+    assert_eq!(row.settings.equipment_niche, 254);
+    assert_eq!(row.settings.role, Some(4294967294));
+    assert_eq!(row.settings.ai_role, None);
+    assert_eq!(row.settings.ai_role_fallback, u32::MAX);
+    assert_eq!(row.settings.total_manpower, -6_000);
+    assert_eq!(row.settings.command_power_cost, -1234567);
+    assert_eq!(row.settings.training_time, -44);
+    assert_eq!(
+        (
+            row.settings.allow_new_equipment,
+            row.settings.allow_foreign_equipment
+        ),
+        (2, 5)
+    );
+    assert_eq!(row.settings.parent, 0xfeed_beef_0000_0034);
+    assert_eq!(row.settings.division_cap, Some(-11));
+    assert_eq!(variants, [4294967294, 4294967294]);
+    // Spatial capture adds no second read of the grid payload.
+    assert_eq!(
+        memory
+            .1
+            .borrow()
+            .iter()
+            .filter(|&&(at, len)| at == 0x6000 && len == 48)
+            .count(),
+        1
+    );
+    memory.array(0x5000 + FORBIDDEN_EQUIPMENT, 0xbff8, 2);
+    let (walk, _, _, _) = icons_all(&memory, &mut rows);
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+    assert!(rows[0].equipment_failure.is_some());
+    assert_eq!(rows[0].model_failure, None);
+    assert_eq!(rows[0].settings, row.settings);
+    assert_eq!(rows[0].cells, row.cells);
 }

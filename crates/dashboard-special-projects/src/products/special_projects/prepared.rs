@@ -406,6 +406,12 @@ impl Prepared {
     /// Bind weak identities to the already restored decoder, without replaying it.
     pub fn restore_views(&mut self, frame: &DecodedFrame) {
         self.lexical_view = Some(frame.tables[TableId::LexicalTokens.index()].identity());
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+            tracker.observe(frame, replay_data::format::FormatVersion::CURRENT);
+            self.test_changes = Some(tracker);
+        }
         self.completions.restore_views(frame);
     }
     /// Runs `run` as this family's own consumer of the shared content
@@ -497,10 +503,17 @@ impl Prepared {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.configure(source, context)?;
-        let changes = self
+        let mut changes = self
             .test_changes
             .get_or_insert_with(dashboard_base::prepared::frame_changes::FrameChangeTracker::new)
             .observe(frame, source.replay_ref().format);
+        if self.actors.is_none() {
+            // Restoring the decoder preserves dictionary change evidence, but
+            // the observer's skipped native joins still need their first read.
+            let lexical_changed = changes.rows_changed[TableId::LexicalTokens.index()];
+            changes.rows_changed.fill(true);
+            changes.rows_changed[TableId::LexicalTokens.index()] = lexical_changed;
+        }
         self.observe_changed(frame, &changes, cancelled)
     }
     pub fn observe_changed(

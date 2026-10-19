@@ -1644,6 +1644,9 @@ mod index_tests {
                             friendly: i64::from(country == 0),
                             enemy: 0,
                             impact: Default::default(),
+                            friendly_missions: 0,
+                            enemy_missions: 0,
+                            air_spotting_scale: Some(0),
                         })
                         .collect(),
                 ));
@@ -1670,6 +1673,9 @@ mod index_tests {
                             friendly: 3,
                             enemy: 0,
                             impact: Default::default(),
+                            friendly_missions: 0,
+                            enemy_missions: 0,
+                            air_spotting_scale: Some(0),
                         }]),
                     };
                 } else if hour == 4 {
@@ -1680,6 +1686,9 @@ mod index_tests {
                             friendly: 4,
                             enemy: 0,
                             impact: Default::default(),
+                            friendly_missions: 0,
+                            enemy_missions: 0,
+                            air_spotting_scale: Some(0),
                         }]));
                 }
                 let encoded = encoder.encode(frame.clone(), hour == 0).unwrap();

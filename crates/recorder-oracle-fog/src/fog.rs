@@ -1,13 +1,10 @@
 //! Fog-derivation input comparisons.
 //!
-//! Three of the six families have an exact text-save representation and are
-//! compared here: the unit writer emits `country_intel` triples, the country
-//! writer emits `received_air_volunteer_permission` blocks, and the theatre
-//! writer emits `unit` references plus one representative `area` province
-//! per controller area. The other three are named limitations: the theatre writer does not
-//! emit an area's whole province membership, the air-base writer does not
-//! traverse its country registrations at all, and no country serializer
-//! path was found that writes the radar coverage vectors.
+//! Unit intel, volunteer permissions, stationed references and representative
+//! areas have saved counterparts. State Air-base dense countries and fuel
+//! words compare independently with their serialized container occurrences.
+//! Complete area membership, indexed registration order, pool partitions and
+//! radar coverage retain their separately named comparison boundaries.
 
 use std::{collections::BTreeMap, io};
 
@@ -42,6 +39,9 @@ pub fn compare(
         report.attempt("fog RadarCoverage", |report| record_radar(frame, report));
     complete_comparison &= report.attempt("fog AirBaseRegistrations", |report| {
         record_registrations(frame, report)
+    });
+    complete_comparison &= report.attempt("state Air container fuel", |report| {
+        compare_state_container_fuel(frame, saved, links, report)
     });
     complete_comparison &= report.attempt("fog CarrierAir (recording self-check)", |report| {
         record_carrier(frame, links, report)
@@ -216,6 +216,7 @@ fn compare_volunteer_hosts(
         );
     }
     report.compared("VolunteerHosts", compared);
+    report.limitation("the directed effective Air volunteer-capacity modifier is a runtime accumulator result without an established saved scalar", "VolunteerHosts.air_capacity_modifier");
     report.limitation(
         "the host vector stores raw country references and the save writes resolved tags, so two aliases of one country cannot be told apart in the comparison",
         "VolunteerHosts.host",
@@ -350,7 +351,7 @@ fn record_registrations(frame: &DecodedFrame, report: &mut Report) -> io::Result
     let rows = complete::<tables::AirBaseRegistrations>(frame)?;
     report.compared("AirBaseRegistrations", 0);
     report.limitation(
-        "The air-base writer does not traverse the country containers, and a wing pool's assigned base is not the registration, so this table has no save comparison",
+        "The saved country containers do not serialize pool registration order or indexed country slots; state dense-country order and fuel scalars compare separately by the saved base handle and resolved country",
         format!(
             "AirBaseRegistrations: {} decoded rows, zero save comparisons",
             rows.len()
@@ -359,8 +360,154 @@ fn record_registrations(frame: &DecodedFrame, report: &mut Report) -> io::Result
     Ok(())
 }
 
-/// Additional carrier inputs have no exact text-save representation here.
-/// Numeric presence and cross-table joins are recording self-checks only.
+/// The base writer emits its dense country occurrences and exact fixed5 fuel
+/// words, omitting each zero scalar. Indexed ordinals stay recording-only.
+fn compare_state_container_fuel(
+    frame: &DecodedFrame,
+    saved: &Save,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let bases = complete::<tables::AirBases>(frame)?;
+    let rows = complete::<tables::AirBaseRegistrations>(frame)?;
+    let expected: BTreeMap<_, _> = saved
+        .air
+        .bases
+        .iter()
+        .filter(|base| base.state.is_some())
+        .map(|base| (base.id, base))
+        .collect();
+    if expected.len()
+        != saved
+            .air
+            .bases
+            .iter()
+            .filter(|base| base.state.is_some())
+            .count()
+    {
+        return Err(invalid("saved state air bases repeat one handle"));
+    }
+    let mut actual = BTreeMap::new();
+    for row in rows {
+        if !expected.contains_key(&row.base) {
+            continue;
+        }
+        let Some(packet) = report.recorded(
+            &row.carrier,
+            "AirBaseRegistrations.carrier",
+            "state fuel country",
+        ) else {
+            continue;
+        };
+        let Some(packet) = packet else {
+            return Err(invalid("state fuel container country unavailable"));
+        };
+        if row.slot == 0 {
+            report.limitation(
+                "a reserved or unlinked country reference has no authenticated saved tag join",
+                format!("state air base {} slot0", row.base),
+            );
+            continue;
+        }
+        let tag = country_tag(packet.country, links)?
+            .ok_or_else(|| invalid("state fuel country resolves to zero"))?;
+        if actual.insert((row.base, tag), row).is_some() {
+            return Err(invalid(
+                "state air-base registrations share one saved country identity",
+            ));
+        }
+    }
+    let mut compared = 0;
+    for (&id, base) in &expected {
+        if let Some(current) = bases.iter().find(|row| row.id == id)
+            && let Some(Some(packet)) = report.recorded(
+                &current.carrier,
+                "AirBases.carrier",
+                "state dense country order",
+            )
+            && let Some(dense) = packet.registered_countries.as_ref()
+        {
+            let actual_tags = dense
+                .iter()
+                .map(|row| country_tag(row.country, links))
+                .collect::<io::Result<Vec<_>>>()?
+                .into_iter()
+                .collect::<Option<Vec<_>>>();
+            if let Some(actual_tags) = actual_tags {
+                let expected_tags: Vec<_> = base
+                    .containers
+                    .iter()
+                    .map(|row| row.country.as_slice())
+                    .collect();
+                if actual_tags != expected_tags {
+                    report.difference(
+                        format!("state air base {id}.countries"),
+                        actual_tags,
+                        expected_tags,
+                    );
+                }
+                report.compared("AirBases.registered_countries (save)", dense.len());
+            }
+        }
+        let mut visited = std::collections::BTreeSet::new();
+        for container in &base.containers {
+            let tag = container.country.as_slice();
+            let key = (id, tag);
+            visited.insert(tag);
+            let Some(&row) = actual.get(&key) else {
+                report.difference(
+                    format!(
+                        "state air base {id} country {}",
+                        String::from_utf8_lossy(tag)
+                    ),
+                    "absent",
+                    "saved container",
+                );
+                continue;
+            };
+            let label = format!(
+                "state air base {id} country {}",
+                String::from_utf8_lossy(tag)
+            );
+            for (field, captured, expected) in [
+                (
+                    "fuel_demand_raw",
+                    &row.fuel_demand_raw,
+                    &container.fuel_demand,
+                ),
+                (
+                    "fuel_allocated_raw",
+                    &row.fuel_allocated_raw,
+                    &container.fuel_allocated,
+                ),
+            ] {
+                let Some(captured) = report.recorded(captured, field, &label) else {
+                    continue;
+                };
+                report.scalar(&label, field, *captured, Some(expected));
+                compared += 1;
+            }
+        }
+        for tag in visited {
+            actual.remove(&(id, tag));
+        }
+    }
+    for ((base, tag), _) in actual {
+        report.difference(
+            format!(
+                "state air base {base} country {}",
+                String::from_utf8_lossy(tag)
+            ),
+            "recorded container",
+            "absent from save",
+        );
+    }
+    report.compared("AirBaseRegistrations.fuel (save)", compared);
+    Ok(())
+}
+
+/// Host names, host fuel and pool projections have no exact text-save join
+/// here; state container fuel compares separately above. Numeric presence and cross-table joins are recording self-checks only.
 fn record_carrier(
     frame: &DecodedFrame,
     links: &BTreeMap<u32, &CountryRow>,
@@ -373,7 +520,7 @@ fn record_carrier(
         "AirBases.carrier, AirBaseRegistrations.carrier",
     );
     report.limitation(
-        "The air-base writer does not serialize the dense vector, the indexed container capacity scalars, or retained host-name bytes; passive current/max query operands and results have no established text-save comparator and require a matched native witness",
+        "Retained host-name bytes and passive current/max query results have no established text-save comparator and require a matched native witness. State-container demand/allocation and dense country occurrences compare separately with the serialized container list",
         "registered_countries, host_name, fuel_demand_raw, fuel_allocated_raw, current_fuel_raw, maximum_fuel_raw",
     );
     report.limitation(
@@ -397,10 +544,6 @@ fn record_carrier(
     let mut checks_complete = true;
     for base in bases {
         let label = format!("carrier base {}", base.id);
-        if base.state.is_some() {
-            report.limitation("state base is outside carrier-input demand", label);
-            continue;
-        }
         let Some(packet) = report.recorded(&base.carrier, "AirBases.carrier", &label) else {
             continue;
         };
@@ -410,12 +553,12 @@ fn record_carrier(
             });
             continue;
         };
-        checks_complete &= report.attempt(&format!("{label}.host_name"), |report| {
-            // Some(empty) is a successfully read null/stale or empty host name.
-            // Raw bytes need no UTF-8 normalization for this recording check.
-            carrier_input(&packet.host_name, "host_name", report)?;
-            Ok(())
-        });
+        if base.state.is_none() {
+            checks_complete &= report.attempt(&format!("{label}.host_name"), |report| {
+                carrier_input(&packet.host_name, "host_name", report)?;
+                Ok(())
+            });
+        }
         checks_complete &= report.attempt(&format!("{label}.registered_countries"), |report| {
             let dense =
                 carrier_input(&packet.registered_countries, "registered_countries", report)?;
@@ -466,10 +609,6 @@ fn record_carrier(
             });
             continue;
         };
-        if base.state.is_some() {
-            report.limitation("state base is outside carrier-input demand", label);
-            continue;
-        }
         let Some(packet) = report.recorded(
             &registration.carrier,
             "AirBaseRegistrations.carrier",
@@ -488,10 +627,26 @@ fn record_carrier(
         checks_complete &= report.attempt(&format!("{label}.country"), |report| {
             carrier_country(packet.country, registration.slot, links, report)
         });
-        for (field, value) in [
-            ("fuel_demand_raw", &packet.fuel_demand_raw),
-            ("fuel_allocated_raw", &packet.fuel_allocated_raw),
+        for (field, host, state) in [
+            (
+                "fuel_demand_raw",
+                &packet.fuel_demand_raw,
+                &registration.fuel_demand_raw,
+            ),
+            (
+                "fuel_allocated_raw",
+                &packet.fuel_allocated_raw,
+                &registration.fuel_allocated_raw,
+            ),
         ] {
+            let value = if base.state.is_some() {
+                let Some(value) = report.recorded(state, field, &label) else {
+                    continue;
+                };
+                value
+            } else {
+                host
+            };
             checks_complete &= report.attempt(&format!("{label}.{field}"), |report| {
                 carrier_input(value, field, report)?;
                 Ok(())
@@ -519,7 +674,7 @@ fn record_carrier(
                 for (field, value) in [
                     ("current_fuel_raw", &pool.current_fuel_raw),
                     ("maximum_fuel_raw", &pool.maximum_fuel_raw),
-                ] {
+                ].into_iter().filter(|_| base.state.is_none()) {
                     pool_checks &= report.attempt(&format!("{pool_label}.{field}"), |report| {
                         carrier_input(value, field, report)?;
                         Ok(())
@@ -732,12 +887,14 @@ states={} provinces={}"#,
                     position: 0,
                     host: 34,
                     deployed_divisions: 3,
+                    air_capacity_modifier: (None).into(),
                 },
                 VolunteerHostRow {
                     country: 12,
                     position: 1,
                     host: 34,
                     deployed_divisions: -1,
+                    air_capacity_modifier: (None).into(),
                 },
             ]),
             TableRows::StationedUnits(vec![StationedUnitRow {
@@ -764,10 +921,18 @@ states={} provinces={}"#,
                 ordinal: 0,
                 state: Some(4),
                 provinces: vec![7],
+                radius: None,
             }]),
             TableRows::AirBases(vec![AirBaseRow {
                 id: 65,
                 state: Some(4),
+                carrier: Recorded::Value(Some(AirBaseCarrierInputs {
+                    registered_countries: Some(vec![AirBaseCountryOccurrence {
+                        country: 12,
+                        slot: 1,
+                    }]),
+                    host_name: None,
+                })),
                 ..Default::default()
             }]),
             TableRows::AirBaseRegistrations(vec![AirBaseRegistrationRow {
@@ -775,8 +940,27 @@ states={} provinces={}"#,
                 slot: 1,
                 capacity_raw: 100_000,
                 wings: vec![69],
-                carrier: Default::default(),
+                carrier: Recorded::Value(Some(AirBaseRegistrationCarrierInputs {
+                    country: 12,
+                    fuel_demand_raw: None,
+                    fuel_allocated_raw: None,
+                    pools: Some(vec![CarrierAirPool {
+                        subunit_index: 42,
+                        wing_count: 1,
+                        ..Default::default()
+                    }]),
+                })),
                 transport_planes: Default::default(),
+                fuel_demand_raw: Recorded::Value(Some(0)),
+                fuel_allocated_raw: Recorded::Value(Some(0)),
+            }]),
+            TableRows::AirWings(vec![AirWingRow {
+                id: 69,
+                owner: 12,
+                planes: 1,
+                air_base: 65,
+                pool_subunit: Recorded::Value(Some(42)),
+                ..Default::default()
             }]),
         ])
     }
@@ -840,6 +1024,8 @@ states={} provinces={}"#,
                         },
                     ]),
                 })),
+                fuel_demand_raw: Default::default(),
+                fuel_allocated_raw: Default::default(),
             }]),
             TableRows::AirWings(vec![AirWingRow {
                 id: CARRIER_WING,
@@ -926,6 +1112,71 @@ states={} provinces={}"#,
     }
 
     #[test]
+    fn state_registration_checks_raw_scalars_and_metadata_without_pool_getter_results() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(12, &country)]);
+        let mut frame = carrier_frame();
+        carrier_base(&mut frame).state = Some(4);
+        carrier_registration(&mut frame).fuel_demand_raw = Recorded::Value(Some(-11));
+        carrier_registration(&mut frame).fuel_allocated_raw = Recorded::Value(Some(5));
+        carrier_packet(&mut frame).fuel_demand_raw = None;
+        carrier_packet(&mut frame).fuel_allocated_raw = None;
+        if let Recorded::Value(Some(base)) = &mut carrier_base(&mut frame).carrier {
+            base.host_name = None;
+        }
+        for pool in carrier_packet(&mut frame).pools.as_mut().unwrap() {
+            pool.current_fuel_raw = None;
+            pool.maximum_fuel_raw = None;
+        }
+        let mut report = Report::default();
+        record_carrier(&frame, &links, &mut report).unwrap();
+        assert!(report.failed_comparisons.is_empty());
+        assert_eq!(carrier_count(&report, "fuel_demand_raw"), 1);
+        assert_eq!(carrier_count(&report, "fuel_allocated_raw"), 1);
+        assert_eq!(carrier_count(&report, "partition"), 3);
+        assert_eq!(carrier_count(&report, "member_identity"), 2);
+        assert_eq!(carrier_count(&report, "current_fuel_raw"), 0);
+        assert_eq!(carrier_count(&report, "maximum_fuel_raw"), 0);
+    }
+
+    #[test]
+    fn state_fuel_save_comparison_keeps_exact_signed_fractional_values_and_zero_omission() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(12, &country)]);
+        let mut frame = carrier_frame();
+        carrier_base(&mut frame).state = Some(4);
+        carrier_registration(&mut frame).fuel_demand_raw = Recorded::Value(Some(-3));
+        carrier_registration(&mut frame).fuel_allocated_raw = Recorded::Value(Some(123456));
+        let mut save = saved();
+        save.air.bases.push(installed_content_save::air::AirBase {
+            id: carrier_base(&mut frame).id,
+            state: Some(4),
+            host: None,
+            capacity: 0,
+            kind: 0,
+            containers: vec![
+                installed_content_save::air::AirBaseCountry {
+                    country: b"GER".to_vec(),
+                    fuel_demand: installed_content_save::Decimal::parse(b"-0.00003").unwrap(),
+                    fuel_allocated: installed_content_save::Decimal::parse(b"1.23456").unwrap(),
+                };
+                2
+            ],
+        });
+        let mut report = Report::default();
+        compare_state_container_fuel(&frame, &save, &links, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(
+            report.compared_tables["AirBaseRegistrations.fuel (save)"],
+            4
+        );
+        carrier_registration(&mut frame).fuel_allocated_raw = Recorded::Value(Some(123455));
+        let mut report = Report::default();
+        compare_state_container_fuel(&frame, &save, &links, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 2);
+    }
+
+    #[test]
     fn carrier_optional_refusals_preserve_independent_fuel_name_and_pool_checks() {
         let (country, _) = links();
         let links = BTreeMap::from([(12, &country)]);
@@ -992,12 +1243,8 @@ states={} provinces={}"#,
         assert_eq!(report.failed_comparisons.len(), 2);
         carrier_base(&mut frame).state = Some(4);
         let mut report = Report::default();
-        record_carrier(&frame, &links, &mut report).unwrap();
-        assert!(report.failed_comparisons.is_empty());
-        assert_eq!(
-            report.limitations["state base is outside carrier-input demand"].len(),
-            2
-        );
+        assert!(record_carrier(&frame, &links, &mut report).is_err());
+        assert_eq!(report.failed_comparisons.len(), 2);
 
         let mut frame = carrier_frame();
         let base = carrier_base(&mut frame);
@@ -1188,12 +1435,9 @@ states={} provinces={}"#,
         let mut report = Report::default();
         assert!(compare(&frame, &saved(), &links, &mut report).is_err());
         assert_eq!(report.compared_tables["AirBaseRegistrations"], 0);
-        assert!(
-            report
-                .limitations
-                .keys()
-                .any(|key| key.contains("does not traverse the country containers"))
-        );
+        assert!(report.limitations.keys().any(|key| {
+            key.contains("do not serialize pool registration order or indexed country slots")
+        }));
         assert!(
             report
                 .failed_comparisons
@@ -1270,7 +1514,7 @@ states={} provinces={}"#,
             "decay accumulator",
             "representative province per controller area",
             "radar coverage vectors",
-            "does not traverse the country containers",
+            "do not serialize pool registration order or indexed country slots",
         ] {
             assert!(
                 report

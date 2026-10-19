@@ -9,6 +9,9 @@ use crate::{
 };
 use engine_allocation as allocation;
 use std::io;
+pub mod decisions;
+pub mod state;
+pub use state::{DelayedEvent, PendingEvent, ScriptEventState, ScriptIdentity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -28,6 +31,27 @@ pub enum EventFeedSource {
     /// A peace conference started: actor the winner, target the loser
     /// the creation named.
     PeaceConference = 7,
+    /// An accepted scripted event dispatch, independent of its later choice.
+    ScriptEvent = 8,
+    /// An accepted news-event dispatch.
+    NewsEvent = 9,
+    /// An admitted option execution; its signed native ordinal is retained.
+    EventOption = 10,
+    DecisionSelected = 11,
+    DecisionRemoved = 12,
+    DecisionCancelled = 13,
+    DecisionTimedOut = 14,
+    DecisionActivated = 15,
+    DecisionCompleted = 16,
+    /// Retained event-registry baseline or writer delta, never a fired event.
+    ScriptState = 17,
+    DecisionReenabled = 18,
+    /// Authored effect execution is independent of a later status transition.
+    DecisionRemovalEffect = 19,
+    DecisionCancellationEffect = 20,
+    DecisionCompletionEffect = 21,
+    DecisionTimeoutEffect = 22,
+    DecisionDurationChanged = 23,
 }
 
 impl Value for EventFeedSource {
@@ -54,6 +78,22 @@ impl Value for EventFeedSource {
             5 => Ok(Self::Release),
             6 => Ok(Self::StateTransfer),
             7 => Ok(Self::PeaceConference),
+            8 => Ok(Self::ScriptEvent),
+            9 => Ok(Self::NewsEvent),
+            10 => Ok(Self::EventOption),
+            11 => Ok(Self::DecisionSelected),
+            12 => Ok(Self::DecisionRemoved),
+            13 => Ok(Self::DecisionCancelled),
+            14 => Ok(Self::DecisionTimedOut),
+            15 => Ok(Self::DecisionActivated),
+            16 => Ok(Self::DecisionCompleted),
+            17 => Ok(Self::ScriptState),
+            18 => Ok(Self::DecisionReenabled),
+            19 => Ok(Self::DecisionRemovalEffect),
+            20 => Ok(Self::DecisionCancellationEffect),
+            21 => Ok(Self::DecisionCompletionEffect),
+            22 => Ok(Self::DecisionTimeoutEffect),
+            23 => Ok(Self::DecisionDurationChanged),
             _ => Err(invalid("unknown Event feed source")),
         }
     }
@@ -92,17 +132,40 @@ impl Value for EventFeedCoverage {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventFeedCountry {
     pub reference: u32,
     pub id: u32,
     pub instance: u32,
 }
-value_struct!(EventFeedCountry {
-    reference: u32,
-    id: u32,
-    instance: u32
-});
+impl Value for EventFeedCountry {
+    const MINIMUM_ENCODED_BYTES: usize = 3;
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok([self.reference, self.id, self.instance]
+            .into_iter()
+            .map(compact_len)
+            .sum())
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        for value in [self.reference, self.id, self.instance] {
+            compact_write(value, output);
+        }
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        Ok(Self {
+            reference: compact_read(input)?,
+            id: compact_read(input)?,
+            instance: compact_read(input)?,
+        })
+    }
+}
 
 macro_rules! routes {
     ($($(#[$doc:meta])* $name:ident = $value:literal,)*) => {
@@ -379,17 +442,570 @@ pub struct EventFeedEvent {
     /// Not recorded before format
     /// [`EVENT_CAUSE_FORMAT`](crate::rows::compatibility).
     pub cause: Recorded<EventFeedCause>,
+    /// Compact operands in this supplying row's token and scope arenas.
+    pub script: Option<EventFeedScript>,
 }
-value_struct!(EventFeedEvent {
-    sequence: u64,
-    generation: u64,
-    hour: i32,
-    source: EventFeedSource,
-    actor: EventFeedCountry,
-    target: EventFeedCountry
-} appended EventFeedEvent {
-    cause: Recorded<EventFeedCause>
-});
+impl Value for EventFeedEvent {
+    const MINIMUM_ENCODED_BYTES: usize = 5;
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        let mut bytes = wide_len(self.sequence)
+            + wide_len(self.generation)
+            + compact_len(signed_word(self.hour))
+            + 2;
+        for country in [self.actor, self.target] {
+            if country != EventFeedCountry::default() {
+                bytes += country.encoded_bytes()?;
+            }
+        }
+        if let Recorded::Value(cause) = self.cause
+            && cause != EventFeedCause::default()
+        {
+            bytes += cause.encoded_bytes()?;
+        }
+        if let Some(script) = self.script {
+            bytes += script.encoded_bytes()?;
+        }
+        Ok(bytes)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        crate::codec::put_varint(output, self.sequence as u128);
+        crate::codec::put_varint(output, self.generation as u128);
+        compact_write(signed_word(self.hour), output);
+        self.source.encode_reserved(output)?;
+        let cause = match self.cause {
+            Recorded::NotRecorded => 1,
+            Recorded::Value(value) if value != EventFeedCause::default() => 2,
+            _ => 0,
+        };
+        let flags = u8::from(self.actor != EventFeedCountry::default())
+            | (u8::from(self.target != EventFeedCountry::default()) << 1)
+            | (cause << 2)
+            | (u8::from(self.script.is_some()) << 4);
+        flags.encode_reserved(output)?;
+        for country in [self.actor, self.target] {
+            if country != EventFeedCountry::default() {
+                country.encode_reserved(output)?;
+            }
+        }
+        if cause == 2
+            && let Recorded::Value(cause) = self.cause
+        {
+            cause.encode_reserved(output)?;
+        }
+        if let Some(script) = self.script {
+            script.encode_reserved(output)?;
+        }
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let sequence = wide_read(input)?;
+        let generation = wide_read(input)?;
+        let hour = signed_value(compact_read(input)?);
+        let source = EventFeedSource::decode(input)?;
+        let flags = u8::decode(input)?;
+        if flags >> 5 != 0 || (flags >> 2) & 3 == 3 {
+            return Err(invalid("Event feed occurrence flags differ"));
+        }
+        let actor = if flags & 1 != 0 {
+            EventFeedCountry::decode(input)?
+        } else {
+            Default::default()
+        };
+        let target = if flags & 2 != 0 {
+            EventFeedCountry::decode(input)?
+        } else {
+            Default::default()
+        };
+        let cause = match (flags >> 2) & 3 {
+            0 => Recorded::Value(Default::default()),
+            1 => Recorded::NotRecorded,
+            _ => Recorded::Value(EventFeedCause::decode(input)?),
+        };
+        let script = if flags & 16 != 0 {
+            Some(EventFeedScript::decode(input)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            sequence,
+            generation,
+            hour,
+            source,
+            actor,
+            target,
+            cause,
+            script,
+        })
+    }
+}
+
+/// Authored bytes and native identities, never rendered text or game pointers.
+/// Scope binding IDs are local to this occurrence's scope span.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub struct EventFeedEventIdentity {
+    pub kind: u32,
+    pub id: u32,
+}
+impl std::fmt::Display for EventFeedEventIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} (type {})", self.id, self.kind)
+    }
+}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EventFeedScript {
+    pub token_start: u32,
+    pub token_len: u32,
+    pub scope_start: u32,
+    pub scope_len: u32,
+    pub native_event: Option<EventFeedEventIdentity>,
+    pub instance: Option<u32>,
+    pub option: Option<i32>,
+    pub country_target: Option<u32>,
+    /// Raw selector operand; definition-specific meaning is not assumed.
+    pub numeric_target: Option<i32>,
+    pub token_unrecorded: bool,
+    pub scope_unrecorded: bool,
+    pub change: Option<EventFeedScriptChange>,
+    /// Actual writer result, present only when that boundary supplies it.
+    pub lifecycle: Option<i32>,
+    pub days: Option<i32>,
+}
+
+/// Retained registry operations share the occurrence stream's ordering,
+/// world and delivery receipts. Baseline membership is never timed history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventFeedScriptChange {
+    Decision(decisions::DecisionChange),
+    PendingBaseline,
+    PendingStored {
+        due_hour: i32,
+    },
+    PendingReady,
+    PendingRemoved,
+    FiredBaseline,
+    FiredMember,
+    FiredRemoved,
+    FiredReady,
+    DelayedBaseline,
+    DelayedStored {
+        remaining: i32,
+    },
+    DelayedReady,
+    /// One certified empty owner baseline; no separate begin/end payload.
+    DelayedEmpty,
+    /// Decrements derived from a pass anchor and sparse native cursor boundaries.
+    /// Quiet passes emit one final count, with no per-timer observation.
+    DelayedAdvance {
+        count: u32,
+        finished: bool,
+    },
+    DelayedRemoved {
+        iteration: bool,
+        visited: bool,
+    },
+}
+impl Value for EventFeedScriptChange {
+    const MINIMUM_ENCODED_BYTES: usize = 1;
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok(1 + match self {
+            Self::Decision(change) => change.encoded_bytes()?,
+            Self::PendingStored { due_hour } => compact_len(signed_word(*due_hour)),
+            Self::DelayedStored { remaining } => compact_len(signed_word(*remaining)),
+            Self::DelayedAdvance { count, .. } => compact_len(*count),
+            _ => 0,
+        })
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        let code = match self {
+            Self::Decision(_) => 17,
+            Self::PendingBaseline => 0_u8,
+            Self::PendingStored { .. } => 1,
+            Self::PendingReady => 2,
+            Self::PendingRemoved => 3,
+            Self::FiredBaseline => 4,
+            Self::FiredMember => 5,
+            Self::FiredReady => 6,
+            Self::FiredRemoved => 16,
+            Self::DelayedBaseline => 7,
+            Self::DelayedStored { .. } => 8,
+            Self::DelayedReady => 9,
+            Self::DelayedAdvance {
+                finished: false, ..
+            } => 10,
+            Self::DelayedAdvance { finished: true, .. } => 11,
+            Self::DelayedRemoved {
+                iteration: false,
+                visited: false,
+            } => 12,
+            Self::DelayedRemoved {
+                iteration: true,
+                visited: false,
+            } => 13,
+            Self::DelayedRemoved {
+                iteration: true,
+                visited: true,
+            } => 14,
+            Self::DelayedEmpty => 15,
+            Self::DelayedRemoved {
+                iteration: false,
+                visited: true,
+            } => {
+                return Err(invalid(
+                    "delayed-event cancellation cannot be a native visit",
+                ));
+            }
+        };
+        code.encode_reserved(output)?;
+        if let Self::Decision(change) = self {
+            change.encode_reserved(output)?;
+        }
+        if let Self::PendingStored { due_hour } = self {
+            compact_write(signed_word(*due_hour), output);
+        }
+        if let Self::DelayedStored { remaining } = self {
+            compact_write(signed_word(*remaining), output);
+        }
+        if let Self::DelayedAdvance { count, .. } = self {
+            compact_write(*count, output);
+        }
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        match u8::decode(input)? {
+            17 => Ok(Self::Decision(decisions::DecisionChange::decode(input)?)),
+            0 => Ok(Self::PendingBaseline),
+            1 => Ok(Self::PendingStored {
+                due_hour: signed_value(compact_read(input)?),
+            }),
+            2 => Ok(Self::PendingReady),
+            3 => Ok(Self::PendingRemoved),
+            4 => Ok(Self::FiredBaseline),
+            5 => Ok(Self::FiredMember),
+            6 => Ok(Self::FiredReady),
+            16 => Ok(Self::FiredRemoved),
+            7 => Ok(Self::DelayedBaseline),
+            8 => Ok(Self::DelayedStored {
+                remaining: signed_value(compact_read(input)?),
+            }),
+            9 => Ok(Self::DelayedReady),
+            code @ (10 | 11) => Ok(Self::DelayedAdvance {
+                count: compact_read(input)?,
+                finished: code == 11,
+            }),
+            code @ (12..=14) => Ok(Self::DelayedRemoved {
+                iteration: code != 12,
+                visited: code == 14,
+            }),
+            15 => Ok(Self::DelayedEmpty),
+            _ => Err(invalid("Event feed script registry change differs")),
+        }
+    }
+}
+impl EventFeedScript {
+    fn flags(&self) -> u32 {
+        [
+            self.instance,
+            self.option.map(signed_word),
+            self.country_target,
+            self.numeric_target.map(signed_word),
+        ]
+        .iter()
+        .enumerate()
+        .fold(0_u32, |flags, (n, value)| {
+            flags | (u32::from(value.is_some()) << (n + 1))
+        }) | u32::from(self.native_event.is_some())
+            | (u32::from(self.scope_unrecorded) << 5)
+            | (u32::from(self.token_unrecorded) << 6)
+            | (u32::from(self.change.is_some()) << 7)
+            | (u32::from(self.lifecycle.is_some()) << 8)
+            | (u32::from(self.days.is_some()) << 9)
+    }
+}
+impl Value for EventFeedScript {
+    const MINIMUM_ENCODED_BYTES: usize = 5;
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok(compact_len(self.flags())
+            + self
+                .lifecycle
+                .map(|n| compact_len(signed_word(n)))
+                .unwrap_or(0)
+            + self.days.map(|n| compact_len(signed_word(n))).unwrap_or(0)
+            + self
+                .native_event
+                .map(|id| compact_len(id.kind) + compact_len(id.id))
+                .unwrap_or(0)
+            + self
+                .change
+                .map(|change| change.encoded_bytes())
+                .transpose()?
+                .unwrap_or(0)
+            + [
+                self.token_start,
+                self.token_len,
+                self.scope_start,
+                self.scope_len,
+            ]
+            .into_iter()
+            .map(compact_len)
+            .sum::<usize>()
+            + [
+                self.instance,
+                self.option.map(signed_word),
+                self.country_target,
+                self.numeric_target.map(signed_word),
+            ]
+            .into_iter()
+            .flatten()
+            .map(compact_len)
+            .sum::<usize>())
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        for value in [
+            self.token_start,
+            self.token_len,
+            self.scope_start,
+            self.scope_len,
+        ] {
+            compact_write(value, output);
+        }
+        let values = [
+            self.instance,
+            self.option.map(signed_word),
+            self.country_target,
+            self.numeric_target.map(signed_word),
+        ];
+        compact_write(self.flags(), output);
+        if let Some(id) = self.native_event {
+            compact_write(id.kind, output);
+            compact_write(id.id, output);
+        }
+        for value in values.into_iter().flatten() {
+            compact_write(value, output);
+        }
+        if let Some(change) = self.change {
+            change.encode_reserved(output)?;
+        }
+        for value in [self.lifecycle, self.days].into_iter().flatten() {
+            compact_write(signed_word(value), output);
+        }
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let token_start = compact_read(input)?;
+        let token_len = compact_read(input)?;
+        let scope_start = compact_read(input)?;
+        let scope_len = compact_read(input)?;
+        let flags = compact_read(input)?;
+        if flags >> 10 != 0 {
+            return Err(invalid("script operand flags differ"));
+        }
+        let native_event = if flags & 1 != 0 {
+            Some(EventFeedEventIdentity {
+                kind: compact_read(input)?,
+                id: compact_read(input)?,
+            })
+        } else {
+            None
+        };
+        let mut values = [None; 4];
+        for (n, value) in values.iter_mut().enumerate() {
+            if flags & (1 << (n + 1)) != 0 {
+                *value = Some(compact_read(input)?);
+            }
+        }
+        Ok(Self {
+            token_start,
+            token_len,
+            scope_start,
+            scope_len,
+            native_event,
+            instance: values[0],
+            option: values[1].map(signed_value),
+            country_target: values[2],
+            numeric_target: values[3].map(signed_value),
+            scope_unrecorded: flags & 0x20 != 0,
+            token_unrecorded: flags & 0x40 != 0,
+            change: if flags & 0x80 != 0 {
+                Some(EventFeedScriptChange::decode(input)?)
+            } else {
+                None
+            },
+            lifecycle: if flags & 0x100 != 0 {
+                Some(signed_value(compact_read(input)?))
+            } else {
+                None
+            },
+            days: if flags & 0x200 != 0 {
+                Some(signed_value(compact_read(input)?))
+            } else {
+                None
+            },
+        })
+    }
+}
+
+/// An occurrence's bound scope. Unproved pointer-owned operands are named
+/// demands, independent of the values that were acquired successfully.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EventFeedScope {
+    pub country: u32,
+    pub random: [u32; 2],
+    /// ROOT, FROM and PREV, in that order.
+    pub bindings: [u32; 3],
+    pub state: i32,
+    pub references: [u64; 9],
+    pub strategic_region: Option<u32>,
+    pub combat_context_unrecorded: bool,
+    pub target_storage_unrecorded: bool,
+    pub tooltip_storage_unrecorded: bool,
+}
+fn compact_len(value: u32) -> usize {
+    ((32 - value.leading_zeros()).max(1) as usize).div_ceil(7)
+}
+fn wide_len(value: u64) -> usize {
+    ((64 - value.leading_zeros()).max(1) as usize).div_ceil(7)
+}
+fn wide_read(input: &mut Decoder<'_>) -> io::Result<u64> {
+    u64::try_from(input.varint()?).map_err(|_| invalid("Event feed integer exceeds u64"))
+}
+fn compact_write(value: u32, output: &mut Vec<u8>) {
+    crate::codec::put_varint(output, value as u128);
+}
+fn compact_read(input: &mut Decoder<'_>) -> io::Result<u32> {
+    u32::try_from(input.varint()?).map_err(|_| invalid("Event feed integer exceeds u32"))
+}
+fn signed_word(value: i32) -> u32 {
+    (value as u32).wrapping_shl(1) ^ (value >> 31) as u32
+}
+fn signed_value(value: u32) -> i32 {
+    ((value >> 1) as i32) ^ -((value & 1) as i32)
+}
+
+impl Value for EventFeedScope {
+    const MINIMUM_ENCODED_BYTES: usize = 16;
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        Ok(11
+            + compact_len(self.country)
+            + self
+                .bindings
+                .iter()
+                .map(|id| compact_len(*id))
+                .sum::<usize>()
+            + compact_len(signed_word(self.state))
+            + self
+                .references
+                .iter()
+                .filter(|reference| **reference != 0)
+                .count()
+                * 8
+            + self.strategic_region.map(compact_len).unwrap_or(0))
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        compact_write(self.country, output);
+        self.random.encode_reserved(output)?;
+        for binding in self.bindings {
+            compact_write(binding, output);
+        }
+        compact_write(signed_word(self.state), output);
+        let mask = self
+            .references
+            .iter()
+            .enumerate()
+            .fold(0_u16, |mask, (n, reference)| {
+                mask | (u16::from(*reference != 0) << n)
+            });
+        mask.encode_reserved(output)?;
+        for reference in self.references {
+            if reference != 0 {
+                reference.encode_reserved(output)?;
+            }
+        }
+        let flags = u8::from(self.strategic_region.is_some())
+            | (u8::from(self.combat_context_unrecorded) << 1)
+            | (u8::from(self.target_storage_unrecorded) << 2)
+            | (u8::from(self.tooltip_storage_unrecorded) << 3);
+        flags.encode_reserved(output)?;
+        if let Some(region) = self.strategic_region {
+            compact_write(region, output);
+        }
+        Ok(())
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let country = compact_read(input)?;
+        let random = <[u32; 2]>::decode(input)?;
+        let bindings = [
+            compact_read(input)?,
+            compact_read(input)?,
+            compact_read(input)?,
+        ];
+        let state = signed_value(compact_read(input)?);
+        let mask = u16::decode(input)?;
+        if mask >> 9 != 0 {
+            return Err(invalid("Event feed scope reference mask differs"));
+        }
+        let mut references = [0; 9];
+        for (n, reference) in references.iter_mut().enumerate() {
+            if mask & (1 << n) != 0 {
+                *reference = u64::decode(input)?;
+            }
+        }
+        let flags = u8::decode(input)?;
+        if flags >> 4 != 0 {
+            return Err(invalid("Event feed scope flags differ"));
+        }
+        let strategic_region = if flags & 1 != 0 {
+            Some(compact_read(input)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            country,
+            random,
+            bindings,
+            state,
+            references,
+            strategic_region,
+            combat_context_unrecorded: flags & 2 != 0,
+            target_storage_unrecorded: flags & 4 != 0,
+            tooltip_storage_unrecorded: flags & 8 != 0,
+        })
+    }
+}
 
 /// Cumulative attachment accounting survives drains and world replacement.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -406,22 +1022,78 @@ value_struct!(EventFeedCounts {
     rejected: u64
 });
 
+/// Families whose unobserved conditional writers prevent interval carry.
+/// These bits qualify family coverage independently of transport/flight coverage:
+/// known occurrences and independently certified event registries remain usable.
+pub const DECISION_FAMILY_REFUSALS: u8 = 0x1f;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ScriptFamily {
+    DecisionMembership = 1,
+    DecisionTimers = 2,
+    DecisionLifecycle = 4,
+    DecisionRoster = 8,
+    DecisionRandomCount = 16,
+}
+pub const SCRIPT_FAMILY_NAMES: [(ScriptFamily, &str); 5] = [
+    (
+        ScriptFamily::DecisionMembership,
+        "decision and mission membership (selection retention, targeted cleanup, loading and refresh)",
+    ),
+    (
+        ScriptFamily::DecisionTimers,
+        "decision and mission durations, cooldowns, removal and re-enable timers (conditional countdowns and timer transfers)",
+    ),
+    (
+        ScriptFamily::DecisionLifecycle,
+        "decision and mission lifecycle (targeted reactivation and selection result stores)",
+    ),
+    (
+        ScriptFamily::DecisionRoster,
+        "visible and available decision roster (native trigger inputs, target rebuild and ignore commands)",
+    ),
+    (
+        ScriptFamily::DecisionRandomCount,
+        "decision description random-count state (selection, loading and reset)",
+    ),
+];
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EventFeedHistoryRow {
     pub generation: u64,
     pub read_hour: i32,
+    /// Observation/transport coverage; consult script_family_coverage before family carry.
     pub coverage: EventFeedCoverage,
     /// None after count overflow; never a saturated or wrapped known total.
     pub counts: Option<EventFeedCounts>,
     pub outstanding: u64,
     pub failure: Option<Vec<u8>>,
+    /// Named/countable unavailable families for this supplying interval.
+    pub script_refusals: u8,
     /// Known facts also survive partial/unavailable coverage. Missing events
     /// in those intervals cannot be interpreted as proof that nothing happened.
     pub events: Vec<EventFeedEvent>,
+    pub script_tokens: Vec<u8>,
+    pub script_scopes: Vec<EventFeedScope>,
 }
 
 impl EventFeedHistoryRow {
+    pub fn script_family_coverage(&self, family: ScriptFamily) -> EventFeedCoverage {
+        if self.script_refusals & family as u8 != 0 {
+            EventFeedCoverage::Unavailable
+        } else {
+            self.coverage
+        }
+    }
+    pub fn refused_script_families(&self) -> impl Iterator<Item = &'static str> {
+        SCRIPT_FAMILY_NAMES
+            .into_iter()
+            .filter_map(|(bit, name)| (self.script_refusals & bit as u8 != 0).then_some(name))
+    }
     pub fn validate(&self) -> io::Result<()> {
+        if self.script_refusals & !DECISION_FAMILY_REFUSALS != 0 {
+            return Err(invalid("unknown Event feed script family refusal"));
+        }
         if self.coverage == EventFeedCoverage::Complete
             && (self.outstanding != 0 || self.failure.is_some() || self.counts.is_none())
         {
@@ -453,6 +1125,113 @@ impl EventFeedHistoryRow {
                 return Err(invalid("Event feed history identity or order differs"));
             }
             previous = Some(event.sequence);
+            let scripted = matches!(
+                event.source,
+                EventFeedSource::ScriptEvent
+                    | EventFeedSource::NewsEvent
+                    | EventFeedSource::EventOption
+                    | EventFeedSource::DecisionSelected
+                    | EventFeedSource::DecisionRemoved
+                    | EventFeedSource::DecisionCancelled
+                    | EventFeedSource::DecisionTimedOut
+                    | EventFeedSource::DecisionActivated
+                    | EventFeedSource::DecisionCompleted
+                    | EventFeedSource::ScriptState
+                    | EventFeedSource::DecisionReenabled
+                    | EventFeedSource::DecisionRemovalEffect
+                    | EventFeedSource::DecisionCancellationEffect
+                    | EventFeedSource::DecisionCompletionEffect
+                    | EventFeedSource::DecisionTimeoutEffect
+                    | EventFeedSource::DecisionDurationChanged
+            );
+            if scripted != event.script.is_some() {
+                return Err(invalid("Event feed script operands differ from source"));
+            }
+            if let Some(script) = event.script {
+                if event.source == EventFeedSource::ScriptState && script.change.is_none()
+                    || script.change.is_some()
+                        && event.source != EventFeedSource::ScriptState
+                        && (!matches!(script.change, Some(EventFeedScriptChange::Decision(_)))
+                            || !matches!(
+                                event.source,
+                                EventFeedSource::DecisionActivated
+                                    | EventFeedSource::DecisionCompleted
+                                    | EventFeedSource::DecisionTimedOut
+                                    | EventFeedSource::DecisionRemoved
+                                    | EventFeedSource::DecisionCancelled
+                                    | EventFeedSource::DecisionReenabled
+                                    | EventFeedSource::DecisionDurationChanged
+                            ))
+                {
+                    return Err(invalid("Event feed registry change differs from source"));
+                }
+                if let Some(change) = script.change {
+                    use EventFeedScriptChange::*;
+                    if let Decision(change) = change {
+                        change.validate(script)?;
+                    }
+                    let (identity, instance, scope) = match change {
+                        Decision(_) => (false, script.instance.is_some(), false),
+                        PendingStored { .. } | DelayedStored { .. } => (true, true, true),
+                        PendingRemoved | DelayedRemoved { .. } => (false, true, false),
+                        FiredMember | FiredRemoved => (true, false, false),
+                        PendingBaseline
+                        | PendingReady
+                        | FiredBaseline
+                        | FiredReady
+                        | DelayedBaseline
+                        | DelayedReady
+                        | DelayedEmpty
+                        | DelayedAdvance { .. } => (false, false, false),
+                    };
+                    if identity != script.native_event.is_some()
+                        || instance != script.instance.is_some()
+                        || scope != (script.scope_len != 0 || script.scope_unrecorded)
+                        || !matches!(change, Decision(_))
+                            && !identity
+                            && (script.token_len != 0 || script.token_unrecorded)
+                        || !matches!(change, Decision(_))
+                            && (script.country_target.is_some() || script.numeric_target.is_some())
+                    {
+                        return Err(invalid("Event feed registry operands differ from change"));
+                    }
+                }
+                if script.token_unrecorded && script.token_len != 0
+                    || script.scope_unrecorded && script.scope_len != 0
+                {
+                    return Err(invalid(
+                        "Event feed unavailable script operand carries a value",
+                    ));
+                }
+                let span = |start: u32, len: u32, size: usize| {
+                    let start = start as usize;
+                    let end = start
+                        .checked_add(len as usize)
+                        .filter(|end| *end <= size)
+                        .ok_or_else(|| invalid("Event feed script arena span differs"))?;
+                    Ok::<_, io::Error>(start..end)
+                };
+                span(
+                    script.token_start,
+                    script.token_len,
+                    self.script_tokens.len(),
+                )?;
+                let scopes = span(
+                    script.scope_start,
+                    script.scope_len,
+                    self.script_scopes.len(),
+                )?;
+                for scope in &self.script_scopes[scopes] {
+                    if scope.bindings.iter().any(|id| *id >= script.scope_len) {
+                        return Err(invalid(
+                            "Event feed scope binding is outside its occurrence",
+                        ));
+                    }
+                }
+                if (event.source == EventFeedSource::EventOption) != script.option.is_some() {
+                    return Err(invalid("Event feed option operand differs from source"));
+                }
+            }
         }
         Ok(())
     }
@@ -463,13 +1242,17 @@ impl Value for EventFeedHistoryRow {
         Value::heap_bytes(&self.counts)
             + Value::heap_bytes(&self.failure)
             + Value::heap_bytes(&self.events)
+            + Value::heap_bytes(&self.script_tokens)
+            + Value::heap_bytes(&self.script_scopes)
     }
-    const MINIMUM_ENCODED_BYTES: usize = 27;
+    const MINIMUM_ENCODED_BYTES: usize = 36;
     fn encoded_bytes(&self) -> io::Result<usize> {
         self.validate()?;
-        let size = allocation::add(21, self.counts.encoded_bytes()?)?;
+        let size = allocation::add(22, self.counts.encoded_bytes()?)?;
         let size = allocation::add(size, self.failure.encoded_bytes()?)?;
-        allocation::add(size, self.events.encoded_bytes()?)
+        let size = allocation::add(size, self.events.encoded_bytes()?)?;
+        let size = allocation::add(size, self.script_tokens.encoded_bytes()?)?;
+        allocation::add(size, self.script_scopes.encoded_bytes()?)
     }
     fn try_clone(&self) -> io::Result<Self> {
         self.validate()?;
@@ -480,7 +1263,10 @@ impl Value for EventFeedHistoryRow {
             counts: self.counts,
             outstanding: self.outstanding,
             failure: self.failure.try_clone()?,
+            script_refusals: self.script_refusals,
             events: self.events.try_clone()?,
+            script_tokens: self.script_tokens.try_clone()?,
+            script_scopes: self.script_scopes.try_clone()?,
         })
     }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
@@ -491,7 +1277,10 @@ impl Value for EventFeedHistoryRow {
         self.counts.encode_reserved(output)?;
         self.outstanding.encode_reserved(output)?;
         self.failure.encode_reserved(output)?;
-        self.events.encode_reserved(output)
+        self.script_refusals.encode_reserved(output)?;
+        self.events.encode_reserved(output)?;
+        self.script_tokens.encode_reserved(output)?;
+        self.script_scopes.encode_reserved(output)
     }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
         let row = Self {
@@ -501,7 +1290,10 @@ impl Value for EventFeedHistoryRow {
             counts: Option::decode(input)?,
             outstanding: u64::decode(input)?,
             failure: Option::decode(input)?,
+            script_refusals: u8::decode(input)?,
             events: Vec::decode(input)?,
+            script_tokens: Vec::decode(input)?,
+            script_scopes: Vec::decode(input)?,
         };
         row.validate()?;
         Ok(row)
@@ -513,8 +1305,32 @@ impl Value for EventFeedHistoryRow {
 pub mod tests {
     use super::*;
 
+    #[test]
+    fn family_refusals_roundtrip_without_inventing_transport_or_registry_loss() {
+        let mut row = row();
+        row.script_refusals = DECISION_FAMILY_REFUSALS;
+        assert_eq!(row.refused_script_families().count(), 5);
+        for (family, _) in SCRIPT_FAMILY_NAMES {
+            assert_eq!(
+                row.script_family_coverage(family),
+                EventFeedCoverage::Unavailable
+            );
+        }
+        assert_eq!(row.coverage, EventFeedCoverage::Complete);
+        let mut bytes = Vec::new();
+        row.encode(&mut bytes).unwrap();
+        assert_eq!(row.encoded_bytes().unwrap(), bytes.len());
+        assert_eq!(
+            EventFeedHistoryRow::decode(&mut Decoder::new(&bytes)).unwrap(),
+            row
+        );
+        row.script_refusals = 0x80;
+        assert!(row.validate().is_err());
+    }
     pub fn row() -> EventFeedHistoryRow {
         EventFeedHistoryRow {
+            script_tokens: Vec::new(),
+            script_scopes: Vec::new(),
             generation: 9,
             read_hour: 12,
             coverage: EventFeedCoverage::Complete,
@@ -526,7 +1342,9 @@ pub mod tests {
             }),
             outstanding: 0,
             failure: None,
+            script_refusals: 0,
             events: vec![EventFeedEvent {
+                script: None,
                 sequence: 4,
                 generation: 9,
                 hour: -17,
@@ -582,6 +1400,80 @@ pub mod tests {
     }
 
     #[test]
+    fn script_occurrences_preserve_repeat_instances_signed_options_and_scope_ids() {
+        let mut row = row();
+        row.script_tokens = b"synthetic.1".to_vec();
+        row.script_scopes = vec![
+            EventFeedScope {
+                country: 0,
+                random: [u32::MAX, 7],
+                bindings: [0, 1, 1],
+                state: i32::MIN,
+                references: [u64::MAX, 0, 4, 0, 0, 0, 0, 0, 0],
+                ..Default::default()
+            },
+            EventFeedScope {
+                bindings: [1, 1, 0],
+                country: 5_000,
+                ..Default::default()
+            },
+        ];
+        row.events[0].source = EventFeedSource::EventOption;
+        row.events[0].script = Some(EventFeedScript {
+            token_len: row.script_tokens.len() as u32,
+            scope_len: 2,
+            native_event: Some(EventFeedEventIdentity {
+                kind: u32::MAX,
+                id: u32::MAX,
+            }),
+            instance: Some(0),
+            option: Some(i32::MIN),
+            numeric_target: Some(i32::MIN),
+            lifecycle: Some(i32::MAX),
+            days: Some(-123),
+            ..Default::default()
+        });
+        let mut second = row.events[0];
+        second.sequence += 1;
+        row.events.push(second);
+        let mut bytes = Vec::new();
+        row.encode(&mut bytes).unwrap();
+        assert_eq!(row.encoded_bytes().unwrap(), bytes.len());
+        assert_eq!(
+            EventFeedHistoryRow::decode(&mut Decoder::new(&bytes)).unwrap(),
+            row
+        );
+        for end in 0..bytes.len() {
+            assert!(EventFeedHistoryRow::decode(&mut Decoder::new(&bytes[..end])).is_err());
+        }
+        row.script_scopes[0].bindings[1] = 2;
+        assert!(row.validate().is_err());
+        row.script_scopes[0].bindings[1] = 1;
+        row.events[0].script.as_mut().unwrap().token_len += 1;
+        assert!(row.validate().is_err());
+    }
+
+    #[test]
+    fn scope_codec_omits_zero_references_and_rejects_unbounded_ids_and_masks() {
+        let scope = EventFeedScope::default();
+        let mut bytes = Vec::new();
+        scope.encode(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), 16);
+        assert_eq!(scope.encoded_bytes().unwrap(), bytes.len());
+        assert_eq!(
+            EventFeedScope::decode(&mut Decoder::new(&bytes)).unwrap(),
+            scope
+        );
+        // The nine-bit object-reference mask starts after country, random,
+        // three bindings and signed state. Higher bits have no native operand.
+        bytes[14] = 2;
+        assert!(EventFeedScope::decode(&mut Decoder::new(&bytes)).is_err());
+        let mut bytes = Vec::new();
+        crate::codec::put_varint(&mut bytes, u32::MAX as u128 + 1);
+        assert!(EventFeedScope::decode(&mut Decoder::new(&bytes)).is_err());
+    }
+
+    #[test]
     fn annex_before_dispatch_remains_known_with_an_unsettled_native_call() {
         let mut row = row();
         row.coverage = EventFeedCoverage::Unavailable;
@@ -603,7 +1495,7 @@ pub mod tests {
     }
 
     #[test]
-    fn causes_round_trip_and_older_events_decode_without_one() {
+    fn causes_and_routes_round_trip() {
         let mut current = row();
         current.events[0].source = EventFeedSource::StateTransfer;
         current.events[0].cause = Recorded::Value(EventFeedCause {
@@ -625,17 +1517,6 @@ pub mod tests {
             EventFeedHistoryRow::decode(&mut Decoder::new(&bytes)).unwrap(),
             current
         );
-        // A format-101 event ends at its target; its cause is not recorded.
-        let mut older = row();
-        let mut bytes = Vec::new();
-        older.encode(&mut bytes).unwrap();
-        let cause = older.events[0].cause.encoded_bytes().unwrap();
-        bytes.truncate(bytes.len() - cause);
-        let mut input = Decoder::new(&bytes);
-        input.format = crate::rows::compatibility::EVENT_CAUSE_FORMAT - 1;
-        older.events[0].cause = Recorded::NotRecorded;
-        assert_eq!(EventFeedHistoryRow::decode(&mut input).unwrap(), older);
-        input.finish().unwrap();
         for route in EventFeedRoute::ALL {
             assert_eq!(
                 EventFeedRoute::named(route.name()),
@@ -653,7 +1534,7 @@ pub mod tests {
 
     #[test]
     fn malformed_kinds_counts_generation_and_duplicate_sequences_refuse() {
-        assert!(EventFeedSource::decode(&mut Decoder::new(&[8])).is_err());
+        assert!(EventFeedSource::decode(&mut Decoder::new(&[24])).is_err());
         assert!(EventFeedCoverage::decode(&mut Decoder::new(&[3])).is_err());
         let mut row = row();
         row.counts.as_mut().unwrap().settled = 3;

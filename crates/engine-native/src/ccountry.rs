@@ -28,8 +28,8 @@ mod rosters;
 pub use native_reference::{NativeReferenceContext, NativeReferenceMemo};
 pub use rosters::{
     CarriedRosters, CarriedSpans, CounterRosters, EffectRosterDemand, EffectRosters, NEIGHBORS,
-    POLICY_STATUS_NULL, RosterDemand, RosterSpan, counter_effect_roster_demand,
-    counter_roster_demand, counter_roster_demand_with_pride_observer,
+    POLICY_STATUS_NULL, RosterDemand, RosterSpan, SENT_EXPEDITIONARIES,
+    counter_effect_roster_demand, counter_roster_demand, counter_roster_demand_with_pride_observer,
 };
 
 /// Country primary vtable.
@@ -204,6 +204,8 @@ pub const ACTIVE_COMMAND_ABILITIES_CAPACITY: usize = 0x15c0;
 pub const PREFERRED_TACTIC: usize = 0x15d0;
 
 /// CCountry division-template pointer vector.
+/// Nonzero forces every owned template locked.
+pub const LOCK_ALL_TEMPLATES: usize = 0x1b4;
 pub const DIVISION_TEMPLATES: usize = 0x1b8;
 /// CCountry scripted variables object pointer.
 pub const VARIABLES: usize = 0x218;
@@ -2801,6 +2803,70 @@ pub fn movement_friendly(
     )?)
 }
 
+/// The raw `river_crossing_factor_against` entry of `owner_raw`'s relation
+/// towards `target_raw`, which a land river crossing into a province
+/// `target_raw` controls adds to the commander's river crossing factor: the
+/// owner's diplomacy relation matrix at the target's canonical slot (slot zero
+/// for a target at or below zero, or unlinked). `None` is a null diplomacy, a
+/// null relation or an absent entry.
+pub fn river_crossing_against(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    owner_raw: u32,
+    target_raw: u32,
+) -> Result<Option<i64>, &'static str> {
+    let countries = Reader::new(memory, base, state)?;
+    let owner = countries.resolve(owner_raw)?;
+    river_crossing_against_with(memory, base, &countries, owner, target_raw)
+}
+
+/// [`river_crossing_against`] with the hour's reader and the resolved owner.
+pub fn river_crossing_against_with(
+    memory: &impl Memory,
+    base: usize,
+    countries: &Reader<'_, impl Memory>,
+    owner: Country,
+    target_raw: u32,
+) -> Result<Option<i64>, &'static str> {
+    let diplomacy = movement_pointer(memory, owner.pointer, DIPLOMACY_STATUS)?;
+    if diplomacy == 0 {
+        return Ok(None);
+    }
+    movement_auth(
+        memory,
+        base,
+        diplomacy,
+        crate::cdiplomacy_status::VTABLE_RVA,
+    )?;
+    let slot = if (target_raw as i32) <= 0 {
+        0
+    } else {
+        countries.link(target_raw)?.unwrap_or(0)
+    };
+    let relation = movement_element(
+        memory,
+        movement_array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS)?,
+        slot,
+    )?;
+    if relation == 0 {
+        return Ok(None);
+    }
+    movement_auth(memory, base, relation, crate::crelation_status::VTABLE_RVA)?;
+    if movement_pointer(memory, relation, crate::crelation_status::DIPLOMACY_STATUS)? != diplomacy {
+        return Err("movement relation matrix identity mismatch");
+    }
+    let accumulator = relation
+        .checked_add(crate::crelation_status::MODIFIER_ACCUMULATOR)
+        .ok_or("movement relation accumulator overflow")?;
+    let value = crate::modifier_accumulator::lookup_requested_at(
+        memory,
+        accumulator,
+        crate::modifier_keys::RIVER_CROSSING_FACTOR_AGAINST,
+    )?;
+    Ok(value.present.then_some(value.raw))
+}
+
 /// Active-war predicate preserving self and alias exclusion.
 pub fn movement_enemy(
     memory: &impl Memory,
@@ -3523,6 +3589,8 @@ pub struct VolunteerHostRow {
     pub host: u32,
     /// Paired tally word, re-derived from the sender's armies.
     pub deployed_divisions: i32,
+    /// Effective directed Air volunteer-capacity modifier, independently unavailable.
+    pub air_capacity_modifier: Option<i64>,
 }
 
 /// Read every canonical country's host vector and paired tally. Appending
@@ -3553,7 +3621,18 @@ pub fn walk_volunteer_hosts_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    output: Buffer<'_, VolunteerHostRow>,
+) -> Outcome {
+    walk_volunteer_hosts_with_air_buffer(memory, base, game_state, output, false)
+}
+
+/// The asynchronous worker opts into demanded relation modifier reads.
+pub fn walk_volunteer_hosts_with_air_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
     mut output: Buffer<'_, VolunteerHostRow>,
+    air_modifiers: bool,
 ) -> Outcome {
     let result = (|| {
         let countries = Reader::new(memory, base, game_state)?;
@@ -3614,6 +3693,18 @@ pub fn walk_volunteer_hosts_buffer(
                         position: position + index as u32,
                         host: host_batch[index],
                         deployed_divisions: tally_batch[index] as i32,
+                        air_capacity_modifier: air_modifiers
+                            .then(|| {
+                                volunteer_air_modifier(
+                                    memory,
+                                    base,
+                                    &countries,
+                                    country,
+                                    host_batch[index],
+                                )
+                                .ok()
+                            })
+                            .flatten(),
                     };
                     len += 1;
                 }
@@ -3627,6 +3718,75 @@ pub fn walk_volunteer_hosts_buffer(
         })
     })();
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
+}
+
+/// Requested-key read for one already demanded sender/host occurrence.
+/// Failure is independent of the host/tally serialization.
+fn volunteer_air_modifier(
+    memory: &impl Memory,
+    base: usize,
+    countries: &Reader<'_, impl Memory>,
+    sender: Country,
+    host: u32,
+) -> Result<i64, &'static str> {
+    let slot = if host == 0 {
+        0
+    } else {
+        countries.link(host)?.unwrap_or(0)
+    };
+    let diplomacy = read::<u64>(memory, sender.pointer + DIPLOMACY_STATUS)
+        .and_then(|p| usize::try_from(p).ok())
+        .ok_or("volunteer diplomacy unavailable")?;
+    if read::<u64>(memory, diplomacy)
+        != base
+            .checked_add(crate::cdiplomacy_status::VTABLE_RVA)
+            .map(|p| p as u64)
+    {
+        return Err("volunteer diplomacy identity mismatch");
+    }
+    if read::<u64>(memory, diplomacy + crate::cdiplomacy_status::COUNTRY)
+        != Some(sender.pointer as u64)
+    {
+        return Err("volunteer diplomacy owner mismatch");
+    }
+    let relations = Array::read(memory, diplomacy + crate::cdiplomacy_status::RELATIONS, 8)
+        .ok_or("volunteer relation matrix unavailable")?;
+    let relation = relations
+        .element(slot, 8)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .ok_or("volunteer relation unavailable")?;
+    if read::<u64>(memory, relation)
+        != base
+            .checked_add(crate::crelation_status::VTABLE_RVA)
+            .map(|p| p as u64)
+    {
+        return Err("volunteer relation identity mismatch");
+    }
+    if read::<u64>(memory, relation + crate::crelation_status::DIPLOMACY_STATUS)
+        != Some(diplomacy as u64)
+    {
+        return Err("volunteer relation owner mismatch");
+    }
+    let target = read::<u32>(memory, relation + crate::crelation_status::TARGET_COUNTRY)
+        .ok_or("volunteer relation target unreadable")?;
+    let target_slot = if target == 0 {
+        0
+    } else {
+        countries.link(target)?.unwrap_or(0)
+    };
+    if target_slot != slot {
+        return Err("volunteer relation target mismatch");
+    }
+    let accumulator = relation
+        .checked_add(crate::crelation_status::MODIFIER_ACCUMULATOR)
+        .ok_or("volunteer relation modifier address overflow")?;
+    crate::modifier_accumulator::requested_effective_at(
+        memory,
+        base,
+        accumulator,
+        AIR_MODIFIER_KEYS[4],
+    )
 }
 
 /// Country naval and supply operands with retained controlled-state count.
@@ -3644,6 +3804,7 @@ pub struct CounterInputsRow {
     pub state_rosters: Option<[RosterSpan; 3]>,
     /// Army and navy leader spans in the caller-owned arena.
     pub leader_rosters: Option<[RosterSpan; 2]>,
+    pub sent_expeditionaries: Option<RosterSpan>,
     /// The optional roster inputs' own refusal; scalar operands stand.
     pub roster_reason: Option<&'static str>,
     pub neighbors: Option<RosterSpan>,
@@ -3657,19 +3818,54 @@ pub struct CounterInputsRow {
     /// The same accumulator's raw entries for [`MOVEMENT_MODIFIER_KEYS`], refused
     /// alone.
     pub movement_modifiers: Option<[Option<i64>; MOVEMENT_MODIFIER_KEYS.len()]>,
+    pub recruitment_modifiers: Option<[Option<i64>; 4]>,
+    /// Air map terms projected from the same complete raw accumulator census.
+    pub air_modifiers: Option<[Option<i64>; AIR_MODIFIER_KEYS.len()]>,
+    /// Additional combat terms from the same complete accumulator copy.
+    pub air_combat_modifiers: Option<[Option<i64>; AIR_COMBAT_MODIFIER_KEYS.len()]>,
+    /// Mine penalty modifier forwarded from the same complete accumulator census.
+    pub mines_effect_reduction: Option<Option<i64>>,
+    pub naval_detection: Option<Option<i64>>,
 }
+
+/// Detection mission factors, home defence and power projection, volunteer
+/// capacity, bomber/night/weather and carrier-night terms, then fuel consumption.
+pub const AIR_MODIFIER_KEYS: [u32; 10] = [
+    crate::modifier_keys::AIR_INTERCEPT_DETECTION,
+    crate::modifier_keys::AIR_SUPERIORITY_DETECTION,
+    crate::modifier_keys::AIR_HOME_DEFENCE_FACTOR,
+    crate::modifier_keys::AIR_POWER_PROJECTION_FACTOR,
+    crate::modifier_keys::AIR_VOLUNTEER_CAPACITY,
+    crate::modifier_keys::AIR_STRATEGIC_BOMBER_NIGHT_PENALTY,
+    crate::modifier_keys::AIR_NIGHT_PENALTY,
+    crate::modifier_keys::AIR_WEATHER_PENALTY,
+    crate::modifier_keys::AIR_CARRIER_NIGHT_PENALTY_REDUCTION_FACTOR,
+    crate::modifier_keys::AIR_FUEL_CONSUMPTION_FACTOR,
+];
+
+/// Home defence and power projection already belong to AIR_MODIFIER_KEYS.
+pub const AIR_COMBAT_MODIFIER_KEYS: [u32; 7] = [
+    crate::modifier_keys::AIR_SUPERIORITY_EFFICIENCY,
+    crate::modifier_keys::AIR_INTERCEPT_EFFICIENCY,
+    crate::modifier_keys::AIR_CAS_EFFICIENCY,
+    crate::modifier_keys::AIR_NAV_EFFICIENCY,
+    crate::modifier_keys::AIR_ATTACK_FACTOR,
+    crate::modifier_keys::AIR_DEFENCE_FACTOR,
+    crate::modifier_keys::AIR_STRATEGIC_BOMBER_DEFENCE_FACTOR,
+];
 
 /// The country terms of the movement speed (army speed, armour speed, out-of-supply
 /// and special-forces out-of-supply factors, attack speed and retreat speed) and of the
 /// attrition hover (attrition, winter and heat attrition factors), in the
 /// accumulator's ascending key order.
-pub const MOVEMENT_MODIFIER_KEYS: [u32; 9] = [
+pub const MOVEMENT_MODIFIER_KEYS: [u32; 10] = [
     crate::modifier_keys::ARMY_SPEED_FACTOR,
     crate::modifier_keys::ARMY_ARMOR_SPEED_FACTOR,
     crate::modifier_keys::ATTRITION,
     crate::modifier_keys::WINTER_ATTRITION_FACTOR,
     crate::modifier_keys::HEAT_ATTRITION_FACTOR,
     crate::modifier_keys::OUT_OF_SUPPLY_FACTOR,
+    crate::modifier_keys::COMBAT_WIDTH_FACTOR,
     crate::modifier_keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
     crate::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
     crate::modifier_keys::ARMY_RETREAT_SPEED_FACTOR,
@@ -3677,15 +3873,51 @@ pub const MOVEMENT_MODIFIER_KEYS: [u32; 9] = [
 
 /// [`MOVEMENT_MODIFIER_KEYS`] and [`ATTACK_MODIFIER_KEYS`] merged in ascending order,
 /// so one census of the accumulator reads both.
-const COUNTER_MODIFIER_KEYS: [u32; MOVEMENT_MODIFIER_KEYS.len() + ATTACK_MODIFIER_KEYS.len()] = [
+pub const RECRUITMENT_MODIFIER_KEYS: [u32; 4] = [
+    crate::modifier_keys::MOBILIZATION_SPEED,
+    crate::modifier_keys::CONSCRIPTION,
+    crate::modifier_keys::CONSCRIPTION_FACTOR,
+    crate::modifier_keys::NON_CORE_MANPOWER,
+];
+
+/// All requested map keys, in ascending order, from one unchanged census.
+const COUNTER_MODIFIER_KEYS: [u32; MOVEMENT_MODIFIER_KEYS.len()
+    + ATTACK_MODIFIER_KEYS.len()
+    + AIR_MODIFIER_KEYS.len()
+    + AIR_COMBAT_MODIFIER_KEYS.len()
+    + 6] = [
+    AIR_MODIFIER_KEYS[0],
+    AIR_MODIFIER_KEYS[1],
+    AIR_COMBAT_MODIFIER_KEYS[0],
+    AIR_COMBAT_MODIFIER_KEYS[1],
+    AIR_COMBAT_MODIFIER_KEYS[2],
+    AIR_COMBAT_MODIFIER_KEYS[3],
+    crate::modifier_keys::NAVAL_DETECTION,
     crate::modifier_keys::ARMY_SPEED_FACTOR,
     crate::modifier_keys::ARMY_ARMOR_SPEED_FACTOR,
+    RECRUITMENT_MODIFIER_KEYS[3],
+    RECRUITMENT_MODIFIER_KEYS[0],
+    RECRUITMENT_MODIFIER_KEYS[1],
+    RECRUITMENT_MODIFIER_KEYS[2],
     crate::modifier_keys::ATTRITION,
     crate::modifier_keys::WINTER_ATTRITION_FACTOR,
     crate::modifier_keys::HEAT_ATTRITION_FACTOR,
     crate::modifier_keys::OUT_OF_SUPPLY_FACTOR,
+    AIR_COMBAT_MODIFIER_KEYS[4],
+    AIR_COMBAT_MODIFIER_KEYS[5],
+    AIR_MODIFIER_KEYS[2],
+    AIR_MODIFIER_KEYS[3],
+    AIR_COMBAT_MODIFIER_KEYS[6],
+    AIR_MODIFIER_KEYS[4],
     crate::modifier_keys::LAND_NIGHT_ATTACK,
+    AIR_MODIFIER_KEYS[5],
+    AIR_MODIFIER_KEYS[6],
+    AIR_MODIFIER_KEYS[7],
+    AIR_MODIFIER_KEYS[8],
+    crate::modifier_keys::COMBAT_WIDTH_FACTOR,
     crate::modifier_keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
+    AIR_MODIFIER_KEYS[9],
+    crate::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION,
     crate::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
     crate::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR,
     crate::modifier_keys::ARMY_RETREAT_SPEED_FACTOR,
@@ -4017,7 +4249,7 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
                     .ok_or("country counter unread row count overflow")?;
                 continue;
             }
-            // One census of the accumulator answers the attack and movement entries.
+            // One complete accumulator census answers all requested map entries.
             let mut merged =
                 [crate::modifier_accumulator::Value::default(); COUNTER_MODIFIER_KEYS.len()];
             let merged = crate::modifier_accumulator::lookup_many(
@@ -4034,16 +4266,36 @@ fn walk_counter_inputs_inner<'a, M: Memory>(
             let movement_modifiers = merged
                 .as_ref()
                 .map(|merged| counter_entries(merged, &MOVEMENT_MODIFIER_KEYS));
+            let air_modifiers = merged
+                .as_ref()
+                .map(|merged| counter_entries(merged, &AIR_MODIFIER_KEYS));
             output[len] = CounterInputsRow {
                 country: country.id,
                 attack_modifiers,
                 movement_modifiers,
+                recruitment_modifiers: merged
+                    .as_ref()
+                    .map(|values| counter_entries(values, &RECRUITMENT_MODIFIER_KEYS)),
+                air_modifiers,
+                air_combat_modifiers: merged
+                    .as_ref()
+                    .map(|merged| counter_entries(merged, &AIR_COMBAT_MODIFIER_KEYS)),
+                mines_effect_reduction: merged.as_ref().map(|merged| {
+                    counter_entries(
+                        merged,
+                        &[crate::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION],
+                    )[0]
+                }),
+                naval_detection: merged.as_ref().map(|merged| {
+                    counter_entries(merged, &[crate::modifier_keys::NAVAL_DETECTION])[0]
+                }),
                 pride_of_the_fleet: pride,
                 owned_state_count: states.count as i32,
                 controlled_state_count: controlled.count as i32,
                 first_division,
-                state_rosters: captured_rosters.map(|(states, _)| states),
-                leader_rosters: captured_rosters.map(|(_, leaders)| leaders),
+                state_rosters: captured_rosters.map(|(states, _, _)| states),
+                leader_rosters: captured_rosters.map(|(_, leaders, _)| leaders),
+                sent_expeditionaries: captured_rosters.and_then(|(_, _, sent)| sent),
                 roster_reason,
                 neighbors,
                 mio_policies,
@@ -4278,10 +4530,17 @@ mod tests {
     use crate::memory::SliceMemory;
 
     #[test]
-    fn one_census_answers_the_attack_and_movement_entries() {
+    fn manpower_one_census_answers_attack_movement_and_recruitment_entries() {
         let mut union: Vec<u32> = MOVEMENT_MODIFIER_KEYS
             .iter()
             .chain(&ATTACK_MODIFIER_KEYS)
+            .chain(&RECRUITMENT_MODIFIER_KEYS)
+            .chain(&AIR_MODIFIER_KEYS)
+            .chain(&AIR_COMBAT_MODIFIER_KEYS)
+            .chain(&[
+                crate::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION,
+                crate::modifier_keys::NAVAL_DETECTION,
+            ])
             .copied()
             .collect();
         union.sort_unstable();
@@ -4296,6 +4555,91 @@ mod tests {
             counter_entries(&values, &MOVEMENT_MODIFIER_KEYS),
             MOVEMENT_MODIFIER_KEYS.map(|key| Some(i64::from(key)))
         );
+        assert_eq!(
+            counter_entries(&values, &AIR_MODIFIER_KEYS),
+            AIR_MODIFIER_KEYS.map(|key| Some(i64::from(key)))
+        );
+        assert_eq!(
+            counter_entries(&values, &AIR_COMBAT_MODIFIER_KEYS),
+            AIR_COMBAT_MODIFIER_KEYS.map(|key| Some(i64::from(key)))
+        );
+    }
+
+    #[test]
+    fn air_projection_reuses_the_complete_counter_accumulator_read() {
+        use crate::{modifier_accumulator, modifier_entry, read_census::ReadCensus};
+        let country = 0x100;
+        let data = 0x1000;
+        let mut bytes = vec![0_u8; 0x2000];
+        let mut keys = COUNTER_MODIFIER_KEYS.to_vec();
+        keys.push(0x400);
+        put(
+            &mut bytes,
+            country + MODIFIER_ACCUMULATOR,
+            &(data as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            country + MODIFIER_ACCUMULATOR + modifier_accumulator::CAPACITY,
+            &(keys.len() as u32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            country + MODIFIER_ACCUMULATOR + modifier_accumulator::COUNT,
+            &(keys.len() as u32).to_le_bytes(),
+        );
+        for (index, &key) in keys.iter().enumerate() {
+            let at = data + index * modifier_entry::STRIDE;
+            put(&mut bytes, at + modifier_entry::KEY, &key.to_le_bytes());
+            put(
+                &mut bytes,
+                at + modifier_entry::VALUE,
+                &(-i64::from(key)).to_le_bytes(),
+            );
+        }
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let census = ReadCensus::new(&memory);
+        let mut old_keys: Vec<_> = MOVEMENT_MODIFIER_KEYS
+            .into_iter()
+            .chain(ATTACK_MODIFIER_KEYS)
+            .collect();
+        old_keys.sort_unstable();
+        let mut old = vec![modifier_accumulator::Value::default(); old_keys.len()];
+        modifier_accumulator::lookup_many(&census, country, &old_keys, &mut old).unwrap();
+        let old_cost = (census.calls(), census.bytes());
+        census.reset();
+        let mut all = [modifier_accumulator::Value::default(); COUNTER_MODIFIER_KEYS.len()];
+        modifier_accumulator::lookup_many(&census, country, &COUNTER_MODIFIER_KEYS, &mut all)
+            .unwrap();
+        assert_eq!((census.calls(), census.bytes()), old_cost);
+        let raw = all.map(|entry| entry.present.then_some(entry.raw));
+        assert_eq!(
+            counter_entries(&raw, &AIR_COMBAT_MODIFIER_KEYS),
+            AIR_COMBAT_MODIFIER_KEYS.map(|key| Some(-i64::from(key)))
+        );
+        assert_eq!(
+            counter_entries(&raw, &AIR_MODIFIER_KEYS),
+            AIR_MODIFIER_KEYS.map(|key| Some(-i64::from(key)))
+        );
+        assert_eq!(
+            counter_entries(&raw, &[crate::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION]),
+            [Some(-i64::from(
+                crate::modifier_keys::NAVAL_MINES_EFFECT_REDUCTION
+            ))]
+        );
+        assert_eq!(
+            counter_entries(&raw, &[crate::modifier_keys::NAVAL_DETECTION]),
+            [Some(-i64::from(crate::modifier_keys::NAVAL_DETECTION))]
+        );
+        for (at, key) in old_keys.into_iter().enumerate() {
+            assert_eq!(
+                all[COUNTER_MODIFIER_KEYS.binary_search(&key).unwrap()],
+                old[at]
+            );
+        }
     }
 
     struct ReservedMemory<'a> {
@@ -5699,6 +6043,49 @@ mod tests {
     }
 
     #[test]
+    fn movement_river_relation_resolves_aliases_and_reserved_targets_without_requiring_a_relation()
+    {
+        use crate::{crelation_status as relation, modifier_keys};
+        let mut bytes = movement_fixture();
+        let run = |bytes: &[u8], target| {
+            river_crossing_against(&SliceMemory { base: 0, bytes }, 0, 0x1000, 1, target)
+        };
+        let accumulator = 0x9000 + relation::MODIFIER_ACCUMULATOR;
+        movement_test_array(&mut bytes, accumulator, 0xa000, 1);
+        put(
+            &mut bytes,
+            0xa000,
+            &modifier_keys::RIVER_CROSSING_FACTOR_AGAINST.to_le_bytes(),
+        );
+        put(&mut bytes, 0xa008, &(-27_000_i64).to_le_bytes());
+        // Both references resolve the same canonical relation slot.
+        assert_eq!(run(&bytes, 2), Ok(Some(-27_000)));
+        assert_eq!(run(&bytes, 3), Ok(Some(-27_000)));
+        // Nonpositive and unlinked positive targets use slot zero.
+        put(&mut bytes, 0x7800, &0x9000_u64.to_le_bytes());
+        put(&mut bytes, 0x2100 + 3 * 4, &0_u32.to_le_bytes());
+        for target in [0, u32::MAX, 3] {
+            assert_eq!(run(&bytes, target), Ok(Some(-27_000)));
+        }
+        // Null relation and null diplomacy mean no modifier entry.
+        put(&mut bytes, 0x7800, &0_u64.to_le_bytes());
+        assert_eq!(run(&bytes, 0), Ok(None));
+        put(&mut bytes, 0x3000 + DIPLOMACY_STATUS, &0_u64.to_le_bytes());
+        assert_eq!(run(&bytes, 2), Ok(None));
+        put(
+            &mut bytes,
+            0x3000 + DIPLOMACY_STATUS,
+            &0x7000_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            0x9000 + relation::DIPLOMACY_STATUS,
+            &0_u64.to_le_bytes(),
+        );
+        assert!(run(&bytes, 2).is_err());
+    }
+
+    #[test]
     fn movement_relationship_aliases_war_precedence_and_subject_endpoints() {
         let mut bytes = movement_fixture();
         let run = |bytes: &[u8], owner, target| {
@@ -6405,6 +6792,70 @@ mod tests {
     }
 
     #[test]
+    fn volunteer_air_relation_suffix_keeps_absent_key_separate_from_failed_pair() {
+        let mut bytes = volunteer_world(2, 2);
+        let mut at = |address: usize, data: &[u8]| put(&mut bytes, address - 0x1000, data);
+        at(0x3000 + DIPLOMACY_STATUS, &0x7000_u64.to_le_bytes());
+        at(
+            0x7000,
+            &(crate::cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        at(
+            0x7000 + crate::cdiplomacy_status::COUNTRY,
+            &0x3000_u64.to_le_bytes(),
+        );
+        at(
+            0x7000 + crate::cdiplomacy_status::RELATIONS,
+            &0x8200_u64.to_le_bytes(),
+        );
+        at(
+            0x7000 + crate::cdiplomacy_status::RELATION_CAPACITY,
+            &2_u32.to_le_bytes(),
+        );
+        at(
+            0x7000 + crate::cdiplomacy_status::RELATION_COUNT,
+            &2_u32.to_le_bytes(),
+        );
+        at(0x8208, &0x7400_u64.to_le_bytes());
+        at(
+            0x7400,
+            &(crate::crelation_status::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        at(
+            0x7400 + crate::crelation_status::DIPLOMACY_STATUS,
+            &0x7000_u64.to_le_bytes(),
+        );
+        at(
+            0x7400 + crate::crelation_status::TARGET_COUNTRY,
+            &1_u32.to_le_bytes(),
+        );
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut rows = [VolunteerHostRow::default(); 2];
+        assert_eq!(
+            walk_volunteer_hosts_with_air_buffer(
+                &memory,
+                0,
+                0x1000,
+                Buffer::Fixed(&mut rows),
+                true
+            ),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(
+            (rows[0].air_capacity_modifier, rows[1].air_capacity_modifier),
+            (Some(0), None)
+        );
+        assert_eq!((rows[0].host, rows[1].host), (1, 2));
+        assert_eq!(
+            (rows[0].deployed_divisions, rows[1].deployed_divisions),
+            (0, -1)
+        );
+    }
+
+    #[test]
     fn volunteer_positions_survive_the_batch_boundary_in_native_order() {
         // Sixty-five positions force the batched copy past its first window.
         let bytes = volunteer_world(65, 65);
@@ -6425,6 +6876,7 @@ mod tests {
                     position: position as u32,
                     host: position as u32 + 1,
                     deployed_divisions: -(position as i32),
+                    air_capacity_modifier: None,
                 },
                 "position {position}"
             );
@@ -7053,12 +7505,22 @@ mod tests {
                     // An empty accumulator holds neither key.
                     attack_modifiers: Some([None, None]),
                     movement_modifiers: Some([None; MOVEMENT_MODIFIER_KEYS.len()]),
+                    recruitment_modifiers: Some([None; 4]),
+                    air_modifiers: Some([None; AIR_MODIFIER_KEYS.len()]),
+                    air_combat_modifiers: Some([None; AIR_COMBAT_MODIFIER_KEYS.len()]),
+                    mines_effect_reduction: Some(None),
+                    naval_detection: Some(None),
                     ..Default::default()
                 },
                 CounterInputsRow {
                     country: 2,
                     attack_modifiers: Some([None, None]),
                     movement_modifiers: Some([None; MOVEMENT_MODIFIER_KEYS.len()]),
+                    recruitment_modifiers: Some([None; 4]),
+                    air_modifiers: Some([None; AIR_MODIFIER_KEYS.len()]),
+                    air_combat_modifiers: Some([None; AIR_COMBAT_MODIFIER_KEYS.len()]),
+                    mines_effect_reduction: Some(None),
+                    naval_detection: Some(None),
                     ..Default::default()
                 },
             ]

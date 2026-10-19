@@ -70,6 +70,28 @@ fn strategic_regions() -> BTreeMap<u32, StrategicRegion> {
     )])
 }
 
+#[test]
+fn naval_control_attributes_use_the_same_nonzero_keys_as_the_region_field() {
+    let attributes = gradient::Attributes {
+        control: 255,
+        contested: 128,
+        gradient: None,
+    };
+    let fill = super::super::naval_dominance::Fill {
+        attributes: BTreeMap::from([(4, attributes)]),
+        warnings: Vec::new(),
+    };
+    let built = build_with_naval(&map(), &occupied(), fill, Default::default()).unwrap();
+    assert_eq!(
+        built.regions.strategic_attributes,
+        BTreeMap::from([(5, attributes)])
+    );
+    assert_eq!(
+        strategic_regions_of(&map(), &strategic_regions()).unwrap()[5],
+        5
+    );
+}
+
 /// Layer 1 for the fixture map, which no hour changes.
 fn strategic() -> LayerPlane {
     {

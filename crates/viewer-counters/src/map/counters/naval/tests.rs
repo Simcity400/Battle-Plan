@@ -194,7 +194,6 @@ fn with_port_context<R>(
         mission_skips: Default::default(),
         forces,
         forces_complete: true,
-        coarse: false,
     };
     body(&mut context)
 }
@@ -267,7 +266,6 @@ fn a_hidden_unit_pass_reads_no_naval_table() {
         country_ids: &country_ids,
         ideology: &|_| Ok(None),
         aggression: &[1],
-        coarse: false,
     };
     assert!(
         NavalContext::read(false, &frame, sources)
@@ -324,6 +322,9 @@ fn a_5000_task_force_port_roster_with_wrapping_fleets_sorts_as_the_game_does() {
 #[test]
 fn the_port_comparator_wraps_and_the_insertion_sort_orders_the_cycle() {
     let key = |low: i32| PortSortKey {
+        selected: false,
+        handle: 0,
+        mission: 0,
         own: true,
         full: true,
         refused: false,
@@ -448,5 +449,95 @@ fn a_port_force_the_incomplete_census_lacks_leaves_its_roster_undecided() {
             unrecorded_port_forces(&bases, &order, context),
             [(12, vec![8])]
         );
+    });
+}
+
+/// Strategic views below the content region-group distance must not merge all
+/// own fleets into the political map's single allegiance plate.
+#[test]
+fn strategic_port_frames_keep_fleet_mission_and_selected_splits() {
+    let mut defines = CounterDefines::VANILLA;
+    defines.coarse_distance = [100.0, 700.0];
+    defines.groups.province_distance = 70.0;
+    defines.groups.state_distance = 150.0;
+    defines.groups.strategic_distance = 420.0;
+    let strategic = Visibility {
+        political_mode: false,
+        strategic_grouping: true,
+        priorities: PriorityTable::StrategicAir,
+        ..Visibility::POLITICAL
+    };
+    let forces: Vec<_> = [(1, 11, 1), (2, 11, 0), (3, 11, 1), (4, 22, 1)]
+        .map(|(id, fleet, mission)| TaskForceRow {
+            id,
+            fleet,
+            mission,
+            ..Default::default()
+        })
+        .into();
+    with_port_context(&forces, |context| {
+        let prepare = |grouping: PortGrouping, selected: &BTreeSet<Unit>| {
+            let mut units: Vec<_> = forces.iter().map(|force| port_unit(force, 0)).collect();
+            let keys =
+                naval_regional::sort_own(&mut units, selected, context, grouping.coarse).unwrap();
+            port_runs(grouping, &keys, |_| Allegiance::Ours)
+                .into_iter()
+                .map(|run| units[run].iter().map(|u| u.force.id).collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        };
+        let detail = port_grouping(&defines, strategic, 310.0);
+        assert_eq!(
+            detail,
+            PortGrouping {
+                cleared: false,
+                coarse: false,
+                allegiance: false
+            }
+        );
+        assert_eq!(
+            prepare(detail, &BTreeSet::new()),
+            [vec![2], vec![1, 3], vec![4]]
+        );
+        assert_eq!(
+            prepare(
+                detail,
+                &BTreeSet::from([Unit::TaskForce(1), Unit::TaskForce(3)])
+            ),
+            [vec![1], vec![3], vec![2], vec![4]]
+        );
+        // Level equality selects allegiance grouping; selected own members remain a separate run.
+        let far = port_grouping(&defines, strategic, 420.0);
+        assert_eq!(prepare(far, &BTreeSet::new()), [vec![2, 1, 3, 4]]);
+        assert_eq!(
+            prepare(far, &BTreeSet::from([Unit::TaskForce(1)])),
+            [vec![1], vec![2, 3, 4]]
+        );
+        // Political mode keeps its coarse stable order even at a close camera.
+        let political = port_grouping(&defines, Visibility::POLITICAL, 80.0);
+        assert_eq!(prepare(political, &BTreeSet::new()), [vec![1, 2, 3, 4]]);
+        assert!(!port_grouping(&defines, Visibility::POLITICAL, 100.0).cleared);
+        assert!(port_grouping(&defines, Visibility::POLITICAL, 100.01).cleared);
+        assert!(
+            !port_grouping(&defines, strategic, 701.0).cleared,
+            "coarse strategic ports retain their grids; only political mode clears boxes"
+        );
+        // The priority table alone does not turn another mode into political mode.
+        let other = Visibility {
+            priorities: PriorityTable::Default,
+            ..strategic
+        };
+        assert!(!port_grouping(&defines, other, 310.0).allegiance);
+        // Coarse and geographical group cutoffs are independent and content-defined.
+        defines.coarse_distance[1] = 250.0;
+        let coarse = port_grouping(&defines, strategic, 310.0);
+        assert_eq!(
+            coarse,
+            PortGrouping {
+                cleared: false,
+                coarse: true,
+                allegiance: false
+            }
+        );
+        assert_eq!(prepare(coarse, &BTreeSet::new()), [vec![1, 2, 3], vec![4]]);
     });
 }

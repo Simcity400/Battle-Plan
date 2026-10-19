@@ -13,6 +13,11 @@ export const EVENT_ICONS: Record<EventFeedKind, IconName> = {
   factionJoined: 'users-plus', factionLeft: 'users-minus', becameSubject: 'link', guaranteeGranted: 'shield-check',
   rulingPartyChanged: 'ballot', lawChanged: 'parliament', advisorHired: 'star', focusCompleted: 'target',
   projectFinished: 'flask', nukesIncreased: 'sparkle', nuclearStrike: 'sunburst',
+  scriptEventFired: 'flag', newsEventFired: 'flag', eventOptionSelected: 'ballot',
+  decisionSelected: 'ballot', decisionRemoved: 'ballot', decisionCancelled: 'ballot',
+  decisionTimedOut: 'clock', decisionActivated: 'target', decisionCompleted: 'target', decisionReenabled: 'target',
+  decisionRemovalEffect: 'ballot', decisionCancellationEffect: 'ballot', decisionCompletionEffect: 'target',
+  decisionTimeoutEffect: 'clock', decisionDurationChanged: 'clock', decisionRosterRebuilt: 'ballot', scriptStateObserved: 'clock',
 };
 
 export const CATEGORIES = [

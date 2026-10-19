@@ -57,14 +57,22 @@ fn repeated_reads_reclassify_learned_logistics_and_variant_names() {
         let mut frame = classification_frame(variants);
         let first = frame.hour;
         let format = replay(vec![frame.clone()]).format;
+        let flag = AtomicBool::new(false);
+        let actual = dashboard_base::prepared::series::tests::Fixture::new();
+        let expected = dashboard_base::prepared::series::tests::Fixture::new();
         let mut prepared = Prepared::default();
-        prepared.bind_content(&content);
-        prepared.observe(format, &frame).unwrap();
+        let mut reference = Prepared::default();
+        for (state, fixture) in [(&mut prepared, &actual), (&mut reference, &expected)] {
+            state.bind_content(&content);
+            state.observe(format, &frame).unwrap();
+            let mut writer = fixture.writer();
+            state.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+        }
         assert_eq!(prepared.choices.completeness["GER"][1..], [false, false]);
         // Restoring discards runtime caches; published groups and continuation
         // state still match preparation that keeps them.
-        let mut reference: Prepared =
-            serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+        reference = serde_json::from_slice(&serde_json::to_vec(&reference).unwrap()).unwrap();
         reference.bind_content(&content);
         reference.choices.whole_projection = true;
         frame.hour += 1;
@@ -89,9 +97,6 @@ fn repeated_reads_reclassify_learned_logistics_and_variant_names() {
             prepared.choices.work.history_visits, groups,
             "equal supplying reads project no group"
         );
-        let flag = AtomicBool::new(false);
-        let actual = dashboard_base::prepared::series::tests::Fixture::new();
-        let expected = dashboard_base::prepared::series::tests::Fixture::new();
         for (state, fixture) in [(&mut prepared, &actual), (&mut reference, &expected)] {
             let mut writer = fixture.writer();
             state.flush(&mut writer, 1, &flag).unwrap();
@@ -249,9 +254,17 @@ fn logistics_coverage_loss_closes_known_totals_with_unchanged_completeness_acros
             assert!(!changes.slot_read[TableId::Stockpiles.index()]);
             assert!(!changes.slot_read[TableId::VariantDefinitions.index()]);
         }
-        for (state, fixture) in [(&mut prepared, &uninterrupted), (&mut resumed, &restored)] {
+        for (path, state, fixture) in [
+            ("uninterrupted", &mut prepared, &uninterrupted),
+            ("restored", &mut resumed, &restored),
+        ] {
             state.observe_changed(format, frame, &changes).unwrap();
-            assert_eq!(state.choices.completeness["GER"], [true, false, false]);
+            assert_eq!(
+                state.choices.completeness["GER"],
+                [true, false, false],
+                "{path} completeness at {}",
+                frame.hour,
+            );
             let mut writer = fixture.writer();
             state.flush(&mut writer, 1, &flag).unwrap();
             writer.commit().unwrap();

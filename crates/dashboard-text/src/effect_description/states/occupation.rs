@@ -252,6 +252,7 @@ impl Renderer<'_, '_, '_> {
                 })
                 .transpose()
                 .map(|country| country.flatten().unwrap_or(0))
+                .map_err(|why| why.to_string())
         };
         let occupied = country("occupied")?;
         let occupier = country("occupier")?;

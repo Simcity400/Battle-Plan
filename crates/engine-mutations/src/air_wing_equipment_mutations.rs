@@ -36,6 +36,68 @@ pub use crate::advisor_mutations::MutationSite;
 /// Bytes from a wing to its equipment pool.
 pub const POOL: usize = 0x1d8;
 
+/// Inline fields use their own receiver keys, never the equipment-pool key.
+pub const TRAINING_STOP: usize = 0x10c;
+pub const ATTACHMENT_COVERAGE: usize = 0x9c0;
+pub const MISSION: usize = 0x90;
+pub const RAID_REFERENCE: usize = engine_native::cair_wing::transport_operands::RAID_REFERENCE;
+/// A disjoint inline lifetime key within an observed raid object.
+pub const RAID_LIFETIME_KEY: usize = 1;
+
+/// Field writers and the pointed raid's lifetime. Construction/loading is
+/// covered by lifetime admission. Coverage names the wing in R8; the mission
+/// setter names its embedded mission in RCX; the other two name RCX directly.
+pub const MAP_MUTATIONS: [MutationSite; 6] = [
+    MutationSite {
+        name: "wing_training_stop",
+        rva: 0xf7_0530,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x4c, 0x89, 0x4c, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24,
+            0x18, 0x89,
+        ],
+    },
+    MutationSite {
+        name: "wing_attachment_coverage",
+        rva: 0xbe_37f0,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
+            0x18, 0x57,
+        ],
+    },
+    MutationSite {
+        name: "wing_raid_reference",
+        rva: 0xf5_20d0,
+        sentinel: [
+            0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0x05, 0xbb, 0x24, 0x3d, 0x02, 0x48,
+            0x8b, 0xf9,
+        ],
+    },
+    MutationSite {
+        name: "raid_reference_lifetime",
+        rva: 0xfd_4ce0,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
+            0x20, 0x8b,
+        ],
+    },
+    MutationSite {
+        name: "append_incoming_air_wing",
+        rva: 0xc3_c640,
+        sentinel: [
+            0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
+            0x30, 0x80,
+        ],
+    },
+    MutationSite {
+        name: "erase_incoming_air_wing",
+        rva: 0xc5_3fb0,
+        sentinel: [
+            0x48, 0x83, 0xec, 0x08, 0x48, 0x63, 0x41, 0x24, 0x45, 0x33, 0xc9, 0x4c, 0x8b, 0xd9,
+            0x85, 0xc0,
+        ],
+    },
+];
+
 /// The pool primitive the call sites in [`MUTATIONS`] invoke.
 pub const SUBTRACT_VARIANT_RVA: usize = 0xff_d5a0;
 

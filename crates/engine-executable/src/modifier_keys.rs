@@ -38,9 +38,15 @@ pub fn all() -> impl Iterator<Item = Key> {
 
 keys! {
 
+    REGION_AIR_DETECTION = 0x1;
+
     AIR_MAXIMUM_SPEED_FACTOR = 0x2;
 
     AIR_RANGE_FACTOR = 0x5;
+
+    AIR_INTERCEPT_DETECTION = 0x8;
+
+    AIR_SUPERIORITY_DETECTION = 0x9;
 
     AIR_STRATEGIC_BOMBER_BOMBING_FACTOR = 0xa;
     /// Current air-superiority mission branch.
@@ -76,11 +82,18 @@ keys! {
 
     SUBMARINE_ATTACK = 0x38;
 
+    LOCAL_MANPOWER = 0x3b;
+    LOCAL_NON_CORE_MANPOWER = 0x3c;
+    NON_CORE_MANPOWER = 0x3d;
+    MOBILIZATION_SPEED = 0x3f;
     NAVY_ORG = 0x46;
 
     NAVY_ORG_FACTOR = 0x47;
 
+    CONSCRIPTION = 0x49;
+    CONSCRIPTION_FACTOR = 0x4a;
     LOCAL_INTEL_TO_ENEMIES = 0x4b;
+
     /// Fresh own-army attrition.
     ATTRITION = 0x4f;
     /// Fresh weather attrition.
@@ -174,6 +187,8 @@ keys! {
     /// Equipment-conversion speed.
     EQUIPMENT_CONVERSION_SPEED = 0xdc;
 
+    AIR_VOLUNTEER_CAPACITY = 0xf5;
+
     LAND_REINFORCE_RATE = 0xfb;
     /// Selected-attack own-country modifier.
     LAND_NIGHT_ATTACK = 0x103;
@@ -209,6 +224,8 @@ keys! {
     NAVAL_INVASION_PREP_DAYS = 0x184;
     /// Preparation for project type four.
     AIR_INVASION_PREP_DAYS = 0x185;
+
+    AIR_FUEL_CONSUMPTION_FACTOR = 0x19e;
 
     NAVY_VISIBILITY = 0x19f;
 
@@ -270,6 +287,9 @@ keys! {
     ATTRITION_FOR_CONTROLLER = 0x1ee;
     /// Fresh state attrition.
     ENEMY_ATTRITION = 0x1ef;
+
+    RECRUITABLE_POPULATION = 0x1f7;
+    RECRUITABLE_POPULATION_FACTOR = 0x1f8;
 
     INTELLIGENCE_AGENCY_DEFENSE = 0x1ff;
 

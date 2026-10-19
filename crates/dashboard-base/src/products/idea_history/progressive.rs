@@ -347,7 +347,7 @@ mod tests {
         let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
             (
                 "common/defines/work.lua",
-                "NDefines={NFocus={FOCUS_POINT_DAYS=7}}",
+                "NDefines={NFocus={FOCUS_POINT_DAYS=7}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
             ),
             (
                 "common/ideas/work.txt",
@@ -460,7 +460,7 @@ mod tests {
         for frame in &input[1..] {
             scan.observe(frame).unwrap();
         }
-        let mut writer = store.append(&key, key.clone()).unwrap();
+        let mut writer = store.extend(&key).unwrap();
         writer
             .write_at("idea-history-1", 0, scan.saved_bytes().unwrap().as_slice())
             .unwrap();

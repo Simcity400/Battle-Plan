@@ -1214,8 +1214,8 @@ fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas
     let mut cache = Cache::with_modifier_demand(cadvisor::ModifierDemand::default());
     cache.sections = std::array::from_fn(|_| Section::with_capacity(0, 0, 0));
     let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; 5],
-        bytes: [0; 5],
+        rows: [0; N],
+        bytes: [0; N],
     });
     let mut observer = Observer::new();
     for enlarged in [false, true] {
@@ -1494,8 +1494,8 @@ fn quiet_hours_carry_5000_advisor_modifier_caches_and_read_only_a_rebuilt_role()
     cache.sections = std::array::from_fn(|_| Section::with_capacity(0, 0, 0));
     cache.modifiers.roles = RoleObservation::with(&WATCHES, Some(Check::Nothing));
     let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; 5],
-        bytes: [0; 5],
+        rows: [0; N],
+        bytes: [0; N],
     });
     cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
     assert_eq!(cache.result.outcome, Outcome::Rows { len: 5_000 });
@@ -1534,4 +1534,18 @@ fn quiet_hours_carry_5000_advisor_modifier_caches_and_read_only_a_rebuilt_role()
     );
     cache.decode(&mut captured);
     assert_eq!(captured.advisors_table(), expected);
+}
+
+#[cfg(feature = "advisor_profile")]
+#[test]
+fn profile_diagnostics_have_five_slots_independent_of_table_count() {
+    let section = Section::with_capacity(0, 0, 0);
+    let memory = engine_native::memory::SliceMemory {
+        base: 0,
+        bytes: &[],
+    };
+    let counted = Counted::new(&memory);
+    let _: [u64; 5] = section.diagnostic;
+    let _: [u64; 5] = counted.plan.get();
+    assert_eq!(DIAGNOSTIC_SLOTS, 5);
 }

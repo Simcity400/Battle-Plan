@@ -8,6 +8,260 @@ use viewer_foundation::map::gpu_passes::PassTimer;
 use viewer_foundation::map::test_support::serial;
 
 #[test]
+fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing() {
+    let Some(harness) = Harness::fallback(64, 32) else {
+        return;
+    };
+    let ids: Vec<_> = (0..64 * 32)
+        .map(|at| if at % 64 < 32 { 1 } else { 2 })
+        .collect();
+    let keys = [0, 1, 2];
+    let base = Cache::default()
+        .warm(
+            &harness.device,
+            &harness.queue,
+            Inputs {
+                map: ProvinceMap {
+                    width: 64,
+                    height: 32,
+                    ids: &ids,
+                },
+                strategic: &keys,
+                field: &FieldDefines::TEST,
+            },
+        )
+        .unwrap();
+    let regions = Arc::new(Regions {
+        country_of: vec![0; 3],
+        owner_of: Vec::new(),
+        state_of: Vec::new(),
+        country_colors: HashMap::new(),
+        warnings: Vec::new(),
+        strategic_attributes: BTreeMap::from([
+            (
+                1,
+                gradient::Attributes {
+                    control: 27,
+                    contested: 171,
+                    gradient: None,
+                },
+            ),
+            (
+                2,
+                gradient::Attributes {
+                    control: 91,
+                    contested: 63,
+                    gradient: None,
+                },
+            ),
+        ]),
+        mode: None,
+    });
+    let mut a = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    let mut b = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    a.show(&harness.device, &harness.queue, &regions).unwrap();
+    b.show(&harness.device, &harness.queue, &regions).unwrap();
+    assert!(Arc::ptr_eq(
+        a.shown.as_ref().unwrap(),
+        b.shown.as_ref().unwrap()
+    ));
+    let selected = BTreeMap::from([(
+        1,
+        Style {
+            color: [17, 231, 43, 127],
+            pulse: false,
+            fill: 1.0,
+        },
+    )]);
+    let expected = |styles: &BTreeMap<u32, Style>| {
+        let field = FieldDefines::TEST;
+        let color = |key| {
+            styles.get(&key).map_or(field.navy_neutral, |style| {
+                [style.color[0], style.color[1], style.color[2]]
+            })
+        };
+        let style = |key| {
+            styles
+                .get(&key)
+                .map_or(gradient::RegionStyle::plain(0), |style| {
+                    gradient::RegionStyle {
+                        alpha: style.color[3],
+                        pulse: style.pulse,
+                        fill: style.fill,
+                        thickness: None,
+                    }
+                })
+        };
+        let mut layer = Layer::new(
+            LayerKind::Fixed(field.strategic_thickness),
+            &keys,
+            &color,
+            &field,
+        );
+        let attributes = |key| {
+            regions
+                .strategic_attributes
+                .get(&key)
+                .copied()
+                .unwrap_or_default()
+        };
+        layer.region_opacity = 0;
+        layer.no_region_color = field.navy_neutral;
+        layer.region_style = Some(&style);
+        layer.region_attributes = Some(&attributes);
+        gradient::build_layer(
+            &ProvinceMap {
+                width: 64,
+                height: 32,
+                ids: &ids,
+            },
+            &layer,
+        )
+        .unwrap()
+    };
+    assert!(
+        a.set_strategic_styles(&harness.device, &harness.queue, &selected)
+            .unwrap()
+    );
+    assert!(!Arc::ptr_eq(
+        a.shown.as_ref().unwrap(),
+        b.shown.as_ref().unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        a.shown.as_ref().unwrap().lock().shown.as_ref().unwrap(),
+        &regions
+    ));
+    let (_, _, a_pixels) = harness.view(&a);
+    let (_, _, b_pixels) = harness.view(&b);
+    compare(
+        &expected(&selected),
+        &a_pixels,
+        "local selected strategic style",
+    );
+    compare(
+        &expected(&BTreeMap::new()),
+        &b_pixels,
+        "other view remains unselected",
+    );
+    assert_ne!(a_pixels.channel1, b_pixels.channel1);
+    // Region opacity belongs to channel two's green component; control,
+    // pulse and contested bytes remain independent of this local style.
+    assert_ne!(a_pixels.channel2, b_pixels.channel2);
+    assert!(
+        a_pixels
+            .channel2
+            .iter()
+            .zip(&b_pixels.channel2)
+            .all(|(a, b)| [a[0], a[2], a[3]] == [b[0], b[2], b[3]])
+    );
+    let (_, _, unchanged) = harness.view(&b);
+    compare(
+        &b_pixels,
+        &unchanged,
+        "second view keeps both texture channels",
+    );
+    assert!(
+        !a.set_strategic_styles(&harness.device, &harness.queue, &selected)
+            .unwrap()
+    );
+    assert!(
+        b.set_strategic_styles(&harness.device, &harness.queue, &selected)
+            .unwrap()
+    );
+    assert!(Arc::ptr_eq(
+        a.shown.as_ref().unwrap(),
+        b.shown.as_ref().unwrap()
+    ));
+    let mut c = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    // A selection chosen before the first fill joins the same selected state.
+    assert!(
+        !c.set_strategic_styles(&harness.device, &harness.queue, &selected)
+            .unwrap()
+    );
+    c.show(&harness.device, &harness.queue, &regions).unwrap();
+    assert!(Arc::ptr_eq(
+        a.shown.as_ref().unwrap(),
+        c.shown.as_ref().unwrap()
+    ));
+    a.set_strategic_styles(&harness.device, &harness.queue, &BTreeMap::new())
+        .unwrap();
+    b.set_strategic_styles(&harness.device, &harness.queue, &BTreeMap::new())
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        a.shown.as_ref().unwrap(),
+        b.shown.as_ref().unwrap()
+    ));
+    let (_, _, restored) = harness.view(&a);
+    compare(
+        &b_pixels,
+        &restored,
+        "clearing selection restores both channels",
+    );
+    let (_, _, still_selected) = harness.view(&c);
+    compare(
+        &a_pixels,
+        &still_selected,
+        "cleared views leave selected peer untouched",
+    );
+}
+
+#[test]
+fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection() {
+    use std::collections::BTreeMap;
+    // The gradient harness reads half of its nominal map extent; province
+    // stripes are full-resolution, so read every pixel of this 64 by 32 map.
+    let Some(harness) = Harness::fallback(128, 64) else {
+        return;
+    };
+    for second in [2, 65_537] {
+        let ids: Vec<_> = (0..64 * 32)
+            .map(|at| if at % 32 < 16 { 1 } else { second })
+            .collect();
+        let keys = vec![0; second as usize + 1];
+        let cache = Cache::default();
+        let source = cache
+            .warm(
+                &harness.device,
+                &harness.queue,
+                Inputs {
+                    map: ProvinceMap {
+                        width: 64,
+                        height: 32,
+                        ids: &ids,
+                    },
+                    strategic: &keys,
+                    field: &FieldDefines::TEST,
+                },
+            )
+            .unwrap();
+        let mut pass = ProvinceColors::new(&harness.device, &source).unwrap();
+        let red = [255, 0, 0, 127];
+        let blue = [0, 0, 255, 255];
+        let green = [0, 255, 0, 64];
+        pass.update(&harness.queue, &BTreeMap::from([(1, red), (second, blue)]));
+        let mut encoder = harness.device.create_command_encoder(&Default::default());
+        pass.encode(&mut encoder);
+        let got = harness.read(encoder, [&pass.bound.texture; 2], 0);
+        for (at, color) in got.channel1.iter().enumerate() {
+            assert_eq!(*color, if at % 32 < 16 { red } else { blue });
+        }
+        pass.update(&harness.queue, &BTreeMap::from([(second, green)]));
+        pass.update(&harness.queue, &BTreeMap::from([(1, red), (second, green)]));
+        let mut encoder = harness.device.create_command_encoder(&Default::default());
+        pass.encode(&mut encoder);
+        let got = harness.read(encoder, [&pass.bound.texture; 2], 0);
+        for (at, color) in got.channel1.iter().enumerate() {
+            assert_eq!(*color, if at % 32 < 16 { red } else { green });
+        }
+        pass.update(&harness.queue, &BTreeMap::new());
+        let mut encoder = harness.device.create_command_encoder(&Default::default());
+        pass.encode(&mut encoder);
+        let got = harness.read(encoder, [&pass.bound.texture; 2], 0);
+        assert!(got.channel1.iter().all(|color| *color == [0; 4]));
+    }
+}
+
+#[test]
 fn political_gpu_fallback_naval_attributes_change_shared_fill() {
     let (width, height) = (64, 32);
     let Some(harness) = Harness::fallback(width, height) else {
@@ -494,7 +748,8 @@ fn political_gpu_fallback_exactness() {
             + gpu.alpha_buffer.size()
             + std::mem::size_of::<Params>() as u64
             + 12
-            + fill.naval.own_bytes();
+            + fill.naval.own_bytes()
+            + fill.mode.own_bytes();
         drop(fill);
         assert_eq!(state.bytes(), expected);
         assert_eq!(a.state_bytes(), Some(expected));
@@ -821,7 +1076,7 @@ fn political_gpu_fallback_pool_interleavings() {
 
     // (a) find, then recycle: find takes the pooled state out whole, still holding its fill.
     let before = checks();
-    let found = base.find(&one).expect("the pooled fill");
+    let found = base.find(&one, &BTreeMap::new()).expect("the pooled fill");
     assert!(checks() > before);
     assert_eq!(shows(&found), Some(1));
     assert!(base.recycle().is_none());
@@ -830,7 +1085,7 @@ fn political_gpu_fallback_pool_interleavings() {
     // (a) recycle, then find: the recycled state is forgotten before any find can see it.
     let recycled = base.recycle().expect("the pooled state");
     assert_eq!(shows(&recycled), None);
-    assert!(base.find(&one).is_none());
+    assert!(base.find(&one, &BTreeMap::new()).is_none());
 
     // (b) find, then release: the found state has a holder, so it is not pooled.
     {
@@ -839,7 +1094,9 @@ fn political_gpu_fallback_pool_interleavings() {
         fill.shown = Some(hour(3));
     }
     let before = checks();
-    let found = base.find(&hour(3)).expect("the updated state");
+    let found = base
+        .find(&hour(3), &BTreeMap::new())
+        .expect("the updated state");
     base.release(recycled);
     assert_eq!(base.pooled(), 0);
     // (b) release, then find: the state is pooled only while nobody holds it, and find takes
@@ -847,7 +1104,9 @@ fn political_gpu_fallback_pool_interleavings() {
     base.release(found);
     assert!(checks() > before);
     assert_eq!(base.pooled(), 1);
-    let found = base.find(&hour(3)).expect("the pooled state");
+    let found = base
+        .find(&hour(3), &BTreeMap::new())
+        .expect("the pooled state");
     assert_eq!(base.pooled(), 0);
     assert!(base.recycle().is_none());
     drop(found);
@@ -858,7 +1117,7 @@ fn political_gpu_fallback_pool_interleavings() {
     y.show(device, queue, &hour(4)).unwrap();
     let own = x.shown.as_ref().unwrap();
     assert!(base.claim(own));
-    assert!(base.find(&two).is_none());
+    assert!(base.find(&two, &BTreeMap::new()).is_none());
 }
 
 #[test]

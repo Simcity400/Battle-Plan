@@ -8,10 +8,12 @@
 
 pub mod products {
     pub mod war_casualties;
+    pub mod wargoals;
     pub mod wars;
 
     dashboard_base::reply_warnings!(
         wars::WarsReply,
+        wargoals::WargoalsReply,
         war_casualties::CasualtyReply,
         war_casualties::pairs::CasualtyPairsReply,
         war_casualties::breakdown::CasualtyBreakdownReply,

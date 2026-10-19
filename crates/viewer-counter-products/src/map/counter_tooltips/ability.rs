@@ -306,7 +306,10 @@ fn communication_leader<'a>(
     if original.character_type == 0 && original.character_id == 0 {
         return Ok(None);
     }
-    match Tables::read(context.frame).unit_leader(original.character_id)? {
+    match Tables::read(context.frame)
+        .unit_leader(original.character_id)
+        .map_err(|why| why.to_string())?
+    {
         Some(UnitLeader::Direct(row)) => Ok(Some(row)),
         Some(UnitLeader::Referenced(row)) if (row.category as u32) >= 2 => Ok(None),
         Some(UnitLeader::Referenced(_)) => {

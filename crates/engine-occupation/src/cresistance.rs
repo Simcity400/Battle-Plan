@@ -7,6 +7,10 @@ use crate::{
     walk::{self, Outcome},
 };
 
+pub mod changes;
+pub mod hover;
+pub mod map_icons;
+
 /// Primary vtable.
 pub const VTABLE_RVA: usize = 0x0296_7740;
 /// Owning state pointer from the second constructor argument.
@@ -100,7 +104,7 @@ pub fn walk_buffer(
     }
 }
 
-fn read_state(
+pub fn read_state(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -243,6 +247,31 @@ mod tests {
             put(&mut bytes, resistance + ACTIVE, &[id as u8]);
         }
         bytes
+    }
+
+    #[test]
+    fn occupation_hover_keeps_inactive_levels_without_reading_active_only_sources() {
+        let mut bytes = fixture();
+        let state = 0x1500;
+        put(&mut bytes, state + cstate::RESISTANCE + ACTIVE, &[0]);
+        let memory = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let row = hover::read_inputs(
+            &memory,
+            0,
+            0x1000,
+            cstate::Source {
+                pointer: state,
+                id: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(row.resistance, read_state(&memory, 0, state, 1).unwrap());
+        assert_eq!(row.sources, [0; 4]);
+        assert!(row.effects.iter().all(Vec::is_empty));
+        assert!(row.added.is_empty());
     }
 
     #[test]

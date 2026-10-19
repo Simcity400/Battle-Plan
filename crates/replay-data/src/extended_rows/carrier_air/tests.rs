@@ -103,6 +103,8 @@ fn carrier_registration_suffix_keeps_empty_pools_and_independent_signed_fuel() {
         wings: vec![u64::MAX - 1, u64::MAX - 1],
         carrier: Recorded::Value(None),
         transport_planes: Recorded::Value(Retired),
+        fuel_demand_raw: Default::default(),
+        fuel_allocated_raw: Default::default(),
     };
     let after = AirBaseRegistrationRow {
         carrier: Recorded::Value(Some(inputs.clone())),
@@ -133,4 +135,36 @@ fn carrier_registration_suffix_keeps_empty_pools_and_independent_signed_fuel() {
     };
     assert_ne!(changed, after);
     assert_eq!(changed.delta(Some(&after)).unwrap().unwrap().mask, 1 << 2);
+}
+
+#[test]
+fn state_scalar_delta_does_not_repeat_unchanged_pool_metadata() {
+    let previous = AirBaseRegistrationRow {
+        base: 77,
+        slot: 19,
+        fuel_demand_raw: Recorded::Value(Some(-23)),
+        fuel_allocated_raw: Recorded::Value(Some(11)),
+        carrier: Recorded::Value(Some(AirBaseRegistrationCarrierInputs {
+            pools: Some(vec![
+                CarrierAirPool {
+                    type_index: -7,
+                    subunit_index: 9,
+                    ..Default::default()
+                };
+                128
+            ]),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    let after = AirBaseRegistrationRow {
+        fuel_allocated_raw: Recorded::Value(Some(i64::MIN)),
+        ..previous.clone()
+    };
+    let delta = after.delta(Some(&previous)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 5);
+    assert_eq!(
+        AirBaseRegistrationRow::apply_delta(&delta, Some(previous)).unwrap(),
+        after
+    );
 }

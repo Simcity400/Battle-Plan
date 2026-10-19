@@ -29,6 +29,14 @@ pub const GLOBAL_FACTOR_KEY: u32 = crate::modifier_keys::STATE_RESOURCES_FACTOR;
 pub const INFRASTRUCTURE_KEY: u32 =
     crate::modifier_keys::LOCAL_RESOURCE_GAIN_EFFICIENCY_PER_INFRASTRUCTURE;
 
+/// Effective state recruitment operands, in accumulator order.
+const RECRUITMENT_KEYS: [u32; 4] = [
+    crate::modifier_keys::LOCAL_MANPOWER,
+    crate::modifier_keys::LOCAL_NON_CORE_MANPOWER,
+    crate::modifier_keys::RECRUITABLE_POPULATION,
+    crate::modifier_keys::RECRUITABLE_POPULATION_FACTOR,
+];
+
 /// Infrastructure building template pointer in the building database.
 const INFRASTRUCTURE_TEMPLATE: usize = 0x3b0;
 
@@ -51,6 +59,7 @@ pub struct InputRow {
     pub infrastructure_modifier: i64,
     /// Whether the maximum state province-node value is positive, read only with an origin.
     pub supply_route: u8,
+    pub recruitment: Option<[i64; 4]>,
 }
 
 /// A resource's stored operands in one state; an all-zero resource has no row.
@@ -441,6 +450,7 @@ impl Default for Nation {
 
 /// Caller-owned rows and scratch; only the worker walk grows storage.
 pub struct Buffers {
+    pub recruitment_enabled: bool,
     pub inputs: Vec<InputRow>,
     pub resources: Vec<ResourceRow>,
     pub modifiers: Vec<ModifierRow>,
@@ -479,7 +489,7 @@ impl Buffers {
         let keys = capacity
             .resources
             .checked_mul(3)
-            .and_then(|n| n.checked_add(2))
+            .and_then(|n| n.checked_add(6))
             .ok_or_else(oom)?;
         let words = capacity
             .states
@@ -507,6 +517,7 @@ impl Buffers {
             .and_then(usize::checked_next_power_of_two)
             .ok_or_else(oom)?;
         Ok(Self {
+            recruitment_enabled: true,
             inputs: crate::allocation::filled(capacity.states, InputRow::default())?,
             resources: crate::allocation::filled(capacity.resource_rows, ResourceRow::default())?,
             modifiers: crate::allocation::filled(capacity.modifier_rows, ModifierRow::default())?,
@@ -539,6 +550,7 @@ impl Buffers {
     /// No storage at all, for a parked placeholder.
     pub fn empty() -> Self {
         Self {
+            recruitment_enabled: true,
             inputs: Vec::new(),
             resources: Vec::new(),
             modifiers: Vec::new(),
@@ -1146,6 +1158,7 @@ fn walk_inner(
     growing: bool,
 ) -> Result<(), &'static str> {
     let Buffers {
+        recruitment_enabled,
         inputs,
         resources: resource_rows,
         modifiers,
@@ -1188,7 +1201,7 @@ fn walk_inner(
     need(&mut required.resources, resources);
     let key_capacity = resources
         .checked_mul(3)
-        .and_then(|count| count.checked_add(2))
+        .and_then(|count| count.checked_add(6))
         .ok_or("state resource key count overflow")?;
     grow(keys, key_capacity, growing)?;
     grow(values, key_capacity, growing)?;
@@ -1208,7 +1221,8 @@ fn walk_inner(
     }
     keys[key_count] = GLOBAL_FACTOR_KEY;
     keys[key_count + 1] = INFRASTRUCTURE_KEY;
-    key_count += 2;
+    keys[key_count + 2..key_count + 6].copy_from_slice(&RECRUITMENT_KEYS);
+    key_count += 6;
     keys[..key_count].sort_unstable();
     let mut unique = 1;
     for index in 1..key_count {
@@ -1942,21 +1956,26 @@ fn walk_inner(
             need(&mut required.modifier_rows, totals.demand[1]);
             grow(inputs, totals.lens[0] + 1, growing)?;
             grow(modifiers, totals.lens[2] + entries, growing)?;
+            let accumulator = address(state.pointer, cstate::BASE_MODIFIERS)?;
+            let selected = if state.controller as i32 <= 0
+                || !(*recruitment_enabled || state.origin && state.level.is_some())
+                || (state.origin && state.level.is_some() && distances[probed[row] * 8] == 0)
+            {
+                Ok(accumulator)
+            } else {
+                cstate::country_modifier_accumulator_with_canonical(
+                    memory,
+                    state.pointer,
+                    state.controller,
+                    state.fields[STATE_HASH..STATE_HASH + 17]
+                        .try_into()
+                        .unwrap(),
+                    |raw| census.canonical(raw),
+                )
+            };
             let mut infrastructure_modifier = 0;
             if state.origin && state.level.is_some() {
-                let accumulator = address(state.pointer, cstate::BASE_MODIFIERS)?;
-                // An empty first bucket means no country entry: the base
-                // accumulator; anything else takes the full probe.
-                let selected = if distances[probed[row] * 8] == 0 {
-                    accumulator
-                } else {
-                    cstate::country_modifier_accumulator(
-                        memory,
-                        game_state,
-                        state.pointer,
-                        state.controller,
-                    )?
-                };
+                let selected = selected?;
                 infrastructure_modifier = if selected == accumulator {
                     value(INFRASTRUCTURE_KEY)?
                 } else {
@@ -1969,6 +1988,36 @@ fn walk_inner(
                     .effective
                 };
             }
+            let recruitment = (|| -> Result<_, &'static str> {
+                if !*recruitment_enabled || state.controller as i32 <= 0 {
+                    return Ok(None);
+                }
+                let selected = selected?;
+                let mut result = [0_i64; 4];
+                if selected == accumulator {
+                    for (out, key) in result.iter_mut().zip(RECRUITMENT_KEYS) {
+                        *out = value(key)?;
+                    }
+                } else {
+                    let mut values = [Value::default(); 4];
+                    modifier_accumulator::lookup_many_at(
+                        memory,
+                        selected,
+                        &RECRUITMENT_KEYS,
+                        &mut values,
+                    )?;
+                    for ((out, key), found) in result.iter_mut().zip(RECRUITMENT_KEYS).zip(values) {
+                        *out = if found.present {
+                            effective_memo(memory, base, key, found.raw, memo)?
+                        } else {
+                            0
+                        };
+                    }
+                }
+                Ok(Some(result))
+            })()
+            .ok()
+            .flatten();
             let fits = totals.lens[0] < inputs.len()
                 && first_row + rows <= resource_rows.len()
                 && totals.lens[2] + entries <= modifiers.len();
@@ -2021,6 +2070,7 @@ fn walk_inner(
                 infrastructure_level: state.level.filter(|_| state.origin),
                 infrastructure_modifier,
                 supply_route: u8::from(state.origin && state.supply),
+                recruitment,
             };
             totals.lens[0] += 1;
         }

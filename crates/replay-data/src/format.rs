@@ -156,12 +156,77 @@ mod tests {
     }
 
     #[test]
+    fn movement_layout_is_introduced_only_in_format_104() {
+        let format = FormatVersion::read(104).unwrap();
+        for table in [
+            TableId::MovementStateTerms,
+            TableId::CoreSupplyAccess,
+            TableId::CountryUnitSpeedEntries,
+            TableId::RiverRelations,
+            TableId::DivisionTransportSpeeds,
+        ] {
+            assert_eq!(table.last_change().introduced, 104);
+            assert!(
+                FormatVersion::read(103)
+                    .unwrap()
+                    .table_refusal(table)
+                    .is_some()
+            );
+            assert!(format.table_refusal(table).is_none());
+            assert!(FormatVersion::CURRENT.table_refusal(table).is_none());
+        }
+        assert_eq!(TableId::RegionalConvoyEfficiency as u16, 338);
+        for (table, id) in [
+            (TableId::MovementStateTerms, 406),
+            (TableId::CoreSupplyAccess, 407),
+            (TableId::CountryUnitSpeedEntries, 408),
+            (TableId::RiverRelations, 409),
+            (TableId::DivisionTransportSpeeds, 410),
+        ] {
+            assert_eq!(table as u16, id);
+        }
+        for table in [TableId::DivisionStatus, TableId::DivisionTemplateIcons] {
+            assert_eq!(table.last_change().format, 104);
+            let fields: Vec<_> = table
+                .last_change()
+                .appended
+                .iter()
+                .filter(|field| field.introduced == 104)
+                .map(|field| field.name)
+                .collect();
+            assert_eq!(
+                fields,
+                if table == TableId::DivisionStatus {
+                    vec![
+                        "experience",
+                        "pending_template",
+                        "officer_experience",
+                        "career_counter",
+                        "panel_source",
+                        "combat_movement",
+                        "organisation_exact",
+                        "maximum_organisation_exact",
+                        "commander_width_factor",
+                    ]
+                } else {
+                    vec![
+                        "manpower_exile",
+                        "base_width",
+                        "layout",
+                        "settings",
+                        "speed_keys",
+                    ]
+                }
+            );
+        }
+    }
+
+    #[test]
     fn politics_additions_leave_the_published_table_contracts_readable() {
         let previous =
             FormatVersion::read(crate::rows::compatibility::WIDGET_CAPTURE_FORMAT - 1).unwrap();
         for table in [
             TableId::Countries,
-            TableId::DivisionStatus,
             TableId::Characters,
             TableId::OperativeMemberships,
             TableId::CountryAppearance,
@@ -187,7 +252,7 @@ mod tests {
 
     #[test]
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
-        assert_eq!(FORMAT_VERSION, 103);
+        assert_eq!(FORMAT_VERSION, 105);
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
                 assert!(FormatVersion::read(version).is_err());
@@ -196,6 +261,64 @@ mod tests {
             let format = FormatVersion::read(version).unwrap();
             // Retired tables are refused by name in every recording.
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version < crate::rows::compatibility::OCCUPATION_MAP_FORMAT {
+                expected.push(TableId::StateResistance);
+            }
+            if version < 104 {
+                expected.extend([
+                    TableId::CountryWargoals,
+                    TableId::WargoalTargets,
+                    TableId::WargoalJustifications,
+                ]);
+            }
+            if version < crate::rows::compatibility::EXPERIENCE_FORMAT {
+                expected.extend([
+                    TableId::UnitLeaders,
+                    TableId::UnitLeaderTraitExperience,
+                    TableId::DivisionHistory,
+                    TableId::DivisionPanelSources,
+                    TableId::DivisionPanelStats,
+                ]);
+            }
+            if version < crate::rows::compatibility::FACTION_STATE_FORMAT {
+                expected.extend([
+                    TableId::FactionGoalStatus,
+                    TableId::FactionGoalEntries,
+                    TableId::FactionRules,
+                    TableId::FactionPrograms,
+                    TableId::FactionManpower,
+                    TableId::FactionUnlocks,
+                    TableId::FactionVariables,
+                    TableId::FactionAccounts,
+                    TableId::FactionResearch,
+                    TableId::FactionMinimumUpgrades,
+                    TableId::FactionDoctrine,
+                    TableId::FactionProjection,
+                    TableId::FactionResources,
+                    TableId::FactionAdvisorModifiers,
+                ]);
+            }
+            if version < crate::rows::compatibility::DOCTRINES_FORMAT {
+                expected.extend([
+                    TableId::DoctrineFolders,
+                    TableId::DoctrineTracks,
+                    TableId::DoctrineLeaderMastery,
+                    TableId::DoctrineCostReductions,
+                    TableId::DoctrineMasteryGrants,
+                    TableId::DoctrineEquipmentBonuses,
+                    TableId::DoctrineCountries,
+                ]);
+            }
+            if version < crate::rows::compatibility::SCRIPT_EVENT_FORMAT {
+                expected.push(TableId::EventFeedHistory);
+            }
+            if version < 104 {
+                expected.extend([
+                    TableId::WarParticipation,
+                    TableId::WarCapturedProvinces,
+                    TableId::WarLendLeaseHistories,
+                ]);
+            }
             if version <= 101 {
                 expected.extend([
                     TableId::NavalModifierTrees,
@@ -214,7 +337,17 @@ mod tests {
             if version < crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT {
                 expected.push(TableId::FuelDemandParts);
             }
-            if version < crate::rows::compatibility::MAP_EVENTS_FORMAT {
+            if version < crate::rows::compatibility::DESIGN_STATE_FORMAT {
+                expected.extend([
+                    TableId::VariantChanges,
+                    TableId::VariantBonusSnapshots,
+                    TableId::DesignCountryModifiers,
+                    TableId::DesignCountryTemplates,
+                    TableId::DesignObserverContext,
+                    TableId::DesignOrganisationLiveness,
+                ]);
+            }
+            if version < crate::rows::compatibility::SCRIPTED_MAP_FORMAT {
                 expected.push(TableId::MapEvents);
             }
             if version < crate::rows::compatibility::OWNER_TRANSPORT_SPEEDS_FORMAT {
@@ -238,6 +371,17 @@ mod tests {
             if version < crate::rows::compatibility::OPERATION_PREPARATION_FORMAT {
                 expected.push(TableId::Operations);
             }
+            if version < crate::rows::compatibility::RESEARCH_PROJECT_DETAILS_FORMAT {
+                expected.push(TableId::ScientistDaily);
+            }
+            if version < 104 {
+                expected.extend([
+                    TableId::CountryMarket,
+                    TableId::MarketContractTerms,
+                    TableId::LendLeaseAgreements,
+                    TableId::MarketEvents,
+                ]);
+            }
             if version < crate::rows::compatibility::RESOURCES_MAP_FORMAT {
                 expected.extend([
                     TableId::ResourceOrigins,
@@ -247,6 +391,74 @@ mod tests {
                     TableId::ConvoyClients,
                     TableId::TradeRoutes,
                     TableId::RegionalConvoyEfficiency,
+                ]);
+            }
+            if version < crate::rows::compatibility::INDUSTRIAL_ORGANISATION_DETAILS_FORMAT {
+                expected.extend([
+                    TableId::VariantStats,
+                    TableId::IndustrialOrganisationHistory,
+                    TableId::IndustrialOrganisationDetails,
+                    TableId::IndustrialOrganisationPolicies,
+                ]);
+            }
+            if version < crate::rows::compatibility::TEMPLATE_SETTINGS_FORMAT {
+                expected.push(TableId::CountryTemplateState);
+            }
+            if version < crate::rows::compatibility::MOVEMENT_STATE_TERMS_FORMAT {
+                expected.push(TableId::MovementStateTerms);
+            }
+            if version < crate::rows::compatibility::CORE_SUPPLY_ACCESS_FORMAT {
+                expected.push(TableId::CoreSupplyAccess);
+            }
+            if version < crate::rows::compatibility::COUNTRY_UNIT_SPEED_ENTRIES_FORMAT {
+                expected.push(TableId::CountryUnitSpeedEntries);
+            }
+            if version < crate::rows::compatibility::RIVER_RELATIONS_FORMAT {
+                expected.push(TableId::RiverRelations);
+            }
+            if version < crate::rows::compatibility::DIVISION_TRANSPORT_SPEEDS_FORMAT {
+                expected.push(TableId::DivisionTransportSpeeds);
+            }
+            if version < 104 {
+                expected.extend([
+                    TableId::LandCombatResults,
+                    TableId::CombatLogGroups,
+                    TableId::CombatLogMonths,
+                    TableId::CombatLogManpower,
+                    TableId::CombatLogTemplates,
+                    TableId::CombatLogReferences,
+                    TableId::CombatLogBattles,
+                    TableId::CombatLogEnemyEquipment,
+                    TableId::CombatLogBattleSides,
+                    TableId::CombatLogBattleEquipment,
+                    TableId::CombatLogBattleModifiers,
+                    TableId::CombatLogBattleCountries,
+                    TableId::CombatLogObservers,
+                    TableId::NavalRepairCountries,
+                    TableId::NavalRepairFleets,
+                    TableId::NavalRepairTaskForces,
+                    TableId::NavalTaskForceComposition,
+                    TableId::NavalRepairBases,
+                    TableId::NavalRepairQueue,
+                    TableId::NavalRefitShips,
+                    TableId::NavalRefitProgress,
+                    TableId::NavalRepairChildren,
+                    TableId::IntelNetworkSummaries,
+                    TableId::PropagandaEfforts,
+                    TableId::IntelContributions,
+                    TableId::IntelSources,
+                    TableId::IntelNetworkAuxiliaries,
+                    TableId::RadarCoverage,
+                    TableId::AirMissionInputs,
+                    TableId::AirSortieModifiers,
+                    TableId::RaidAirScores,
+                    TableId::NavalMissionTaskForces,
+                    TableId::AirGroundCrews,
+                    TableId::AirTransferInputs,
+                    TableId::NavalRegionalMines,
+                    TableId::NavalAccidentReports,
+                    TableId::NavalDominanceTaskForceRanges,
+                    TableId::NavalPatrolMissionInputs,
                 ]);
             }
             if version < crate::rows::compatibility::RETREAT_BANS_FORMAT {
@@ -287,14 +499,12 @@ mod tests {
                     TableId::PeaceBids,
                     TableId::DivisionEquipmentDeletions,
                     TableId::DivisionLandInputs,
-                    TableId::LandCombatResults,
                     TableId::DestroyedDivisions,
                     TableId::LandEventCoverage,
                     TableId::NavalResultSources,
                     TableId::AirLossEvents,
                     TableId::BuildingBombingDamage,
                     TableId::AirDailyRoster,
-                    TableId::EventFeedHistory,
                     TableId::RocketProductionOutput,
                 ]);
             }

@@ -15,6 +15,7 @@ fn fixture_name(value: TemplateNameValue) -> (DecodedFrame, Save) {
     saved.division_templates.insert(
         template,
         save::DivisionTemplate {
+            origin_type: None,
             template,
             country: b"GER".to_vec(),
             name: b"New".to_vec(),
@@ -26,6 +27,14 @@ fn fixture_name(value: TemplateNameValue) -> (DecodedFrame, Save) {
             foreign_template_tag: Some(b"---".to_vec()),
             composition: BTreeMap::new(),
             names_group: None,
+            settings: save::DivisionTemplateSettings {
+                priority: Some(0),
+                allow_new_equipment: Some(false),
+                allow_foreign_equipment: Some(false),
+                origin_type: Some(b"master_host".to_vec()),
+                ..Default::default()
+            },
+            ..Default::default()
         },
     );
     saved
@@ -44,6 +53,14 @@ fn fixture_name(value: TemplateNameValue) -> (DecodedFrame, Save) {
             DivisionTemplateIconRow {
                 template,
                 country: 102,
+                layout: Recorded::Value(Some(replay_data::rows::TemplateLayout::default().into())),
+                settings: Recorded::Value(Some(
+                    replay_data::rows::TemplateSettings {
+                        forbidden_equipment: Some(Vec::new()),
+                        ..Default::default()
+                    }
+                    .into(),
+                )),
                 display_name: Recorded::Value(Some(TemplateDisplayName {
                     sample_hour: replay_data::rows::PacketHour::Host,
                     value,
@@ -72,7 +89,8 @@ fn saved_name_fields(saved: &mut Save, fields: &str) {
          country_leader_index=10 navy_id=11 land_combat_id=12 \
          multiplayer_random_count=-13 countries={{}} states={{}} provinces={{}} \
          division_templates={{division_template={{id={{id=7000 type=52}} country=GER \
-         foreign_template_tag=\"---\" template_counter=0 ingame_set_template_counter=no {fields}}}}}"
+         foreign_template_tag=\"---\" template_counter=0 ingame_set_template_counter=no \
+         priority=0 allow_new_equipment=no allow_foreign_equipment=no origin_type=master_host {fields}}}}}"
     ).as_bytes()).unwrap().division_templates;
 }
 
@@ -424,4 +442,42 @@ fn daily_key_presence_is_independent_of_inactive_hourly_fallback() {
     assert!(hourly.differences.is_empty());
     assert!(hourly.failed_comparisons.is_empty());
     assert!(hourly.outcome().is_ok());
+}
+
+/// The movement speed keys hold only nonzero modifier keys, and their sub-unit
+/// selection is named as a derived engine cache the save omits.
+#[test]
+fn template_speed_keys_refuse_a_zero_key_and_name_their_selection() {
+    let (mut frame, saved) = fixture_name(TemplateNameValue::Changed {
+        literal: b"New".to_vec(),
+        fallback_key: None,
+    });
+    for (keys, differs) in [
+        (vec![7, 9, 9], false),
+        (Vec::new(), false),
+        (vec![7, 0], true),
+    ] {
+        let TableView::Complete(TableRows::DivisionTemplateIcons(rows)) =
+            &mut *frame.tables[TableId::DivisionTemplateIcons.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].speed_keys = Recorded::Value(Some(keys));
+        let report = report_name(&frame, &saved);
+        assert_eq!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains(".speed_keys")),
+            differs,
+            "{:?}",
+            report.differences
+        );
+        assert!(report.limitations.iter().any(|(reason, subjects)| {
+            reason.contains("absent from text saves")
+                && subjects
+                    .iter()
+                    .any(|subject| subject == "DivisionTemplateIcons.speed_keys")
+        }));
+    }
 }

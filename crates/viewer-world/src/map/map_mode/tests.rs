@@ -10,6 +10,18 @@ use replay_data::{
 };
 use replay_frame::{frame::Metrics, frame::TableView};
 
+/// Synthetic scripted modes have a complete, empty character catalogue.
+/// Keyword classification must not inherit an unrelated unavailable input.
+fn with_empty_character_templates(
+    mut facts: dashboard_text::triggers::ContentFacts<'_>,
+) -> dashboard_text::triggers::ContentFacts<'_> {
+    static ROLES: std::sync::OnceLock<dashboard_text::triggers::LeaderRoles> =
+        std::sync::OnceLock::new();
+    facts.leader_roles =
+        Ok(ROLES.get_or_init(|| dashboard_text::triggers::LeaderRoles::new(Vec::new())));
+    facts
+}
+
 /// The shipped defines' values.
 fn defines() -> ModeDefines {
     ModeDefines {
@@ -51,7 +63,7 @@ fn defines() -> ModeDefines {
     }
 }
 
-fn content(scripted: MapModes) -> Content {
+pub(super) fn content(scripted: MapModes) -> Content {
     Content {
         defines: defines(),
         ideologies: Arc::new(installed_content_core::ideologies::Ideologies::default()),
@@ -65,10 +77,11 @@ fn content(scripted: MapModes) -> Content {
         recorded_language: "english".to_owned(),
         terrain: Err("the terrain database did not read".to_owned()),
         infrastructure: infrastructure::Content::default(),
+        strategic: strategic::Content::fixture(),
     }
 }
 
-fn map() -> MapData {
+pub(super) fn map() -> MapData {
     let kinds = [
         (1, ProvinceKind::Land),
         (2, ProvinceKind::Land),
@@ -112,7 +125,7 @@ fn appearance(country: u32, rgba: [f32; 4]) -> CountryAppearanceRow {
 /// GER (raw 100, slot 0) controls provinces 1-2 in state 1, SOV (raw 200, slot 1) province 3 in
 /// state 2 and ITA (raw 300, slot 2) province 4 in state 3; GER and ITA share a faction and a
 /// human plays SOV.
-fn frame() -> DecodedFrame {
+pub(super) fn frame() -> DecodedFrame {
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
         reason: "not needed".into(),
     });
@@ -211,6 +224,24 @@ fn frame() -> DecodedFrame {
         country: 200,
         ..Default::default()
     }]));
+    // Standalone colour callbacks need proof that no effect refresh inherited
+    // a caller's temporary store in this hour.
+    tables[TableId::MapEvents.index()] = {
+        use replay_data::{rows::MapEventFamily, rows::MapEventFamilyHealth, rows::MapEventsRow};
+        TableView::Complete(TableRows::MapEvents(vec![MapEventsRow {
+            from_hour: 42,
+            to_hour: 42,
+            first_sequence: 1,
+            next_sequence: 1,
+            health: [MapEventFamilyHealth {
+                complete: true,
+                enabled: true,
+                installed: true,
+                ..Default::default()
+            }; MapEventFamily::COUNT],
+            ..Default::default()
+        }]))
+    };
     DecodedFrame {
         branch: 1,
         hour: 42,
@@ -737,6 +768,10 @@ fn each_mode_takes_the_games_channel_pair_and_names_what_it_lacks() {
         );
         assert_eq!(fill.draw.unwrap().channels, channels, "{stock:?}");
         assert_eq!(fill.warnings.len(), 1);
+        if stock == Stock::StrategicAir {
+            assert!(fill.warnings[0].starts_with("Air-supply regional summary operands"));
+            assert!(fill.warnings[0].contains("recording cost rules"));
+        }
     }
     // The raid and resources modes are the countries alone, with nothing left to refuse: the
     // resources mode's state icons draw.
@@ -755,7 +790,8 @@ fn each_mode_takes_the_games_channel_pair_and_names_what_it_lacks() {
         &content(MapModes::default()),
         Some(0),
     );
-    assert!(navy.draw.is_none() && navy.warnings.len() == 1);
+    assert_eq!(navy.draw.unwrap().channels, POLITICAL);
+    assert!(navy.warnings.is_empty(), "{:?}", navy.warnings);
     assert_eq!(
         run(
             MapMode::Stock(Stock::Default),
@@ -844,14 +880,8 @@ fn scripted_modes_delegate_game_layers_and_refuse_colour_scripts() {
     );
     let scripted = run(MapMode::Scripted("scripted".into()), &content, Some(0));
     assert_eq!(scripted.draw.unwrap().channels, [Source::Empty; 2]);
-    // Both colour layers refused by name, and the forced refreshes recordings lack.
-    assert_eq!(scripted.warnings.len(), 3, "{:?}", scripted.warnings);
-    assert!(
-        scripted
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("force_update_map_mode not recorded"))
-    );
+    // Selecting a mode rebuilds both layers without a historical refresh interval.
+    assert_eq!(scripted.warnings.len(), 2, "{:?}", scripted.warnings);
     let blank = run(MapMode::Scripted("blank".into()), &content, Some(0));
     assert_eq!(blank.draw.unwrap().channels, [Source::Empty; 2]);
     let layered = run(MapMode::Scripted("layered".into()), &content, Some(0))
@@ -899,7 +929,10 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
     };
     let dlcs = BTreeSet::new();
     let aliases = Arc::default();
-    let world = World::read(&frame, ContentFacts::content_only(&dlcs, &names, &aliases));
+    let world = World::read(
+        &frame,
+        with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+    );
     let map = map();
     let run = |name: &str| {
         fill(
@@ -950,10 +983,1204 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
         refused
             .warnings
             .iter()
-            .any(|warning| warning.contains("has_stability") && warning.contains("3 targets")),
+            .any(|warning| warning.contains("CountryStabilityInputs")
+                && warning.contains("3 targets")),
         "{:?}",
         refused.warnings
     );
+}
+
+#[test]
+fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_count() {
+    use dashboard_text::triggers::{ContentFacts, World};
+    use replay_data::{
+        rows::CountryStabilityInputRow, rows::HumanControllerRow, rows::RaidCountryInputRow,
+        rows::ResearchModifierRow, rows::SimulationFeatureRow, rows::TableSchema,
+    };
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    fn set<T: TableSchema>(f: &mut DecodedFrame, rows: Vec<T::Row>) {
+        f.tables[T::ID.index()] = TableView::Complete(TableRows::from_rows::<T>(rows)).into();
+    }
+    let mut modes = MapModes::default();
+    scripted_map_modes::parse_into(
+        "test.txt",
+        br#"scripted_map_modes = {
+        politics = { update_daily = no top = { type = country color = {
+            FROM = {
+                set_temp_variable = { alpha = 1 }
+                if = { limit = { has_stability > 0.5 has_war_support > 0.1 is_ai = yes }
+                    set_temp_variable = { green = 1 }
+                } else = { set_temp_variable = { red = 1 } }
+                if = { limit = { is_in_tech_sharing_group = synthetic_sharing_group }
+                    set_temp_variable = { red = 0 } set_temp_variable = { green = 0 }
+                    set_temp_variable = { blue = 1 }
+                }
+            }
+        } } }
+    }"#,
+        &mut modes,
+    )
+    .unwrap();
+    let content = content(modes);
+    let map = map();
+    let mut f = frame();
+    set::<tables::CountryStabilityInputs>(
+        &mut f,
+        [100, 200, 300]
+            .into_iter()
+            .map(|country| CountryStabilityInputRow {
+                country,
+                stability_raw: 70_000,
+                war_support_raw: 30_000,
+                stability_factor: Some(0),
+                party_popularity_stability_factor: Some(0),
+                max_stability: 100_000,
+                war_support_factor: Some(0),
+                max_war_support: 100_000,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    set::<tables::HumanControllers>(
+        &mut f,
+        [100, 200, 300]
+            .into_iter()
+            .map(|country| HumanControllerRow {
+                country,
+                count: i8::from(country == 100),
+            })
+            .collect(),
+    );
+    set::<tables::RaidCountryInputs>(
+        &mut f,
+        (0..3)
+            .map(|canonical_slot| RaidCountryInputRow {
+                canonical_slot,
+                autonomous: Some(1),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    set::<tables::SimulationFeatures>(&mut f, vec![SimulationFeatureRow::default()]);
+    let names = installed_content_core::trigger_keys::TriggerNames::default();
+    let dlcs = BTreeSet::new();
+    let aliases = Arc::default();
+    let render = |f: &DecodedFrame| {
+        let world = World::read(
+            f,
+            with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+        );
+        fill(
+            &MapMode::Scripted("politics".into()),
+            &Inputs {
+                content: &content,
+                map: &map,
+                frame: f,
+                selected: Some(0),
+                world: Some(&world),
+                colour: None,
+            },
+        )
+        .unwrap()
+    };
+    // A poisoned certificate can leave the table unavailable, or complete with
+    // unrelated metadata but no acquired country-local roster witnesses.
+    for known_name in [false, true] {
+        set::<tables::LexicalTokens>(
+            &mut f,
+            if known_name {
+                vec![LexicalTokenRow {
+                    token: 9,
+                    literal: b"synthetic_sharing_group".to_vec(),
+                }]
+            } else {
+                Vec::new()
+            },
+        );
+        for missing_witness in [false, true] {
+            if missing_witness {
+                set::<tables::ResearchModifiers>(&mut f, Vec::new());
+            } else {
+                f.tables[TableId::ResearchModifiers.index()] = TableView::Unavailable {
+                    reason: "shared research certificate poisoned".into(),
+                }
+                .into();
+            }
+            let refused = render(&f);
+            let roster_refusals: Vec<_> = refused
+                .warnings
+                .iter()
+                .filter(|why| why.contains("ResearchModifiers"))
+                .collect();
+            if missing_witness {
+                // Three countries have three distinct missing local inputs;
+                // each target is counted once against its own roster.
+                assert_eq!(roster_refusals.len(), 3, "{:?}", refused.warnings);
+                for country in 0..3 {
+                    assert_eq!(
+                        roster_refusals
+                            .iter()
+                            .filter(|why| why.contains(&format!("Country({country})"))
+                                && why.contains("1 targets"))
+                            .count(),
+                        1,
+                        "{:?}",
+                        refused.warnings
+                    );
+                }
+            } else {
+                // Whole-table unavailability is one input used by all targets.
+                assert_eq!(roster_refusals.len(), 1, "{:?}", refused.warnings);
+                assert!(
+                    roster_refusals[0].contains("3 targets"),
+                    "{:?}",
+                    refused.warnings
+                );
+            }
+            let kept = refused.colour.unwrap();
+            assert!(
+                kept.layers[1]
+                    .borders
+                    .values()
+                    .all(|border| border.style.is_none())
+            );
+        }
+    }
+    let mut roster = Vec::new();
+    for country in [100, 200, 300] {
+        roster.push(ResearchModifierRow {
+            country,
+            index: u32::MAX,
+            kind: ResearchModifierRow::SHARING_ROSTER,
+            raw: -1,
+            count: u32::from(country == 100),
+            ..Default::default()
+        });
+        if country == 100 {
+            roster.push(ResearchModifierRow {
+                country,
+                index: u32::MAX,
+                ordinal: 1,
+                kind: ResearchModifierRow::SHARING_ROSTER,
+                raw: 9,
+                ..Default::default()
+            });
+        }
+    }
+    set::<tables::ResearchModifiers>(&mut f, roster);
+    let painted = render(&f);
+    assert!(painted.warnings.is_empty(), "{:?}", painted.warnings);
+    let kept = painted.colour.unwrap();
+    assert_eq!(kept.layers[1].borders.len(), 3);
+    for (id, border) in &kept.layers[1].borders {
+        let expected = if *id == colour_script::TargetId::Country(0) {
+            [0.0, 0.0, 1.0, 1.0]
+        } else {
+            [0.0, 1.0, 0.0, 1.0]
+        };
+        assert_eq!(
+            border.style.as_ref().map(|style| style.color),
+            Some(pack(expected)),
+            "{id:?}"
+        );
+    }
+}
+
+#[test]
+fn scripted_callbacks_count_one_roster_input_across_iterator_and_array_reads() {
+    use dashboard_text::triggers::{ContentFacts, World};
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let content = content(MapModes::default());
+    let map = map();
+    let mut f = frame();
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    {
+        for row in rows {
+            row.owned_states = None.into();
+        }
+    }
+    let names = installed_content_core::trigger_keys::TriggerNames::default();
+    let dlcs = BTreeSet::new();
+    let aliases = Arc::default();
+    let world = World::read(
+        &f,
+        with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+    );
+    let inputs = Inputs {
+        content: &content,
+        map: &map,
+        frame: &f,
+        selected: Some(0),
+        world: Some(&world),
+        colour: None,
+    };
+    let layer = scripted_map_modes::Layer {
+        kind: LayerType::Country,
+        color: installed_content_core::parser::parse(
+            br#"
+            if = { limit = { FROM = { tag = SOV } }
+                set_temp_variable = { red = owned_states^num }
+            }
+            OR = { any_owned_state = { always = yes } always = yes }
+            set_temp_variable = { red = owned_states^num }
+            set_temp_variable = { alpha = 1 }
+        "#,
+        )
+        .unwrap()
+        .items,
+        ..Default::default()
+    };
+    let result =
+        colour_script::borders("test", "top", &layer, &inputs, None, true, &mut Vec::new());
+    assert_eq!(result.refusals.len(), 1, "{:?}", result.refusals);
+    assert!(result.refusals[0].contains("CountryCounterInputs.owned_states"));
+    assert!(
+        result.refusals[0].contains("3 targets"),
+        "{:?}",
+        result.refusals
+    );
+    assert!(result.borders.values().all(|border| border.style.is_none()));
+}
+
+#[test]
+fn scripted_callbacks_count_the_global_lexical_failure_once_across_country_scopes() {
+    use dashboard_text::triggers::{ContentFacts, World};
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let content = content(MapModes::default());
+    let map = map();
+    let mut f = frame();
+    f.tables[TableId::ResearchModifiers.index()] =
+        TableView::Complete(TableRows::ResearchModifiers(
+            [100, 200, 300]
+                .into_iter()
+                .map(|country| replay_data::rows::ResearchModifierRow {
+                    country,
+                    index: u32::MAX,
+                    kind: replay_data::rows::ResearchModifierRow::SHARING_ROSTER,
+                    raw: -1,
+                    count: 0,
+                    ..Default::default()
+                })
+                .collect(),
+        ))
+        .into();
+    f.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+        reason: "synthetic dictionary acquisition failed".into(),
+    }
+    .into();
+    let names = installed_content_core::trigger_keys::TriggerNames::default();
+    let dlcs = BTreeSet::new();
+    let aliases = Arc::default();
+    let world = World::read(
+        &f,
+        with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+    );
+    let inputs = Inputs {
+        content: &content,
+        map: &map,
+        frame: &f,
+        selected: Some(0),
+        world: Some(&world),
+        colour: None,
+    };
+    let layer = scripted_map_modes::Layer {
+        kind: LayerType::Country,
+        color: installed_content_core::parser::parse(
+            br#"
+            OR = { is_in_tech_sharing_group = mod_group always = yes }
+            FROM = { OR = { is_in_tech_sharing_group = mod_group always = yes } }
+            set_temp_variable = { red = 1 } set_temp_variable = { alpha = 1 }
+        "#,
+        )
+        .unwrap()
+        .items,
+        ..Default::default()
+    };
+    // Reuse the same World's failed lexical cache on the second presentation.
+    for _ in 0..2 {
+        let refused =
+            colour_script::borders("test", "top", &layer, &inputs, None, true, &mut Vec::new());
+        assert_eq!(refused.refusals.len(), 1, "{:?}", refused.refusals);
+        let why = &refused.refusals[0];
+        assert!(
+            why.contains("LexicalTokens") && why.contains("3 targets"),
+            "{why}"
+        );
+        assert!(
+            !why.contains("ResearchModifiers") && !why.contains("Country("),
+            "{why}"
+        );
+        assert!(
+            refused
+                .borders
+                .values()
+                .all(|border| border.style.is_none())
+        );
+    }
+}
+
+#[test]
+fn scripted_callbacks_refuse_uncertain_inputs_once_per_target() {
+    use dashboard_text::triggers::{ContentFacts, World};
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let content = content(MapModes::default());
+    let map = map();
+    let mut f = frame();
+    for table in [TableId::CountryStabilityInputs, TableId::ResearchModifiers] {
+        f.tables[table.index()] = TableView::Unavailable {
+            reason: "synthetic uncertified inputs".into(),
+        }
+        .into();
+    }
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    {
+        for row in rows {
+            row.owned_states = Some(vec![64, 65]).into();
+        }
+    }
+    if let TableView::Complete(TableRows::States(rows)) = &mut *f.tables[TableId::States.index()] {
+        rows.extend([64, 65].into_iter().map(|id| StateRow {
+            id,
+            owner: 100,
+            ..Default::default()
+        }));
+    }
+    let names = installed_content_core::trigger_keys::TriggerNames::default();
+    let dlcs = BTreeSet::new();
+    let aliases = Arc::default();
+    let world = World::read(
+        &f,
+        with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+    );
+    let inputs = Inputs {
+        content: &content,
+        map: &map,
+        frame: &f,
+        selected: Some(0),
+        world: Some(&world),
+        colour: None,
+    };
+    let render = |body: &str, previous: Option<&colour_script::LayerState>| {
+        let layer = scripted_map_modes::Layer {
+            kind: LayerType::Country,
+            color: installed_content_core::parser::parse(body.as_bytes())
+                .unwrap()
+                .items,
+            ..Default::default()
+        };
+        colour_script::borders(
+            "test",
+            "top",
+            &layer,
+            &inputs,
+            previous,
+            true,
+            &mut Vec::new(),
+        )
+    };
+    let previous = render(
+        "set_temp_variable = { alpha = 1 } set_temp_variable = { red = 1 }",
+        None,
+    );
+    assert!(previous.refusals.is_empty());
+    assert_eq!(previous.borders.len(), 3);
+    assert!(
+        previous
+            .borders
+            .values()
+            .all(|border| border.style.is_some())
+    );
+    for (case, body, missing) in [
+        (
+            "known overwrite is conservatively refused",
+            r#"
+            if = { limit = { is_in_tech_sharing_group = mod_group }
+                set_temp_variable = { scratch = 1 }
+                add_to_temp_variable = { scratch = 1 }
+                set_temp_variable = { red = 0 }
+            }
+            set_temp_variable = { red = 1 } set_temp_variable = { green = 0 }
+            set_temp_variable = { blue = 0 } set_temp_variable = { alpha = 1 }
+            set_temp_variable = { highlighted = 0 }
+        "#,
+            vec!["ResearchModifiers"],
+        ),
+        (
+            "optional division destination insertion without store",
+            r#"
+            set_temp_variable = { alpha = 1 }
+            if = { limit = { has_stability > 0.5 } divide_temp_variable = { var = red?1 value = 0 } }
+        "#,
+            vec!["CountryStabilityInputs"],
+        ),
+        (
+            "optional modulo destination insertion without store",
+            r#"
+            set_temp_variable = { alpha = 1 }
+            if = { limit = { has_stability > 0.5 } modulo_temp_variable = { var = red?1 value = 0 } }
+        "#,
+            vec!["CountryStabilityInputs"],
+        ),
+        (
+            "later iteration cannot erase an uncertain earlier stop",
+            r#"
+            set_temp_variable = { alpha = 1 }
+            any_owned_state = {
+                if = { limit = { state = 64 } ROOT = { has_stability > 0.5 } }
+                if = { limit = { state = 65 } set_temp_variable = { red = 1 } }
+            }
+        "#,
+            vec!["CountryStabilityInputs"],
+        ),
+        (
+            "one input affects two outputs and several reads",
+            r#"
+            set_temp_variable = { alpha = 1 }
+            if = { limit = { has_stability > 0.5 }
+                set_temp_variable = { red = 1 } set_temp_variable = { blue = 1 }
+            }
+            if = { limit = { has_stability > 0.7 } set_temp_variable = { green = 1 } }
+            set_temp_variable = { red = stability }
+        "#,
+            vec!["CountryStabilityInputs"],
+        ),
+        (
+            "two independent inputs",
+            r#"
+            set_temp_variable = { alpha = 1 }
+            if = { limit = { has_stability > 0.5 } set_temp_variable = { red = 1 } }
+            if = { limit = { is_in_tech_sharing_group = mod_group } set_temp_variable = { blue = 1 } }
+        "#,
+            vec!["CountryStabilityInputs", "ResearchModifiers"],
+        ),
+    ] {
+        let refused = render(&format!("FROM = {{ {body} }}"), Some(&previous));
+        assert_eq!(
+            refused.refusals.len(),
+            missing.len(),
+            "{case}: {:?}",
+            refused.refusals
+        );
+        for input in missing {
+            let lines = refused
+                .refusals
+                .iter()
+                .filter(|why| why.contains(input))
+                .collect::<Vec<_>>();
+            assert_eq!(lines.len(), 1, "{case}: {:?}", refused.refusals);
+            assert!(
+                lines[0].contains("3 targets"),
+                "{case}: {:?}",
+                refused.refusals
+            );
+        }
+        // Refusing a refresh also withholds a previously painted border.
+        assert!(
+            refused
+                .borders
+                .values()
+                .all(|border| border.style.is_none()),
+            "{case}"
+        );
+    }
+    let one_target = render(
+        r#"
+        if = { limit = { FROM = { tag = SOV } } has_stability > 0.5 }
+        set_temp_variable = { alpha = 1 } set_temp_variable = { red = 1 }
+    "#,
+        None,
+    );
+    assert_eq!(one_target.refusals.len(), 1, "{:?}", one_target.refusals);
+    assert!(one_target.refusals[0].contains("1 targets"));
+    assert!(one_target.refusals[0].contains("CountryStabilityInputs"));
+    assert_eq!(
+        one_target
+            .borders
+            .values()
+            .filter(|border| border.style.is_some())
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn scripted_target_filters_refuse_uncertainty_before_colour_capture_on_cold_and_warm_reads() {
+    use dashboard_text::triggers::{ContentFacts, World};
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let content = content(MapModes::default());
+    let map = map();
+    let mut f = frame();
+    // Keep the filter initiator/candidate separate from the reserved country.
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *f.tables[TableId::Countries.index()]
+    {
+        for row in rows {
+            row.canonical_slot += 1;
+        }
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *f.tables[TableId::CountryLinks.index()]
+    {
+        for row in rows {
+            row.canonical_slot += 1;
+        }
+    }
+    if let TableView::Complete(TableRows::States(rows)) = &mut *f.tables[TableId::States.index()] {
+        for row in rows {
+            row.controller = 100;
+            row.single_controller = Some(1).into();
+        }
+    }
+    let names = installed_content_core::trigger_keys::TriggerNames::default();
+    let dlcs = BTreeSet::new();
+    let aliases = Arc::default();
+    for scenario in ["missing templates", "missing stability", "true", "false"] {
+        let facts = ContentFacts::content_only(&dlcs, &names, &aliases);
+        let world = World::read(
+            &f,
+            if scenario == "missing templates" {
+                facts
+            } else {
+                with_empty_character_templates(facts)
+            },
+        );
+        let inputs = Inputs {
+            content: &content,
+            map: &map,
+            frame: &f,
+            selected: Some(1),
+            world: Some(&world),
+            colour: None,
+        };
+        for kind in [
+            LayerType::Country,
+            LayerType::State,
+            LayerType::StateController,
+        ] {
+            let baseline = scripted_map_modes::Layer {
+                kind,
+                color: installed_content_core::parser::parse(
+                    b"set_temp_variable = { green = 1 } set_temp_variable = { alpha = 1 }",
+                )
+                .unwrap()
+                .items,
+                ..Default::default()
+            };
+            let previous = colour_script::borders(
+                "test",
+                "top",
+                &baseline,
+                &inputs,
+                None,
+                true,
+                &mut Vec::new(),
+            );
+            assert!(previous.refusals.is_empty(), "{:?}", previous.refusals);
+            assert_eq!(previous.borders.len(), 3);
+            assert!(
+                previous
+                    .borders
+                    .values()
+                    .all(|border| border.style.is_some())
+            );
+            for filter in ["target_root_trigger", "target_trigger"] {
+                let candidate = if kind == LayerType::Country {
+                    "country = GER"
+                } else {
+                    "state = 1"
+                };
+                let condition = match scenario {
+                    "missing stability" => "OR = { has_stability > 0.5 always = yes }",
+                    "false" => "ROOT = { always = no }",
+                    _ => "ROOT = { always = yes } ROOT = { always = yes }",
+                };
+                let layer = scripted_map_modes::Layer {
+                    targets: Some(
+                        installed_content_core::parser::parse(
+                            format!("{candidate} {filter} = {{ {condition} }}").as_bytes(),
+                        )
+                        .unwrap()
+                        .items,
+                    ),
+                    ..baseline.clone()
+                };
+                // Reuse the parsed layer and World's lazy indexes, with painted
+                // previous borders proving an uncertain selection clears them.
+                for _ in 0..2 {
+                    let mut warnings = Vec::new();
+                    let selected = colour_script::borders(
+                        "test",
+                        "top",
+                        &layer,
+                        &inputs,
+                        Some(&previous),
+                        true,
+                        &mut warnings,
+                    );
+                    match scenario {
+                        "missing templates" | "missing stability" => {
+                            assert!(selected.refused, "{kind:?}/{filter}/{scenario}");
+                            assert!(selected.borders.is_empty());
+                            assert_eq!(warnings, selected.refusals);
+                            assert_eq!(warnings.len(), 1, "{warnings:?}");
+                            let input = if scenario == "missing templates" {
+                                "character templates"
+                            } else {
+                                "CountryStabilityInputs"
+                            };
+                            assert!(warnings[0].contains(input), "{warnings:?}");
+                            assert!(warnings[0].contains("1 layer"), "{warnings:?}");
+                        }
+                        "true" => {
+                            assert!(!selected.refused);
+                            assert!(warnings.is_empty(), "{warnings:?}");
+                            assert_eq!(selected.borders.len(), 1, "{kind:?}/{filter}");
+                            let border = selected.borders.values().next().unwrap();
+                            assert_eq!(border.provinces, [1, 2]);
+                            assert_eq!(border.style.unwrap().color, pack([0.0, 1.0, 0.0, 1.0]));
+                        }
+                        "false" => {
+                            assert!(!selected.refused);
+                            assert!(warnings.is_empty(), "{warnings:?}");
+                            assert!(selected.borders.is_empty());
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn scripted_empty_targets_keep_country_state_and_controller_layers_unrestricted() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    use dashboard_text::triggers::{ContentFacts, World};
+    let content = content(MapModes::default());
+    let map = map();
+    let mut f = frame();
+    if let TableView::Complete(TableRows::States(rows)) = &mut *f.tables[TableId::States.index()] {
+        for row in rows {
+            row.controller = match row.id {
+                1 => 100,
+                2 => 200,
+                _ => 300,
+            };
+            row.single_controller = Some(1).into();
+        }
+    }
+    let names = installed_content_core::trigger_keys::TriggerNames::default();
+    let dlcs = BTreeSet::new();
+    let aliases = Arc::default();
+    let world = World::read(
+        &f,
+        with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+    );
+    let inputs = Inputs {
+        content: &content,
+        map: &map,
+        frame: &f,
+        selected: Some(0),
+        world: Some(&world),
+        colour: None,
+    };
+    for kind in [
+        LayerType::Country,
+        LayerType::State,
+        LayerType::StateController,
+    ] {
+        let mut layer = scripted_map_modes::Layer {
+            kind,
+            color: installed_content_core::parser::parse(b"set_temp_variable = { alpha = 1 }")
+                .unwrap()
+                .items,
+            ..Default::default()
+        };
+        let unrestricted =
+            colour_script::borders("test", "top", &layer, &inputs, None, true, &mut Vec::new());
+        assert!(
+            unrestricted.refusals.is_empty(),
+            "{:?}",
+            unrestricted.refusals
+        );
+        assert_eq!(unrestricted.borders.len(), 3, "{kind:?}");
+        layer.targets = Some(Vec::new());
+        let empty =
+            colour_script::borders("test", "top", &layer, &inputs, None, true, &mut Vec::new());
+        assert_eq!(empty, unrestricted, "{kind:?}");
+    }
+}
+
+#[test]
+fn scripted_split_states_use_the_cached_single_branch_and_positive_province_groups() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    use colour_script::{TargetId, borders};
+    use dashboard_text::triggers::{ContentFacts, World};
+    let mut modes = MapModes::default();
+    scripted_map_modes::parse_into("test.txt", br#"scripted_map_modes = {
+        split = { top = { type = state_controller targets = { targets = { 1 } }
+            color = { set_temp_variable = { alpha = 1 } FROM = { FROM = { tag = SOV } } set_temp_variable = { red = 1 } }
+        } }
+    }"#, &mut modes).unwrap();
+    let content = content(modes);
+    let map = map();
+    let (names, dlcs, aliases) = (
+        installed_content_core::trigger_keys::TriggerNames::default(),
+        BTreeSet::new(),
+        Arc::default(),
+    );
+    let mut f = frame();
+    for (single, province_controller) in [
+        (true, 200),
+        (false, 200),
+        (true, u32::MAX),
+        (false, u32::MAX),
+    ] {
+        if let TableView::Complete(TableRows::Provinces(rows)) =
+            &mut *f.tables[TableId::Provinces.index()]
+        {
+            rows[1].controller = province_controller;
+        }
+        if let TableView::Complete(TableRows::States(rows)) =
+            &mut *f.tables[TableId::States.index()]
+        {
+            for row in rows {
+                row.controller = 100;
+                row.single_controller = (row.id == 1).then_some(u32::from(single)).into();
+            }
+        }
+        let world = World::read(
+            &f,
+            with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+        );
+        let inputs = Inputs {
+            content: &content,
+            map: &map,
+            frame: &f,
+            selected: Some(0),
+            world: Some(&world),
+            colour: None,
+        };
+        let mut warnings = Vec::new();
+        let kept = borders(
+            "split",
+            "top",
+            &content.scripted.get("split").unwrap().top,
+            &inputs,
+            None,
+            true,
+            &mut warnings,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let sov = TargetId::Portion {
+            state: 1,
+            controller: 1,
+        };
+        if single {
+            // State 1's own controller is GER even though one province is SOV.
+            assert_eq!(kept.borders.len(), 1);
+            assert_eq!(
+                kept.borders[&TargetId::Portion {
+                    state: 1,
+                    controller: 0
+                }]
+                    .provinces,
+                [1, 2]
+            );
+            assert!(kept.borders.values().all(|border| border.style.is_none()));
+        } else if province_controller == 200 {
+            assert_eq!(kept.borders.len(), 2);
+            assert_eq!(kept.borders[&sov].provinces, [2]);
+            assert!(kept.borders[&sov].style.is_some());
+        } else {
+            assert_eq!(kept.borders.len(), 1);
+            assert_eq!(kept.borders.values().next().unwrap().provinces, [1]);
+        }
+    }
+}
+
+#[test]
+fn scripted_forced_refresh_matches_the_recorded_declaration_between_daily_updates() {
+    use replay_data::{
+        rows::MapEvent, rows::MapEventFamily, rows::MapEventFamilyHealth, rows::MapEventPayload,
+        rows::MapEventsRow,
+    };
+    let mut modes = MapModes::default();
+    scripted_map_modes::parse_into(
+        "test.txt",
+        b"scripted_map_modes = { first = {} second = { update_daily = no } }",
+        &mut modes,
+    )
+    .unwrap();
+    let content = content(modes);
+    let map = map();
+    let mut f = frame();
+    *f.tables[TableId::MapEvents.index()] =
+        TableView::Complete(TableRows::MapEvents(vec![MapEventsRow {
+            from_hour: f.hour,
+            to_hour: f.hour,
+            first_sequence: 1,
+            next_sequence: 2,
+            health: [MapEventFamilyHealth {
+                complete: true,
+                enabled: true,
+                installed: true,
+                ..Default::default()
+            }; MapEventFamily::COUNT],
+            events: vec![MapEvent {
+                sequence: 1,
+                hour: f.hour,
+                payload: MapEventPayload::ScriptedMapRefresh(1),
+            }],
+            ..Default::default()
+        }]));
+    let refresh = |name: &str, frame: &DecodedFrame| {
+        colour_script::forced_refresh(
+            name,
+            &Inputs {
+                content: &content,
+                map: &map,
+                frame,
+                selected: Some(0),
+                world: None,
+                colour: None,
+            },
+        )
+    };
+    assert_eq!(refresh("second", &f), Ok(true));
+    assert_eq!(refresh("first", &f), Ok(false));
+    if let TableView::Complete(TableRows::MapEvents(rows)) =
+        &mut *f.tables[TableId::MapEvents.index()]
+    {
+        rows[0].to_hour += 1;
+    }
+    assert!(refresh("second", &f).unwrap_err().contains("not this hour"));
+    if let TableView::Complete(TableRows::MapEvents(rows)) =
+        &mut *f.tables[TableId::MapEvents.index()]
+    {
+        rows[0].to_hour -= 1;
+        rows[0].events[0].payload = MapEventPayload::ScriptedMapRefresh(2);
+    }
+    assert!(
+        refresh("second", &f)
+            .unwrap_err()
+            .contains("outside the recorded content")
+    );
+    if let TableView::Complete(TableRows::MapEvents(rows)) =
+        &mut *f.tables[TableId::MapEvents.index()]
+    {
+        rows[0].health[MapEventFamily::ScriptedMapRefresh.index()].complete = false;
+    }
+    assert!(refresh("second", &f).unwrap_err().contains("incomplete"));
+}
+
+#[test]
+fn scripted_forced_refresh_refuses_inherited_temps_without_guessing_zero() {
+    use dashboard_text::triggers::{ContentFacts, World};
+    use replay_data::{
+        rows::MapEvent, rows::MapEventFamily, rows::MapEventFamilyHealth, rows::MapEventPayload,
+        rows::MapEventsRow,
+    };
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut modes = MapModes::default();
+    scripted_map_modes::parse_into("test.txt", br#"scripted_map_modes = {
+        partial = { update_daily = no top = { type = country color = {
+            set_temp_variable = { alpha = 1 }
+            FROM = { if = { limit = { tag = SOV } set_temp_variable = { blue = 1 } }
+                else = { set_temp_variable = { green = 1 } } }
+        } } }
+        complete = { top = { type = country color = {
+            set_temp_variable = { red = 0.25 } set_temp_variable = { green = 0.5 }
+            set_temp_variable = { blue = 0.75 } set_temp_variable = { alpha = 1 }
+            set_temp_variable = { highlighted = 0 }
+        } } }
+        filter = { top = { type = country
+            targets = { target_root_trigger = { OR = { check_variable = { inherited = 0 } always = yes } } targets = { SOV } }
+            color = { set_temp_variable = { red = 0 } set_temp_variable = { green = 1 }
+                set_temp_variable = { blue = 0 } set_temp_variable = { alpha = 1 }
+                set_temp_variable = { highlighted = 0 } }
+        } }
+        transparent = { top = { type = country color = { set_temp_variable = { alpha = 0 } } } }
+    }"#, &mut modes).unwrap();
+    let content = content(modes);
+    let (mut frame, map) = (frame(), map());
+    let names = installed_content_core::trigger_keys::TriggerNames {
+        scripted: Default::default(),
+        counts: Some(Default::default()),
+    };
+    let (dlcs, aliases) = (BTreeSet::new(), Arc::default());
+    let run = |name: &str, frame: &DecodedFrame, previous: Option<&ColourState>| {
+        let world = World::read(
+            frame,
+            with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+        );
+        fill(
+            &MapMode::Scripted(name.into()),
+            &Inputs {
+                content: &content,
+                map: &map,
+                frame,
+                selected: Some(0),
+                world: Some(&world),
+                colour: previous,
+            },
+        )
+        .unwrap()
+    };
+    let standalone = run("partial", &frame, None);
+    assert!(standalone.warnings.is_empty(), "{:?}", standalone.warnings);
+    assert_eq!(
+        standalone
+            .draw
+            .unwrap()
+            .layer
+            .unwrap()
+            .styles
+            .values()
+            .map(|s| s.color)
+            .collect::<Vec<_>>(),
+        [
+            pack([0.0, 1.0, 0.0, 1.0]),
+            pack([0.0, 0.0, 1.0, 1.0]),
+            pack([0.0, 1.0, 0.0, 1.0])
+        ]
+    );
+    let prior = standalone.colour.unwrap();
+    for (ordinal, name) in ["partial", "complete", "filter", "transparent"]
+        .into_iter()
+        .enumerate()
+    {
+        *frame.tables[TableId::MapEvents.index()] =
+            TableView::Complete(TableRows::MapEvents(vec![MapEventsRow {
+                from_hour: frame.hour,
+                to_hour: frame.hour,
+                first_sequence: 1,
+                next_sequence: 2,
+                health: [MapEventFamilyHealth {
+                    complete: true,
+                    enabled: true,
+                    installed: true,
+                    ..Default::default()
+                }; MapEventFamily::COUNT],
+                events: vec![MapEvent {
+                    sequence: 1,
+                    hour: frame.hour,
+                    payload: MapEventPayload::ScriptedMapRefresh(ordinal as u32),
+                }],
+                ..Default::default()
+            }]));
+        // First presentation, retained-border refresh, and an event coinciding
+        // with a scheduled refresh must all honour inherited TLS availability.
+        for previous in [None, Some(prior.as_ref())] {
+            let actual = run(name, &frame, previous);
+            if name == "transparent" {
+                assert!(actual.warnings.is_empty(), "{:?}", actual.warnings);
+                assert!(actual.draw.unwrap().layer.unwrap().styles.is_empty());
+            } else if name == "complete" {
+                assert!(actual.warnings.is_empty(), "{:?}", actual.warnings);
+                assert_eq!(
+                    actual
+                        .draw
+                        .unwrap()
+                        .layer
+                        .unwrap()
+                        .styles
+                        .values()
+                        .map(|s| s.color)
+                        .collect::<Vec<_>>(),
+                    [pack([0.25, 0.5, 0.75, 1.0]); 3]
+                );
+            } else {
+                assert_eq!(actual.warnings.len(), 1, "{:?}", actual.warnings);
+                assert!(
+                    actual.warnings[0].contains("caller temporary variables"),
+                    "{:?}",
+                    actual.warnings
+                );
+                assert!(
+                    actual.warnings[0].contains(if name == "partial" {
+                        "3 targets"
+                    } else {
+                        "1 layer"
+                    }),
+                    "{:?}",
+                    actual.warnings
+                );
+                assert!(
+                    actual.colour.unwrap().layers[1]
+                        .borders
+                        .values()
+                        .all(|b| b.style.is_none())
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn scripted_scheduled_refresh_preserves_unknown_event_context() {
+    use dashboard_text::triggers::{ContentFacts, World};
+    use replay_data::{rows::MapEventFamily, rows::MapEventFamilyHealth, rows::MapEventsRow};
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut modes = MapModes::default();
+    scripted_map_modes::parse_into(
+        "test.txt",
+        br#"scripted_map_modes = {
+        partial = { update_daily = yes top = { type = country color = {
+            set_temp_variable = { alpha = 1 } set_temp_variable = { green = 1 }
+        } } }
+        complete = { update_daily = yes top = { type = country color = {
+            set_temp_variable = { red = 0.25 } set_temp_variable = { green = 0.5 }
+            set_temp_variable = { blue = 0.75 } set_temp_variable = { alpha = 1 }
+            set_temp_variable = { highlighted = 0 }
+        } } }
+    }"#,
+        &mut modes,
+    )
+    .unwrap();
+    let content = content(modes);
+    let (frame, map) = (frame(), map());
+    let names = installed_content_core::trigger_keys::TriggerNames {
+        scripted: Default::default(),
+        counts: Some(Default::default()),
+    };
+    let (dlcs, aliases) = (BTreeSet::new(), Arc::default());
+    let run = |name: &str, frame: &DecodedFrame, previous: Option<&ColourState>| {
+        let world = World::read(
+            frame,
+            with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+        );
+        fill(
+            &MapMode::Scripted(name.into()),
+            &Inputs {
+                content: &content,
+                map: &map,
+                frame,
+                selected: Some(0),
+                world: Some(&world),
+                colour: previous,
+            },
+        )
+        .unwrap()
+    };
+    for name in ["partial", "complete"] {
+        let update_daily = content.scripted.get(name).unwrap().update_daily;
+        assert!(update_daily, "{name} must repaint daily");
+        let prior = run(name, &frame, None).colour.unwrap();
+        // Exercise the actual first/daily dispatch, then the stricter retained
+        // path between scheduled refreshes with the same uncertain evidence.
+        for (hour, previous, scheduled) in [
+            (43, None, true),
+            (48, Some(prior.as_ref()), true),
+            (43, Some(prior.as_ref()), false),
+        ] {
+            assert_eq!(
+                colour_script::refreshes(previous, update_daily, hour),
+                scheduled,
+                "{name} at {hour} must exercise the intended refresh path"
+            );
+            let mut current = frame.clone();
+            current.hour = hour;
+            let clean = MapEventsRow {
+                from_hour: hour,
+                to_hour: hour,
+                first_sequence: 1,
+                next_sequence: 1,
+                health: [MapEventFamilyHealth {
+                    complete: true,
+                    enabled: true,
+                    installed: true,
+                    ..Default::default()
+                }; MapEventFamily::COUNT],
+                ..Default::default()
+            };
+            let mut incomplete = clean.clone();
+            incomplete.health[MapEventFamily::ScriptedMapRefresh.index()].complete = false;
+            let mut malformed = clean.clone();
+            malformed.from_hour += 1;
+            *current.tables[TableId::MapEvents.index()] =
+                TableView::Complete(TableRows::MapEvents(vec![clean.clone()]));
+            let control = run(name, &current, previous);
+            assert!(control.warnings.is_empty(), "{:?}", control.warnings);
+            let expected = if name == "complete" {
+                [pack([0.25, 0.5, 0.75, 1.0]); 3]
+            } else {
+                [pack([0.0, 1.0, 0.0, 1.0]); 3]
+            };
+            let colors = |actual: &ModeFill| {
+                actual
+                    .draw
+                    .as_ref()
+                    .unwrap()
+                    .layer
+                    .as_ref()
+                    .unwrap()
+                    .styles
+                    .values()
+                    .map(|style| style.color)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(colors(&control), expected, "{name} at {hour}");
+            for (why, evidence) in [
+                (
+                    "events unavailable",
+                    TableView::Unavailable {
+                        reason: "missing refresh evidence".into(),
+                    },
+                ),
+                (
+                    "events unavailable",
+                    TableView::Truncated {
+                        rows: TableRows::MapEvents(vec![clean]),
+                        missing: 1,
+                    },
+                ),
+                (
+                    "interval is absent",
+                    TableView::Complete(TableRows::MapEvents(Vec::new())),
+                ),
+                (
+                    "interval is incomplete",
+                    TableView::Complete(TableRows::MapEvents(vec![incomplete])),
+                ),
+                (
+                    "interval is malformed",
+                    TableView::Complete(TableRows::MapEvents(vec![malformed])),
+                ),
+            ] {
+                *current.tables[TableId::MapEvents.index()] = evidence;
+                let actual = run(name, &current, previous);
+                let kept = &actual.colour.as_ref().unwrap().layers[1];
+                if !scheduled {
+                    // Unknown event coverage cannot certify retained borders,
+                    // even for a callback whose outputs would be independent.
+                    assert_eq!(actual.warnings.len(), 1, "{:?}", actual.warnings);
+                    assert!(actual.warnings[0].contains(why), "{:?}", actual.warnings);
+                    assert!(kept.refused && kept.borders.is_empty());
+                } else if name == "complete" {
+                    assert!(actual.warnings.is_empty(), "{:?}", actual.warnings);
+                    assert_eq!(colors(&actual), expected, "{name} at {hour}: {why}");
+                } else {
+                    assert_eq!(actual.warnings.len(), 1, "{:?}", actual.warnings);
+                    assert!(
+                        actual.warnings[0].contains("caller temporary variables"),
+                        "{:?}",
+                        actual.warnings
+                    );
+                    assert!(
+                        actual.warnings[0].contains("3 targets"),
+                        "{:?}",
+                        actual.warnings
+                    );
+                    assert_eq!(kept.borders.len(), 3);
+                    assert!(kept.borders.values().all(|border| border.style.is_none()));
+                    assert!(!kept.refused);
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -977,7 +2204,10 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
         counts: Some(Default::default()),
     };
     let (dlcs, aliases) = (BTreeSet::new(), Arc::default());
-    let world = World::read(&frame, ContentFacts::content_only(&dlcs, &names, &aliases));
+    let world = World::read(
+        &frame,
+        with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases)),
+    );
     let inputs = Inputs {
         content: &content,
         map: &map,
@@ -1481,4 +2711,183 @@ fn each_recorded_declaration_of_a_repeated_technology_gives_its_own_unlock() {
         "{:?}",
         fill.warnings
     );
+}
+
+#[test]
+fn scripted_invasion_failures_withhold_colours_on_cold_and_warm_caches() {
+    use dashboard_text::triggers::{ContentFacts, World};
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let content = content(MapModes::default());
+    let map = map();
+    for (known_state, unresolved, missing_province) in [
+        (None, true, false),
+        (Some(2), true, false),
+        (Some(1), true, false),
+        (Some(1), false, false),
+        (Some(1), false, true),
+    ] {
+        let mut f = frame();
+        f.tables[TableId::LandTheatres.index()] =
+            TableView::Complete(TableRows::LandTheatres(vec![
+                replay_data::rows::LandTheatreRow {
+                    id: 1,
+                    owner: 999,
+                    ..Default::default()
+                },
+            ]))
+            .into();
+        f.tables[TableId::OrdersGroups.index()] =
+            TableView::Complete(TableRows::OrdersGroups(vec![])).into();
+        if let Some(state) = known_state {
+            use replay_data::rows::*;
+            macro_rules! set {
+                ($table:ident, $rows:expr) => {
+                    f.tables[TableId::$table.index()] =
+                        TableView::Complete(TableRows::from_rows::<tables::$table>($rows)).into();
+                };
+            }
+            set!(
+                LandTheatres,
+                vec![
+                    LandTheatreRow {
+                        id: 1,
+                        owner: 999,
+                        ..Default::default()
+                    },
+                    LandTheatreRow {
+                        id: 2,
+                        owner: 200,
+                        ..Default::default()
+                    },
+                ]
+            );
+            set!(
+                OrdersGroups,
+                vec![OrdersGroupRow {
+                    handle: 10,
+                    theatre: 2,
+                    theatre_ordinal: Some(0),
+                    ..Default::default()
+                }]
+            );
+            set!(
+                OrdersGroupPlans,
+                vec![OrdersGroupPlanRow {
+                    group: 10,
+                    primary_orders: vec![1],
+                    ..Default::default()
+                }]
+            );
+            set!(
+                ArmyOrders,
+                vec![ArmyOrderRow {
+                    owner_group: 10,
+                    instance: 1,
+                    order_type: 3,
+                    path: vec![if state == 1 { 1 } else { 3 }],
+                    ..Default::default()
+                }]
+            );
+            set!(
+                ArmyOrderPlans,
+                vec![ArmyOrderPlanRow {
+                    owner_group: 10,
+                    instance: 1,
+                    ..Default::default()
+                }]
+            );
+            set!(
+                InvasionPreparations,
+                vec![InvasionPreparationRow {
+                    owner_group: 10,
+                    instance: 1,
+                    ..Default::default()
+                }]
+            );
+        }
+        if !unresolved {
+            let TableView::Complete(TableRows::LandTheatres(rows)) =
+                &mut *f.tables[TableId::LandTheatres.index()]
+            else {
+                panic!("theatres");
+            };
+            rows.retain(|row| row.owner != 999);
+        }
+        if missing_province {
+            let TableView::Complete(TableRows::Provinces(rows)) =
+                &mut *f.tables[TableId::Provinces.index()]
+            else {
+                panic!("complete provinces");
+            };
+            rows.retain(|row| row.id != 1);
+        }
+        let names = installed_content_core::trigger_keys::TriggerNames::default();
+        let dlcs = BTreeSet::new();
+        let aliases = Arc::default();
+        let mut facts =
+            with_empty_character_templates(ContentFacts::content_only(&dlcs, &names, &aliases));
+        facts.invasion_prepare_days = Ok(1);
+        let world = World::read(&f, facts);
+        let inputs = Inputs {
+            content: &content,
+            map: &map,
+            frame: &f,
+            selected: Some(0),
+            world: Some(&world),
+            colour: None,
+        };
+        let render = |body: &str, previous: Option<&colour_script::LayerState>| {
+            let layer = scripted_map_modes::Layer {
+                kind: LayerType::Country,
+                color: installed_content_core::parser::parse(body.as_bytes())
+                    .unwrap()
+                    .items,
+                ..Default::default()
+            };
+            colour_script::borders(
+                "test",
+                "top",
+                &layer,
+                &inputs,
+                previous,
+                true,
+                &mut Vec::new(),
+            )
+        };
+        let known = render(
+            "set_temp_variable = { red = 1 } set_temp_variable = { alpha = 1 }",
+            None,
+        );
+        assert!(known.refusals.is_empty());
+        assert!(known.borders.values().all(|border| border.style.is_some()));
+        for _ in 0..2 {
+            let refused = render(
+                "SOV = { OR = { AND = { has_naval_invasion_against_state = 1 set_temp_variable = { red = 1 } } always = yes } } set_temp_variable = { alpha = 1 }",
+                Some(&known),
+            );
+            if !unresolved && !missing_province {
+                assert!(refused.refusals.is_empty(), "{:?}", refused.refusals);
+                for (key, border) in &refused.borders {
+                    assert_eq!(border.style, known.borders[key].style);
+                }
+                continue;
+            }
+            assert_eq!(refused.refusals.len(), 1, "{:?}", refused.refusals);
+            assert!(
+                refused.refusals[0].contains(if missing_province {
+                    "Provinces"
+                } else {
+                    "CountryLinks"
+                }) && refused.refusals[0].contains("3 targets"),
+                "{:?}",
+                refused.refusals
+            );
+            assert!(
+                refused
+                    .borders
+                    .values()
+                    .all(|border| border.style.is_none())
+            );
+        }
+    }
 }

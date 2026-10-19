@@ -49,6 +49,9 @@ pub const NAVAL_TRANSFER_MEMBERSHIP: usize = 0x2f8;
 /// Byte that, nonzero, spares the movement speed's out-of-supply step its
 /// noncore-supply term.
 pub const NONCORE_SUPPLY_BYPASS: usize = 0x2e;
+/// Signed air-supply word, i64: positive, the movement speed's noncore-supply
+/// term takes the air noncore-supply define instead of the ordinary one.
+pub const AIR_SUPPLY: usize = 0x58;
 /// Signed days out of supply, i32: the movement speed's and attrition's
 /// out-of-supply penalty scale it by the supply-days define.
 pub const OUT_OF_SUPPLY_DAYS: usize = 0x498;
@@ -66,6 +69,8 @@ pub const EQUIPMENT_CAPACITY: usize = 0x370;
 pub const EQUIPMENT_COUNT: usize = 0x374;
 /// Standard referenced-template pointer used by serialization.
 pub const STANDARD_TEMPLATE: usize = 0x3b8;
+/// Previous template retained while a deployed division completes conversion.
+pub const PREVIOUS_TEMPLATE: usize = 0x3c0;
 /// Separate fake-intelligence template pointer.
 pub const FAKE_INTEL_TEMPLATE: usize = 0x3c8;
 /// Embedded manpower-values object.
@@ -383,6 +388,20 @@ pub fn read_icon_inputs(
     })
 }
 
+/// Reads only a transition-dirty division, using its authenticated census identity.
+pub fn pending_template(
+    memory: &impl Memory,
+    base: usize,
+    army: usize,
+) -> Result<u64, &'static str> {
+    let pointer = army
+        .checked_add(PREVIOUS_TEMPLATE)
+        .and_then(|address| read::<u64>(memory, address))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .ok_or("division previous template pointer unreadable")?;
+    template_handle(memory, base, pointer)
+}
+
 fn template_handle(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {
     if pointer == 0 {
         return Ok(0);
@@ -603,6 +622,8 @@ pub struct DivisionSeed {
     /// [`FUEL_CANDIDATE`], the fuel the movement speed's fuel ratio reads, on the
     /// supply grace scalars' line.
     pub fuel: Option<i64>,
+    /// [`AIR_SUPPLY`], which selects the noncore-supply term's air define.
+    pub air_supply: Option<i64>,
 }
 
 impl DivisionSeed {
@@ -649,13 +670,14 @@ impl DivisionSeed {
     pub const NONCORE_SUPPLY_BYPASS: u64 = 1 << 40;
     pub const OUT_OF_SUPPLY_DAYS: u64 = 1 << 41;
     pub const FUEL: u64 = 1 << 42;
+    pub const AIR_SUPPLY: u64 = 1 << 43;
 }
 
 /// The two arrow-style fields (beside `RETREAT`) share the retreat byte's line, so the census
 /// gathers them there instead of the movement pass reading each division twice more; the counter
 /// icon's alternate template and separate-counter byte share the standard template's and the supply
 /// grace scalars' lines.
-const DIVISION_SEED_SPANS: [(usize, usize); 43] = [
+const DIVISION_SEED_SPANS: [(usize, usize); 44] = [
     (0, 8),
     (SECONDARY_BASE, 8),
     (cunit::HANDLE, 8),
@@ -699,8 +721,9 @@ const DIVISION_SEED_SPANS: [(usize, usize); 43] = [
     (NONCORE_SUPPLY_BYPASS, 1),
     (OUT_OF_SUPPLY_DAYS, 4),
     (FUEL_CANDIDATE, 8),
+    (AIR_SUPPLY, 8),
 ];
-const DIVISION_SEED_FIELDS: [crate::memory::RecordField; 43] =
+const DIVISION_SEED_FIELDS: [crate::memory::RecordField; 44] =
     crate::memory::packed_fields(DIVISION_SEED_SPANS);
 const DIVISION_SEED_STRIDE: usize = crate::memory::packed_stride(DIVISION_SEED_SPANS);
 
@@ -835,6 +858,8 @@ pub fn capture_division_seeds(memory: &impl Memory, seeds: &mut [DivisionSeed]) 
                 .then(|| i32::from_le_bytes(record[351..355].try_into().unwrap()));
             seed.fuel = (valid & DivisionSeed::FUEL != 0)
                 .then(|| i64::from_le_bytes(record[355..363].try_into().unwrap()));
+            seed.air_supply = (valid & DivisionSeed::AIR_SUPPLY != 0)
+                .then(|| i64::from_le_bytes(record[363..371].try_into().unwrap()));
         }
     }
     total
@@ -882,10 +907,11 @@ pub struct MovementRow {
     /// speed), read only when the ordinary route count is positive. None is outside demand or a
     /// guarded refusal.
     pub base_speed: Option<i64>,
-    /// [`FUEL_CANDIDATE`] from the census seed, kept with the base speed for a
-    /// division whose ordinary route count is positive. None is outside demand
-    /// or that field's refusal.
+    /// [`FUEL_CANDIDATE`] already held by the census seed, including stationary
+    /// divisions whose panel speed takes the fuel factor. None is a field refusal.
     pub fuel: Option<i64>,
+    /// Regional transport speed acquired only for an embarked unit by the caller's companion.
+    pub transport_speed: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1103,7 +1129,7 @@ pub(crate) fn movement_route_province(
 }
 
 /// The arrival calculation uses the actual route's final destination rather than a hypothetical edge.
-pub(crate) fn movement_attacking(
+pub fn movement_attacking(
     memory: &impl Memory,
     base: usize,
     state: usize,
@@ -1371,13 +1397,73 @@ pub(crate) fn movement_priority_unit(
     Ok(selected)
 }
 
+/// The modifier keys the land movement speed reads for `template`'s movement
+/// priority sub-unit ([`movement_priority_unit`]), appended to `keys` in native
+/// order with repeats kept: the sub-unit's own key
+/// ([`crate::csub_unit_definition::SPEED_MODIFIER_KEY`]) when nonzero, then each
+/// nonzero key of its categories
+/// ([`crate::csub_unit_definition::CATEGORY_MODIFIER_KEY`]). On a refusal `keys`
+/// keeps only what it held before.
+pub fn movement_speed_keys(
+    memory: &impl Memory,
+    base: usize,
+    template: usize,
+    keys: &mut Vec<u32>,
+) -> Result<(), &'static str> {
+    let start = keys.len();
+    let result = movement_speed_key_demands(memory, base, template, keys);
+    if result.is_err() {
+        keys.truncate(start);
+    }
+    result
+}
+
+/// Acquisition demand keeps already-readable keys if a later category refuses.
+/// The complete recorded template list still uses `movement_speed_keys`.
+pub fn movement_speed_key_demands(
+    memory: &impl Memory,
+    base: usize,
+    template: usize,
+    keys: &mut Vec<u32>,
+) -> Result<(), &'static str> {
+    use crate::csub_unit_definition as unit;
+
+    let selected = movement_priority_unit(memory, base, template)?;
+    let token = presentation_field::<u32>(memory, selected, unit::SPEED_MODIFIER_KEY)?;
+    if token != 0 {
+        crate::allocation::reserve(keys, 1).map_err(|_| "movement speed key allocation failed")?;
+        keys.push(token);
+    }
+    let categories = presentation_array(memory, selected, unit::CATEGORIES, 8)?;
+    crate::allocation::reserve(keys, categories.count as usize)
+        .map_err(|_| "movement speed key allocation failed")?;
+    for index in 0..categories.count {
+        let category = movement_pointer(
+            memory,
+            categories
+                .element(index, 8)
+                .ok_or("movement category index invalid")?,
+            0,
+        )?;
+        let token = presentation_field::<u32>(memory, category, unit::CATEGORY_MODIFIER_KEY)?;
+        if token != 0 {
+            keys.push(token);
+        }
+    }
+    Ok(())
+}
+
 mod strategic_action;
+pub use strategic_action::read_inputs as strategic_redeployment_inputs;
 pub use strategic_action::{StrategicAction, StrategicActionFailure, StrategicRedeploymentInputs};
 
 mod movement;
+#[cfg(feature = "movement_witness")]
+pub mod movement_witness;
+pub mod organisation_movement;
 pub use movement::{
     MovementPacket, capture_movement_inputs, capture_movement_inputs_with_combat_references,
-    project_movement,
+    capture_movement_inputs_with_extra, project_movement,
 };
 
 #[cfg(test)]
@@ -1430,6 +1516,8 @@ pub struct StatusRow {
     pub division: u64,
     pub maximum_hit_points: i64,
     pub maximum_organisation: i64,
+    /// Exact movement organisation pair: outer None refuses; inner None certifies no penalty.
+    pub movement_organisation: Option<Option<[i64; 2]>>,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
     pub supply_ratio: i64,
@@ -1494,6 +1582,11 @@ impl StatusRow {
     /// [`NONCORE_SUPPLY_BYPASS`] is nonzero: the movement speed's out-of-supply step
     /// adds no noncore-supply term.
     pub const MOVE_NONCORE_SUPPLY_BYPASS: u8 = 4;
+    /// [`AIR_SUPPLY`] is positive: the noncore-supply term takes the air
+    /// noncore-supply speed define instead of the ordinary one.
+    pub const MOVE_NONCORE_AIR: u8 = 8;
+    /// Air-supply sign unavailable; only the reached noncore speed branch refuses.
+    pub const MOVE_NONCORE_AIR_REFUSED: u8 = 64;
 }
 
 /// A division whose commander bans retreat: retain the bits of its selected
@@ -1563,6 +1656,7 @@ struct StatusExerciseOperands {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct StatusUnitInputs {
+    movement_organisation: Option<Option<[i64; 2]>>,
     division: u64,
     maxima: usize,
     threshold: usize,
@@ -1580,6 +1674,7 @@ struct StatusUnitInputs {
     strength_factor: i64,
     exiled: u8,
     noncore_supply_bypass: u8,
+    air_supply: Option<i64>,
     out_of_supply_days: Option<i32>,
     model_number: i32,
     camouflage: Option<Camouflage>,
@@ -2411,6 +2506,7 @@ impl StatusPacket {
         memory: &impl Memory,
         base: usize,
         army: usize,
+        held_experience: Option<i64>,
     ) -> Result<StatusLevelOperands, &'static str> {
         let address = army
             .checked_add(MANPOWER_DATA)
@@ -2469,7 +2565,10 @@ impl StatusPacket {
         let experience = if manpower < 1 {
             None
         } else {
-            Some(presentation_field::<i64>(memory, army, EXPERIENCE)?)
+            Some(match held_experience {
+                Some(value) => value,
+                None => presentation_field::<i64>(memory, army, EXPERIENCE)?,
+            })
         };
         let fraction = status_experience_fraction(manpower, experience.unwrap_or(0));
         if self.thresholds_header.is_none() {
@@ -2559,6 +2658,7 @@ impl StatusPacket {
         base: usize,
         seed: &DivisionSeed,
         unit: usize,
+        held_experience: Option<i64>,
         autonomous: impl FnOnce(&mut Self, u32) -> Result<bool, &'static str>,
     ) -> Result<StatusExerciseOperands, &'static str> {
         let mut inputs = StatusExerciseOperands::default();
@@ -2571,7 +2671,7 @@ impl StatusPacket {
             .get_or_insert_with(|| presentation_field(memory, base, EXERCISE_MAXIMUM_LEVEL_RVA)))?;
         inputs.autonomous = autonomous(self, owner)?;
         if inputs.autonomous {
-            let level = self.capture_level(memory, base, seed.pointer)?;
+            let level = self.capture_level(memory, base, seed.pointer, held_experience)?;
             inputs.level = Some(level);
             if self.level(level)? >= inputs.maximum_level {
                 return Ok(inputs);
@@ -2600,7 +2700,7 @@ impl StatusPacket {
         let stop = self.stop_at_maximum(memory, self.units[unit].group)?;
         inputs.stop_at_maximum = Some(stop);
         if stop != 0 && inputs.level.is_none() {
-            inputs.level = Some(self.capture_level(memory, base, seed.pointer)?);
+            inputs.level = Some(self.capture_level(memory, base, seed.pointer, held_experience)?);
         }
         Ok(inputs)
     }
@@ -2783,6 +2883,7 @@ impl StatusPacket {
             source_outcome,
             row_capacity,
             &[],
+            &[],
         )
     }
 
@@ -2800,6 +2901,7 @@ impl StatusPacket {
         source_outcome: Outcome,
         row_capacity: usize,
         held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        experience: &[Option<i64>],
     ) -> Outcome {
         self.clear();
         let prepared = (|| {
@@ -2960,6 +3062,7 @@ impl StatusPacket {
                     self.units[unit].noncore_supply_bypass = seed
                         .noncore_supply_bypass
                         .ok_or("division presentation field unreadable")?;
+                    self.units[unit].air_supply = seed.air_supply;
                     self.units[unit].out_of_supply_days = seed.out_of_supply_days;
                     self.units[unit].model_number = seed
                         .model_number
@@ -2972,6 +3075,7 @@ impl StatusPacket {
                             base,
                             seed,
                             unit,
+                            experience.get(unit).copied().flatten(),
                             |packet, raw| {
                                 packet.exercise_autonomous(memory, base, state, &countries, raw)
                             },
@@ -3151,7 +3255,10 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
                 | (u8::from(maxima.can_exfiltrate_from_coast != 0)
                     * StatusRow::MOVE_CAN_EXFILTRATE_FROM_COAST)
                 | (u8::from(unit.noncore_supply_bypass != 0)
-                    * StatusRow::MOVE_NONCORE_SUPPLY_BYPASS);
+                    * StatusRow::MOVE_NONCORE_SUPPLY_BYPASS)
+                | (u8::from(unit.air_supply.is_some_and(|value| value > 0))
+                    * StatusRow::MOVE_NONCORE_AIR)
+                | (u8::from(unit.air_supply.is_none()) * StatusRow::MOVE_NONCORE_AIR_REFUSED);
             let country = packet
                 .countries
                 .get(unit.threshold)
@@ -3181,6 +3288,7 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
                 division: unit.division,
                 maximum_hit_points,
                 maximum_organisation,
+                movement_organisation: unit.movement_organisation,
                 entrenchment: unit.entrenchment,
                 entrenchment_cap: unit.entrenchment_cap,
                 supply_ratio: unit.supply_ratio,
@@ -3547,7 +3655,7 @@ fn status_counter_scalars(
 #[cfg(test)]
 fn exercise_level(memory: &impl Memory, base: usize, army: usize) -> Result<i32, &'static str> {
     let mut packet = StatusPacket::new(1).unwrap();
-    let inputs = packet.capture_level(memory, base, army)?;
+    let inputs = packet.capture_level(memory, base, army, None)?;
     packet.level(inputs)
 }
 
@@ -3579,7 +3687,7 @@ fn exercising(
             strength: maximum_hp,
             ..crate::csub_unit_definition::DivisionMaxima::default()
         });
-    let inputs = packet.capture_exercise(memory, base, &seeds[0], 0, |_, raw| {
+    let inputs = packet.capture_exercise(memory, base, &seeds[0], 0, None, |_, raw| {
         cgame_state::autonomous_country(memory, base, state, raw)
     })?;
     packet.exercise(inputs, maximum_hp)

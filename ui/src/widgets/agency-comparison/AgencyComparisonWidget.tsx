@@ -25,12 +25,13 @@ import { DEFAULT_SORT, OPTIONS } from './definition';
 import { agencyRequestParams, agencyRows, agencyTooltip, operativesCell, upgradesCell, validateAgencyComparisonReply } from './agencyData';
 import type { AgencyRow } from './agencyData';
 import './agencyComparison.css';
+import IntelSection from './IntelSection';
 
 const NO_WARNINGS: string[] = [];
 const NO_ROWS: readonly AgencyRow[] = [];
 const rowKey = (row: AgencyRow) => row.key;
 
-export default function AgencyComparisonWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
   const viewport = useViewportHeight();
@@ -106,4 +107,8 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
       density={options.density === 'compact' ? 'compact' : 'comfortable'} muted={row => !row.value.created}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond} />
   </div>;
+}
+
+export default function AgencyComparisonWidget(props: WidgetProps) {
+ return <div className="agency-comparison-product"><div className="agency-table-section"><AgencyTable {...props} /></div><IntelSection {...props} /></div>;
 }

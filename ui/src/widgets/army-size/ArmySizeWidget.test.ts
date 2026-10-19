@@ -9,6 +9,39 @@ import type { CountryRaceViewProps } from '../../charts/race/CountryRaceView';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import type { reducePartsRaceDrill } from '../../charts/race/partsRaceDrill';
 
+test('actual Army breakdown renders a country template roster when its deployed count is zero', async () => {
+  const span = { firstHour: 0, lastHour: 100 };
+  const reply = { branchId: '1', available: true, measures: ['divisions'], types: [], warnings: [],
+    windows: [], window: 0, interval: span, series: [{ tag: 'AAA', membership: null, segments: [span],
+      identities: [{ ...span, slot: 1, countryId: 11 }], runs: [[0, 0, 100, '0']] }] };
+  const manifest = { ...reply, windows: [span], window: null, interval: null, series: [] };
+  const roster = { ...manifest, windows: [], templateSections: ['Unused template with holes', 'Staff and garrison priority: -3', 'Queued HQ without deployed units'] };
+  const host = globalThis as typeof globalThis & { __armyTemplateRequest?: { params: { templateAt: [string, number] } } };
+  const replacements: Record<string, string> = {
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => { globalThis.__armyTemplateRequest = request; return { data: ${JSON.stringify(roster)}, retry() {} }; };`,
+    '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, ${JSON.stringify(reply)}]]), errors: new Map(), retry() {} });`,
+    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => () => null });',
+    '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: ['blue'] });",
+    '/charts/race/CountryRaceView.tsx': 'export default props => props.beforeChart;',
+    '/charts/drill/DrillParts.tsx': 'export default () => null;',
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'army-template-roster-fixture', enforce: 'pre',
+      transform: (_source, id) => { const key = Object.keys(replacements).find(key => id.endsWith(key)); return key ? replacements[key] : undefined; },
+    }] });
+  try {
+    const { default: Breakdown } = await vite.ssrLoadModule('/ui/src/widgets/army-size/ArmyBreakdown.tsx') as typeof import('./ArmyBreakdown.tsx');
+    const props = { runtime: { client: {} }, track: { source: { id: 'synthetic', revision: '1' }, branch: { id: '1' } },
+      active: true, options: {}, countrySlot: null, headerSelection: null, extent: [0, 100], playhead: 50,
+      tag: 'AAA', hour: 50, measure: 'divisions', countFor: 'owner', manifest, following: false, pinned: false,
+      originHour: 0, onPick() {}, onFollow() {}, onWarnings() {} } as unknown as Parameters<typeof Breakdown>[0];
+    const html = renderToStaticMarkup(createElement(Breakdown, props));
+    assert.deepEqual(host.__armyTemplateRequest?.params.templateAt, ['AAA', 50]);
+    for (const text of ['Division templates', ...roster.templateSections]) assert.ok(html.includes(text), html);
+  } finally { delete host.__armyTemplateRequest; await vite.close(); }
+});
+
 test('actual Army keeps dated flags, full inventories and focusable chart return targets', async () => {
   type Action = Parameters<typeof reducePartsRaceDrill>[1];
   const actions: Action[] = [], effects: (() => void)[] = [];

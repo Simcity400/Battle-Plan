@@ -340,7 +340,7 @@ impl<'a> SortieSources<'a> {
     }
 
     /// Sortie efficiency with the ordinary land-base and mission parameters.
-    fn efficiency(
+    pub fn efficiency(
         &self,
         wing: &AirWingRow,
         input: &AirMissionInputRow,

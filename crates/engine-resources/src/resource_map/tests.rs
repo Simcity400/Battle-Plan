@@ -316,7 +316,8 @@ fn an_unreadable_origin_refuses_the_origins_and_rights_alone() {
     );
     assert_eq!(outcomes.rights, outcomes.origins);
     assert_eq!(outcomes.clients, Outcome::Rows { len: 3 });
-    assert_eq!(rows.clients.len(), 3);
+    let (_, healthy) = walk(&world());
+    assert_eq!(rows.clients[..3], healthy.clients[..3]);
 }
 
 #[test]

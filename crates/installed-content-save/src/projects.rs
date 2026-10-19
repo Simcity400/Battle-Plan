@@ -47,6 +47,15 @@ pub struct Program {
     pub scientist: Option<u64>,
     pub building: Vec<u8>,
     pub unread_rewards: i32,
+    pub assignments: Vec<ScientistAssignment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScientistAssignment {
+    pub scientist: u64,
+    pub target: i32,
+    pub current: i32,
+    pub timed: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
@@ -62,6 +71,8 @@ pub struct Project {
     pub iterations: i32,
     pub stopping_phase_progress: Decimal,
     pub history: Vec<History>,
+    pub pending_reward: Option<Vec<u8>>,
+    pub variables: super::intel::Variables,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct History {
@@ -283,6 +294,27 @@ fn optional_handle(items: &[Item], key: &[u8]) -> io::Result<Option<u64>> {
 }
 
 fn parse_program(items: &[Item]) -> io::Result<Program> {
+    let assignment = |fields: &[Item]| -> io::Result<ScientistAssignment> {
+        let timer = field(fields, b"delayed_unassigned_scientist")?
+            .map(block)
+            .transpose()?
+            .unwrap_or_default();
+        Ok(ScientistAssignment {
+            scientist: optional_handle(fields, b"scientist")?.unwrap_or(0),
+            target: optional_number(timer, b"target")?.unwrap_or(0),
+            current: optional_number(timer, b"current")?.unwrap_or(0),
+            timed: field(timer, b"timed")?
+                .map(boolean)
+                .transpose()?
+                .unwrap_or(false),
+        })
+    };
+    let mut assignments = vec![assignment(required_block(items, b"scientist")?)?];
+    if let Some(value) = field(items, b"supportive_scientist")? {
+        for fields in anonymous(block(value)?)? {
+            assignments.push(assignment(fields)?);
+        }
+    }
     Ok(Program {
         id: id(items)?,
         country: bytes(items, b"country")?,
@@ -291,6 +323,7 @@ fn parse_program(items: &[Item]) -> io::Result<Program> {
         scientist: optional_handle(required_block(items, b"scientist")?, b"scientist")?,
         building: bytes(items, b"building")?.ok_or_else(|| invalid("program lacks building"))?,
         unread_rewards: number(items, b"unread_prototype_rewards")?,
+        assignments,
     })
 }
 fn parse_context(items: &[Item]) -> io::Result<Context> {
@@ -323,6 +356,13 @@ fn parse_project(definition: &[u8], items: &[Item]) -> io::Result<Project> {
         }
     }
     Ok(Project {
+        pending_reward: bytes(items, b"multiple_choice")?,
+        variables: super::intel::parse_variables(
+            field(items, b"variables")?
+                .map(block)
+                .transpose()?
+                .unwrap_or_default(),
+        )?,
         id: id(items)?,
         definition: definition.to_vec(),
         program: optional_handle(items, b"program")?,
@@ -717,6 +757,31 @@ mod tests {
     fn parsed(text: &[u8]) -> Pack {
         parse(&installed_content_core::parser::parse(text).unwrap().items).unwrap()
     }
+    #[test]
+    fn gap_research_grants_project_runtime_save_reads_supports_timers_pending_reward_and_variables()
+    {
+        let program = parse_program(&installed_content_core::parser::parse(br#"id={id=3 type=83} province=9 building=mod_facility unread_prototype_rewards=0
+            scientist={scientist={id=7 type=73} delayed_unassigned_scientist={target=5 current=-2 timed=yes}}
+            supportive_scientist={{scientist={id=8 type=73} delayed_unassigned_scientist={target=8 current=3 timed=no}} {}}"#).unwrap().items).unwrap();
+        assert_eq!(program.assignments.len(), 3);
+        assert_eq!(program.assignments[0].scientist, (7u64 << 32) | 73);
+        assert_eq!(
+            (
+                program.assignments[0].target,
+                program.assignments[0].current,
+                program.assignments[0].timed
+            ),
+            (5, -2, true)
+        );
+        assert_eq!(program.assignments[2].scientist, 0);
+        let project = parse_project(b"mod_project", &installed_content_core::parser::parse(br#"id={id=4 type=84} start=yes completed=no multiple_choice=mod_reward
+            variables={mod_value=-1.23456 random={123 456}}
+            progress={current_state=24 prototype_state={phase_progress=0 project_progress=2 iterations=3} stopping_state={phase_progress=0}}"#).unwrap().items).unwrap();
+        assert_eq!(project.pending_reward, Some(b"mod_reward".to_vec()));
+        assert_eq!(project.variables.seed, Some(456));
+        assert_eq!(project.variables.entries[0].value.raw, -123456);
+    }
+
     #[test]
     fn nuke_save_uses_fixed5_literals_and_full_signed_ready_count() {
         let pack = parsed(br"countries={ GER={ nukes={ { amount=1000.00001 nukes_ready=-2147483648 } { amount=90071992547.40993 nukes_ready=2147483647 } } } }");

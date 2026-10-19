@@ -18,12 +18,36 @@ pub fn compare(
     frame: &DecodedFrame,
     save: &Save,
     countries: &CountryContext<'_>,
+    spotting_factors: &Result<Vec<i64>, String>,
     report: &mut Report,
 ) {
+    report.attempt("Air wing fuel operands", |report| {
+        report.compared("AirWings fuel columns", wing_fuel_inputs(frame)?);
+        report.limitation(
+            "Wing cached fuel statistics, execution, training capacity and registry liveness, and living ace raw fuel modifiers are unsaved. Demanded packet leaves and shared execution joins are checked; compare their signed values with an independent native read at the matched paused hour.",
+            "AirWings fuel columns / AceRangeInputs.fuel_modifier",
+        );
+        Ok(())
+    });
+    report.attempt("country Air modifier operands", |report| {
+        let rows = country_air_modifiers(frame)?;
+        report.compared("CountryCounterInputs.air_modifiers", rows);
+        report.limitation(
+            "The save does not serialize the country accumulator entries used by Air detection, normalization, volunteer capacity, fuel and combat/patrol statistics. Compare each raw entry's presence and signed value with an independent native read at the matched paused hour; effective values also require the recorded modifier metadata and feature mask. Living ace own and type combat operands likewise require an independent matched native read.",
+            "CountryCounterInputs.air_modifiers",
+        );
+        Ok(())
+    });
+    report.attempt_table(replay_data::rows::TableId::AirTransferInputs, |report| {
+        transfers(frame, save, report)
+    });
+    report.attempt_table(replay_data::rows::TableId::AirGroundCrews, |report| {
+        ground_crews(frame, save, countries, report)
+    });
     report.attempt_table(replay_data::rows::TableId::AirRegionalMissions, |report| {
         report.compared("AirRegionalMissions", registrations(frame, countries)?);
         report.limitation(
-            "The save stores each wing's mission, not CStrategicAir's per-region registration vectors. Membership, owner and region are checked against AirWings and the ordinals for contiguity; their native order needs a live comparison.",
+            "The save stores each wing's mission, not its regional or all-active registration vectors. Membership, owner, region and contiguous regional ordinals are checked against AirWings. Certified all-active labels must be nonzero and unique within a country, with country-wide availability; both native orders need a live comparison.",
             "AirRegionalMissions order",
         );
         Ok(())
@@ -41,11 +65,12 @@ pub fn compare(
         replay_data::rows::TableId::AirReferenceWitnesses,
         |report| witnesses(frame, save, report),
     );
-    report.attempt_table(replay_data::rows::TableId::NavalMineLevels, |report| {
+    report.attempt_table(replay_data::rows::TableId::NavalRegionalMines, |report| {
         mines(frame, save, countries, report)
     });
     report.attempt_table(replay_data::rows::TableId::AirMissionInputs, |report| {
-        let rows = mission_inputs(frame, save, report)?;
+        let factors = spotting_factors.as_ref().map_err(|why| invalid(format!("Air spotting content factors: {why}")))?;
+        let rows = mission_inputs(frame, save, factors, report)?;
         report.compared("AirMissionInputs", rows);
         for row in complete::<tables::AirMissionInputs>(frame)? {
             if matches!(&row.cas_ratio_raw, Recorded::NotRecorded) {
@@ -56,7 +81,7 @@ pub fn compare(
             }
         }
         report.limitation(
-            "The save holds no other sortie operand: mission coverage, last target, reached provinces and pool-definition flags are checked for structure only. The mission's CAS diversion ratio has no saved counterpart; compare its recorded value or read refusal with an independent native read at the same paused hour.",
+            "The save holds no other sortie operand: mission coverage, last target, reached provinces and pool-definition flags are checked for structure only. The mission's CAS diversion ratio, retained-count interception predicate, current execution/count and cached aircraft-detection statistics have no saved counterpart; compare its recorded value or read refusal with an independent native read at the same paused hour.",
             "AirMissionInputs",
         );
         Ok(())
@@ -96,6 +121,299 @@ pub fn compare(
         }
         Ok(())
     });
+}
+
+fn wing_fuel_inputs(frame: &DecodedFrame) -> io::Result<usize> {
+    let wings = complete::<tables::AirWings>(frame)?;
+    let missions = complete::<tables::AirMissionInputs>(frame)?;
+    for wing in wings {
+        let label = format!("AirWings {} fuel_inputs", wing.id);
+        let input = wing.fuel_inputs().map_err(invalid)?;
+        input
+            .base_fuel
+            .ok_or_else(|| invalid(format!("{label} base fuel unreadable")))?;
+        let current = input
+            .current_type
+            .ok_or_else(|| invalid(format!("{label} current execution unreadable")))?;
+        if (current != 0) != input.effective_aircraft.is_some() {
+            return Err(invalid(format!("{label} current aircraft demand mismatch")));
+        }
+        let training = current == 0
+            && wing.mission_mask & 0x800 != 0
+            && wing.eligibility_veto == 0
+            && wing.eligibility_counter <= wing.eligibility_limit
+            && wing.planes > 0;
+        if training && input.override_resolved.is_none() {
+            return Err(invalid(format!(
+                "{label} training override liveness unreadable"
+            )));
+        }
+        let needs_training = training && input.override_resolved == Some(false);
+        if needs_training && input.capacity_class.is_none() {
+            return Err(invalid(format!(
+                "{label} training capacity class unreadable"
+            )));
+        }
+        if (current != 0 || needs_training) && input.context_mode.is_none() {
+            return Err(invalid(format!("{label} fuel context mode unreadable")));
+        }
+        if let Ok(at) = missions.binary_search_by_key(&wing.id, |row| row.wing) {
+            let mission = &missions[at];
+            if (*mission
+                .current_type
+                .require("AirMissionInputs.current_type")
+                .map_err(invalid)?)
+                != Some(current as u32)
+                || (*mission
+                    .effective_aircraft
+                    .require("AirMissionInputs.effective_aircraft")
+                    .map_err(invalid)?)
+                    != input.effective_aircraft
+            {
+                return Err(invalid(format!(
+                    "{label} shared execution differs from AirMissionInputs"
+                )));
+            }
+        }
+    }
+    for ace in complete::<tables::AceRangeInputs>(frame)? {
+        let fuel_modifier = *ace
+            .fuel_modifier
+            .require("AceRangeInputs.fuel_modifier")
+            .map_err(invalid)?;
+        let combat_modifiers_known = *ace
+            .combat_modifiers_known
+            .require("AceRangeInputs.combat_modifiers_known")
+            .map_err(invalid)?;
+        let type_combat_flags = *ace
+            .type_combat_flags
+            .require("AceRangeInputs.type_combat_flags")
+            .map_err(invalid)?;
+        let speed_modifier_raw = *ace
+            .speed_modifier_raw
+            .require("AceRangeInputs.speed_modifier_raw")
+            .map_err(invalid)?;
+        let attack_modifier_raw = *ace
+            .attack_modifier_raw
+            .require("AceRangeInputs.attack_modifier_raw")
+            .map_err(invalid)?;
+        let defence_modifier_raw = *ace
+            .defence_modifier_raw
+            .require("AceRangeInputs.defence_modifier_raw")
+            .map_err(invalid)?;
+        let type_speed_modifier_raw = *ace
+            .type_speed_modifier_raw
+            .require("AceRangeInputs.type_speed_modifier_raw")
+            .map_err(invalid)?;
+        if (ace.alive != 0) != fuel_modifier.is_some() {
+            return Err(invalid(format!(
+                "AceRangeInputs {} living fuel demand mismatch",
+                ace.ace
+            )));
+        }
+        if (ace.alive != 0) != combat_modifiers_known
+            || (ace.alive != 0) != (type_combat_flags & 1 != 0)
+            || type_combat_flags & !7 != 0
+        {
+            return Err(invalid(format!(
+                "AceRangeInputs {} living combat demand mismatch",
+                ace.ace
+            )));
+        }
+        if ace.alive == 0
+            && [
+                speed_modifier_raw,
+                attack_modifier_raw,
+                defence_modifier_raw,
+                type_speed_modifier_raw,
+            ]
+            .iter()
+            .any(Option::is_some)
+        {
+            return Err(invalid(format!(
+                "AceRangeInputs {} dead combat operands were read",
+                ace.ace
+            )));
+        }
+    }
+    Ok(wings.len())
+}
+
+fn country_air_modifiers(frame: &DecodedFrame) -> io::Result<usize> {
+    let rows = complete::<tables::CountryCounterInputs>(frame)?;
+    for row in rows {
+        row.air_modifiers
+            .require("CountryCounterInputs.air_modifiers")
+            .map_err(invalid)?
+            .as_ref()
+            .ok_or_else(|| {
+                invalid(format!(
+                    "country {} Air modifier accumulator unreadable",
+                    row.country
+                ))
+            })?;
+        if row.air_combat_modifiers_known != replay_data::rows::Recorded::Value(true) {
+            return Err(invalid(format!(
+                "country {} Air combat modifier accumulator unreadable",
+                row.country
+            )));
+        }
+    }
+    Ok(rows.len())
+}
+
+fn transfers(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    let rows = complete::<tables::AirTransferInputs>(frame)?;
+    let wings = complete::<tables::AirWings>(frame)?;
+    let bases = complete::<tables::AirBases>(frame)?;
+    for saved in save
+        .air_wings
+        .values()
+        .filter(|wing| wing.transferring_to.is_some())
+    {
+        if rows
+            .binary_search_by_key(&saved.id, |row| row.wing)
+            .is_err()
+        {
+            return Err(invalid(format!(
+                "Air transfer {} saved destination has no incoming membership",
+                saved.id
+            )));
+        }
+    }
+    let mut ordinals = BTreeMap::<u64, BTreeSet<u32>>::new();
+    for row in rows {
+        let wing = wings
+            .binary_search_by_key(&row.wing, |wing| wing.id)
+            .ok()
+            .map(|at| &wings[at])
+            .ok_or_else(|| invalid("Air transfer has no current wing"))?;
+        if row.base == 0 || row.base != wing.base_override {
+            return Err(invalid(
+                "Air transfer destination differs from its current wing",
+            ));
+        }
+        let ordinal = row.ordinal.ok_or_else(|| {
+            invalid(format!(
+                "Air transfer {} incoming order is uncertified or unreadable",
+                row.wing
+            ))
+        })?;
+        if !ordinals.entry(row.base).or_default().insert(ordinal) {
+            return Err(invalid("Air transfer incoming ordinal repeats"));
+        }
+        if wing.eligibility_counter > wing.eligibility_limit {
+            continue;
+        }
+        let progress = row
+            .progress_raw
+            .ok_or_else(|| invalid(format!("Air transfer {} progress is unreadable", row.wing)))?;
+        row.distance_raw.ok_or_else(|| {
+            invalid(format!(
+                "Air transfer {} total distance is unreadable",
+                row.wing
+            ))
+        })?;
+        let saved = save
+            .air_wings
+            .get(&row.wing)
+            .ok_or_else(|| invalid("Air transfer wing is absent from the save"))?;
+        if saved.transfer_progress != Some(progress) {
+            report.difference(
+                format!("Air transfer {} progress", row.wing),
+                progress,
+                saved
+                    .transfer_progress
+                    .map_or_else(|| "absent".to_owned(), |raw| raw.to_string()),
+            );
+        }
+        if let Some(target) = saved.transferring_to {
+            let state = bases
+                .binary_search_by_key(&row.base, |base| base.id)
+                .ok()
+                .and_then(|at| bases[at].state);
+            if state != Some(target) {
+                report.difference(
+                    format!("Air transfer {} destination state", row.wing),
+                    state.map_or_else(|| "absent".to_owned(), |id| id.to_string()),
+                    target,
+                );
+            }
+        }
+    }
+    contiguous(ordinals.values(), "Air incoming-wing")?;
+    report.compared("AirTransferInputs", rows.len());
+    report.limitation("The save does not serialize direct incoming-wing order or the retained total relocation distance. Current admitted progress is compared exactly; incoming order and total distance need the integration live comparison.", "Air transfer order and total distance");
+    Ok(())
+}
+
+fn ground_crews(
+    frame: &DecodedFrame,
+    save: &Save,
+    countries: &CountryContext<'_>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let wings: BTreeMap<_, _> = complete::<tables::AirWings>(frame)?
+        .iter()
+        .map(|row| (row.id, row))
+        .collect();
+    let mut demanded = BTreeSet::new();
+    for row in complete::<tables::AirRegionalMissions>(frame)? {
+        let wing = wings
+            .get(&row.wing)
+            .ok_or_else(|| invalid("Ground Crews registration has no wing"))?;
+        let slot = countries
+            .links
+            .get(&wing.owner)
+            .ok_or_else(|| invalid("Ground Crews owner has no country link"))?
+            .canonical_slot;
+        let region = wing
+            .mission_region
+            .ok_or_else(|| invalid("Ground Crews registration has no region"))?;
+        demanded.insert((slot, region));
+    }
+    let mut expected = BTreeMap::new();
+    for row in &save.air.ground_crews {
+        let slot = super::saved_country_slot(&row.country, save, countries)?;
+        if expected.insert((slot, row.region), row.enabled).is_some() {
+            return Err(invalid("saved Ground Crews country/region is repeated"));
+        }
+    }
+    let rows = complete::<tables::AirGroundCrews>(frame)?;
+    for row in rows {
+        if !demanded.contains(&(row.country, row.region))
+            || row.enabled.is_some_and(|enabled| enabled > 1)
+        {
+            return Err(invalid(
+                "Ground Crews names an undemanded region or invalid enabled flag",
+            ));
+        }
+    }
+    let mut compared = 0;
+    for key in demanded {
+        let actual = match rows.binary_search_by_key(&key, |row| (row.country, row.region)) {
+            Ok(at) => rows[at].enabled,
+            Err(_) => Some(0),
+        };
+        let Some(actual) = actual else {
+            report.limitation(
+                "Ground Crews writer certification or enabled-byte acquisition was unavailable",
+                format!("AirGroundCrews {}:{} enabled", key.0, key.1),
+            );
+            continue;
+        };
+        let saved = expected.get(&key).copied().unwrap_or(false);
+        if (actual != 0) != saved {
+            report.difference(
+                format!("AirGroundCrews {}:{} enabled", key.0, key.1),
+                actual != 0,
+                saved,
+            );
+        }
+        compared += 1;
+    }
+    report.compared("AirGroundCrews", compared);
+    Ok(())
 }
 
 /// Naval-patrol rows name live countries; task-force ordinals are
@@ -178,7 +496,12 @@ fn histories_structure(
 
 /// One row per registered mission; reached IDs only for membership masks.
 /// The reassignment penalty is the save's `region_change_penalty`.
-fn mission_inputs(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<usize> {
+fn mission_inputs(
+    frame: &DecodedFrame,
+    save: &Save,
+    spotting_factors: &[i64],
+    report: &mut Report,
+) -> io::Result<usize> {
     let wings: BTreeMap<_, _> = complete::<tables::AirWings>(frame)?
         .iter()
         .map(|wing| (wing.id, wing))
@@ -198,6 +521,46 @@ fn mission_inputs(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io:
         ));
     }
     for row in rows {
+        match *row
+            .current_type
+            .require("AirMissionInputs.current_type")
+            .map_err(invalid)?
+        {
+            None => {
+                return Err(invalid(format!(
+                    "air mission {} current execution is unreadable",
+                    row.wing
+                )));
+            }
+            Some(0)
+                if (*row
+                    .effective_aircraft
+                    .require("AirMissionInputs.effective_aircraft")
+                    .map_err(invalid)?)
+                .is_some() =>
+            {
+                return Err(invalid(format!(
+                    "air mission {} count was read outside execution demand",
+                    row.wing
+                )));
+            }
+            Some(mask)
+                if mask != 0
+                    && (*row
+                        .effective_aircraft
+                        .require("AirMissionInputs.effective_aircraft")
+                        .map_err(invalid)?)
+                    .is_none() =>
+            {
+                return Err(invalid(format!(
+                    "air mission {} executing aircraft count is unreadable",
+                    row.wing
+                )));
+            }
+            _ => (),
+        }
+        mission_normalization(row)?;
+        mission_spotting(frame, row, spotting_factors)?;
         let mask = wings
             .get(&row.wing)
             .ok_or_else(|| invalid("air mission input lacks its AirWings row"))?
@@ -235,6 +598,412 @@ struct SortieKeys {
     positive: BTreeSet<u32>,
     regions: BTreeSet<u32>,
     country_regions: BTreeSet<(u32, u32)>,
+}
+
+fn mission_spotting(
+    frame: &DecodedFrame,
+    row: &replay_data::rows::AirMissionInputRow,
+    factors: &[i64],
+) -> io::Result<()> {
+    let admitted = (*row
+        .current_type
+        .require("AirMissionInputs.current_type")
+        .map_err(invalid)?)
+    .is_some_and(|mask| {
+        mask as i32 > 0
+            && mask.is_power_of_two()
+            && factors
+                .get(mask.trailing_zeros() as usize)
+                .is_some_and(|factor| *factor != 0)
+    });
+    if admitted {
+        mission_detection(row)?;
+        mission_patrol_disruption(row)?;
+        mission_patrol_night(frame, row)
+    } else if [
+        (*row
+            .detection_stat_13
+            .require("AirMissionInputs.detection_stat_13")
+            .map_err(invalid)?),
+        (*row
+            .detection_stat_14
+            .require("AirMissionInputs.detection_stat_14")
+            .map_err(invalid)?),
+        (*row
+            .patrol_disruption_raw
+            .require("AirMissionInputs.patrol_disruption_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_attack_raw
+            .require("AirMissionInputs.patrol_attack_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_defence_raw
+            .require("AirMissionInputs.patrol_defence_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_speed_raw
+            .require("AirMissionInputs.patrol_speed_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_wing_attack_raw
+            .require("AirMissionInputs.patrol_wing_attack_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_wing_defence_raw
+            .require("AirMissionInputs.patrol_wing_defence_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_night_applied_raw
+            .require("AirMissionInputs.patrol_night_applied_raw")
+            .map_err(invalid)?),
+    ]
+    .into_iter()
+    .any(|value| value.is_some())
+    {
+        Err(invalid(
+            "Air patrol operands acquired outside the recorded-content spotting factor demand",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn recorded_content_spotting_factor_distinguishes_skipped_and_refused_leaves() {
+    use replay_data::rows::AirMissionInputRow;
+    let (frame, _, _, _) = super::fixtures::fixture();
+    let row = AirMissionInputRow {
+        current_type: (Some(8)).into(),
+        effective_aircraft: (Some(17)).into(),
+        normalization: (Some(replay_data::rows::AirMissionNormalization {
+            night_stat: Some(0),
+            modifiers: [Some(Default::default()); 2],
+        }))
+        .into(),
+        ..Default::default()
+    };
+    assert!(mission_spotting(&frame, &row, &[0; 8]).is_ok());
+    assert!(mission_spotting(&frame, &row, &[]).is_ok());
+    assert!(mission_spotting(&frame, &row, &[100_000; 8]).is_err());
+    assert!(
+        mission_spotting(
+            &frame,
+            &AirMissionInputRow {
+                detection_stat_13: (Some(0)).into(),
+                ..row
+            },
+            &[0; 8]
+        )
+        .is_err()
+    );
+}
+
+fn mission_detection(row: &replay_data::rows::AirMissionInputRow) -> io::Result<()> {
+    let demanded = (*row
+        .current_type
+        .require("AirMissionInputs.current_type")
+        .map_err(invalid)?)
+    .is_some_and(|mask| mask as i32 > 0 && mask.is_power_of_two())
+        && (*row
+            .effective_aircraft
+            .require("AirMissionInputs.effective_aircraft")
+            .map_err(invalid)?)
+        .is_some_and(|count| count != 0);
+    let values = [
+        (*row
+            .detection_stat_13
+            .require("AirMissionInputs.detection_stat_13")
+            .map_err(invalid)?),
+        (*row
+            .detection_stat_14
+            .require("AirMissionInputs.detection_stat_14")
+            .map_err(invalid)?),
+    ];
+    if demanded && values.iter().any(Option::is_none) {
+        return Err(invalid(
+            "executing Air patrol detection statistic unreadable",
+        ));
+    }
+    if !demanded && values.iter().any(Option::is_some) {
+        return Err(invalid(
+            "Air patrol detection statistics outside execution demand",
+        ));
+    }
+    Ok(())
+}
+
+fn mission_patrol_disruption(row: &replay_data::rows::AirMissionInputRow) -> io::Result<()> {
+    let mask = (*row
+        .current_type
+        .require("AirMissionInputs.current_type")
+        .map_err(invalid)?)
+    .unwrap_or(0);
+    let count = (*row
+        .effective_aircraft
+        .require("AirMissionInputs.effective_aircraft")
+        .map_err(invalid)?)
+    .unwrap_or(0);
+    let demanded = mask as i32 > 0 && mask.is_power_of_two() && mask & 0x1f7fa != 0 && count != 0;
+    if demanded
+        != (*row
+            .patrol_disruption_raw
+            .require("AirMissionInputs.patrol_disruption_raw")
+            .map_err(invalid)?)
+        .is_some()
+    {
+        return Err(invalid(
+            "Air patrol disruption demand or acquisition is incomplete",
+        ));
+    }
+    let combat = demanded
+        && (*row
+            .patrol_disruption_raw
+            .require("AirMissionInputs.patrol_disruption_raw")
+            .map_err(invalid)?)
+            != Some(0)
+        && mask & 0x4400 == 0
+        && count > 0;
+    let leaves = [
+        (*row
+            .patrol_attack_raw
+            .require("AirMissionInputs.patrol_attack_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_defence_raw
+            .require("AirMissionInputs.patrol_defence_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_speed_raw
+            .require("AirMissionInputs.patrol_speed_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_wing_attack_raw
+            .require("AirMissionInputs.patrol_wing_attack_raw")
+            .map_err(invalid)?),
+        (*row
+            .patrol_wing_defence_raw
+            .require("AirMissionInputs.patrol_wing_defence_raw")
+            .map_err(invalid)?),
+    ];
+    if leaves.into_iter().any(|leaf| leaf.is_some() != combat) {
+        return Err(invalid(
+            "Air patrol disruption combat leaves do not match their demand",
+        ));
+    }
+    if !combat
+        && (*row
+            .patrol_night_applied_raw
+            .require("AirMissionInputs.patrol_night_applied_raw")
+            .map_err(invalid)?)
+        .is_some()
+    {
+        return Err(invalid(
+            "Air patrol held night marker outside disruption demand",
+        ));
+    }
+    Ok(())
+}
+
+fn mission_patrol_night(
+    frame: &DecodedFrame,
+    row: &replay_data::rows::AirMissionInputRow,
+) -> io::Result<()> {
+    let mask = (*row
+        .current_type
+        .require("AirMissionInputs.current_type")
+        .map_err(invalid)?)
+    .unwrap_or(0);
+    if mask & 0x4400 != 0
+        || mask & 0x1f7fa == 0
+        || (*row
+            .effective_aircraft
+            .require("AirMissionInputs.effective_aircraft")
+            .map_err(invalid)?)
+        .is_none_or(|count| count <= 0)
+        || (*row
+            .patrol_disruption_raw
+            .require("AirMissionInputs.patrol_disruption_raw")
+            .map_err(invalid)?)
+        .is_none_or(|raw| raw == 0)
+    {
+        return Ok(());
+    }
+    let clocks = complete::<tables::WeatherProvinces>(frame)?;
+    let mut observed = false;
+    let mut held = false;
+    for row in clocks.iter().filter(|row| row.id != 0) {
+        observed = true;
+        match row.clock.state(row.id).map_err(invalid)? {
+            replay_data::rows::ClockState::Updated => (),
+            replay_data::rows::ClockState::Held(_) => held = true,
+            replay_data::rows::ClockState::NotRecorded => {
+                return Err(invalid("Air patrol sampled clock was not recorded"));
+            }
+        }
+    }
+    if !observed
+        || (held
+            && (*row
+                .patrol_night_applied_raw
+                .require("AirMissionInputs.patrol_night_applied_raw")
+                .map_err(invalid)?)
+            .is_none())
+    {
+        return Err(invalid(
+            "Air patrol held night application marker is unavailable",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn patrol_held_night_oracle_never_interprets_a_missing_marker_as_updated() {
+    use replay_data::rows::*;
+    use replay_frame::frame::TableView;
+    let (mut frame, _, _, _) = super::fixtures::fixture();
+    let mut row = AirMissionInputRow {
+        wing: 7,
+        current_type: (Some(8)).into(),
+        effective_aircraft: (Some(9)).into(),
+        patrol_disruption_raw: (Some(1)).into(),
+        ..Default::default()
+    };
+    *frame.tables[TableId::WeatherProvinces.index()] =
+        TableView::Complete(TableRows::WeatherProvinces(vec![WeatherProvinceRow {
+            id: 1,
+            clock: DayNightClock::UPDATED,
+            ..Default::default()
+        }]));
+    assert!(mission_patrol_night(&frame, &row).is_ok());
+    *frame.tables[TableId::WeatherProvinces.index()] =
+        TableView::Complete(TableRows::WeatherProvinces(vec![WeatherProvinceRow {
+            id: 1,
+            clock: DayNightClock::held(replay_data::day_night::Clock {
+                local_hour: 0,
+                night_factor: 50_001,
+            }),
+            ..Default::default()
+        }]));
+    assert!(mission_patrol_night(&frame, &row).is_err());
+    row.patrol_night_applied_raw = Some(50_001).into();
+    assert!(mission_patrol_night(&frame, &row).is_ok());
+    row.patrol_night_applied_raw = Some(-100_000).into();
+    assert!(mission_patrol_night(&frame, &row).is_ok());
+}
+
+#[cfg(test)]
+#[test]
+fn patrol_disruption_oracle_preserves_bypass_and_independent_demand() {
+    use replay_data::rows::AirMissionInputRow;
+    let quiet = AirMissionInputRow {
+        current_type: (Some(8)).into(),
+        effective_aircraft: (Some(7)).into(),
+        patrol_disruption_raw: (Some(0)).into(),
+        ..Default::default()
+    };
+    assert!(mission_patrol_disruption(&quiet).is_ok());
+    assert!(
+        mission_patrol_disruption(&AirMissionInputRow {
+            patrol_disruption_raw: (None).into(),
+            ..quiet.clone()
+        })
+        .is_err()
+    );
+    let combat = AirMissionInputRow {
+        patrol_disruption_raw: (Some(1)).into(),
+        patrol_attack_raw: (Some(2)).into(),
+        patrol_defence_raw: (Some(3)).into(),
+        patrol_speed_raw: (Some(4)).into(),
+        patrol_wing_attack_raw: (Some(0)).into(),
+        patrol_wing_defence_raw: (Some(-5)).into(),
+        ..quiet.clone()
+    };
+    assert!(mission_patrol_disruption(&combat).is_ok());
+    for row in [
+        AirMissionInputRow {
+            patrol_speed_raw: (None).into(),
+            ..combat.clone()
+        },
+        AirMissionInputRow {
+            patrol_wing_attack_raw: (None).into(),
+            ..combat.clone()
+        },
+        AirMissionInputRow {
+            current_type: (Some(0x400)).into(),
+            ..combat.clone()
+        },
+        AirMissionInputRow {
+            effective_aircraft: (Some(-1)).into(),
+            ..combat
+        },
+    ] {
+        assert!(mission_patrol_disruption(&row).is_err());
+    }
+    assert!(
+        mission_patrol_disruption(&AirMissionInputRow {
+            current_type: (Some(0x400)).into(),
+            patrol_disruption_raw: (Some(1)).into(),
+            ..quiet.clone()
+        })
+        .is_ok()
+    );
+    assert!(
+        mission_patrol_disruption(&AirMissionInputRow {
+            effective_aircraft: (Some(-1)).into(),
+            patrol_disruption_raw: (Some(1)).into(),
+            ..quiet
+        })
+        .is_ok()
+    );
+}
+
+fn mission_normalization(row: &replay_data::rows::AirMissionInputRow) -> io::Result<()> {
+    let demanded = (*row
+        .current_type
+        .require("AirMissionInputs.current_type")
+        .map_err(invalid)?)
+    .is_some_and(|mask| mask != 0)
+        && (*row
+            .effective_aircraft
+            .require("AirMissionInputs.effective_aircraft")
+            .map_err(invalid)?)
+        .is_some_and(|count| count != 0);
+    if !demanded {
+        if row
+            .normalization
+            .require("AirMissionInputs.normalization")
+            .map_err(invalid)?
+            .is_some()
+        {
+            return Err(invalid(
+                "Air normalization was read outside execution demand",
+            ));
+        }
+        return Ok(());
+    }
+    let packet = row
+        .normalization
+        .require("AirMissionInputs.normalization")
+        .map_err(invalid)?
+        .as_ref()
+        .ok_or_else(|| invalid("executing Air normalization packet is missing"))?;
+    if packet.night_stat.is_none() || packet.modifiers.iter().any(Option::is_none) {
+        return Err(invalid(
+            "executing Air normalization contains an unreadable operand",
+        ));
+    }
+    if packet
+        .modifiers
+        .iter()
+        .flatten()
+        .any(|entry| !entry.present && entry.raw.is_some())
+    {
+        return Err(invalid("absent Air normalization modifier has a raw value"));
+    }
+    Ok(())
 }
 
 fn sortie_keys(frame: &DecodedFrame, countries: &CountryContext<'_>) -> io::Result<SortieKeys> {
@@ -333,15 +1102,34 @@ fn sortie_operands(
                 keys.country_regions.contains(&(row.subject, row.region))
             }
             // Every console override is a row, zero included.
-            AirSortieModifierRow::EFFICIENCY_OVERRIDE => row.region == 0,
+            AirSortieModifierRow::EFFICIENCY_OVERRIDE
+            | AirSortieModifierRow::DETECTION_OVERRIDE => row.region == 0,
+            AirSortieModifierRow::DETECTION_OVERRIDE_STATUS => {
+                row.region == 0 && row.subject == 0 && row.raw == 1
+            }
             _ => false,
         };
-        if !keyed || (row.raw == 0 && row.scope != AirSortieModifierRow::EFFICIENCY_OVERRIDE) {
+        if !keyed
+            || (row.raw == 0
+                && !matches!(
+                    row.scope,
+                    AirSortieModifierRow::EFFICIENCY_OVERRIDE
+                        | AirSortieModifierRow::DETECTION_OVERRIDE
+                ))
+        {
             return Err(invalid(format!(
                 "air sortie modifier {}:{}:{} is neither a registered mission's nonzero term nor an override",
                 row.scope, row.subject, row.region
             )));
         }
+    }
+    let mut witnesses = modifiers
+        .iter()
+        .filter(|row| row.scope == AirSortieModifierRow::DETECTION_OVERRIDE_STATUS);
+    if witnesses.next().is_none() || witnesses.next().is_some() {
+        return Err(invalid(
+            "Air detection override availability witness is missing or duplicated",
+        ));
     }
     report.compared("AirSortieModifiers", modifiers.len());
 
@@ -392,6 +1180,8 @@ fn registrations(frame: &DecodedFrame, countries: &CountryContext<'_>) -> io::Re
         .collect();
     let rows = complete::<tables::AirRegionalMissions>(frame)?;
     let mut ordinals = BTreeMap::<(u32, u32), BTreeSet<u32>>::new();
+    let mut labels = BTreeSet::new();
+    let mut known = BTreeMap::new();
     for row in rows {
         let wing = wings
             .get(&row.wing)
@@ -403,6 +1193,18 @@ fn registrations(frame: &DecodedFrame, countries: &CountryContext<'_>) -> io::Re
         let region = wing
             .mission_region
             .ok_or_else(|| invalid("registered air mission has no region"))?;
+        if let Some(previous) = known.insert(owner.canonical_slot, row.active_order.is_some())
+            && previous != row.active_order.is_some()
+        {
+            return Err(invalid(
+                "Air all-active order availability differs within one country",
+            ));
+        }
+        if let Some(label) = row.active_order
+            && (label == 0 || !labels.insert((owner.canonical_slot, label)))
+        {
+            return Err(invalid("Air all-active order label is zero or repeats"));
+        }
         if !ordinals
             .entry((owner.canonical_slot, region))
             .or_default()
@@ -630,91 +1432,93 @@ fn witnesses(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
     Ok(())
 }
 
-/// The recorded pairs are those of the registered mine-laying wings, and each
-/// equals the owner's saved `per_region_mines` entry.
+/// The shared certified full Navy vectors replace mission-targeted acquisition.
 fn mines(
     frame: &DecodedFrame,
     save: &Save,
     countries: &CountryContext<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let tags: BTreeMap<_, _> = countries
-        .by_tag
-        .iter()
-        .map(|(tag, country)| (country.canonical_slot, *tag))
-        .collect();
-    let wings: BTreeMap<_, _> = complete::<tables::AirWings>(frame)?
-        .iter()
-        .map(|wing| (wing.id, wing))
-        .collect();
-    let mut required = BTreeSet::new();
-    for registration in complete::<tables::AirRegionalMissions>(frame)? {
-        let wing = wings
-            .get(&registration.wing)
-            .ok_or_else(|| invalid("registered air mission lacks its AirWings row"))?;
-        if wing.mission_mask & replay_data::rows::AIR_MISSION_LAY_MINES == 0 {
+    let rows = complete::<tables::NavalRegionalMines>(frame)?;
+    let mut navies: BTreeMap<u32, Vec<replay_data::rows::NavalRegionalMineRow>> = BTreeMap::new();
+    for row in rows {
+        let owner = countries
+            .links
+            .get(&row.country)
+            .ok_or_else(|| invalid("regional mine country has no live link"))?;
+        navies.entry(owner.canonical_slot).or_default().push(*row);
+    }
+    let mut compared = 0;
+    for (tag, country) in &countries.by_tag {
+        if country.canonical_slot == 0 {
             continue;
         }
-        let effective = if wing.country_override > 0 {
-            wing.country_override as u32
-        } else {
-            wing.owner
+        let label = format!("naval mines {}", String::from_utf8_lossy(tag));
+        let Some(rows) = navies.remove(&country.canonical_slot) else {
+            report.difference(label, "owner witness absent", "owner witness present");
+            continue;
         };
-        let country = countries
-            .links
-            .get(&effective)
-            .ok_or_else(|| invalid("mine-laying wing country is not a linked country"))?;
-        if let Some(region) = wing.mission_region {
-            required.insert((country.canonical_slot, region));
-        }
-    }
-    let rows = complete::<tables::NavalMineLevels>(frame)?;
-    let recorded: BTreeSet<_> = rows.iter().map(|row| (row.country, row.region)).collect();
-    if recorded != required {
-        report.difference(
-            "naval mine level pairs",
-            recorded.len(),
-            format!("{} registered mine-laying pairs", required.len()),
-        );
-    }
-    for row in rows {
-        let tag = tags
-            .get(&row.country)
-            .ok_or_else(|| invalid("naval mine level names no live country"))?;
-        let field = format!(
-            "naval mines {} region {}",
-            String::from_utf8_lossy(tag),
-            row.region
-        );
+        let (count, positive) = project_mines(&rows)?;
         let saved = save
             .countries
             .get(*tag)
-            .map(|country| country.naval_mines.as_ref());
-        match saved_mines(saved, row.region) {
-            Ok(saved) if saved == row.raw_mines => {}
-            Ok(saved) => report.difference(field, row.raw_mines, saved),
-            Err(missing) => report.difference(field, row.raw_mines, missing),
+            .ok_or_else(|| invalid("regional mine country absent from save"))?;
+        match (count, saved.naval_mines.as_ref()) {
+            (0, None) => {}
+            (0, Some(_)) => {
+                report.difference(format!("{label}.per_region_mines"), "absent", "present")
+            }
+            (_, None) => {
+                report.difference(format!("{label}.per_region_mines"), "present", "absent")
+            }
+            (_, Some(saved)) => {
+                let saved: BTreeMap<_, _> = saved
+                    .iter()
+                    .map(|(&region, value)| (region, value.raw))
+                    .collect();
+                if positive != saved {
+                    report.difference(label, positive, saved);
+                }
+            }
         }
+        compared += 1;
     }
-    report.compared("NavalMineLevels", rows.len());
+    if !navies.is_empty() {
+        return Err(invalid(
+            "regional mine witness names no saved positive country",
+        ));
+    }
+    report.compared("NavalRegionalMines", compared);
+    report.limitation("The mine vector length and nonpositive native values are not serialized; match the complete raw vector and its count with the native observation, including negative values allowed by content.","NavalRegionalMines.region/amount");
     Ok(())
 }
 
-/// The saved mines of `region`. A recorded row read an element of the nonempty
-/// navy mine-region vector (the collector refuses a region outside it),
-/// and the writer emits `per_region_mines` whenever that vector's
-/// count is nonzero, listing only positive entries. So only a region
-/// missing from a present block is zero; a missing country or block
-/// contradicts the recording and is reported, never read as zero.
-/// `saved` is the country's parsed block, `None` when the country is absent.
-fn saved_mines(
-    saved: Option<Option<&BTreeMap<u32, installed_content_save::Decimal>>>,
-    region: u32,
-) -> Result<i64, &'static str> {
-    let mines = saved
-        .ok_or("country absent from the save")?
-        .ok_or("per_region_mines absent though the vector is nonempty")?;
-    Ok(mines.get(&region).map_or(0, |amount| amount.raw))
+fn project_mines(
+    rows: &[replay_data::rows::NavalRegionalMineRow],
+) -> io::Result<(u32, BTreeMap<u32, i64>)> {
+    let mut count = None;
+    let mut values = BTreeMap::new();
+    for row in rows {
+        match row.kind {
+            0 if count.is_none() && row.amount == 0 => count = Some(row.region),
+            1 if row.amount != 0 && !values.contains_key(&row.region) => {
+                values.insert(row.region, row.amount);
+            }
+            _ => {
+                return Err(invalid(
+                    "regional mine vector has duplicate or malformed rows",
+                ));
+            }
+        }
+    }
+    let count = count.ok_or_else(|| invalid("regional mine completeness witness missing"))?;
+    if values.keys().any(|&region| region >= count) {
+        return Err(invalid(
+            "regional mine value lies outside its witnessed vector",
+        ));
+    }
+    values.retain(|_, amount| *amount > 0);
+    Ok((count, values))
 }
 
 #[cfg(test)]
@@ -724,12 +1528,442 @@ mod witness_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use installed_content_save::Decimal;
+    #[test]
+    fn patrol_air_stat_oracle_distinguishes_execution_demand_and_independent_faults() {
+        use replay_data::rows::AirMissionInputRow;
+        let row = AirMissionInputRow {
+            current_type: (Some(8)).into(),
+            effective_aircraft: (Some(-3)).into(),
+            detection_stat_13: (Some(i64::MIN)).into(),
+            detection_stat_14: (Some(0)).into(),
+            ..Default::default()
+        };
+        assert!(mission_detection(&row).is_ok());
+        assert!(
+            mission_detection(&AirMissionInputRow {
+                detection_stat_14: (None).into(),
+                ..row.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            mission_detection(&AirMissionInputRow {
+                effective_aircraft: (Some(0)).into(),
+                ..row.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            mission_detection(&AirMissionInputRow {
+                effective_aircraft: (Some(0)).into(),
+                detection_stat_13: (None).into(),
+                detection_stat_14: (None).into(),
+                ..row.clone()
+            })
+            .is_ok()
+        );
+        assert!(
+            mission_detection(&AirMissionInputRow {
+                current_type: (Some(3)).into(),
+                detection_stat_13: (None).into(),
+                detection_stat_14: (None).into(),
+                ..row
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn wing_fuel_oracle_checks_idle_and_shared_execution_without_selected_missions() {
+        use replay_data::rows::AirMissionInputRow;
+        use replay_data::rows::AirWingFuelInputs;
+        use replay_data::rows::TableId;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+        let (mut frame, _, _, _) = super::super::fixtures::fixture();
+        *frame.tables[TableId::AceRangeInputs.index()] =
+            TableView::Complete(TableRows::AceRangeInputs(Vec::new()));
+        *frame.tables[TableId::AirMissionInputs.index()] =
+            TableView::Complete(TableRows::AirMissionInputs(Vec::new()));
+        let row = |input: AirWingFuelInputs| AirWingRow {
+            id: 1,
+            fuel_base_raw: input.base_fuel.into(),
+            fuel_current_type: input.current_type.into(),
+            fuel_effective_aircraft: input.effective_aircraft.into(),
+            fuel_context_mode: input.context_mode.map(u32::from).into(),
+            fuel_capacity_class: input.capacity_class.into(),
+            fuel_override_resolved: input.override_resolved.map(u32::from).into(),
+            ..Default::default()
+        };
+        let idle = replay_data::rows::AirWingFuelInputs {
+            base_fuel: Some(123_456),
+            current_type: Some(0),
+            ..Default::default()
+        };
+        *frame.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(vec![row(idle)]));
+        assert_eq!(wing_fuel_inputs(&frame).unwrap(), 1);
+        let executing = AirWingFuelInputs {
+            current_type: Some(4),
+            effective_aircraft: Some(0),
+            context_mode: Some(2),
+            ..idle
+        };
+        *frame.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(vec![row(executing)]));
+        assert_eq!(wing_fuel_inputs(&frame).unwrap(), 1);
+        *frame.tables[TableId::AirMissionInputs.index()] =
+            TableView::Complete(TableRows::AirMissionInputs(vec![AirMissionInputRow {
+                wing: 1,
+                current_type: (Some(4)).into(),
+                effective_aircraft: (Some(1)).into(),
+                ..Default::default()
+            }]));
+        assert!(
+            wing_fuel_inputs(&frame)
+                .unwrap_err()
+                .to_string()
+                .contains("shared execution")
+        );
+        *frame.tables[TableId::AirMissionInputs.index()] =
+            TableView::Complete(TableRows::AirMissionInputs(Vec::new()));
+        *frame.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(vec![row(AirWingFuelInputs {
+                effective_aircraft: Some(0),
+                ..idle
+            })]));
+        assert!(
+            wing_fuel_inputs(&frame)
+                .unwrap_err()
+                .to_string()
+                .contains("demand mismatch")
+        );
+    }
+
+    #[test]
+    fn combat_modifier_oracle_checks_ace_living_demand_and_signed_absence() {
+        use replay_data::rows::AceRangeInputRow;
+        use replay_data::rows::TableId;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+        let (mut frame, _, _, _) = super::super::fixtures::fixture();
+        *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![]));
+        *frame.tables[TableId::AirMissionInputs.index()] =
+            TableView::Complete(TableRows::AirMissionInputs(vec![]));
+        let row = AceRangeInputRow {
+            ace: 7,
+            alive: 1,
+            fuel_modifier: Some([None]).into(),
+            combat_modifiers_known: true.into(),
+            type_combat_flags: 5.into(),
+            attack_modifier_raw: Some(i64::MIN).into(),
+            ..Default::default()
+        };
+        for (row, valid) in [
+            (row.clone(), true),
+            (
+                AceRangeInputRow {
+                    combat_modifiers_known: false.into(),
+                    ..row.clone()
+                },
+                false,
+            ),
+            (
+                AceRangeInputRow {
+                    type_combat_flags: 0.into(),
+                    ..row.clone()
+                },
+                false,
+            ),
+            (
+                AceRangeInputRow {
+                    type_combat_flags: 9.into(),
+                    ..row.clone()
+                },
+                false,
+            ),
+            (
+                AceRangeInputRow {
+                    alive: 0,
+                    fuel_modifier: None.into(),
+                    combat_modifiers_known: false.into(),
+                    type_combat_flags: 0.into(),
+                    ..row.clone()
+                },
+                false,
+            ),
+            (
+                AceRangeInputRow {
+                    ace: 7,
+                    ..Default::default()
+                },
+                true,
+            ),
+        ] {
+            *frame.tables[TableId::AceRangeInputs.index()] =
+                TableView::Complete(TableRows::AceRangeInputs(vec![row]));
+            assert_eq!(wing_fuel_inputs(&frame).is_ok(), valid);
+        }
+    }
+
+    #[test]
+    fn current_execution_oracle_requires_exact_demand_independently_of_selected_mask() {
+        use replay_data::rows::AirMissionInputRow;
+        use replay_data::rows::AirRegionalMissionRow;
+        use replay_data::rows::TableId;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+        let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+        saved.air_wings.insert(
+            1,
+            installed_content_save::AirWing {
+                government_in_exile_tag: None,
+                manpower: None,
+                reinforcement_setting: None,
+                id: 1,
+                owner: b"AAA".to_vec(),
+                name: Some(Vec::new()),
+                country_override: b"AAA".to_vec(),
+                air_base: 3,
+                planes: 1,
+                mission_mask: 0,
+                mission_region: None,
+                mission_active: Some(false),
+                stop_training_at_max_xp: false,
+                region_change_penalty: Some(0),
+                transfer_progress: None,
+                transferring_to: None,
+                pool_ordinal: 0,
+            },
+        );
+        *frame.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(vec![AirWingRow {
+                id: 1,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::AirRegionalMissions.index()] =
+            TableView::Complete(TableRows::AirRegionalMissions(vec![
+                AirRegionalMissionRow {
+                    wing: 1,
+                    ..Default::default()
+                },
+            ]));
+        for (mask, count, expected) in [
+            (None, None, false),
+            (Some(0), None, true),
+            (Some(0), Some(0), false),
+            (Some(8), None, false),
+            (Some(8), Some(-4), true),
+        ] {
+            *frame.tables[TableId::AirMissionInputs.index()] =
+                TableView::Complete(TableRows::AirMissionInputs(vec![AirMissionInputRow {
+                    wing: 1,
+                    current_type: (mask).into(),
+                    effective_aircraft: (count).into(),
+                    patrol_disruption_raw: ((mask.is_some_and(|mask| {
+                        mask as i32 > 0 && mask.is_power_of_two() && mask & 0x1f7fa != 0
+                    }) && count.is_some_and(|count| count != 0))
+                    .then_some(0))
+                    .into(),
+                    detection_stat_13: ((mask
+                        .is_some_and(|mask| mask as i32 > 0 && mask.is_power_of_two())
+                        && count.is_some_and(|count| count != 0))
+                    .then_some(0))
+                    .into(),
+                    detection_stat_14: ((mask
+                        .is_some_and(|mask| mask as i32 > 0 && mask.is_power_of_two())
+                        && count.is_some_and(|count| count != 0))
+                    .then_some(0))
+                    .into(),
+                    normalization: ((mask.is_some_and(|mask| mask != 0)
+                        && count.is_some_and(|count| count != 0))
+                    .then_some(replay_data::rows::AirMissionNormalization {
+                        night_stat: Some(0),
+                        modifiers: [Some(replay_data::rows::AirNormalizationEntry::default()); 2],
+                    }))
+                    .into(),
+                    ..Default::default()
+                }]));
+            let mut report = Report::default();
+            assert_eq!(
+                mission_inputs(&frame, &saved, &[100_000; 32], &mut report).is_ok(),
+                expected
+            );
+            assert!(report.differences.is_empty());
+        }
+    }
+
+    #[test]
+    fn incoming_transfer_oracle_compares_progress_and_rejects_unknown_order() {
+        use replay_data::rows::AirBaseRow;
+        use replay_data::rows::AirTransferInputRow;
+        use replay_data::rows::TableId;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+        let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+        saved.air_wings.clear();
+        saved.air_wings.insert(
+            1,
+            installed_content_save::AirWing {
+                government_in_exile_tag: None,
+                manpower: None,
+                reinforcement_setting: None,
+                id: 1,
+                owner: b"AAA".to_vec(),
+                name: Some(Vec::new()),
+                country_override: b"AAA".to_vec(),
+                air_base: 3,
+                planes: 1,
+                mission_mask: 0,
+                mission_region: None,
+                mission_active: Some(false),
+                stop_training_at_max_xp: false,
+                region_change_penalty: None,
+                transfer_progress: Some(123_456),
+                transferring_to: Some(9),
+                pool_ordinal: 0,
+            },
+        );
+        *frame.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(vec![AirWingRow {
+                id: 1,
+                air_base: 3,
+                base_override: 7,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::AirBases.index()] =
+            TableView::Complete(TableRows::AirBases(vec![AirBaseRow {
+                id: 7,
+                state: Some(9),
+                ..Default::default()
+            }]));
+        for (ordinal, progress, valid, differences) in [
+            (Some(0), Some(123_456), true, 0),
+            (Some(0), Some(123_457), true, 1),
+            (None, Some(123_456), false, 0),
+            (Some(0), None, false, 0),
+        ] {
+            *frame.tables[TableId::AirTransferInputs.index()] =
+                TableView::Complete(TableRows::AirTransferInputs(vec![AirTransferInputRow {
+                    wing: 1,
+                    base: 7,
+                    ordinal,
+                    progress_raw: progress,
+                    distance_raw: Some(987_654),
+                }]));
+            let mut report = Report::default();
+            assert_eq!(transfers(&frame, &saved, &mut report).is_ok(), valid);
+            assert_eq!(report.differences.len(), differences);
+        }
+        *frame.tables[TableId::AirTransferInputs.index()] =
+            TableView::Complete(TableRows::AirTransferInputs(Vec::new()));
+        assert!(transfers(&frame, &saved, &mut Report::default()).is_err());
+    }
+    #[test]
+    fn global_order_labels_are_independent_but_country_wide_and_unique() {
+        use replay_data::rows::AirRegionalMissionRow;
+        use replay_data::rows::TableId;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+        let (mut frame, _, _, _) = super::super::fixtures::fixture();
+        *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(
+            [1, 2]
+                .map(|id| AirWingRow {
+                    id,
+                    owner: 102,
+                    mission_region: Some(9),
+                    ..Default::default()
+                })
+                .into(),
+        ));
+        for (labels, expected) in [
+            ([None, None], true),
+            ([Some(20), Some(10)], true),
+            ([Some(10), Some(10)], false),
+            ([Some(0), Some(10)], false),
+            ([None, Some(10)], false),
+        ] {
+            *frame.tables[TableId::AirRegionalMissions.index()] =
+                TableView::Complete(TableRows::AirRegionalMissions(
+                    labels
+                        .into_iter()
+                        .enumerate()
+                        .map(|(at, active_order)| AirRegionalMissionRow {
+                            wing: at as u64 + 1,
+                            ordinal: at as u32,
+                            active_order,
+                        })
+                        .collect(),
+                ));
+            let context = super::super::country_context(&frame).unwrap();
+            assert_eq!(
+                registrations(&frame, &context).is_ok(),
+                expected,
+                "{labels:?}"
+            );
+        }
+    }
     use replay_data::{
         rows::AirCountryRelationRow, rows::AirNavalPatrolHistoryRow, rows::CountryLinkRow,
         rows::CountryWarRow, rows::TableId, rows::TableRows,
     };
     use replay_frame::frame::TableView;
+
+    #[test]
+    fn ground_crews_compare_saved_flags_including_sparse_false_and_optional_reads() {
+        let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+        *frame.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(vec![replay_data::rows::AirWingRow {
+                id: 123,
+                owner: 101,
+                country_override: 999,
+                mission_region: Some(9),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::AirRegionalMissions.index()] =
+            TableView::Complete(TableRows::AirRegionalMissions(vec![
+                replay_data::rows::AirRegionalMissionRow {
+                    wing: 123,
+                    ordinal: 0,
+                    ..Default::default()
+                },
+            ]));
+        saved
+            .air
+            .ground_crews
+            .push(installed_content_save::air::GroundCrews {
+                country: b"GER".to_vec(),
+                region: 9,
+                enabled: true,
+            });
+        for (enabled, difference, limited) in
+            [(Some(1), 0, false), (Some(0), 1, false), (None, 0, true)]
+        {
+            *frame.tables[TableId::AirGroundCrews.index()] =
+                TableView::Complete(TableRows::AirGroundCrews(vec![
+                    replay_data::rows::AirGroundCrewRow {
+                        country: 7,
+                        region: 9,
+                        enabled,
+                    },
+                ]));
+            let context = super::super::country_context(&frame).unwrap();
+            let mut report = Report::default();
+            ground_crews(&frame, &saved, &context, &mut report).unwrap();
+            assert_eq!(report.differences.len(), difference);
+            assert_eq!(!report.limitations.is_empty(), limited);
+        }
+        *frame.tables[TableId::AirGroundCrews.index()] =
+            TableView::Complete(TableRows::AirGroundCrews(Vec::new()));
+        let context = super::super::country_context(&frame).unwrap();
+        let mut report = Report::default();
+        ground_crews(&frame, &saved, &context, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        saved.air.ground_crews.clear();
+        let mut report = Report::default();
+        ground_crews(&frame, &saved, &context, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+    }
 
     #[test]
     fn naval_patrol_histories_are_sparse_nonzero_entries() {
@@ -870,7 +2104,13 @@ mod tests {
     fn run(frame: &DecodedFrame, saved: &Save) -> Report {
         let context = super::super::country_context(frame).unwrap();
         let mut report = Report::default();
-        compare(frame, saved, &context, &mut report);
+        compare(
+            frame,
+            saved,
+            &context,
+            &Ok(vec![100_000; u32::BITS as usize]),
+            &mut report,
+        );
         assert!(
             report.failed_comparisons.is_empty(),
             "{:?}",
@@ -888,6 +2128,12 @@ mod tests {
     #[test]
     fn an_unrebuilt_revolter_vector_is_held_to_the_country_wars_read() {
         let (mut frame, mut saved, _, _) = super::super::fixtures::fixture();
+        *frame.tables[TableId::AirSortieModifiers.index()] =
+            TableView::Complete(TableRows::AirSortieModifiers(vec![AirSortieModifierRow {
+                scope: AirSortieModifierRow::DETECTION_OVERRIDE_STATUS,
+                raw: 1,
+                ..Default::default()
+            }]));
         // The sortie comparison needs its Static singleton.
         *frame.tables[TableId::AirSortieModifierMetadata.index()] =
             TableView::Complete(TableRows::AirSortieModifierMetadata(vec![
@@ -896,7 +2142,18 @@ mod tests {
         // GER is 101 (alias 102) at slot 7.
         add_country(&mut frame, &mut saved, 201, 8, b"REB");
         add_country(&mut frame, &mut saved, 301, 9, b"SOV");
+        *frame.tables[TableId::NavalRegionalMines.index()] =
+            TableView::Complete(TableRows::NavalRegionalMines(
+                [101, 201, 301]
+                    .into_iter()
+                    .map(|country| replay_data::rows::NavalRegionalMineRow {
+                        country,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
         saved.war_relations.push(installed_content_save::WarRelation {
+            participation: [None, None],
             first_goals: Vec::new(),
             second_goals: Vec::new(),
             roster_owner: b"REB".to_vec(),
@@ -979,21 +2236,107 @@ mod tests {
     }
 
     #[test]
-    fn only_a_region_missing_from_a_saved_block_is_zero() {
-        assert_eq!(saved_mines(None, 4), Err("country absent from the save"));
+    fn full_mine_projection_requires_witness_and_matches_positive_only_serialization() {
+        use replay_data::rows::NavalRegionalMineRow as Row;
+        let witness = Row {
+            country: 1,
+            kind: 0,
+            region: 4,
+            amount: 0,
+        };
+        let positive = Row {
+            country: 1,
+            kind: 1,
+            region: 2,
+            amount: 250_000,
+        };
+        let negative = Row {
+            country: 1,
+            kind: 1,
+            region: 3,
+            amount: -9,
+        };
         assert_eq!(
-            saved_mines(Some(None), 4),
-            Err("per_region_mines absent though the vector is nonempty")
+            project_mines(&[witness, positive, negative]).unwrap(),
+            (4, BTreeMap::from([(2, 250_000)]))
         );
-        let block = BTreeMap::from([(
-            4,
-            Decimal {
-                raw: 250_000,
-                fractional_digits: 5,
-                lexeme: b"2.5".to_vec(),
-            },
-        )]);
-        assert_eq!(saved_mines(Some(Some(&block)), 4), Ok(250_000));
-        assert_eq!(saved_mines(Some(Some(&block)), 9), Ok(0));
+        assert!(project_mines(&[positive]).is_err());
+        assert!(project_mines(&[witness, witness]).is_err());
+        assert!(
+            project_mines(&[
+                witness,
+                Row {
+                    region: 4,
+                    ..positive
+                }
+            ])
+            .is_err()
+        );
+        assert_eq!(
+            project_mines(&[Row {
+                region: 0,
+                ..witness
+            }])
+            .unwrap(),
+            (0, BTreeMap::new())
+        );
+    }
+}
+
+#[cfg(test)]
+mod country_air_modifier_tests {
+    use super::*;
+    use replay_data::rows::CountryCounterInputRow;
+    use replay_data::rows::TableId;
+    use replay_data::rows::TableRows;
+    use replay_frame::frame::TableView;
+
+    #[test]
+    fn combat_country_census_distinguishes_unknown_from_known_absent_keys() {
+        let (mut frame, _, _, _) = super::super::fixtures::fixture();
+        for (known, raw, valid) in [
+            (false, None, false),
+            (true, None, true),
+            (true, Some(i64::MIN), true),
+        ] {
+            *frame.tables[TableId::CountryCounterInputs.index()] =
+                TableView::Complete(TableRows::CountryCounterInputs(vec![
+                    CountryCounterInputRow {
+                        country: 1,
+                        air_modifiers: Recorded::Value(Some([None; 10])),
+                        air_combat_modifiers_known: (known).into(),
+                        air_attack_factor: (raw).into(),
+                        ..Default::default()
+                    },
+                ]));
+            assert_eq!(country_air_modifiers(&frame).is_ok(), valid);
+        }
+    }
+
+    #[test]
+    fn absent_keys_are_complete_but_an_unreadable_country_packet_fails() {
+        let (mut frame, _, _, _) = super::super::fixtures::fixture();
+        *frame.tables[TableId::CountryCounterInputs.index()] =
+            TableView::Complete(TableRows::CountryCounterInputs(vec![
+                CountryCounterInputRow {
+                    country: 1,
+                    air_modifiers: Recorded::Value(Some([None; 10])),
+                    air_combat_modifiers_known: true.into(),
+                    ..Default::default()
+                },
+            ]));
+        assert_eq!(country_air_modifiers(&frame).unwrap(), 1);
+        let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+            &mut *frame.tables[TableId::CountryCounterInputs.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].air_modifiers = Recorded::Value(None);
+        assert!(
+            country_air_modifiers(&frame)
+                .unwrap_err()
+                .to_string()
+                .contains("country 1 Air modifier accumulator unreadable")
+        );
     }
 }

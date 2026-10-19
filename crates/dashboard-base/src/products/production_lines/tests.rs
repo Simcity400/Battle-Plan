@@ -21,6 +21,18 @@ fn production_hour_batches_its_supplying_flags_and_matches_individual_lookups() 
         );
         // A peer read dates the entire cadence group, including off-slot reads.
         frame.metrics.table_ns[TableId::ProductionLineModifiers.index()] = u64::from(at == 7);
+        if at == 13 {
+            *frame.tables[TableId::VariantChanges.index()] =
+                TableView::Complete(TableRows::VariantChanges(vec![
+                    replay_data::rows::VariantChangeRow {
+                        sequence: 1,
+                        hour: frame.hour,
+                        variant: 70,
+                        removed: true,
+                        ..Default::default()
+                    },
+                ]));
+        }
         let before = crate::metadata::slot_read_batches();
         let actual = scan_hour(format, frame.hour, &frame, "GER", None);
         assert_eq!(crate::metadata::slot_read_batches() - before, 1);
@@ -28,7 +40,7 @@ fn production_hour_batches_its_supplying_flags_and_matches_individual_lookups() 
         assert_eq!(actual.lines_read, read(TableId::ProductionLines));
         assert_eq!(
             actual.definitions_read,
-            read(TableId::VariantDefinitions)
+            (equipment::design_changed(&frame) || read(TableId::VariantDefinitions))
                 && frame.complete::<tables::VariantDefinitions>().is_ok()
         );
         assert_eq!(
@@ -40,6 +52,10 @@ fn production_hour_batches_its_supplying_flags_and_matches_individual_lookups() 
             read(TableId::CountryProductionModifiers) && read(TableId::ProductionLineModifiers)
         );
         assert_eq!(actual.variants, VariantCatalogue::hour_of(format, &frame));
+        if at == 13 {
+            assert_eq!(actual.variants, VariantHour::Read);
+            assert!(actual.definitions_read);
+        }
     }
 }
 
@@ -2097,7 +2113,8 @@ fn variant_reads_build_only_changed_definitions_and_name_as_every_read_does() {
         {
             rows[1].display_name = b"Mauser".to_vec();
         }
-        // Italy is renamed: every name's countries change, though no name does.
+        // The slot-zero country is renamed: its type-tag naming operand changes,
+        // even for a variant whose own display name stays the same.
         if at >= 70
             && let TableView::Complete(TableRows::Countries(rows)) =
                 &mut *frame.tables[TableId::Countries.index()]
@@ -2156,12 +2173,29 @@ fn variant_reads_build_only_changed_definitions_and_name_as_every_read_does() {
         [
             (FIRST, Some("Gewehr 98".to_owned())),
             (FIRST + 50, Some("Mauser".to_owned())),
+            (FIRST + 70, Some("Mauser".to_owned())),
             (FIRST + 90, None),
             (FIRST + 91, Some("Mauser".to_owned())),
             (FIRST + 100, None),
             (FIRST + 101, Some("Mauser".to_owned())),
         ]
     );
+}
+
+/// Valid synthetic country trees in the native request catalogue's order.
+fn saved_modifier_trees() -> Vec<replay_data::rows::ProductionModifierTree> {
+    engine_production::production_modifiers::KEYS
+        .into_iter()
+        .map(|key| replay_data::rows::ProductionModifierTree {
+            key,
+            nodes: vec![replay_data::rows::ModifierBreakdownNode {
+                children: 0,
+                value: 0,
+                name: b"Synthetic total".to_vec(),
+            }],
+            failure: vec![],
+        })
+        .collect()
 }
 
 /// A saved scan restores to the scan it saved: every value, its modifier runs'
@@ -2222,11 +2256,13 @@ fn a_saved_scan_restores_the_scan_it_saved() {
         .insert("production modifiers refused".into(), 3);
     let shared = Arc::new(CountryProductionModifiersRow {
         country: 9001,
+        trees: saved_modifier_trees(),
         ..Default::default()
     });
     let later = Arc::new(CountryProductionModifiersRow {
         country: 9001,
         base_cap: 7,
+        trees: shared.trees.clone(),
         ..Default::default()
     });
     for (handle, countries) in [(5, [&shared, &shared]), (6, [&shared, &later])] {
@@ -2526,6 +2562,7 @@ fn saving_a_scan_does_one_lookup_per_modifier_run() {
             Arc::new(CountryProductionModifiersRow {
                 country: 9001,
                 base_cap: day,
+                trees: saved_modifier_trees(),
                 ..Default::default()
             })
         })
@@ -2566,6 +2603,201 @@ fn saving_a_scan_does_one_lookup_per_modifier_run() {
     );
     let error = SavedLines::save(&scanned, &AtomicBool::new(true)).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+}
+
+#[test]
+fn organisation_daily_states_are_sent_only_for_the_demanded_detail_window() {
+    let mut scanned = ScannedLines::default();
+    scanned.lines.push(ScannedLine {
+        key: "5#1".into(),
+        handle: 5,
+        kind: Some(LineKind::Military),
+        runs: vec![RawRun {
+            first_hour: 0,
+            last_hour: 95,
+            mio: 79,
+            variant: 70,
+            ..Default::default()
+        }],
+        output: vec![],
+        final_output: None,
+        ended_by: None,
+        before_recording: true,
+        between_reads: None,
+        variants: vec![],
+    });
+    let state = |points| {
+        let mut row = IndustrialOrganisationDetailsRow::default();
+        row.state.points = points;
+        organisation_state(&row, Some(24), &[])
+    };
+    scanned.organisations.insert(
+        79,
+        vec![
+            RawOrganisation {
+                first_hour: 0,
+                state: Some(state(1)),
+                ..Default::default()
+            },
+            RawOrganisation {
+                first_hour: 24,
+                state: Some(state(2)),
+                ..Default::default()
+            },
+            RawOrganisation {
+                first_hour: 48,
+                state: None,
+                ..Default::default()
+            },
+            RawOrganisation {
+                first_hour: 72,
+                state: Some(state(9)),
+                ..Default::default()
+            },
+        ],
+    );
+    let details = detail_lines(&scanned, 24, 47);
+    assert_eq!(details[0].organisations.len(), 1);
+    assert_eq!(details[0].organisations[0].first_hour, 24);
+    assert_eq!(
+        details[0].organisations[0]
+            .state
+            .as_ref()
+            .unwrap()
+            .unspent_points,
+        2
+    );
+    let details = detail_lines(&scanned, 50, 60);
+    assert_eq!(details[0].organisations.len(), 1);
+    assert!(details[0].organisations[0].state.is_none());
+}
+
+#[test]
+fn organisation_design_observations_follow_stats_cadence_availability_and_shared_read_dates() {
+    use replay_data::rows::{IndustrialOrganisationBonus, VariantStatsRow};
+    let design_hour = FIRST + 14; // line slot 08 -> variant slot 22
+    let lost_hour = design_hour + 2;
+    let recovered_hour = design_hour + 4;
+    let frames = (FIRST..=FIRST + 25)
+        .map(|hour| {
+            let mut frame = production_frame(
+                hour,
+                (hour - FIRST) % 24 == 0,
+                false,
+                9001,
+                &[(5, 70, 8, 0)],
+                Some(&[(5, 70, 0, true, false)]),
+            );
+            if hour < design_hour || (lost_hour..recovered_hour).contains(&hour) {
+                *frame.tables[TableId::VariantStats.index()] = TableView::Unavailable {
+                    reason: "not observed".into(),
+                };
+            } else {
+                *frame.tables[TableId::VariantStats.index()] =
+                    TableView::Complete(TableRows::VariantStats(vec![VariantStatsRow {
+                        variant: 70,
+                        organisation: 79,
+                        organisation_trait_count: 7,
+                        organisation_bonuses: vec![IndustrialOrganisationBonus {
+                            key: 601,
+                            value_raw: -123,
+                        }],
+                        ..Default::default()
+                    }]));
+            }
+            // The worker's shared group charges modules, not stats. No new line
+            // read accompanies the design observation or its forced recovery.
+            *frame.tables[TableId::VariantModules.index()] =
+                TableView::Complete(TableRows::VariantModules(vec![]));
+            if hour == design_hour || hour == recovered_hour {
+                frame.metrics.table_ns[TableId::VariantModules.index()] = 1;
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scanned = scan(&replay, 1, "GER", None, &AtomicBool::new(false)).unwrap();
+    assert_eq!(scanned.reads, [FIRST, FIRST + 24]);
+    let detail = detail_lines(&scanned, FIRST, FIRST + 25);
+    let at = |hour| {
+        detail[0]
+            .runs
+            .iter()
+            .find(|run| run.first_hour <= hour && run.last_hour >= hour)
+            .unwrap()
+    };
+    assert_eq!(at(design_hour - 1).design_author, None);
+    assert_eq!(at(design_hour).design_author.as_deref(), Some("79"));
+    assert_eq!(at(design_hour).design_trait_count, Some(7));
+    assert_eq!(at(design_hour).design_bonus_count, Some(1));
+    assert_eq!(at(design_hour).design_read_hour, Some(design_hour));
+    assert_eq!(at(design_hour + 1).design_read_hour, Some(design_hour));
+    assert_eq!(
+        (
+            at(lost_hour).design_author.as_deref(),
+            at(lost_hour).design_read_hour
+        ),
+        (None, None)
+    );
+    assert_eq!(at(recovered_hour).design_author.as_deref(), Some("79"));
+    assert_eq!(at(recovered_hour).design_read_hour, Some(recovered_hour));
+    assert_eq!(
+        at(FIRST + 24).design_read_hour,
+        Some(recovered_hour),
+        "line read must not redate the design"
+    );
+    let saved = SavedLines::save(&scanned, &AtomicBool::new(false)).unwrap();
+    let restored = saved.restore(None, Arc::from("english")).unwrap().unwrap();
+    assert_eq!(restored.designs, scanned.designs);
+    assert_eq!(detail_lines(&restored, FIRST, FIRST + 25), detail);
+}
+
+#[test]
+fn design_detail_projects_only_observations_overlapping_the_requested_window() {
+    use super::{DesignRead, append_design_runs};
+    // One unchanged line can outlive thousands of independent design reads.
+    let run = RawRun {
+        first_hour: 0,
+        last_hour: 240_000,
+        starts_segment: true,
+        ..Default::default()
+    };
+    let versions: Vec<_> = (0..10_000)
+        .map(|day| DesignRead {
+            first_hour: day * 24 + 22,
+            read_hour: Some(day * 24 + 22),
+            author: Some(day as u64),
+            ..Default::default()
+        })
+        .collect();
+    let (first, last) = (120_000, 120_719);
+    let mut projected = Vec::new();
+    append_design_runs(&mut projected, &run, &versions, first, last);
+    assert_eq!(projected.len(), 31);
+    assert_eq!(projected[0].first_hour, first - 2);
+    assert_eq!(projected.last().unwrap().last_hour, last + 22);
+    assert!(projected.iter().all(|value| {
+        value.first_hour <= last && value.last_hour >= first && !value.starts_segment
+    }));
+    assert_eq!(projected[0].design_author.as_deref(), Some("4999"));
+    assert_eq!(
+        projected.last().unwrap().design_author.as_deref(),
+        Some("5029")
+    );
+    projected.clear();
+    append_design_runs(&mut projected, &run, &versions, 0, 21);
+    assert_eq!(projected.len(), 1);
+    assert_eq!(
+        projected[0].design_author, None,
+        "no future observation leaks backwards"
+    );
+    assert!(projected[0].starts_segment);
+    projected.clear();
+    append_design_runs(&mut projected, &run, &[], first, last);
+    assert_eq!(
+        (projected[0].first_hour, projected[0].last_hour),
+        (0, 240_000)
+    );
 }
 
 fn country_lookup_reuse(count: u32) {

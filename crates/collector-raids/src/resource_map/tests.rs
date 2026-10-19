@@ -51,6 +51,90 @@ fn slice(hour: i32) -> Vec<u32> {
         .collect()
 }
 
+/// Client removal is observed by the hourly census, without a route-object
+/// writer. It must invalidate the old content hash as well as select a read.
+#[test]
+fn removing_a_supply_client_marks_the_changed_census_without_poisoning_carry() {
+    let watches = Watches::enabled(64, 64);
+    let mut captured = Captured::with_capacities(&Capacities);
+    let mut store = SliceFingerprints::new();
+    let census = [
+        (key(5, native::SUPPLY_ROUTE_CLASS, 9), 0x100),
+        (key(5, native::SUPPLY_ROUTE_CLASS, 10), 0x200),
+    ];
+    select(&mut captured, &mut store, &watches, 0, &census);
+    assert_eq!(
+        captured.selection.compare(&mut store, Some(&[(5, 111)])),
+        (0, 0)
+    );
+    let hour = (1..24).find(|&hour| !slice(hour).contains(&5)).unwrap();
+    let (full, owners) = select(&mut captured, &mut store, &watches, hour, &census[..1]);
+    assert!(!full);
+    assert!(owners.contains(&5));
+    // The row disappeared because the census saw its client leave: an observed
+    // change. Old coverage incorrectly compares its new content with 111.
+    assert_eq!(
+        captured.selection.compare(&mut store, Some(&[(5, 222)])),
+        (0, 0)
+    );
+    // Quiet membership still verifies. A route changing under that same
+    // census without a writer mark remains a mismatch.
+    let quiet_hour = (hour + 1..hour + 25)
+        .find(|&hour| slice(hour).contains(&5))
+        .unwrap();
+    select(
+        &mut captured,
+        &mut store,
+        &watches,
+        quiet_hour,
+        &census[..1],
+    );
+    assert_eq!(
+        captured.selection.compare(&mut store, Some(&[(5, 222)])),
+        (1, 0)
+    );
+    select(
+        &mut captured,
+        &mut store,
+        &watches,
+        quiet_hour,
+        &census[..1],
+    );
+    assert_eq!(
+        captured.selection.compare(&mut store, Some(&[(5, 333)])),
+        (1, 1)
+    );
+}
+
+/// Supply repathing keeps the client and route addresses. Its writer must
+/// select the owner outside the slice even though the census is unchanged.
+#[test]
+fn supply_repath_with_unchanged_membership_reads_the_owner_immediately() {
+    let watches = Watches::enabled(64, 64);
+    let mut captured = Captured::with_capacities(&Capacities);
+    let mut store = SliceFingerprints::new();
+    let census = [(key(5, native::SUPPLY_ROUTE_CLASS, 9), 0x100)];
+    select(&mut captured, &mut store, &watches, 0, &census);
+    let hour = (1..24).find(|&hour| !slice(hour).contains(&5)).unwrap();
+    assert!(
+        !select(&mut captured, &mut store, &watches, hour, &census)
+            .1
+            .contains(&5)
+    );
+    let (index, (_, receiver)) = engine_mutations::raid_mutations::MUTATIONS
+        .iter()
+        .enumerate()
+        .find(|(_, (site, _))| site.name == "update_supply_trade_route")
+        .unwrap();
+    assert_eq!(*receiver, engine_mutations::raid_mutations::Receiver::Route);
+    drop(watches.notify(index, Target::Route(Some(5))));
+    // Repeating this hour isolates writer admission from the rotating slice.
+    let (full, owners) = select(&mut captured, &mut store, &watches, hour, &census);
+    assert!(!full);
+    assert!(owners.contains(&5));
+    assert!(!watches.poisoned(crate::raid_changes::Family::Routes));
+}
+
 /// A route owner a hooked route writer marked is read within the hour, outside its daily
 /// slice, and so is one whose referenced routes changed; an unmarked, unchanged owner
 /// outside the slice is not. An hour whose take does not return the previous hour's epoch

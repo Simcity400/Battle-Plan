@@ -1,0 +1,353 @@
+//! Source occurrences use the same prepared raw log as accepted design edits.
+use super::*;
+use collector_hooks::hook::Hook;
+use native::source_mutations::{BONUS_BODY, IDEA_SOURCES, MUTATIONS};
+use std::ops::Range;
+static ORIGINAL: [AtomicUsize; MUTATIONS.len()] = [const { AtomicUsize::new(0) }; MUTATIONS.len()];
+static ENABLED: AtomicBool = AtomicBool::new(false);
+static COUNTRY_ENABLED: AtomicBool = AtomicBool::new(false);
+static CONTENT_ENABLED: AtomicBool = AtomicBool::new(false);
+fn content_enabled(enabled: bool) {
+    CONTENT_ENABLED.store(enabled, Ordering::Release);
+    super::update_enabled();
+}
+unsafe fn content(
+    _writer: collector_certificates::content_changes::Writer,
+    [a, b, c, d]: [usize; 4],
+    original: collector_certificates::content_changes::Original,
+) -> usize {
+    REVISION.fetch_add(1, Ordering::AcqRel);
+    ACTIVE.fetch_add(1, Ordering::SeqCst);
+    let mut scope = Scope { complete: false };
+    let forwarded = unsafe { forward::content_invalidation() };
+    super::boundary(true);
+    let result = unsafe { original(a, b, c, d) };
+    if let Some(forwarded) = forwarded {
+        unsafe { forwarded.finish() };
+    }
+    scope.complete = true;
+    result
+}
+static CONTENT_FORWARDER: collector_certificates::content_changes::Forwarder =
+    collector_certificates::content_changes::Forwarder {
+        call: content,
+        enabled: content_enabled,
+    };
+
+fn country_enabled(enabled: bool) {
+    COUNTRY_ENABLED.store(enabled, Ordering::Release);
+    super::update_enabled();
+    if !enabled {
+        MISSED.store(true, Ordering::Release);
+    }
+}
+unsafe fn country(
+    [a, b, c, d]: [usize; 4],
+    original: collector_observers::country_input_changes::DesignSourceOriginal,
+) -> usize {
+    REVISION.fetch_add(1, Ordering::AcqRel);
+    ACTIVE.fetch_add(1, Ordering::SeqCst);
+    let mut scope = Scope { complete: false };
+    let forwarded = unsafe { forward::country_invalidation(a) };
+    let result = unsafe { original(a, b, c, d) };
+    if let Some(forwarded) = forwarded {
+        unsafe { forwarded.finish() };
+    }
+    scope.complete = true;
+    result
+}
+static COUNTRY_FORWARDER: collector_observers::country_input_changes::DesignSourceForwarder =
+    collector_observers::country_input_changes::DesignSourceForwarder {
+        call: country,
+        enabled: country_enabled,
+    };
+
+pub(super) fn enabled() -> bool {
+    ENABLED.load(Ordering::Acquire)
+        && COUNTRY_ENABLED.load(Ordering::Acquire)
+        && CONTENT_ENABLED.load(Ordering::Acquire)
+}
+fn clock(memory: &impl Memory, base: usize) -> Result<i32, &'static str> {
+    let state =
+        engine_native::read::<u64>(memory, base + engine_native::cgame_state::SINGLETON_RVA)
+            .ok_or("design source clock unreadable")?;
+    engine_native::read(
+        memory,
+        state as usize + engine_native::cgame_state::CURRENT_HOUR,
+    )
+    .ok_or("design source hour unreadable")
+}
+fn direct(
+    log: &mut RawLog<1>,
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+) -> Result<(), &'static str> {
+    let size = native::bonus_source_size(memory, base, pointer)?;
+    let header = take(log, memory, pointer, size)?;
+    array(log, memory, header + native::BONUS_STATS, 16)?;
+    array(log, memory, header + native::BONUS_TERRAIN, 8)?;
+    if size > native::BONUS_IDEA {
+        let idea = u64_at(log, header + native::BONUS_IDEA) as usize;
+        if idea != 0 {
+            let header = take(log, memory, idea, engine_native::cidea::TOKEN + 32)?;
+            string(log, memory, header + engine_native::cidea::TOKEN)?;
+        }
+    }
+    Ok(())
+}
+fn provider(log: &mut RawLog<1>, memory: &impl Memory, pointer: usize) -> Result<(), &'static str> {
+    let header = take(log, memory, pointer + native::COUNTRY_NAMED_BONUSES, 16)?;
+    let (records, count) = array(log, memory, header, native::NAMED_BONUS_STRIDE)?;
+    for ordinal in 0..count as usize {
+        let record = records + ordinal * native::NAMED_BONUS_STRIDE;
+        string(log, memory, record + native::NAMED_BONUS_NAME)?;
+        string(log, memory, record + native::NAMED_BONUS_DESCRIPTION)?;
+        array(log, memory, record + 8 + native::BONUS_STATS, 16)?;
+        array(log, memory, record + 8 + native::BONUS_TERRAIN, 8)?;
+    }
+    Ok(())
+}
+fn observe(memory: &impl Memory, base: usize, key: sources::Key, retired: bool) {
+    let Some(store) = STORE.get() else {
+        return;
+    };
+    let Ok(mut store) = store.try_lock() else {
+        MISSED.store(true, Ordering::Release);
+        return;
+    };
+    if store.epoch != EPOCH.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(owner) = store.interests.get(key) else {
+        return;
+    };
+    store.batch.required_events = store.batch.required_events.saturating_add(1);
+    if store.batch.events.len() == store.batch.events.capacity() {
+        store.batch.failure = Some("design source event capacity exhausted");
+        return;
+    }
+    let (pointer, kind) = match key {
+        sources::Key::Direct(pointer) => (
+            pointer,
+            if retired {
+                Kind::SourceRemoved
+            } else {
+                Kind::Source
+            },
+        ),
+        sources::Key::Provider(pointer) => (
+            pointer,
+            if retired {
+                Kind::ProviderReset(owner)
+            } else {
+                Kind::Provider(owner)
+            },
+        ),
+    };
+    let result = (|| {
+        let hour = clock(memory, base)?;
+        if let sources::Key::Provider(pointer) = key {
+            let state = engine_native::read::<u64>(
+                memory,
+                base + engine_native::cgame_state::SINGLETON_RVA,
+            )
+            .ok_or("design provider world unreadable")? as usize;
+            let countries = engine_native::ccountry::Reader::new(memory, base, state)?;
+            let country = countries.resolve(owner)?;
+            if engine_native::cproduction_status::manager(memory, base, country)? != pointer {
+                return Err("design provider address reused outside its owner lifetime");
+            }
+        }
+        let start = store.batch.log.spans.len();
+        if !retired {
+            match key {
+                sources::Key::Direct(_) => direct(&mut store.batch.log, memory, base, pointer)?,
+                sources::Key::Provider(_) => provider(&mut store.batch.log, memory, pointer)?,
+            }
+        }
+        let end = store.batch.log.spans.len();
+        store.batch.events.push(Event {
+            kind,
+            sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            hour,
+            pointer,
+            variant: 0,
+            flags: None,
+            removed: false,
+            start,
+            end,
+        });
+        Ok(())
+    })();
+    if let Err(reason) = result {
+        store.batch.failure = Some(reason);
+    }
+}
+pub(super) fn reset_provider(memory: &impl Memory, base: usize, pointer: usize) {
+    observe(memory, base, sources::Key::Provider(pointer), true);
+}
+
+struct Scope {
+    complete: bool,
+}
+impl Drop for Scope {
+    fn drop(&mut self) {
+        REVISION.fetch_add(1, Ordering::AcqRel);
+        if !self.complete {
+            MISSED.store(true, Ordering::Release);
+        }
+        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+unsafe extern "system-unwind" fn callback<const SITE: usize>(
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+) -> usize {
+    let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize =
+        unsafe { std::mem::transmute(ORIGINAL[SITE].load(Ordering::Acquire)) };
+    unsafe { around::<SITE>(a, b, c, d, || original(a, b, c, d)) }
+}
+unsafe extern "system-unwind" fn append(a: usize, b: usize, c: usize, d: usize, e: usize) -> usize {
+    let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) -> usize =
+        unsafe { std::mem::transmute(ORIGINAL[4].load(Ordering::Acquire)) };
+    unsafe { around::<4>(a, b, c, d, || original(a, b, c, d, e)) }
+}
+unsafe fn around<const SITE: usize>(
+    a: usize,
+    _b: usize,
+    _c: usize,
+    _d: usize,
+    original: impl FnOnce() -> usize,
+) -> usize {
+    let timing =
+        collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
+    REVISION.fetch_add(1, Ordering::AcqRel);
+    ACTIVE.fetch_add(1, Ordering::SeqCst);
+    let mut scope = Scope { complete: false };
+    let base = BASE.load(Ordering::Acquire);
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let source = (SITE <= 1 || SITE == 3)
+        .then(|| a.checked_sub(BONUS_BODY))
+        .flatten();
+    let retired = SITE == 3;
+    if retired && let Some(source) = source {
+        observe(&memory, base, sources::Key::Direct(source), true);
+    }
+    let provider = SITE >= 4;
+    let forwarded = unsafe {
+        if SITE == 2 {
+            forward::idea_invalidation(a)
+        } else {
+            forward::invalidation(provider, if provider { a } else { source.unwrap_or(a) })
+        }
+    };
+    let result = timing.original(original);
+    if !retired {
+        if let Some(source) = source {
+            observe(&memory, base, sources::Key::Direct(source), false);
+        } else if provider {
+            observe(&memory, base, sources::Key::Provider(a), false);
+        } else if SITE == 2 && SOURCE_BASELINE.load(Ordering::Acquire) {
+            // This rare postprocessing boundary owns only this idea's source list.
+            if let Some(roster) = Array::read(&memory, a + IDEA_SOURCES, 8) {
+                for ordinal in 0..roster.count {
+                    if let Some(pointer) = roster
+                        .element(ordinal, 8)
+                        .and_then(|at| engine_native::read::<u64>(&memory, at))
+                    {
+                        observe(&memory, base, sources::Key::Direct(pointer as usize), false);
+                    } else {
+                        MISSED.store(true, Ordering::Release);
+                    }
+                }
+            } else {
+                MISSED.store(true, Ordering::Release);
+            }
+        }
+    }
+    if let Some(forwarded) = forwarded {
+        unsafe { forwarded.finish() };
+    }
+    scope.complete = true;
+    result
+}
+pub(super) struct Hooks {
+    hooks: Vec<Hook>,
+}
+impl Hooks {
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+        let callbacks = [
+            callback::<0> as *const () as usize,
+            callback::<1> as *const () as usize,
+            callback::<2> as *const () as usize,
+            callback::<3> as *const () as usize,
+            append as *const () as usize,
+            callback::<5> as *const () as usize,
+        ];
+        let mut hooks = Vec::new();
+        if MUTATIONS.iter().all(|site| {
+            engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+        }) {
+            for (index, site) in MUTATIONS.iter().enumerate() {
+                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                    .map_err(|_| match index {
+                    0 => "design-source ReadAppliedSource hook construction failed",
+                    1 => "design-source ResetAppliedSource hook construction failed",
+                    2 => "design-source PostprocessIdeaSources hook construction failed",
+                    3 => "design-source DestroyAppliedSource hook construction failed",
+                    4 => "design-source AppendNamedSource hook construction failed",
+                    _ => "design-source RemoveNamedSource hook construction failed",
+                })?;
+                ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
+                hooks.push(hook);
+            }
+        }
+        collector_observers::country_input_changes::design_source_forwarder(Some(
+            &COUNTRY_FORWARDER,
+        ));
+        collector_certificates::content_changes::forwarder(Some(&CONTENT_FORWARDER));
+        Ok(Self { hooks })
+    }
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        if !enabled {
+            ENABLED.store(false, Ordering::Release);
+        }
+        let changed = Hook::set_family_enabled_shared(&mut self.hooks,enabled).map_err(|_| "design-source hook publication failed (ReadAppliedSource, ResetAppliedSource, PostprocessIdeaSources, DestroyAppliedSource, AppendNamedSource, RemoveNamedSource)")?;
+        if changed {
+            ENABLED.store(
+                enabled && self.hooks.len() == MUTATIONS.len(),
+                Ordering::Release,
+            );
+        }
+        Ok(changed)
+    }
+    pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.hooks.iter().flat_map(Hook::executable_ranges)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn named_append_preserves_its_fifth_stack_argument_and_return() {
+        unsafe extern "system-unwind" fn original(
+            a: usize,
+            b: usize,
+            c: usize,
+            d: usize,
+            e: usize,
+        ) -> usize {
+            a ^ b ^ c ^ d ^ e
+        }
+        let previous = ORIGINAL[4].swap(original as *const () as usize, Ordering::AcqRel);
+        assert_eq!(unsafe { append(1, 2, 4, 8, 16) }, 31);
+        collector_test_support::with_allocations_denied(|| {
+            assert_eq!(unsafe { append(1, 2, 4, 8, 16) }, 31)
+        });
+        ORIGINAL[4].store(previous, Ordering::Release);
+    }
+}

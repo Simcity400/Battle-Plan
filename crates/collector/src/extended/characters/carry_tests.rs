@@ -64,7 +64,7 @@ fn hour(job: &mut CharactersJob, world: &World) -> Hour {
     assert!(report.raw_ok && !report.plan_failed);
     let planned = job.log.planned_capture_succeeded();
     let mut captured = Captured::with_capacities(&capacities());
-    captured.decode_characters_payload(MODULE, job, &mut [0; 5]);
+    captured.decode_characters_payload(MODULE, job, &mut [0; N]);
     captured.remember_templates(job);
     if job.grow_for_next() {
         job.grow();
@@ -369,7 +369,7 @@ fn roster_hour(job: &mut CharactersJob, world: &World) -> RosterHour {
         })
     });
     let mut captured = Captured::with_capacities(&capacities());
-    captured.decode_characters_payload(MODULE, job, &mut [0; 5]);
+    captured.decode_characters_payload(MODULE, job, &mut [0; N]);
     captured.remember_templates(job);
     if job.grow_for_next() {
         job.grow();
@@ -477,7 +477,7 @@ fn a_settled_quiet_hour_republishes_its_characters_rows() {
     let carry = std::mem::replace(&mut job.carry, Carry::with(&WATCHES, Some(Check::Nothing)));
     job.carry.version = version;
     let mut captured = Captured::with_capacities(&capacities());
-    captured.decode_characters_payload(MODULE, &job, &mut [0; 5]);
+    captured.decode_characters_payload(MODULE, &job, &mut [0; N]);
     job.carry = carry;
     characters_test_kit::assert_matches_direct(&captured, &walked(&world));
 }
@@ -610,7 +610,7 @@ fn a_settled_quiet_roster_hour_reads_every_unit_leader_in_one_program() {
             "{countries} countries, {units} unit leaders: the role census and the program"
         );
         let mut captured = Captured::with_capacities(&capacities());
-        captured.decode_characters_payload(MODULE, &job, &mut [0; 5]);
+        captured.decode_characters_payload(MODULE, &job, &mut [0; N]);
         characters_test_kit::assert_matches_direct(&captured, &walked(&world));
     }
 }
@@ -1002,7 +1002,7 @@ fn trait_hour(
     let report = copy_characters_growing(&memory, context(PART_MASKS[3]), job, Roles::Borrow(loan));
     assert!(report.raw_ok && !report.plan_failed);
     let mut captured = Captured::with_capacities(&capacities());
-    captured.decode_characters_payload(MODULE, job, &mut [0; 5]);
+    captured.decode_characters_payload(MODULE, job, &mut [0; N]);
     captured.remember_templates(job);
     if job.grow_for_next() {
         job.grow();
@@ -1109,7 +1109,7 @@ fn roster_hour_into(
     // The pipeline grows every frame between hours.
     frame.grow(&mut capacities());
     frame.reset();
-    frame.decode_characters_payload(MODULE, job, &mut [0; 5]);
+    frame.decode_characters_payload(MODULE, job, &mut [0; N]);
     frame.remember_templates(job);
     if job.grow_for_next() {
         job.grow();
@@ -1188,7 +1188,7 @@ fn trait_hour_into(
     assert!(report.raw_ok && !report.plan_failed);
     frame.grow(&mut capacities());
     frame.reset();
-    frame.decode_characters_payload(MODULE, job, &mut [0; 5]);
+    frame.decode_characters_payload(MODULE, job, &mut [0; N]);
     frame.remember_templates(job);
     if job.grow_for_next() {
         job.grow();
@@ -1231,4 +1231,129 @@ fn a_frame_publishes_its_held_traits_without_rewriting_them() {
         trait_hour_into(&mut job, &world, &loan, &mut frame),
         traits_walked(&world)
     );
+}
+
+#[test]
+fn forced_full_refresh_publishes_current_training_without_a_stale_carry_key() {
+    static WATCHES: Watches = Watches::new();
+    static DOMAIN: Isolated = Isolated::new();
+    static LEADERS: LeaderWatches = LeaderWatches::new();
+    let mut world = world();
+    WATCHES.enable(world.characters);
+    DOMAIN.enable();
+    LEADERS.enable(world.characters);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    settle_roster(&mut job, &world);
+    let mut frame = Captured::with_capacities(&capacities());
+    roster_hour_into(&mut job, &world, &mut frame);
+    roster_hour_into(&mut job, &world, &mut frame);
+    let mut cache = None;
+    let mut output = match frame.training_input(&mut cache) {
+        TableInput::SharedComplete(rows) => rows,
+        _ => panic!("complete training baseline"),
+    };
+    assert!(cache.is_some(), "the baseline must exercise the carry memo");
+    let leader = World::unit(5).unwrap();
+    let progress = engine_native::read::<u64>(&world, leader + cunit_leader::TRAIT_EXPERIENCE_DATA)
+        .unwrap() as usize;
+    for (list, address, site, value) in [
+        (0, progress + 8, 26, 1_234_567_i64),
+        (1, World::factors(5) + 8, 30, -765_432_i64),
+    ] {
+        let generation = frame.held.units.unwrap().0.0;
+        let scalar = frame.tables()[3].clone();
+        world.patch(address, &value.to_le_bytes());
+        drop(LEADERS.notify(leader, site));
+        let mut ctx = context(PART_MASKS[0]);
+        ctx.force_full = true;
+        let report = copy_characters_growing(&world, ctx, &mut job, Roles::Gather);
+        assert!(report.raw_ok && !report.plan_failed);
+        assert!(!job.roster.quiet);
+        assert_eq!(quiet::census_generation(&job), generation);
+        frame.grow(&mut capacities());
+        frame.reset();
+        frame.decode_characters_payload(MODULE, &job, &mut [0; N]);
+        frame.remember_templates(&mut job);
+        assert_eq!(frame.tables()[3], scalar, "only training changed");
+        let expected = frame.tables()[5].clone();
+        let TableInput::SharedComplete(current) = frame.training_input(&mut cache) else {
+            panic!("complete refreshed training");
+        };
+        assert!(!Arc::ptr_eq(&output, &current));
+        assert_eq!(TableView::Complete((*current).clone()), expected);
+        let TableRows::UnitLeaderTraitExperience(rows) = current.as_ref() else {
+            panic!("training rows");
+        };
+        assert!(
+            rows.iter()
+                .any(|row| row.list == list && row.experience == value)
+        );
+        if job.grow_for_next() {
+            job.grow();
+        }
+        job.prepare_read_plans();
+        job.clear();
+        roster_hour_into(&mut job, &world, &mut frame);
+        let held = roster_hour(&mut job, &world);
+        assert_eq!(held.leaders, 0, "quiet recovery still carries every leader");
+        assert_eq!(held.captured.tables()[5], expected);
+        output = match frame.training_input(&mut cache) {
+            TableInput::SharedComplete(rows) => rows,
+            _ => panic!("complete renewed training"),
+        };
+    }
+}
+
+#[test]
+fn experience_mutations_refresh_one_leader_and_carry_complete_training() {
+    static WATCHES: Watches = Watches::new();
+    static DOMAIN: Isolated = Isolated::new();
+    static LEADERS: LeaderWatches = LeaderWatches::new();
+    let mut world = world();
+    WATCHES.enable(world.characters);
+    DOMAIN.enable();
+    LEADERS.enable(world.characters);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    settle_roster(&mut job, &world);
+    let before = roster_hour(&mut job, &world);
+    let held = roster_hour(&mut job, &world);
+    assert!(
+        matches!(held.captured.outcomes()[5], Outcome::Rows { .. }),
+        "training: {:?}; first training refusal: {:?}",
+        held.captured.outcomes()[5],
+        held.captured
+            .units
+            .rows
+            .rows
+            .iter()
+            .find_map(|row| row.training_reason)
+    );
+    assert_eq!(
+        held.leaders, 0,
+        "unchanged XP and training perform no native leader read"
+    );
+    assert_eq!(held.captured.tables()[5], before.captured.tables()[5]);
+    assert!(
+        matches!(&held.captured.tables()[5], TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) if !rows.is_empty())
+    );
+    let leader = World::unit(5).unwrap();
+    for site in 23..32 {
+        let value = i64::MAX - site as i64;
+        world.patch(leader + cunit_leader::EXPERIENCE, &value.to_le_bytes());
+        if site >= 30 {
+            world.patch(World::factors(5) + 8, &value.to_le_bytes());
+        }
+        drop(LEADERS.notify(leader, site));
+        let changed = roster_hour(&mut job, &world);
+        assert_eq!(changed.units(), walked(&world).tables()[3]);
+        assert_eq!(changed.captured.tables()[5], walked(&world).tables()[5]);
+        assert_eq!(
+            (job.unit_carry.counts().reused, job.unit_carry.counts().read),
+            (leaders(&world) - 1, 1)
+        );
+        assert!(
+            matches!(&changed.units(), TableView::Complete(TableRows::UnitLeaders(rows)) if rows.iter().any(|row| row.experience == value))
+        );
+        assert_eq!(roster_hour(&mut job, &world).leaders, 0);
+    }
 }

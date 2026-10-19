@@ -1417,6 +1417,11 @@ fn resource_frame() -> DecodedFrame {
     put::<tables::StateResourceInputs>(
         &mut frame,
         vec![StateResourceInputRow {
+            local_manpower: Default::default(),
+            local_noncore_manpower: Default::default(),
+            recruitment_add: Default::default(),
+            recruitment_factor: Default::default(),
+
             state: 10,
             gate: 0,
             global_factor: 0,
@@ -2289,6 +2294,7 @@ mod launch_gate {
             vec![VariantStatsRow {
                 variant: TRANSPORT_VARIANT,
                 values,
+                ..Default::default()
             }],
         );
         let world = World::new(&frame, assets.trigger_content.facts()).unwrap();

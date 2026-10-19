@@ -198,7 +198,15 @@ impl Partial {
         if WHOLE_BUCKETS.with(std::cell::Cell::get) {
             return Self::Bucket { aligned, bucket };
         }
-        if let Some(run) = run {
+        // A backdated merge can have reversed endpoints. A sparse bucket's
+        // constant-span candidate can also overflow even when its real total
+        // fits, so prove that total before materializing the candidate.
+        if let Some(run) = run
+            && bucket.first_hour <= bucket.last_hour
+            && run.value.unsigned_abs().checked_mul(
+                (i64::from(bucket.last_hour) - i64::from(bucket.first_hour) + 1) as u128,
+            ) == Some(bucket.absolute_total)
+        {
             let span = Self::Span {
                 aligned,
                 first: bucket.first_hour,
@@ -1450,7 +1458,8 @@ impl Batch {
             })
             .collect())
     }
-    #[allow(clippy::too_many_arguments)] // The writer's fixed inputs, passed straight through from the caller.
+    // Keep batch bounds, encoding and page-publication operands explicit at this writer boundary.
+    #[allow(clippy::too_many_arguments)]
     fn write_keys<'a, W: super::pages::Pages + ?Sized>(
         first: i32,
         last: i32,
@@ -3065,6 +3074,7 @@ impl<'a> Reader<'a> {
     /// serialized. The hour's batch is found once. A key's row comes from that
     /// batch when the key has events there, else from the batch holding it; a
     /// key without events in the hour's batch is not decoded there.
+    // Keep the supplying hour and serialized row optional per key, in requested key order.
     pub fn latest_event_rows(
         &mut self,
         keys: &[u64],

@@ -2,7 +2,7 @@ use super::*;
 
 impl Captured {
     /// Decode-worker interpretation of a scheduled raw construction-rest
-    /// payload. Replays the existing resource, queue, occupation, resistance
+    /// payload. Replays the existing resource, queue, occupation
     /// and collaboration walks against the recorded spans. Worker buffers grow
     /// from these original headers before publication. Fixed fixtures retain
     /// their grants and copied occupation demand. Clears `rest_raw_mode`.
@@ -180,17 +180,9 @@ impl Captured {
             self.laws.outcome = Outcome::Unavailable { reason };
         }
         decode_ticks[3] += elapsed(started);
-        let started = qpc();
-        self.resistance.outcome = cresistance::walk_buffer(
-            &recorded,
-            base,
-            game_state,
-            engine_native::walk::Buffer::for_worker(
-                &mut self.resistance.rows,
-                job.log.worker_growth_enabled(),
-            ),
-        );
-        decode_ticks[8] += elapsed(started);
+        self.resistance.outcome = Outcome::Unavailable {
+            reason: "state resistance is acquired by the state worker",
+        };
         let started = qpc();
         self.collaboration.outcome = ccountry_collaboration_status::walk_buffer(
             &recorded,
@@ -217,7 +209,7 @@ impl Captured {
 // (`crate::raw::Recorded`), so rows, ordinals, arenas, truncation and failure
 // reasons are identical by construction (see `crate::raw`).
 //
-// One shared states-array traversal feeds resources, resistance and building
+// One shared states-array traversal feeds resources and building
 // targets (no duplicated censuses); one shared country census feeds the
 // queue, occupation and collaboration walks. The occupation shared walk (five
 // tables plus route/law arenas) moves together; empty
@@ -241,9 +233,8 @@ impl Captured {
 const M_C_RES: u32 = 0x001;
 const M_C_BLD: u32 = 0x002;
 const M_C_RAIL: u32 = 0x004;
-const M_C_RESIST: u32 = 0x100;
 const M_C_COLLAB: u32 = 0x200;
-const M_C_ALL: u32 = 0x3FF;
+const M_C_ALL: u32 = 0x2FF;
 const M_C_QUEUE: u32 = 0x006;
 pub(super) const M_C_OCC: u32 = 0x0F8;
 
@@ -440,7 +431,7 @@ pub(super) fn copy_construction_string(
 }
 
 /// Shared states-array header plus country census. Returns the states array
-/// on success; the caller traverses states once for resources, resistance
+/// on success; the caller traverses states once for resources
 /// and building targets (no duplicated censuses).
 fn copy_construction_roots(
     log: &mut RawLog<10>,
@@ -563,9 +554,9 @@ fn copy_construction_link(
     Some(Some(slot))
 }
 
-/// Mirror of `state_resource_entry::walk` plus `cresistance::walk` over one
+/// Mirror of `state_resource_entry::walk` over one
 /// shared states traversal: state pointers, vtables, ids, templates,
-/// resource vectors plus resistance headers. Takes are unconditional over
+/// resource vectors. Takes are unconditional over
 /// discoverable addresses (a superset); the replay derives every outcome.
 fn copy_states_walk(log: &mut RawLog<10>, memory: &impl Memory, base: usize, states: &Array) {
     let state_vtable = match base.checked_add(cstate::VTABLE_RVA) {
@@ -576,11 +567,7 @@ fn copy_states_walk(log: &mut RawLog<10>, memory: &impl Memory, base: usize, sta
         Some(v) => v as u64,
         None => return,
     };
-    let resistance_vtable = match base.checked_add(cresistance::VTABLE_RVA) {
-        Some(v) => v as u64,
-        None => return,
-    };
-    let _ = (state_vtable, template_vtable, resistance_vtable);
+    let _ = (state_vtable, template_vtable);
     for state in 1..states.count {
         let addr = states.element(state, 8);
         let Some(ptr_start) = cspan(log, memory, addr, 8, M_C_ALL) else {
@@ -593,7 +580,7 @@ fn copy_states_walk(log: &mut RawLog<10>, memory: &impl Memory, base: usize, sta
             Some(p) => p,
             None => continue,
         };
-        // State vtable plus id (shared by resources and resistance).
+        // State identity for the resource template.
         let _ = cspan(log, memory, Some(pointer), 8, M_C_ALL);
         let _ = cspan(log, memory, pointer.checked_add(cstate::ID), 4, M_C_ALL);
         // Template chain for resources.
@@ -631,20 +618,6 @@ fn copy_states_walk(log: &mut RawLog<10>, memory: &impl Memory, base: usize, sta
                     }
                 }
             }
-        }
-        // Resistance object: header, compliance block, active byte.
-        if let Some(resistance) = pointer.checked_add(cstate::RESISTANCE) {
-            let _ = cspan(log, memory, Some(resistance), 32, M_C_RESIST);
-            if let Some(compliance) = resistance.checked_add(cresistance::COMPLIANCE) {
-                let _ = cspan(log, memory, Some(compliance), 20, M_C_RESIST);
-            }
-            let _ = cspan(
-                log,
-                memory,
-                resistance.checked_add(cresistance::ACTIVE),
-                1,
-                M_C_RESIST,
-            );
         }
         if log.overflowed {
             return;

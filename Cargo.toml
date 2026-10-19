@@ -11,6 +11,7 @@ publish = false
 license = "MIT"
 
 [workspace.dependencies]
+collector-naval-management = { path = "crates/collector-naval-management" }
 replay-frame = { path = "crates/replay-frame" }
 replay-derive = { path = "crates/replay-derive" }
 weather-period = { path = "crates/weather-period" }

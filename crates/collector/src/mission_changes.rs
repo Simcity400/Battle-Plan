@@ -126,7 +126,14 @@ pub(crate) const VERIFY: bool = cfg!(feature = "mission_verify");
 
 /// Notifications running now.
 pub fn active() -> usize {
-    WATCHES.registry.active()
+    WATCHES
+        .registry
+        .active()
+        .saturating_add(crate::radar_changes::active())
+        .saturating_add(crate::ground_crew_changes::active())
+        .saturating_add(crate::air_detection_changes::active())
+        .saturating_add(crate::naval_map_changes::active())
+        .saturating_add(collector_observers::fleet_region_changes::active())
 }
 
 /// Game thread, in the hourly callback before any capture. `invalidate`
@@ -134,6 +141,7 @@ pub fn active() -> usize {
 /// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
+    collector_observers::fleet_region_changes::boundary(invalidate);
 }
 
 /// Off the game thread: size the watches for the country air objects the
@@ -141,6 +149,7 @@ pub fn boundary(invalidate: bool) {
 /// later larger table waits for an invalidating hour, while the first
 /// installs at once.
 pub fn presize() {
+    collector_observers::fleet_region_changes::presize();
     let countries = COUNTRIES.load(Ordering::Relaxed);
     if countries != 0 {
         WATCHES.registry.offer(countries);
@@ -150,6 +159,10 @@ pub fn presize() {
 /// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
+    crate::radar_changes::collect();
+    crate::ground_crew_changes::collect();
+    crate::naval_map_changes::collect();
+    collector_observers::fleet_region_changes::collect();
 }
 
 /// One walk's countries and registrations.
@@ -186,6 +199,22 @@ pub(crate) fn record(counts: &Counts, countries: Option<usize>) {
     }
 }
 
+static PUBLICATION_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Attach/detach failures only; retains the family's site and the original reason.
+pub(crate) fn hook_failure(
+    family: &str,
+    action: &str,
+    sites: &str,
+    reason: impl std::fmt::Display,
+) -> &'static str {
+    let message = format!("{family} {action} [{sites}]: {reason}");
+    *PUBLICATION_ERROR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message.clone());
+    Box::leak(message.into_boxed_str())
+}
+
 pub fn status() -> impl serde::Serialize {
     let events = crate::status::map(
         MUTATIONS
@@ -196,6 +225,10 @@ pub fn status() -> impl serde::Serialize {
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
         "configured": cfg!(feature = "mission_changes"),
+        "publication_error": PUBLICATION_ERROR.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+        "ground_crews": crate::ground_crew_changes::status(),
+        "naval_map": crate::naval_map_changes::status(),
+        "fleet_regions": collector_observers::fleet_region_changes::status(),
         "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
         "sampled_verified": SAMPLED.verified(),
@@ -211,12 +244,18 @@ pub fn status() -> impl serde::Serialize {
         "quiet_hours": reads[6],
         "events": events,
         "watches": WATCHES.registry.status(),
+        "radar_symbols": crate::radar_changes::status(),
         "scope": "cumulative since attach; a country's AirRegionalMissions registrations are carried when its country air object has the address, canonical slot and gathered mission-vector header bytes of the held read and no hooked writer touched it since, and each carried registration's wing in this hour's census still names the object's country and the registration's region (otherwise the country is read afresh); every object's headers and the wing census are read every hour; every hour also reads the carryable countries of its slice afresh (one in rotation_hours by canonical slot; every one in verify mode), publishes the fresh rows and disables reuse at the first mismatch (sampled_*); quiet_hours counts walks whose certificates held by the domain's unchanged quiet token alone, without a per-country lookup"
     })
 }
 
 pub struct Hooks {
     hooks: Vec<Hook>,
+    radar: crate::radar_changes::Hooks,
+    ground_crews: crate::ground_crew_changes::Hooks,
+    detection: crate::air_detection_changes::Hooks,
+    naval_map: crate::naval_map_changes::Hooks,
+    fleet_regions: collector_observers::fleet_region_changes::Hooks,
 }
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
@@ -226,7 +265,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "mission_changes")
             && MUTATIONS.iter().all(|site| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -240,7 +279,18 @@ impl Hooks {
                 hooks.push(hook);
             }
         }
-        Ok(Self { hooks })
+        Ok(Self {
+            hooks,
+            radar: unsafe { crate::radar_changes::Hooks::new(memory, base) }?,
+            ground_crews: unsafe { crate::ground_crew_changes::Hooks::new(memory, base) }?,
+            detection: unsafe { crate::air_detection_changes::Hooks::new(memory, base) }?,
+            naval_map: unsafe { crate::naval_map_changes::Hooks::new(memory, base) }?,
+            fleet_regions: if cfg!(feature = "mission_changes") {
+                unsafe { collector_observers::fleet_region_changes::Hooks::new(memory, base) }?
+            } else {
+                collector_observers::fleet_region_changes::Hooks::disabled()
+            },
+        })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
@@ -258,10 +308,29 @@ impl Hooks {
         WATCHES
             .registry
             .set_enabled(enabled && !self.hooks.is_empty());
-        Ok(true)
+        if !self.radar.set_enabled(enabled)? {
+            return Ok(false);
+        }
+        if !self.ground_crews.set_enabled(enabled)? {
+            return Ok(false);
+        }
+        if !self.detection.set_enabled(enabled)? {
+            return Ok(false);
+        }
+        if !self.naval_map.set_enabled(enabled)? {
+            return Ok(false);
+        }
+        self.fleet_regions.set_enabled(enabled)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
-        self.hooks.iter().flat_map(Hook::executable_ranges)
+        self.hooks
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .chain(self.radar.executable_ranges())
+            .chain(self.ground_crews.executable_ranges())
+            .chain(self.detection.executable_ranges())
+            .chain(self.naval_map.executable_ranges())
+            .chain(self.fleet_regions.executable_ranges())
     }
 }
 impl Drop for Hooks {
@@ -300,6 +369,19 @@ callback!(unregister_mission, 1);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_hook_errors_name_the_family_site_and_original_reason() {
+        let message = hook_failure(
+            "ground_crews",
+            "construction failed",
+            "enable",
+            "synthetic verification refusal",
+        );
+        assert!(message.contains("ground_crews"));
+        assert!(message.contains("enable"));
+        assert!(message.contains("synthetic verification refusal"));
+    }
 
     /// A writer moves only the object it names, and every writer moves the
     /// domain's quiet token.

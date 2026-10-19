@@ -23,7 +23,13 @@ use collector_timing::hook_timing;
 
 pub mod daily_intel;
 pub mod flag_changes;
+mod hook_errors;
 pub mod intel;
+pub mod network_auxiliary;
+pub mod propaganda_changes;
+mod retained_snapshot;
+pub mod source_changes;
+mod source_state;
 pub mod variable_changes;
 
 #[cfg(test)]

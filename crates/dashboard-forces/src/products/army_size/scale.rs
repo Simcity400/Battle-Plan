@@ -533,6 +533,7 @@ fn army_size_scale_window_reply_sizes() {
         for attribution in [ArmyAttribution::Owner, ArmyAttribution::Host] {
             for top in [10, 30] {
                 let params = ArmySizeParams {
+                    template_at: None,
                     branch_id: "1".into(),
                     tags: vec![],
                     top: Some(top),
@@ -545,6 +546,7 @@ fn army_size_scale_window_reply_sizes() {
                     reply_series(black_box(&scanned), &params, &range, None, &cancelled, None)
                         .unwrap();
                 let reply = ArmySizeReply {
+                    template_sections: None,
                     branch_id: "1".into(),
                     available: true,
                     windows: vec![],
@@ -594,6 +596,7 @@ fn army_size_scale_window_reply_sizes() {
         }
     }
     let params = ArmySizeParams {
+        template_at: None,
         branch_id: "1".into(),
         tags: vec![synthetic_tag(1)],
         top: None,
@@ -616,6 +619,7 @@ fn army_size_scale_window_reply_sizes() {
     )
     .unwrap();
     let reply = ArmySizeReply {
+        template_sections: None,
         branch_id: "1".into(),
         available: true,
         windows: vec![],

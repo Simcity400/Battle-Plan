@@ -120,7 +120,7 @@ mod characters;
 pub use ability::ability_description;
 mod diplomacy;
 mod doctrine_sources;
-pub use doctrine_sources::doctrine_tactic_sources;
+pub use doctrine_sources::{doctrine_benefits, doctrine_tactic_sources};
 pub use static_lists::scaled_static_modifiers;
 mod dispatch;
 mod empty;
@@ -128,6 +128,8 @@ mod events;
 mod lists;
 mod modifiers;
 mod numeric;
+mod occupation;
+pub use occupation::occupation_modifier_description;
 mod politics;
 mod scope_names;
 mod scopes;
@@ -618,7 +620,7 @@ pub fn describe(
                 let result = evaluator.end_description(scopes);
                 context.session.replace(Some(evaluator.variable_session()));
                 if let Err(why) = result {
-                    out.refuse("description cleanup", why);
+                    out.refuse("description cleanup", why.to_string());
                 }
             } else if !context.nested_session {
                 let result = crate::triggers::event_scopes::cleanup_description(
@@ -626,11 +628,11 @@ pub fn describe(
                     0,
                 );
                 if let Err(why) = result {
-                    out.refuse("description cleanup", why);
+                    out.refuse("description cleanup", why.to_string());
                 }
             }
         }
-        Err(why) => out.refuse("event scope", why),
+        Err(why) => out.refuse("event scope", why.to_string()),
     }
     *scopes = out.graph.borrow().clone();
     out.out
@@ -848,7 +850,11 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             }
             Some(Selected::Keyword(selector)) => {
                 if let Some(target) = selector_scope(selector) {
-                    match self.evaluator()?.enter(&target, scopes)? {
+                    match self
+                        .evaluator()?
+                        .enter(&target, scopes)
+                        .map_err(|why| why.to_string())?
+                    {
                         Some(Scope::Country(country) | Scope::CountryLeader { country, .. }) => {
                             Some(country)
                         }
@@ -882,12 +888,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                     .context
                     .text
                     .recorded()
-                    .saved_country(row.country, installed_content_core::parser::c_string(name))?,
+                    .saved_country(row.country, installed_content_core::parser::c_string(name))
+                    .map_err(|why| why.to_string())?,
                 _ => None,
             },
             None => self
                 .evaluator()?
-                .scoped_country(scalar_operand(item)?, scopes)?,
+                .scoped_country(scalar_operand(item)?, scopes)
+                .map_err(|why| why.to_string())?,
         };
         Ok(country.filter(|country| *country > 0))
     }
@@ -928,7 +936,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         match scopes.this {
             // falls back to zero when no current state exists.
             Scope::Country(_) | Scope::CountryLeader { .. } | Scope::State(NULL_STATE) => Ok(None),
-            Scope::State(_) => Ok(match self.evaluator()?.enter(&Parsed::Keyword(keyword), scopes)? {
+            Scope::State(_) => Ok(match self.evaluator()?.enter(&Parsed::Keyword(keyword), scopes).map_err(|why| why.to_string())? {
                 Some(Scope::Country(country) | Scope::CountryLeader { country, .. }) => Some(country),
                 _ => None,
             }),
@@ -995,15 +1003,24 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         return Ok(Some(EffectSavedTarget::Graph(target)));
                     }
                     EventObject::Project { owner, id } => {
-                        self.context.world()?.project(owner, id)?;
+                        self.context
+                            .world()?
+                            .project(owner, id)
+                            .map_err(|why| why.to_string())?;
                         return Ok(Some(EffectSavedTarget::Graph(target)));
                     }
                     EventObject::Raid(reference) => {
-                        self.context.world()?.raid(reference)?;
+                        self.context
+                            .world()?
+                            .raid(reference)
+                            .map_err(|why| why.to_string())?;
                         return Ok(Some(EffectSavedTarget::Graph(target)));
                     }
                     EventObject::Unit(reference) => {
-                        self.context.world()?.unit(reference)?;
+                        self.context
+                            .world()?
+                            .unit(reference)
+                            .map_err(|why| why.to_string())?;
                         return Ok(Some(EffectSavedTarget::Graph(target)));
                     }
                     EventObject::Character(_)
@@ -1024,7 +1041,7 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         // Read only the requested member: state and country are
         // independent, unlike a context projection.
         let recorded = self.context.text.recorded();
-        match recorded.saved_target(name)? {
+        match recorded.saved_target(name).map_err(|why| why.to_string())? {
             Some(row) if crate::scope::valid_saved_target(row) => {
                 Ok(Some(EffectSavedTarget::Recorded(row)))
             }
@@ -1074,13 +1091,20 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 return self
                     .evaluator()?
                     .scoped_state_id(operand, scopes)
-                    .map(|id| id as u32);
+                    .map(|id| id as u32)
+                    .map_err(|why| why.to_string());
             }
         };
-        Ok(match self.evaluator()?.enter(&target, scopes)? {
-            Some(Scope::State(id)) => id,
-            _ => 0,
-        })
+        Ok(
+            match self
+                .evaluator()?
+                .enter(&target, scopes)
+                .map_err(|why| why.to_string())?
+            {
+                Some(Scope::State(id)) => id,
+                _ => 0,
+            },
+        )
     }
 
     fn valid_state(&self, id: u32) -> Result<Option<&StateRow>, String> {
@@ -1111,7 +1135,9 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 
     pub(super) fn scoped_value(&self, operand: &[u8], scopes: Scopes) -> Result<i64, String> {
-        self.evaluator()?.scoped_value(operand, scopes)
+        self.evaluator()?
+            .scoped_value(operand, scopes)
+            .map_err(|why| why.to_string())
     }
 
     pub(super) fn evaluator(&self) -> Result<&Evaluator<'c, 'f>, String> {
@@ -1125,14 +1151,17 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 if let Some(session) = self.context.session.borrow().as_ref() {
                     evaluator = evaluator.with_variable_session(session);
                 }
-                evaluator.begin_description_in(evaluator.event_scopes(0)?);
+                evaluator.begin_description_in(
+                    evaluator.event_scopes(0).map_err(|why| why.to_string())?,
+                );
                 Ok(evaluator)
             })
             .as_ref()
             .map_err(Clone::clone)
     }
 
-    pub(super) fn refuse(&mut self, key: &str, why: String) {
+    pub(super) fn refuse(&mut self, key: &str, why: impl Into<String>) {
+        let why = why.into();
         *self
             .out
             .refusals
@@ -1298,4 +1327,45 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
         text
     }
+}
+
+/// Describe an authored output in the selected project's actual assignment scopes.
+/// A missing assignment stays missing instead of selecting another scientist or facility.
+pub fn project_output_description(
+    output: &installed_content_core::special_projects::Output,
+    context: &Context<'_, '_>,
+    owner: u32,
+    id: u32,
+    scientist: Result<Option<u32>, String>,
+    facility: Result<Option<(u32, u32)>, String>,
+) -> Description {
+    let mut renderer = Renderer {
+        context,
+        graph: Rc::new(RefCell::new(EventScopes::new(vec![
+            crate::scripted_text::EventScope::of(EventObject::Project { owner, id }),
+        ]))),
+        evaluator: OnceCell::new(),
+        out: Description::default(),
+        scripted_stack: Vec::new(),
+    };
+    let item = Item {
+        key: None,
+        key_quoted: false,
+        operator: Default::default(),
+        value: installed_content_core::parser::Value::Block(Vec::new()),
+        kind: installed_content_core::parser::Kind::Open,
+    };
+    match renderer.project_output_body(
+        output,
+        &item,
+        Scopes::of(Scope::Project { owner, id }),
+        owner,
+        id,
+        scientist,
+        facility,
+    ) {
+        Ok(text) => renderer.out.text = text,
+        Err(why) => renderer.refuse("special-project output", why),
+    }
+    renderer.out
 }

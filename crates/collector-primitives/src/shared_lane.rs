@@ -73,6 +73,11 @@ impl<R: Copy + Default> SharedLane<R> {
     pub fn stride(&self) -> usize {
         self.stride
     }
+    /// No reservation can still own an element. The owner must separately
+    /// exclude new producers before replacing the lane.
+    pub fn is_drained(&self) -> bool {
+        self.reserved.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+    }
     pub fn allocated_bytes(&self) -> usize {
         self.slots.len() * size_of::<Slot<R>>() + self.bytes.len()
     }
@@ -132,9 +137,19 @@ impl<R: Copy + Default> SharedLane<R> {
     /// Consumer side: every published, unreleased record as (order, index),
     /// sorted by the log-wide order. Void reservations are released here.
     pub fn published(&self, order: impl Fn(&R) -> u64) -> Result<Vec<(u64, u64)>, &'static str> {
+        let mut entries = Vec::new();
+        self.published_into(&mut entries, order)?;
+        Ok(entries)
+    }
+    /// Reuse the sole consumer's ordering arena across drains.
+    pub fn published_into(
+        &self,
+        entries: &mut Vec<(u64, u64)>,
+        order: impl Fn(&R) -> u64,
+    ) -> Result<(), &'static str> {
+        entries.clear();
         let tail = self.tail.load(Ordering::Acquire);
         let end = self.reserved.load(Ordering::Acquire);
-        let mut entries = Vec::new();
         for index in tail..end {
             let slot = self.slot(index);
             let mark = slot.mark.load(Ordering::Acquire);
@@ -145,12 +160,12 @@ impl<R: Copy + Default> SharedLane<R> {
                 slot.mark.fetch_or(RELEASED, Ordering::Release);
                 continue;
             }
-            allocation::reserve(&mut entries, 1)
+            allocation::reserve(entries, 1)
                 .map_err(|_| "shared observer lane drain allocation failed")?;
             entries.push((order(unsafe { &*slot.record.get() }), index));
         }
         entries.sort_unstable();
-        Ok(entries)
+        Ok(())
     }
     /// A published, unreleased record and its byte span.
     pub fn record(&self, index: u64) -> (R, &[u8]) {

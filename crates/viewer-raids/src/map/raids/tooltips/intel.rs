@@ -302,7 +302,8 @@ pub fn current(
         .any(|id| world.state_controller(*id) == Some(ours));
     // Select the template's first province.
     let first = world
-        .state_order(state)?
+        .state_order(state)
+        .map_err(|why| why.to_string())?
         .first()
         .ok_or("target state has no province")?;
     let region = *assets

@@ -7,10 +7,15 @@ mod air_region;
 mod border;
 pub(super) mod clock;
 mod mode_lines;
+pub mod naval_accidents;
+pub mod naval_mines;
+mod occupation;
 mod operatives;
 mod resources;
 mod selected_attack;
 mod selection;
+mod strategic_air;
+mod strategic_navy;
 pub(super) mod units;
 mod weather;
 
@@ -30,6 +35,7 @@ use {
 };
 
 pub struct Content {
+    labels: Arc<viewer_foundation::recorded_labels::RecordedLabels>,
     members: BTreeMap<u32, Vec<u32>>,
     impassable: BTreeSet<u32>,
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
@@ -43,7 +49,11 @@ pub struct Content {
     /// `NGame.AIR_LOG_TIMEOUT_HOURS`, the daily prune's window
     /// ([`replay_derive::air_region_derive`]).
     air_log_timeout: Result<i32, String>,
-    /// The `NCountry` resistance and compliance defines the occupation hover reads.
+    air_detection: Result<viewer_foundation::map::air_detection::Defines, String>,
+    air_range: Result<viewer_foundation::map::air_range::Defines, String>,
+    pub(super) air_fuel: Result<super::counter_tooltips::air_fuel::Defines, String>,
+    navy: strategic_navy::Defines,
+    /// The `NResistance` and `NCountry` defines the occupation hover reads.
     occupation: Result<mode_lines::OccupationDefines, String>,
     /// `NOperatives.INTEL_NETWORK_BASE_STRENGTH_TARGET_COUNTERINTELLIGENCE_OFFSET`, the base
     /// the Operatives hover shows for a network's strength cap.
@@ -59,6 +69,7 @@ impl Content {
         states: &BTreeMap<u32, StateDefinition>,
         temperature: &Result<installed_content_weather::weather::TemperatureRanges, String>,
         subunits: Result<&installed_content_core::unit_leader::SubUnits, &str>,
+        labels: Arc<viewer_foundation::recorded_labels::RecordedLabels>,
     ) -> Self {
         let members = states
             .iter()
@@ -66,6 +77,7 @@ impl Content {
             .collect();
         let graph = installed_content_core::province_graph::ProvinceGraph::read(layers);
         Self {
+            labels,
             impassable: states
                 .iter()
                 .filter_map(|(&id, state)| state.impassable.then_some(id))
@@ -89,6 +101,19 @@ impl Content {
             air_log_timeout: defines
                 .int32("NGame", "AIR_LOG_TIMEOUT_HOURS")
                 .map_err(|e| e.to_string()),
+            air_detection: viewer_foundation::map::air_detection::Defines::load(defines)
+                .map_err(|e| e.to_string()),
+            air_range: (|| -> std::io::Result<_> {
+                Ok(viewer_foundation::map::air_range::Defines {
+                    map_scale: defines.fixed5("NGame", "MAP_SCALE_PIXEL_TO_KM")?,
+                    ace_wing_size: defines.fixed5("NAir", "ACE_WING_SIZE")?,
+                    ace_wing_size_max_bonus: defines.fixed5("NAir", "ACE_WING_SIZE_MAX_BONUS")?,
+                })
+            })()
+            .map_err(|e| e.to_string()),
+            air_fuel: super::counter_tooltips::air_fuel::Defines::load(defines)
+                .map_err(|error| error.to_string()),
+            navy: strategic_navy::Defines::load(defines),
             occupation: mode_lines::OccupationDefines::load(defines).map_err(|e| e.to_string()),
             network_base_target: defines
                 .fixed5(
@@ -171,6 +196,12 @@ pub enum ModeHover {
     /// The location block, units and selection; `category` adds the state's category line,
     /// naming its live category (States `category`), as the states mode does.
     Location { category: bool },
+    /// Regional Air detection and statistics.
+    StrategicAir(Arc<Vec<u64>>),
+    /// Regional naval control, live source statistics and mine summary.
+    StrategicNavy(
+        Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>,
+    ),
     /// Nothing of the mode's own.
     Nothing,
     /// The state's population.
@@ -187,6 +218,8 @@ pub enum ModeHover {
     Operatives,
     /// The state's resistance and compliance, the same in both modes.
     Occupation,
+    /// The percentage control's detailed resistance section, in either occupation mode.
+    OccupationMarker,
     /// What the state produces, resource by resource.
     Resources,
     /// A scripted mode's `<name>_tooltip` and `<name>_tooltip_delayed`.
@@ -543,7 +576,9 @@ impl Context<'_> {
         dashboard_text::effect_description::scaled_static_modifiers(&context, token, "  ", scale)
     }
     fn state_name(&self) -> Result<String, String> {
-        let id = self.province.state;
+        self.state_name_of(self.province.state)
+    }
+    fn state_name_of(&self, id: u32) -> Result<String, String> {
         let state = self
             .frame
             .complete::<tables::States>()

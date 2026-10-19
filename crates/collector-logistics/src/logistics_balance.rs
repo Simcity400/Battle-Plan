@@ -714,11 +714,16 @@ impl Hooks {
             .iter()
             .chain(native::HISTORY_CALLS.iter())
             .any(|(rva, sentinel, _)| {
-                base.checked_add(*rva)
-                    .and_then(|site| read::<[u8; 16]>(memory, site))
-                    != Some(*sentinel)
+                base.checked_add(*rva).is_none_or(|site| {
+                    !crate::hook::installation::sentinel(memory, site, *sentinel)
+                })
             })
         {
+            crate::hook::installation::refused(
+                crate::hook::installation::Kind::Sentinel,
+                None,
+                "logistics balance sentinel differs or address is unreadable",
+            );
             UNHOOKED.store(true, Ordering::Relaxed);
             return Ok(Self { hooks });
         }

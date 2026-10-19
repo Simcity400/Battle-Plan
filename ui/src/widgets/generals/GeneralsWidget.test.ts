@@ -13,7 +13,7 @@ test('leaderboard keeps the dated country selection when an alias is reused', as
     people: [5, 6].map(characterId => ({ characterId, token: null, name: String(characterId), portraitHour: 100, portraitReference: String(characterId) })),
     roles: ['current', 'alias'].map(owner => ({ owner, category: 1, rank: null, kind: 1, maximumSkill: 10, attributeNames: [null, null, null, null] })),
     traits: [{ token: 'synthetic_trait', name: 'Synthetic trait', icon: null, missing: null }], leaders: [5, 6].map((id, index) => ({ reference: String(id),
-      runs: [{ firstHour: 100, lastHour: 102, value: { person: index, role: index, skill: 3, components: [1, 2, 3, 4], traits: [0] } }],
+      runs: [{ firstHour: 100, lastHour: 102, value: { person: index, role: index, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [0] } }],
       traitGains: [], commands: [], battleStarts: [], battleStartReadHours: [], unknownBattleStarts: [], partialFrom: null })),
     observed: [{ firstHour: 100, lastHour: 102, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
     resultsMissing: 'Result not recorded', navyCommandsMissing: 'Navy commands not recorded', warnings: [] };

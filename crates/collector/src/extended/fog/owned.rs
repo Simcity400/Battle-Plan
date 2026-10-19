@@ -221,23 +221,35 @@ fn acquire_radar(job: &mut RadarJob, memory: &impl Memory, ctx: RadarCopyContext
         inner: memory,
         bytes: std::cell::Cell::new(0),
     };
-    let result = if job.growing {
-        radar_group::walk_growing(
-            &source,
-            ctx.base,
-            ctx.game_state,
-            &mut job.rows,
-            &mut job.provinces,
-        )
-    } else {
-        radar_group::walk(
-            &source,
-            ctx.base,
-            ctx.game_state,
-            &mut job.rows[..job.row_limit],
-            &mut job.provinces[..job.province_limit],
-        )
-    };
+    let (result, symbols_trusted) =
+        crate::radar_changes::with_symbols(&source, ctx.row_limit, ctx.force_full, |symbols| {
+            if job.growing {
+                radar_group::walk_growing_with_symbols(
+                    &source,
+                    ctx.base,
+                    ctx.game_state,
+                    &mut job.rows,
+                    &mut job.provinces,
+                    symbols,
+                )
+            } else {
+                radar_group::walk_with_symbols(
+                    &source,
+                    ctx.base,
+                    ctx.game_state,
+                    &mut job.rows[..job.row_limit],
+                    &mut job.provinces[..job.province_limit],
+                    symbols,
+                )
+            }
+        });
+    if !symbols_trusted {
+        // A writer overlapping the complete census revokes its carried
+        // symbol values. Coverage keeps its existing independent outcome.
+        for row in &mut job.rows[..result.outcome.len()] {
+            row.symbol = None;
+        }
+    }
     job.outcome = result.outcome;
     job.provinces_len = result.provinces_len;
     job.required_provinces = result.required_provinces;

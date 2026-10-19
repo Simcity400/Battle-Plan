@@ -7,6 +7,7 @@
 //! and queries them.
 
 pub mod products {
+    pub mod combat_log;
     pub mod division_log;
     pub mod land_battles;
 }

@@ -125,6 +125,145 @@ impl Fixture {
         )
     }
 }
+
+#[test]
+fn gap_research_grants_grant_inventory_captures_unused_kinds_restrictions_and_counter_without_slots()
+ {
+    use crate::{
+        climited_use_tech_bonus as bonus, climited_use_tech_cost_reduction as cost,
+        ctechnology_status as status, ctechnology_template as template,
+    };
+    let mut f = Fixture::new();
+    f.put(STATUS + status::NEXT_BONUS_ID, (-7_i32).to_le_bytes());
+    f.array(STATUS + status::LIMITED_BONUSES, 0x8000, 1);
+    f.array(STATUS + status::COST_REDUCTIONS, 0x8010, 1);
+    f.put(0x8000, 0x9000_u64.to_le_bytes());
+    f.put(0x8010, 0xa000_u64.to_le_bytes());
+    f.put(0x9000, (bonus::VTABLE_RVA as u64).to_le_bytes());
+    f.put(0x9000 + bonus::ID, (-3_i32).to_le_bytes());
+    f.put(0x9000 + bonus::USES, (-2_i32).to_le_bytes());
+    f.put(0x9000 + bonus::CLAIMS, 4_i32.to_le_bytes());
+    f.put(0x9000 + bonus::SPEED_BONUS, i64::MIN.to_le_bytes());
+    f.put(0x9000 + bonus::AHEAD_REDUCTION, i64::MAX.to_le_bytes());
+    f.text(0x9000 + bonus::NAME, b"synthetic grant");
+    f.array(0x9000 + bonus::TECHNOLOGIES, 0xb000, 2);
+    f.array(0x9000 + bonus::CATEGORIES, 0xb020, 1);
+    f.put(0xb000, (TEMPLATE as u64).to_le_bytes());
+    f.put(0xb008, (TEMPLATE as u64).to_le_bytes());
+    f.put(0xb020, 0xc000_u64.to_le_bytes());
+    f.put(TEMPLATE + template::DATABASE_INDEX, 5000_i32.to_le_bytes());
+    f.put(
+        TEMPLATE + template::TECHNOLOGY_HANDLE,
+        0xfedc_ba98_u32.to_le_bytes(),
+    );
+    f.put(0xc02c, 0xdead_beef_u32.to_le_bytes());
+    f.put(0xa000, (cost::VTABLE_RVA as u64).to_le_bytes());
+    f.put(0xa000 + cost::ID, 9_i32.to_le_bytes());
+    f.put(0xa000 + cost::USES, 8_i32.to_le_bytes());
+    f.put(0xa000 + cost::REDUCTION, (-12345_i64).to_le_bytes());
+    f.text(0xa000 + cost::NAME, b"cost grant");
+    let run = |f: &Fixture, rows: &mut Vec<Row>| {
+        let countries = ccountry::Reader::new(f, 0, GAME).unwrap();
+        grants::walk_country_buffer(
+            f,
+            0,
+            &countries,
+            countries.at(1).unwrap().unwrap(),
+            Err("idle needs no modifier defines"),
+            &[],
+            crate::walk::Buffer::Growing(rows),
+        )
+    };
+    let mut rows = Vec::new();
+    let outcome = run(&f, &mut rows);
+    assert_eq!(outcome, Outcome::Rows { len: 8 });
+    let rows = &rows[..outcome.len()];
+    assert!(rows.iter().all(|row| row.index == grants::INVENTORY_INDEX));
+    assert_eq!((rows[0].kind, rows[0].raw), (Kind::GrantCounter, -7));
+    assert_eq!(
+        (rows[1].kind, rows[1].raw, rows[1].auxiliary),
+        (Kind::SpeedGrant, i64::MIN, i64::MAX)
+    );
+    assert_eq!((rows[2].raw, rows[2].auxiliary), (-2, 4));
+    assert_eq!((rows[3].raw, rows[3].auxiliary), (0xfedc_ba98, 5000));
+    assert_eq!(
+        rows[3],
+        Row {
+            ordinal: rows[3].ordinal,
+            ..rows[4].clone()
+        }
+    );
+    assert_eq!(rows[5].raw, 0xdead_beef);
+    assert_eq!((rows[6].kind, rows[6].raw), (Kind::CostGrant, -12345));
+    assert_eq!(
+        (rows[7].kind, rows[7].raw, rows[7].count),
+        (Kind::GrantUses, 8, 1)
+    );
+    let cached = research_inputs::BonusRow {
+        country: 1,
+        source_pointer: 0x9000,
+        resolved: 1,
+        value: bonus::value(&f, 0x9000, -3, true).unwrap(),
+        ..Default::default()
+    };
+    f.reads.borrow_mut().clear();
+    f.fault = Some(0x9000);
+    let countries = ccountry::Reader::new(&f, 0, GAME).unwrap();
+    let mut reused = Vec::new();
+    let reused_outcome = grants::walk_country_with_applied(
+        &f,
+        0,
+        &countries,
+        countries.at(1).unwrap().unwrap(),
+        Err("idle needs no modifier defines"),
+        &[],
+        STATUS,
+        &[cached],
+        crate::walk::Buffer::Growing(&mut reused),
+    );
+    assert_eq!(reused_outcome, outcome);
+    assert_eq!(&reused[..outcome.len()], rows);
+    assert!(
+        !f.reads
+            .borrow()
+            .iter()
+            .any(|(address, _)| *address == 0x9000
+                || *address == STATUS
+                || *address == COUNTRY + ccountry::TECHNOLOGY_STATUS
+                || *address == 0x9000 + bonus::NAME
+                || *address == 0x9000 + bonus::AHEAD_REDUCTION)
+    );
+    f.fault = Some(0x9000 + bonus::USES);
+    assert_eq!(
+        run(&f, &mut Vec::new()),
+        Outcome::Unavailable {
+            reason: "research grant uses unreadable"
+        }
+    );
+}
+
+#[test]
+fn gap_research_grants_empty_grant_inventory_is_a_recorded_counter_and_reuses_owned_storage() {
+    let f = Fixture::new();
+    let countries = ccountry::Reader::new(&f, 0, GAME).unwrap();
+    let mut rows = vec![Row::default(); 3];
+    let capacity = rows.capacity();
+    assert_eq!(
+        grants::walk_country_buffer(
+            &f,
+            0,
+            &countries,
+            countries.at(1).unwrap().unwrap(),
+            Err("unused"),
+            &[],
+            crate::walk::Buffer::Growing(&mut rows)
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].kind, Kind::GrantCounter);
+    assert_eq!(rows[0].raw, 0);
+    assert_eq!(rows.capacity(), capacity);
+}
 impl Memory for Fixture {
     fn copy(&self, at: usize, out: &mut [u8]) -> bool {
         self.calls.set(self.calls.get() + 1);
@@ -399,6 +538,60 @@ fn active_operands_are_exact_and_idle_avoids_country_dependencies() {
     f.reads.borrow_mut().clear();
     assert_eq!(f.capture(&[idle], &mut rows), Outcome::Rows { len: 0 });
     assert_eq!(f.reads.borrow().len(), 2); // Shared country census headers only.
+}
+
+#[test]
+fn scripted_sharing_roster_keeps_idle_countries_duplicates_and_native_extent() {
+    const POINTERS: usize = 0x40000;
+    const GROUP: usize = 0x50000;
+    let mut f = Fixture::new();
+    f.bytes.resize(GROUP + 16, 0);
+    f.array(STATUS + 0x118, POINTERS, 5_000);
+    f.put(GROUP, (sharing::FACTION_VTABLE as u64).to_le_bytes());
+    f.put(GROUP + 8, 19_u32.to_le_bytes());
+    for index in 0..5_000 {
+        f.put(POINTERS + index * 8, (GROUP as u64).to_le_bytes());
+    }
+    // Unneeded group operands are unreadable and must remain unread.
+    f.fault = Some(GROUP + 12);
+    let countries = ccountry::Reader::new(&f, 0, GAME).unwrap();
+    let mut input = f.input();
+    input.slot.technology_present = 0;
+    let mut rows = Vec::new();
+    let capture = |record, rows: &mut Vec<Row>| {
+        walk_country_buffer_with_roster(
+            &f,
+            0,
+            &countries,
+            ccountry::Country {
+                pointer: COUNTRY,
+                id: 1,
+                canonical_slot: 1,
+            },
+            Err("idle country has no modifier context"),
+            std::slice::from_ref(&input),
+            crate::walk::Buffer::Growing(rows),
+            record,
+        )
+    };
+    assert_eq!(capture(false, &mut rows), Outcome::Rows { len: 0 });
+    let captured = capture(true, &mut rows);
+    assert_eq!(captured, Outcome::Rows { len: 5_001 });
+    assert_eq!(
+        (rows[0].kind, rows[0].raw, rows[0].count),
+        (Kind::SharingRoster, -1, 5_000)
+    );
+    assert!(
+        rows[1..captured.len()]
+            .iter()
+            .all(|row| row.kind == Kind::SharingRoster && row.index == u32::MAX && row.raw == 19)
+    );
+    assert!(
+        !f.reads
+            .borrow()
+            .iter()
+            .any(|&(address, _)| address == COUNTRY + ccountry::MODIFIER_ACCUMULATOR)
+    );
 }
 
 #[test]

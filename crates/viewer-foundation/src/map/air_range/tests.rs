@@ -1,6 +1,86 @@
 use super::*;
 use std::cell::RefCell;
 
+fn ace_frame(rows: Vec<AceRangeInputRow>) -> replay_frame::frame::DecodedFrame {
+    use replay_data::{rows::TableId, rows::TableRows};
+    use replay_frame::{frame::Metrics, frame::TableView};
+    let mut frame = replay_frame::frame::DecodedFrame {
+        branch: 1,
+        hour: 0,
+        metrics: Metrics::default(),
+        tables: std::array::from_fn(|index| {
+            TableView::Complete(TableRows::empty(TableId::ALL[index]))
+        })
+        .map(Into::into),
+    };
+    *frame.tables[TableId::AceRangeInputs.index()] =
+        TableView::Complete(TableRows::AceRangeInputs(rows));
+    frame
+}
+
+#[test]
+fn frame_ace_lookup_indexes_interleaved_country_handles_once() {
+    let frame = ace_frame(vec![
+        AceRangeInputRow {
+            canonical_slot: 1,
+            ace: 90,
+            range: 900,
+            ..Default::default()
+        },
+        AceRangeInputRow {
+            canonical_slot: 2,
+            ace: 3,
+            range: 30,
+            ..Default::default()
+        },
+        AceRangeInputRow {
+            canonical_slot: 3,
+            ace: 70,
+            range: 700,
+            ..Default::default()
+        },
+    ]);
+    let sources = FrameSources::new(&frame);
+    assert!(sources.aces.get().is_none());
+    assert_eq!(sources.ace(3).unwrap().unwrap().range, 30);
+    let index = sources.aces.get().unwrap() as *const _;
+    assert_eq!(sources.ace(90).unwrap().unwrap().range, 900);
+    assert_eq!(sources.ace(70).unwrap().unwrap().range, 700);
+    assert_eq!(sources.ace(4).unwrap(), None);
+    assert_eq!(sources.aces.get().unwrap() as *const _, index);
+}
+
+#[test]
+fn frame_ace_duplicates_share_equal_rows_and_refuse_conflicts_by_handle() {
+    let shared = AceRangeInputRow {
+        canonical_slot: 1,
+        ace: 90,
+        range: 900,
+        ..Default::default()
+    };
+    let other = AceRangeInputRow {
+        canonical_slot: 2,
+        ace: 3,
+        range: 30,
+        ..Default::default()
+    };
+    let frame = ace_frame(vec![shared.clone(), shared.clone(), other.clone()]);
+    assert_eq!(FrameSources::new(&frame).ace(90).unwrap(), Some(&shared));
+    let frame = ace_frame(vec![
+        shared.clone(),
+        AceRangeInputRow {
+            canonical_slot: 3,
+            range: 901,
+            ..shared
+        },
+        other.clone(),
+    ]);
+    let sources = FrameSources::new(&frame);
+    let reason = sources.ace(90).unwrap_err();
+    assert!(reason.contains("0x5a") && reason.contains("conflicting"));
+    assert_eq!(sources.ace(3).unwrap(), Some(&other));
+}
+
 struct Fixture {
     countries: Vec<RaidCountryInputRow>,
     command: Vec<CountryCommandPowerRow>,
@@ -109,6 +189,7 @@ fn live_ace_uses_its_owner_and_assigned_wing_before_the_wing_country_bonus() {
         alive: 1,
         range: 20_000,
         type_range: 1,
+        ..Default::default()
     });
     let wing = AirWingRow {
         owner: 22,

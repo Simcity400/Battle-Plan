@@ -1698,8 +1698,7 @@ pub(super) fn copy_unit(
     let kind = parsed.map(|(kind, _)| kind);
     if !dead.units {
         // State scatter in `cunit_leader::read` order: character backlink,
-        // category, skill pointer, exile country (the retired experience is
-        // not read).
+        // category, skill pointer, exile country and residual experience.
         let state = take_fixed_fields::<4, false>(
             job,
             memory,
@@ -1725,7 +1724,22 @@ pub(super) fn copy_unit(
             {
                 dead.units = true;
             } else {
-                copy_unit_skill(job, memory, base, skill, dead);
+                if matches!(
+                    kind,
+                    Some(cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY)
+                ) {
+                    take_or_kill(
+                        job,
+                        memory,
+                        unit.checked_add(cunit_leader::EXPERIENCE),
+                        8,
+                        MASK_UNITS,
+                        &mut dead.units,
+                    );
+                }
+                if !dead.units {
+                    copy_unit_skill(job, memory, base, skill, dead);
+                }
             }
         }
         if job.log.overflowed {
@@ -1748,6 +1762,33 @@ pub(super) fn copy_unit(
         if !dead.units && kind.is_some_and(cunit_leader::has_codename) {
             copy_unit_codename(job, memory, base, unit);
             if job.log.overflowed {
+                return false;
+            }
+        }
+        if !dead.units
+            && matches!(
+                kind,
+                Some(cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY)
+            )
+        {
+            let source = AppendedCopy {
+                job: std::cell::RefCell::new(job),
+                memory,
+                mask: MASK_TRAINING,
+            };
+            let mut count = 0_usize;
+            let _ = cunit_leader::visit_trait_progress(&source, base, unit, |_, _, _| {
+                count += 1;
+            });
+            let _ = cunit_leader::visit_trait_factors(&source, base, unit, |_, _, _| {
+                count += 1;
+            });
+            source
+                .job
+                .borrow_mut()
+                .unit_demand
+                .add(0, count.saturating_mul(16));
+            if source.job.borrow().log.overflowed {
                 return false;
             }
         }

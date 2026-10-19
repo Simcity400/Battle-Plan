@@ -165,11 +165,39 @@ pub struct LeaderRole {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct LeaderTraining {
+    pub token: Option<String>,
+    pub name: Option<String>,
+    pub experience_raw: String,
+    pub required_raw: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderTrainingFactor {
+    pub token: Option<String>,
+    pub name: Option<String>,
+    pub factor_raw: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderProgress {
+    pub experience_raw: String,
+    pub next_required_raw: Option<String>,
+    /// None is missing acquisition; an empty list is complete native absence.
+    pub training: Option<Vec<LeaderTraining>>,
+    pub factors: Option<Vec<LeaderTrainingFactor>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct LeaderValues {
     pub person: u32,
     pub role: u32,
     pub skill: Option<i32>,
     pub components: [i32; 4],
+    pub progress: Option<LeaderProgress>,
     #[serde(default, with = "trait_indices")]
     #[ts(as = "Option<Vec<u32>>")]
     pub traits: Option<Arc<[u32]>>,
@@ -216,7 +244,7 @@ mod owner_projection {
 
 #[derive(Clone, Debug, PartialEq, Eq, TS)]
 #[ts(
-    type = "[number, number, number, number, number | null, [number, number, number, number], number[] | null]"
+    type = "[number, number, number, number, number | null, [number, number, number, number], number[] | null, LeaderProgress | null]"
 )]
 pub struct UnitLeaderRun {
     pub first_hour: i32,
@@ -224,7 +252,16 @@ pub struct UnitLeaderRun {
     pub value: LeaderValues,
 }
 
-type WireLeaderRun = (i32, i32, u32, u32, Option<i32>, [i32; 4], Option<Vec<u32>>);
+type WireLeaderRun = (
+    i32,
+    i32,
+    u32,
+    u32,
+    Option<i32>,
+    [i32; 4],
+    Option<Vec<u32>>,
+    Option<LeaderProgress>,
+);
 impl Serialize for UnitLeaderRun {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let v = &self.value;
@@ -236,6 +273,7 @@ impl Serialize for UnitLeaderRun {
             v.skill,
             v.components,
             v.traits.as_deref(),
+            &v.progress,
         )
             .serialize(serializer)
     }
@@ -247,7 +285,7 @@ impl<'de> Deserialize<'de> for UnitLeaderRun {
 }
 impl From<WireLeaderRun> for UnitLeaderRun {
     fn from(
-        (first_hour, last_hour, person, role, skill, components, traits): WireLeaderRun,
+        (first_hour, last_hour, person, role, skill, components, traits, progress): WireLeaderRun,
     ) -> Self {
         Self {
             first_hour,
@@ -258,6 +296,7 @@ impl From<WireLeaderRun> for UnitLeaderRun {
                 skill,
                 components,
                 traits: traits.map(Arc::from),
+                progress,
             },
         }
     }
@@ -273,6 +312,7 @@ impl From<UnitLeaderRun> for WireLeaderRun {
             v.skill,
             v.components,
             v.traits.as_deref().map(<[_]>::to_vec),
+            v.progress,
         )
     }
 }
@@ -1464,6 +1504,7 @@ const LEADER_TABLES: &[TableId] = &[
     TableId::LexicalTokens,
     TableId::CharacterPortraits,
     TableId::UnitLeaderTraits,
+    TableId::UnitLeaderTraitExperience,
     TableId::LandCombatDetails,
     TableId::NavalCombatDetails,
     TableId::LandCombatResults,
@@ -1695,10 +1736,7 @@ pub(crate) fn battle_tables(
 /// availability: an hour at which none of these changed reads what the
 /// hour before read.
 pub(crate) struct Reads {
-    /// The leaders, their identity and traits: every leader field but
-    /// `experience` (retired, and moving every hour in older formats;
-    /// nothing reads it), and every character, portrait, token and trait
-    /// field.
+    /// Every leader, character, portrait, token, assigned trait and training field.
     pub leaders: Vec<TableRead>,
     /// The leaders alone, whose visibility inputs decide whether any leader
     /// is evaluated in its owner's scope.
@@ -1722,7 +1760,7 @@ pub(crate) fn reads() -> &'static Reads {
     static READS: std::sync::OnceLock<Reads> = std::sync::OnceLock::new();
     READS.get_or_init(|| {
         let unit_leaders = TableRead {
-            fields: full_mask(TableId::UnitLeaders.schema().len()) & !experience_field(),
+            fields: full_mask(TableId::UnitLeaders.schema().len()),
             ..TableRead::keys(TableId::UnitLeaders)
         };
         let holders = [
@@ -1735,6 +1773,7 @@ pub(crate) fn reads() -> &'static Reads {
             TableRead::all(TableId::CharacterPortraits),
             TableRead::all(TableId::LexicalTokens),
             TableRead::all(TableId::UnitLeaderTraits),
+            TableRead::all(TableId::UnitLeaderTraitExperience),
         ];
         Reads {
             leaders,
@@ -1761,14 +1800,6 @@ pub(crate) fn reads() -> &'static Reads {
             ],
         }
     })
-}
-
-/// The change-mask bit of `UnitLeaders.experience`; none when the schema
-/// does not name it, so every field is read.
-pub(crate) fn experience_field() -> u64 {
-    (0..TableId::UnitLeaders.schema().len())
-        .find(|&field| TableId::UnitLeaders.field_name(field) == Some("experience"))
-        .map_or(0, |field| 1_u64 << field)
 }
 
 /// The scan's read mask of an hour: which of its tables were read there.
@@ -2582,6 +2613,8 @@ impl Scan {
                     hour,
                 )
             });
+        let progress_rows = decoded.complete::<tables::UnitLeaderTraitExperience>().ok();
+        let progress_tokens = decoded.complete::<tables::LexicalTokens>().ok();
         let mut trait_cursor = 0;
         let mut complete = true;
         let now_traits = &decoded.tables[TableId::UnitLeaderTraits.index()];
@@ -2833,6 +2866,93 @@ impl Scan {
                 .then_some(traits)
                 .flatten()
                 .map(|ts| trait_slice(ts, reference, &mut trait_cursor));
+            let training = progress_rows.map(|rows| {
+                let start = rows.partition_point(|p| p.leader_reference < reference);
+                rows[start..]
+                    .iter()
+                    .take_while(|p| p.leader_reference == reference)
+                    .filter(|p| p.list == 0)
+                    .map(|p| {
+                        let token = progress_tokens
+                            .and_then(|tokens| {
+                                tokens
+                                    .binary_search_by_key(&(p.token_id as u32), |t| t.token)
+                                    .ok()
+                                    .map(|i| &tokens[i])
+                            })
+                            .and_then(|t| {
+                                std::str::from_utf8(installed_content_core::parser::c_string(&t.literal))
+                                    .ok()
+                            });
+                        if token.is_none() {
+                            refusals.note(
+                                "Training trait token is unavailable",
+                                format!("{reference}:{}", p.ordinal),
+                            );
+                        }
+                        let required = token
+                            .and_then(|token| content.and_then(|c| c.leaders.traits.get(token)))
+                            .map(|t| i64::from(t.required_experience()) * 100_000);
+                        LeaderTraining {
+                            token: token.map(str::to_owned),
+                            name: token.and_then(|token| {
+                                content.and_then(|c| c.catalogue.localised(token, View::Plain))
+                            }),
+                            experience_raw: p.experience.to_string(),
+                            required_raw: required.map(|v| v.to_string()),
+                        }
+                    })
+                    .collect()
+            });
+            let factors = progress_rows.map(|rows| {
+                let start = rows.partition_point(|p| p.leader_reference < reference);
+                rows[start..]
+                    .iter()
+                    .take_while(|p| p.leader_reference == reference)
+                    .filter(|p| p.list == 1)
+                    .map(|p| {
+                        let token = progress_tokens
+                            .and_then(|tokens| {
+                                tokens
+                                    .binary_search_by_key(&(p.token_id as u32), |t| t.token)
+                                    .ok()
+                                    .map(|i| &tokens[i])
+                            })
+                            .and_then(|t| {
+                                std::str::from_utf8(installed_content_core::parser::c_string(&t.literal))
+                                    .ok()
+                            });
+                        if token.is_none() {
+                            refusals.note(
+                                "Training trait token is unavailable",
+                                format!("{reference}:{}", p.ordinal),
+                            );
+                        }
+                        LeaderTrainingFactor {
+                            token: token.map(str::to_owned),
+                            name: token.and_then(|token| {
+                                content.and_then(|c| c.catalogue.localised(token, View::Plain))
+                            }),
+                            factor_raw: p.experience.to_string(),
+                        }
+                    })
+                    .collect()
+            });
+            let progress = Some(LeaderProgress {
+                experience_raw: row.experience.to_string(),
+                next_required_raw: (row.skill_status != 0)
+                    .then_some(content)
+                    .flatten()
+                    .and_then(|c| {
+                        c.leaders
+                            .skills
+                            .next_required_experience(row.skill_level, row.category)
+                    })
+                    .flatten()
+                    .map(|v| (i64::from(v) * 100_000).to_string()),
+                training,
+                factors,
+            });
             let leader = &mut state.career;
             let previous_run = state.last_run.map(|i| &stored_runs[i].run);
             let previous_hour = previous_run.map(|r| r.last_hour);
@@ -2857,6 +2977,7 @@ impl Scan {
                     && last.row.skill_status == row.skill_status
                     && last.row.skill_level == row.skill_level
                     && last.row.components == row.components
+                    && previous_run.is_some_and(|run| run.value.progress == progress)
                     && traits_unchanged
                     && (owner_unchanged
                         || reply.roles[last.role as usize].owner.as_deref() == owner)
@@ -2868,8 +2989,7 @@ impl Scan {
             {
                 stored_runs[i].run.last_hour = hour;
                 let read = state.last_read.as_mut().expect("unchanged read");
-                // Experience and other unshown fields can change without
-                // creating new values, roles or trait holdings.
+                // Unshown identity fields can change without creating a new value.
                 if read.row != *row {
                     read.row.clone_from(row);
                 }
@@ -3011,6 +3131,7 @@ impl Scan {
                 role,
                 skill: (row.skill_status != 0).then_some(row.skill_level),
                 components: row.components,
+                progress,
                 traits: held,
             };
             let before = stored_runs.len();
@@ -3771,6 +3892,10 @@ fn record_results(
 /// the hour before when the leaders carry on unchanged). Ends with the
 /// hour's combats as the last read's. Returns the sides visited.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::type_complexity,
+    reason = "Battle intervals keep the scan's persisted tuple representation."
+)]
 fn record_battles(
     format: FormatVersion,
     decoded: &DecodedFrame,
@@ -4225,6 +4350,9 @@ impl Product for UnitLeaders {
             UnitLeadersAtHourParams::decl(),
             LeaderPerson::decl(),
             LeaderRole::decl(),
+            LeaderTraining::decl(),
+            LeaderTrainingFactor::decl(),
+            LeaderProgress::decl(),
             LeaderValues::decl(),
             UnitLeaderRun::decl(),
             LeaderChangeDate::decl(),

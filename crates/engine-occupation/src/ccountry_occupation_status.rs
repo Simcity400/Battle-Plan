@@ -17,6 +17,24 @@ pub const OCCUPATION_DATA_ROWS: usize = 0x60;
 pub const OCCUPATION_DATA_COUNT: usize = 0x6c;
 /// CReferencedDivisionTemplate pointer requiring reference-type and vtable authentication.
 pub const GARRISON_TEMPLATE: usize = 0x78;
+/// Retained distributable garrison reinforcement priority.
+pub const GARRISON_PRIORITY: usize = 8;
+
+pub fn template_priority(
+    memory: &impl Memory,
+    base: usize,
+    country: usize,
+) -> Result<i32, &'static str> {
+    let holder = status(memory, base, country)?;
+    holder
+        .checked_add(GARRISON_PRIORITY)
+        .and_then(|at| read::<i32>(memory, at))
+        .ok_or("garrison reinforcement priority unreadable")
+}
+/// Occupied-country template override; null inherits the country's default.
+pub const GROUP_TEMPLATE: usize = 0xc8;
+/// State-id to template-pointer override table in an occupied-country holder.
+pub const STATE_TEMPLATES: usize = 0xf8;
 /// Embedded assigned-manpower container with signed i32 entry amounts.
 pub const ASSIGNED_MANPOWER: usize = 0x90;
 /// Default COccupationLaw pointer.
@@ -51,6 +69,87 @@ pub struct ReserveManpowerRow {
     pub ordinal: u32,
     pub source_country: u32,
     pub amount: i32,
+}
+
+/// One stored template selection, including unset defaults and group overrides.
+/// Absent occupied/state values denote the country default and group scope.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TemplateSelection {
+    pub country: u32,
+    pub occupied: Option<u32>,
+    pub state: Option<u32>,
+    pub template: Option<u64>,
+}
+
+/// Visit the default and every live group/state override without following stale
+/// empty buckets. This reads selection holders, independently of garrison allocation.
+pub fn visit_template_selections(
+    memory: &impl Memory,
+    base: usize,
+    country: ccountry::Country,
+    countries: &ccountry::Reader<'_, impl Memory>,
+    mut visit: impl FnMut(TemplateSelection) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    let parent = status(memory, base, country.pointer)?;
+    let template = |at: usize| {
+        let pointer = read::<u64>(memory, at)
+            .and_then(|p| usize::try_from(p).ok())
+            .ok_or("garrison template selection unreadable")?;
+        if pointer == 0 {
+            Ok(None)
+        } else {
+            creferenced_division_template::identity(memory, base, pointer).map(Some)
+        }
+    };
+    visit(TemplateSelection {
+        country: country.id,
+        template: template(
+            parent
+                .checked_add(GARRISON_TEMPLATE)
+                .ok_or("garrison selection address overflow")?,
+        )?,
+        ..Default::default()
+    })?;
+    pdx_robin_hood_table::visit(
+        memory,
+        parent
+            .checked_add(OCCUPATION_DATA_TABLE)
+            .ok_or("garrison selection address overflow")?,
+        |entry| {
+            let occupied =
+                ccountry_occupation_data::identity(memory, base, parent, entry, countries)?;
+            visit(TemplateSelection {
+                country: country.id,
+                occupied: Some(occupied),
+                state: None,
+                template: template(
+                    entry
+                        .value
+                        .checked_add(GROUP_TEMPLATE)
+                        .ok_or("garrison selection address overflow")?,
+                )?,
+            })?;
+            pdx_robin_hood_table::visit(
+                memory,
+                entry
+                    .value
+                    .checked_add(STATE_TEMPLATES)
+                    .ok_or("garrison selection address overflow")?,
+                |state| {
+                    visit(TemplateSelection {
+                        country: country.id,
+                        occupied: Some(occupied),
+                        state: Some(state.key),
+                        template: Some(creferenced_division_template::identity(
+                            memory,
+                            base,
+                            state.value,
+                        )?),
+                    })
+                },
+            )
+        },
+    )
 }
 
 pub struct Buffers<'a> {
@@ -294,7 +393,11 @@ impl<'a, T: Default> Rows<'a, T> {
     }
 }
 
-fn status(memory: &impl Memory, base: usize, country: usize) -> Result<usize, &'static str> {
+pub(crate) fn status(
+    memory: &impl Memory,
+    base: usize,
+    country: usize,
+) -> Result<usize, &'static str> {
     let pointer = country
         .checked_add(ccountry::OCCUPATION_STATUS)
         .and_then(|p| read::<u64>(memory, p))
@@ -698,6 +801,93 @@ mod tests {
                 );
             }
             assert!(settings[1].occupied.is_some_and(|span| span.count == 0));
+        }
+    }
+
+    #[test]
+    fn template_selections_keep_defaults_inherited_groups_and_explicit_state_overrides() {
+        let mut bytes = fixture();
+        table(&mut bytes, 0x8400 + STATE_TEMPLATES, 0x8800, 0, 0xa200);
+        u64_at(
+            &mut bytes,
+            0xa200,
+            creferenced_division_template::VTABLE_RVA as u64,
+        );
+        u64_at(
+            &mut bytes,
+            0xa200 + creferenced_division_template::TYPE,
+            (9_u64 << 32) | 52,
+        );
+        // A stale pointer in an empty bucket must never become an override.
+        u64_at(&mut bytes, 0x8800 + 24 + 16, u64::MAX);
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let countries = ccountry::Reader::new(&memory, 0, BASE).unwrap();
+        let mut rows = Vec::new();
+        visit_template_selections(
+            &memory,
+            0,
+            countries.at(1).unwrap().unwrap(),
+            &countries,
+            |row| {
+                rows.push(row);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            rows,
+            [
+                TemplateSelection {
+                    country: 1,
+                    occupied: None,
+                    state: None,
+                    template: Some((7_u64 << 32) | 52)
+                },
+                TemplateSelection {
+                    country: 1,
+                    occupied: Some(99),
+                    state: None,
+                    template: None
+                },
+                TemplateSelection {
+                    country: 1,
+                    occupied: Some(99),
+                    state: Some(0),
+                    template: Some((9_u64 << 32) | 52)
+                },
+            ]
+        );
+        u64_at(&mut bytes, 0xa200, 0);
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let countries = ccountry::Reader::new(&memory, 0, BASE).unwrap();
+        assert!(
+            visit_template_selections(
+                &memory,
+                0,
+                countries.at(1).unwrap().unwrap(),
+                &countries,
+                |_| Ok(())
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn garrison_priority_is_independent_of_template_selection_and_keeps_signed_words() {
+        let mut bytes = fixture();
+        for priority in [1_i32, 0, -7, i32::MIN, i32::MAX] {
+            u32_at(&mut bytes, 0x7000 + GARRISON_PRIORITY, priority as u32);
+            let memory = SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            };
+            assert_eq!(template_priority(&memory, 0, 0x3000).unwrap(), priority);
         }
     }
 

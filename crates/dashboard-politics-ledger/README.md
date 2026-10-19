@@ -162,3 +162,7 @@ checks, accounting selection, names, presence, coverage, events, holds and
 completion, the retained read, daily key membership and capture checks for
 parts. Presentation workers label payment projection; native daily settlement
 labels its projection separately.
+
+Capture expiry scheduling retains the first hour, any future held last hour and the first hour after the capture. A boundary ending at the accepted hour is already reflected in that join and is not rescheduled as a future change.
+
+Capture carry certificates require a one-to-one census, tag and native-link join. Shared tags or aliased links retain ordinary accounting; canonical country rows remain unique and native aliases belong in CountryLinks.

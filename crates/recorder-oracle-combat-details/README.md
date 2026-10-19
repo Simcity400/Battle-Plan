@@ -4,4 +4,6 @@ Retained combat detail rows, commander operands and nested value trees. Owns [co
 
 Table completeness, exact joins, differences and named limitations use [shared oracle support](../recorder-oracle-support/README.md). Content-dependent facts resolve through the recorded content stack. Synthetic fixtures are dev-only through the support crate's `test-support` feature.
 
+Naval current commanders compare with the saved `last_leader` while nonnull. A null current selection preserves that retained leader at any hour, so it has no exact save counterpart and receives a named limitation. Other side operands and wrong nonnull commander identities still compare exactly.
+
 Shared rules live in [AGENTS.md](../../AGENTS.md); the [recorder guide](../recorder/README.md) defines fresh-save/load and matched-native-observation checks.

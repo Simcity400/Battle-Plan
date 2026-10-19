@@ -12,10 +12,9 @@ use engine_native::{
     Memory, ccountry, cname_group_member, creference_registry, crelation_status, cship,
     walk::Outcome,
 };
-use replay_data::{
-    rows::CountryAttackModifiers, rows::CountryCivilWarRow, rows::CountryCounterInputRow,
-    rows::CountryMovementModifiers, rows::Recorded, rows::Retired, rows::TableId, rows::Witnessed,
-    rows::tables,
+use replay_data::rows::{
+    CountryAttackModifiers, CountryCivilWarRow, CountryCounterInputRow, CountryMovementModifiers,
+    ManpowerReferences, Recorded, Retired, TableId, Witnessed, tables,
 };
 use replay_frame::frame::TableView;
 
@@ -186,8 +185,10 @@ impl RosterWork {
             .ok_or_else(|| std::io::Error::other("country counter row count exceeds buffer"))?;
         for (index, row) in rows.iter().enumerate() {
             let reason = row.roster_reason.or_else(|| {
-                (row.state_rosters.is_none() || row.leader_rosters.is_none())
-                    .then_some("country roster inputs unobserved")
+                (row.state_rosters.is_none()
+                    || row.leader_rosters.is_none()
+                    || row.sent_expeditionaries.is_none())
+                .then_some("country roster inputs unobserved")
             });
             let neighbor_reason = row.neighbor_reason.or_else(|| {
                 row.neighbors
@@ -405,6 +406,7 @@ pub struct Captured {
     pride_names: Arena<u8>,
     naval: naval::Captured,
     phases: Phases,
+    manpower_references: std::sync::Mutex<Vec<(u32, ManpowerReferences)>>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -445,6 +447,7 @@ impl Captured {
             pride_names: Arena::new(capacity.pride_names),
             naval: naval::Captured::new(capacity.naval),
             phases: Phases::default(),
+            manpower_references: std::sync::Mutex::new(Vec::new()),
         }
     }
     pub fn reset(&mut self) {
@@ -477,6 +480,14 @@ impl Captured {
             + self.co_belligerents.allocated_bytes()
             + self.pride_names.allocated_bytes()
             + self.naval.allocated_bytes()
+            + {
+                let cache = self.manpower_references.lock().unwrap();
+                cache.capacity() * size_of::<(u32, ManpowerReferences)>()
+                    + cache
+                        .iter()
+                        .map(|(_, values)| values.allocated_bytes())
+                        .sum::<usize>()
+            }
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
@@ -556,6 +567,10 @@ impl Captured {
                 store.begin(memory, base, state);
             }
             let mut rosters = ccountry::CounterRosters {
+                capture_sent_expeditionaries: store.as_deref().map_or(
+                    cfg!(any(test, feature = "test-support")),
+                    CounterStore::has_certificate,
+                ),
                 states: engine_native::walk::Buffer::Growing(&mut self.states.first),
                 leaders: engine_native::walk::Buffer::Growing(&mut self.leaders.first),
                 state_len: 0,
@@ -917,6 +932,28 @@ impl Captured {
                     // WarRelations; no packet is captured.
                     directed_wars: Recorded::Value(None),
                     country: r.country,
+                    recruitment_modifiers: Recorded::Value(r.recruitment_modifiers),
+                    air_modifiers: Recorded::Value(r.air_modifiers),
+                    air_combat_modifiers_known: (r.air_combat_modifiers.is_some()).into(),
+                    air_superiority_efficiency: (r
+                        .air_combat_modifiers
+                        .and_then(|values| values[0]))
+                    .into(),
+                    air_intercept_efficiency: (r.air_combat_modifiers.and_then(|values| values[1]))
+                        .into(),
+                    air_cas_efficiency: (r.air_combat_modifiers.and_then(|values| values[2]))
+                        .into(),
+                    air_nav_efficiency: (r.air_combat_modifiers.and_then(|values| values[3]))
+                        .into(),
+                    air_attack_factor: (r.air_combat_modifiers.and_then(|values| values[4])).into(),
+                    air_defence_factor: (r.air_combat_modifiers.and_then(|values| values[5]))
+                        .into(),
+                    air_strategic_bomber_defence_factor: (r
+                        .air_combat_modifiers
+                        .and_then(|values| values[6]))
+                    .into(),
+                    mines_effect_reduction: Recorded::Value(r.mines_effect_reduction),
+                    naval_detection: Recorded::Value(r.naval_detection),
                     // No country operand is witnessed; current writers leave it empty.
                     attack: Recorded::Value(Witnessed(None)),
                     attack_modifiers: Recorded::Value(r.attack_modifiers.map(|[night, bunker]| {
@@ -925,6 +962,9 @@ impl Captured {
                             land_bunker_effectiveness_factor: bunker,
                         }
                     })),
+                    combat_width_factor: Recorded::Value(
+                        r.movement_modifiers.and_then(|entries| entries[6]),
+                    ),
                     movement_modifiers: Recorded::Value(r.movement_modifiers.map(
                         |[
                             army_speed_factor,
@@ -933,6 +973,7 @@ impl Captured {
                             winter_attrition_factor,
                             heat_attrition_factor,
                             out_of_supply_factor,
+                            _combat_width_factor,
                             special_forces_out_of_supply_factor,
                             army_attack_speed_factor,
                             army_retreat_speed_factor,
@@ -963,6 +1004,10 @@ impl Captured {
                     ),
                     army_leaders: Recorded::Value(
                         r.leader_rosters.map(|spans| self.leader_list(spans[0])),
+                    ),
+                    sent_expeditionaries: Recorded::Value(
+                        r.sent_expeditionaries
+                            .and_then(|span| self.manpower_reference_list(r.country, span)),
                     ),
                     navy_leaders: Recorded::Value(
                         r.leader_rosters.map(|spans| self.leader_list(spans[1])),
@@ -999,6 +1044,34 @@ impl Captured {
                 }
             },
         )
+    }
+
+    fn manpower_reference_list(
+        &self,
+        country: u32,
+        span: ccountry::RosterSpan,
+    ) -> Option<ManpowerReferences> {
+        if !valid_span(&self.leaders, span.start, span.count) {
+            return None;
+        }
+        let values = &self.leaders.first[span.start..span.start + span.count];
+        let mut cache = self.manpower_references.lock().unwrap();
+        let index = match cache.binary_search_by_key(&country, |(country, _)| *country) {
+            Ok(index) => index,
+            Err(index) => {
+                if let Err(error) = engine_allocation::reserve(&mut cache, 1) {
+                    engine_allocation::owned_vec::<()>(Err(error));
+                    return None;
+                }
+                cache.insert(index, (country, ManpowerReferences::default()));
+                index
+            }
+        };
+        if &*cache[index].1 != values {
+            cache[index].1 =
+                engine_allocation::owned_vec(engine_allocation::copy_vec(values)).into();
+        }
+        Some(cache[index].1.clone())
     }
 
     fn state_list(&self, span: ccountry::RosterSpan) -> Vec<u32> {
@@ -1736,6 +1809,7 @@ mod tests {
             owned_state_count: 7,
             state_rosters: Some([Default::default(); 3]),
             leader_rosters: Some([Default::default(); 2]),
+            sent_expeditionaries: Some(Default::default()),
             neighbors: Some(Default::default()),
             policy_reason: Some("MIO policy production status is null"),
             ..Default::default()
@@ -2268,6 +2342,33 @@ mod tests {
         assert_eq!(
             capture.relations.first[0].forward_visibility.unwrap().war,
             None
+        );
+    }
+}
+
+#[cfg(test)]
+mod manpower_projection_tests {
+    use super::*;
+    #[test]
+    fn manpower_projection_reuses_quiet_reference_storage_and_preserves_old_rows() {
+        let mut capture = Captured::vacant();
+        capture.leaders.first = vec![7, 0, 7];
+        capture.leaders.len = 3;
+        let span = ccountry::RosterSpan { start: 0, count: 3 };
+        let first = capture.manpower_reference_list(1, span).unwrap();
+        for _ in 0..100 {
+            let quiet = capture.manpower_reference_list(1, span).unwrap();
+            assert_eq!(quiet.as_ptr(), first.as_ptr());
+        }
+        capture.leaders.first[0] = 9;
+        let changed = capture.manpower_reference_list(1, span).unwrap();
+        assert_eq!(&*first, &[7, 0, 7]);
+        assert_eq!(&*changed, &[9, 0, 7]);
+        assert_ne!(changed.as_ptr(), first.as_ptr());
+        assert!(
+            capture
+                .manpower_reference_list(1, ccountry::RosterSpan { start: 3, count: 1 })
+                .is_none()
         );
     }
 }

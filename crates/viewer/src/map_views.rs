@@ -154,9 +154,10 @@ pub struct Views {
     pub raids: PoolView,
     /// The Operatives map mode's state containers and their entries.
     pub intel: viewer_raids::map::intel_icons::IntelView,
-    pub bases: [PoolView; viewer_counters::map::counters::BASE_FAMILIES],
+    pub bases: viewer_counters::map::counters::BaseView,
     pub land_combats: viewer_counters::map::counters::land_windows::View,
     pub resources: viewer_world::map::resource_icons::ResourceIconView,
+    pub occupation: viewer_world::map::occupation_icons::OccupationIconView,
     pub adjacency_rules: PoolView,
 }
 
@@ -166,9 +167,10 @@ impl Views {
         retries.extend(self.labels.retries());
         retries.extend(self.pings.retry());
         retries.extend(self.raids.retry());
-        retries.extend(self.bases.iter().filter_map(PoolView::retry));
+        retries.extend(self.bases.retries());
         retries.extend(self.land_combats.retry());
         retries.extend(self.resources.retry());
+        retries.extend(self.occupation.retry());
         retries.extend(self.adjacency_rules.retry());
         retries
     }
@@ -179,12 +181,10 @@ impl Views {
         let pings = self.pings.take_running();
         let raids = self.raids.take_running();
         let intel = self.intel.take_running();
-        let mut bases = false;
-        for view in &mut self.bases {
-            bases |= view.take_running();
-        }
+        let bases = self.bases.take_running();
         let land_combats = self.land_combats.take_running();
         let resources = self.resources.take_running();
+        let occupation = self.occupation.take_running();
         let adjacency_rules = self.adjacency_rules.take_running();
         naval
             || labels
@@ -194,6 +194,7 @@ impl Views {
             || bases
             || land_combats
             || resources
+            || occupation
             || adjacency_rules
     }
 }
@@ -234,22 +235,46 @@ impl Presentation {
 pub struct CounterView {
     pub settings: CounterSettings,
     pub selected: Arc<BTreeSet<Unit>>,
+    pub air_selected: Arc<Vec<u64>>,
+    pub air_bases: Arc<Vec<u64>>,
+    pub fleets_selected: Arc<Vec<u64>>,
     pub hovered: Option<Unit>,
     /// Whether the view shows the Operatives map mode, whose intel icons it then draws.
     pub operatives: bool,
+    /// The exact occupation mode; both share the same counter visibility.
+    pub occupation: Option<viewer_world::map::occupation_icons::Mode>,
     pub presentation: Arc<Presentation>,
     /// What the view's map mode shows of the counters, icons and labels.
     pub visibility: viewer_foundation::map::mode_visibility::Visibility,
 }
 
 impl CounterView {
+    /// Resolve the mode together so shared visibility cannot hide a label-mode change.
+    pub fn set_mode(&mut self, mode: &viewer_world::map::map_mode::MapMode) {
+        use viewer_world::map::{
+            map_mode::{MapMode, Stock},
+            occupation_icons::Mode,
+        };
+        self.visibility = viewer_world::map::map_mode::visibility::of(mode);
+        self.operatives = matches!(mode, MapMode::Stock(Stock::Operatives));
+        self.occupation = match mode {
+            MapMode::Stock(Stock::Resistance) => Some(Mode::Resistance),
+            MapMode::Stock(Stock::Compliance) => Some(Mode::Compliance),
+            _ => None,
+        };
+    }
+
     /// A new view with no counter history, as a freshly loaded game.
     pub fn new(settings: CounterSettings) -> Self {
         Self {
             settings,
             selected: Arc::default(),
+            air_selected: Arc::default(),
+            air_bases: Arc::default(),
+            fleets_selected: Arc::default(),
             hovered: None,
             operatives: false,
+            occupation: None,
             presentation: Arc::default(),
             visibility: Default::default(),
         }
@@ -260,8 +285,12 @@ impl PartialEq for CounterView {
     fn eq(&self, other: &Self) -> bool {
         self.settings == other.settings
             && self.selected == other.selected
+            && self.air_selected == other.air_selected
+            && self.air_bases == other.air_bases
+            && self.fleets_selected == other.fleets_selected
             && self.hovered == other.hovered
             && self.operatives == other.operatives
+            && self.occupation == other.occupation
             && Arc::ptr_eq(&self.presentation, &other.presentation)
             && self.visibility == other.visibility
     }
@@ -271,6 +300,40 @@ impl PartialEq for CounterView {
 mod tests {
     use super::*;
     use dashboard::protocol::CounterFilter;
+
+    #[test]
+    fn occupation_mode_changes_invalidate_shared_visibility_and_clear_locally() {
+        use viewer_world::map::{
+            map_mode::{MapMode, Stock},
+            occupation_icons::Mode,
+        };
+        let mut resistance = CounterView::default();
+        resistance.set_mode(&MapMode::Stock(Stock::Resistance));
+        let mut compliance = resistance.clone();
+        compliance.set_mode(&MapMode::Stock(Stock::Compliance));
+        assert_eq!(resistance.visibility, compliance.visibility);
+        assert_eq!(resistance.occupation, Some(Mode::Resistance));
+        assert_eq!(compliance.occupation, Some(Mode::Compliance));
+        assert_ne!(resistance, compliance);
+        compliance.set_mode(&MapMode::default());
+        assert_eq!(compliance.occupation, None);
+        assert_eq!(resistance.occupation, Some(Mode::Resistance));
+    }
+
+    #[test]
+    fn a_changed_air_selection_invalidates_the_prepared_view() {
+        let first = CounterView::default();
+        let mut selected = first.clone();
+        selected.air_selected = Arc::new(vec![7]);
+        assert_ne!(first, selected);
+        assert_eq!(selected, selected.clone());
+        selected = first.clone();
+        selected.air_bases = Arc::new(vec![9]);
+        assert_ne!(first, selected);
+        selected = first.clone();
+        selected.fleets_selected = Arc::new(vec![11]);
+        assert_ne!(first, selected);
+    }
 
     #[test]
     fn players_are_placed_through_the_links_and_an_unplaced_one_draws_everyone() {

@@ -1,5 +1,5 @@
 use super::super::{
-    Captured, CharactersCopyContext, CharactersJob, Roles, census, copy_characters_growing,
+    Captured, CharactersCopyContext, CharactersJob, N, Roles, census, copy_characters_growing,
 };
 use super::*;
 use engine_native::{cgame_state, cunit_leader_trait, memory::SliceMemory, walk::Outcome};
@@ -10,8 +10,7 @@ const BASE: usize = 0x1_4000_0000;
 const STATE: usize = 0x1000;
 const COUNT: usize = 5_000;
 const TRAITS: usize = 5;
-/// The native trait-experience vector each leader also holds. The
-/// UnitLeaderTraitExperience table is retired, so no walk reads it.
+/// The complete native trait-training vector, independent of assigned traits.
 const EXPERIENCE: usize = 17;
 const TOKEN: &[u8] = b"mod_trait_name";
 
@@ -165,7 +164,7 @@ fn final_input_fallback_grows_5000_country_traits_before_first_publication() {
     assert_eq!(captured.allocated_bytes(), 0);
     assert!(captured.fallback_jobs.iter().all(Option::is_none));
     for _ in 0..2 {
-        captured.set_character_activity([false, false, false, false, true]);
+        captured.set_character_activity([false, false, false, false, true, false]);
         // An independent raw-owned table does not authorize a duplicate read.
         captured.raw_active[0] = true;
         captured.capture_growing(&world.memory(), BASE, STATE, 0, false);
@@ -207,16 +206,16 @@ fn worker_capture_grows_original_trait_observations_and_projection_at_5000_count
         base: BASE,
         game_state: STATE,
         force_full: true,
-        active: [false, false, false, false, true],
+        active: [false, false, false, false, true, false],
         trait_rows: 1,
         trait_bytes: 1,
     };
     assert!(copy_characters_growing(&memory, context, &mut job, Roles::Independent).raw_ok);
-    // The retired trait-experience vector is never read.
+    // The assigned-traits job reads no training-progress vector.
     assert_eq!(memory.first_xp_header_reads.get(), 0);
     let mut capacity = Capacities::default();
     let mut captured = Captured::with_capacities(&capacity);
-    captured.decode_characters_payload(BASE, &job, &mut [0; 5]);
+    captured.decode_characters_payload(BASE, &job, &mut [0; N]);
     assert_eq!(
         captured.traits.rows.outcome,
         Outcome::Rows {
@@ -230,7 +229,7 @@ fn worker_capture_grows_original_trait_observations_and_projection_at_5000_count
     captured.reset();
     captured.grow(&mut capacity);
     let mut idle = Captured::with_capacities(&capacity);
-    idle.decode_characters_payload(BASE, &job, &mut [0; 5]);
+    idle.decode_characters_payload(BASE, &job, &mut [0; N]);
     assert_eq!(
         idle.traits.rows.outcome,
         Outcome::Rows {
@@ -248,13 +247,13 @@ fn worker_grows_5000_country_leader_maps_and_retains_prepared_demand() {
         base: BASE,
         game_state: STATE,
         force_full: false,
-        active: [false, true, false, false, false],
+        active: [false, true, false, false, false, false],
         trait_rows: 0,
         trait_bytes: 0,
     };
     let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; 5],
-        bytes: [0; 5],
+        rows: [0; N],
+        bytes: [0; N],
     });
     for count in [3_usize, 7] {
         for index in 0..COUNT {
@@ -295,7 +294,7 @@ fn worker_grows_5000_country_leader_maps_and_retains_prepared_demand() {
                 copy_characters_growing(&world.memory(), context, &mut job, Roles::Independent)
                     .raw_ok
             );
-            captured.decode_characters_payload(BASE, &job, &mut [0; 5]);
+            captured.decode_characters_payload(BASE, &job, &mut [0; N]);
             assert_eq!(
                 captured.leaders.rows.outcome,
                 Outcome::Rows { len: COUNT * count }
@@ -338,13 +337,13 @@ fn worker_grows_character_unit_text_and_census_before_first_publication() {
         base: BASE,
         game_state: STATE,
         force_full: false,
-        active: [true, false, false, true, false],
+        active: [true, false, false, true, false, true],
         trait_rows: 0,
         trait_bytes: 0,
     };
     let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; 5],
-        bytes: [0; 5],
+        rows: [0; N],
+        bytes: [0; N],
     });
     for enlarged in [false, true] {
         if enlarged {
@@ -376,7 +375,7 @@ fn worker_grows_character_unit_text_and_census_before_first_publication() {
                 .len(),
             COUNT
         );
-        captured.decode_characters_payload(BASE, &job, &mut [0; 5]);
+        captured.decode_characters_payload(BASE, &job, &mut [0; N]);
         assert_eq!(
             captured.characters.rows.outcome,
             Outcome::Rows { len: COUNT }

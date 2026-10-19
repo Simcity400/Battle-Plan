@@ -124,7 +124,8 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
         scripted.effects()?.view(None),
     );
     let graph = Rc::new(RefCell::new(graph));
-    let scopes = crate::triggers::event_scopes::project(&graph.borrow(), 0)?;
+    let scopes = crate::triggers::event_scopes::project(&graph.borrow(), 0)
+        .map_err(|why| why.to_string())?;
     let renderer = Renderer {
         context: &context,
         graph,

@@ -893,8 +893,9 @@ fn query_data(
             // App continuity numbers groups across consecutive observed hours,
             // so the lanes are the walk of the prepared prefix's change inputs;
             // the walk's hours after its last input are pending, not
-            // unobserved. A requested read past the prefix also lists the
-            // groups at that hour from its frame alone (`current`).
+            // unobserved. Requested reads also list native groups and
+            // contributions from each hour's frame alone (`current`),
+            // independently of the prefix's progress.
             let prefix = super::prefix::read_or_empty(
                 source,
                 content,
@@ -914,6 +915,17 @@ fn query_data(
                 &context,
                 cancelled,
             )?;
+            let current = crate::products::wars::prepared::current(
+                source,
+                &request.params,
+                &context,
+                cancelled,
+            )?;
+            if !current.is_empty()
+                && let Some(reply) = data.as_object_mut()
+            {
+                reply.insert("current".into(), serde_json::to_value(current)?);
+            }
             if !prefix.coverage.complete
                 && let Some(reply) = data.as_object_mut()
             {
@@ -924,16 +936,6 @@ fn query_data(
                         prefix.clip(&mut clipped);
                         *spans = serde_json::to_value(clipped)?;
                     }
-                }
-                let current = crate::products::wars::prepared::current(
-                    source,
-                    &request.params,
-                    prefix.coverage.last_hour,
-                    &context,
-                    cancelled,
-                )?;
-                if !current.is_empty() {
-                    reply.insert("current".into(), serde_json::to_value(current)?);
                 }
                 // Native capitulation dates may precede their first read by
                 // any number of hours, revising earlier timeline glyphs.
@@ -1209,6 +1211,18 @@ fn query_data(
                     )?,
                 )?;
             }
+            if let Some(hour) = params.hour {
+                data["details"] =
+                    serde_json::to_value(crate::products::special_projects::details_at_hour(
+                        source,
+                        &crate::products::LoadContext {
+                            content: content.cloned(),
+                        },
+                        &params,
+                        hour,
+                        cancelled,
+                    )?)?;
+            }
             if let Some(prefix) = prefix {
                 prefix.mark(&mut data)?;
             } else {
@@ -1255,8 +1269,8 @@ fn query_data(
             let Some(approximate) = approximate else {
                 return Ok(serde_json::to_value(reply)?);
             };
-            // Recorded gaps after the prefix are unobserved however far
-            // preparation has gone; the other hours there are sampled or pending.
+            // Recorded gaps and discontinuities between blocks after the prefix
+            // are unobserved; the other hours there are sampled or pending.
             let after = prefix.coverage.last_hour;
             let gaps = super::prefix::gaps_after(source, branch, after);
             for spans in [
@@ -1893,7 +1907,10 @@ fn query_data(
                             &|frame, _, requested| sampler.sample(frame, requested),
                             &|block| {
                                 crate::products::country_experience::Sampler::first_block(
-                                    source, block, &requested, cancelled,
+                                    source,
+                                    block,
+                                    &sampled_requested,
+                                    cancelled,
                                 )
                             },
                             cancelled,

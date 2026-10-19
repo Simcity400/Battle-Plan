@@ -35,16 +35,16 @@ use dashboard_base::{
     products::validate_tag,
 };
 use dashboard_text::metadata::link_slots;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use replay::container::Replay;
-use replay_data::{rows::TableId, rows::tables};
+use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::{collections::VecDeque, sync::atomic::Ordering};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -1013,7 +1013,7 @@ impl ScannedAutonomy {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedAutonomy> {
     let selected = [
         TableId::Campaign,
@@ -1125,7 +1125,7 @@ pub fn content_levels(
 }
 
 #[derive(Default)]
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct Cache {
     entries: VecDeque<(u64, Arc<ScannedAutonomy>)>,
 }
@@ -1180,7 +1180,7 @@ impl Product for Autonomy {
             .try_for_each(|tag| validate_tag(tag))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn load(
         source: &Source,
         params: &Self::Params,

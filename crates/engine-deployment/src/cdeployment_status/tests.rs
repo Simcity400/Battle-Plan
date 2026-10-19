@@ -702,3 +702,44 @@ fn a_proven_empty_queue_is_rows_and_a_missing_country_table_is_unavailable() {
         }
     );
 }
+
+#[test]
+fn template_configuration_authenticates_manager_and_retains_raw_selection_and_lock() {
+    let mut bytes = fixture();
+    let handle = (u64::from(u32::MAX) << 32) | 52;
+    put(
+        &mut bytes,
+        STATUS + SELECTED_STAFF_TEMPLATE,
+        &handle.to_le_bytes(),
+    );
+    put(&mut bytes, COUNTRY + ccountry::LOCK_ALL_TEMPLATES, &[7]);
+    put(&mut bytes, STATUS + NEXT_HQ_ORDER, &(-19_i32).to_le_bytes());
+    let country = ccountry::Country {
+        pointer: COUNTRY,
+        id: 2,
+        canonical_slot: 1,
+    };
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        template_state(&memory, 0, country).unwrap(),
+        TemplateState {
+            manager: STATUS,
+            country: 2,
+            selected_staff: handle,
+            next_hq_order: -19,
+            lock_all: 7
+        }
+    );
+    put(&mut bytes, STATUS + OWNER, &0_u64.to_le_bytes());
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        template_state(&memory, 0, country),
+        Err("deployment status country mismatch")
+    );
+}

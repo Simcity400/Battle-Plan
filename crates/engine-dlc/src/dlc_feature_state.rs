@@ -18,6 +18,9 @@ pub const MASK_FOR_NAME_RVA: usize = 0x001a_dd20;
 pub const DEPLOYED_HQ_ABILITY_FEATURE: u32 = 0x39;
 /// Related feature ID with an independently unspecified meaning.
 pub const OTHER_THUNDER_FEATURE: u32 = 0x3a;
+/// Feature required by faction goal commands.
+pub const DEEPER_FACTIONS_FEATURE: u32 = 0x32;
+pub const DEEPER_FACTIONS_MASK: u32 = 0x0000_8000;
 /// Runtime bit required by both related feature IDs.
 pub const THUNDER_AT_OUR_GATES: u32 = 0x0002_0000;
 /// Narrow compiled DLC-name and mask dependencies.

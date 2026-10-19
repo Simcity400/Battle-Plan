@@ -40,6 +40,9 @@ pub(super) fn frame(hour: i32, read: bool, countries: u32) -> DecodedFrame {
     frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(
         (1..=countries)
             .map(|owner| ProjectRow {
+                runtime: replay_data::rows::Recorded::Value(
+                    replay_data::rows::ProjectRuntime::default(),
+                ),
                 owner,
                 local_id: owner,
                 definition_id: 8,
@@ -60,6 +63,7 @@ pub(super) fn frame(hour: i32, read: bool, countries: u32) -> DecodedFrame {
         TableView::Complete(TableRows::ProjectPrograms(
             (1..=countries)
                 .map(|id| ProjectProgramRow {
+                    assignments: replay_data::rows::Recorded::Value(Some(Vec::new())),
                     id,
                     owner: id,
                     scientist: 0,

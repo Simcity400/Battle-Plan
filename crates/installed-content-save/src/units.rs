@@ -82,6 +82,12 @@ pub struct Division {
 /// Positive-only fields retain omission, rather than inventing a zero value.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionPresentation {
+    /// Stored division XP, independent of exercising status and country XP.
+    pub experience: Option<Decimal>,
+    pub history: Option<DivisionHistory>,
+    pub pending_template: Option<u64>,
+    pub officer_experience: Option<Decimal>,
+    pub career_counter: Option<i32>,
     /// `fuel_requested`: signed fixed5, omitted exactly at zero.
     pub fuel_requested: Option<Decimal>,
     pub path: Vec<u32>,
@@ -149,8 +155,9 @@ impl Acclimatization {
     pub const OMITTED_MAXIMUM_RAW: i64 = 10_000_000;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionTemplate {
+    pub origin_type: Option<Vec<u8>>,
     pub template: u64,
     pub country: Vec<u8>,
     /// Saved bytes, still empty for either omission or an emitted empty value.
@@ -174,6 +181,34 @@ pub struct DivisionTemplate {
     /// `division_names_group`: the selected name group's key is written only
     /// when the composition's group is set.
     pub names_group: Option<Vec<u8>>,
+    pub settings: DivisionTemplateSettings,
+    pub excluded_variants: Vec<u64>,
+    pub model_category: Option<u64>,
+    pub model_entity: Vec<u8>,
+    pub model_entity_present: bool,
+}
+
+/// The template writer's saved restriction and equipment settings. Required
+/// keys retain their presence, so the oracle cannot turn a missing value into
+/// a matching default.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DivisionTemplateSettings {
+    pub priority: Option<i32>,
+    pub role: Option<Vec<u8>>,
+    pub is_army_hq: bool,
+    pub locked: bool,
+    pub obsolete: bool,
+    pub obsolete_change_date: Option<i32>,
+    pub force_allow_recruiting: bool,
+    pub allow_new_equipment: Option<bool>,
+    pub allow_foreign_equipment: Option<bool>,
+    pub parent: Option<u64>,
+    pub creator_country: Option<Vec<u8>>,
+    pub origin_type: Option<Vec<u8>>,
+    pub fake_intel: bool,
+    pub division_cap: Option<i32>,
+    pub equipment_niche: Option<i32>,
+    pub forbidden_equipment: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -236,6 +271,11 @@ pub struct TaskForce {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ship {
+    pub manpower: Option<i32>,
+    pub max_manpower: Option<i32>,
+    /// The serializer emits this wrapper iff its critical array is nonempty,
+    /// even when every unnamed entry is omitted from the wrapper.
+    pub has_criticals: bool,
     /// Position in the task force serializer's ordered ship list.
     pub roster_ordinal: u32,
     pub id: u64,
@@ -264,8 +304,13 @@ pub struct ArmyOrder {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AirWing {
+    /// Written only for a signed-positive exile country reference.
+    pub government_in_exile_tag: Option<Vec<u8>>,
+    pub manpower: Option<i32>,
     pub id: u64,
     pub owner: Vec<u8>,
+    /// Ordinary saves emit the raw byte as an unsigned integer unconditionally.
+    pub reinforcement_setting: Option<u8>,
     /// Stored text, mandatory even when empty in ordinary saves. Optional
     /// parsing preserves omitted-key evidence for the oracle.
     pub name: Option<Vec<u8>>,
@@ -276,8 +321,14 @@ pub struct AirWing {
     pub mission_region: Option<u32>,
     /// The mission's `active` flag, when written.
     pub mission_active: Option<bool>,
+    /// The mission writer emits this key only for a nonzero stored byte.
+    pub stop_training_at_max_xp: bool,
     /// Raw fixed5 region-change penalty, written with a mission region.
     pub region_change_penalty: Option<i64>,
+    /// Omitted outside the serializer's relocation branch. Total distance
+    /// and the destination's direct registration order are not saved.
+    pub transfer_progress: Option<i64>,
+    pub transferring_to: Option<u32>,
     /// The wing's position among its country's `air_wing_pool` blocks'
     /// `air_wings`, in file order: the pools retain their stored order, as do
     /// each pool's wings.
@@ -360,6 +411,7 @@ pub(super) fn parse_division_templates(
         let name = bytes(fields, b"name")?;
         let name_key = bytes(fields, b"localization_key")?;
         let row = DivisionTemplate {
+            origin_type: bytes(fields, b"origin_type")?,
             template,
             country,
             name_present: name.is_some(),
@@ -374,6 +426,79 @@ pub(super) fn parse_division_templates(
             foreign_template_tag: bytes(fields, b"foreign_template_tag")?,
             composition,
             names_group: bytes(fields, b"division_names_group")?,
+            settings: DivisionTemplateSettings {
+                role: bytes(fields, b"role")?,
+                priority: bytes(fields, b"priority")?
+                    .map(|v| integer(&v))
+                    .transpose()?,
+                is_army_hq: field(fields, b"is_army_hq")?
+                    .map(boolean)
+                    .transpose()?
+                    .unwrap_or(false),
+                locked: field(fields, b"is_locked")?
+                    .map(boolean)
+                    .transpose()?
+                    .unwrap_or(false),
+                obsolete: field(fields, b"obsolete")?
+                    .map(boolean)
+                    .transpose()?
+                    .unwrap_or(false),
+                obsolete_change_date: bytes(fields, b"obsolete_change_date")?
+                    .map(|v| super::SavedDate::parse(&v)?.engine_hour())
+                    .transpose()?,
+                force_allow_recruiting: field(fields, b"force_allow_recruiting")?
+                    .map(boolean)
+                    .transpose()?
+                    .unwrap_or(false),
+                allow_new_equipment: field(fields, b"allow_new_equipment")?
+                    .map(boolean)
+                    .transpose()?,
+                allow_foreign_equipment: field(fields, b"allow_foreign_equipment")?
+                    .map(boolean)
+                    .transpose()?,
+                parent: field(fields, b"parent")?.map(typed_handle).transpose()?,
+                creator_country: bytes(fields, b"original_tag")?,
+                origin_type: bytes(fields, b"origin_type")?,
+                fake_intel: field(fields, b"is_fake_intel_division")?
+                    .map(boolean)
+                    .transpose()?
+                    .unwrap_or(false),
+                division_cap: bytes(fields, b"division_cap")?
+                    .map(|v| integer(&v))
+                    .transpose()?,
+                equipment_niche: bytes(fields, b"equipment_niche")?
+                    .map(|v| integer(&v))
+                    .transpose()?,
+                forbidden_equipment: match field(fields, b"forbidden_equipment_types")? {
+                    None => Vec::new(),
+                    Some(value) => block(value)?
+                        .iter()
+                        .map(|item| {
+                            if item.key.as_deref() != Some(b"token") {
+                                return Err(invalid("unexpected forbidden template equipment key"));
+                            }
+                            integer(scalar(&item.value)?)
+                        })
+                        .collect::<io::Result<_>>()?,
+                },
+            },
+            excluded_variants: match field(fields, b"not_allowed_equipment")? {
+                None => Vec::new(),
+                Some(value) => block(value)?
+                    .iter()
+                    .map(|item| {
+                        if item.key.as_deref() != Some(b"equipment_variant_index") {
+                            return Err(invalid("unexpected template equipment exclusion key"));
+                        }
+                        typed_handle(&item.value)
+                    })
+                    .collect::<io::Result<_>>()?,
+            },
+            model_category: bytes(fields, b"override_model_equipment_category_filter")?
+                .map(|v| integer(&v))
+                .transpose()?,
+            model_entity_present: bytes(fields, b"override_model")?.is_some(),
+            model_entity: bytes(fields, b"override_model")?.unwrap_or_default(),
         };
         if result.insert(template, row).is_some() {
             return Err(invalid("duplicate division template handle"));
@@ -497,6 +622,20 @@ pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<
         organisation: Decimal::parse(&required_bytes(items, b"organisation")?)?,
         country_intel: country_intel(items)?,
         presentation: DivisionPresentation {
+            experience: decimal(items, b"experience")?,
+            pending_template: field(items, b"old_division_template_id")?
+                .map(typed_handle)
+                .transpose()?,
+            history: field(items, b"army_history")?
+                .map(|value| division_history(block(value)?))
+                .transpose()?,
+            officer_experience: field(items, b"held_officer")?
+                .map(|value| decimal(block(value)?, b"experience"))
+                .transpose()?
+                .flatten(),
+            career_counter: bytes(items, b"killed")?
+                .map(|value| integer(&value))
+                .transpose()?,
             fuel_requested: decimal(items, b"fuel_requested")?,
             path: integer_list(items, b"path")?,
             support_attack: bytes(items, b"support_attack")?
@@ -686,6 +825,16 @@ pub(super) fn parse_task_force(owner: &[u8], fleet: u64, items: &[Item]) -> io::
 
 pub(super) fn parse_ship(task_force: u64, items: &[Item]) -> io::Result<Ship> {
     Ok(Ship {
+        manpower: field(items, b"manpower")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        max_manpower: field(items, b"max_manpower")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        has_criticals: field(items, b"critical_damage")?
+            .map(block)
+            .transpose()?
+            .is_some(),
         roster_ordinal: 0,
         id: object_id(items)?,
         task_force,
@@ -784,8 +933,15 @@ pub(super) fn parse_air_wings(items: &[Item]) -> io::Result<BTreeMap<u64, AirWin
                 let fields = block(&wing.value)?;
                 let mission = required_block(fields, b"mission")?;
                 let wing = AirWing {
+                    government_in_exile_tag: bytes(fields, b"government_in_exile_tag")?,
+                    manpower: field(fields, b"manpower")?
+                        .map(|value| integer(scalar(value)?))
+                        .transpose()?,
                     id: object_id(fields)?,
                     owner: owner.to_vec(),
+                    reinforcement_setting: field(fields, b"reinforcement_setting")?
+                        .map(|value| integer(scalar(value)?))
+                        .transpose()?,
                     name: field(fields, b"name")?
                         .map(|value| scalar(value).map(Vec::from))
                         .transpose()?,
@@ -800,8 +956,17 @@ pub(super) fn parse_air_wings(items: &[Item]) -> io::Result<BTreeMap<u64, AirWin
                         .map(|value| integer(scalar(value)?))
                         .transpose()?,
                     mission_active: field(mission, b"active")?.map(boolean).transpose()?,
+                    stop_training_at_max_xp: field(mission, b"stop_training_at_max_xp")?
+                        .map(boolean)
+                        .transpose()?
+                        .unwrap_or(false),
                     region_change_penalty: decimal(mission, b"region_change_penalty")?
                         .map(|penalty| penalty.raw),
+                    transfer_progress: decimal(fields, b"transfer_progress")?
+                        .map(|value| value.raw),
+                    transferring_to: field(fields, b"transferring_to")?
+                        .map(|value| integer(scalar(value)?))
+                        .transpose()?,
                     pool_ordinal,
                 };
                 pool_ordinal = pool_ordinal
@@ -864,5 +1029,77 @@ pub(super) fn parse_naval_combat(
             .filter(|item| item.key.as_deref() == Some(b"naval_transport"))
             .map(|item| null_permitted_handle(&item.value))
             .collect::<io::Result<_>>()?,
+    })
+}
+
+/// The saved division's ordered career and awarded-medal lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DivisionHistory {
+    pub amount: Option<i32>,
+    pub career: Vec<DivisionHistoryEntry>,
+    pub awards: Vec<DivisionHistoryEntry>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DivisionHistoryEntry {
+    pub name: Option<Vec<u8>>,
+    pub custom_name: Option<Vec<u8>>,
+    pub kind: i32,
+    pub target_country: Vec<u8>,
+    pub hour: i32,
+    pub medal: Option<Vec<u8>>,
+    pub medal_count: bool,
+    pub inherit: bool,
+    pub multiplier: Option<Decimal>,
+    pub orders: Option<i32>,
+    pub provinces: Vec<u32>,
+    pub sunk_ship: Option<super::naval_history::SunkShip>,
+}
+fn division_history(items: &[Item]) -> io::Result<DivisionHistory> {
+    fn entries(items: &[Item], key: &[u8]) -> io::Result<Vec<DivisionHistoryEntry>> {
+        let Some(value) = field(items, key)? else {
+            return Ok(Vec::new());
+        };
+        block(value)?
+            .iter()
+            .filter(|item| item.key.as_deref() == Some(b"history_queue"))
+            .map(|item| {
+                let fields = block(&item.value)?;
+                Ok(DivisionHistoryEntry {
+                    name: bytes(fields, b"army_names")?,
+                    custom_name: bytes(fields, b"custom_lockey")?,
+                    kind: integer(&required_bytes(fields, b"unique")?)?,
+                    target_country: required_bytes(fields, b"target_country")?,
+                    hour: super::SavedDate::parse(&required_bytes(fields, b"date")?)?
+                        .engine_hour()?,
+                    medal: bytes(fields, b"unit_medals")?,
+                    medal_count: boolean(
+                        field(fields, b"medal_count")?
+                            .ok_or_else(|| invalid("save lacks medal_count"))?,
+                    )?,
+                    inherit: boolean(
+                        field(fields, b"inherit")?.ok_or_else(|| invalid("save lacks inherit"))?,
+                    )?,
+                    multiplier: decimal(fields, b"multiplier")?,
+                    orders: bytes(fields, b"orders")?
+                        .map(|value| integer(&value))
+                        .transpose()?,
+                    provinces: integer_list(fields, b"location")?,
+                    sunk_ship: field(fields, b"sunk_ship")?
+                        .map(|value| super::naval_history::sunk_ship(block(value)?))
+                        .transpose()?,
+                })
+            })
+            .collect()
+    }
+    let medals = field(items, b"unit_medals")?
+        .map(block)
+        .transpose()?
+        .unwrap_or(&[]);
+    Ok(DivisionHistory {
+        amount: bytes(medals, b"amount")?
+            .map(|value| integer(&value))
+            .transpose()?,
+        career: entries(items, b"army_history")?,
+        awards: entries(medals, b"history")?,
     })
 }

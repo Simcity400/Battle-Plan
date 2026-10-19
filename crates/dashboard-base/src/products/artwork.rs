@@ -1092,7 +1092,7 @@ impl Context {
                             crate::triggers::Evaluator::new(context()?.trigger_world()?, None)
                                 .with_event_scopes(graph);
                         evaluator
-                            .evaluate(trigger, evaluator.event_scopes(0)?)
+                            .evaluate(trigger, evaluator.event_scopes(0).map_err(|why| why.to_string())?)
                             .decided()
                     })
                     .map(|name| name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned())

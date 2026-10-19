@@ -28,7 +28,7 @@ const TEMPLATES: usize = 6;
 const GROUPED: usize = 3;
 /// Every field the walks read lies below this.
 const DEFINITION: usize = 0x5c0;
-const TEMPLATE: usize = 0x240;
+const TEMPLATE: usize = (template::EQUIPMENT_NICHE + 1).next_multiple_of(8);
 
 struct Bench {
     world: World,
@@ -273,6 +273,14 @@ fn measure_templates(countries: u32, templates: usize) -> Cost {
         .outcome
     });
     assert_eq!(hourly, Outcome::Rows { len: templates });
+    for row in &icons {
+        assert_eq!(row.model_failure, None);
+        assert!(row.details_fresh);
+        assert_eq!(row.details_failure, None);
+        assert_eq!(row.equipment_failure, None);
+        // The zeroed settings must not overlap the appended grouped entries.
+        assert_eq!(row.settings.division_cap, None);
+    }
 
     let clones = countries as usize * CLONES;
     let differing = countries as usize / 8;
@@ -323,13 +331,15 @@ fn unit_scale_templates() {
 /// in one batch gather (identity and one contiguous span), plus the priority
 /// unit's name and the grouped entries in one read each; a definition costs one
 /// gathered read (identity and index) once per country, or once per walk for a
-/// database entry, however many templates name it.
+/// database entry, however many templates name it. This walk also demands both
+/// fresh extension spans per template, counted separately from its fixed record.
 #[test]
 fn model_input_capture_reads_stay_flat_per_template_and_clone() {
     for countries in [16, 128] {
         let cost = measure(countries);
         let per_country = 16;
         let overhead = countries as usize * per_country;
+        let extension_copies = cost.templates * 2;
         assert!(
             cost.daily_copies <= cost.templates * 3 + overhead,
             "{countries} countries: {} daily copies for {} templates",
@@ -337,7 +347,8 @@ fn model_input_capture_reads_stay_flat_per_template_and_clone() {
             cost.templates
         );
         assert!(
-            cost.hourly_copies <= cost.templates * 6 + cost.clones * 3 + overhead,
+            cost.hourly_copies
+                <= cost.templates * 6 + extension_copies + cost.clones * 3 + overhead,
             "{countries} countries: {} hourly copies for {} templates",
             cost.hourly_copies,
             cost.templates

@@ -30,3 +30,5 @@ Parity builds retain every ordered leader row and exact numeric cell operand. Th
 **Files:** [GeneralsWidget.tsx](GeneralsWidget.tsx) renders table/drill; `generalsData.ts` and `useLeaders.ts` own validation/loading; `LeaderIdentity.tsx`, `Attributes.tsx`, `portraits.ts` and `skillDisplay.ts` shape cells/art. Adjacent tests cover these rules. `generals.css`, `definition.ts` and `index.ts` own styling, settings and registration; [CareerView](../general-career/CareerView.tsx) renders detail.
 
 Shared framework conventions: [widgets](../README.md).
+
+Career details show commander residual XP and complete training progress, using exact signed fixed-point strings until formatting.

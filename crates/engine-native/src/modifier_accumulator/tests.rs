@@ -48,6 +48,16 @@ fn requested_operand_keeps_lazy_disabled_presence_separate_from_raw_and_clamped_
             effective: 0
         })
     );
+    assert_eq!(
+        requested_effective_memo(
+            &memory,
+            0,
+            0x1000,
+            1,
+            &definition::DefinitionMemo::default()
+        ),
+        Ok(0)
+    );
     memory.put(
         metadata + definition::FEATURE_SELECTOR,
         &0_u32.to_le_bytes(),
@@ -64,6 +74,16 @@ fn requested_operand_keeps_lazy_disabled_presence_separate_from_raw_and_clamped_
             present: true,
             effective: 0
         })
+    );
+    assert_eq!(
+        requested_effective_memo(
+            &memory,
+            0,
+            0x1000,
+            1,
+            &definition::DefinitionMemo::default()
+        ),
+        Ok(0)
     );
     assert_eq!(
         requested_operand_at(&memory, 0, 0x1000, 2),
@@ -1023,4 +1043,63 @@ fn held_observations_serve_their_address_without_reading() {
     assert_eq!(second.value(served), first.value(fresh));
     assert_eq!(memory.calls.get(), calls, "the held address reads nothing");
     assert_eq!(second.observed(address), Some(&held[..]));
+}
+
+#[test]
+fn requested_lookup_does_not_read_unselected_values_or_discard_sibling_keys() {
+    struct Selected;
+    impl crate::Memory for Selected {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            let bytes = match (at, out.len()) {
+                (0x100, 8) => 0x200_u64.to_le_bytes().to_vec(),
+                (0x10c, 4) => 2_i32.to_le_bytes().to_vec(),
+                (0x200, 4) => 10_u32.to_le_bytes().to_vec(),
+                (0x210, 4) => 20_u32.to_le_bytes().to_vec(),
+                (0x208, 8) => 123_i64.to_le_bytes().to_vec(),
+                _ => return false,
+            };
+            out.copy_from_slice(&bytes);
+            true
+        }
+    }
+    assert_eq!(
+        super::lookup_requested_at(&Selected, 0x100, 10),
+        Ok(super::Value {
+            present: true,
+            raw: 123
+        })
+    );
+    assert!(super::lookup_requested_at(&Selected, 0x100, 20).is_err());
+    assert_eq!(
+        super::lookup_requested_at(&Selected, 0x100, 15),
+        Ok(super::Value::default())
+    );
+}
+
+#[test]
+fn requested_lookup_does_not_require_the_capacity_word() {
+    struct WithoutCapacity(i32);
+    impl crate::Memory for WithoutCapacity {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            match (at, out.len()) {
+                (0x100, 8) => out.copy_from_slice(&0x200_u64.to_le_bytes()),
+                (0x10c, 4) => out.copy_from_slice(&self.0.to_le_bytes()),
+                (0x200, 4) => out.copy_from_slice(&7_u32.to_le_bytes()),
+                (0x208, 8) => out.copy_from_slice(&123_i64.to_le_bytes()),
+                _ => return false, // Capacity is unreadable, including a combined header.
+            }
+            true
+        }
+    }
+    assert_eq!(
+        super::lookup_requested_at(&WithoutCapacity(0), 0x100, 7),
+        Ok(super::Value::default())
+    );
+    assert_eq!(
+        super::lookup_requested_at(&WithoutCapacity(1), 0x100, 7),
+        Ok(super::Value {
+            present: true,
+            raw: 123
+        })
+    );
 }

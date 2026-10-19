@@ -31,6 +31,31 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 
+/// Shares authenticated region objects already reached by sortie acquisition.
+/// A successful miss is distinct from an unreadable lookup.
+pub trait RegionObserver {
+    /// A certified native console vector, independent of any map or tooltip evaluation.
+    /// Missing support is explicit unknown and never guessed empty.
+    fn detection_overrides(
+        &mut self,
+        _emit: &mut dyn FnMut(u32, i64) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        Err("Air detection override writer certificate unavailable")
+    }
+
+    fn observed(
+        &mut self,
+        country: usize,
+        region: usize,
+        object: Option<map_air_country_region_modifier::Region>,
+    );
+}
+
+impl RegionObserver for () {
+    fn observed(&mut self, _: usize, _: usize, _: Option<map_air_country_region_modifier::Region>) {
+    }
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     pub missions: usize,
@@ -73,6 +98,7 @@ struct Mission {
     region: Option<u32>,
     membership: bool,
     operands: native::Mission,
+    execution: Option<engine_native::cair_wing::fuel_inputs::Inputs>,
     definition_map_flags: u64,
     reached_start: usize,
     reached_len: usize,
@@ -113,6 +139,7 @@ impl Key {
 /// country (its region map); keys arrive grouped by base and country.
 #[derive(Default)]
 struct Cached {
+    weather_manager: Option<Result<usize, &'static str>>,
     weather: Option<Array>,
     containers: Option<(u64, Array)>,
     region_map: Option<(usize, map_air_country_region_modifier::CountryMap)>,
@@ -286,7 +313,14 @@ impl Sorties {
         witnesses: &[BaseWitness],
     ) {
         self.capture_mode(
-            memory, base, game_state, metadata, registered, witnesses, false,
+            memory,
+            base,
+            game_state,
+            metadata,
+            registered,
+            witnesses,
+            false,
+            &mut (),
         )
     }
 
@@ -300,7 +334,33 @@ impl Sorties {
         witnesses: &[BaseWitness],
     ) {
         self.capture_mode(
-            memory, base, game_state, metadata, registered, witnesses, true,
+            memory,
+            base,
+            game_state,
+            metadata,
+            registered,
+            witnesses,
+            true,
+            &mut (),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The observer borrows the same capture inputs without bundling independent acquisition lifetimes."
+    )]
+    pub fn capture_observed<'a>(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        metadata: bool,
+        registered: impl Iterator<Item = Result<&'a WingIdentity, &'static str>>,
+        witnesses: &[BaseWitness],
+        observer: &mut impl RegionObserver,
+    ) {
+        self.capture_mode(
+            memory, base, game_state, metadata, registered, witnesses, true, observer,
         )
     }
 
@@ -314,6 +374,7 @@ impl Sorties {
         registered: impl Iterator<Item = Result<&'a WingIdentity, &'static str>>,
         witnesses: &[BaseWitness],
         growing: bool,
+        observer: &mut impl RegionObserver,
     ) {
         self.reset();
         self.missions.growing = growing;
@@ -329,8 +390,9 @@ impl Sorties {
                 reason: replay_data::cadence::SKIPPED_REASON,
             }
         };
-        self.outcome = match self.acquire(memory, base, game_state, metadata, registered, witnesses)
-        {
+        self.outcome = match self.acquire(
+            memory, base, game_state, metadata, registered, witnesses, observer,
+        ) {
             Ok(()) => {
                 let short = self.missions.short()
                     + self.reached.short()
@@ -358,6 +420,10 @@ impl Sorties {
         };
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep the registered wing stream, witnesses and observer borrowed independently during acquisition."
+    )]
     fn acquire<'a>(
         &mut self,
         memory: &impl Memory,
@@ -366,6 +432,7 @@ impl Sorties {
         metadata: bool,
         registered: impl Iterator<Item = Result<&'a WingIdentity, &'static str>>,
         witnesses: &[BaseWitness],
+        observer: &mut impl RegionObserver,
     ) -> Result<(), &'static str> {
         if metadata {
             let row = native::read_modifier_metadata(memory, base)?;
@@ -386,6 +453,7 @@ impl Sorties {
                 effective: wing.effective_country(),
                 region: wing.region,
                 membership: wing.mission_mask & AIR_MISSION_REACHED_IDS != 0,
+                execution: wing.fuel_inputs,
                 ..Mission::default()
             })?;
         }
@@ -406,9 +474,62 @@ impl Sorties {
                 continue;
             }
             previous = Some(key.order());
-            self.operand(memory, base, game_state, &countries, &mut cached, key)?;
+            self.operand(
+                memory,
+                base,
+                game_state,
+                &countries,
+                &mut cached,
+                key,
+                observer,
+            )?;
         }
-        self.overrides(memory, base)
+        self.patrol_night(memory, base, game_state, &mut cached);
+        self.overrides(memory, base)?;
+        self.detection_overrides(observer)
+    }
+
+    /// A held night marker is acquired only for the original sampled regions
+    /// demanded by nonzero disruption. The ordinary updated path reads none.
+    fn patrol_night(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        cached: &mut Cached,
+    ) {
+        let missions = &mut self.missions.rows[..self.missions.len];
+        let mut count = 0;
+        for (index, mission) in missions.iter().enumerate() {
+            if native::patrol::demanded(&mission.operands) {
+                self.order[count] = index as u32;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return;
+        }
+        let manager = *cached
+            .weather_manager
+            .get_or_insert_with(|| native::weather_manager(memory, base, game_state));
+        let Ok(Some(held)) = native::patrol::HeldNight::read(memory, game_state, manager) else {
+            return;
+        };
+        let order = &mut self.order[..count];
+        order.sort_unstable_by_key(|&index| missions[index as usize].operands.region_pointer);
+        let mut previous = None;
+        let mut applied = None;
+        for &index in order.iter() {
+            let mission = &mut missions[index as usize];
+            let region = mission.operands.region_pointer;
+            if previous != Some(region) {
+                previous = Some(region);
+                applied = held.applied(memory, base, region, mission.region).ok();
+            }
+            if let Some(normalization) = &mut mission.operands.normalization {
+                normalization.patrol.night_applied = applied;
+            }
+        }
     }
 
     /// Every console override, in slot order after the keyed modifiers. The
@@ -435,22 +556,68 @@ impl Sorties {
         Ok(())
     }
 
+    fn detection_overrides(
+        &mut self,
+        observer: &mut impl RegionObserver,
+    ) -> Result<(), &'static str> {
+        let first = self.modifiers.len;
+        let result = observer.detection_overrides(&mut |slot, raw| {
+            self.modifiers.push(AirSortieModifierRow {
+                scope: AirSortieModifierRow::DETECTION_OVERRIDE,
+                subject: slot,
+                region: 0,
+                raw,
+            })
+        });
+        if result.is_err() {
+            self.modifiers.len = first;
+        }
+        self.modifiers.push(AirSortieModifierRow {
+            scope: AirSortieModifierRow::DETECTION_OVERRIDE_STATUS,
+            subject: 0,
+            region: 0,
+            raw: i64::from(result.is_ok()),
+        })?;
+        Ok(())
+    }
+
     /// Mission operands in gathered batches, then the reached IDs. A mission
     /// whose IDs do not fit is dropped and counted short.
     fn read_missions(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         let missions = &mut self.missions.rows[..self.missions.len];
+        let mut spotting = native::patrol::SpottingFactors::default();
         for chunk in missions.chunks_mut(native::MISSION_BATCH) {
             let mut pointers = [0; native::MISSION_BATCH];
             let mut operands = [native::Mission::default(); native::MISSION_BATCH];
             for (pointer, mission) in pointers.iter_mut().zip(chunk.iter()) {
                 *pointer = mission.pointer;
             }
-            native::read_missions(
-                memory,
-                base,
-                &pointers[..chunk.len()],
-                &mut operands[..chunk.len()],
-            )?;
+            if chunk.iter().all(|mission| mission.execution.is_some()) {
+                let mut execution = [engine_native::cair_wing::fuel_inputs::Inputs::default();
+                    native::MISSION_BATCH];
+                for (row, mission) in execution.iter_mut().zip(chunk.iter()) {
+                    *row = mission
+                        .execution
+                        .expect("complete same-pass execution observations");
+                }
+                native::read_missions_with_spotting(
+                    memory,
+                    base,
+                    &pointers[..chunk.len()],
+                    Some(&execution[..chunk.len()]),
+                    &mut spotting,
+                    &mut operands[..chunk.len()],
+                )?;
+            } else {
+                native::read_missions_with_spotting(
+                    memory,
+                    base,
+                    &pointers[..chunk.len()],
+                    None,
+                    &mut spotting,
+                    &mut operands[..chunk.len()],
+                )?;
+            }
             for (mission, operands) in chunk.iter_mut().zip(operands) {
                 mission.operands = operands;
             }
@@ -652,6 +819,10 @@ impl Sorties {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The selected key shares the existing country reader and cache while forwarding its reached region."
+    )]
     fn operand<M: Memory>(
         &mut self,
         memory: &M,
@@ -660,6 +831,7 @@ impl Sorties {
         countries: &ccountry::Reader<'_, M>,
         cached: &mut Cached,
         key: Key,
+        observer: &mut impl RegionObserver,
     ) -> Result<(), &'static str> {
         let raw = match key.scope {
             Scope::Container => {
@@ -725,11 +897,14 @@ impl Sorties {
                 return Ok(());
             }
             Scope::Weather => {
+                let manager = *cached
+                    .weather_manager
+                    .get_or_insert_with(|| native::weather_manager(memory, base, game_state));
                 let regions = match cached.weather {
                     Some(regions) => regions,
                     None => *cached
                         .weather
-                        .insert(native::weather_regions(memory, base, game_state)?),
+                        .insert(native::weather_regions_from_manager(memory, manager?)?),
                 };
                 native::weather_modifier(memory, base, regions, key.region)?.raw
             }
@@ -747,7 +922,11 @@ impl Sorties {
                         map
                     }
                 };
-                map.lookup(memory, base, key.object)?.raw
+                let object = map.region(memory, base, key.object)?;
+                observer.observed(key.country, key.object, object);
+                object
+                    .map_or(Ok(Default::default()), |object| object.efficiency(memory))?
+                    .raw
             }
         };
         if raw != 0 {
@@ -810,6 +989,70 @@ impl Sorties {
                     )),
                     definition_map_flags: mission.definition_map_flags,
                     cas_ratio_raw: mission.operands.cas_ratio_raw.into(),
+                    interception_alert_gate: (mission
+                        .operands
+                        .interception_alert_gate
+                        .map(u32::from))
+                    .into(),
+                    current_type: (mission.operands.current_type).into(),
+                    effective_aircraft: (mission.operands.effective_aircraft).into(),
+                    detection_stat_13: (mission
+                        .operands
+                        .normalization
+                        .and_then(|input| input.detection[0]))
+                    .into(),
+                    detection_stat_14: (mission
+                        .operands
+                        .normalization
+                        .and_then(|input| input.detection[1]))
+                    .into(),
+                    patrol_disruption_raw: (mission
+                        .operands
+                        .normalization
+                        .and_then(|input| input.patrol.disruption))
+                    .into(),
+                    patrol_attack_raw: (mission
+                        .operands
+                        .normalization
+                        .and_then(|input| input.patrol.attack))
+                    .into(),
+                    patrol_defence_raw: (mission
+                        .operands
+                        .normalization
+                        .and_then(|input| input.patrol.defence))
+                    .into(),
+                    patrol_speed_raw: (mission
+                        .operands
+                        .normalization
+                        .and_then(|input| input.patrol.speed))
+                    .into(),
+                    patrol_wing_attack_raw: (mission
+                        .operands
+                        .normalization
+                        .and_then(|input| input.patrol.attack_modifier))
+                    .into(),
+                    patrol_wing_defence_raw: (mission
+                        .operands
+                        .normalization
+                        .and_then(|input| input.patrol.defence_modifier))
+                    .into(),
+                    patrol_night_applied_raw: (mission
+                        .operands
+                        .normalization
+                        .and_then(|input| input.patrol.night_applied))
+                    .into(),
+                    normalization: (mission.operands.normalization.map(|input| {
+                        replay_data::rows::AirMissionNormalization {
+                            night_stat: input.night_stat,
+                            modifiers: input.modifiers.map(|entry| {
+                                entry.map(|entry| replay_data::rows::AirNormalizationEntry {
+                                    present: entry.present,
+                                    raw: entry.raw,
+                                })
+                            }),
+                        }
+                    }))
+                    .into(),
                 }
             }),
             table::<tables::AirSortieBaseCountries, _>(

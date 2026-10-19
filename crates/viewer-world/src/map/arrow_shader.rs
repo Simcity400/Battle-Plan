@@ -65,6 +65,8 @@ pub struct Arrow {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     reference: u32,
+    block: u32,
+    written: u32,
 }
 
 impl Arrow {
@@ -79,10 +81,38 @@ impl Arrow {
     ) -> io::Result<Self> {
         // A visual mod's replacement that cannot be drawn here falls back to the recording.
         shader_pipeline::library::with_recorded(effect, |effect| {
-            Self::build(device, effect, technique, samples, format, depth, mode)
+            Self::build(
+                device, effect, technique, samples, format, depth, mode, false,
+            )
         })
     }
 
+    /// Symbols share the authored map-arrow effects, with their own vertex
+    /// declaration and constant block.
+    pub fn symbol(
+        device: &wgpu::Device,
+        effect: &Arc<Effect>,
+        technique: &str,
+        samples: u32,
+        format: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+    ) -> io::Result<Self> {
+        shader_pipeline::library::with_recorded(effect, |effect| {
+            Self::build(
+                device,
+                effect,
+                technique,
+                samples,
+                format,
+                depth,
+                Mode::Main,
+                true,
+            )
+        })
+    }
+
+    // Pipeline identity includes each authored technique, target format and draw mode operand.
+    #[allow(clippy::too_many_arguments)]
     fn build(
         device: &wgpu::Device,
         effect: &Arc<Effect>,
@@ -91,6 +121,7 @@ impl Arrow {
         format: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
         mode: Mode,
+        symbol: bool,
     ) -> io::Result<Self> {
         let selection = effect.select(technique).map_err(refuse)?.ok_or_else(|| {
             refuse(format!(
@@ -108,6 +139,7 @@ impl Arrow {
         for input in &compiled.vertex.inputs {
             let (offset, format, width) = match input.semantic.as_str() {
                 "POSITION" | "POSITION0" => (0, wgpu::VertexFormat::Float32x3, 3),
+                "TEXCOORD" | "TEXCOORD0" if symbol => (12, wgpu::VertexFormat::Float32x3, 3),
                 "TEXCOORD" | "TEXCOORD0" => (16, wgpu::VertexFormat::Float32x4, 4),
                 _ => return Err(refuse(format!("native arrow cannot supply {input:?}"))),
             };
@@ -121,7 +153,11 @@ impl Arrow {
             });
         }
         pass.vertices = vec![gpu::VertexLayout {
-            stride: std::mem::size_of::<Vertex>() as u64,
+            stride: if symbol {
+                24
+            } else {
+                std::mem::size_of::<Vertex>() as u64
+            },
             step: wgpu::VertexStepMode::Vertex,
             attributes,
         }];
@@ -148,7 +184,8 @@ impl Arrow {
             super::shader_constants::scene(&pipeline).map_err(refuse)?;
         }
         // allocates128; writes116 bytes.
-        super::shader_constants::both(&pipeline, 3, 128, std::slice::from_ref(&(0..116)))
+        let (block, size, written) = if symbol { (4, 48, 48) } else { (3, 128, 116) };
+        super::shader_constants::both(&pipeline, block, size, std::slice::from_ref(&(0..written)))
             .map_err(refuse)?;
         let retained = super::shader_scene::Program::new(
             &selection,
@@ -161,6 +198,8 @@ impl Arrow {
             retained,
             pipeline,
             reference,
+            block,
+            written,
         })
     }
 
@@ -180,8 +219,8 @@ impl Arrow {
                     (binding(0, Stage::Vertex), scene.to_vec()),
                     (binding(0, Stage::Pixel), scene.to_vec()),
                     (binding(2, Stage::Pixel), grid.to_vec()),
-                    (binding(3, Stage::Vertex), arrow.to_vec()),
-                    (binding(3, Stage::Pixel), arrow.to_vec()),
+                    (binding(self.block, Stage::Vertex), arrow.to_vec()),
+                    (binding(self.block, Stage::Pixel), arrow.to_vec()),
                 ]),
                 textures,
             )
@@ -202,17 +241,17 @@ impl Arrow {
                 (binding(0, Stage::Vertex), scene.to_vec()),
                 (binding(0, Stage::Pixel), scene.to_vec()),
                 (binding(2, Stage::Pixel), grid.to_vec()),
-                (binding(3, Stage::Vertex), arrow.to_vec()),
-                (binding(3, Stage::Pixel), arrow.to_vec()),
+                (binding(self.block, Stage::Vertex), arrow.to_vec()),
+                (binding(self.block, Stage::Pixel), arrow.to_vec()),
             ]),
             textures,
         );
         for stage in [Stage::Vertex, Stage::Pixel] {
             retained.stream.bind_partial_constants(
-                3,
+                self.block,
                 stage,
                 Some(arrow),
-                std::slice::from_ref(&(0..116)),
+                std::slice::from_ref(&(0..self.written)),
             );
         }
     }

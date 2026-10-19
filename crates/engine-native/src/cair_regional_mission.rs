@@ -55,13 +55,20 @@ pub struct WingIdentity {
     pub pool: usize,
     pub wing: u64,
     pub owner: u32,
+    pub owner_pointer: usize,
+    pub owner_slot: u32,
     pub region: Option<u32>,
+    pub region_pointer: usize,
     pub mission_mask: u32,
     pub air_base: u64,
     pub base_override: u64,
     pub country_override: i32,
     pub ace: u64,
     pub planes: i32,
+    pub eligibility_counter: i32,
+    pub eligibility_limit: i32,
+    /// Same-pass optional wing fuel execution; acquisition context only.
+    pub fuel_inputs: Option<crate::cair_wing::fuel_inputs::Inputs>,
 }
 
 impl WingIdentity {
@@ -76,14 +83,20 @@ impl WingIdentity {
                 .ok_or("air mission address overflow")?,
             pool,
             wing: row.id,
+            eligibility_counter: row.eligibility_counter,
+            eligibility_limit: row.eligibility_limit,
             owner: row.owner,
+            owner_pointer: row.owner_pointer,
+            owner_slot: row.owner_slot,
             region: row.mission_region,
+            region_pointer: row.region_pointer,
             mission_mask: row.mission_mask,
             air_base: row.air_base,
             base_override: row.base_override,
             country_override: row.country_override,
             ace: row.ace,
             planes: row.planes,
+            fuel_inputs: row.fuel_inputs,
         })
     }
 

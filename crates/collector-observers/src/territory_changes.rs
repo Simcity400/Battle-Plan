@@ -236,6 +236,16 @@ impl Changes for Observer {
 /// compare, rather than the hour's sampled slice ([`crate::sampled_verify`]).
 pub const VERIFY: bool = cfg!(feature = "territory_verify");
 
+static SCRIPTED_VP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SCRIPTED_CONTROLLERS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Loader-only content demand: optional writer hooks are absent without consumers.
+pub fn scripted_capture(victory_point: bool, controllers: bool) {
+    SCRIPTED_VP.store(victory_point, Ordering::Relaxed);
+    SCRIPTED_CONTROLLERS.store(controllers, Ordering::Relaxed);
+}
+
 /// What a site's first argument names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -433,8 +443,11 @@ impl Hooks {
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let mut hooks = Vec::new();
         if cfg!(feature = "territory_changes")
-            && MUTATIONS.iter().all(|(site, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+            && MUTATIONS.iter().enumerate().all(|(index, (site, _))| {
+                (index == 12 && !SCRIPTED_CONTROLLERS.load(Ordering::Relaxed))
+                    || (index == 13 && !SCRIPTED_VP.load(Ordering::Relaxed))
+                    || engine_native::read::<[u8; 16]>(memory, base + site.rva)
+                        == Some(site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -450,8 +463,15 @@ impl Hooks {
                 reset_state as *const () as usize,
                 read_state as *const () as usize,
                 state_name_effect as *const () as usize,
+                recount_single_controller as *const () as usize,
+                refresh_cached_victory_point as *const () as usize,
             ];
             for (index, (site, _)) in MUTATIONS.iter().enumerate() {
+                if (index == 12 && !SCRIPTED_CONTROLLERS.load(Ordering::Relaxed))
+                    || (index == 13 && !SCRIPTED_VP.load(Ordering::Relaxed))
+                {
+                    continue;
+                }
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
                     .map_err(|_| "native hook construction failed")?;
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
@@ -462,6 +482,10 @@ impl Hooks {
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
+            crate::occupation_changes::forwarder(
+                crate::occupation_changes::Forwarder::Territory,
+                false,
+            );
             for set in DOMAIN.sets() {
                 set.set_enabled(false);
             }
@@ -498,6 +522,10 @@ impl Hooks {
             crate::event_feed_observer::Forwarder::Territory,
             enabled && !self.hooks.is_empty(),
         );
+        crate::occupation_changes::forwarder(
+            crate::occupation_changes::Forwarder::Territory,
+            enabled && !self.hooks.is_empty(),
+        );
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
@@ -527,6 +555,14 @@ macro_rules! callback {
             fourth: usize,
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::TerritoryChanges);
+            let _occupation = (7..=11).contains(&$site).then(|| {
+                (
+                    crate::occupation_changes::changed(first),
+                    crate::occupation_changes::changed(
+                        first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
+                    ),
+                )
+            });
             let _marks = DOMAIN.notify($site, target(MUTATIONS[$site].1, first));
             // The state owner and controller setters and the state reset
             // also write the countries' state lists, which the country
@@ -575,6 +611,12 @@ unsafe extern "system-unwind" fn state_owner(
     caller: usize,
 ) -> usize {
     const SITE: usize = 7;
+    let _occupation = (
+        crate::occupation_changes::changed(first),
+        crate::occupation_changes::changed(
+            first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
+        ),
+    );
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::TerritoryChanges);
     let _marks = DOMAIN.notify(SITE, target(MUTATIONS[SITE].1, first));
     let _inputs = crate::country_input_changes::forwarded_territory(SITE, first, second);
@@ -593,6 +635,9 @@ callback!(reset_state, 9);
 callback!(read_state, 10);
 // State name set/reset effects(effect, scope).
 callback!(state_name_effect, 11);
+// Cached controller grouping publication (state, optional change result).
+callback!(recount_single_controller, 12);
+callback!(refresh_cached_victory_point, 13);
 
 #[cfg(test)]
 mod tests {

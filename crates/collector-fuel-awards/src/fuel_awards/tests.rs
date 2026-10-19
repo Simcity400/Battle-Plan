@@ -3,6 +3,54 @@ use super::*;
 static EXCLUSIVE: Mutex<()> = Mutex::new(());
 
 #[test]
+fn detach_after_air_store_keeps_terminal_cleanup_live_after_admission_stops() {
+    let _exclusive = EXCLUSIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    PENDING.set(None);
+    finish_air_store(1);
+    LOG.enabled.store(true, Ordering::SeqCst);
+    let mut registers: Registers = unsafe { std::mem::zeroed() };
+    registers.rdx = 0x1200;
+    // The AIR callback returns before the native displaced store. Its
+    // independent interval guard must retain the terminal tap beyond return.
+    unsafe { observe(&registers, 8) };
+    assert_eq!(AIR_CONTAINER_WRITERS.load(Ordering::SeqCst), 1);
+    assert_eq!(LOG.active.load(Ordering::SeqCst), 0);
+    let mut hooks = Hooks {
+        taps: Vec::new(),
+        publication_attempted: false,
+    };
+    assert_eq!(hooks.set_enabled(false), Ok(false));
+    assert!(!LOG.enabled.load(Ordering::SeqCst));
+    // This call represents END after the original receipt store completed.
+    // Disabled capture still releases its certificate guard.
+    unsafe { observe(&registers, 1) };
+    assert_eq!(AIR_CONTAINER_WRITERS.load(Ordering::SeqCst), 0);
+    assert!(stop_admission_and_drained());
+}
+
+#[test]
+fn detach_cannot_pass_an_admitted_callback_before_it_retains_the_store_guard() {
+    let _exclusive = EXCLUSIVE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    finish_air_store(1);
+    LOG.enabled.store(true, Ordering::SeqCst);
+    // The callback's admission check observed enabled but it has not yet
+    // created its AIR guard when another thread begins detach.
+    let call = LOG.enter();
+    assert!(LOG.enabled.load(Ordering::SeqCst));
+    assert!(!stop_admission_and_drained());
+    AIR_CONTAINER_WRITER
+        .with(|writer| *writer.borrow_mut() = Some(AirContainerWriter::new(0x1200)));
+    drop(call);
+    assert!(!stop_admission_and_drained());
+    finish_air_store(1);
+    assert!(stop_admission_and_drained());
+}
+
+#[test]
 fn worker_handover_grows_original_five_thousand_country_receipts_and_mod_name_bytes() {
     let mut entries = Vec::new();
     let mut names = Vec::new();

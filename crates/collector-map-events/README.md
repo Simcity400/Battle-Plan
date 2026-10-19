@@ -1,6 +1,11 @@
 # collector-map-events
 
-Map event capture: the seven simulation edges behind the game's floating map text and the critical shore bombardment explosion (`hooks`), the per-thread publication lanes they copy into (`lanes`) and the hourly interval that becomes the `MapEvents` table (`interval`). The host installs the hooks in the shared attach round, seals each hourly cut, assembles and commits the interval on the spool thread and grows the lanes on the sizing thread.
+Map event capture: floating map text, the critical shore bombardment explosion and forced scripted-map refresh calls (`hooks`), the per-thread publication lanes they copy into (`lanes`) and the hourly interval that becomes the `MapEvents` table (`interval`). The host installs the hooks in the shared attach round, seals each hourly cut, assembles and commits the interval on the spool thread and grows the lanes on the sizing thread.
+
+A forced refresh publishes only the selected scripted declaration ordinal, at the
+native call after the mode-name and limit gates. Quiet hours poll no map-mode object.
+The direct-CALL hook forwards both native arguments and stays in flight until the
+original returns; an event read refusal never skips the game's refresh.
 
 Each site sits where the game decides the event, before its local-viewpoint filter, so one recording can show what any country would have seen. The sites, their operands and why each is where it is are in the engine's [map_event_sites.rs](../engine-events/src/map_event_sites.rs).
 

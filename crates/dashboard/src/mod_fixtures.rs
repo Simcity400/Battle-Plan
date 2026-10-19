@@ -2406,6 +2406,13 @@ fn corpus_checks_new_main_products_through_their_shared_preparation() {
         ("occupied-states", &[], &[], Some(0), None),
         ("equipment-stockpile", &equipment, &[], None, None),
         ("equipment-produced", &equipment, &[], None, None),
+        (
+            "equipment-design-detail",
+            &[],
+            &[Kind::Fallback],
+            Some(0),
+            Some("VariantDefinitions"),
+        ),
         ("production-spending", &equipment, &[], None, None),
         (
             "equipment-losses",
@@ -2614,6 +2621,7 @@ fn shared_equipment_and_autonomy_reader_notes_are_not_repeated_by_products() {
     for key in [
         "equipment-stockpile",
         "equipment-produced",
+        "equipment-design-detail",
         "production-spending",
         "equipment-losses",
         "production-lines",

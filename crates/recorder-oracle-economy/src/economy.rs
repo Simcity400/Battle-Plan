@@ -1,6 +1,7 @@
 //! Exact native economy comparisons with explicit save coverage limits.
 
 use std::{collections::BTreeMap, io};
+mod market;
 
 use installed_content_save::{Save, economy};
 use replay_data::{rows::CountryResourceRow, rows::CountryRow, rows::tables};
@@ -15,10 +16,12 @@ pub fn compare(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
-    let mut all_complete = report.attempt("economy CountryFuel", |report| {
-        compare_fuel(frame, &saved.economy, links, report)?;
-        super::fuel_demand::compare(frame, saved, links, report)
-    });
+    let market_complete = market::compare(frame, saved, links, tokens, report).is_ok();
+    let mut all_complete = market_complete
+        & report.attempt("economy CountryFuel", |report| {
+            compare_fuel(frame, &saved.economy, links, report)?;
+            super::fuel_demand::compare(frame, saved, links, report)
+        });
     all_complete &= report.attempt("economy CountryFuelConsumers", |report| {
         compare_fuel_consumers(frame, &saved.economy, links, report)
     });
@@ -1273,7 +1276,7 @@ mod tests {
             br#"HOI4txt
             date=1942.9.6.2 game_unique_id=test version=test game_unique_seed=1 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
             countries={} states={} provinces={}
-            equipment_market={contracts={}} supply_system_2={countries={}}
+            equipment_market={contracts={} requests={0}} supply_system_2={countries={}}
             "#,
         )
         .unwrap();

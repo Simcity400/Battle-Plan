@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// Native groups and contributions from the fixture hour without a content catalogue.
+pub fn at_hour(frame: &DecodedFrame, viewpoint_tag: Option<&str>) -> io::Result<WarsAtHour> {
+    super::at_hour(frame.branch, frame, viewpoint_tag, None)
+}
+
 /// One recorded hour with three countries, their links and names, and a war
 /// between the first two.
 pub fn recorded(hour: i32) -> DecodedFrame {

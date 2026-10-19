@@ -1529,6 +1529,57 @@ fn already_finalized_with_reader(
     Ok(true)
 }
 
+fn print_script_events(branch: BranchId, state: &replay_data::event_feed_rows::ScriptEventState) {
+    println!("script_events branch={branch} hour={:?}", state.hour());
+    match state.pending() {
+        Ok(rows) => {
+            println!("pending_events count={}", rows.len());
+            for row in rows {
+                println!(
+                    "pending_event instance={} event={} due_hour={} originator={:?} scopes={:?}",
+                    row.instance,
+                    String::from_utf8_lossy(&row.definition.token),
+                    row.due_hour,
+                    row.originator,
+                    row.scopes
+                );
+            }
+        }
+        Err(reason) => println!("pending_events unavailable={reason}"),
+    }
+    match state.fired() {
+        Ok(rows) => {
+            println!("fired_event_names count={}", rows.len());
+            for row in rows {
+                println!(
+                    "fired_event_name {} native={}",
+                    String::from_utf8_lossy(&row.token),
+                    row.native_event
+                );
+            }
+        }
+        Err(reason) => println!("fired_event_names unavailable={reason}"),
+    }
+    for (country, rows) in state.delayed_owners() {
+        match rows {
+            Ok(rows) => {
+                println!("delayed_events country={country:?} count={}", rows.len());
+                for row in rows {
+                    println!(
+                        "delayed_event instance={} event={} remaining={} originator={:?} scopes={:?}",
+                        row.instance,
+                        String::from_utf8_lossy(&row.definition.token),
+                        row.remaining,
+                        row.originator,
+                        row.scopes
+                    );
+                }
+            }
+            Err(reason) => println!("delayed_events country={country:?} unavailable={reason}"),
+        }
+    }
+}
+
 pub fn inspect(path: &Path) -> Result<()> {
     let replay = open(path)?;
     println!(
@@ -1559,6 +1610,10 @@ pub fn inspect(path: &Path) -> Result<()> {
         print_identity(&format!("session {}", session.id), &session.identity);
     }
     let mut summary = Summary::default();
+    let mut script_states = std::collections::BTreeMap::<
+        BranchId,
+        replay_data::event_feed_rows::ScriptEventState,
+    >::new();
     for index in &replay.index {
         let layout = match replay
             .block_sections(index)
@@ -1576,12 +1631,39 @@ pub fn inspect(path: &Path) -> Result<()> {
             index.length,
             index.raw_length
         );
+        let mut script_decoder = replay_frame::frame::FrameDecoder::for_tables(&[
+            replay_data::rows::TableId::EventFeedHistory,
+        ]);
         for frame in replay
             .read_block(index)
             .map_err(|error| failure(path, error))?
         {
             summary.observe(&frame)?;
+            let decoded = script_decoder
+                .advance(&frame)
+                .map_err(|error| failure(path, error))?;
+            match decoded.complete::<replay_data::rows::tables::EventFeedHistory>() {
+                Ok(rows) => {
+                    for row in rows {
+                        script_states
+                            .entry(index.branch)
+                            .or_default()
+                            .observe(row)
+                            .map_err(|error| failure(path, error))?;
+                    }
+                }
+                Err(reason) => {
+                    script_states.remove(&index.branch);
+                    println!(
+                        "script_events branch={} hour={} unavailable={reason}",
+                        index.branch, frame.hour
+                    );
+                }
+            }
         }
+    }
+    for (branch, state) in &script_states {
+        print_script_events(*branch, state);
     }
     for branch in &replay.branches {
         let parent = match branch.parent {
@@ -1736,6 +1818,7 @@ fn print_map_events(path: &Path, replay: &Replay) -> Result<()> {
                         activity.overlord,
                         String::from_utf8_lossy(&activity.key)
                     ),
+                    MapEventPayload::ScriptedMapRefresh(mode) => format!("scripted_mode={mode}"),
                     MapEventPayload::BuildingDamage(building) => format!(
                         "building_type={} province={} controller={} reason={:?}",
                         building.building_type,

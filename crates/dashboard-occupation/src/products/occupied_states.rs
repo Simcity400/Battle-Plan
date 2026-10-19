@@ -1,4 +1,4 @@
-//! Occupied states, as recorded, in prepared replay-block windows. Daily reads are dated
+//! Occupied states, as recorded, in prepared replay-block windows. Supplying reads are dated
 //! separately from equal-value runs; neither resumes after a gap without a read.
 //! Preparation observes each frame once; `occupied-states-manifest` sends its replay-block
 //! windows, laws and warnings, and `occupied-states` one window's values as
@@ -305,7 +305,7 @@ fn occupation_law_valid(
         occupied_scope,
     ])));
     let evaluator = dashboard_text::triggers::Evaluator::new(world, None).with_event_scopes(graph);
-    let scope = evaluator.event_scopes(0)?;
+    let scope = evaluator.event_scopes(0).map_err(|why| why.to_string())?;
     let valid = evaluator.evaluate(&law.visible, scope);
     // Skip availability when raw/canonical country identities match.
     valid

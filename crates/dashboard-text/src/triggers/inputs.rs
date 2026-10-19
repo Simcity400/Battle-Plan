@@ -690,6 +690,50 @@ pub fn query_debug<V: std::fmt::Debug>(
     value
 }
 
+fn with_resolutions(
+    value: u64,
+    failures: &std::collections::BTreeSet<super::refusal::Identity>,
+) -> u64 {
+    if failures.is_empty() {
+        value
+    } else {
+        digest(&(value, failures))
+    }
+}
+
+/// A filtered failed join is part of the answer even when its value is unchanged.
+/// Include it when confirming reuse, so a formerly proved nonmatch cannot be
+/// reused after a raw reference stops resolving.
+pub(crate) fn resolved_digest(run: impl FnOnce() -> u64) -> u64 {
+    let (value, failures) = super::refusal::resolutions(run);
+    with_resolutions(value, &failures)
+}
+
+pub(crate) fn query_resolved<V: Hash>(key: impl FnOnce() -> Key, compute: impl FnOnce() -> V) -> V {
+    if !recording() {
+        return compute();
+    }
+    let (value, failures) = unrecorded(|| super::refusal::resolutions(compute));
+    record(key(), || {
+        Value::Digest(with_resolutions(digest(&value), &failures))
+    });
+    value
+}
+
+pub(crate) fn query_debug_resolved<V: std::fmt::Debug>(
+    key: impl FnOnce() -> Key,
+    compute: impl FnOnce() -> V,
+) -> V {
+    if !recording() {
+        return compute();
+    }
+    let (value, failures) = unrecorded(|| super::refusal::resolutions(compute));
+    record(key(), || {
+        Value::Digest(with_resolutions(digest_debug(&value), &failures))
+    });
+    value
+}
+
 /// Whether an evaluation on this thread records reads here.
 fn recording() -> bool {
     SUSPENDED.with(Cell::get) == 0 && RECORDING.with(|recording| !recording.borrow().is_empty())
@@ -784,6 +828,8 @@ pub fn missed_dependences() -> u64 {
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
+    /// This thread's misses, independent of concurrently running tests.
+    static LOCAL_MISSED: Cell<u64> = const { Cell::new(0) };
     /// Whether a missed dependence is expected here rather than a failure.
     static EXPECTING_MISSED: Cell<bool> = const { Cell::new(false) };
     /// A test's own declarations, before each key's.
@@ -797,6 +843,8 @@ type Declaration = Box<dyn Fn(&Key) -> Option<Option<Vec<TableRead>>>>;
 
 fn missed(key: &Key, frame: &DecodedFrame) {
     MISSED.fetch_add(1, Ordering::Relaxed);
+    #[cfg(any(test, feature = "test-support"))]
+    LOCAL_MISSED.with(|missed| missed.set(missed.get().wrapping_add(1)));
     #[cfg(any(test, feature = "test-support"))]
     if !EXPECTING_MISSED.with(Cell::get) {
         panic!(
@@ -819,9 +867,9 @@ pub fn expecting_missed<T>(f: impl FnOnce() -> T) -> (T, u64) {
         }
     }
     let _restore = Restore(EXPECTING_MISSED.with(|expecting| expecting.replace(true)));
-    let before = missed_dependences();
+    let before = LOCAL_MISSED.with(Cell::get);
     let value = f();
-    (value, missed_dependences() - before)
+    (value, LOCAL_MISSED.with(Cell::get).wrapping_sub(before))
 }
 
 /// Run `f` on this thread with `declare` deciding each recorded key's

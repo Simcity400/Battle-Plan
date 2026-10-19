@@ -586,6 +586,42 @@ fn injected<T>(
     result
 }
 
+/// Caller-owned lane controls, scoped to an independently scheduled test worker.
+#[cfg(test)]
+#[derive(Clone)]
+pub(super) struct TestContext {
+    parallelism: Option<usize>,
+    hook: Option<Hook>,
+    refusals: Vec<(&'static str, i32)>,
+}
+
+#[cfg(test)]
+impl TestContext {
+    pub(super) fn capture() -> Self {
+        Self {
+            parallelism: TEST_PARALLELISM.with(std::cell::Cell::get),
+            hook: TEST_HOOK.with(|hook| hook.borrow().clone()),
+            refusals: test_refusals(),
+        }
+    }
+
+    pub(super) fn install(self) -> impl Drop {
+        struct Reset(TestContext);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TEST_PARALLELISM.with(|v| v.set(self.0.parallelism));
+                TEST_HOOK.with(|v| *v.borrow_mut() = self.0.hook.take());
+                set_test_refusals(std::mem::take(&mut self.0.refusals));
+            }
+        }
+        let reset = Reset(Self::capture());
+        TEST_PARALLELISM.with(|v| v.set(self.parallelism));
+        TEST_HOOK.with(|v| *v.borrow_mut() = self.hook);
+        set_test_refusals(self.refusals);
+        reset
+    }
+}
+
 /// The refusals this thread's test injects, for pre-pass workers to apply.
 #[cfg(test)]
 pub(super) fn test_refusals() -> Vec<(&'static str, i32)> {

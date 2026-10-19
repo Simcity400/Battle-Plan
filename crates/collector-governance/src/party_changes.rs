@@ -247,7 +247,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "party_changes")
             && MUTATIONS.iter().all(|site| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [

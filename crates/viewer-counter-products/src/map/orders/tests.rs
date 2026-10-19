@@ -1122,6 +1122,9 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
         passes: 1,
     };
     let assets = OrderAssets {
+        air_transfer: Err("unused".into()),
+        air_range: Err("not read in this test".into()),
+        radar: Err("not read in this test".into()),
         types,
         pages: BTreeMap::new(),
         defines: fixture_defines(smoothing),

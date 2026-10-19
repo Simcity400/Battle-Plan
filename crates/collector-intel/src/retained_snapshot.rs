@@ -1,0 +1,510 @@
+//! Certified acquisition ownership, with replay projection only on the spool.
+
+use crate::table_conversion::{table, unavailable};
+use engine_native::walk::Outcome;
+use replay_data::{
+    cadence::SKIPPED_REASON,
+    rows::{self, TableId, tables},
+};
+use replay_frame::frame::{TableInput, TableView};
+use std::{
+    mem::size_of,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
+
+pub(crate) enum AcquiredRows {
+    Propaganda(Vec<crate::propaganda_changes::Row>),
+    Contributions(Vec<rows::IntelContributionRow>),
+    Sources(Vec<rows::IntelSourceRow>),
+    NetworkAuxiliaries(Vec<rows::IntelNetworkAuxiliaryRow>),
+}
+
+impl AcquiredRows {
+    fn table(&self) -> TableId {
+        match self {
+            Self::Propaganda(_) => TableId::PropagandaEfforts,
+            Self::Contributions(_) => TableId::IntelContributions,
+            Self::Sources(_) => TableId::IntelSources,
+            Self::NetworkAuxiliaries(_) => TableId::IntelNetworkAuxiliaries,
+        }
+    }
+    fn len(&self) -> usize {
+        match self {
+            Self::Propaganda(rows) => rows.len(),
+            Self::Contributions(rows) => rows.len(),
+            Self::Sources(rows) => rows.len(),
+            Self::NetworkAuxiliaries(rows) => rows.len(),
+        }
+    }
+    fn truncate(&mut self, len: usize) {
+        match self {
+            Self::Propaganda(rows) => rows.truncate(len),
+            Self::Contributions(rows) => rows.truncate(len),
+            Self::Sources(rows) => rows.truncate(len),
+            Self::NetworkAuxiliaries(rows) => rows.truncate(len),
+        }
+    }
+    fn bytes(&self) -> usize {
+        match self {
+            Self::Propaganda(rows) => rows.capacity() * size_of::<crate::propaganda_changes::Row>(),
+            Self::Contributions(rows) => rows.capacity() * size_of::<rows::IntelContributionRow>(),
+            Self::Sources(rows) => rows.capacity() * size_of::<rows::IntelSourceRow>(),
+            Self::NetworkAuxiliaries(rows) => {
+                rows.capacity() * size_of::<rows::IntelNetworkAuxiliaryRow>()
+            }
+        }
+    }
+    /// The ordinary spool conversion also sorts keys and refuses duplicates.
+    fn project(&self) -> TableView {
+        let outcome = Outcome::Rows { len: self.len() };
+        match self {
+            Self::Propaganda(rows) => table::<tables::PropagandaEfforts, _>(outcome, rows, |r| {
+                rows::PropagandaEffortRow {
+                    slot: r.slot,
+                    country: r.country,
+                    sequence: r.sequence,
+                    stability: r.stability,
+                    war_support: r.war_support,
+                    derived_drift: r.derived_drift,
+                }
+            }),
+            Self::Contributions(rows) => {
+                table::<tables::IntelContributions, _>(outcome, rows, |r| *r)
+            }
+            Self::Sources(rows) => table::<tables::IntelSources, _>(outcome, rows, |r| *r),
+            Self::NetworkAuxiliaries(rows) => {
+                table::<tables::IntelNetworkAuxiliaries, _>(outcome, rows, |r| *r)
+            }
+        }
+    }
+}
+
+pub(crate) struct Snapshot {
+    table: TableId,
+    acquired: Mutex<Option<AcquiredRows>>,
+    acquired_bytes: AtomicUsize,
+    projected: OnceLock<TableInput>,
+}
+impl Snapshot {
+    /// Spool only. The joined worker never enters this lock or projection.
+    fn projection(&self) -> Option<&TableInput> {
+        if let Some(projected) = self.projected.get() {
+            return Some(projected);
+        }
+        let acquired = self
+            .acquired
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.projected.get().is_none() {
+            let view = acquired
+                .as_ref()
+                .expect("acquisition recycled before projection")
+                .project();
+            // Advisory frame return can fail allocation without stopping
+            // capture. Keep the original acquisition for a later spool retry;
+            // never cache that failure as an empty/unnamed observation.
+            if matches!(&view, TableView::Unavailable { reason } if reason.is_empty()) {
+                return None;
+            }
+            let input = match view {
+                TableView::Complete(rows) => TableInput::SharedComplete(Arc::new(rows)),
+                other => TableInput::Sampled(other),
+            };
+            let _ = self.projected.set(input);
+        }
+        self.projected.get()
+    }
+    pub(crate) fn input(&self) -> TableInput {
+        match self.projection() {
+            Some(projected) => projected.clone(),
+            None => TableInput::Sampled(unavailable(refusal(self.table))),
+        }
+    }
+    /// Spool frame return: project even an unadmitted acquisition before
+    /// returning its original vector to that frame's prepared capture storage.
+    pub(crate) fn recycle_acquired(&self) -> Option<AcquiredRows> {
+        self.projection()?;
+        let rows = self
+            .acquired
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.acquired_bytes.store(0, Ordering::Relaxed);
+        rows
+    }
+    pub(crate) fn acquired_bytes(&self) -> usize {
+        self.acquired_bytes.load(Ordering::Relaxed)
+    }
+    fn bytes(&self) -> usize {
+        self.acquired_bytes()
+            + match self.projected.get() {
+                Some(TableInput::SharedComplete(rows)) => rows.allocated_bytes(),
+                _ => 0,
+            }
+    }
+}
+
+pub(crate) struct RetainedSnapshot {
+    rows: Option<Arc<Snapshot>>,
+}
+impl RetainedSnapshot {
+    pub(crate) const fn new() -> Self {
+        Self { rows: None }
+    }
+    pub(crate) fn clear(&mut self) {
+        self.rows = None;
+    }
+    pub(crate) fn bytes(&self) -> usize {
+        self.rows.as_ref().map_or(0, |rows| rows.bytes())
+    }
+
+    /// Only the family's own certificate admits a cut. Changed cuts transfer
+    /// the existing native vector in constant time; quiet cuts clone a handle.
+    /// No replay conversion, sorting, table allocation or copy runs here.
+    pub(crate) fn publish(
+        &mut self,
+        table: TableId,
+        outcome: Outcome,
+        acquire: impl FnOnce() -> AcquiredRows,
+        shared: &mut Option<Arc<Snapshot>>,
+    ) -> Outcome {
+        *shared = None;
+        match outcome {
+            Outcome::Rows { len } => {
+                let mut acquired = acquire();
+                if acquired.table() != table || acquired.len() < len {
+                    self.clear();
+                    return Outcome::Unavailable {
+                        reason: refusal(table),
+                    };
+                }
+                acquired.truncate(len);
+                let bytes = acquired.bytes();
+                let rows = Arc::new(Snapshot {
+                    table,
+                    acquired: Mutex::new(Some(acquired)),
+                    acquired_bytes: AtomicUsize::new(bytes),
+                    projected: OnceLock::new(),
+                });
+                self.rows = Some(Arc::clone(&rows));
+                *shared = Some(rows);
+                outcome
+            }
+            Outcome::Unavailable {
+                reason: SKIPPED_REASON,
+            } => {
+                if let Some(rows) = &self.rows {
+                    *shared = Some(Arc::clone(rows));
+                    outcome
+                } else {
+                    Outcome::Unavailable {
+                        reason: refusal(table),
+                    }
+                }
+            }
+            _ => {
+                self.clear();
+                outcome
+            }
+        }
+    }
+}
+fn refusal(table: TableId) -> &'static str {
+    match table {
+        TableId::PropagandaEfforts => "propaganda certified acquisition unavailable",
+        TableId::IntelNetworkAuxiliaries => "network auxiliary certified acquisition unavailable",
+        TableId::IntelContributions => "intel contribution certified acquisition unavailable",
+        TableId::IntelSources => "intel source certified acquisition unavailable",
+        _ => "intel certified acquisition table mismatch",
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fixture(rows: rows::TableRows) -> AcquiredRows {
+    // Acquisition deliberately disagrees with replay-key order, including
+    // owner headers before their lower-key held-reference rows.
+    match rows {
+        rows::TableRows::PropagandaEfforts(mut rows) => {
+            rows.reverse();
+            AcquiredRows::Propaganda(
+                rows.into_iter()
+                    .map(|r| crate::propaganda_changes::Row {
+                        slot: r.slot,
+                        country: r.country,
+                        sequence: r.sequence,
+                        stability: r.stability,
+                        war_support: r.war_support,
+                        derived_drift: r.derived_drift,
+                    })
+                    .collect(),
+            )
+        }
+        rows::TableRows::IntelContributions(mut rows) => {
+            rows.reverse();
+            AcquiredRows::Contributions(rows)
+        }
+        rows::TableRows::IntelSources(mut rows) => {
+            rows.reverse();
+            AcquiredRows::Sources(rows)
+        }
+        rows::TableRows::IntelNetworkAuxiliaries(mut rows) => {
+            rows.reverse();
+            AcquiredRows::NetworkAuxiliaries(rows)
+        }
+        _ => panic!("unexpected intel fixture table"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quiet_without_baseline_or_after_loss_refuses_until_authenticated_recovery() {
+        for table in [
+            TableId::PropagandaEfforts,
+            TableId::IntelContributions,
+            TableId::IntelSources,
+            TableId::IntelNetworkAuxiliaries,
+        ] {
+            let mut retained = RetainedSnapshot::new();
+            let mut shared = None;
+            let quiet = Outcome::Unavailable {
+                reason: SKIPPED_REASON,
+            };
+            let refused = Outcome::Unavailable {
+                reason: refusal(table),
+            };
+            assert_eq!(
+                retained.publish(table, quiet, || panic!("quiet acquisition"), &mut shared),
+                refused
+            );
+            assert!(shared.is_none());
+            // Observed empty membership is a complete baseline, unlike loss.
+            assert_eq!(
+                retained.publish(
+                    table,
+                    Outcome::Rows { len: 0 },
+                    || fixture(rows::TableRows::empty(table)),
+                    &mut shared
+                ),
+                Outcome::Rows { len: 0 }
+            );
+            let empty = shared.take().unwrap();
+            crate::test_support::with_allocations_denied(|| {
+                assert_eq!(
+                    retained.publish(table, quiet, || panic!("quiet acquisition"), &mut shared),
+                    quiet
+                );
+                assert!(Arc::ptr_eq(&empty, shared.as_ref().unwrap()));
+                assert!(empty.projected.get().is_none());
+            });
+            let TableInput::SharedComplete(rows) = empty.input() else {
+                panic!("observed empty refused")
+            };
+            assert!(rows.is_empty());
+            let lost = Outcome::Unavailable {
+                reason: "synthetic writer coverage lost",
+            };
+            assert_eq!(
+                retained.publish(table, lost, || panic!("lost acquisition"), &mut shared),
+                lost
+            );
+            assert!(shared.is_none());
+            assert_eq!(
+                retained.publish(table, quiet, || panic!("revoked acquisition"), &mut shared),
+                refused
+            );
+            assert_eq!(
+                retained.publish(
+                    table,
+                    Outcome::Rows { len: 0 },
+                    || fixture(rows::TableRows::empty(table)),
+                    &mut shared
+                ),
+                Outcome::Rows { len: 0 }
+            );
+            assert!(shared.is_some());
+            // A short or mismatched acquisition revokes the previous handle.
+            assert_eq!(
+                retained.publish(
+                    table,
+                    Outcome::Rows { len: 1 },
+                    || fixture(rows::TableRows::empty(table)),
+                    &mut shared
+                ),
+                refused
+            );
+            assert!(shared.is_none());
+            assert_eq!(
+                retained.publish(
+                    table,
+                    quiet,
+                    || panic!("failed acquisition reused"),
+                    &mut shared
+                ),
+                refused
+            );
+            assert_eq!(retained.bytes(), 0);
+        }
+    }
+
+    #[test]
+    fn duplicate_keys_refuse_on_the_spool_and_stay_refused_on_quiet_and_recovery_encoders() {
+        for table in [
+            TableId::PropagandaEfforts,
+            TableId::IntelContributions,
+            TableId::IntelSources,
+            TableId::IntelNetworkAuxiliaries,
+        ] {
+            let rows = match table {
+                TableId::PropagandaEfforts => {
+                    rows::TableRows::PropagandaEfforts(vec![Default::default(); 2])
+                }
+                TableId::IntelContributions => {
+                    rows::TableRows::IntelContributions(vec![Default::default(); 2])
+                }
+                TableId::IntelSources => rows::TableRows::IntelSources(vec![Default::default(); 2]),
+                TableId::IntelNetworkAuxiliaries => {
+                    rows::TableRows::IntelNetworkAuxiliaries(vec![Default::default(); 2])
+                }
+                _ => unreachable!(),
+            };
+            let mut retained = RetainedSnapshot::new();
+            let mut shared = None;
+            retained.publish(
+                table,
+                Outcome::Rows { len: 2 },
+                || fixture(rows),
+                &mut shared,
+            );
+            let snapshot = shared.unwrap();
+            assert!(snapshot.projected.get().is_none());
+            for hour in 1..=2 {
+                let mut encoder = replay_frame::frame::FrameEncoder::new();
+                let mut tables = std::array::from_fn(|_| {
+                    TableInput::Sampled(TableView::Unavailable {
+                        reason: "outside duplicate regression".into(),
+                    })
+                });
+                tables[table.index()] = snapshot.input();
+                let frame = encoder
+                    .encode_input(
+                        replay_frame::frame::FrameInput {
+                            branch: 1,
+                            hour,
+                            tables,
+                            metrics: Default::default(),
+                        },
+                        true,
+                    )
+                    .unwrap();
+                assert!(
+                    matches!(&frame.tables[table.index()], replay_frame::frame::TableUpdate::Unavailable { reason }
+                    if reason == "walker produced duplicate engine ids")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_advisory_projection_keeps_native_rows_for_an_authenticated_spool_retry() {
+        let mut retained = RetainedSnapshot::new();
+        let mut shared = None;
+        retained.publish(
+            TableId::IntelSources,
+            Outcome::Rows { len: 1 },
+            || AcquiredRows::Sources(vec![rows::IntelSourceRow::default()]),
+            &mut shared,
+        );
+        let snapshot = shared.unwrap();
+        crate::test_support::with_allocations_denied(|| {
+            assert!(engine_allocation::advisory(|| snapshot.recycle_acquired()).is_none());
+            assert!(snapshot.projected.get().is_none());
+            assert!(snapshot.acquired_bytes.load(Ordering::Relaxed) > 0);
+        });
+        let TableInput::SharedComplete(rows) = snapshot.input() else {
+            panic!("projection did not recover")
+        };
+        assert_eq!(rows.len(), 1);
+        assert!(snapshot.recycle_acquired().is_some());
+    }
+
+    #[test]
+    fn changed_five_thousand_owner_handoff_has_one_fixed_handle_allocation_and_no_row_copy() {
+        let mut acquired = Vec::with_capacity(10_000);
+        for owner in (1..=5000).rev() {
+            acquired.push(rows::IntelSourceRow {
+                owner,
+                pool: u32::MAX,
+                source: u32::MAX,
+                ordinal: u32::MAX,
+                count: 3,
+                ..Default::default()
+            });
+            acquired.push(rows::IntelSourceRow {
+                owner,
+                pool: u32::MAX,
+                source: 0,
+                ordinal: 0,
+                reference_country: owner,
+                ..Default::default()
+            });
+        }
+        let pointer = acquired.as_ptr();
+        let capacity = acquired.capacity();
+        let mut retained = RetainedSnapshot::new();
+        let mut shared = None;
+        {
+            // Permit the one fixed-size Arc allocation, deny any subsequent
+            // allocation. A full-table projection/copy here would fail.
+            let guard = crate::test_support::NullGuard::new(2);
+            assert_eq!(
+                retained.publish(
+                    TableId::IntelSources,
+                    Outcome::Rows {
+                        len: acquired.len()
+                    },
+                    || AcquiredRows::Sources(std::mem::take(&mut acquired)),
+                    &mut shared
+                ),
+                Outcome::Rows { len: 10_000 }
+            );
+            assert_eq!(crate::test_support::ATTEMPTS.load(Ordering::Relaxed), 1);
+            assert_eq!(crate::test_support::DENIALS.load(Ordering::Relaxed), 0);
+            assert!(shared.as_ref().unwrap().projected.get().is_none());
+            drop(guard);
+        }
+        assert_eq!(acquired.capacity(), 0);
+        let snapshot = shared.unwrap();
+        {
+            let raw = snapshot.acquired.lock().unwrap();
+            let Some(AcquiredRows::Sources(rows)) = &*raw else {
+                panic!()
+            };
+            assert_eq!(rows.as_ptr(), pointer);
+            assert_eq!(rows.capacity(), capacity);
+            assert_eq!(rows[0].source, u32::MAX);
+        }
+        // Spool projection sorts the copy, preserving the original native
+        // allocation for frame reuse. No worker contends for this mutex.
+        let TableInput::SharedComplete(projected) = snapshot.input() else {
+            panic!()
+        };
+        projected.validate_keys().unwrap();
+        assert_eq!(projected.len(), 10_000);
+        let AcquiredRows::Sources(recycled) = snapshot.recycle_acquired().unwrap() else {
+            panic!()
+        };
+        assert_eq!(recycled.as_ptr(), pointer);
+        assert_eq!(recycled.capacity(), capacity);
+        assert_eq!(snapshot.acquired_bytes.load(Ordering::Relaxed), 0);
+        let TableInput::SharedComplete(quiet) = snapshot.input() else {
+            panic!()
+        };
+        assert!(Arc::ptr_eq(&projected, &quiet));
+    }
+}

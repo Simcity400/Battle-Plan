@@ -13,12 +13,15 @@ value_struct!(AirBaseCountryOccurrence {
     slot: u32
 });
 
-/// Same-hour carrier base facts. Each optional field fails independently.
+/// Air-base summary facts. State bases carry dense country order under the
+/// registration writers; host bases observe it with the existing carrier census.
+/// Each optional field fails independently.
 /// A successfully read empty dense vector or empty name remains Some(empty).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct AirBaseCarrierInputs {
     pub registered_countries: Option<Vec<AirBaseCountryOccurrence>>,
-    /// Exact retained ship name bytes bound to this row's full host reference. Native
+    /// Absent for a state base. Exact retained ship name bytes bound to a host base's
+    /// full host reference. Native
     /// null/stale host is Some(empty); acquisition failure is None. Display applies the
     /// recorded-language and UTF-8 guards.
     pub host_name: Option<Vec<u8>>,
@@ -41,7 +44,8 @@ pub struct CarrierAirPool {
     pub subunit_index: u32,
     pub wing_start: u32,
     pub wing_count: u32,
-    /// Independent passive simulation-query results, before daily scaling.
+    /// Independent host-base passive simulation-query results, before daily
+    /// scaling. State pools leave both absent and derive them in playback.
     pub current_fuel_raw: Option<i64>,
     pub maximum_fuel_raw: Option<i64>,
 }
@@ -54,7 +58,8 @@ value_struct!(CarrierAirPool {
     maximum_fuel_raw: Option<i64>
 });
 
-/// Same-hour indexed-country registration facts. None means a local read or
+/// Indexed-country metadata and host-base same-hour fuel. State container
+/// fuel uses the registration row's independent numeric columns. None means a local read or
 /// capacity refusal, not zero fuel or an empty pool inventory. The predecessor
 /// capacity/wing fields remain independently usable when this packet fails.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

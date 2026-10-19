@@ -11,6 +11,10 @@ use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
     branches::{BranchReason, BranchStart, BranchTracker, Gap, Parentage},
     container::{Replay, SeekResult},
+    event_feed_rows::{
+        DECISION_FAMILY_REFUSALS, EventFeedEventIdentity, EventFeedScope, EventFeedScript,
+        EventFeedSource,
+    },
     frame::{DecodedFrame, FrameDecoder, FrameEncoder, Metrics, TableUpdate, TableView},
     identity::{Identity, Roster, SessionStart, Verification},
     rows::{
@@ -18,7 +22,9 @@ use crate::{
         CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow, FactionRow, FleetRow,
         HumanControllerRow, LandCombatRow, NavalCombatParticipantRow, NavalCombatRow, PlayerRow,
         ProvinceRow, Recorded, RowCodec, RowRef, ShipRow, StateRow, TableId, TableRows,
-        TableSchema, TaskForceRow, WarRelationRow, compatibility::RETIRED_FIELDS, tables,
+        TableSchema, TaskForceRow, VariantChangeRow, VariantOrganisationChange,
+        VariantScalarChange, VariantSourceReferences, WarCapturedProvinceRow, WarRelationRow,
+        compatibility::RETIRED_FIELDS, tables,
     },
     spool::{
         ControlRecord, Record, Recovery, SegmentBackend, SegmentSink, SegmentedSpool,
@@ -37,6 +43,31 @@ const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), 
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
 const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRED_TABLES.len()] = [
+    TableId::UnitLeaderTraitExperience,
+    TableId::DivisionHistory,
+    TableId::DivisionPanelSources,
+    TableId::DivisionPanelStats,
+    TableId::DoctrineFolders,
+    TableId::DoctrineTracks,
+    TableId::DoctrineLeaderMastery,
+    TableId::DoctrineCostReductions,
+    TableId::DoctrineMasteryGrants,
+    TableId::DoctrineEquipmentBonuses,
+    TableId::DoctrineCountries,
+    TableId::FactionAccounts,
+    TableId::FactionResearch,
+    TableId::FactionMinimumUpgrades,
+    TableId::FactionDoctrine,
+    TableId::FactionProjection,
+    TableId::FactionResources,
+    TableId::FactionGoalStatus,
+    TableId::FactionGoalEntries,
+    TableId::FactionRules,
+    TableId::FactionPrograms,
+    TableId::FactionManpower,
+    TableId::FactionUnlocks,
+    TableId::FactionVariables,
+    TableId::FactionAdvisorModifiers,
     TableId::CountryPowerDaily,
     TableId::CountryPowerChanges,
     TableId::CountryPowerDailyCosts,
@@ -47,6 +78,12 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::WarRelationGoals,
     TableId::WarOverviewCountries,
     TableId::WarNameRules,
+    TableId::CountryWargoals,
+    TableId::WargoalTargets,
+    TableId::WargoalJustifications,
+    TableId::WarParticipation,
+    TableId::WarCapturedProvinces,
+    TableId::WarLendLeaseHistories,
     TableId::Factions,
     TableId::FactionMembers,
     TableId::Players,
@@ -86,6 +123,12 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::VariantDefinitions,
     TableId::VariantModules,
     TableId::VariantStats,
+    TableId::VariantChanges,
+    TableId::VariantBonusSnapshots,
+    TableId::DesignCountryModifiers,
+    TableId::DesignCountryTemplates,
+    TableId::DesignObserverContext,
+    TableId::DesignOrganisationLiveness,
     TableId::VariantUpgrades,
     TableId::ArmyUpgradeGroups,
     TableId::ArmyUpgradeRequests,
@@ -190,10 +233,24 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::LogisticsEquipment,
     TableId::IndustrialOrganisations,
     TableId::IndustrialOrganisationHistory,
+    TableId::IndustrialOrganisationDetails,
+    TableId::IndustrialOrganisationPolicies,
     TableId::ProductionLineOutput,
     TableId::ConstructionLineOutput,
     TableId::CombatLogEquipment,
     TableId::CombatLogState,
+    TableId::CombatLogGroups,
+    TableId::CombatLogMonths,
+    TableId::CombatLogManpower,
+    TableId::CombatLogTemplates,
+    TableId::CombatLogReferences,
+    TableId::CombatLogBattles,
+    TableId::CombatLogEnemyEquipment,
+    TableId::CombatLogBattleSides,
+    TableId::CombatLogBattleEquipment,
+    TableId::CombatLogBattleModifiers,
+    TableId::CombatLogBattleCountries,
+    TableId::CombatLogObservers,
     TableId::LendLeaseEquipment,
     TableId::DivisionCensus,
     TableId::TheatreAreas,
@@ -214,6 +271,7 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::ArmyGroupMembers,
     TableId::IncomingDiplomaticActions,
     TableId::Scientists,
+    TableId::ScientistDaily,
     TableId::ScientistSkills,
     TableId::RelationOpinions,
     TableId::RelationTuples,
@@ -293,13 +351,17 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::RelationLinks,
     TableId::SliceReads,
     TableId::DivisionTemplateIcons,
+    TableId::CountryTemplateState,
     TableId::CountryLocalSubunits,
     TableId::AvailableEquipmentVariants,
     TableId::NewDivisionEquipment,
     TableId::AirRegionalMissions,
     TableId::AirCountryRelations,
     TableId::AirReferenceWitnesses,
-    TableId::NavalMineLevels,
+    TableId::NavalRegionalMines,
+    TableId::NavalDominanceTaskForceRanges,
+    TableId::NavalPatrolMissionInputs,
+    TableId::NavalAccidentReports,
     TableId::AirMissionInputs,
     TableId::AirSortieBaseCountries,
     TableId::AirSortieModifiers,
@@ -330,6 +392,11 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::OperativeMissions,
     TableId::StrategicOperatives,
     TableId::AgencyOperationBuffers,
+    TableId::IntelNetworkSummaries,
+    TableId::PropagandaEfforts,
+    TableId::IntelContributions,
+    TableId::IntelSources,
+    TableId::IntelNetworkAuxiliaries,
     TableId::ResourceOrigins,
     TableId::ResourceRights,
     TableId::CountryOilFactors,
@@ -337,6 +404,15 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::ConvoyClients,
     TableId::TradeRoutes,
     TableId::RegionalConvoyEfficiency,
+    TableId::CountryMarket,
+    TableId::MarketContractTerms,
+    TableId::LendLeaseAgreements,
+    TableId::MarketEvents,
+    TableId::MovementStateTerms,
+    TableId::CoreSupplyAccess,
+    TableId::CountryUnitSpeedEntries,
+    TableId::RiverRelations,
+    TableId::DivisionTransportSpeeds,
     TableId::NavalCombatDetails,
     TableId::NavalCombatShips,
     TableId::NavalModifierTrees,
@@ -350,6 +426,17 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::NavalMissionLedgers,
     TableId::NavalMissionCountries,
     TableId::NavalMissionCommanders,
+    TableId::NavalRepairCountries,
+    TableId::NavalRepairFleets,
+    TableId::NavalRepairTaskForces,
+    TableId::NavalTaskForceComposition,
+    TableId::NavalRepairChildren,
+    TableId::NavalRepairBases,
+    TableId::NavalRepairQueue,
+    TableId::NavalRefitShips,
+    TableId::NavalRefitProgress,
+    TableId::AirGroundCrews,
+    TableId::AirTransferInputs,
 ];
 /// Retired tables: no current writer emits them, and older recordings discard
 /// them by name (the compatibility tests exercise that framing).
@@ -615,6 +702,12 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 category: [0, u32::MAX, tick as u32][tick % 3],
                 sunk_convoys: tick as i32,
                 class_id: [i32::MIN, 0, i32::MAX][tick % 3],
+                acquired_manpower: Recorded::Value(
+                    [None, Some(0), Some(i32::MIN), Some(i32::MAX)][tick % 4],
+                ),
+                required_manpower: Recorded::Value(
+                    [Some(i32::MAX), Some(i32::MIN), Some(0), None][tick % 4],
+                ),
             },
         );
         push_map::<tables::NavalCombats>(
@@ -667,6 +760,14 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                     [None, Some(Vec::new()), Some(vec![0xff, 0, b'W'])][tick % 3].clone(),
                 ),
                 strategic_bombing_raw: Recorded::Value([None, Some(0), Some(i64::MIN)][tick % 3]),
+                replacement_setting: Recorded::Value([None, Some(0), Some(u8::MAX)][tick % 3]),
+                map_flags: Recorded::Value([None, Some(0), Some(u32::MAX)][tick % 3]),
+                fuel_base_raw: Recorded::Value([None, Some(0), Some(i64::MIN)][tick % 3]),
+                fuel_current_type: Recorded::Value([None, Some(0), Some(i32::MAX)][tick % 3]),
+                fuel_effective_aircraft: Recorded::Value([None, Some(0), Some(i32::MIN)][tick % 3]),
+                fuel_context_mode: Recorded::Value([None, Some(0), Some(255)][tick % 3]),
+                fuel_capacity_class: Recorded::Value([None, Some(0), Some(i32::MIN)][tick % 3]),
+                fuel_override_resolved: Recorded::Value([None, Some(0), Some(1)][tick % 3]),
                 pool_subunit: Recorded::Value([None, Some(0), Some(u32::MAX)][tick % 3]),
                 raid_reference: Recorded::Value(
                     [
@@ -680,6 +781,12 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                             resolves: true,
                         }),
                     ][tick % 3],
+                ),
+                acquired_manpower: Recorded::Value(
+                    [None, Some(0), Some(i32::MIN), Some(i32::MAX)][tick % 4],
+                ),
+                exile_country: Recorded::Value(
+                    [Some(i32::MAX), Some(i32::MIN), Some(0), None][tick % 4],
                 ),
             },
         );
@@ -819,6 +926,8 @@ fn source_with_faults(
     }
     let mut states: Vec<_> = (0..=2)
         .map(|id| StateRow {
+            manpower_locked: Default::default(),
+
             id,
             owner: [2, 19][(index / 37 + id as usize) % 2],
             controller: [0, 7, 19][(index / 5 + id as usize) % 3],
@@ -842,6 +951,10 @@ fn source_with_faults(
                 0 => Vec::new(),
                 _ => format!("Owner name {}", index % 3).into_bytes(),
             },
+
+            best_vp_index: Default::default(),
+
+            single_controller: Default::default(),
         })
         .collect();
     if index % 17 < 5 {
@@ -992,8 +1105,166 @@ fn source_with_faults(
     }
     add_map_rows(index, &mut tables);
     for table in TableId::ALL.into_iter().skip(20) {
-        tables[table.index()] =
-            TableView::Complete(crate::rows::sample_extended_table(table, index).unwrap());
+        let mut rows = crate::rows::sample_extended_table(table, index).unwrap();
+        // Shared round-trip fixtures also need to exercise every mutable campaign column.
+        match &mut rows {
+            TableRows::VariantChanges(rows) => {
+                for (ordinal, row) in rows.iter_mut().enumerate() {
+                    let tick = index + ordinal;
+                    let snapshot = row.snapshot.take().unwrap();
+                    row.removed = false;
+                    match tick % 6 {
+                        0 => {
+                            row.removed = !(tick / 6).is_multiple_of(2);
+                            row.snapshot = Some(snapshot);
+                        }
+                        1 => row.removed = true,
+                        2 => row.flags = Some(RAW_FLAG_CASES),
+                        3 => {
+                            row.sources = Some(VariantSourceReferences {
+                                direct: vec![0, u64::MAX, tick as u64],
+                                named: vec![tick as u64],
+                            });
+                        }
+                        4 => {
+                            row.organisation = Some(VariantOrganisationChange {
+                                organisation: row.variant,
+                                live: (tick / 6).is_multiple_of(2),
+                            });
+                            row.variant = 0;
+                        }
+                        _ => {
+                            row.scalar = Some(VariantScalarChange {
+                                display_name: Some(vec![0xff, 0, tick as u8]),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+                // Only sequence zero can carry a named observation failure.
+                rows.insert(
+                    0,
+                    VariantChangeRow {
+                        hour: index as i32,
+                        failure: format!("synthetic variant observation failure {index}")
+                            .into_bytes(),
+                        ..Default::default()
+                    },
+                );
+            }
+            TableRows::DesignCountryModifiers(rows) => {
+                for (ordinal, row) in rows.iter_mut().enumerate() {
+                    row.failure = ((index + ordinal) % 3) as u8;
+                    if row.failure != 0 {
+                        row.value = None;
+                    }
+                }
+            }
+            TableRows::DesignCountryTemplates(rows) => {
+                for (ordinal, row) in rows.iter_mut().enumerate() {
+                    row.failure = ((index + ordinal) % 3) as u8;
+                    if row.failure != 0 {
+                        row.uses.clear();
+                        row.factors.clear();
+                        row.equipment.clear();
+                    }
+                }
+            }
+            TableRows::EventFeedHistory(rows) => {
+                let row = &mut rows[0];
+                row.script_refusals = if index.is_multiple_of(2) {
+                    0
+                } else {
+                    DECISION_FAMILY_REFUSALS
+                };
+                // Keep the ordinary events and add a script with a bound scope on odd ticks.
+                if !index.is_multiple_of(2) {
+                    let mut event = row.events[0];
+                    event.sequence += 1;
+                    event.source = EventFeedSource::ScriptEvent;
+                    event.cause = Recorded::Value(Default::default());
+                    event.script = Some(EventFeedScript {
+                        token_len: 3,
+                        scope_len: 1,
+                        native_event: Some(EventFeedEventIdentity {
+                            kind: index as u32,
+                            id: u32::MAX - index as u32,
+                        }),
+                        ..Default::default()
+                    });
+                    row.script_tokens = vec![0xff, 0, index as u8];
+                    row.script_scopes = vec![EventFeedScope {
+                        country: event.actor.reference,
+                        state: index as i32,
+                        random: [0, u32::MAX],
+                        ..Default::default()
+                    }];
+                    row.events.push(event);
+                    if let Some(counts) = &mut row.counts {
+                        counts.acquired += 1;
+                        counts.settled += 1;
+                    }
+                }
+            }
+            TableRows::IndustrialOrganisationDetails(rows) => {
+                for (ordinal, row) in rows.iter_mut().enumerate() {
+                    let tick = index + ordinal;
+                    let raw = [i64::MIN, -1, i64::MAX][tick % 3];
+                    let integer = [i32::MIN, -1, i32::MAX][tick % 3];
+                    row.state.points = integer;
+                    row.state.research_bonus_raw = raw;
+                    row.state.task_capacity = integer;
+                    row.state.research_assign_cost_raw = raw;
+                    row.state.production_assign_cost_raw = raw;
+                    row.state.design_team_change_cost = integer;
+                    row.state.funds_gain_factor_raw = raw;
+                    row.state.size_cost_factor_raw = raw;
+                    row.state.upgrades = [0, 1, u8::MAX][tick % 3];
+                    row.state.queue_index = integer;
+                    row.state.policy = [0, 1, u32::MAX][tick % 3];
+                    row.state.source_location =
+                        [None, Some([0, u32::MAX]), Some([u32::MAX, 0])][tick % 3];
+                }
+            }
+            TableRows::CountryCounterInputs(rows) => {
+                for (ordinal, row) in rows.iter_mut().enumerate() {
+                    let tick = index + ordinal;
+                    row.sent_expeditionaries = Recorded::Value(match tick % 3 {
+                        0 => None,
+                        1 => Some(Vec::new().into()),
+                        _ => Some(vec![u64::MAX, 0, 7, 7, tick as u64].into()),
+                    });
+                    row.recruitment_modifiers =
+                        Recorded::Value((!tick.is_multiple_of(3)).then_some([
+                            Some(tick as i64),
+                            None,
+                            Some(i64::MIN),
+                            Some(i64::MAX),
+                        ]));
+                    row.air_combat_modifiers_known = Recorded::Value(tick.is_multiple_of(2));
+                    if !tick.is_multiple_of(2) {
+                        row.air_superiority_efficiency = Recorded::Value(None);
+                        row.air_intercept_efficiency = Recorded::Value(None);
+                        row.air_cas_efficiency = Recorded::Value(None);
+                        row.air_nav_efficiency = Recorded::Value(None);
+                        row.air_attack_factor = Recorded::Value(None);
+                        row.air_defence_factor = Recorded::Value(None);
+                        row.air_strategic_bomber_defence_factor = Recorded::Value(None);
+                    }
+                }
+            }
+            TableRows::PropagandaEfforts(rows) => {
+                for row in rows.iter_mut().filter(|row| row.sequence == u64::MAX) {
+                    row.derived_drift = (index % 2) as u8;
+                    if row.derived_drift != 0 {
+                        row.stability = 0;
+                        row.war_support = 0;
+                    }
+                }
+            }
+            _ => {}
+        }
+        tables[table.index()] = TableView::Complete(rows);
     }
     if faults {
         for table in TableId::ALL.into_iter().skip(2) {
@@ -1017,13 +1288,15 @@ fn source_with_faults(
                 let TableView::Complete(rows) = &tables[table.index()] else {
                     unreachable!()
                 };
+                assert!(!rows.is_empty(), "{table:?} has no rows to truncate");
+                let retained = usize::from(table.key_bits() != 0).min(rows.len() - 1);
                 tables[table.index()] = TableView::Truncated {
                     rows: {
                         let mut partial = rows.clone();
-                        partial.truncate(if table.key_bits() == 0 { 0 } else { 1 });
+                        partial.truncate(retained);
                         partial
                     },
-                    missing: (rows.len() - if table.key_bits() == 0 { 0 } else { 1 }) as u32,
+                    missing: (rows.len() - retained) as u32,
                 };
             }
         }
@@ -1090,6 +1363,8 @@ struct Coverage {
     country_optional_transitions: [[bool; 4]; 4],
     equipment_coverage_values: [bool; 2],
     domains: Vec<DomainCoverage>,
+    war_captured_directions: [bool; 2],
+    war_captured_unchanged: usize,
     war_field_changes: u64,
     war_flag_values: [[bool; RAW_FLAG_CASES.len()]; 2],
     war_casualty_extremes: [[bool; 2]; 4],
@@ -1232,6 +1507,17 @@ fn synthesize() -> Campaign {
                     coverage.equipment_coverage_values[value as usize] = true;
                 }
             }
+            if let TableView::Complete(TableRows::WarCapturedProvinces(rows))
+            | TableView::Truncated {
+                rows: TableRows::WarCapturedProvinces(rows),
+                ..
+            } = &*source.tables[table.index()]
+            {
+                for row in rows {
+                    assert_eq!(row.credited, 1, "captured-province membership marker");
+                    coverage.war_captured_directions[row.direction as usize] = true;
+                }
+            }
             if table == TableId::WarRelations
                 && let TableView::Complete(rows) = &*source.tables[table.index()]
             {
@@ -1294,6 +1580,23 @@ fn synthesize() -> Campaign {
                                 }
                             } else {
                                 coverage.domains[domain_index].insertions += 1;
+                                if table == TableId::WarCapturedProvinces {
+                                    assert_eq!(row.mask, table.full_mask());
+                                    let inserted =
+                                        row.apply::<WarCapturedProvinceRow>(None).unwrap();
+                                    let TableView::Complete(TableRows::WarCapturedProvinces(rows)) =
+                                        &*source.tables[table.index()]
+                                    else {
+                                        panic!(
+                                            "membership insertion needs a complete direct source"
+                                        );
+                                    };
+                                    assert_eq!(
+                                        rows.iter().find(|source| source.key() == row.key),
+                                        Some(&inserted),
+                                        "captured-province insertion differs from its direct source"
+                                    );
+                                }
                             }
                         }
                     }
@@ -1344,7 +1647,11 @@ fn synthesize() -> Campaign {
                         }
                     }
                 }
-                TableUpdate::Unchanged { .. } => coverage.unchanged_tables += 1,
+                TableUpdate::Unchanged { .. } => {
+                    coverage.unchanged_tables += 1;
+                    coverage.war_captured_unchanged +=
+                        usize::from(table == TableId::WarCapturedProvinces);
+                }
                 TableUpdate::Unavailable { .. } | TableUpdate::Incompatible { .. } => {
                     coverage.unavailable_tables += 1;
                     if let Some(domain_index) = domain_index {
@@ -1700,11 +2007,15 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
             .all(|seen| seen)
     );
     for (table, covered) in DOMAIN_TABLES.into_iter().zip(&coverage.domains) {
-        // Equipment coverage is fixed by key: amount rows and the key-zero marker.
-        let mutable_fields = if table == TableId::EquipmentDestruction {
-            table.full_mask() & !(1 << 1)
-        } else {
-            table.full_mask()
+        let mutable_fields = match table {
+            // Equipment coverage is fixed by key: amount rows and the key-zero marker.
+            TableId::EquipmentDestruction => table.full_mask() & !(1 << 1),
+            // Captured provinces are membership keys; their only value must be credited=1.
+            TableId::WarCapturedProvinces => {
+                assert_eq!(table.full_mask(), 1);
+                0
+            }
+            _ => table.full_mask(),
         };
         // A retired whole field stores the same empty payload in every row.
         let mutable_fields = RETIRED_FIELDS
@@ -1715,10 +2026,27 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
             covered.changed_fields, mutable_fields,
             "{table:?} mutable field coverage"
         );
-        assert!(
-            covered.changes > 10,
-            "{table:?} never changed existing rows"
-        );
+        if table == TableId::WarCapturedProvinces {
+            assert_eq!(
+                covered.changes, 0,
+                "captured-province membership was rewritten"
+            );
+            assert!(
+                coverage.war_captured_unchanged > 10,
+                "captured-province membership never stayed unchanged"
+            );
+            assert!(
+                coverage
+                    .war_captured_directions
+                    .into_iter()
+                    .all(|seen| seen)
+            );
+        } else {
+            assert!(
+                covered.changes > 10,
+                "{table:?} never changed existing rows"
+            );
+        }
         if table.key_bits() != 0 {
             assert!(covered.insertions > 10, "{table:?} never inserted new rows");
             assert!(covered.deletions > 10, "{table:?} never deleted rows");

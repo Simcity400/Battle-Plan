@@ -1,5 +1,6 @@
 //! The coded triggers of country, state and unit-leader scopes, each read
 //! from the table the game itself reads.
+use crate::triggers::Failure;
 
 use std::collections::BTreeSet;
 
@@ -32,7 +33,7 @@ impl Evaluator<'_, '_> {
         item: &Item,
         slot: u32,
         scopes: Scopes,
-    ) -> Result<Option<Eval>, String> {
+    ) -> Result<Option<Eval>, Failure> {
         let world = self.world();
         let scalar = item.value.scalar_str();
         let named = || self.country_operand(item, scopes);
@@ -60,9 +61,9 @@ impl Evaluator<'_, '_> {
             // independently of the map.
             world.table_status(replay_data::rows::TableId::Countries)?;
             world.table_status(replay_data::rows::TableId::CountryLinks)?;
-            let raw = world
-                .raw_country(slot)
-                .ok_or_else(|| format!("Countries lacks country slot {slot}"))?;
+            let raw = world.raw_country(slot).ok_or_else(|| -> Failure {
+                format!("Countries lacks country slot {slot}").into()
+            })?;
             if world.slot(raw) != Some(slot) {
                 return Err(world.unlinked("Countries", raw));
             }
@@ -80,8 +81,8 @@ impl Evaluator<'_, '_> {
                 "has_government" => {
                     // Compare IDs after ideology-specifier resolution;
                     // FROM/ROOT/tags and var: operands are reached.
-                    let ideologies = world.ideologies.map_err(str::to_owned)?;
-                    let declared = |token: &[u8]| -> Result<bool, String> {
+                    let ideologies = world.ideologies.map_err(Failure::from)?;
+                    let declared = |token: &[u8]| -> Result<bool, Failure> {
                         let (groups, gap) = ideologies.groups();
                         if groups
                             .iter()
@@ -90,7 +91,7 @@ impl Evaluator<'_, '_> {
                             return Ok(true);
                         }
                         match gap {
-                            Some(gap) => Err(gap.to_string()),
+                            Some(gap) => Err(gap.to_string().into()),
                             None => Ok(false),
                         }
                     };
@@ -108,8 +109,8 @@ impl Evaluator<'_, '_> {
                     let wanted = scalar
                         .ok_or("has_country_leader_ideology needs a subtype")?
                         .as_bytes();
-                    let ideologies = world.ideologies.map_err(str::to_owned)?;
-                    let declared = |token: &[u8]| -> Result<(), String> {
+                    let ideologies = world.ideologies.map_err(Failure::from)?;
+                    let declared = |token: &[u8]| -> Result<(), Failure> {
                         let (groups, gap) = ideologies.groups();
                         if groups.iter().any(|group| {
                             group
@@ -120,9 +121,9 @@ impl Evaluator<'_, '_> {
                             return Ok(());
                         }
                         if let Some(gap) = gap {
-                            return Err(gap.to_string());
+                            return Err(gap.to_string().into());
                         }
-                        Err(super::refused(format!(
+                        Err(crate::triggers::refusal::refused(format!(
                             "leader ideology {} has no recorded-content declaration",
                             String::from_utf8_lossy(token)
                         )))
@@ -146,6 +147,37 @@ impl Evaluator<'_, '_> {
             })
         };
         Ok(match name {
+            "has_stability" | "has_war_support" => {
+                let actual = self.country_stability_value(slot, name == "has_war_support")?;
+                let wanted = self.required(
+                    item.value.scalar().unwrap_or_default(),
+                    item.quoted(),
+                    true,
+                    scopes,
+                )?;
+                Some(Eval::from_bool(compare(
+                    actual,
+                    wanted,
+                    item.operator,
+                    true,
+                )))
+            }
+            "has_war" => is(self.country_has_war(slot)?),
+            "is_ai" => is(self.country_is_ai(slot)?),
+            "has_idea_with_trait" => Some(Eval::from_bool(
+                self.idea_has_trait(slot, scalar.ok_or("has_idea_with_trait needs a trait")?)?,
+            )),
+            "is_in_tech_sharing_group" => Some(Eval::from_bool(
+                self.in_tech_sharing_group(slot, item.value.scalar().unwrap_or_default())?,
+            )),
+            "is_neighbor_of" => {
+                let wanted = named()?.unwrap_or(0);
+                Some(Eval::from_bool(
+                    self.country_neighbors(slot)?
+                        .into_iter()
+                        .any(|neighbor| neighbor == wanted),
+                ))
+            }
             "has_tech" => Some(Eval::from_bool(world.has_tech(
                 slot,
                 scalar.ok_or("has_tech needs a technology")?.as_bytes(),
@@ -263,7 +295,7 @@ impl Evaluator<'_, '_> {
                         return Err(format!(
                             "the operand names {}, and what the trigger reads from a scope that is no unit leader is not reproduced",
                             self.describe(other)
-                        ));
+                        ).into());
                     }
                 })
             }
@@ -271,9 +303,9 @@ impl Evaluator<'_, '_> {
             // false. Focus holds the game's value every hour (replay_data::cadence).
             "has_focus_tree" => {
                 let wanted = scalar.ok_or("has_focus_tree needs a focus tree")?;
-                let raw = world
-                    .raw_country(slot)
-                    .ok_or_else(|| format!("country slot {slot} has no Countries row"))?;
+                let raw = world.raw_country(slot).ok_or_else(|| -> Failure {
+                    format!("country slot {slot} has no Countries row").into()
+                })?;
                 let tree = world.focus_tree(raw)?;
                 Some(Eval::from_bool(tree.as_deref() == Some(wanted.as_bytes())))
             }
@@ -294,7 +326,7 @@ impl Evaluator<'_, '_> {
         item: &Item,
         state: u32,
         scopes: Scopes,
-    ) -> Result<Option<Eval>, String> {
+    ) -> Result<Option<Eval>, Failure> {
         let world = self.world();
         if name == "is_on_continent" {
             // Compare the retained continent pointer;
@@ -305,9 +337,9 @@ impl Evaluator<'_, '_> {
                 .scalar_str()
                 .ok_or("is_on_continent needs a continent")?
                 .to_ascii_lowercase();
-            let continents = world.continents.map_err(str::to_owned)?;
+            let continents = world.continents.map_err(Failure::from)?;
             if !continents.contains(&wanted) {
-                return Err(super::refused(format!(
+                return Err(crate::triggers::refusal::refused(format!(
                     "continent {wanted} has no recorded-content declaration"
                 )));
             }
@@ -315,14 +347,14 @@ impl Evaluator<'_, '_> {
             let actual = if token == 0 {
                 None
             } else {
-                let literal = world.token(token)?.ok_or_else(|| {
-                    format!("continent token {token} has no recorded lexer literal")
+                let literal = world.token(token)?.ok_or_else(|| -> Failure {
+                    format!("continent token {token} has no recorded lexer literal").into()
                 })?;
                 let name = std::str::from_utf8(literal)
                     .map_err(|_| "recorded continent token is not UTF-8")?
                     .to_ascii_lowercase();
                 if !continents.contains(&name) {
-                    return Err(super::refused(format!(
+                    return Err(crate::triggers::refusal::refused(format!(
                         "recorded continent {name} has no recorded-content declaration"
                     )));
                 }
@@ -334,11 +366,11 @@ impl Evaluator<'_, '_> {
         }
         self.core()?;
         if matches!(name, "is_fully_controlled_by" | "impassable" | "is_coastal") {
-            world.state_content.map_err(str::to_owned)?;
+            world.state_content.map_err(Failure::from)?;
         }
         let (owner, controller) = world
             .state_row(state)
-            .ok_or_else(|| format!("state {state} is not recorded"))?;
+            .ok_or_else(|| -> Failure { format!("state {state} is not recorded").into() })?;
         let country = || self.country_operand(item, scopes);
         let provinces = world
             .state_provinces()
@@ -359,6 +391,7 @@ impl Evaluator<'_, '_> {
             )),
             "is_core_of" => Some(world.is_core_of(state, country()?)?),
             "is_claimed_by" => Some(world.is_claimed_by(state, country()?)?),
+            "is_in_home_area" => Some(Eval::from_bool(self.state_in_home_area(state)?)),
             "is_owned_by" => Some(Eval::from_bool(
                 world.slot(owner).is_some() && world.slot(owner) == country()?,
             )),
@@ -419,7 +452,7 @@ impl Evaluator<'_, '_> {
         &self,
         item: &'i Item,
         scopes: Scopes,
-    ) -> Result<(&'i [u8], Option<Scope>), String> {
+    ) -> Result<(&'i [u8], Option<Scope>), Failure> {
         let Some(block) = item.value.items() else {
             let name = item
                 .value
@@ -437,8 +470,8 @@ impl Evaluator<'_, '_> {
                     .read_string()
                     .ok_or("has_dynamic_modifier modifier is not a string token")?;
             } else if field.keyword_is("scope") && field.value.scalar().is_none() {
-                return Err(super::refused(
-                    "has_dynamic_modifier scope is not a scalar scoped-variable token".into(),
+                return Err(crate::triggers::refusal::refused(
+                    "has_dynamic_modifier scope is not a scalar scoped-variable token",
                 ));
             }
         }
@@ -451,8 +484,9 @@ impl Evaluator<'_, '_> {
         // decoded unit leader) carries neither field.
         let target = match self.decoded(Value::Raw(raw), scopes)? {
             Some(Scope::Country(slot) | Scope::CountryLeader { country: slot, .. }) => {
-                let raw = self.world().raw_country(slot).ok_or_else(|| {
+                let raw = self.world().raw_country(slot).ok_or_else(|| -> Failure {
                     format!("has_dynamic_modifier target country slot {slot} has no Countries row")
+                        .into()
                 })?;
                 ((raw as i32) > 0).then_some(Scope::Country(slot))
             }
@@ -470,7 +504,7 @@ impl Evaluator<'_, '_> {
         item: &Item,
         kind: u8,
         id: Option<u32>,
-    ) -> Result<Eval, String> {
+    ) -> Result<Eval, Failure> {
         let (name, test) = match item.value.items() {
             None => (
                 item.value
@@ -499,7 +533,8 @@ impl Evaluator<'_, '_> {
                             return Err(format!(
                                 "flag field {} is not supported",
                                 String::from_utf8_lossy(entry.key.as_deref().unwrap_or_default())
-                            ));
+                            )
+                            .into());
                         }
                     }
                 }
@@ -522,7 +557,7 @@ impl Evaluator<'_, '_> {
     /// A state operand as scoped-variable state-id evaluation reads
     /// it, `None` for a state that does not exist (the trigger then logs and
     /// is false).
-    fn state_operand(&self, value: &str, scopes: Scopes) -> Result<Option<u32>, String> {
+    fn state_operand(&self, value: &str, scopes: Scopes) -> Result<Option<u32>, Failure> {
         let state = self.scoped_state(value.as_bytes(), scopes)?;
         Ok((state != NULL_STATE).then_some(state))
     }
@@ -546,7 +581,7 @@ impl Evaluator<'_, '_> {
         item: &Item,
         slot: u32,
         scopes: Scopes,
-    ) -> Result<Eval, String> {
+    ) -> Result<Eval, Failure> {
         let world = self.world();
         let name = "has_naval_invasion_against_state";
         // (comparison, threshold fixed5); the scalar form's is (`>`, 0).
@@ -555,7 +590,7 @@ impl Evaluator<'_, '_> {
             None => (
                 item.value
                     .scalar_str()
-                    .ok_or_else(|| format!("{name} operand is not text"))?,
+                    .ok_or_else(|| -> Failure { format!("{name} operand is not text").into() })?,
                 None,
             ),
             Some(block) => {
@@ -569,8 +604,8 @@ impl Evaluator<'_, '_> {
                         // Read fixed5 preparation.
                         (Some("preparation"), Some(value)) => {
                             let threshold = installed_content_core::fixed5::script_fixed5(value.as_bytes())
-                                .ok_or_else(|| {
-                                    format!("{name} preparation {value} is not a number")
+                                .ok_or_else(|| -> Failure {
+                                    format!("{name} preparation {value} is not a number").into()
                                 })?;
                             bound = Some((entry.operator, threshold));
                         }
@@ -578,12 +613,14 @@ impl Evaluator<'_, '_> {
                             return Err(format!(
                                 "{name} field {} is not supported",
                                 String::from_utf8_lossy(entry.key.as_deref().unwrap_or_default())
-                            ));
+                            )
+                            .into());
                         }
                     }
                 }
                 (
-                    operand.ok_or_else(|| format!("{name} names no state"))?,
+                    operand
+                        .ok_or_else(|| -> Failure { format!("{name} names no state").into() })?,
                     activated,
                 )
             }
@@ -598,10 +635,9 @@ impl Evaluator<'_, '_> {
             Operator::Less => preparation < threshold,
             Operator::Equals => false,
         };
-        let mut result = Eval::False;
-        for order in world.invasion_orders(slot)? {
+        Ok(world.invasion_orders(slot)?.any(|order| {
             if activated.is_some_and(|wanted| (order.active != 0) != wanted) {
-                continue;
+                return Eval::False;
             }
             let touches = order.path.iter().any(|province| {
                 world
@@ -610,19 +646,16 @@ impl Evaluator<'_, '_> {
                     .is_some_and(|row| row.state == state)
             });
             if !touches {
-                continue;
+                return Eval::False;
             }
-            let value = match world.invasion_preparation(order.key) {
+            match world.invasion_preparation(order.key) {
                 Ok(preparation) => Eval::from_bool(passes(preparation)),
                 Err(_) if !explicit => Eval::True,
-                Err(reason) => Eval::unknown(format!("{name} preparation: {reason}")),
-            };
-            result = result.or(|| value);
-            if result == Eval::True {
-                break;
+                Err(reason) => {
+                    Eval::unknown(reason.context(|reason| format!("{name} preparation: {reason}")))
+                }
             }
-        }
-        Ok(result)
+        }))
     }
 
     /// Build the list from the `array` operand's `^num` and `^<i>` entries
@@ -656,7 +689,11 @@ impl Evaluator<'_, '_> {
             .and_then(|operand| self.array(&operand, scopes))
         {
             Ok(values) => values,
-            Err(reason) => return Eval::unknown(format!("any_state_in array {shown}: {reason}")),
+            Err(reason) => {
+                return Eval::unknown(
+                    reason.context(|reason| format!("any_state_in array {shown}: {reason}")),
+                );
+            }
         };
         if values.is_empty() {
             return Eval::False;
@@ -669,7 +706,9 @@ impl Evaluator<'_, '_> {
                 Value::Object(Scope::State(id)) => Ok(id),
                 value => self.raw(value).and_then(|raw| world.state_of_value(raw)),
             }
-            .map_err(|reason| format!("any_state_in: {shown}^{index}: {reason}"))
+            .map_err(|reason| {
+                reason.context(|reason| format!("any_state_in: {shown}^{index}: {reason}"))
+            })
         });
         self.count_passing(states, count, &body, scopes)
     }
@@ -709,13 +748,9 @@ impl Evaluator<'_, '_> {
     /// Owned- and controlled-state iteration:
     /// only nonempty states enter either stored roster.
     pub(super) fn any_country_state(&self, name: &str, block: &[Item], scopes: Scopes) -> Eval {
-        let controlled = name == "any_controlled_state";
-        let roster = if controlled {
-            "controlled_states"
-        } else {
-            "owned_states"
-        };
-        let run = || -> Result<Eval, String> {
+        let controlled = name.ends_with("controlled_state");
+        let all = name.starts_with("all_");
+        let run = || -> Result<Eval, Failure> {
             let (Scope::Country(country) | Scope::CountryLeader { country, .. }) = scopes.this
             else {
                 return Ok(Eval::False);
@@ -727,9 +762,15 @@ impl Evaluator<'_, '_> {
             if recorded.is_none()
                 && let Some(why) = self.state_iteration_order_sensitive(block, &mut BTreeSet::new())
             {
-                return Err(super::refused(format!(
-                    "{name}: {why}; CountryCounterInputs.{roster} roster order is not recorded"
-                )));
+                return self
+                    .world()
+                    .ordered_country_states(country, controlled)
+                    .map(|_| unreachable!("an absent optional roster cannot have recorded order"))
+                    .map_err(|failure| {
+                        failure.context(|reason| {
+                            format!("{name}: {why}; the roster order is required; {reason}")
+                        })
+                    });
             }
             let mut count = 1_i32;
             let mut body = Vec::new();
@@ -745,9 +786,9 @@ impl Evaluator<'_, '_> {
                 }
             }
             if recorded.is_none() && count == i32::MIN {
-                return Err(super::refused(format!(
-                    "{name}: count wraps from i32::MIN on a passing first body, so the unrecorded roster order is required"
-                )));
+                return self.world().ordered_country_states(country, controlled)
+                    .map(|_| unreachable!("an absent optional roster cannot have recorded order"))
+                    .map_err(|failure| failure.context(|reason| format!("{name}: count wraps from i32::MIN on a passing first body, so the roster order is required; {reason}")));
             }
             let mut undecided = 0_i64;
             let mut reasons = BTreeSet::new();
@@ -774,11 +815,12 @@ impl Evaluator<'_, '_> {
                             Some(_) => None,
                             None => {
                                 undecided += 1;
-                                reasons.insert(format!(
+                                let why = format!(
                                     "state {} {} {raw} has no CountryLinks row",
                                     state.id,
                                     if controlled { "controller" } else { "owner" }
-                                ));
+                                );
+                                reasons.insert(Failure::from(why));
                                 None
                             }
                         }
@@ -789,7 +831,9 @@ impl Evaluator<'_, '_> {
             for &state in states {
                 let entered = self.with_this(scopes, Scope::State(state))?;
                 match self.evaluate(&body, entered) {
-                    Eval::True => count = count.wrapping_sub(1),
+                    Eval::True if !all => count = count.wrapping_sub(1),
+                    Eval::True => {}
+                    Eval::False if all => return Ok(Eval::False),
                     Eval::False => {}
                     Eval::Unknown(why) => {
                         undecided += 1;
@@ -802,12 +846,14 @@ impl Evaluator<'_, '_> {
                     }
                 }
                 // Unlike any_state_in, this checks count AFTER the visited body.
-                if count < 1 {
+                if !all && count < 1 {
                     return Ok(Eval::True);
                 }
             }
-            Ok(if undecided > 0 && i64::from(count) <= undecided {
+            Ok(if undecided > 0 && (all || i64::from(count) <= undecided) {
                 Eval::Unknown(reasons)
+            } else if all {
+                Eval::True
             } else {
                 Eval::False
             })
@@ -822,7 +868,7 @@ impl Evaluator<'_, '_> {
     /// cannot be read counts as undecided.
     fn count_passing(
         &self,
-        states: impl IntoIterator<Item = Result<u32, String>>,
+        states: impl IntoIterator<Item = Result<u32, Failure>>,
         count: i64,
         body: &[Item],
         scopes: Scopes,
@@ -885,12 +931,14 @@ impl Evaluator<'_, '_> {
         };
         let world = self.world();
         if let Err(why) = self.core() {
-            return Eval::unknown(format!("{name}: {why}"));
+            return Eval::unknown(why.context(|why| format!("{name}: {why}")));
         }
         let lists = match world.neighbor_states() {
             Ok(lists) => lists,
             Err(reason) => {
-                return Eval::unknown(format!("{name}: {reason}"));
+                return Eval::unknown(
+                    Failure::from(reason).context(|reason| format!("{name}: {reason}")),
+                );
             }
         };
         let Some(neighbours) = lists.get(&state) else {
@@ -900,9 +948,7 @@ impl Evaluator<'_, '_> {
             if world.state_row(neighbour).is_some() {
                 Ok(neighbour)
             } else {
-                Err(format!(
-                    "{name}: neighbour state {neighbour} is not recorded"
-                ))
+                Err(format!("{name}: neighbour state {neighbour} is not recorded").into())
             }
         });
         if name == "any_neighbor_state" {
@@ -995,7 +1041,7 @@ impl Evaluator<'_, '_> {
     /// that token (the first record of the token in CountryCharacters)
     /// and matches a leader's character; `name` matches the leader's name
     /// (Characters.name); a nonzero `id` matches the role's stored id.
-    fn has_country_leader(&self, item: &Item, slot: u32) -> Result<Eval, String> {
+    fn has_country_leader(&self, item: &Item, slot: u32) -> Result<Eval, Failure> {
         let world = self.world();
         let block = item
             .value
@@ -1024,7 +1070,8 @@ impl Evaluator<'_, '_> {
                     return Err(format!(
                         "has_country_leader {} is not supported",
                         String::from_utf8_lossy(entry.key.as_deref().unwrap_or_default())
-                    ));
+                    )
+                    .into());
                 }
             }
         }
@@ -1048,9 +1095,9 @@ impl Evaluator<'_, '_> {
             };
             let mut target = None;
             for id in world.country_characters(slot)?.into_iter().flatten() {
-                let row = world
-                    .character(id)?
-                    .ok_or_else(|| format!("character {id} is not recorded"))?;
+                let row = world.character(id)?.ok_or_else(|| -> Failure {
+                    format!("character {id} is not recorded").into()
+                })?;
                 if u32::try_from(row.name_token_id).ok() == Some(token) {
                     target = Some(id);
                     break;
@@ -1068,9 +1115,9 @@ impl Evaluator<'_, '_> {
                 let value = match leader.character {
                     None => Eval::from_bool(false),
                     Some(id) => {
-                        let row = world
-                            .character(id)?
-                            .ok_or_else(|| format!("character {id} is not recorded"))?;
+                        let row = world.character(id)?.ok_or_else(|| -> Failure {
+                            format!("character {id} is not recorded").into()
+                        })?;
                         // An empty name falls back to localising its name token,
                         // but every name-token writer stores that same
                         // localisation into the name, so the fallback
@@ -1090,7 +1137,7 @@ impl Evaluator<'_, '_> {
     /// A real trait (its definition marker is set on construction; the null object
     /// for an unknown name has none) held by the ruling party's first leader
     /// in the recorded trait roster.
-    fn has_country_leader_with_trait(&self, item: &Item, slot: u32) -> Result<Eval, String> {
+    fn has_country_leader_with_trait(&self, item: &Item, slot: u32) -> Result<Eval, Failure> {
         let world = self.world();
         let name = item
             .value
@@ -1111,7 +1158,7 @@ impl Evaluator<'_, '_> {
         name: &str,
         block: &[Item],
         scopes: Scopes,
-    ) -> Result<Eval, String> {
+    ) -> Result<Eval, Failure> {
         let world = self.world();
         let mut check = None;
         let mut count: i64 = 1;
@@ -1132,7 +1179,8 @@ impl Evaluator<'_, '_> {
                 _ => children.push(item.clone()),
             }
         }
-        let check = check.ok_or_else(|| format!("{name} needs original_tag_to_check"))?;
+        let check = check
+            .ok_or_else(|| -> Failure { format!("{name} needs original_tag_to_check").into() })?;
         let Some(target) = self.country_operand(check, scopes)? else {
             return Ok(Eval::from_bool(name.starts_with("all")));
         };
@@ -1194,7 +1242,7 @@ impl Evaluator<'_, '_> {
     /// (the leaders whose owner is the country, which capture leaves unchanged)
     /// that is captured and visible in a scope of the country
     /// ([`Self::leader_visible`]).
-    fn any_captured_general(&self, slot: u32) -> Result<Eval, String> {
+    fn any_captured_general(&self, slot: u32) -> Result<Eval, Failure> {
         let world = self.world();
         let mut result = Eval::False;
         for row in table::<tables::UnitLeaders>(world.frame())? {

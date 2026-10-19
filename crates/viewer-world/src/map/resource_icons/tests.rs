@@ -189,12 +189,32 @@ fn resource_anchor_uses_centroid_mean_and_authored_ties_and_wrapping() {
     };
     let anchors = anchor_provinces(&members, &centroid, 100.).unwrap();
     assert_eq!(anchors[&1], 4);
-    assert_eq!(anchors[&2], 9); // Equidistant across the seam; authored order wins.
+    // Mean x normalizes before integer distance, as do each member's candidates.
+    assert_eq!(anchors[&2], 10);
     let reversed = BTreeMap::from([(2, vec![10, 9])]);
     assert_eq!(
         anchor_provinces(&reversed, &centroid, 100.).unwrap()[&2],
         10
     );
+}
+
+#[test]
+fn graphical_state_anchor_uses_signed_integer_distance_and_keeps_normal_ties() {
+    let members = BTreeMap::from([(1, vec![1, 2]), (2, vec![3, 4]), (3, vec![])]);
+    let centroid = |province| {
+        Some(match province {
+            1 => [10., 0., 20.],
+            2 => [12., 0., 20.],
+            3 => [100_000., 0., 0.],
+            4 => [0., 0., 0.],
+            _ => unreachable!(),
+        })
+    };
+    let anchors = anchor_provinces(&members, &centroid, 400_000.).unwrap();
+    assert_eq!(anchors[&1], 1);
+    // A negative wrapped best distance is the native uninitialized sentinel too.
+    assert_eq!(anchors[&2], 4);
+    assert!(!anchors.contains_key(&3));
 }
 
 #[test]

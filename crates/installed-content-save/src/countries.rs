@@ -110,6 +110,30 @@ impl SaveDocument {
         )
     }
 
+    pub fn mission_raiding_grid(
+        &self,
+        keys: [&[u8]; 2],
+    ) -> io::Result<super::naval_missions::RaidingGridSave> {
+        if self.has_repeated_country_tags()? {
+            return Err(invalid(
+                "repeated country tags require authenticated physical projection for raiding grid",
+            ));
+        }
+        super::naval_missions::raiding_grid(CountriesView::from_root(&self.document.items)?, keys)
+    }
+
+    pub fn mission_patrol_inputs(
+        &self,
+        keys: [&[u8]; 3],
+    ) -> io::Result<super::naval_missions::PatrolMissionSave> {
+        if self.has_repeated_country_tags()? {
+            return Err(invalid(
+                "repeated country tags require authenticated physical projection for patrol missions",
+            ));
+        }
+        super::naval_missions::patrol_inputs(CountriesView::from_root(&self.document.items)?, keys)
+    }
+
     pub fn mission_spotting_caches(
         &self,
         keys: [&[u8]; 2],
@@ -214,6 +238,24 @@ pub struct CountryProjection<'a> {
 }
 
 impl CountryProjection<'_> {
+    pub fn mission_patrol_inputs(
+        &self,
+        keys: [&[u8]; 3],
+    ) -> io::Result<super::naval_missions::PatrolMissionSave> {
+        let mut countries = CountriesView::from_root(&self.document.document.items)?;
+        countries.selected = Some(&self.representatives);
+        super::naval_missions::patrol_inputs(countries, keys)
+    }
+
+    pub fn mission_raiding_grid(
+        &self,
+        keys: [&[u8]; 2],
+    ) -> io::Result<super::naval_missions::RaidingGridSave> {
+        let mut countries = CountriesView::from_root(&self.document.document.items)?;
+        countries.selected = Some(&self.representatives);
+        super::naval_missions::raiding_grid(countries, keys)
+    }
+
     pub fn mission_spotting_caches(
         &self,
         keys: [&[u8]; 2],

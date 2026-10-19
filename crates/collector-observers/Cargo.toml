@@ -74,13 +74,18 @@ world_input_verify = ["world_input_changes"]
 [dependencies]
 engine-air-history.workspace = true
 engine-allocation.workspace = true
+engine-decisions.workspace = true
 engine-events.workspace = true
 engine-mutations.workspace = true
 engine-native.workspace = true
 engine-naval-history.workspace = true
+engine-occupation.workspace = true
+engine-production.workspace = true
+engine-projects.workspace = true
 engine-raid-inputs.workspace = true
 engine-railways.workspace = true
 engine-resources.workspace = true
+engine-scripts.workspace = true
 replay-data.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-certificates.workspace = true
@@ -96,7 +101,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 engine-research.workspace = true
-engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
+engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
 collector-extended-support = { workspace = true, features = ["test-support"] }

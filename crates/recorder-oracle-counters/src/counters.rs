@@ -7,10 +7,38 @@ pub fn eq<T: PartialEq + std::fmt::Debug>(r: &mut Report, label: &str, a: T, b: 
     }
 }
 pub fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
+    report.attempt_table(TableId::CountryCounterInputs, |r| {
+        sent_expeditionaries(frame, save, r)
+    });
     report.attempt_table(TableId::SentVolunteers, |r| sent_volunteers(frame, save, r));
     report.attempt_table(TableId::ProvinceUnitOrder, |r| provinces(frame, save, r));
     report.attempt_table(TableId::CharacterPortraits, |r| characters(frame, save, r));
     report.attempt_table(TableId::LeaderPortraits, |r| leaders(frame, save, r));
+}
+fn sent_expeditionaries(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::CountryCounterInputs>()?;
+    let context = country_context(frame)?;
+    for row in rows {
+        let tag = required_country_tag(row.country, &context.links)?;
+        let label = format!(
+            "CountryCounterInputs {} sent expeditionaries",
+            String::from_utf8_lossy(tag)
+        );
+        let expected = save
+            .counter_inputs
+            .sent_expeditionaries
+            .get(tag)
+            .map_or(&[][..], Vec::as_slice);
+        let actual = row
+            .sent_expeditionaries
+            .require(&label)
+            .map_err(invalid)?
+            .as_ref()
+            .map(|values| &values[..]);
+        eq(r, &label, actual, Some(expected));
+    }
+    r.compared("CountryCounterInputs.sent_expeditionaries", rows.len());
+    Ok(())
 }
 fn sent_volunteers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::SentVolunteers>()?;
@@ -427,6 +455,43 @@ mod sent_volunteer_tests {
                 &mut report,
             );
             assert!(!report.differences.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod manpower_tests {
+    use super::*;
+    #[test]
+    fn manpower_expeditionary_oracle_rejects_changed_order_and_missing_capture() {
+        use replay_data::rows::CountryCounterInputRow;
+        use replay_data::rows::Recorded;
+        use replay_data::rows::TableRows;
+        use replay_frame::frame::TableView;
+        let (mut frame, mut saved, _, _) = crate::fixtures::fixture();
+        let country = frame.complete::<tables::Countries>().unwrap()[0].clone();
+        let references = vec![0, 7, 7];
+        saved
+            .counter_inputs
+            .sent_expeditionaries
+            .insert(country.tag.clone(), references.clone());
+        for (actual, differences) in [(Some(references), 0), (Some(vec![7, 0, 7]), 1), (None, 1)] {
+            *frame.tables[TableId::CountryCounterInputs.index()] =
+                TableView::Complete(TableRows::CountryCounterInputs(vec![
+                    CountryCounterInputRow {
+                        country: country.id,
+                        sent_expeditionaries: Recorded::Value(actual.map(Into::into)),
+                        ..Default::default()
+                    },
+                ]));
+            let mut report = Report::default();
+            sent_expeditionaries(&frame, &saved, &mut report).unwrap();
+            assert_eq!(
+                report.differences.len(),
+                differences,
+                "{:?}",
+                report.differences
+            );
         }
     }
 }

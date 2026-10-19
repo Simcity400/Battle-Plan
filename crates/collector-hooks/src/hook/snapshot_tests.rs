@@ -84,9 +84,9 @@ fn ready(threads: &mut Threads, hooks: &mut [Hook], enabled: bool) -> Result<boo
         .filter(|(_, selected)| **selected)
         .map(|(hook, _)| hook.site..hook.site + hook.sentinel_len)
         .collect();
-    let hooks: Vec<_> = hooks.iter_mut().collect();
-    Hook::family_ready(
-        &hooks,
+    let mut hooks: Vec<_> = hooks.iter_mut().collect();
+    Hook::family_ready::<false>(
+        &mut hooks,
         enabled,
         |index| selected[index],
         &ranges,
@@ -452,4 +452,23 @@ fn hold_measurement_excludes_off_hold_work_and_publishes_only_after_resolution()
         assert_eq!(summary.as_object().unwrap().len(), 6);
         assert_eq!(json.as_object().unwrap().len(), 2);
     }
+}
+
+#[test]
+fn installation_diagnostic_identifies_the_mismatching_member_snapshot() {
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    let (site, bytes) = code.stub(0, code.0 as usize + 2048);
+    let hook = unsafe { Hook::new(site, code.0 as usize + 1024, bytes) }.unwrap();
+    assert!(hook.matches_published_snapshot());
+    unsafe {
+        *(site as *mut u8) = 0xcc;
+    }
+    assert!(!hook.matches_published_snapshot());
+    unsafe {
+        *(site as *mut u8) = bytes[0];
+    }
+    assert!(hook.matches_published_snapshot());
 }

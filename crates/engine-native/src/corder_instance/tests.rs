@@ -1950,6 +1950,7 @@ fn group_withdrawing_byte_uses_authenticated_identities() {
             leader_enroute_days: Some(0),
             border_war_presence: Some(0),
             invasion_source_distance: Some(0),
+            hq_nearest_front: Some(0),
         }
     );
     assert_eq!(
@@ -1971,6 +1972,7 @@ fn group_hq_distance_keeps_raw_signed_words_and_isolated_failures() {
     for raw in [i32::MIN, -7, -1, 0, 1, i32::MAX] {
         image.u32(GROUP + corders_group::HQ_DISTANCE, raw as u32);
         image.u32(GROUP + corders_group::INVASION_SOURCE_DISTANCE, raw as u32);
+        image.u32(GROUP + corders_group::HQ_NEAREST_FRONT, raw as u32);
         image.1.borrow_mut().clear();
         assert_eq!(
             corders_group::walk_counter_inputs(&image, BASE, &roots, source, &mut rows),
@@ -1978,6 +1980,7 @@ fn group_hq_distance_keeps_raw_signed_words_and_isolated_failures() {
         );
         assert_eq!(rows[0].hq_distance, Some(raw));
         assert_eq!(rows[0].invasion_source_distance, Some(raw));
+        assert_eq!(rows[0].hq_nearest_front, Some(raw));
         // The distance comes from its own word, in the group's gathered
         // suffix record.
         assert!(image.1.borrow().iter().any(|&(at, len)| {
@@ -1992,7 +1995,7 @@ fn group_hq_distance_keeps_raw_signed_words_and_isolated_failures() {
         for (hole, per_field) in [
             (None, true),
             (Some((GROUP + 0x20, 8)), false),
-            (Some((GROUP + corders_group::HQ_DISTANCE + 4, 4)), false),
+            (Some((GROUP + corders_group::HQ_DISTANCE - 4, 4)), false),
         ] {
             let holed = Holed {
                 image: &image,
@@ -2019,6 +2022,7 @@ fn group_hq_distance_keeps_raw_signed_words_and_isolated_failures() {
         assert_eq!((rows[0].group, rows[0].withdrawing), (HANDLE, 0xfe));
         assert_eq!(rows[0].hq_distance, None);
         assert_eq!(rows[0].invasion_source_distance, Some(raw));
+        assert_eq!(rows[0].hq_nearest_front, Some(raw));
         let holed = Holed {
             image: &image,
             hole: Some((GROUP + corders_group::INVASION_SOURCE_DISTANCE, 4)),
@@ -2032,8 +2036,26 @@ fn group_hq_distance_keeps_raw_signed_words_and_isolated_failures() {
         assert_eq!((rows[0].group, rows[0].withdrawing), (HANDLE, 0xfe));
         assert_eq!(rows[0].hq_distance, Some(raw));
         assert_eq!(rows[0].invasion_source_distance, None);
+        assert_eq!(rows[0].hq_nearest_front, Some(raw));
         assert_eq!(rows[0].border_war_presence, Some(0));
         assert_eq!(rows[0].leader_enroute_days, Some(0));
+        let holed = Holed {
+            image: &image,
+            hole: Some((GROUP + corders_group::HQ_NEAREST_FRONT, 4)),
+            per_field: false,
+            payloads: &[],
+        };
+        assert_eq!(
+            corders_group::walk_counter_inputs(&holed, BASE, &roots, source, &mut rows),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(
+            rows,
+            [corders_group::CounterInputsRow {
+                hq_nearest_front: None,
+                ..gathered[0]
+            }]
+        );
     }
 }
 

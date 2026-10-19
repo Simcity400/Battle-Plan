@@ -27,9 +27,10 @@ impl World {
     /// a fixed base for [`SliceMemory`].
     fn build(provinces: u32, regions: u32, budgets: (i32, i32), live: bool) -> Self {
         let accumulators = REGIONS + regions as usize * sweather_per_region::STRIDE;
-        let province_data =
-            (accumulators + regions as usize * 2 * engine_native::modifier_entry::STRIDE + 0xff)
-                & !0xff;
+        let province_data = (accumulators
+            + regions as usize * COMBAT_KEYS.len() * engine_native::modifier_entry::STRIDE
+            + 0xff)
+            & !0xff;
         let snow = province_data + provinces as usize * sweather_per_province::STRIDE;
         let mud = snow + provinces as usize;
         let clocks = (mud + provinces as usize + 0xff) & !0xff;
@@ -80,18 +81,19 @@ impl World {
                 record + sweather_per_region::ID,
                 &(slot as i32 + 1).to_le_bytes(),
             );
-            let entries = accumulators + slot as usize * 2 * engine_native::modifier_entry::STRIDE;
+            let entries = accumulators
+                + slot as usize * COMBAT_KEYS.len() * engine_native::modifier_entry::STRIDE;
             world.put(
                 record + sweather_per_region::MODIFIERS,
                 &((world.base + entries) as u64).to_le_bytes(),
             );
             world.put(
                 record + sweather_per_region::MODIFIERS + 8,
-                &2_u32.to_le_bytes(),
+                &(COMBAT_KEYS.len() as u32).to_le_bytes(),
             );
             world.put(
                 record + sweather_per_region::MODIFIERS + 12,
-                &2_u32.to_le_bytes(),
+                &(COMBAT_KEYS.len() as u32).to_le_bytes(),
             );
             for (index, key) in COMBAT_KEYS.into_iter().enumerate() {
                 let entry = entries + index * engine_native::modifier_entry::STRIDE;
@@ -135,7 +137,9 @@ impl World {
     }
 
     fn combat_value(&self, slot: u32) -> usize {
-        self.accumulators + slot as usize * 2 * engine_native::modifier_entry::STRIDE + 8
+        self.accumulators
+            + slot as usize * COMBAT_KEYS.len() * engine_native::modifier_entry::STRIDE
+            + 8
     }
 
     fn budgets(&mut self, (provinces, regions): (i32, i32)) {
@@ -609,6 +613,27 @@ fn a_difference_reads_all_and_only_an_unexplained_one_poisons() {
     let (carry, _) = hour(&world, carry, 6, false, Some(4));
     assert!(carry.poisoned);
     assert_eq!(carry.followed, 0);
+}
+
+#[test]
+fn regional_map_terms_share_the_existing_outside_window_carry_guard() {
+    for key in [
+        engine_executable::modifier_keys::NAVAL_DETECTION,
+        engine_executable::modifier_keys::AIR_ATTACK_FACTOR,
+        engine_executable::modifier_keys::AIR_DEFENCE_FACTOR,
+    ] {
+        let (mut world, mut carry) = held(40, 9, (5, 2));
+        carry.every = true;
+        let (window, _) = next_windows(&world);
+        world.pass(1);
+        let slot = (0..9).find(|&slot| !in_window(slot, window, 9)).unwrap();
+        let term = COMBAT_KEYS.iter().position(|&value| value == key).unwrap();
+        let address = world.combat_value(slot) + term * engine_native::modifier_entry::STRIDE;
+        world.put(address, &(-91_111_i64).to_le_bytes());
+        let (carry, _) = hour(&world, carry, 2, false, Some(0));
+        assert!(carry.poisoned, "{key}");
+        assert_eq!(carry.combat[slot as usize].unwrap()[term], Some(-91_111));
+    }
 }
 
 /// A province record difference reads every province that hour, and every province's

@@ -278,6 +278,9 @@ fn ship_experience_is_recorded_at_a_hundredth() {
         Some(ShipRow::EXPERIENCE_STEP)
     );
     let captured = ShipRow {
+        acquired_manpower: Default::default(),
+        required_manpower: Default::default(),
+
         id: 5,
         task_force: 9,
         strength: 123_456,

@@ -444,11 +444,20 @@ fn zero_hint_wing_growth_preserves_fixed_original_read_order_and_first_faults() 
             growing.cumulative_outcome, fixed.cumulative_outcome,
             "fault {fault:?}"
         );
-        assert_eq!(
-            growing_memory.calls.borrow().as_slice(),
-            fixed_memory.calls.borrow().as_slice(),
-            "fault {fault:?}"
-        );
+        let fixed_calls = fixed_memory.calls.borrow();
+        let original_requests: std::collections::BTreeSet<_> =
+            fixed_calls.iter().copied().collect();
+        // The worker also reads its independent fuel and map-flag leaves.
+        // Preserve every original request, including repeats and first faults;
+        // a new observation of an original key must not disappear from this check.
+        let growing_original_calls: Vec<_> = growing_memory
+            .calls
+            .borrow()
+            .iter()
+            .copied()
+            .filter(|request| original_requests.contains(request))
+            .collect();
+        assert_eq!(growing_original_calls, *fixed_calls, "fault {fault:?}");
         assert_eq!(growing_memory.failed.get(), fault.is_some());
     }
 }
@@ -2094,6 +2103,7 @@ fn air_bases_staging_overflow_falls_back_to_typed_walk() {
     let mut tiny = AirBasesJob {
         log: crate::raw::RawLog::new(1, 1),
         carrier: super::carrier::Job::default(),
+        state_fuel: Default::default(),
         game_state: 0,
         registration_demand: None,
         aces_active: false,

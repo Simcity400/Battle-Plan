@@ -46,6 +46,8 @@ pub enum IconFamily {
     Combats,
     /// Naval mission icons.
     Missions,
+    /// Resistance and compliance state markers.
+    Occupation,
 }
 
 /// Where a map icon stands, as its owner tags its quads.

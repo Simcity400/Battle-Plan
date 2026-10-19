@@ -1,0 +1,739 @@
+//! Preallocated scalar operands. No callback allocates or follows native pointers.
+use super::Account;
+use engine_allocation as allocation;
+use std::{
+    ptr,
+    sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
+};
+static POINTER: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
+static CLOSED: AtomicBool = AtomicBool::new(false);
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static VERSION: AtomicU64 = AtomicU64::new(0);
+static MISSED: AtomicBool = AtomicBool::new(false);
+/// Scalar lanes independent of the influence vector.
+pub const INITIATIVE: usize = 0;
+pub const CONTRIBUTION: usize = 1;
+pub const GAIN_A: usize = 2;
+pub const GAIN_B: usize = 3;
+pub const PREVIOUS_SCORE: usize = 4;
+pub const INFLUENCE_SHARE: usize = 5;
+pub const PROJECTION_SHARE: usize = 6;
+pub const PROJECTION_RANK: usize = 7;
+pub const PROJECTION_START: usize = 8;
+#[derive(Clone, Copy)]
+pub enum Operation {
+    Set,
+    Add,
+    Subtract,
+}
+pub struct Flight;
+impl Flight {
+    pub fn new() -> Self {
+        ACTIVE.fetch_add(1, Ordering::SeqCst);
+        VERSION.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+impl Drop for Flight {
+    fn drop(&mut self) {
+        VERSION.fetch_add(1, Ordering::SeqCst);
+        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+pub fn active() -> usize {
+    ACTIVE.load(Ordering::SeqCst)
+}
+pub fn baseline_stamp() -> Option<u64> {
+    let version = VERSION.load(Ordering::SeqCst);
+    (active() == 0 && version == VERSION.load(Ordering::SeqCst)).then_some(version)
+}
+pub fn quiet() -> Option<u64> {
+    let version = VERSION.load(Ordering::SeqCst);
+    (active() == 0 && !MISSED.load(Ordering::SeqCst) && version == VERSION.load(Ordering::SeqCst))
+        .then_some(version)
+}
+struct Slot {
+    address: usize,
+    influence: Vec<AtomicI64>,
+    projection: Vec<AtomicI64>,
+    values: [AtomicI64; 8],
+    initiative_anchor: AtomicI64,
+    initiative_product: AtomicI64,
+    initiative_steps: AtomicU64,
+    shares: [AtomicI64; 6],
+    projection_sources: [AtomicI64; 7],
+    projection_derived: AtomicU64,
+    influence_faction: AtomicU64,
+    total_inputs: [AtomicI64; 2],
+    rank_pending: [AtomicI64; 5],
+    rank: [AtomicI64; 5],
+}
+pub struct Storage {
+    slots: Vec<Slot>,
+    dirty: Vec<AtomicU64>,
+    invalid: AtomicBool,
+    missing_projection_sources: AtomicBool,
+}
+impl Storage {
+    pub fn new(data: usize, stride: usize, rows: &[Account]) -> Result<Box<Self>, &'static str> {
+        let mut slots = Vec::new();
+        let mut dirty = Vec::new();
+        allocation::reserve(&mut slots, rows.len())
+            .map_err(|_| "faction operand slot allocation failed")?;
+        allocation::reserve(&mut dirty, rows.len().div_ceil(64))
+            .map_err(|_| "faction operand marks allocation failed")?;
+        for (index, row) in rows.iter().enumerate() {
+            let mut influence = Vec::new();
+            allocation::reserve(&mut influence, row.influence.len())
+                .map_err(|_| "faction influence operand allocation failed")?;
+            influence.extend(row.influence.iter().map(|value| AtomicI64::new(*value)));
+            let mut projection = Vec::new();
+            allocation::reserve(&mut projection, row.projection.len())
+                .map_err(|_| "faction projection operand allocation failed")?;
+            projection.extend(row.projection.iter().map(|value| AtomicI64::new(*value)));
+            let values = [
+                row.initiative_raw,
+                row.contribution_raw,
+                row.contribution_gain_a_raw,
+                row.contribution_gain_b_raw,
+                row.previous_war_score_raw,
+                row.influence_share_raw,
+                row.projection_share_raw,
+                i64::from(row.projection_rank),
+            ]
+            .map(AtomicI64::new);
+            slots.push(Slot {
+                address: data
+                    .checked_add(
+                        index
+                            .checked_mul(stride)
+                            .ok_or("faction operand slot address overflow")?,
+                    )
+                    .ok_or("faction operand slot address overflow")?,
+                influence,
+                projection,
+                values,
+                initiative_anchor: AtomicI64::new(row.initiative_raw),
+                initiative_product: AtomicI64::new(0),
+                initiative_steps: AtomicU64::new(0),
+                shares: std::array::from_fn(|_| AtomicI64::new(0)),
+                projection_sources: std::array::from_fn(|_| AtomicI64::new(0)),
+                projection_derived: AtomicU64::new(0),
+                influence_faction: AtomicU64::new(0),
+                total_inputs: std::array::from_fn(|_| AtomicI64::new(0)),
+                rank_pending: std::array::from_fn(|_| AtomicI64::new(0)),
+                rank: std::array::from_fn(|_| AtomicI64::new(0)),
+            });
+        }
+        dirty.extend((0..rows.len().div_ceil(64)).map(|_| AtomicU64::new(0)));
+        allocation::boxed(Self {
+            slots,
+            dirty,
+            invalid: AtomicBool::new(false),
+            missing_projection_sources: AtomicBool::new(false),
+        })
+        .map_err(|_| "faction operand storage allocation failed")
+    }
+    fn write(
+        &self,
+        address: usize,
+        influence: bool,
+        field: usize,
+        value: i64,
+        operation: Operation,
+    ) {
+        let Ok(index) = self
+            .slots
+            .binary_search_by_key(&address, |slot| slot.address)
+        else {
+            return;
+        };
+        let slot = &self.slots[index];
+        let target = if influence {
+            slot.influence.get(field)
+        } else if field >= PROJECTION_START {
+            slot.projection.get(field - PROJECTION_START)
+        } else {
+            slot.values.get(field)
+        };
+        let Some(target) = target else {
+            self.invalid.store(true, Ordering::SeqCst);
+            return;
+        };
+        if !influence && field == INITIATIVE {
+            slot.initiative_anchor.store(value, Ordering::Relaxed);
+            slot.initiative_product.store(0, Ordering::Relaxed);
+            slot.initiative_steps.store(0, Ordering::Relaxed);
+        }
+        match operation {
+            Operation::Set => target.store(value, Ordering::Relaxed),
+            Operation::Add => {
+                target.fetch_add(value, Ordering::Relaxed);
+            }
+            Operation::Subtract => {
+                target.fetch_sub(value, Ordering::Relaxed);
+            }
+        }
+        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+    }
+    fn projection_sources(&self, address: usize, term: usize, source: &[i64; 7]) {
+        let Ok(index) = self
+            .slots
+            .binary_search_by_key(&address, |slot| slot.address)
+        else {
+            return;
+        };
+        let indices: &[usize] = match term {
+            0 => &[0, 1],
+            1 => &[2],
+            2 => &[3, 4],
+            3 => &[5, 6],
+            _ => {
+                self.invalid.store(true, Ordering::SeqCst);
+                return;
+            }
+        };
+        for &at in indices {
+            self.slots[index].projection_sources[at].store(source[at], Ordering::Relaxed);
+        }
+        self.slots[index]
+            .projection_derived
+            .fetch_or(1 << term, Ordering::Relaxed);
+        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+    }
+    fn refresh(&self, address: usize, projection: bool, numerator: i64, denominator: i64) {
+        let Ok(index) = self
+            .slots
+            .binary_search_by_key(&address, |slot| slot.address)
+        else {
+            return;
+        };
+        let slot = &self.slots[index];
+        let offset = if projection { 3 } else { 0 };
+        slot.shares[offset].store(numerator, Ordering::Relaxed);
+        slot.shares[offset + 1].store(denominator, Ordering::Relaxed);
+        let boundary = slot.shares[offset + 2].load(Ordering::Relaxed) as u32;
+        let boundary = boundary.wrapping_add(1).max(1);
+        if !projection && let Some((faction, phase, _)) = crate::faction_pools::phase(0) {
+            slot.influence_faction.store(faction, Ordering::Relaxed);
+            slot.total_inputs[0].store(phase as i64, Ordering::Relaxed);
+            slot.total_inputs[1].store(numerator, Ordering::Relaxed);
+        }
+        slot.shares[offset + 2].store(i64::from(boundary), Ordering::Relaxed);
+        slot.values[if projection {
+            PROJECTION_SHARE
+        } else {
+            INFLUENCE_SHARE
+        }]
+        .store(
+            replay_data::rows::FactionAccountRow::normalized(numerator, denominator),
+            Ordering::Relaxed,
+        );
+        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+    }
+    fn rank_input(&self, address: usize, numerator: i64, order: u32) {
+        let Ok(index) = self
+            .slots
+            .binary_search_by_key(&address, |slot| slot.address)
+        else {
+            return;
+        };
+        let Some((faction, phase, count)) = crate::faction_pools::phase(1) else {
+            self.invalid.store(true, Ordering::SeqCst);
+            return;
+        };
+        for (target, value) in self.slots[index].rank_pending.iter().zip([
+            numerator.max(0),
+            order as i64,
+            faction as i64,
+            phase as i64,
+            count as i64,
+        ]) {
+            target.store(value, Ordering::Relaxed);
+        }
+    }
+    fn rank_commit(&self, address: usize, native: i32) {
+        let Ok(index) = self
+            .slots
+            .binary_search_by_key(&address, |slot| slot.address)
+        else {
+            return;
+        };
+        let slot = &self.slots[index];
+        for (target, source) in slot.rank.iter().zip(&slot.rank_pending) {
+            target.store(source.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        slot.values[PROJECTION_RANK].store(native as i64, Ordering::Relaxed);
+        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+    }
+    fn passive(&self, address: usize, product: i64) {
+        let Ok(index) = self
+            .slots
+            .binary_search_by_key(&address, |slot| slot.address)
+        else {
+            return;
+        };
+        let slot = &self.slots[index];
+        let current = slot.values[INITIATIVE].load(Ordering::Relaxed);
+        let steps = slot.initiative_steps.load(Ordering::Relaxed);
+        if slot.initiative_product.load(Ordering::Relaxed) != product || steps == u32::MAX as u64 {
+            slot.initiative_anchor.store(current, Ordering::Relaxed);
+            slot.initiative_product.store(product, Ordering::Relaxed);
+            slot.initiative_steps.store(0, Ordering::Relaxed);
+        }
+        slot.initiative_steps.fetch_add(1, Ordering::Relaxed);
+        slot.values[INITIATIVE].store(
+            current.wrapping_add(product / 100_000).max(0),
+            Ordering::Relaxed,
+        );
+        self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
+    }
+    pub fn allocated_bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.slots.capacity() * size_of::<Slot>()
+            + self.dirty.capacity() * size_of::<AtomicU64>()
+            + self
+                .slots
+                .iter()
+                .map(|slot| {
+                    (slot.influence.capacity() + slot.projection.capacity())
+                        * size_of::<AtomicI64>()
+                })
+                .sum::<usize>()
+    }
+    pub fn reset(&self, index: usize, row: &Account) -> Result<(), &'static str> {
+        let slot = self
+            .slots
+            .get(index)
+            .ok_or("faction operand reset index invalid")?;
+        if slot.influence.len() != row.influence.len() {
+            return Err(
+                "faction influence operand geometry changed without array lifetime notification",
+            );
+        }
+        for (target, value) in slot.influence.iter().zip(&row.influence) {
+            target.store(*value, Ordering::Relaxed);
+        }
+        if slot.projection.len() != row.projection.len() {
+            return Err(
+                "faction projection operand geometry changed without lifetime notification",
+            );
+        }
+        for (target, value) in slot.projection.iter().zip(&row.projection) {
+            target.store(*value, Ordering::Relaxed);
+        }
+        for (target, value) in slot.values.iter().zip([
+            row.initiative_raw,
+            row.contribution_raw,
+            row.contribution_gain_a_raw,
+            row.contribution_gain_b_raw,
+            row.previous_war_score_raw,
+            row.influence_share_raw,
+            row.projection_share_raw,
+            i64::from(row.projection_rank),
+        ]) {
+            target.store(value, Ordering::Relaxed);
+        }
+        slot.influence_faction.store(0, Ordering::Relaxed);
+        for value in &slot.total_inputs {
+            value.store(0, Ordering::Relaxed);
+        }
+        for value in slot.rank.iter().chain(&slot.rank_pending) {
+            value.store(0, Ordering::Relaxed);
+        }
+        slot.projection_derived.store(0, Ordering::Relaxed);
+        for value in &slot.projection_sources {
+            value.store(0, Ordering::Relaxed);
+        }
+        for value in &slot.shares {
+            value.store(0, Ordering::Relaxed);
+        }
+        slot.initiative_anchor
+            .store(row.initiative_raw, Ordering::Relaxed);
+        slot.initiative_product.store(0, Ordering::Relaxed);
+        slot.initiative_steps.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+    pub fn drain(&self, rows: &mut [Account]) -> Result<bool, &'static str> {
+        if self.missing_projection_sources.load(Ordering::SeqCst) {
+            return Err("faction projection setter lacks its supplying getter operands");
+        }
+        if self.invalid.load(Ordering::SeqCst) {
+            return Err("faction operand writer selected an invalid statistic");
+        }
+        let mut changed = false;
+        for (word, dirty) in self.dirty.iter().enumerate() {
+            let mut bits = dirty.swap(0, Ordering::SeqCst);
+            while bits != 0 {
+                let index = word * 64 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let slot = &self.slots[index];
+                let row = &mut rows[index];
+                for (value, source) in row.influence.iter_mut().zip(&slot.influence) {
+                    *value = source.load(Ordering::Relaxed);
+                }
+                for (value, source) in row.projection.iter_mut().zip(&slot.projection) {
+                    *value = source.load(Ordering::Relaxed);
+                }
+                let values = slot
+                    .values
+                    .each_ref()
+                    .map(|value| value.load(Ordering::Relaxed));
+                row.projection_derived = slot.projection_derived.load(Ordering::Relaxed) as u8;
+                row.projection_sources = slot
+                    .projection_sources
+                    .each_ref()
+                    .map(|value| value.load(Ordering::Relaxed));
+                row.initiative_raw = values[0];
+                row.initiative_anchor_raw = slot.initiative_anchor.load(Ordering::Relaxed);
+                row.initiative_product_raw = slot.initiative_product.load(Ordering::Relaxed);
+                row.initiative_steps = slot.initiative_steps.load(Ordering::Relaxed) as u32;
+                row.contribution_raw = values[1];
+                row.contribution_gain_a_raw = values[2];
+                row.contribution_gain_b_raw = values[3];
+                row.previous_war_score_raw = values[4];
+                let shares = slot
+                    .shares
+                    .each_ref()
+                    .map(|value| value.load(Ordering::Relaxed));
+                row.influence_numerator_raw = shares[0];
+                row.influence_denominator_raw = shares[1];
+                row.influence_refresh = shares[2] as u32;
+                row.projection_numerator_raw = shares[3];
+                row.projection_denominator_raw = shares[4];
+                row.projection_refresh = shares[5] as u32;
+                row.influence_faction = slot.influence_faction.load(Ordering::Relaxed);
+                row.influence_total_phase = slot.total_inputs[0].load(Ordering::Relaxed) as u64;
+                row.influence_total_raw = slot.total_inputs[1].load(Ordering::Relaxed);
+                let rank = slot
+                    .rank
+                    .each_ref()
+                    .map(|value| value.load(Ordering::Relaxed));
+                row.rank_input_raw = rank[0];
+                row.rank_input_order = rank[1] as u32;
+                row.rank_faction = rank[2] as u64;
+                row.rank_refresh = rank[3] as u64;
+                row.rank_members = rank[4] as u32;
+                row.influence_share_raw = values[5];
+                row.projection_share_raw = values[6];
+                row.projection_rank = values[7] as i32;
+                changed = true;
+            }
+        }
+        Ok(changed)
+    }
+}
+/// Owned by the faction worker. Publication closes callback admission without
+/// waiting; a concurrent write refuses capture rather than authorizing a scan.
+#[derive(Default)]
+pub struct Holder {
+    storage: Option<Box<Storage>>,
+}
+impl Holder {
+    pub fn install(&mut self, mut storage: Box<Storage>) -> Result<(), &'static str> {
+        CLOSED.store(true, Ordering::SeqCst);
+        if active() != 0 {
+            CLOSED.store(false, Ordering::SeqCst);
+            return Err("faction operand publication overlaps a writer");
+        }
+        MISSED.store(false, Ordering::SeqCst);
+        POINTER.store(&mut *storage, Ordering::SeqCst);
+        let old = self.storage.replace(storage);
+        CLOSED.store(false, Ordering::SeqCst);
+        drop(old);
+        Ok(())
+    }
+    pub fn allocated_bytes(&self) -> usize {
+        self.storage
+            .as_ref()
+            .map_or(0, |storage| storage.allocated_bytes())
+    }
+    pub fn storage(&self) -> Result<&Storage, &'static str> {
+        self.storage
+            .as_deref()
+            .ok_or("faction operand baseline unavailable")
+    }
+}
+impl Drop for Holder {
+    fn drop(&mut self) {
+        let Some(storage) = self.storage.take() else {
+            return;
+        };
+        if ptr::eq(POINTER.load(Ordering::SeqCst), &*storage) {
+            CLOSED.store(true, Ordering::SeqCst);
+            POINTER.store(ptr::null_mut(), Ordering::SeqCst);
+            if active() != 0 {
+                std::mem::forget(storage);
+            }
+        }
+    }
+}
+/// Caller holds a Flight through its native original or is a bounded store tap.
+pub fn observe(address: usize, influence: bool, field: usize, value: i64, operation: Operation) {
+    if CLOSED.load(Ordering::SeqCst) {
+        MISSED.store(true, Ordering::SeqCst);
+        return;
+    }
+    let pointer = POINTER.load(Ordering::SeqCst);
+    if pointer.is_null() {
+        return;
+    }
+    // SAFETY: Flight admission precedes the pointer load; publication and Drop
+    // close admission and retain old storage when a flight is active.
+    unsafe { &*pointer }.write(address, influence, field, value, operation);
+}
+thread_local! {static RANK_RECEIVER:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
+pub fn rank_receiver(receiver: usize) {
+    RANK_RECEIVER.with(|cell| cell.set(receiver));
+}
+pub fn rank_input(numerator: i64, order: u32) {
+    if CLOSED.load(Ordering::SeqCst) {
+        MISSED.store(true, Ordering::SeqCst);
+        return;
+    }
+    let pointer = POINTER.load(Ordering::SeqCst);
+    if !pointer.is_null() {
+        unsafe { &*pointer }.rank_input(RANK_RECEIVER.with(|cell| cell.get()), numerator, order);
+    }
+}
+pub fn rank_commit(receiver: usize, native: i32) {
+    if CLOSED.load(Ordering::SeqCst) {
+        MISSED.store(true, Ordering::SeqCst);
+        return;
+    }
+    let pointer = POINTER.load(Ordering::SeqCst);
+    if !pointer.is_null() {
+        unsafe { &*pointer }.rank_commit(receiver, native);
+    }
+}
+thread_local! { static PROJECTION_SOURCE: std::cell::Cell<([i64;7],u8)> = const {std::cell::Cell::new(([0;7],0))}; }
+/// Getter temporaries do not publish game state. Only the authenticated
+/// simulation setter consumes the complete supplying operands on this thread.
+pub fn projection_operand(index: usize, value: i64) {
+    PROJECTION_SOURCE.with(|cell| {
+        let (mut values, mut mask) = cell.get();
+        values[index] = value;
+        if matches!(index, 0 | 2 | 3 | 5) {
+            mask &= !(match index {
+                0 => 3,
+                2 => 4,
+                3 => 24,
+                _ => 96,
+            });
+        }
+        mask |= 1 << index;
+        cell.set((values, mask));
+    });
+}
+pub fn projection_sources(address: usize, term: usize) {
+    let required = match term {
+        0 => 3,
+        1 => 4,
+        2 => 24,
+        3 => 96,
+        _ => 0,
+    };
+    let source = PROJECTION_SOURCE.with(|cell| {
+        let (values, mask) = cell.get();
+        cell.set((values, mask & !required));
+        (values, mask)
+    });
+    if CLOSED.load(Ordering::SeqCst) {
+        MISSED.store(true, Ordering::SeqCst);
+        return;
+    }
+    let pointer = POINTER.load(Ordering::SeqCst);
+    if !pointer.is_null() {
+        let storage = unsafe { &*pointer };
+        if storage
+            .slots
+            .binary_search_by_key(&address, |slot| slot.address)
+            .is_err()
+        {
+            return;
+        }
+        if required == 0 || source.1 & required != required {
+            storage
+                .missing_projection_sources
+                .store(true, Ordering::SeqCst);
+            return;
+        }
+        storage.projection_sources(address, term, &source.0);
+    }
+}
+/// The arithmetic input versions and the reached refresh boundary are retained
+/// together, even if the source tables change again before hourly publication.
+pub fn refresh(address: usize, projection: bool, numerator: i64, denominator: i64) {
+    if CLOSED.load(Ordering::SeqCst) {
+        MISSED.store(true, Ordering::SeqCst);
+        return;
+    }
+    let pointer = POINTER.load(Ordering::SeqCst);
+    if !pointer.is_null() {
+        unsafe { &*pointer }.refresh(address, projection, numerator, denominator);
+    }
+}
+/// Passive sites supply the canonical product for the already-truncated native
+/// increment, never the resulting balance.
+pub fn passive(address: usize, product: i64) {
+    if CLOSED.load(Ordering::SeqCst) {
+        MISSED.store(true, Ordering::SeqCst);
+        return;
+    }
+    let pointer = POINTER.load(Ordering::SeqCst);
+    if !pointer.is_null() {
+        unsafe { &*pointer }.passive(address, product);
+    }
+}
+
+// The native account array is indexed by canonical country slot. Raw references
+// retained in an account and in the current member need not be equal.
+fn rank_address(storage: &Storage, canonical_slot: Option<u32>) -> Option<usize> {
+    canonical_slot
+        .and_then(|slot| storage.slots.get(slot as usize))
+        .map(|slot| slot.address)
+}
+pub fn rank_country(canonical_slot: Option<u32>) {
+    let pointer = POINTER.load(Ordering::SeqCst);
+    let receiver = if CLOSED.load(Ordering::SeqCst) || pointer.is_null() {
+        None
+    } else {
+        rank_address(unsafe { &*pointer }, canonical_slot)
+    };
+    rank_receiver(receiver.unwrap_or(0));
+}
+pub fn refuse(receiver: usize) {
+    let pointer = POINTER.load(Ordering::SeqCst);
+    if !pointer.is_null() && !CLOSED.load(Ordering::SeqCst) {
+        let storage = unsafe { &*pointer };
+        if storage
+            .slots
+            .binary_search_by_key(&receiver, |slot| slot.address)
+            .is_ok()
+        {
+            storage.invalid.store(true, Ordering::SeqCst);
+        }
+    }
+}
+pub fn projection_factory_total(total: Option<i64>) {
+    PROJECTION_SOURCE.with(|cell| {
+        let (mut values, mut mask) = cell.get();
+        if let Some(total) = total.filter(|_| mask & 1 != 0) {
+            values[1] = total.wrapping_sub((values[0] / 100_000).max(0));
+            mask |= 2;
+        } else {
+            mask &= !2;
+        }
+        cell.set((values, mask));
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rank_alias_selects_canonical_account_and_keeps_its_supplying_certificate() {
+        let bytes = super::super::tests::alias_fixture();
+        let memory = engine_native::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let reader = engine_native::ccountry::Reader::new(&memory, 0, 0x1000).unwrap();
+        let mut rows = (0..4)
+            .map(|account| Account {
+                account,
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        rows[3].country = 5;
+        let storage = Storage::new(0x8000, 0xd0, &rows).unwrap();
+        let canonical = reader.resolve(9).unwrap().canonical_slot;
+        assert_eq!(
+            reader.resolve(rows[3].country).unwrap().canonical_slot,
+            canonical
+        );
+        let address = rank_address(&storage, Some(canonical)).unwrap();
+        assert_eq!(address, 0x8000 + 3 * 0xd0);
+        for (target, value) in storage.slots[3].rank_pending.iter().zip([123, 0, 77, 8, 1]) {
+            target.store(value, Ordering::Relaxed);
+        }
+        crate::test_support::with_allocations_denied(|| {
+            storage.rank_commit(address, 1);
+            storage.drain(&mut rows).unwrap();
+        });
+        assert_eq!(
+            (
+                rows[3].rank_input_raw,
+                rows[3].rank_faction,
+                rows[3].rank_refresh,
+                rows[3].rank_members
+            ),
+            (123, 77, 8, 1)
+        );
+        assert_eq!(rows[0].rank_refresh, 0);
+    }
+    #[test]
+    fn final_operands_select_one_of_five_thousand_accounts_without_native_reads_or_allocations() {
+        let mut rows = (0..5000)
+            .map(|account| Account {
+                account,
+                influence: vec![0; 5],
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let storage = Storage::new(0x1000, 0xd0, &rows).unwrap();
+        crate::test_support::with_allocations_denied(|| {
+            storage.write(0x1000 + 4999 * 0xd0, true, 2, -7, Operation::Set);
+            storage.write(
+                0x1000 + 4999 * 0xd0,
+                false,
+                CONTRIBUTION,
+                i64::MAX,
+                Operation::Add,
+            );
+            storage.write(0x1000 + 4999 * 0xd0, false, CONTRIBUTION, 1, Operation::Add);
+            assert!(storage.drain(&mut rows).unwrap());
+            assert!(!storage.drain(&mut rows).unwrap());
+        });
+        assert_eq!(rows[4999].influence, [0, 0, -7, 0, 0]);
+        assert_eq!(rows[4999].contribution_raw, i64::MIN);
+        assert_eq!(rows[0].contribution_raw, 0);
+    }
+    #[test]
+    fn passive_boundaries_keep_the_anchor_sparse_and_capture_only_changed_products() {
+        let mut rows = vec![Account {
+            initiative_raw: 100,
+            ..Default::default()
+        }];
+        let storage = Storage::new(0x1000, 0xd0, &rows).unwrap();
+        crate::test_support::with_allocations_denied(|| {
+            storage.passive(0x1000, 250_001);
+            storage.passive(0x1000, 250_001);
+            storage.drain(&mut rows).unwrap();
+            assert_eq!(
+                (
+                    rows[0].initiative_anchor_raw,
+                    rows[0].initiative_product_raw,
+                    rows[0].initiative_steps
+                ),
+                (100, 250_001, 2)
+            );
+            storage.passive(0x1000, -150_001);
+            storage.drain(&mut rows).unwrap();
+            assert_eq!(
+                (
+                    rows[0].initiative_anchor_raw,
+                    rows[0].initiative_steps,
+                    rows[0].initiative_raw
+                ),
+                (104, 1, 103)
+            );
+            storage.write(0x1000, false, INITIATIVE, 7, Operation::Set);
+            storage.drain(&mut rows).unwrap();
+            assert_eq!(
+                (rows[0].initiative_anchor_raw, rows[0].initiative_steps),
+                (7, 0)
+            );
+        });
+    }
+}

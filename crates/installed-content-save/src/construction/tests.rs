@@ -1,5 +1,101 @@
 use super::*;
 
+#[test]
+fn occupation_active_definitions_preserve_state_and_core_order_duplicates_and_empty_names() {
+    let saved = pack(r#"countries={AAA={occupation_status={occupation={BBB={resistance_modifiers={"core_b" "" "core_a" "core_b"} compliance_modifiers={"core_c" "core_c"}}}}}} states={7={resistance={resistance_modifiers={"state_b" "" "state_a" "state_b"} compliance_modifiers={"state_c" "state_c"} resistance_target=-90071992547.40993}}} provinces={}"#).unwrap();
+    let state = &saved.state_resistance[&7];
+    assert!(!state.active);
+    assert_eq!(state.target.raw, -9_007_199_254_740_993);
+    assert_eq!(
+        state.definitions.resistance,
+        [
+            b"state_b".to_vec(),
+            Vec::new(),
+            b"state_a".to_vec(),
+            b"state_b".to_vec()
+        ]
+    );
+    assert_eq!(
+        state.definitions.compliance,
+        [b"state_c".to_vec(), b"state_c".to_vec()]
+    );
+    let core = &saved.occupation_definitions[&(b"AAA".to_vec(), b"BBB".to_vec())];
+    assert_eq!(
+        core.resistance,
+        [
+            b"core_b".to_vec(),
+            Vec::new(),
+            b"core_a".to_vec(),
+            b"core_b".to_vec()
+        ]
+    );
+    assert_eq!(core.compliance, [b"core_c".to_vec(), b"core_c".to_vec()]);
+}
+
+#[test]
+fn occupation_active_definition_omission_is_empty_and_target_omission_is_zero() {
+    let saved = pack("countries={AAA={occupation_status={occupation={BBB={}}}}} states={7={resistance={}} 8={resistance={resistance_modifiers={} compliance_modifiers={} resistance_target=0}}} provinces={}").unwrap();
+    assert_eq!(
+        saved.state_resistance[&7].definitions,
+        ActiveOccupationDefinitions::default()
+    );
+    assert_eq!(saved.state_resistance[&7].target.raw, 0);
+    assert_eq!(
+        saved.state_resistance[&8].definitions,
+        ActiveOccupationDefinitions::default()
+    );
+    assert_eq!(saved.state_resistance[&8].target.raw, 0);
+    assert_eq!(
+        saved.occupation_definitions[&(b"AAA".to_vec(), b"BBB".to_vec())],
+        ActiveOccupationDefinitions::default()
+    );
+    assert!(
+        !saved
+            .occupation_definitions
+            .contains_key(&(b"AAA".to_vec(), b"CCC".to_vec()))
+    );
+}
+
+#[test]
+fn occupation_active_definitions_refuse_keyed_nested_scalar_and_duplicate_lists() {
+    for fields in [
+        "resistance_modifiers={name=value}",
+        "compliance_modifiers={{}}",
+        "resistance_modifiers=identity",
+        "resistance_modifiers={a} resistance_modifiers={b}",
+        "compliance_modifiers={a} compliance_modifiers={b}",
+    ] {
+        assert!(
+            pack(&format!(
+                "countries={{}} states={{7={{resistance={{{fields}}}}}}} provinces={{}}"
+            ))
+            .is_err(),
+            "{fields}"
+        );
+        assert!(
+            pack(&format!(
+                "countries={{AAA={{occupation_status={{occupation={{BBB={{{fields}}}}}}}}}}} states={{}} provinces={{}}"
+            ))
+            .is_err(),
+            "{fields}"
+        );
+    }
+    assert!(pack("countries={} states={7={resistance={resistance_target=1 resistance_target=2}}} provinces={}").is_err());
+}
+
+#[test]
+fn occupation_resistance_targets_keep_order_country_omissions_and_emitted_empty_tooltips() {
+    let saved = pack("countries={} states={7={resistance={added_resistance_targets={{amount=-1.23456 controller=AAA tooltip=\"\"} {amount=0.00001 occupied=BBB tooltip=fixture}}}}} provinces={}").unwrap();
+    let targets = &saved.state_resistance[&7].added;
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0].amount.raw, -123_456);
+    assert_eq!(targets[0].controller.as_deref(), Some(b"AAA".as_slice()));
+    assert_eq!(targets[0].occupied, None);
+    assert_eq!(targets[0].tooltip, Some(Vec::new()));
+    assert_eq!(targets[1].amount.raw, 1);
+    assert_eq!(targets[1].occupied.as_deref(), Some(b"BBB".as_slice()));
+}
+
 fn railway_fields(extra: &str) -> Vec<Item> {
     installed_content_core::parser::parse(
         format!(
@@ -297,6 +393,19 @@ fn malformed_or_duplicate_serialized_scope_is_never_silently_overwritten() {
     ] {
         assert!(pack(input).is_err(), "{input}");
     }
+}
+
+#[test]
+fn shared_manpower_reader_keeps_nonfaction_wrappers_unique() {
+    let doc =
+        installed_content_core::parser::parse(b"manpower_pool={} manpower_pool={value={tag=MOD value=4}}")
+            .unwrap();
+    assert_eq!(
+        manpower(&doc.items, b"manpower_pool")
+            .unwrap_err()
+            .to_string(),
+        "duplicate save field manpower_pool",
+    );
 }
 
 #[test]

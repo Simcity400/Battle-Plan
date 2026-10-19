@@ -48,24 +48,37 @@ impl Renderer<'_, '_, '_> {
         let destination = if sorted {
             None
         } else {
-            Some(evaluator.description_temp_destination_fields(
-                fields,
-                "var",
-                b"highest_scored_country",
-                caller,
-                None,
-            )?)
+            Some(
+                evaluator
+                    .description_temp_destination_fields(
+                        fields,
+                        "var",
+                        b"highest_scored_country",
+                        caller,
+                        None,
+                    )
+                    .map_err(|why| why.to_string())?,
+            )
         };
         // One fresh scope is reused across targets, FROM a copy of the caller;
         // clearing THIS retains its links and RNG words.
-        let scope = evaluator.fresh_country_scope(None, Some(caller))?;
+        let scope = evaluator
+            .fresh_country_scope(None, Some(caller))
+            .map_err(|why| why.to_string())?;
         let mut best = None;
         let mut best_score = -0x53e2_d620_fb40_i64;
         let mut scores = ScoreMap::default();
         for entry in entries {
-            for target in evaluator.script_target_candidates(&entry.targets, caller)? {
-                let scope = evaluator.repoint_this(scope, Scope::Country(target))?;
-                let score = evaluator.mean_time_to_happen("country scorer", &entry.score, scope)?;
+            for target in evaluator
+                .script_target_candidates(&entry.targets, caller)
+                .map_err(|why| why.to_string())?
+            {
+                let scope = evaluator
+                    .repoint_this(scope, Scope::Country(target))
+                    .map_err(|why| why.to_string())?;
+                let score = evaluator
+                    .mean_time_to_happen("country scorer", &entry.score, scope)
+                    .map_err(|why| why.to_string())?;
                 if sorted {
                     scores.insert(target, score);
                 } else if score > best_score {
@@ -76,7 +89,9 @@ impl Renderer<'_, '_, '_> {
         }
         if let Some(destination) = destination {
             let value = match best {
-                Some(country) => evaluator.encode_description_scope(Scope::Country(country))?,
+                Some(country) => evaluator
+                    .encode_description_scope(Scope::Country(country))
+                    .map_err(|why| why.to_string())?,
                 None => 0,
             };
             evaluator.store_description_temp(destination, value);
@@ -96,35 +111,37 @@ impl Renderer<'_, '_, '_> {
             ("array", b"sorted_country_list".as_slice()),
             ("scores", b"country_list_scores".as_slice()),
         ] {
-            let key = evaluator.description_temp_destination_fields(
-                fields,
-                name,
-                default,
-                caller,
-                Some(&num),
-            )?;
+            let key = evaluator
+                .description_temp_destination_fields(fields, name, default, caller, Some(&num))
+                .map_err(|why| why.to_string())?;
             evaluator.store_description_temp(key, count);
         }
         for (index, (country, score)) in values.into_iter().enumerate() {
             let index = installed_content_core::scoped_variable::ScopedVariable::literal(
                 (index as i64).wrapping_mul(100_000),
             );
-            let key = evaluator.description_temp_destination_fields(
-                fields,
-                "array",
-                b"sorted_country_list",
-                caller,
-                Some(&index),
-            )?;
-            let country = evaluator.encode_description_scope(Scope::Country(country))?;
+            let key = evaluator
+                .description_temp_destination_fields(
+                    fields,
+                    "array",
+                    b"sorted_country_list",
+                    caller,
+                    Some(&index),
+                )
+                .map_err(|why| why.to_string())?;
+            let country = evaluator
+                .encode_description_scope(Scope::Country(country))
+                .map_err(|why| why.to_string())?;
             evaluator.store_description_temp(key, country);
-            let key = evaluator.description_temp_destination_fields(
-                fields,
-                "scores",
-                b"country_list_scores",
-                caller,
-                Some(&index),
-            )?;
+            let key = evaluator
+                .description_temp_destination_fields(
+                    fields,
+                    "scores",
+                    b"country_list_scores",
+                    caller,
+                    Some(&index),
+                )
+                .map_err(|why| why.to_string())?;
             evaluator.store_description_temp(key, score);
         }
         Ok(())

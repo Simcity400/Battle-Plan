@@ -308,6 +308,42 @@ pub fn compare_states(
             return Err(invalid("duplicate state row"));
         }
     }
+    report.limitation(
+        "text saves omit the cached victory-point index and the cached controller-group branch; recorded range/availability checks cannot certify the cached choices, which need matched native observations",
+        "States.best_vp_index and States.single_controller",
+    );
+    let mut province_counts = BTreeMap::<u32, usize>::new();
+    for province in frame.complete::<tables::Provinces>()? {
+        *province_counts.entry(province.state).or_default() += 1;
+    }
+    for state in states.values() {
+        if let Some(&Some(index)) = report.recorded(
+            &state.best_vp_index,
+            "States.best_vp_index",
+            format!("state {} cached victory point", state.id),
+        ) {
+            let count = province_counts.get(&state.id).copied().unwrap_or(0);
+            if index >= 0 && index as usize >= count {
+                report.difference(
+                    format!("state {}.best_vp_index", state.id),
+                    index,
+                    format!("negative or below {count}"),
+                );
+            }
+        }
+        if let Some(value) = report.recorded(
+            &state.single_controller,
+            "States.single_controller",
+            format!("state {} cached controller branch", state.id),
+        ) && !matches!(value, None | Some(0 | 1))
+        {
+            report.difference(
+                format!("state {}.single_controller", state.id),
+                value,
+                "captured 0 or 1",
+            );
+        }
+    }
     let tokens = lexical_tokens(frame, report)?;
     for expected in save.state_control_emissions(membership)? {
         let id = match &expected {
@@ -421,6 +457,19 @@ fn compare_state_scalars(actual: &StateRow, saved: &installed_content_save::Stat
             "CState omits the manpower pool when total <= 0; available is not independently saved",
             field,
         ),
+    }
+    if let Some(&locked) = report.recorded(
+        &actual.manpower_locked,
+        "States.manpower_locked",
+        format!("state {}.manpower_locked", actual.id),
+    ) && saved.population.is_some()
+        && saved.manpower_locked != Some(locked)
+    {
+        report.difference(
+            format!("state {}.manpower_locked", actual.id),
+            Some(locked),
+            saved.manpower_locked,
+        );
     }
     let field = format!("state {}.population", actual.id);
     if let Some(&population) = report.recorded(&actual.population, "States.population", &field) {

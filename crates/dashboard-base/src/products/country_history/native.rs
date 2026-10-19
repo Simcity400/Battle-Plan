@@ -252,8 +252,8 @@ impl History {
         self.witness(frame.hour);
         self.current = true;
     }
-    pub fn tag(&self, hour: i32, country: EventFeedCountry) -> Option<String> {
-        if country.reference == 0 {
+    fn witness_at(&self, hour: i32, reference: u32) -> Option<&Witness> {
+        if reference == 0 {
             return None;
         }
         let read = self
@@ -262,16 +262,22 @@ impl History {
         if hour < read.first_hour {
             return None;
         }
-        let runs = self.references.get(&country.reference)?;
+        let runs = self.references.get(&reference)?;
         let at = runs.partition_point(|run| run.last < hour);
         let run = runs.get(at).or_else(|| {
-            (self.open.contains(&country.reference)
-                && self.hour.is_some_and(|frontier| frontier >= hour))
-            .then(|| runs.last())
-            .flatten()
+            (self.open.contains(&reference) && self.hour.is_some_and(|frontier| frontier >= hour))
+                .then(|| runs.last())
+                .flatten()
         })?;
-        (run.first <= hour && run.id == country.id && run.instance == country.instance)
-            .then(|| run.tag.clone())
+        (run.first <= hour).then_some(run)
+    }
+    pub fn tag(&self, hour: i32, country: EventFeedCountry) -> Option<String> {
+        let run = self.witness_at(hour, country.reference)?;
+        (run.id == country.id && run.instance == country.instance).then(|| run.tag.clone())
+    }
+    pub fn scope_slot(&self, hour: i32, country: EventFeedCountry) -> Option<u32> {
+        let run = self.witness_at(hour, country.reference)?;
+        (run.id == country.id && run.instance == country.instance).then_some(run.slot)
     }
 }
 
@@ -404,6 +410,67 @@ mod tests {
         }
     }
 
+    #[test]
+    fn captured_scope_reference_uses_the_occurrence_hour_alias_and_refuses_unread_hours() {
+        let mut history = History {
+            reads: vec![HourSpan {
+                first_hour: 10,
+                last_hour: 11,
+            }],
+            ..Default::default()
+        };
+        history.references.insert(
+            90,
+            vec![Witness {
+                first: 10,
+                last: 11,
+                slot: 4,
+                id: 70,
+                instance: 8,
+                tag: "synthetic".into(),
+            }],
+        );
+        let captured = EventFeedCountry {
+            reference: 90,
+            id: 70,
+            instance: 8,
+        };
+        assert_eq!(history.scope_slot(10, captured), Some(4));
+        assert_eq!(history.scope_slot(11, captured), Some(4));
+        assert_eq!(history.scope_slot(9, captured), None);
+        assert_eq!(history.scope_slot(12, captured), None);
+        assert_eq!(
+            history.scope_slot(
+                10,
+                EventFeedCountry {
+                    reference: 70,
+                    ..captured
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            history.scope_slot(
+                10,
+                EventFeedCountry {
+                    instance: 9,
+                    ..captured
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            history.tag(
+                10,
+                EventFeedCountry {
+                    reference: 90,
+                    id: 70,
+                    instance: 9
+                }
+            ),
+            None
+        );
+    }
     #[test]
     fn native_witness_country_and_instance_changes_retain_the_link_allocation() {
         use crate::prepared::frame_changes::FrameChangeTracker;

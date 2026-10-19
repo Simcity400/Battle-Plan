@@ -22,6 +22,7 @@ pub const USAGE: &str = "recorder sizes <campaign.battleplan> [--json] [--verify
 /// Byte totals for one recording; `table_*` are indexed by `TableId::index`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Sizes {
+    pub refusals: Vec<Refusal>,
     pub hours: u64,
     pub blocks: u64,
     /// Blocks as the recording stores them.
@@ -45,6 +46,16 @@ pub(crate) struct Sizes {
     pub table_deleted_rows: Vec<u64>,
     /// By field: the delta rows changing some fields that changed it.
     pub field_changes: Vec<Vec<u64>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    table: String,
+    branch: u64,
+    reason: String,
+    first_hour: i32,
+    last_hour: i32,
+    count: u64,
 }
 
 impl Sizes {
@@ -146,44 +157,67 @@ pub(crate) fn measure(replay: &Replay) -> io::Result<(Sizes, Replay)> {
         recorded: replay.index.iter().map(|block| block.length).sum(),
         ..Sizes::default()
     };
-    let encoded = replay.reencoded(|frame, _, table_sizes| {
-        sizes.hours += 1;
-        for table in TableId::ALL {
-            let TableUpdate::Delta {
-                changed, deleted, ..
-            } = &frame.tables[table.index()]
-            else {
-                continue;
-            };
-            let index = table.index();
-            sizes.table_deleted_rows[index] += deleted.len() as u64;
-            let whole = u64::MAX >> (64 - table.field_count());
-            for row in changed {
-                if row.mask == whole {
-                    sizes.table_whole_rows[index] += 1;
-                    continue;
+    let encoded =
+        replay.reencoded(|frame, _, table_sizes| {
+            sizes.hours += 1;
+            for table in TableId::ALL {
+                if let TableUpdate::Unavailable { reason } = &frame.tables[table.index()]
+                    && replay_data::format::FormatVersion::CURRENT
+                        .table_refusal(table)
+                        .is_none()
+                {
+                    let name = format!("{table:?}");
+                    if let Some(refusal) = sizes.refusals.iter_mut().find(|r| {
+                        r.table == name && r.branch == frame.branch && r.reason == *reason
+                    }) {
+                        refusal.last_hour = frame.hour;
+                        refusal.count += 1;
+                    } else {
+                        sizes.refusals.push(Refusal {
+                            table: name,
+                            branch: frame.branch,
+                            reason: reason.clone(),
+                            first_hour: frame.hour,
+                            last_hour: frame.hour,
+                            count: 1,
+                        });
+                    }
                 }
-                sizes.table_changed_rows[index] += 1;
-                for (field, changes) in sizes.field_changes[index].iter_mut().enumerate() {
-                    *changes += row.mask >> field & 1;
+                let TableUpdate::Delta {
+                    changed, deleted, ..
+                } = &frame.tables[table.index()]
+                else {
+                    continue;
+                };
+                let index = table.index();
+                sizes.table_deleted_rows[index] += deleted.len() as u64;
+                let whole = u64::MAX >> (64 - table.field_count());
+                for row in changed {
+                    if row.mask == whole {
+                        sizes.table_whole_rows[index] += 1;
+                        continue;
+                    }
+                    sizes.table_changed_rows[index] += 1;
+                    for (field, changes) in sizes.field_changes[index].iter_mut().enumerate() {
+                        *changes += row.mask >> field & 1;
+                    }
                 }
             }
-        }
-        // A plain frame is its 37-byte header, a u64 per table and its updates.
-        let present = TableId::ALL
-            .into_iter()
-            .filter(|table| {
-                replay_data::format::FormatVersion::CURRENT
-                    .table_refusal(*table)
-                    .is_none()
-            })
-            .count();
-        sizes.plain += (37 + 8 * present + table_sizes.iter().sum::<usize>()) as u64;
-        for (total, size) in sizes.table_plain.iter_mut().zip(table_sizes) {
-            *total += size as u64;
-        }
-        Ok(())
-    })?;
+            // A plain frame is its 37-byte header, a u64 per table and its updates.
+            let present = TableId::ALL
+                .into_iter()
+                .filter(|table| {
+                    replay_data::format::FormatVersion::CURRENT
+                        .table_refusal(*table)
+                        .is_none()
+                })
+                .count();
+            sizes.plain += (37 + 8 * present + table_sizes.iter().sum::<usize>()) as u64;
+            for (total, size) in sizes.table_plain.iter_mut().zip(table_sizes) {
+                *total += size as u64;
+            }
+            Ok(())
+        })?;
     for block in &encoded.index {
         sizes.blocks += 1;
         sizes.encoded += block.length;
@@ -330,6 +364,10 @@ pub(crate) fn report(sizes: &Sizes) -> Value {
         "later_per_hour": per_hour(later, hours),
         "framing_per_hour": per_hour(sizes.framing(), hours),
         "tables": tables,
+        "refusals": sizes.refusals.iter().map(|r| json!({
+            "table": r.table, "branch": r.branch, "reason": r.reason,
+            "first_hour": r.first_hour, "last_hour": r.last_hour, "count": r.count,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -482,6 +520,17 @@ pub(crate) fn level_report(encoded: &Replay, sizes: &Sizes, levels: &[i32]) -> i
 }
 
 fn print_text(report: &Value) {
+    for refusal in report["refusals"].as_array().into_iter().flatten() {
+        println!(
+            "refused {} branch={} hours={}..={} count={}: {}",
+            refusal["table"].as_str().unwrap(),
+            refusal["branch"],
+            refusal["first_hour"],
+            refusal["last_hour"],
+            refusal["count"],
+            refusal["reason"].as_str().unwrap()
+        );
+    }
     let number = |key: &str| report[key].as_f64().unwrap_or(0.0);
     println!("hours={} blocks={}", report["hours"], report["blocks"]);
     println!(
@@ -618,6 +667,33 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    #[test]
+    fn validation_refusals_survive_sizes_and_verification() {
+        let mut records = crate::test_support::allocation_records();
+        let reason = "spool validation failed: States: row 64 column continent: missing or not recorded row field";
+        let mut count = 0;
+        for record in &mut records {
+            if let Record::Frame(frame) = record {
+                frame.tables[TableId::States.index()] = TableUpdate::Unavailable {
+                    reason: reason.into(),
+                };
+                count += 1;
+            }
+        }
+        let replay = open(records);
+        let (sizes, encoded) = measure(&replay).unwrap();
+        let refusal = report(&sizes)["refusals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["table"] == "States")
+            .unwrap()
+            .clone();
+        assert_eq!(refusal["reason"], reason);
+        assert_eq!(refusal["count"], count);
+        assert_eq!(verify_same_hours(&replay, &encoded).unwrap(), count);
     }
 
     #[test]

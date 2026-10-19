@@ -1007,17 +1007,29 @@ thread_local! {
     static FALLBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Run `run` with every force fold observing the rest of its block hour by
-/// hour, as where the carried scan does not continue as the worker's.
+/// This thread's forced-fold fallback setting, to carry to family workers.
 #[cfg(test)]
-pub(in crate::prepared::pipeline) fn with_test_fallback<T>(run: impl FnOnce() -> T) -> T {
+pub(super) fn test_fallback() -> bool {
+    FALLBACK.with(std::cell::Cell::get)
+}
+
+/// Install a caller's fallback setting until the returned guard is dropped.
+#[cfg(test)]
+pub(super) fn install_test_fallback(fallback: bool) -> impl Drop {
     struct Reset(bool);
     impl Drop for Reset {
         fn drop(&mut self) {
             FALLBACK.with(|value| value.set(self.0));
         }
     }
-    let _reset = Reset(FALLBACK.with(|value| value.replace(true)));
+    Reset(FALLBACK.with(|value| value.replace(fallback)))
+}
+
+/// Run `run` with every force fold observing the rest of its block hour by
+/// hour, as where the carried scan does not continue as the worker's.
+#[cfg(test)]
+pub(in crate::prepared::pipeline) fn with_test_fallback<T>(run: impl FnOnce() -> T) -> T {
+    let _reset = install_test_fallback(true);
     run()
 }
 

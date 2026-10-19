@@ -318,8 +318,8 @@ fn trait_batches_keep_exact_read_ranges_and_reduce_guard_entries() {
     assert_eq!(inline_source.guards.get(), 6); // Two root reads, two per inline entry.
     let source = traced(&bytes, None);
     assert!(read(&source, IMAGE, ADDRESS, 0xf000_0001).is_ok());
-    // Identity, state, skill, components, then owner and visibility.
-    assert_eq!(source.guards.get(), 5);
+    // Identity, state, demanded experience, skill, components, then owner and visibility.
+    assert_eq!(source.guards.get(), 6);
     assert_eq!(
         source
             .spans
@@ -327,9 +327,8 @@ fn trait_batches_keep_exact_read_ranges_and_reduce_guard_entries() {
             .iter()
             .map(|span| span.1)
             .sum::<usize>(),
-        // 81 before the retired experience (eight bytes of the state scatter) stopped being read;
-        // the guard count is unchanged, since it shared the state scatter's one call.
-        81 - 8 + 4 + 8 + 1 + 1 + 4 // + exile country
+        // Exact inherited fields, residual XP and owner/visibility inputs.
+        81 + 4 + 8 + 1 + 1 + 4 // + exile country
     );
 }
 
@@ -700,4 +699,51 @@ fn stored_exile_country_is_signed_and_fresh_with_existing_leader_capture() {
         .exile_country,
         5101
     );
+}
+
+#[test]
+fn residual_experience_and_complete_training_keep_native_widths_and_repeats() {
+    let mut bytes = fixture(carmy_leader::VTABLE_RVA);
+    u64_at(&mut bytes, EXPERIENCE, i64::MIN as u64);
+    u64_at(&mut bytes, XP_ARRAY + 24, i64::MAX as u64);
+    let source = memory(&bytes);
+    assert_eq!(
+        read(&source, IMAGE, ADDRESS, 0xf000_0001)
+            .unwrap()
+            .experience,
+        i64::MIN
+    );
+    let mut values = Vec::new();
+    visit_trait_progress(&source, IMAGE, ADDRESS, |token, ordinal, experience| {
+        values.push((token, ordinal, experience))
+    })
+    .unwrap();
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[0].2, i64::MIN);
+    assert_eq!(values[1].2, i64::MAX);
+    u64_at(&mut bytes, XP_ARRAY + 16, (ADDRESS + SECOND_TRAIT) as u64);
+    let mut repeated = Vec::new();
+    visit_trait_progress(&memory(&bytes), IMAGE, ADDRESS, |token, _, _| {
+        repeated.push(token)
+    })
+    .unwrap();
+    assert_eq!(repeated[0], repeated[1]);
+}
+
+#[test]
+fn experience_factors_preserve_independent_order_repeats_and_signed_widths() {
+    let mut bytes = fixture(carmy_leader::VTABLE_RVA);
+    vector(&mut bytes, TRAIT_EXPERIENCE_FACTORS, XP_ARRAY, 2);
+    u64_at(&mut bytes, XP_ARRAY + 16, (ADDRESS + SECOND_TRAIT) as u64);
+    u64_at(&mut bytes, XP_ARRAY + 8, i64::MIN as u64);
+    u64_at(&mut bytes, XP_ARRAY + 24, i64::MAX as u64);
+    let mut factors = Vec::new();
+    visit_trait_factors(&memory(&bytes), IMAGE, ADDRESS, |token, ordinal, factor| {
+        factors.push((token, ordinal, factor))
+    })
+    .unwrap();
+    assert_eq!(factors.len(), 2);
+    assert_eq!(factors[0].0, factors[1].0);
+    assert_eq!(factors[0].2, i64::MIN);
+    assert_eq!(factors[1].2, i64::MAX);
 }

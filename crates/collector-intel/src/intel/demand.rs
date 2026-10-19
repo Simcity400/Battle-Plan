@@ -116,6 +116,9 @@ impl Capacities {
         count!(8, 7, walk_flags(memory, base, state, &mut [], &mut []));
         let variables = cvariables::walk_scopes(memory, base, state, &mut [], &mut [], &mut []);
         count!(9, 8, variables.outcome);
+        if let Ok(scopes) = count(variables.outcome) {
+            crate::variable_changes::offer_scopes(scopes);
+        }
         raise(
             &mut self.variable_entries,
             rows(variables.required_entries, 1),

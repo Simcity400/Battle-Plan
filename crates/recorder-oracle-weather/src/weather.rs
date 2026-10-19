@@ -94,6 +94,14 @@ pub fn compare(
         "WeatherRegions.max_snow, WeatherProvinces.permanent_snow: census only",
     );
     report.limitation(
+        "the save does not retain held day/night direction or feather words; completed-update direction derives from date and content, while suspended/startup operands require matched native observation",
+        "WeatherProvinces.daylight: runtime only",
+    );
+    report.limitation(
+        "the save does not retain the live regional weather modifier accumulator or its known-read gate; matched native observation must verify its independent raw map terms",
+        "WeatherRegions.map_modifiers_known, naval_detection, air_attack, air_defence: runtime only",
+    );
+    report.limitation(
         "the weather boolean writer preserves zero/nonzero truth only; nonzero native byte values are indistinguishable in text saves",
         "WeatherRegions.light_rain, heavy_rain, snow, blizzard, sandstorm, arctic_water; WeatherProvinces.raw_mud",
     );

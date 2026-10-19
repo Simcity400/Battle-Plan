@@ -1,3 +1,4 @@
+import { validateProjectDetails } from './projectDetailsData.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { CountryGroupReply, CountryIdentityRun, HourSpan, MembershipRun, ProjectDate, ProjectEpisode, ProjectPresentation, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout.ts';
@@ -28,6 +29,7 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
     || !object(input.iterationTexts) || !Object.entries(input.iterationTexts).every(([count, text]) => /^-?(0|[1-9][0-9]*)$/.test(count) && integer(Number(count)) && nullableString(text))
     || !Array.isArray(input.projects) || !Array.isArray(input.presentations) || !Array.isArray(input.people)
     || !Array.isArray(input.warnings) || !input.warnings.every(item => typeof item === 'string')) return bad();
+  if (input.details !== undefined) validateProjectDetails(input.details);
   // A reply answered from the prepared prefix names its coverage and the hours still pending.
   try { preparedPrefix(input); } catch { return bad(); }
   if (input.current !== undefined) {

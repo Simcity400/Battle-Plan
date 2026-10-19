@@ -42,8 +42,8 @@ pub const EXCLUDED_VARIANT_CAPACITY: usize = 0x148;
 pub const EXCLUDED_VARIANT_COUNT: usize = 0x14c;
 /// CReferencedDivisionTemplate u32 priority.
 pub const PRIORITY: usize = 0x1a4;
-/// Raw lock-regime byte retained without boolean collapse.
-pub const LOCK_REGIME: usize = 0x1cc;
+/// Raw headquarters-template byte retained without boolean collapse.
+pub const IS_ARMY_HQ: usize = 0x1cc;
 /// CReferencedDivisionTemplate token289A country operand i32.
 pub const COUNTRY_OPERAND_289A: usize = 0x1ec;
 /// CReferencedDivisionTemplate token3ABE country operand i32.
@@ -56,8 +56,60 @@ pub const MODEL_CATEGORY_PRESENT: usize = 0x208;
 pub const MODEL_ENTITY: usize = 0x210;
 /// Lock byte tested for nonzero.
 pub const LOCKED: usize = 0x235;
-/// CReferencedDivisionTemplate obsolete flag byte, bit0.
+/// Retained obsolete byte; serialization tests it for nonzero.
 pub const OBSOLETE_FLAGS: usize = 0x236;
+/// Template parent reference, kept independently of roster membership.
+pub const PARENT: usize = COMPOSITION + 0x170;
+/// Equipment eligibility switches, kept as native bytes.
+pub const ALLOW_NEW_EQUIPMENT: usize = COMPOSITION + 0x1ad;
+pub const ALLOW_FOREIGN_EQUIPMENT: usize = COMPOSITION + 0x1ae;
+/// Equipment types the template forbids, as definition pointers.
+pub const FORBIDDEN_EQUIPMENT: usize = COMPOSITION + 0x140;
+/// Original creator country, independent of the current composition owner.
+pub const CREATOR_COUNTRY: usize = COMPOSITION + 0x1d8;
+pub const ORIGIN_TYPE: usize = COMPOSITION + 0x1e0;
+pub const FAKE_INTEL: usize = COMPOSITION + 0x21c;
+pub const OBSOLETE_CHANGE_DATE: usize = COMPOSITION + 0x228;
+pub const FORCE_ALLOW_RECRUITING: usize = COMPOSITION + 0x238;
+pub const DIVISION_CAP: usize = COMPOSITION + 0x23c;
+pub const DIVISION_CAP_PRESENT: usize = COMPOSITION + 0x240;
+pub const EQUIPMENT_NICHE: usize = COMPOSITION + 0x244;
+/// Explicit template role and the AI's stored role selection.
+pub const ROLE: usize = COMPOSITION + 0x1c0;
+pub const ROLE_PRESENT: usize = COMPOSITION + 0x1c4;
+pub const AI_ROLE: usize = COMPOSITION + 0x1c8;
+pub const AI_ROLE_PRESENT: usize = COMPOSITION + 0x1cc;
+pub const AI_ROLE_FALLBACK: usize = COMPOSITION + 0x1d0;
+/// Cached composition operands rebuilt with its grouped definitions.
+pub const TOTAL_MANPOWER: usize = COMPOSITION + 0x178;
+pub const COMMAND_POWER_COST: usize = COMPOSITION + 0x180;
+pub const TRAINING_TIME: usize = COMPOSITION + 0x188;
+
+/// Authenticated stored template settings; inactive optional payloads are omitted.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Settings {
+    pub roster_ordinal: u32,
+    pub priority: i32,
+    pub is_army_hq: u8,
+    pub locked: u8,
+    pub obsolete: u8,
+    pub obsolete_change_date: i32,
+    pub force_allow_recruiting: u8,
+    pub allow_new_equipment: u8,
+    pub allow_foreign_equipment: u8,
+    pub parent: u64,
+    pub creator_country: i32,
+    pub origin_type: i32,
+    pub fake_intel: u8,
+    pub division_cap: Option<i32>,
+    pub equipment_niche: u8,
+    pub role: Option<u32>,
+    pub ai_role: Option<u32>,
+    pub ai_role_fallback: u32,
+    pub total_manpower: i32,
+    pub command_power_cost: i64,
+    pub training_time: i32,
+}
 
 use crate::{
     Memory, ccountry,
@@ -87,6 +139,7 @@ pub const CUSTOM_ICON_NATO: usize = COMPOSITION + 0x1ac;
 /// Contained composition signed count added with i32 wrapping for formation
 /// division counts. The hourly fixed span already contains this word.
 pub const FORMATION_DIVISION_COUNT: usize = COMPOSITION + 0x1b0;
+/// Composition origin used by the ordinary manpower template predicate.
 /// First nonzero composition category override.
 pub const UNIT_TYPE_OVERRIDE: usize = COMPOSITION + 0x218;
 
@@ -99,6 +152,7 @@ pub struct Span {
 /// One grouped template entry. `token` is zero for a null-object definition.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SubunitCount {
+    pub width: Option<i64>,
     pub token: u32,
     /// A country-local clone (in the deployment status's clone vector), not the global definition.
     pub local: bool,
@@ -120,6 +174,9 @@ pub struct Row {
 /// can change at any hour: [`walk_icons`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct IconRow {
+    pub manpower_exile: bool,
+    /// Selected historical naming-group key; None is a null group.
+    pub names_group: Option<Span>,
     pub template: u64,
     /// The template object, for the caller's per-template reads.
     pub pointer: usize,
@@ -147,6 +204,20 @@ pub struct IconRow {
     /// cells hold, grouped by token and clone flag in the order each first
     /// occurs, each counted once per cell. A null-object cell is token zero.
     pub grids: [Span; 3],
+    /// Every grid cell in native column-major order. A count of zero denotes
+    /// an empty pointer; one denotes an authenticated definition, including
+    /// the null-object definition. Uses the same counts arena as `grids`.
+    pub cells: [Span; 3],
+    /// Each grid's columns in the low word and rows in the high word.
+    pub grid_dimensions: [u32; 3],
+    /// True only when the caller demanded fresh extension operands.
+    pub details_fresh: bool,
+    /// Failed extension acquisition never withholds the original icon/model fields.
+    pub details_failure: Option<&'static str>,
+    pub settings: Settings,
+    /// Definition tokens in native order, in the variants arena.
+    pub forbidden_equipment: Span,
+    pub equipment_failure: Option<&'static str>,
     /// The composition's `country`, the clone scope of local definitions and the model fallback
     /// country; raw signed reference.
     pub country: i32,
@@ -316,6 +387,7 @@ impl Tokens for Memo<'_> {
 /// unknown, and a failed read is never repeated within a walk.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Identity {
+    width: Option<i64>,
     token: u32,
     token_failure: Option<&'static str>,
     local: bool,
@@ -350,6 +422,7 @@ impl Identity {
         Ok(SubunitCount {
             token,
             local: self.local,
+            width: self.width,
             count: 0,
         })
     }
@@ -385,7 +458,7 @@ pub struct DefinitionSlots<'a> {
 
 /// A definition's identity, database index and template category bytes, in
 /// the order a failed field stops the gather.
-const DEFINITION_FIELDS: [RecordField; 3] = [
+const DEFINITION_FIELDS: [RecordField; 4] = [
     record_field(0, 0, 17),
     record_field(subunit::DATABASE_INDEX, 20, 4),
     record_field(
@@ -393,9 +466,10 @@ const DEFINITION_FIELDS: [RecordField; 3] = [
         DEFINITION_CATEGORY,
         subunit::CATEGORY_LEN,
     ),
+    record_field(subunit::COMBAT_WIDTH, 40, 8),
 ];
 const DEFINITION_CATEGORY: usize = 24;
-const DEFINITION_RECORD: usize = 40;
+const DEFINITION_RECORD: usize = 48;
 const DEFINITION_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DEFINITION_FIELDS, DEFINITION_RECORD).expect("valid definition layout");
 
@@ -564,7 +638,7 @@ impl<'a> Definitions<'a> {
                 ..Identity::default()
             };
         }
-        let (category, category_failure) = if completed < DEFINITION_FIELDS.len() {
+        let (category, category_failure) = if completed < 3 {
             (0, Some("subunit category unreadable"))
         } else {
             let bytes = record[DEFINITION_CATEGORY..DEFINITION_CATEGORY + subunit::CATEGORY_LEN]
@@ -582,6 +656,8 @@ impl<'a> Definitions<'a> {
             // The null object has no clone flag to read.
             Ok(None) => {
                 return Identity {
+                    width: (completed == DEFINITION_FIELDS.len())
+                        .then(|| i64::from_le_bytes(record[40..48].try_into().unwrap())),
                     category,
                     category_failure,
                     ..Identity::default()
@@ -596,6 +672,8 @@ impl<'a> Definitions<'a> {
                 .map(|global| global != at)
         };
         Identity {
+            width: (completed == DEFINITION_FIELDS.len())
+                .then(|| i64::from_le_bytes(record[40..48].try_into().unwrap())),
             token,
             token_failure: None,
             local: local.unwrap_or(false),
@@ -773,8 +851,8 @@ const DAILY_LAYOUT: RecordLayout<'static> =
 /// three grids' and the grouped entries' headers, the representative, the
 /// icon fields, the country operands, the model category, the model entity
 /// string and the dictionary's unit-type operands.
-const ICON_SPAN: usize = REGIMENT_DATA;
-const ICON_SPAN_END: usize = UNIT_TYPE_OVERRIDE + 4;
+const ICON_SPAN: usize = GRID_DIMENSIONS;
+const ICON_SPAN_END: usize = EQUIPMENT_NICHE + 1;
 const _: () = assert!(MODEL_ENTITY + msvc_string::STRIDE == UNIT_TYPE_OVERRIDE);
 const _: () = assert!(
     NAME + msvc_string::STRIDE <= ICON_SPAN
@@ -785,7 +863,13 @@ const _: () = assert!(
 const ICON_RECORD: usize = 16 + ICON_SPAN_END - ICON_SPAN;
 const ICON_FIELDS: [RecordField; 2] = [
     record_field(0, 0, 16),
-    record_field(ICON_SPAN, 16, ICON_SPAN_END - ICON_SPAN),
+    // Ordinary hourly acquisition retains its original fixed span. Extension
+    // prefix/tail bytes are read only for templates the caller marks dirty.
+    record_field(
+        REGIMENT_DATA,
+        16 + REGIMENT_DATA - ICON_SPAN,
+        UNIT_TYPE_OVERRIDE + 4 - REGIMENT_DATA,
+    ),
 ];
 const ICON_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ICON_FIELDS, ICON_RECORD).expect("valid template icon layout");
@@ -811,7 +895,23 @@ const MAX_RECORD: usize = if RECORD > ICON_NAMED_RECORD {
 const fn icon(offset: usize) -> usize {
     16 + offset - ICON_SPAN
 }
-const BATCH: usize = 32;
+/// Fixed-record gather width, also used for caller-owned batch certificates.
+pub const READ_BATCH: usize = 32;
+const BATCH: usize = READ_BATCH;
+
+/// Extension demand can bracket the existing fixed-record read. Country
+/// preparation precedes its roster header; batch preparation precedes every
+/// fixed field. Only then does selection receive the authenticated identity.
+pub trait DetailPolicy {
+    fn before_country(&mut self, _country: u32) {}
+    fn before_records(&mut self, _templates: &[usize]) {}
+    fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> bool;
+}
+impl<F: FnMut(u32, usize, u64, u32) -> bool> DetailPolicy for F {
+    fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> bool {
+        self(country, pointer, template, ordinal)
+    }
+}
 
 /// A tail field's place in a record.
 const fn tail(offset: usize) -> usize {
@@ -854,13 +954,16 @@ fn pointers(
 /// records first, to hint what the visits will read, and `visit` receives the
 /// owner's id, the template and its authenticated record. Hints read nothing,
 /// so a batch's cache misses overlap instead of following one another.
+#[allow(clippy::too_many_arguments)]
 fn visit_templates(
     memory: &impl Memory,
     base: usize,
     state: usize,
     layout: &RecordLayout<'_>,
+    mut country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
+    mut details: Option<&mut dyn DetailPolicy>,
     mut prepare: impl FnMut(&[u8], usize),
-    mut visit: impl FnMut(u32, usize, &[u8]) -> Result<(), &'static str>,
+    mut visit: impl FnMut(u32, usize, &[u8], bool, u32) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
     let vtable = base
@@ -875,6 +978,12 @@ fn visit_templates(
             continue;
         };
         found_country = true;
+        if let Some(details) = details.as_mut() {
+            details.before_country(country.id);
+        }
+        if let Some(visit) = country_visit.as_mut() {
+            visit(country);
+        }
         let root = country
             .pointer
             .checked_add(ccountry::DIVISION_TEMPLATES)
@@ -883,6 +992,9 @@ fn visit_templates(
         for first in (0..roster.count).step_by(BATCH) {
             let batch = ((roster.count - first) as usize).min(BATCH);
             pointers(memory, roster, first, &mut templates[..batch])?;
+            if let Some(details) = details.as_mut() {
+                details.before_records(&templates[..batch]);
+            }
             for &at in &templates[..batch] {
                 for field in layout.fields() {
                     memory.prefetch(at.wrapping_add(field.source_offset), field.len);
@@ -897,14 +1009,19 @@ fn visit_templates(
                 return Err("template fields unreadable");
             }
             prepare(&records[..batch * stride], stride);
-            for (&at, record) in templates[..batch]
+            for (index, (&at, record)) in templates[..batch]
                 .iter()
                 .zip(records[..batch * stride].chunks_exact(stride))
+                .enumerate()
             {
                 if word(record, 0) != vtable || word(record, 8) as u32 != REFERENCE_TYPE {
                     return Err("division template vtable or reference type mismatch");
                 }
-                visit(country.id, at, record)?;
+                let ordinal = first + index as u32;
+                let demanded = details
+                    .as_mut()
+                    .is_none_or(|details| details.demand(country.id, at, word(record, 8), ordinal));
+                visit(country.id, at, record, demanded, ordinal)?;
             }
         }
     }
@@ -985,8 +1102,10 @@ fn walk_inner(
         base,
         state,
         &DAILY_LAYOUT,
+        None,
+        None,
         |_, _| {},
-        |owner, at, record| {
+        |owner, at, record, _, _| {
             let name = Descriptor::from_header(
                 memory,
                 at.checked_add(NAME)
@@ -1130,6 +1249,8 @@ pub fn walk_icons(
         Buffer::Fixed(variants),
         slots,
         None,
+        None,
+        None,
     )
 }
 
@@ -1159,6 +1280,8 @@ pub fn walk_icons_with_names(
         Buffer::Fixed(variants),
         slots,
         Some(Buffer::Fixed(names)),
+        None,
+        None,
     )
 }
 
@@ -1185,6 +1308,92 @@ pub fn walk_icons_with_names_growing(
         Buffer::Growing(variants),
         slots,
         Some(Buffer::Growing(names)),
+        None,
+        None,
+    )
+}
+
+/// The named walk's same authenticated census, visiting countries even when
+/// their template roster is empty. The caller owns each additional field's
+/// failure domain and no second country census is performed.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_icons_with_countries_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    rows: &mut Vec<IconRow>,
+    bytes: &mut Vec<u8>,
+    counts: &mut Vec<SubunitCount>,
+    variants: &mut Vec<u64>,
+    slots: DefinitionSlots<'_>,
+    names: &mut Vec<u8>,
+    countries: &mut dyn FnMut(ccountry::Country),
+) -> IconWalk {
+    walk_icons_inner(
+        memory,
+        base,
+        state,
+        Buffer::Growing(rows),
+        Buffer::Growing(bytes),
+        Buffer::Growing(counts),
+        Buffer::Growing(variants),
+        slots,
+        Some(Buffer::Growing(names)),
+        Some(countries),
+        None,
+    )
+}
+
+/// The existing named/country census with extension demand selected per template.
+/// A false selection performs no extension prefix/tail or forbidden-type payload read.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_icons_with_selected_details_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    rows: &mut Vec<IconRow>,
+    bytes: &mut Vec<u8>,
+    counts: &mut Vec<SubunitCount>,
+    variants: &mut Vec<u64>,
+    slots: DefinitionSlots<'_>,
+    names: &mut Vec<u8>,
+    countries: &mut dyn FnMut(ccountry::Country),
+    details: &mut dyn DetailPolicy,
+) -> IconWalk {
+    walk_icons_inner(
+        memory,
+        base,
+        state,
+        Buffer::Growing(rows),
+        Buffer::Growing(bytes),
+        Buffer::Growing(counts),
+        Buffer::Growing(variants),
+        slots,
+        Some(Buffer::Growing(names)),
+        Some(countries),
+        Some(details),
+    )
+}
+
+/// Advisory capacity from the existing icon sources. Never reads extension
+/// prefix/tail bytes or forbidden-equipment payloads to size a future capture.
+pub fn icon_capacity(memory: &impl Memory, base: usize, state: usize) -> IconWalk {
+    walk_icons_inner(
+        memory,
+        base,
+        state,
+        Buffer::Fixed(&mut []),
+        Buffer::Fixed(&mut []),
+        Buffer::Fixed(&mut []),
+        Buffer::Fixed(&mut []),
+        DefinitionSlots {
+            database: &mut [],
+            globals: &mut [],
+            locals: &mut [],
+        },
+        None,
+        None,
+        Some(&mut |_: u32, _: usize, _: u64, _: u32| false),
     )
 }
 
@@ -1329,6 +1538,8 @@ fn walk_icons_inner(
     mut variants: Buffer<'_, u64>,
     slots: DefinitionSlots<'_>,
     mut display_bytes: Option<Buffer<'_, u8>>,
+    country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
+    detail_policy: Option<&mut dyn DetailPolicy>,
 ) -> IconWalk {
     let mut result = IconWalk {
         outcome: Outcome::Rows { len: 0 },
@@ -1374,8 +1585,35 @@ fn walk_icons_inner(
             Some(_) => &ICON_NAMED_LAYOUT,
             None => &ICON_LAYOUT,
         },
+        country_visit,
+        detail_policy,
         hint,
-        |country, at, record| {
+        |country, at, record, mut details_fresh, roster_ordinal| {
+            let mut details_failure = None;
+            let mut extension = [0_u8; ICON_NAMED_RECORD];
+            extension[..record.len()].copy_from_slice(record);
+            if details_fresh {
+                let mut dimensions = [0_u8; REGIMENT_DATA - GRID_DIMENSIONS];
+                let mut tail = [0_u8; ICON_SPAN_END - (UNIT_TYPE_OVERRIDE + 4)];
+                if memory.copy_scattered(
+                    [
+                        at.checked_add(GRID_DIMENSIONS)
+                            .ok_or("template dimensions address overflow")?,
+                        at.checked_add(UNIT_TYPE_OVERRIDE + 4)
+                            .ok_or("template settings address overflow")?,
+                    ],
+                    &mut [&mut dimensions, &mut tail],
+                ) != 2
+                {
+                    details_fresh = false;
+                    details_failure = Some("template extension operands unreadable");
+                } else {
+                    extension[icon(GRID_DIMENSIONS)..icon(REGIMENT_DATA)]
+                        .copy_from_slice(&dimensions);
+                    extension[icon(UNIT_TYPE_OVERRIDE + 4)..ICON_RECORD].copy_from_slice(&tail);
+                }
+            }
+            let record = &extension[..record.len()];
             if owner != Some(country) {
                 owner = Some(country);
                 memo.begin_country();
@@ -1437,7 +1675,13 @@ fn walk_icons_inner(
                 result.required_counts = result
                     .required_counts
                     .checked_add(grouped.count as usize)
-                    .and_then(|required| required.checked_add(cells))
+                    .and_then(|required| {
+                        required.checked_add(cells.checked_mul(if details_fresh {
+                            2
+                        } else {
+                            1
+                        })?)
+                    })
                     .ok_or("template grouped arena overflow")?;
                 result.required_variants = result
                     .required_variants
@@ -1451,6 +1695,23 @@ fn walk_icons_inner(
                     model_entity,
                 })
             })();
+            let forbidden = if details_fresh {
+                Array::from_header(
+                    record[icon(FORBIDDEN_EQUIPMENT)..icon(FORBIDDEN_EQUIPMENT) + 16]
+                        .try_into()
+                        .unwrap(),
+                    8,
+                )
+                .ok_or("template forbidden equipment invalid")
+            } else {
+                Ok(Array::default())
+            };
+            if let Ok(array) = forbidden {
+                result.required_variants = result
+                    .required_variants
+                    .checked_add(array.count as usize)
+                    .ok_or("template variant arena overflow")?;
+            }
             let name_len = selected_name.as_ref().map_or(0, |name| name.len);
             result.required_bytes = result
                 .required_bytes
@@ -1470,6 +1731,8 @@ fn walk_icons_inner(
             }
             let row_start = (result.bytes_len, result.counts_len, result.variants_len);
             let mut row = IconRow {
+                manpower_exile: dword(record, icon(ORIGIN_TYPE))
+                    == crate::carmy_combat_inputs::EXILE_ORIGIN,
                 template: word(record, 8),
                 pointer: at,
                 owner: country,
@@ -1483,6 +1746,35 @@ fn walk_icons_inner(
                 custom_icon: dword(record, icon(CUSTOM_ICON)),
                 custom_icon_nato: record[icon(CUSTOM_ICON_NATO)],
                 formation_division_count: Some(dword(record, icon(FORMATION_DIVISION_COUNT))),
+                grid_dimensions: GRIDS.map(|grid| dword(record, icon(grid - 8)) as u32),
+                details_fresh,
+                details_failure,
+                settings: Settings {
+                    roster_ordinal,
+                    priority: dword(record, icon(PRIORITY)),
+                    is_army_hq: record[icon(IS_ARMY_HQ)],
+                    locked: record[icon(LOCKED)],
+                    obsolete: record[icon(OBSOLETE_FLAGS)],
+                    obsolete_change_date: dword(record, icon(OBSOLETE_CHANGE_DATE)),
+                    force_allow_recruiting: record[icon(FORCE_ALLOW_RECRUITING)],
+                    allow_new_equipment: record[icon(ALLOW_NEW_EQUIPMENT)],
+                    allow_foreign_equipment: record[icon(ALLOW_FOREIGN_EQUIPMENT)],
+                    parent: word(record, icon(PARENT)),
+                    creator_country: dword(record, icon(CREATOR_COUNTRY)),
+                    origin_type: dword(record, icon(ORIGIN_TYPE)),
+                    fake_intel: record[icon(FAKE_INTEL)],
+                    division_cap: (record[icon(DIVISION_CAP_PRESENT)] != 0)
+                        .then(|| dword(record, icon(DIVISION_CAP))),
+                    equipment_niche: record[icon(EQUIPMENT_NICHE)],
+                    role: (record[icon(ROLE_PRESENT)] != 0)
+                        .then(|| dword(record, icon(ROLE)) as u32),
+                    ai_role: (record[icon(AI_ROLE_PRESENT)] != 0)
+                        .then(|| dword(record, icon(AI_ROLE)) as u32),
+                    ai_role_fallback: dword(record, icon(AI_ROLE_FALLBACK)) as u32,
+                    total_manpower: dword(record, icon(TOTAL_MANPOWER)),
+                    command_power_cost: word(record, icon(COMMAND_POWER_COST)) as i64,
+                    training_time: dword(record, icon(TRAINING_TIME)),
+                },
                 // Read with the authenticated record, so they cannot fail.
                 country: dword(record, icon(COUNTRY_OPERAND_289A)),
                 foreign_country: dword(record, icon(COUNTRY_OPERAND_3ABE)),
@@ -1513,7 +1805,9 @@ fn walk_icons_inner(
                 let counts_end = result
                     .counts_len
                     .checked_add(grouped.count as usize)
-                    .and_then(|end| end.checked_add(cells))
+                    .and_then(|end| {
+                        end.checked_add(cells.checked_mul(if details_fresh { 2 } else { 1 })?)
+                    })
                     .ok_or("template grouped arena overflow")?;
                 let variants_end = result
                     .variants_len
@@ -1562,8 +1856,10 @@ fn walk_icons_inner(
                 }
                 // Each grid's definitions, counted once per occupied cell.
                 let cell_bytes = &mut cell_scratch;
-                for (span, grid) in row.grids.iter_mut().zip(grids) {
+                for (grid_index, (span, grid)) in row.grids.iter_mut().zip(grids).enumerate() {
                     let start = result.counts_len;
+                    let cell_start = start + grid.count as usize;
+                    let mut cell_index = 0;
                     for first in (0..grid.count).step_by(BATCH) {
                         let len = ((grid.count - first) as usize).min(BATCH) * 8;
                         let at = grid
@@ -1577,9 +1873,17 @@ fn walk_icons_inner(
                                 usize::try_from(u64::from_le_bytes(cell.try_into().unwrap()))
                                     .map_err(|_| "template grid cell pointer invalid")?;
                             if cell == 0 {
+                                if details_fresh {
+                                    counts[cell_start + cell_index] = SubunitCount::default();
+                                }
+                                cell_index += 1;
                                 continue;
                             }
                             let unit = memo.identify(memory, base, cell)?;
+                            if details_fresh {
+                                counts[cell_start + cell_index] = SubunitCount { count: 1, ..unit };
+                            }
+                            cell_index += 1;
                             let end = result.counts_len;
                             match counts[start..end].iter_mut().find(|entry| {
                                 (entry.token, entry.local) == (unit.token, unit.local)
@@ -1601,6 +1905,16 @@ fn walk_icons_inner(
                         start,
                         len: result.counts_len - start,
                     };
+                    if details_fresh {
+                        let cell_end = cell_start + grid.count as usize;
+                        let spatial_start = result.counts_len;
+                        counts.copy_within(cell_start..cell_end, spatial_start);
+                        row.cells[grid_index] = Span {
+                            start: spatial_start,
+                            len: grid.count as usize,
+                        };
+                        result.counts_len = spatial_start + grid.count as usize;
+                    }
                 }
                 row.excluded_variants = Span {
                     start: result.variants_len,
@@ -1634,6 +1948,7 @@ fn walk_icons_inner(
                     (result.bytes_len, result.counts_len, result.variants_len) =
                         (name_end, row_start.1, row_start.2);
                     row = IconRow {
+                        manpower_exile: row.manpower_exile,
                         template: row.template,
                         pointer: row.pointer,
                         owner: row.owner,
@@ -1644,6 +1959,10 @@ fn walk_icons_inner(
                         custom_icon: row.custom_icon,
                         custom_icon_nato: row.custom_icon_nato,
                         formation_division_count: row.formation_division_count,
+                        grid_dimensions: row.grid_dimensions,
+                        details_fresh: row.details_fresh,
+                        details_failure: row.details_failure,
+                        settings: row.settings,
                         country: row.country,
                         foreign_country: row.foreign_country,
                         model_category: row.model_category,
@@ -1666,6 +1985,87 @@ fn walk_icons_inner(
                         model_failure: Some(reason),
                         ..IconRow::default()
                     };
+                }
+            }
+            let equipment_start = result.variants_len;
+            let equipment = (|| -> Result<Span, &'static str> {
+                let forbidden = forbidden?;
+                let end = equipment_start
+                    .checked_add(forbidden.count as usize)
+                    .ok_or("template variant arena overflow")?;
+                if !variants.ensure(end)? {
+                    return Err("template forbidden equipment arena shortage");
+                }
+                let span = Span {
+                    start: result.variants_len,
+                    len: forbidden.count as usize,
+                };
+                let excluded = &mut excluded_scratch;
+                for first in (0..forbidden.count).step_by(BATCH) {
+                    let batch = ((forbidden.count - first) as usize).min(BATCH);
+                    pointers(memory, forbidden, first, &mut excluded[..batch])?;
+                    for &definition in &excluded[..batch] {
+                        let identity = read::<[u8; 12]>(memory, definition)
+                            .ok_or("template forbidden equipment unreadable")?;
+                        let vtable = word(&identity, 0);
+                        if vtable != (base + crate::cequipment_type::VTABLE_RVA) as u64
+                            && vtable != (base + crate::cequipment_type::NULL_VTABLE_RVA) as u64
+                        {
+                            return Err("template forbidden equipment identity mismatch");
+                        }
+                        variants[result.variants_len] = dword(&identity, 8) as u32 as u64;
+                        result.variants_len += 1;
+                    }
+                }
+                Ok(span)
+            })();
+            match equipment {
+                Ok(span) => row.forbidden_equipment = span,
+                Err(reason) => {
+                    result.variants_len = equipment_start;
+                    row.equipment_failure = Some(reason);
+                }
+            }
+            if details_fresh {
+                let start = result.bytes_len;
+                let group = (|| -> Result<Option<Span>, &'static str> {
+                    let pointer =
+                        word(record, icon(crate::cname_group_member::TEMPLATE_NAME_GROUP)) as usize;
+                    if pointer == 0 {
+                        return Ok(None);
+                    }
+                    let header = read::<[u8; 40]>(memory, pointer)
+                        .ok_or("template naming group unreadable")?;
+                    if word(&header, 0)
+                        != (base + crate::cname_group_member::GROUP_VTABLE_RVA) as u64
+                    {
+                        return Err("template naming group identity mismatch");
+                    }
+                    let key = Descriptor::from_header(
+                        memory,
+                        pointer
+                            .checked_add(crate::cname_group_member::GROUP_KEY)
+                            .ok_or("template naming group address overflow")?,
+                        header[8..40].try_into().unwrap(),
+                    )?;
+                    result.required_bytes = result
+                        .required_bytes
+                        .checked_add(key.len)
+                        .ok_or("template naming group arena overflow")?;
+                    key.copy_buffer(memory, &mut bytes, start)?;
+                    result.bytes_len += key.len;
+                    Ok(Some(Span {
+                        start,
+                        len: key.len,
+                    }))
+                })();
+                match group {
+                    Ok(group) => row.names_group = group,
+                    Err(reason) => {
+                        result.bytes_len = start;
+                        row.details_fresh = false;
+                        row.details_failure = Some(reason);
+                    }
                 }
             }
             if let Some(names) = display_bytes.as_mut() {

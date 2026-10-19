@@ -263,7 +263,7 @@ mod tests {
                 }
                 match step {
                     2 => rows[0].tag = b"mod new tag".to_vec(),
-                    3 => rows[0].canonical_slot = 999,
+                    3 => rows[0].canonical_slot = count,
                     4 => {
                         rows.pop();
                     }

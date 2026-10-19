@@ -476,11 +476,20 @@ pub fn project(
     nodes: &[RawNode],
     text: &[u8],
 ) -> Result<Vec<rows::NavalModifierKeyTree>, &'static str> {
+    project_keys(nodes, text, &KEYS)
+}
+
+/// The same preorder pruning for a narrowly demanded sorted key set.
+pub fn project_keys<const N: usize>(
+    nodes: &[RawNode<N>],
+    text: &[u8],
+    keys: &[u32; N],
+) -> Result<Vec<rows::NavalModifierKeyTree>, &'static str> {
     let Some(root) = nodes.first() else {
         return Err("naval modifier root has no nodes");
     };
     let mut trees = Vec::new();
-    for (lane, &key) in KEYS.iter().enumerate() {
+    for (lane, &key) in keys.iter().enumerate() {
         let mut projected = Vec::new();
         let mut cursor = 0;
         copy_visible(nodes, text, &mut cursor, lane, true, &mut projected)?;
@@ -506,8 +515,8 @@ pub fn project(
     Ok(trees)
 }
 
-fn copy_visible(
-    nodes: &[RawNode],
+fn copy_visible<const N: usize>(
+    nodes: &[RawNode<N>],
     text: &[u8],
     cursor: &mut usize,
     lane: usize,
@@ -552,6 +561,33 @@ fn copy_visible(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn singleton_projection_keeps_only_printable_escort_sources() {
+        let key = engine_executable::modifier_keys::CONVOY_ESCORT_EFFICIENCY;
+        let nodes = [
+            RawNode::<1> {
+                children: 2,
+                values: [25_000],
+                ..Default::default()
+            },
+            RawNode {
+                name: [0, 4],
+                values: [25_000],
+                ..Default::default()
+            },
+            RawNode {
+                name: [usize::MAX, usize::MAX],
+                ..Default::default()
+            },
+        ];
+        let projected = project_keys(&nodes, b"Idea", &[key]).unwrap();
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].key, key);
+        assert_eq!(projected[0].nodes.len(), 2);
+        assert_eq!(projected[0].nodes[0].children, 1);
+        assert_eq!(projected[0].nodes[1].name, b"Idea");
+    }
 
     fn lane(key: u32) -> usize {
         KEYS.iter().position(|&candidate| candidate == key).unwrap()

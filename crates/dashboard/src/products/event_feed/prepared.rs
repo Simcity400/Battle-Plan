@@ -8,7 +8,7 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 
-pub(crate) const FACT_KEYS: [u64; 22] = [
+pub(crate) const FACT_KEYS: [u64; 56] = [
     1,
     2,
     3,
@@ -20,6 +20,23 @@ pub(crate) const FACT_KEYS: [u64; 22] = [
     11,
     15,
     22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
     (1 << 63) | 1,
     (1 << 63) | 2,
     (1 << 63) | 3,
@@ -31,12 +48,31 @@ pub(crate) const FACT_KEYS: [u64; 22] = [
     (1 << 63) | 11,
     (1 << 63) | 15,
     (1 << 63) | 22,
+    (1 << 63) | 23,
+    (1 << 63) | 24,
+    (1 << 63) | 25,
+    (1 << 63) | 26,
+    (1 << 63) | 27,
+    (1 << 63) | 28,
+    (1 << 63) | 29,
+    (1 << 63) | 30,
+    (1 << 63) | 31,
+    (1 << 63) | 32,
+    (1 << 63) | 33,
+    (1 << 63) | 34,
+    (1 << 63) | 35,
+    (1 << 63) | 36,
+    (1 << 63) | 37,
+    (1 << 63) | 38,
+    (1 << 63) | 39,
 ];
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Fact {
     pub row: EventFeedRow,
     pub nuke_type: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script: Option<script_effects::Inputs>,
 }
 
 pub(crate) mod query;
@@ -196,6 +232,15 @@ impl Observer {
                 key,
                 row.read_hour,
                 &Fact {
+                    script: self
+                        .diagnostics
+                        .script_inputs
+                        .remove(&row.id)
+                        .map(|mut inputs| {
+                            inputs
+                                .resolve(|country| identities.native_scope_slot(row.hour, country));
+                            inputs
+                        }),
                     row,
                     nuke_type: None,
                 },
@@ -240,6 +285,7 @@ impl Observer {
                 &Fact {
                     row,
                     nuke_type: None,
+                    script: None,
                 },
             )?;
         }
@@ -263,6 +309,7 @@ impl Observer {
                 strikes.push(Fact {
                     row,
                     nuke_type: Some(strike.nuke_type),
+                    script: None,
                 });
             }
         }

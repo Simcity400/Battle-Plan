@@ -11,6 +11,59 @@ use replay_data::{
 };
 use replay_frame::frame::TableView;
 
+#[test]
+fn design_discount_oracle_compares_every_record_and_refuses_missing_demanded_owners() {
+    let saved = production::parse(
+        &parser::parse(
+            br#"countries={GER={production={discount={
+        {uses=-1 discount=1.23457 types={synthetic synthetic}}
+    }}}}"#,
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let country = CountryRow {
+        id: 5_000,
+        tag: b"GER".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(5_000, &country)]);
+    let tokens = BTreeMap::from([(9, b"synthetic".as_slice())]);
+    let mut frame = output_frame(7, false, &[], &[]);
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: 70,
+            creator_link: 5_000,
+            ..Default::default()
+        }]));
+    let mut row = replay_data::rows::DesignCountryTemplatesRow {
+        country: 5_000,
+        uses: vec![-1],
+        factors: vec![123_457],
+        equipment: vec![vec![9, 9]],
+        failure: 0,
+    };
+    let mut run = |row| {
+        *frame.tables[TableId::DesignCountryTemplates.index()] =
+            TableView::Complete(TableRows::DesignCountryTemplates(row));
+        let mut report = Report::default();
+        compare_design_templates(&frame, &saved, &links, &tokens, &mut report).map(|()| report)
+    };
+    assert!(run(vec![row.clone()]).unwrap().differences.is_empty());
+    row.uses[0] = 0;
+    assert_eq!(run(vec![row.clone()]).unwrap().differences.len(), 1);
+    row.uses[0] = -1;
+    row.equipment[0].pop();
+    assert_eq!(run(vec![row]).unwrap().differences.len(), 1);
+    assert!(
+        run(vec![])
+            .unwrap_err()
+            .to_string()
+            .contains("demanded country absent")
+    );
+}
+
 /// A frame of the line output self-check: whether it read the lines'
 /// slot, its ProductionLineOutput rows `(line, variant, organisation, units)`
 /// with their census lines, and its history slots.
@@ -66,6 +119,7 @@ fn output_frame(
                         organisation,
                         variant,
                         units,
+                        design_hour: None,
                     },
                 )
                 .collect(),
@@ -341,6 +395,12 @@ fn organisations_compare_order_key_texts_owner_and_history_units() {
             organisation: organisation(5),
             variant,
             units,
+            design_hour: Some(
+                installed_content_save::GameDate::parse(b"1936.1.1.12")
+                    .unwrap()
+                    .engine_hour()
+                    .unwrap(),
+            ),
         }]
     };
     *frame.tables[TableId::IndustrialOrganisations.index()] =
@@ -381,6 +441,7 @@ fn organisations_compare_order_key_texts_owner_and_history_units() {
         organisation: organisation(6),
         variant,
         units: 1,
+        design_hour: None,
     });
     *frame.tables[TableId::IndustrialOrganisations.index()] =
         TableView::Complete(TableRows::IndustrialOrganisations(changed));
@@ -1676,8 +1737,13 @@ fn variant_version_oracle_matches_raw_byte_zero_omission_and_old_absence() {
     let links = BTreeMap::from([(1, &country)]);
     let tokens = TokenNames::from([(17, b"synthetic".as_slice())]);
     let run = |version, saved_version: &str| {
+        let ceiling = if version == Recorded::Value(0) {
+            "max_version=0"
+        } else {
+            ""
+        };
         let source = format!(
-            "equipments={{synthetic={{id={{id=1 type=70}} creator=SYN origin=SYN {saved_version}}}}}"
+            "equipments={{synthetic={{id={{id=1 type=70}} creator=SYN origin=SYN is_frame=no {ceiling} {saved_version}}}}}"
         );
         let saved = production::parse(&parser::parse(source.as_bytes()).unwrap().items).unwrap();
         let mut frame = output_frame(22, false, &[], &[]);
@@ -1720,9 +1786,126 @@ fn variant_version_oracle_matches_raw_byte_zero_omission_and_old_absence() {
 }
 
 #[test]
+fn variant_design_oracle_compares_saved_state_and_reference_admission_without_waivers() {
+    let variant = (1_u64 << 32) | 70;
+    let country = CountryRow {
+        id: 1,
+        tag: b"SYN".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(1, &country)]);
+    let tokens = TokenNames::from([
+        (17, b"synthetic".as_slice()),
+        (18, b"MixedCaseCompany".as_slice()),
+        (19, b"soft_attack".as_slice()),
+    ]);
+    let team = (5_u64 << 32) | 313;
+    for live in [false, true] {
+        let source = format!(
+            "equipments={{synthetic={{id={{id=1 type=70}} creator=SYN origin=SYN max_version=7 is_frame=yes parent_id={{id=2 type=70}} auto_upgraded=yes highlight=yes can_upgrade_type=yes can_upgrade_variant=yes can_upgrade_modules=yes manpower=9 role_icon_index=8 division_names_group=synthetic_group named_equipment_bonuses={{9}} ideas={{MixedCaseCompany}} design_team_bonus={{soft_attack=0.1}} number_of_design_team_traits=3 {}}}}}",
+            if live {
+                "design_team={id=5 type=313}"
+            } else {
+                ""
+            }
+        );
+        let saved = production::parse(&parser::parse(source.as_bytes()).unwrap().items).unwrap();
+        let mut frame = output_frame(22, false, &[], &[]);
+        let bonus = replay_data::rows::VariantBonusSource {
+            idea: Some(b"mixedcasecompany".to_vec()),
+            idea_token: Some(18),
+            ..Default::default()
+        };
+        let bonus_id = replay_data::rows::variant_bonus_snapshot_id(&bonus);
+        *frame.tables[TableId::VariantBonusSnapshots.index()] =
+            TableView::Complete(TableRows::VariantBonusSnapshots(vec![
+                replay_data::rows::VariantBonusSnapshotRow {
+                    id: bonus_id,
+                    source: bonus,
+                },
+            ]));
+        *frame.tables[TableId::VariantDefinitions.index()] =
+            TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+                id: variant,
+                equipment_token: 17,
+                creator_link: 1,
+                origin_link: 1,
+                append_variant_name: 1,
+                version: Recorded::Value(0),
+                design: Recorded::Value(replay_data::rows::VariantDesignState {
+                    parent: Some((2_u64 << 32) | 70),
+                    max_version: 7,
+                    is_frame: 255,
+                    auto_upgraded: 128,
+                    highlight: 128,
+                    can_upgrade_type: 1,
+                    can_upgrade_variant: 1,
+                    can_upgrade_modules: 1,
+                    manpower: 9,
+                    role_icon_index: 8,
+                    division_names_group: Some(b"synthetic_group\0trailing".to_vec()),
+                    named_bonuses: vec![9],
+                    unresolved_stats: (0..78)
+                        .filter(|index| {
+                            ![0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d]
+                                .contains(index)
+                        })
+                        .map(|index| replay_data::rows::VariantStatEntry { index, value: 0 })
+                        .collect(),
+                    bonus_sources: vec![bonus_id, bonus_id],
+                    design_team: team,
+                    design_team_serialized: live,
+                    design_team_traits: 3,
+                    design_team_bonus: vec![replay_data::rows::VariantStatEntry {
+                        index: 19,
+                        value: 10_000,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::DesignOrganisationLiveness.index()] =
+            TableView::Complete(TableRows::DesignOrganisationLiveness(vec![
+                replay_data::rows::DesignOrganisationLivenessRow {
+                    organisation: team,
+                    live,
+                },
+            ]));
+        *frame.tables[TableId::VariantStats.index()] =
+            TableView::Complete(TableRows::VariantStats(vec![VariantStatsRow {
+                variant,
+                organisation: team,
+                organisation_trait_count: 3,
+                organisation_bonuses: vec![replay_data::rows::IndustrialOrganisationBonus {
+                    key: 19,
+                    value_raw: 10_000,
+                }],
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        compare_variants(&frame, &saved, &links, &tokens, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+            &mut *frame.tables[TableId::VariantDefinitions.index()]
+        else {
+            unreachable!()
+        };
+        rows[0]
+            .design
+            .require_mut("design")
+            .unwrap()
+            .can_upgrade_modules = 0;
+        let mut report = Report::default();
+        compare_variants(&frame, &saved, &links, &tokens, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("can_upgrade_modules"));
+    }
+}
+
+#[test]
 fn typed_variants_keep_independent_checks_when_lexical_tokens_are_unavailable() {
     let source = br#"equipments={plane={id={id=4294967295 type=70}
-        name="A" position="II" creator=GER origin=GER
+        name="A" position="II" creator=GER origin=GER is_frame=no max_version=0
         modules={slot=module} upgrades={upgrades={{engine 255}}}}}
     "#;
     let saved = production::parse(&parser::parse(source).unwrap().items).unwrap();
@@ -1777,6 +1960,7 @@ fn typed_variants_keep_independent_checks_when_lexical_tokens_are_unavailable() 
         TableView::Complete(TableRows::VariantStats(vec![VariantStatsRow {
             variant,
             values: [i64::MIN; 10],
+            ..Default::default()
         }]));
     *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
         reason: "lexical writer closure unproved".into(),
@@ -2153,4 +2337,111 @@ fn staggered_off_hours_skips_variants_and_prints_refresh_hour() {
         "{:?}",
         report.limitations.keys()
     );
+}
+
+#[test]
+fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store_changes() {
+    use replay_data::rows::{
+        IndustrialOrganisationDetailsRow, IndustrialOrganisationPoliciesRow,
+        IndustrialOrganisationPolicy, IndustrialOrganisationVariable,
+    };
+    let source = br#"countries={ SYN={ production={
+        policies={ policy_a={ cost=17 cooldown=29 } }
+        industrial_organisations={ synthetic={ id={ id=5 type=79 } name="" icon=""
+            research_bonus=0.00001 funds=12.34567 research_assign_cost=0.00002
+            production_assign_cost=0.00003 add_mio_funds_gain_factor=0.00004
+            task_capacity=9 size=6 points=2 design_team_change_cost=7 upgrades=yes
+            unlocked={ trait=trait_a } queued_trait={ trait=trait_b } queued_trait={ trait=trait_a }
+            queued_trait={ trait=trait_b } allowed_policies={ policy_a policy_a }
+            policy=policy_a cooldown=1936.1.2.1
+            variables={ random=0.00009 scalar=0.00008 }
+            flags={ flag_a={ value=-2 date=1936.1.1.1 days=3 } }
+        } }
+    } } }"#;
+    let saved = production::parse(&parser::parse(source).unwrap().items).unwrap();
+    let date = |s: &[u8]| {
+        installed_content_save::GameDate::parse(s)
+            .unwrap()
+            .engine_hour()
+            .unwrap()
+    };
+    let mut frame = output_frame(8, false, &[], &[]);
+    let mut row = IndustrialOrganisationDetailsRow {
+        organisation: (5_u64 << 32) | 79,
+        country: 11,
+        ..Default::default()
+    };
+    row.state.research_bonus_raw = 1;
+    row.state.funds_raw = 1_234_567;
+    row.state.research_assign_cost_raw = 2;
+    row.state.production_assign_cost_raw = 3;
+    row.state.funds_gain_factor_raw = 4;
+    row.state.task_capacity = 9;
+    row.state.size = 6;
+    row.state.points = 2;
+    row.state.design_team_change_cost = 7;
+    row.state.upgrades = 1;
+    row.state.policy = 3;
+    row.state.cooldown_hour = Some(date(b"1936.1.2.1"));
+    row.unlocked = vec![1];
+    row.queued = vec![2, 1, 2];
+    row.allowed_policies = vec![3, 3];
+    row.variables.seed = Some(1);
+    row.variables.entries = vec![
+        IndustrialOrganisationVariable {
+            name: b"random".to_vec(),
+            value_raw: 9,
+        },
+        IndustrialOrganisationVariable {
+            name: b"scalar\0suffix".to_vec(),
+            value_raw: 8,
+        },
+    ];
+    row.flags = vec![engine_scripts::cscript_flag::Row {
+        token: 4,
+        value: -2,
+        set_hour: date(b"1936.1.1.1"),
+        remaining_days: 3,
+    }];
+    *frame.tables[TableId::IndustrialOrganisationDetails.index()] =
+        TableView::Complete(TableRows::IndustrialOrganisationDetails(vec![row.clone()]));
+    *frame.tables[TableId::IndustrialOrganisationPolicies.index()] =
+        TableView::Complete(TableRows::IndustrialOrganisationPolicies(vec![
+            IndustrialOrganisationPoliciesRow {
+                country: 11,
+                policies: vec![IndustrialOrganisationPolicy {
+                    token: 3,
+                    cost: 17,
+                    days: 29,
+                    ..Default::default()
+                }],
+            },
+        ]));
+    let country = CountryRow {
+        id: 11,
+        tag: b"SYN".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(11, &country)]);
+    let tokens: TokenNames<'_> = BTreeMap::from([
+        (1, b"trait_a".as_slice()),
+        (2, b"trait_b".as_slice()),
+        (3, b"policy_a".as_slice()),
+        (4, b"flag_a".as_slice()),
+    ]);
+    let mut report = Report::default();
+    mios::compare(&frame, &saved, &links, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["IndustrialOrganisationDetails"], 1);
+    row.queued.reverse();
+    row.queued.pop();
+    row.state.points += 1;
+    row.state.policy = 0x4c17;
+    row.variables.entries[0].value_raw += 1;
+    row.flags[0].remaining_days -= 1;
+    *frame.tables[TableId::IndustrialOrganisationDetails.index()] =
+        TableView::Complete(TableRows::IndustrialOrganisationDetails(vec![row]));
+    let mut report = Report::default();
+    mios::compare(&frame, &saved, &links, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 5, "{:?}", report.differences);
 }

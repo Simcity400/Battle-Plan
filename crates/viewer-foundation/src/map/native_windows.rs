@@ -14,6 +14,9 @@ pub const TINY_UNIT_COUNTER_WINDOW: &str = "GFX_mapicon_tiny_unit_counter";
 pub const NAVAL_BASE_WINDOW: &str = "naval_base_mapicon";
 pub const NAVAL_RESULT_WINDOW: &str = "naval_combat_results_mapicon";
 pub const AIR_BASE_WINDOW: &str = "air_base_mapicon";
+pub const AIR_WING_WINDOW: &str = "air_wing_counter";
+pub const AIR_MISSION_WINDOW: &str = "air_mission_mapicon";
+pub const AIR_MISSION_ENTRY_WINDOW: &str = "air_mission_mapicon_entry";
 pub const ROCKET_SITE_WINDOW: &str = "rocket_site_mapicon";
 pub const GUN_EMPLACEMENT_WINDOW: &str = "gun_emplacement_mapicon";
 pub const RADAR_WINDOW: &str = "radar_mapicon";
@@ -35,6 +38,8 @@ pub const ADJACENCY_RULE_WINDOW: &str = "adjacency_rule_mapicon";
 /// A state's resource icon and the window of each of its rows.
 pub const RESOURCE_WINDOW: &str = "resource_mapicon";
 pub const RESOURCE_ITEM_WINDOW: &str = "resource_mapicon_item";
+pub const OCCUPATION_WINDOW: &str = "resistance_compliance_map_icon";
+pub const OCCUPATION_ITEM_WINDOW: &str = "resistance_compliance_map_icon_modifier_entry";
 
 /// Native templates read once per GUI viewport and retained for every window consumer.
 pub struct WindowCache {
@@ -207,6 +212,9 @@ impl NativeWindows {
             FACTION_PING_WINDOW.as_bytes(),
             RAID_WINDOW.as_bytes(),
             AIR_BASE_WINDOW.as_bytes(),
+            AIR_WING_WINDOW.as_bytes(),
+            AIR_MISSION_WINDOW.as_bytes(),
+            AIR_MISSION_ENTRY_WINDOW.as_bytes(),
             ROCKET_SITE_WINDOW.as_bytes(),
             GUN_EMPLACEMENT_WINDOW.as_bytes(),
             RADAR_WINDOW.as_bytes(),
@@ -222,6 +230,8 @@ impl NativeWindows {
             ADJACENCY_RULE_WINDOW.as_bytes(),
             RESOURCE_WINDOW.as_bytes(),
             RESOURCE_ITEM_WINDOW.as_bytes(),
+            OCCUPATION_WINDOW.as_bytes(),
+            OCCUPATION_ITEM_WINDOW.as_bytes(),
             native_gui::text_sprites::TOOLTIP,
             b"defaultTextBox",
         ] {

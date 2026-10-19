@@ -8377,3 +8377,49 @@ fn icon_pool_sizes_keep_every_added_family() {
         [0xC0, 0x20, 0x80, 0x80, 0x40, 0x40]
     );
 }
+
+#[test]
+fn normalized_progress_keeps_large_step_rounding_without_an_integer_reclamp() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut resources = fixture();
+    let steps = 16_777_215;
+    let bar = resources.sprites.get_mut("GFX_bar").unwrap();
+    let SpriteKind::Progress { steps: limit, .. } = &mut bar.kind else {
+        panic!("progress fixture");
+    };
+    *limit = steps;
+    let document = gui("iconType={name=p spriteType=GFX_bar}");
+    let root = document.template("w").unwrap();
+    let element = root.find(Kind::Icon, "p").unwrap();
+    let raw = normalized_progress_value(1.0, steps);
+    assert_eq!(raw, 16_777_216);
+    let state = |instance: &Instance| {
+        let laid = instance.layout(root, &resources, None).unwrap().unwrap();
+        let PartKind::Progress { state, .. } = laid.parts[0].kind else {
+            panic!("progress draw");
+        };
+        state
+    };
+    let mut instance = Instance::construct(root, [800, 600], &resources).unwrap();
+    instance.gui_show(root, root).unwrap();
+    instance
+        .set_progress_float_value(root, element, raw)
+        .unwrap();
+    assert!(state(&instance) > 1.0);
+    instance.set_frame(root, element, raw).unwrap();
+    assert_eq!(state(&instance), 1.0);
+    instance
+        .set_progress_float_value(root, element, normalized_progress_value(-1.0, steps))
+        .unwrap();
+    assert_eq!(state(&instance), 0.0);
+}
+
+#[test]
+fn normalized_progress_uses_double_scaling_and_native_float_half_rounding() {
+    assert_eq!(normalized_progress_value(0.125, 12), 2);
+    assert_eq!(normalized_progress_value(-1.0, 12), 0);
+    assert_eq!(normalized_progress_value(2.0, 12), 12);
+    assert_eq!(normalized_progress_value(0.125, -12), -2);
+    assert_eq!(normalized_progress_value(1.0, i32::MAX), i32::MIN);
+}

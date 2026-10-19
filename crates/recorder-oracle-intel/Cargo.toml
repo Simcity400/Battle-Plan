@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-intelligence.workspace = true
 engine-native.workspace = true
 installed-content-core.workspace = true
 replay-data.workspace = true

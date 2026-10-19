@@ -417,12 +417,15 @@ impl<'a> Hour<'a> {
             return Ok(false);
         }
         for definition in &self.definitions {
-            let operands = self.resources.operands(
-                state,
-                definition.token,
-                Some(controlled.slot),
-                &self.joins(),
-            )?;
+            let operands = self
+                .resources
+                .operands(
+                    state,
+                    definition.token,
+                    Some(controlled.slot),
+                    &self.joins(),
+                )
+                .map_err(|why| why.to_string())?;
             if operands.grants > 0 {
                 return Ok(true);
             }
@@ -472,9 +475,10 @@ impl<'a> Hour<'a> {
         let controlled = self.controlled(state)?;
         let found = &self.definitions[definition];
         let (origin, holder) = self.origin_for(state, found, &controlled)?;
-        let state_operands =
-            self.resources
-                .operands(state, found.token, Some(controlled.slot), &self.joins())?;
+        let state_operands = self
+            .resources
+            .operands(state, found.token, Some(controlled.slot), &self.joins())
+            .map_err(|why| why.to_string())?;
         let input = self
             .inputs
             .get(&state)

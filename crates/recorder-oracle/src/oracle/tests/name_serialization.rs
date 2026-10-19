@@ -120,6 +120,9 @@ fn air_wing_names_compare_first_nul_and_require_emitted_empty_presence() {
     saved.air_wings.insert(
         wing,
         save::AirWing {
+            government_in_exile_tag: None,
+            manpower: None,
+            reinforcement_setting: Some(0),
             id: wing,
             name: Some(b"A".to_vec()),
             owner: b"GER".to_vec(),
@@ -129,7 +132,10 @@ fn air_wing_names_compare_first_nul_and_require_emitted_empty_presence() {
             mission_mask: 0,
             mission_region: None,
             mission_active: None,
+            stop_training_at_max_xp: false,
             region_change_penalty: None,
+            transfer_progress: None,
+            transferring_to: None,
             pool_ordinal: 0,
         },
     );
@@ -169,6 +175,8 @@ fn air_wing_names_compare_first_nul_and_require_emitted_empty_presence() {
         saved.air_wings.get_mut(&wing).unwrap().name = expected;
         *frame.tables[TableId::AirWings.index()] =
             TableView::Complete(TableRows::AirWings(vec![replay_data::rows::AirWingRow {
+                exile_country: Some(0).into(),
+                replacement_setting: replay_data::rows::Recorded::Value(Some(0)),
                 id: wing,
                 name: stored,
                 owner: 101,

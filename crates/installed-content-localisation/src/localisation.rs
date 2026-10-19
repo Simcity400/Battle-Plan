@@ -147,10 +147,35 @@ impl Localisation {
     /// first NUL; an empty key produces empty text. Other keys share one
     /// 0x1800-byte output buffer, starting at depth 0. Missing top-level keys
     /// copy their own bytes, which need not be UTF-8; text layout decodes the
-    /// bytes it draws.
-    pub fn localise_bytes(&self, key: &[u8], arguments: &[(&str, Argument<'_>)]) -> Vec<u8> {
+    /// bytes it draws. A Float32 precision without a native format refuses
+    /// the result, including when the surrounding output would be text.
+    pub fn localise_bytes(
+        &self,
+        key: &[u8],
+        arguments: &[(&str, Argument<'_>)],
+    ) -> Result<Vec<u8>, Unlocalised> {
         let key = crate::parser::c_string(key);
-        self.output(key, arguments, false).bytes
+        let output = self.output(key, arguments, false);
+        match output.cause {
+            Some(cause) => Err(Unlocalised {
+                key: String::from_utf8_lossy(key).into_owned(),
+                cause,
+            }),
+            None => Ok(output.bytes),
+        }
+    }
+
+    /// Whether substitution reaches one of these runtime arguments before
+    /// filling its buffer or reaching its recursion limit. Follow the same
+    /// reference walk, stopping at the first unavailable operand.
+    pub fn requires_arguments(&self, key: &[u8], names: &[&str]) -> bool {
+        let key = crate::parser::c_string(key);
+        if key.is_empty() {
+            return false;
+        }
+        let mut out = Output::default();
+        self.substitute(key, &[], 0, &mut out, names);
+        out.requires_argument
     }
 
     /// Every recovery the localiser took while producing this text, through
@@ -170,7 +195,7 @@ impl Localisation {
             fallbacks: collect_fallbacks.then(Vec::new),
             ..Output::default()
         };
-        self.substitute(key, arguments, 0, &mut out);
+        self.substitute(key, arguments, 0, &mut out, &[]);
         out
     }
 
@@ -190,6 +215,7 @@ impl Localisation {
         arguments: &[(&str, Argument<'_>)],
         depth: u32,
         out: &mut Output,
+        required_arguments: &[&str],
     ) {
         if depth >= SUBSTITUTION_DEPTH {
             if let Some(fallbacks) = &mut out.fallbacks {
@@ -246,8 +272,17 @@ impl Localisation {
                     }
                 }
                 let operand = &rest[open + 1..close];
+                let name = operand.split(|&byte| byte == b'|').next().unwrap();
+                if !out.full()
+                    && required_arguments
+                        .iter()
+                        .any(|required| required.as_bytes() == name)
+                {
+                    out.requires_argument = true;
+                    return;
+                }
                 if !argument(operand, arguments, out) {
-                    self.substitute(operand, arguments, depth + 1, out);
+                    self.substitute(operand, arguments, depth + 1, out, required_arguments);
                 }
             }
             if out.full() {
@@ -271,6 +306,8 @@ pub enum Argument<'a> {
     Text(&'a str),
     /// A signed 32-bit integer (type 5).
     Int32(i32),
+    /// An IEEE 754 single-precision number (type 3), retained as raw bits.
+    Float32(u32),
     /// A fixed-point number with five decimals (type 9).
     Fixed5(i64),
 }
@@ -292,6 +329,8 @@ pub enum Cause {
     /// Bytes that are not UTF-8 reach the output: a key the content lacks is
     /// copied as its own bytes.
     NotText,
+    /// The native floating formatter has no format for this precision.
+    Float32Precision { precision: u8 },
 }
 
 impl std::fmt::Display for Unlocalised {
@@ -302,6 +341,10 @@ impl std::fmt::Display for Unlocalised {
                 f.write_str(": the game's 0x1800-byte buffer ends inside a multi-byte character")
             }
             Cause::NotText => f.write_str(": its text is not UTF-8"),
+            Cause::Float32Precision { precision } => write!(
+                f,
+                ": Float32 precision {precision} selects an uninitialized native format"
+            ),
         }
     }
 }
@@ -312,11 +355,14 @@ impl std::error::Error for Unlocalised {}
 #[derive(Default)]
 struct Output {
     bytes: Vec<u8>,
+    requires_argument: bool,
     /// Other native callers share the formatter with a smaller scratch buffer.
     capacity: Option<usize>,
     fallbacks: Option<Vec<String>>,
     /// Offsets at which a copy or a formatted value was cut short.
     cuts: Vec<usize>,
+    /// A demanded argument whose native result depends on transient state.
+    cause: Option<Cause>,
 }
 
 impl Output {
@@ -325,7 +371,7 @@ impl Output {
     }
 
     fn full(&self) -> bool {
-        self.room() == 0
+        self.requires_argument || self.room() == 0
     }
 
     /// A bounded copy writes as much as fits.
@@ -360,6 +406,9 @@ impl Output {
     /// The text once every level is done, refused when it is not UTF-8. An
     /// incomplete character where a copy was cut is a cut inside it.
     fn finish(self) -> Result<String, Cause> {
+        if let Some(cause) = self.cause {
+            return Err(cause);
+        }
         String::from_utf8(self.bytes).map_err(|error| {
             let bytes = error.as_bytes();
             let start = error.utf8_error().valid_up_to();
@@ -430,7 +479,7 @@ struct Directives {
     /// `+` or `-`: colour the number by its sign, `-` swapping green and red.
     sign: bool,
     minus: bool,
-    /// The last digit: decimals of a fixed-point number (2 by default).
+    /// The last digit: decimals of a fixed-point or float number (2 by default).
     precision: u8,
     /// `=`: a `+` before a positive number.
     plus: bool,
@@ -554,6 +603,36 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
             };
             (Some(shown), value > 0, value < 0)
         }
+        Argument::Float32(bits) => {
+            if read.precision > 6 {
+                let cause = Cause::Float32Precision {
+                    precision: read.precision,
+                };
+                if let Some(fallbacks) = &mut out.fallbacks {
+                    fallbacks.push(format!(
+                        "Float32 precision {} selects an uninitialized native format; the operand is refused",
+                        read.precision
+                    ));
+                }
+                out.cause.get_or_insert(cause);
+                return;
+            }
+            let value = f32::from_bits(bits);
+            // Float arguments ignore compact and trim directives. Percent
+            // multiplication rounds in single precision before promotion.
+            // NaN promotion and multiplication preserve the spelling class;
+            // retain those bits instead of relying on Rust's NaN payload choice.
+            let shown = if read.percent && !value.is_nan() {
+                value * multiplier as f32
+            } else {
+                value
+            };
+            (
+                Some(float32(shown, read.precision)),
+                value > 0.0,
+                value < 0.0,
+            )
+        }
         Argument::Fixed5(value) => {
             let shown = match suffixes {
                 // Compact fixed5 formatting uses the whole part, truncated and narrowed
@@ -617,6 +696,24 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
             out.byte(b'!');
         }
     }
+}
+
+/// Decimal floating output uses the C locale and ties-to-even rounding.
+/// Promotion quiets signalling NaNs; a negative canonical quiet NaN keeps
+/// the CRT's indeterminate spelling. Sign directives still use comparisons
+/// on the original value, independently of the sign printed here.
+fn float32(value: f32, precision: u8) -> String {
+    if value.is_nan() {
+        return if value.to_bits() == 0xffc0_0000 {
+            "-nan(ind)"
+        } else if value.is_sign_negative() {
+            "-nan"
+        } else {
+            "nan"
+        }
+        .to_owned();
+    }
+    format!("{:.*}", usize::from(precision), f64::from(value))
 }
 
 /// Suffixes for `*` compact formatting, from units through billions.
@@ -1099,6 +1196,43 @@ mod tests {
     }
 
     #[test]
+    fn required_arguments_follow_native_references_escapes_and_limits() {
+        let full = format!("{}$ACTOR$", "x".repeat(SUBSTITUTION_BYTES));
+        let almost_full = format!("{}$ACTOR$", "x".repeat(SUBSTITUTION_BYTES - 1));
+        let loc = loc(&[
+            ("plain", "a¤b"),
+            ("alias", "$plain$"),
+            ("actor", "$ACTOR|format$"),
+            ("target", "$TARGET$"),
+            ("nested", "$actor$"),
+            (
+                "ACTOR",
+                "an authored key cannot replace the supplied argument",
+            ),
+            ("escaped", "$$ACTOR$$"),
+            ("unclosed", "$ACTOR"),
+            ("cycle", "$cycle$"),
+            ("full", &full),
+            ("almost_full", &almost_full),
+        ]);
+        for key in ["plain", "alias", "escaped", "unclosed", "cycle", "full", ""] {
+            assert!(
+                !loc.requires_arguments(key.as_bytes(), &["ACTOR", "TARGET"]),
+                "{key}"
+            );
+        }
+        for key in ["actor", "target", "nested", "almost_full"] {
+            assert!(
+                loc.requires_arguments(key.as_bytes(), &["ACTOR", "TARGET"]),
+                "{key}"
+            );
+        }
+        assert!(loc.requires_arguments(b"nested\0ignored", &["ACTOR"]));
+        assert!(!loc.requires_arguments(b"target", &["ACTOR"]));
+        assert!(!loc.requires_arguments(b"actor", &[]));
+    }
+
+    #[test]
     fn substitution_recovery_names_missing_keys_references_and_limits() {
         let loc = loc(&[
             ("nested", "$missing$"),
@@ -1376,6 +1510,122 @@ mod tests {
         assert_eq!(fixed("|7~", 150_000).as_deref(), Ok("1.50000"));
         assert_eq!(fixed("|7~", 123_450).as_deref(), Ok("1.23450"));
         assert_eq!(fixed("|9~", 100_000).as_deref(), Ok("1"));
+    }
+
+    #[test]
+    fn float_arguments_round_promoted_values_and_multiply_percent_in_single_precision() {
+        let float = |format: &str, value: f32| {
+            with(
+                &format!("$VALUE{format}$"),
+                &[("VALUE", Argument::Float32(value.to_bits()))],
+            )
+            .unwrap()
+        };
+        for (value, shown) in [(1.125, "1.12"), (1.375, "1.38"), (-1.125, "-1.12")] {
+            assert_eq!(float("", value), shown);
+        }
+        assert_eq!(float("|0", 2.5), "2");
+        assert_eq!(float("|0", 3.5), "4");
+        assert_eq!(float("|6", 0.29), "0.290000");
+        // Promoting before multiplication would instead yield 28.999999.
+        assert_eq!(float("|6%", 0.29), "29.000000%");
+        assert_eq!(float("|6%%", 0.29), "0.290000%");
+        assert_eq!(float("|3%", 0.125), "12.500%");
+        // Floating arguments never enter the compact or trimming paths.
+        assert_eq!(float("|*^~1%", 1500.0), "150000.0%");
+        assert_eq!(float("|^~3", 1.5), "1.500");
+        assert_eq!(float("|61", 1.5), "1.5");
+        assert_eq!(
+            float("|6", f32::MAX),
+            "340282346638528859811704183484516925440.000000"
+        );
+        assert_eq!(float("|%", f32::MAX), "inf%");
+        assert_eq!(float("|%", -f32::MAX), "-inf%");
+    }
+
+    #[test]
+    fn float_argument_signs_zero_nan_and_infinity_follow_the_native_comparisons() {
+        let float = |format: &str, bits: u32| {
+            with(
+                &format!("$VALUE{format}$"),
+                &[("VALUE", Argument::Float32(bits))],
+            )
+            .unwrap()
+        };
+        assert_eq!(float("", (-0.0_f32).to_bits()), "-0.00");
+        assert_eq!(float("|+=", (-0.0_f32).to_bits()), "\u{11}Y-0.00\u{11}!");
+        assert_eq!(float("|_", (-0.0_f32).to_bits()), "");
+        assert_eq!(float("|Y_", 0), "\u{11}Y\u{11}!");
+        // A tiny nonzero value prints zero but keeps its original sign gates.
+        assert_eq!(float("|_+=", 1), "\u{11}G+0.00\u{11}!");
+        assert_eq!(float("|_+=", 0x8000_0001), "\u{11}R-0.00\u{11}!");
+        assert_eq!(float("|+=", f32::INFINITY.to_bits()), "\u{11}G+inf\u{11}!");
+        assert_eq!(
+            float("|-=", f32::NEG_INFINITY.to_bits()),
+            "\u{11}G-inf\u{11}!"
+        );
+        for (bits, shown) in [
+            (0x7fc0_0000, "nan"),
+            (0xffc0_0000, "-nan(ind)"),
+            (0xffc0_0001, "-nan"),
+            (0x7f80_0001, "nan"),
+            (0xff80_0001, "-nan"),
+        ] {
+            assert_eq!(float("", bits), shown);
+            assert_eq!(float("|%", bits), format!("{shown}%"));
+            assert_eq!(float("|+=", bits), format!("\u{11}Y{shown}\u{11}!"));
+            assert_eq!(float("|_", bits), "");
+        }
+    }
+
+    #[test]
+    fn float_undefined_precision_refuses_only_when_the_argument_is_demanded() {
+        let value = [("VALUE", Argument::Float32(0))];
+        let localisation = loc(&[("KEY", "before $VALUE|7$ after $VALUE|7$")]);
+        let (text, notes) = localisation.localise_with_fallbacks(b"KEY", &value);
+        assert!(
+            text.as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("Float32 precision 7")
+        );
+        assert_eq!(cause(text), Cause::Float32Precision { precision: 7 });
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("Float32 precision 7"));
+        assert_eq!(
+            localisation
+                .localise_bytes(b"KEY", &value)
+                .unwrap_err()
+                .cause,
+            Cause::Float32Precision { precision: 7 }
+        );
+        for precision in 7..=9 {
+            assert_eq!(
+                cause(with(&format!("$VALUE|{precision}_$"), &value)),
+                Cause::Float32Precision { precision }
+            );
+        }
+        // Without a matching argument it is an ordinary nested key; a full
+        // buffer also prevents entry into the argument's formatter.
+        assert_eq!(
+            localisation.localise(b"KEY").as_deref(),
+            Ok("before  after ")
+        );
+        let pad = "x".repeat(SUBSTITUTION_BYTES);
+        let full = loc(&[("KEY", &format!("{pad}$VALUE|9$"))]);
+        assert_eq!(full.localise_with(b"KEY", &value), Ok(pad));
+        let bytes = Localisation::default();
+        assert_eq!(bytes.localise_bytes(b"\xff", &[]), Ok(vec![0xff]));
+    }
+
+    #[test]
+    fn float_arguments_use_the_shared_formatted_output_boundaries() {
+        let arguments = [("VALUE", Argument::Float32(1.5_f32.to_bits()))];
+        let pad = "x".repeat(SUBSTITUTION_BYTES - 4);
+        let loc = loc(&[("KEY", &format!("{pad}$VALUE|2$"))]);
+        let (text, notes) = loc.localise_with_fallbacks(b"KEY", &arguments);
+        assert_eq!(text.unwrap(), format!("{pad}1.5 "));
+        assert_eq!(notes.len(), 1);
     }
 
     /// Compact formatting for integers and fixed5 truncates without rounding,

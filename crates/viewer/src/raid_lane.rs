@@ -565,7 +565,10 @@ fn build(shared: &Shared, job: Job, icons: &mut IconCache) -> Cycle {
     let world = match World::new(&frame, assets.trigger_content.facts()) {
         Ok(world) => world,
         Err(reason) => {
-            publish(hour, RaidIcons::unavailable(&frame, ours, reason));
+            publish(
+                hour,
+                RaidIcons::unavailable(&frame, ours, reason.to_string()),
+            );
             return from.unwrap_or_else(|| Cycle::new(branch, ours));
         }
     };

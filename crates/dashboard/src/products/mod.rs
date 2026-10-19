@@ -7,6 +7,7 @@
 
 pub mod aircraft_catalogue;
 pub mod country_flags;
+pub mod doctrines;
 pub mod event_feed;
 pub mod focus_artwork;
 pub use identity::civil_war;
@@ -27,6 +28,7 @@ pub use dashboard_equipment_losses::products::equipment_losses;
 pub use dashboard_equipment_stockpile::products::equipment_stockpile;
 pub use dashboard_forces::products::air_force;
 pub use dashboard_forces::products::army_size;
+pub use dashboard_forces::products::naval_management;
 pub use dashboard_forces::products::navy;
 pub use dashboard_forces::products::parts_race_prepared;
 pub use dashboard_forces::products::supply_health;
@@ -34,12 +36,14 @@ pub use dashboard_game_score::products::game_score;
 pub use dashboard_intelligence::products::agency_comparison;
 pub use dashboard_intelligence::products::decryption;
 pub use dashboard_intelligence::products::espionage_log;
+pub use dashboard_intelligence::products::intel_details;
 pub use dashboard_intelligence::products::intelligence_content;
 pub use dashboard_intelligence::products::intelligence_prepared;
 pub use dashboard_intelligence::products::operation_description;
 pub use dashboard_intelligence::products::operative_content;
 pub use dashboard_intelligence::products::operative_placements;
 pub use dashboard_intelligence::products::operatives_roster;
+pub use dashboard_land_battles::products::combat_log;
 pub use dashboard_land_battles::products::division_log;
 pub use dashboard_land_battles::products::land_battles;
 pub use dashboard_military_air_ledger::products::military_air_ledger;
@@ -52,13 +56,14 @@ pub use dashboard_party_history::products::party_history;
 pub use dashboard_peace_deals::products::peace_deals;
 pub use dashboard_politics_ledger::products::politics_ledger;
 pub use dashboard_raids::products::raids;
+pub use dashboard_resource_balance::products::market_lendlease;
 pub use dashboard_resource_balance::products::resource_balance;
 pub use dashboard_resource_balance::products::trade_flows;
 pub use dashboard_special_projects::products::special_projects;
 pub use dashboard_stability::products::{country_stability, stability_parts};
 pub use dashboard_subjects::products::{autonomy, subjects};
 pub use dashboard_unit_leaders::products::unit_leaders;
-pub use dashboard_wars::products::{war_casualties, wars};
+pub use dashboard_wars::products::{war_casualties, wargoals, wars};
 pub use dashboard_world_tension::products::world_tension;
 
 use std::sync::atomic::AtomicBool;
@@ -72,6 +77,7 @@ use crate::{
 
 dashboard_base::reply_warnings!(
     country_flags::CountryFlagReply,
+    doctrines::DoctrineReply,
     event_feed::EventFeedReply,
     focus_artwork::FocusArtworkReply,
     crate::LandOwners,
@@ -196,6 +202,7 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<research::Research>(),
     register::<technology_artwork::TechnologyArtwork>(),
     register::<country_flags::CountryFlags>(),
+    register::<doctrines::Doctrines>(),
     register_prepared::<army_size::ArmySize>(),
     register_prepared::<supply_health::SupplyHealth>(),
     register_prepared::<division_log::DivisionLog>(),
@@ -209,13 +216,17 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<land_battles::LandBattlesRanking>(),
     register_prepared::<land_battles::LandBattleCourses>(),
     register::<land_battles::LandBattleTerrains>(),
+    register::<combat_log::CombatLog>(),
     register::<place_names::PlaceNames>(),
     register::<country_styles::CountryStyles>(),
+    register::<faction_details::FactionDetails>(),
     register_prepared::<country_groups::CountryGroups>(),
     register_prepared::<wars::Wars>(),
+    register::<wargoals::Wargoals>(),
     register::<country_stability::CountryStability>(),
     register::<stability_parts::StabilityParts>(),
     register::<country_measure::CountryMeasure>(),
+    register::<country_people::CountryPeople>(),
     register_prepared::<country_fuel::CountryFuel>(),
     register::<country_fuel::CountryFuelAwards>(),
     register::<country_fuel::CountryFuelAwardHistory>(),
@@ -234,6 +245,7 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<air_aces::AirAcePortraits>(),
     register::<air_force::AirForceSize>(),
     register::<navy::NavySize>(),
+    register::<naval_management::NavalManagement>(),
     register::<game_score::GameScore>(),
     register_prepared::<scoreboard::Scoreboard>(),
     register::<country_nukes::CountryNukes>(),
@@ -250,6 +262,7 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<resource_balance::ResourceBalance>(),
     register_prepared::<decryption::Decryption>(),
     register::<production_lines::ProductionLines>(),
+    register::<equipment::designs::detail::EquipmentDesignDetail>(),
     register::<production_lines::ProductionLineDetail>(),
     register::<production_lines::ProductionLineBreakdown>(),
     register_prepared::<equipment_stockpile::EquipmentStockpile>(),
@@ -257,6 +270,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<equipment_produced::EquipmentProduced>(),
     register_prepared::<production_spending::ProductionSpending>(),
     register_prepared::<trade_flows::TradeFlows>(),
+    register::<market_lendlease::MarketLendLease>(),
     register_prepared::<special_projects::SpecialProjects>(),
     register_prepared::<subjects::Subjects>(),
     register_prepared::<event_feed::EventFeed>(),
@@ -276,6 +290,7 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<construction_spending::ConstructionSpending>(),
     register_prepared::<espionage_log::EspionageLog>(),
     register::<operation_description::OperationDescription>(),
+    register::<intel_details::IntelDetails>(),
     register_prepared::<operative_placements::OperativePlacements>(),
     register_prepared::<operatives_roster::OperativesRoster>(),
     register_prepared::<agency_comparison::AgencyComparison>(),
@@ -488,6 +503,11 @@ mod tests {
         keys.dedup();
         assert_eq!(keys.len(), PRODUCTS.len());
         let contract = crate::typescript_contract();
+        // A targeted registry test can also export the exact checked contract
+        // for frontend consumers without building a separate generator binary.
+        if let Some(path) = std::env::var_os("BATTLE_PLAN_TYPESCRIPT_OUTPUT").or_else(|| std::env::var_os("HOI4_TYPESCRIPT_OUTPUT")) {
+            std::fs::write(path, &contract).unwrap();
+        }
         let names: Vec<_> = contract
             .lines()
             .filter_map(|line| line.strip_prefix("export type "))
@@ -528,6 +548,11 @@ mod tests {
             "ResourceBalanceReply",
             "ProductionLinesReply",
             "ProductionLineDetailReply",
+            "DesignDetailReply",
+            "DesignDetailParams",
+            "DesignSection",
+            "DesignField",
+            "DesignChoice",
             "LineRun",
             "EquipmentStockpileReply",
             "EquipmentProducedReply",

@@ -1,0 +1,30 @@
+[package]
+name = "collector-naval-management"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["collector-hooks/test-support"]
+
+[dependencies]
+engine-allocation.workspace = true
+engine-native.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
+collector-certificates.workspace = true
+collector-hooks.workspace = true
+collector-status.workspace = true
+collector-timing.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+collector-timing = { workspace = true, features = ["test-support"] }
+collector-test-support.workspace = true
+collector-hooks = { workspace = true, features = ["test-support"] }
+collector-certificates = { workspace = true, features = ["test-support"] }

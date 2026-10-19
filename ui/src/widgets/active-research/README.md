@@ -37,6 +37,15 @@ Country and campaign/follow/pin; Live is the default. No widget-specific options
 | [ActiveResearchWidget.tsx](ActiveResearchWidget.tsx) | Cards, tooltip and breakdown popover. |
 | [useActiveResearch.ts](useActiveResearch.ts) | Reached-state requests and validation; adjacent tests. |
 | [activeResearchData.ts](activeResearchData.ts) | Each slot's state at the hour; adjacent tests. |
+| [ResearchGrantInventory.tsx](ResearchGrantInventory.tsx), [researchGrants.ts](researchGrants.ts) | Held grant inventory and validation; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [activeResearch.css](activeResearch.css) | Metadata, registration and layout. |
 
 Parity builds expose the "Active research" model, including exact slot state, progress, countdown and saved-day values.
+
+The research bonus inventory appears below the slots, including countries without slots. It shows speed/ahead-of-time/cost grants, remaining uses and active claims, ordered technology/category restrictions, grant IDs and the next ID. An unproved supplying read stays unavailable.
+
+
+The shared [Doctrines panel](../research/DoctrinePanel.tsx) expands below the
+research cards. It follows this widget's country/time and requests data only
+while open; its diagnostics join the cards' diagnostics.
+The research bonus inventory appears below the slots, including countries without slots. It shows speed/ahead-of-time/cost grants, remaining uses and active claims, ordered technology/category restrictions, grant IDs and the next ID. An unproved supplying read stays unavailable.

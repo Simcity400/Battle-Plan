@@ -435,6 +435,35 @@ fn leaders_answer_from_their_own_coverage_while_the_hourly_walk_accepts_nothing(
         let flag = AtomicBool::new(false);
         assert!(
             query(&source, "unit-leaders", requests("1").remove(0)).is_null(),
+            "the default leader history requires a prepared prefix"
+        );
+        let first = replay
+            .index
+            .iter()
+            .find(|block| block.branch == 1)
+            .unwrap()
+            .first_hour;
+        let mut at_hour = requests("1").remove(0);
+        at_hour["hour"] = serde_json::json!(first);
+        let cold = query(&source, "unit-leaders", at_hour);
+        assert!(cold.is_object(), "an explicit cold leader hour answers");
+        assert_eq!(cold["coverage"]["firstHour"], first);
+        assert_eq!(cold["coverage"]["lastHour"], first - 1);
+        assert_eq!(cold["coverage"]["complete"], false);
+        assert!(!cold["pending"].as_array().unwrap().is_empty());
+        assert_eq!(cold["preparing"], serde_json::json!(["battles", "history"]));
+        // Territory totals still require the hourly walk, which has not
+        // accepted a block.
+        assert!(
+            query(&source, "series-state", serde_json::json!({
+                "branchId": "1",
+                "family": {"kind": "faction-totals", "selection": {
+                    "branchId": "1",
+                    "source": {"kind": "territory", "measure": "states", "rule": "owned"},
+                    "membership": "hour", "top": 5
+                }},
+                "reads": [{"hour": replay.index.iter().find(|block| block.branch == 1).unwrap().first_hour}]
+            })).is_null(),
             "nothing is prepared yet"
         );
         // The hourly walk stalls: it is cancelled at its first commit.

@@ -15,8 +15,8 @@ use engine_native::{
 };
 use replay_data::rows::TableSchema;
 
-/// Through the icon entry's string header.
-const VARIANT: usize = cequipment_variant::ICON_OVERRIDE_TOKEN + 32;
+/// Through the held organisation trait marker, rounded to object alignment.
+const VARIANT: usize = (cequipment_variant::DESIGN_TEAM_TRAITS + 4).next_multiple_of(16);
 const DEFINITION: usize = 0x40;
 /// An equipment type reaches its archetype pointer.
 const TYPE_DEFINITION: usize = cequipment_type::ARCHETYPE + 8;
@@ -126,6 +126,12 @@ impl Writer {
 
 /// About `per_country` variants for each of `countries` creators.
 pub(super) fn space(countries: usize, per_country: usize) -> Space {
+    // Keep empty native reference roots inside this same buffer for guarded
+    // and slice readers. Unresolved frozen authors still require readable
+    // roots for the independently observed save-admission witness.
+    let reference_extent = engine_native::creference_registry::LOW_ROOTS_RVA
+        + engine_native::creference_registry::LOW_ROOT_COUNT as usize * 8
+        - cgame_state::SINGLETON_RVA;
     let variants = countries * per_country;
     let plans: Vec<(usize, usize)> = (0..variants)
         .map(|index| {
@@ -139,7 +145,8 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
             (modules, (seed >> 8) as usize % 5)
         })
         .collect();
-    let size = 0x800
+    let size = reference_extent
+        + 0x800
         + (TYPES + MODULES + UPGRADES) * (DEFINITION + 48)
         + TYPES * TYPE_DEFINITION
         + variants * (8 + VARIANT + 64 + 48)
@@ -151,7 +158,7 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         bytes: vec![0; size],
         used: 0,
     };
-    let singleton = writer.alloc(8);
+    let singleton = writer.alloc(reference_extent);
     let base = singleton - cgame_state::SINGLETON_RVA;
     let vtable = |rva: usize| (base + rva) as u64;
     let game_state = writer.alloc(0x720);
@@ -229,6 +236,17 @@ pub(super) fn space(countries: usize, per_country: usize) -> Space {
         writer.u32(variant + cequipment_variant::EQUIPMENT_TOKEN, token);
         let country = (index / per_country.max(1)) as u32 + 1;
         writer.u32(variant + cequipment_variant::CREATOR_LINK, country);
+        writer.u64(
+            variant + cequipment_variant::INDUSTRIAL_ORGANISATION,
+            country as u64,
+        );
+        writer.u32(
+            variant + cequipment_variant::ORGANISATION_TRAIT_COUNT,
+            (index % 9) as u32,
+        );
+        // Every variant owns an explicit empty frozen bonus array; its header
+        // must stay inside this object rather than alias the following object.
+        writer.array(variant + cequipment_variant::ORGANISATION_BONUSES, 0, 0);
         writer.u32(
             variant + cequipment_variant::ORIGIN_LINK,
             country ^ (seed as u32 & 1),
@@ -434,7 +452,8 @@ fn scaled_variant_rows_match_the_recorded_digests() {
         assert!(
             views
                 .iter()
-                .all(|view| matches!(view, TableView::Complete(_)))
+                .all(|view| matches!(view, TableView::Complete(_))),
+            "{views:?}"
         );
         assert_eq!(digest(&views), golden, "{countries} countries");
         let TableView::Complete(definitions) = &views[0] else {
@@ -455,6 +474,17 @@ fn scaled_variant_rows_match_the_recorded_digests() {
                 (active, kind, icon.as_bytes()),
                 "variant {index}"
             );
+        }
+        let TableView::Complete(stats) = &views[2] else {
+            unreachable!()
+        };
+        let stats = stats.rows::<tables::VariantStats>().unwrap();
+        assert_eq!(stats.len(), countries * 16);
+        for row in stats {
+            let index = (row.variant >> 32) as usize - 1;
+            assert_eq!(row.organisation, (index / 16 + 1) as u64);
+            assert_eq!(row.organisation_trait_count, (index % 9) as i32);
+            assert!(row.organisation_bonuses.is_empty());
         }
     }
 }

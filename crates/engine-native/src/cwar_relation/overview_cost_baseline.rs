@@ -55,6 +55,13 @@ pub fn walk(
                 wanted[0] += 1;
                 if let Some(row) = output.get_mut(used[0]) {
                     *row = OwnedRow {
+                        source: Source {
+                            relation,
+                            diplomacy,
+                            owner_slot: country.canonical_slot,
+                            first_slot: first.canonical_slot,
+                            second_slot: second.canonical_slot,
+                        },
                         owner: country.id,
                         ordinal,
                         first_country,

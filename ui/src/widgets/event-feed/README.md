@@ -36,3 +36,9 @@ All countries by default, or manual/groups; campaign/follow/pin/range, category 
 | [EventFeedWidget.tsx](EventFeedWidget.tsx), [useEventFeed.ts](useEventFeed.ts) | Virtual log, cursor demand and source ownership. |
 | [eventFeedData.ts](eventFeedData.ts) | Validation, filtering, read cutoffs and row wording; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [eventFeed.css](eventFeed.css) | Categories, shared options, registration and layout. |
+
+Scripted event fires, news, selected options, decisions and missions have distinct Politics rows. Repeated native instances keep distinct occurrence IDs and exact hours. Tooltips retain chosen ordinals, captured bound scope operands and available lifecycle results. Static titles, bodies, pictures and authored option labels resolve through recorded content; unavailable dynamic inputs appear in diagnostics.
+
+Effect execution, actual terminal transitions and duration changes have distinct feed kinds and wording. Authored effect descriptions and their named/countable missing inputs share the existing tooltip.
+
+Retained script-state rows use read time and carry neither occurrence certainty nor actor/target roles. Their details show pending due hours, fired baseline membership and timer/scope state without inventing historical fires or choices.

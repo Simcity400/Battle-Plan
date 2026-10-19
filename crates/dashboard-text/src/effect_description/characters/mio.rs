@@ -32,9 +32,12 @@ impl Renderer<'_, '_, '_> {
         if let Scope::IndustrialOrganisation(reference) = scopes.this
             && reference != 0
         {
-            let row = world.industrial_organisation(reference)?;
+            let row = world
+                .industrial_organisation(reference)
+                .map_err(|why| why.to_string())?;
             let organisation = world
-                .token(row.token)?
+                .token(row.token)
+                .map_err(|why| why.to_string())?
                 .ok_or("LexicalTokens lacks industrial organisation template")?;
             let organisation = std::str::from_utf8(organisation)
                 .map_err(|_| "industrial organisation template is not UTF-8")?;
@@ -54,9 +57,11 @@ impl Renderer<'_, '_, '_> {
                         .ok_or("CountryLinks lacks MIO owner")?
                 };
                 let spelling = world
-                    .token_of(token.as_bytes())?
+                    .token_of(token.as_bytes())
+                    .map_err(|why| why.to_string())?
                     .map(|id| world.token(id))
-                    .transpose()?
+                    .transpose()
+                    .map_err(|why| why.to_string())?
                     .flatten()
                     .ok_or("LexicalTokens lacks MIO trait spelling")?;
                 let spelling =
@@ -110,11 +115,17 @@ impl Renderer<'_, '_, '_> {
     // after expanding the wrapper's scope.
     fn char_mio_modifiers(&mut self, trait_: &TraitName, scopes: Scopes, class: &str) -> String {
         let mut text = self.char_mio_bonus_list(&trait_.bonuses, scopes, class);
-        let kept = if let Some(why) = &trait_.modifier_inheritance_refusal {
-            self.refuse(class, why.clone());
-            false
-        } else {
-            match self.char_trait_modifier_kept(&trait_.organisation_modifiers) {
+        let modifiers = match trait_
+            .resolved_organisation_modifiers(|name| self.char_trait_modifier_name_eligible(name))
+        {
+            Ok(modifiers) => modifiers,
+            Err(reason) => {
+                self.refuse(class, reason);
+                return text;
+            }
+        };
+        let kept = {
+            match self.char_trait_modifier_kept(&modifiers) {
                 Ok(kept) => kept,
                 Err(why) => {
                     self.refuse(class, why);
@@ -124,7 +135,7 @@ impl Renderer<'_, '_, '_> {
         };
         if kept {
             match self.modifier_description_with(
-                &trait_.organisation_modifiers,
+                &modifiers,
                 "",
                 ModifierListOptions {
                     category_mask: u32::MAX,

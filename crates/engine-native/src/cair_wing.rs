@@ -11,6 +11,8 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
+pub mod replacement;
+pub mod fuel_inputs;
 pub mod transport_operands;
 
 /// Primary wing vtable.
@@ -50,10 +52,18 @@ pub const EQUIPMENT_BANK_CAPACITY: usize = 0x200;
 pub const EQUIPMENT_BANK_COUNT: usize = 0x204;
 /// Experience, signed i64; updates read, add, clamp and write the complete value.
 pub const EXPERIENCE: usize = 0x218;
+/// Inline wing modifier accumulator.
+pub const MODIFIERS: usize = 0x238;
+/// Night-operations statistic in a cached mission/default stat record.
+pub const NIGHT_OPERATIONS_STAT: usize = 0x4c;
 /// Assigned ace id, u32.
 pub const ASSIGNED_ACE_ID: usize = 0x2ec;
 /// Base override reference resolved before falling back to the pool base.
 pub const BASE_OVERRIDE: usize = 0x48;
+/// Signed fixed5 distance already travelled during relocation.
+pub const RELOCATION_PROGRESS: usize = 0x50;
+/// Signed fixed5 total relocation distance, assigned with the destination.
+pub const RELOCATION_DISTANCE: usize = 0x58;
 /// Mission-admission counter, i32; admission requires it not to exceed the limit.
 pub const ELIGIBILITY_COUNTER: usize = 0x60;
 /// Mission-admission limit, i32.
@@ -68,6 +78,7 @@ pub const BASE_RANGE: usize = 0x500;
 pub const BASE_FUEL: usize = 0x5b8;
 /// Signed country-tag override; a positive value wins over the pool owner.
 pub const COUNTRY_OVERRIDE: usize = 0x9c4;
+pub const EXILE_COUNTRY: usize = 0x9c8;
 /// Attached orders-group pointer matched against combat armies in tactical target scans.
 pub const ATTACHED_ORDERS_GROUP: usize = 0x9b8;
 /// Stored wing name string.
@@ -188,6 +199,10 @@ pub struct Row {
     pub id: u64,
     /// Raw country reference from the owning CStrategicAir roster.
     pub owner: u32,
+    /// Already authenticated census context for regional map consumers.
+    /// These pointers and the canonical slot never enter replay rows.
+    pub owner_pointer: usize,
+    pub owner_slot: u32,
     /// Position in the owner's roster: pools in order, then wings in each pool,
     /// starting at zero for each owner. Every wing counts even when a bounded
     /// consumer omits it. This walk already supplies the order without extra
@@ -202,9 +217,13 @@ pub struct Row {
     pub base_override: u64,
     /// Signed integer counts without an imposed range restriction.
     pub planes: i32,
+    /// Collector-owned certified acquired-crew observation.
+    pub acquired_manpower: Option<i32>,
+    pub exile_country: Option<i32>,
     pub mission_mask: u32,
     /// None means a null native region pointer, never a failed region read.
     pub mission_region: Option<u32>,
+    pub region_pointer: usize,
     /// [`BASE_RANGE`], the raid range limit's wing operand.
     pub base_range_raw: i64,
     /// [`ACE_REFERENCE`], unresolved.
@@ -218,16 +237,26 @@ pub struct Row {
     /// authenticated in the reference registry, `Some(0)` when null. `None`
     /// for other wings, or when the group does not authenticate.
     pub attached_orders_group: Option<u64>,
+    /// Already-gathered attachment pointer, joined to the same pass's group
+    /// census during conversion. Acquisition context only; never serialized.
+    pub attached_group_pointer: u64,
     /// Span in the caller's name arena; absent after a field-local refusal.
     pub name: Option<(usize, usize)>,
     /// Authenticated containing pool's recorded-content database index.
     /// Null subtype is Some(0); optional field read failure is None.
     pub pool_subunit: Option<u32>,
-    /// Complete stored raid handle plus same-pass registry liveness for
-    /// admitted idle transport wings; absent after optional field refusal.
+    /// Complete stored raid handle plus authenticated registry liveness. The
+    /// transport pass or certified worker observation supplies this field.
     pub raid_reference: Option<transport_operands::RaidReference>,
     /// Selected tactical mission stat, None after an optional-read refusal.
     pub strategic_bombing_raw: Option<i64>,
+    /// Writer-certified raw replacement preference, populated by the owning worker.
+    pub replacement_setting: Option<u8>,
+    /// Worker-only writer-certified Air grid flags; the synchronous fallback
+    /// leaves them unknown without reading these fields.
+    pub map_flags: Option<u32>,
+    /// Independent simulation fuel operands, acquired only by the existing worker.
+    pub fuel_inputs: Option<fuel_inputs::Inputs>,
 }
 
 /// Allocation-free name acquisition into caller-owned live-sized storage.
@@ -914,6 +943,8 @@ enum Step {
         wing: usize,
         pool: usize,
         owner: u32,
+        owner_pointer: usize,
+        owner_slot: u32,
         ordinal: u32,
         air_base: u64,
     },
@@ -1032,7 +1063,8 @@ fn walk_projected(
             let mut gathered: Option<(usize, usize)> = None;
             let mut index = 0;
             for step in steps {
-                let (wing, pool, owner, ordinal, air_base) = match *step {
+                let (wing, pool, owner, owner_pointer, owner_slot, ordinal, air_base) = match *step
+                {
                     Step::Owner { slot, entry } => {
                         owner_visit(slot, entry);
                         continue;
@@ -1082,9 +1114,19 @@ fn walk_projected(
                         wing,
                         pool,
                         owner,
+                        owner_pointer,
+                        owner_slot,
                         ordinal,
                         air_base,
-                    } => (wing, pool, owner, ordinal, air_base),
+                    } => (
+                        wing,
+                        pool,
+                        owner,
+                        owner_pointer,
+                        owner_slot,
+                        ordinal,
+                        air_base,
+                    ),
                 };
                 let queued = index;
                 index += 1;
@@ -1153,6 +1195,8 @@ fn walk_projected(
                         },
                     ) {
                         Ok(Some(mut row)) => {
+                            row.owner_pointer = owner_pointer;
+                            row.owner_slot = owner_slot;
                             visit(
                                 wing,
                                 pool,
@@ -1270,7 +1314,7 @@ fn walk_projected(
                     "strategic air country vtable mismatch",
                 )?;
                 let owner = reader.field::<u32>(owner_pointer, cstrategic_air::COUNTRY)?;
-                let owner_slot = if slot == 0 && scored {
+                let owner_country = if slot == 0 && scored {
                     let country = crate::game_score_inputs::read_slot_zero(
                         memory,
                         base,
@@ -1280,10 +1324,11 @@ fn walk_projected(
                     if country.id != owner {
                         return Err("strategic air slot zero owner differs from catalogue object");
                     }
-                    country.canonical_slot
+                    country
                 } else {
-                    countries.resolve(owner)?.canonical_slot
+                    countries.resolve(owner)?
                 };
+                let owner_slot = owner_country.canonical_slot;
                 if owner_slot != slot {
                     return Err("strategic air owner differs from canonical country slot");
                 }
@@ -1350,6 +1395,8 @@ fn walk_projected(
                                 wing,
                                 pool,
                                 owner,
+                                owner_pointer: owner_country.pointer,
+                                owner_slot,
                                 ordinal,
                                 air_base,
                             });
@@ -1713,13 +1760,18 @@ impl<M: Memory> Reader<'_, M> {
         Ok(Some(Row {
             id: leaf.id,
             owner,
+            owner_pointer: 0,
+            owner_slot: 0,
             pool_ordinal,
             country_override: i32::from_le_bytes(country_override),
             air_base,
             base_override: u64::from_le_bytes(override_bytes),
             planes: i32::from_le_bytes(planes),
+            acquired_manpower: None,
+            exile_country: None,
             mission_mask: u32::from_le_bytes(mask),
             mission_region,
+            region_pointer: region,
             base_range_raw: i64::from_le_bytes(base_range),
             ace: u64::from_le_bytes(ace),
             mission_active: active[0],
@@ -1727,9 +1779,13 @@ impl<M: Memory> Reader<'_, M> {
             eligibility_counter: i32::from_le_bytes(eligibility[..4].try_into().unwrap()),
             eligibility_limit: i32::from_le_bytes(eligibility[4..].try_into().unwrap()),
             attached_orders_group,
+            attached_group_pointer: u64::from_le_bytes(group),
             name: None,
             pool_subunit: None,
             raid_reference: None,
+            replacement_setting: None,
+            map_flags: None,
+            fuel_inputs: None,
             strategic_bombing_raw: (mission_mask & 8 != 0 && mission_mask & 0x202 == 0)
                 .then(|| strategic_bombing_stat(self.memory, pointer))
                 .and_then(Result::ok),

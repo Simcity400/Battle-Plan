@@ -2,9 +2,9 @@
 //!
 //! `Space` is a deterministic address space of many countries built at the
 //! buffer's own addresses, so the same bytes serve `SliceMemory` for
-//! equivalence and the guarded `LiveMemory` copier for the bench. The golden
-//! digests were recorded from the walks before the batched copy; the copy and
-//! decode must still reproduce them, and still match the direct typed walks.
+//! equivalence and the guarded `LiveMemory` copier for the bench. Golden
+//! digests cover the fixture operands, excluding acquisition-only addresses.
+//! Copy and decode also match the independent direct typed walks.
 
 use super::projects_test_kit as kit;
 use super::*;
@@ -581,7 +581,13 @@ fn digest(captured: &Captured) -> u64 {
     }
     let mut text = String::new();
     rows(&mut text, &captured.programs);
-    rows(&mut text, &captured.projects);
+    // Authenticated object addresses are acquisition metadata, not published facts.
+    let mut projects = captured.projects.rows[..captured.projects.outcome.len()].to_vec();
+    for project in &mut projects {
+        project.source_pointer = 0;
+    }
+    use std::fmt::Write;
+    write!(&mut text, "{:?}{:?}", captured.projects.outcome, projects).unwrap();
     rows(&mut text, &captured.history);
     rows(&mut text, &captured.breakthroughs);
     let names = &captured.names.first[..captured.names.len.min(captured.names.first.len())];
@@ -605,9 +611,9 @@ fn assert_equivalent(space: &Space, capacities: &Capacities, label: &str, golden
 #[test]
 fn scaled_copy_matches_direct_walks_and_the_recorded_digests() {
     for (countries, projects, golden) in [
-        (2, 50, 0x2c94_d9d8_ceed_389c),
-        (440, 50, 0x035f_316a_4cb1_4f03),
-        (5_000, 8, 0x8bbf_6ec1_5ea5_2317),
+        (2, 50, 0x20b8_b98a_95a0_e2aa),
+        (440, 50, 0xe6d0_2bef_e557_b1b6),
+        (5_000, 8, 0xc65d_372c_29e3_d212),
     ] {
         let space = space(countries, projects);
         let label = format!("{countries} countries");
@@ -851,14 +857,14 @@ fn scaled_faults_match_direct_walks_and_the_recorded_digests() {
     let goldens = [
         0xb855_2ee9_c2e1_7946,
         0x37d0_d8db_987c_693e,
-        0x0084_8f41_7ee4_2b03,
-        0xbab4_8bc3_4fdd_cf93,
-        0x6ec2_e6e1_9c59_4bf6,
-        0x73db_88bb_ee04_6cca,
-        0x73db_88bb_ee04_6cca,
-        0x73db_88bb_ee04_6cca,
-        0x54ab_b9d0_6f48_7bbd,
-        0x54ab_b9d0_6f48_7bbd,
+        0x7307_b52f_08f0_b288,
+        0x5df2_3f5f_5693_a518,
+        0xca0e_4b7b_a379_da3f,
+        0x6bbd_8b8b_e98d_d5ab,
+        0x6bbd_8b8b_e98d_d5ab,
+        0x6bbd_8b8b_e98d_d5ab,
+        0x645c_45bd_b926_0b24,
+        0x645c_45bd_b926_0b24,
         HISTORY_GOLDEN,
         PROGRAMS_GOLDEN,
         LINKS_GOLDEN,
@@ -940,15 +946,15 @@ fn projects_copy_bench() {
 
 /// Digests of the direct typed walks before the batched copy, except where
 /// noted.
-const TRUNCATED_GOLDEN: u64 = 0xe5c1_86e9_daa0_8fed;
-const HISTORY_GOLDEN: u64 = 0x6311_a7cb_0cec_0a45;
-const PROGRAMS_GOLDEN: u64 = 0x0f95_3632_422c_4c5e;
+const TRUNCATED_GOLDEN: u64 = 0xeabc_6c9a_682a_f581;
+const HISTORY_GOLDEN: u64 = 0x3d00_8951_bdf6_eb40;
+const PROGRAMS_GOLDEN: u64 = 0x345b_47ce_caa9_ee9c;
 const LINKS_GOLDEN: u64 = 0xa7fe_1f61_4eee_5ce6;
 const CENSUS_GOLDEN: u64 = 0x16e7_6d3d_d939_d851;
 /// The narrowed machine read no longer fails on a byte no row records, so the
 /// walk equals the unfaulted one; the walks before it gave
 /// `BEFORE_UNRECORDED` (projects unavailable).
-const UNRECORDED_GOLDEN: u64 = 0x035f_316a_4cb1_4f03;
+const UNRECORDED_GOLDEN: u64 = 0xe6d0_2bef_e557_b1b6;
 const BEFORE_UNRECORDED: u64 = 0x73db_88bb_ee04_6cca;
 
 fn check_golden(label: &str, digest: u64, golden: u64) {

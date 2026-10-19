@@ -405,6 +405,11 @@ impl Captured {
             if let Some(store) = stores.local_subunits.as_mut() {
                 store.forget();
             }
+            if let Some(store) = stores.doctrines.as_ref()
+                && let Ok(mut store) = store.lock()
+            {
+                store.forget();
+            }
         }
         let read = |outcome: &Outcome| {
             matches!(outcome, Outcome::Rows { .. })
@@ -1628,6 +1633,8 @@ pub(crate) struct NavalMissionLoan {
 /// every country's pool is read.
 #[derive(Default)]
 pub(crate) struct SlowStores {
+    pub(crate) doctrine_bytes: u64,
+    pub(crate) doctrines: Option<Box<std::sync::Mutex<collector_slow_tables::doctrines::Store>>>,
     /// `slicing::AVAILABLE_ADVISORS`.
     pub(crate) available: Option<Box<crate::slicing::SliceFingerprints>>,
     /// Held AvailableAdvisors and AdvisorTokens rows
@@ -2098,11 +2105,23 @@ impl SlowPacks {
             map_names,
             faction_theatres,
             modifier_definitions,
-            country_tactic_unlocks,
             logistics,
             combat_log,
             country_factories
         );
+        scatter(
+            &country_tactic_unlocks::TABLES,
+            self.country_tactic_unlocks.capture_carried(
+                memory,
+                base,
+                game_state,
+                hour,
+                force_full,
+                stores.doctrines.as_deref(),
+            ),
+            &mut ticks,
+        );
+        stores.doctrine_bytes = self.country_tactic_unlocks.doctrine_store_bytes() as u64;
         scatter(
             &model_inputs::TABLES,
             self.model_inputs.capture_carried(
@@ -2428,6 +2447,7 @@ pub(crate) struct FinalInputsReport {
     pub air_records: [u64; super::air_records::N],
     pub bombing: [u64; super::building_bombing::N],
     pub nuclear: [u64; super::nuclear_strikes::N],
+    pub market: [u64; super::market::N],
     pub intel_delegated: [u64; super::intel::N],
 }
 
@@ -2450,8 +2470,9 @@ pub(crate) struct FinalInputsRequest {
     air_records: super::air_records::Captured,
     bombing: super::building_bombing::Captured,
     nuclear: super::nuclear_strikes::Captured,
+    market: super::market::Captured,
     intel: super::intel::Captured,
-    finished: [bool; 13],
+    finished: [bool; 14],
 }
 impl FinalInputsRequest {
     pub(crate) fn allocated_bytes(&self) -> u64 {
@@ -2468,6 +2489,7 @@ impl FinalInputsRequest {
             + self.air_records.allocated_bytes()
             + self.bombing.allocated_bytes()
             + self.nuclear.allocated_bytes()
+            + self.market.allocated_bytes()
             + self.intel.allocated_bytes()) as u64
     }
 
@@ -2537,6 +2559,10 @@ impl FinalInputsRequest {
         self.finished[11] = true;
         let nuclear = self.nuclear.capture_growing(memory, self.base, self.state);
         self.finished[12] = true;
+        let market =
+            self.market
+                .capture_growing(memory, self.base, self.state, self.hour, self.force_full);
+        self.finished[13] = true;
         FinalInputsReport {
             snapshots: [new_divisions, experience],
             production,
@@ -2549,6 +2575,7 @@ impl FinalInputsRequest {
             air_records,
             bombing,
             nuclear,
+            market,
             intel_delegated,
         }
     }
@@ -2607,7 +2634,8 @@ impl Captured {
                 super::nuclear_strikes::Captured::vacant(),
             ),
             intel: std::mem::replace(&mut self.intel, super::intel::Captured::vacant()),
-            finished: [false; 13],
+            market: std::mem::replace(&mut self.market, super::market::Captured::vacant()),
+            finished: [false; 14],
         }
     }
     pub(crate) fn restore_final_inputs_request(
@@ -2669,6 +2697,9 @@ impl Captured {
             if !request.finished[11] {
                 request.air_records.fail(reason);
             }
+            if !request.finished[13] {
+                request.market.fail(reason);
+            }
             if !request.finished[12] {
                 request.nuclear.fail(reason);
             }
@@ -2686,6 +2717,7 @@ impl Captured {
         self.air_records = request.air_records;
         self.building_bombing = request.bombing;
         self.nuclear_strikes = request.nuclear;
+        self.market = request.market;
         self.intel = request.intel;
         self.final_inputs_ticks = Some(ticks);
     }

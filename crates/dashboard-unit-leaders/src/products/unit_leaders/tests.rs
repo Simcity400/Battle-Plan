@@ -1799,6 +1799,7 @@ fn shared_trait_indices_keep_null_empty_order_and_compact_wire() {
             role: 3,
             skill: Some(4),
             components: [5, 6, 7, 8],
+            progress: None,
             traits: traits.clone().map(Arc::from),
         };
         let wire = serde_json::to_value(&values).unwrap();
@@ -2329,6 +2330,7 @@ fn leader_visibility_evaluations_are_reused_until_an_input_reads_differently() {
 }
 
 fn reused_leader_visibility(checking: bool) {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     use dashboard_text::triggers::{ContentFacts, LeaderRoles};
     use replay_data::{
         rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ScriptFlagRow,
@@ -2493,11 +2495,12 @@ fn leader_visibility_is_reused_without_a_world_when_only_unread_fields_change() 
 }
 
 fn leader_visibility_from_changes(checking: bool) {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     use dashboard_text::triggers::{ContentFacts, LeaderRoles, inputs::Since};
     use replay_data::{
         format::FormatVersion, rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow,
-        rows::ScriptFlagRow, rows::TableRows,
+        rows::ScriptFlagRow, rows::ScriptVariablesRow, rows::TableRows,
     };
     use replay_frame::{frame::FrameEncoder, frame::TableView};
     let (catalogue, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[(
@@ -2541,6 +2544,19 @@ fn leader_visibility_from_changes(checking: bool) {
             ),
             TableRows::empty(TableId::Provinces),
             TableRows::empty(TableId::States),
+            // Visibility initializes the scope's variable seed even when this
+            // condition does not draw a random value. Model complete stores
+            // instead of generating a new hour-specific refusal.
+            TableRows::ScriptVariables(
+                [101, 102]
+                    .map(|scope_id| ScriptVariablesRow {
+                        scope_kind: 1,
+                        scope_id,
+                        seed: replay_data::rows::Recorded::Value(Some(1)),
+                        ..Default::default()
+                    })
+                    .into(),
+            ),
             TableRows::LexicalTokens(
                 [(900, "x"), (901, "y")]
                     .into_iter()
@@ -2553,6 +2569,7 @@ fn leader_visibility_from_changes(checking: bool) {
             TableRows::ScriptFlags(
                 [(101, 900, flag), (102, 901, other)]
                     .into_iter()
+                    .filter(|(_, _, value)| *value != 0)
                     .map(|(scope_id, token, value)| ScriptFlagRow {
                         scope_kind: 1,
                         scope_id,
@@ -2647,7 +2664,8 @@ fn leader_visibility_from_changes(checking: bool) {
         assert_eq!(
             (counts.evaluated, counts.reused),
             (evaluated, reused),
-            "hour {hour}"
+            "hour {hour}: rereads {rereads:?}, inputs {:?}",
+            evaluation.as_ref().map(|evaluation| &evaluation.inputs)
         );
         if !builds && !checking {
             assert!(rereads.is_empty(), "hour {hour} read {rereads:?}");
@@ -2676,7 +2694,7 @@ fn a_blocked_kept_visibility_pass_leaves_the_whole_frame_its_refusals() {
     let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
         (
             "common/defines/00.lua",
-            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30} NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
         ),
         (
             "common/unit_leader/a.txt",
@@ -2786,4 +2804,85 @@ fn a_blocked_kept_visibility_pass_leaves_the_whole_frame_its_refusals() {
         );
         dashboard_base::prepared::observer_tests::assert_reply_parity(&actual, &expected).unwrap();
     });
+}
+
+#[test]
+fn experience_changes_create_visible_runs_and_keep_complete_ordered_training() {
+    use replay_data::rows::{LexicalTokenRow, TableRows, UnitLeaderTraitExperienceRow};
+    use replay_frame::frame::TableView;
+    let reference = (5_u64 << 32) | 4713;
+    let make = |hour, experience| {
+        let mut frame = dashboard_core::test_fixtures::source(1, hour, None);
+        *frame.tables[TableId::UnitLeaders.index()] =
+            TableView::Complete(TableRows::UnitLeaders(vec![UnitLeaderRow {
+                id: 5,
+                reference_type: 4713,
+                owner: 11,
+                kind: 1,
+                category: 1,
+                character_id: 9,
+                skill_status: 2,
+                skill_level: 3,
+                experience,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::UnitLeaderTraits.index()] =
+            TableView::Complete(TableRows::UnitLeaderTraits(Vec::new()));
+        *frame.tables[TableId::UnitLeaderTraitExperience.index()] =
+            TableView::Complete(TableRows::UnitLeaderTraitExperience(vec![
+                UnitLeaderTraitExperienceRow {
+                    list: 0,
+                    leader_reference: reference,
+                    ordinal: 0,
+                    token_id: 100,
+                    definition_ordinal: 7,
+                    experience: i64::MAX,
+                },
+                UnitLeaderTraitExperienceRow {
+                    list: 0,
+                    leader_reference: reference,
+                    ordinal: 1,
+                    token_id: 100,
+                    definition_ordinal: 7,
+                    experience: -1,
+                },
+                UnitLeaderTraitExperienceRow {
+                    leader_reference: reference,
+                    list: 1,
+                    ordinal: 0,
+                    token_id: 100,
+                    definition_ordinal: 7,
+                    experience: -25_000,
+                },
+            ]));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 100,
+                literal: b"mod_training".to_vec(),
+            }]));
+        frame
+    };
+    let replay = Replay::from_records(
+        dashboard_core::test_fixtures::CAMPAIGN.to_vec(),
+        &[dashboard_core::test_fixtures::records(
+            1,
+            vec![make(100, 3), make(101, i64::MAX)],
+        )],
+    )
+    .unwrap();
+    let reply = scan(&replay, &all_params(), None, &AtomicBool::new(false)).unwrap();
+    let runs = &reply.leaders[0].runs;
+    assert_eq!(runs.len(), 2);
+    let first = runs[0].value.progress.as_ref().unwrap();
+    assert_eq!(first.experience_raw, "3");
+    let training = first.training.as_ref().unwrap();
+    assert_eq!(training.len(), 2);
+    assert_eq!(training[0].token.as_deref(), Some("mod_training"));
+    assert_eq!(training[0].experience_raw, i64::MAX.to_string());
+    assert_eq!(training[1].experience_raw, "-1");
+    assert_eq!(first.factors.as_ref().unwrap()[0].factor_raw, "-25000");
+    assert_eq!(
+        runs[1].value.progress.as_ref().unwrap().experience_raw,
+        i64::MAX.to_string()
+    );
 }

@@ -1,5 +1,6 @@
 //! Trigger evaluation: dispatch each child through the shared registry
 //! and check it in its accepted scope.
+use crate::triggers::Failure;
 
 use std::{
     cell::{Cell, RefCell},
@@ -35,13 +36,13 @@ use crate::{
 /// `tag` that explicitly read it, not as a country carrier.
 pub trait Combat: Sync {
     /// The combat side's first primary country, a canonical slot.
-    fn country(&self) -> Result<u32, String>;
+    fn country(&self) -> Result<u32, Failure>;
     /// A coded trigger the combat decides (its combat triggers, and the
     /// tactic database's `has_tactic` in any country scope), checked past
     /// its scope mask; `None` for any other.
     fn trigger(&self, name: &str, item: &Item, this: Scope, evaluator: &Evaluator) -> Option<Eval>;
     /// Equipment-category share on the side, fixed5.
-    fn category_share(&self, mask: u64) -> Result<i64, String>;
+    fn category_share(&self, mask: u64) -> Result<i64, Failure>;
 }
 
 /// A content count trigger created while loading a key.
@@ -95,11 +96,13 @@ pub struct Evaluator<'e, 'a> {
     /// temps.
     temps: Temps,
     /// Known TLS values in this evaluation, including failed writes.
-    pub(super) local_temps: RefCell<BTreeMap<Vec<u8>, Result<Value, String>>>,
+    pub(super) local_temps: RefCell<BTreeMap<Vec<u8>, Result<Value, Failure>>>,
     pub(super) checking: Cell<usize>,
     uncertain: Cell<bool>,
+    /// Reached input refusals for one colour callback, regardless of its outputs.
+    callback_depth: Cell<usize>,
     /// The first unreproduced writer of the thread-local store.
-    written: RefCell<Option<String>>,
+    written: RefCell<Option<Failure>>,
     /// Executed temp writes and RNG advances, including writes of the same value.
     variable_effects: Cell<u64>,
     pub(super) event_graph:
@@ -110,8 +113,8 @@ pub struct Evaluator<'e, 'a> {
 /// TLS state carried into scripted localisation nested in a description.
 #[derive(Clone)]
 pub struct VariableSession {
-    values: BTreeMap<Vec<u8>, Result<Value, String>>,
-    written: Option<String>,
+    values: BTreeMap<Vec<u8>, Result<Value, Failure>>,
+    written: Option<Failure>,
     /// Closing a variable context leaves known TLS values but clears the
     /// active flag; the next outer trigger must still begin a fresh context.
     active: bool,
@@ -132,12 +135,12 @@ pub(super) enum Child<'t> {
 
 /// The names the scope step reads over the recorded hour: the recorded
 /// countries and tag aliases, and the content's character templates
-/// looked up by token. Each answer
-/// the templates cannot give is kept, so an unknown result names it.
+/// looked up by token. Every unavailable classification is kept, including
+/// those followed by a recognised keyword or nested inside a scope chain.
 struct LoadNames<'n> {
     recorded: &'n crate::scope::RecordedScopes,
     templates: &'n dyn Fn() -> Result<&'n BTreeSet<Vec<u8>>, &'n str>,
-    asked: RefCell<Option<String>>,
+    asked: RefCell<Vec<Failure>>,
 }
 
 impl Names for LoadNames<'_> {
@@ -146,7 +149,7 @@ impl Names for LoadNames<'_> {
             return true;
         }
         if let Err(why) = self.recorded.roster() {
-            self.asked.replace(Some(format!(
+            self.asked.borrow_mut().push(why.context(|why| format!(
                 "whether {tag} names a country tag is unknown because Countries is incomplete: {why}"
             )));
             return false;
@@ -158,7 +161,7 @@ impl Names for LoadNames<'_> {
         match (self.templates)() {
             Ok(names) => names.contains(&token.as_bytes().to_ascii_lowercase()),
             Err(why) => {
-                self.asked.replace(Some(format!(
+                self.asked.borrow_mut().push(Failure::from(format!(
                     "whether {token} names a character template is unknown: {why}"
                 )));
                 false
@@ -196,6 +199,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             local_temps: RefCell::default(),
             checking: Cell::new(0),
             uncertain: Cell::new(false),
+            callback_depth: Cell::new(0),
             written: RefCell::default(),
             variable_effects: Cell::new(0),
             event_graph: RefCell::default(),
@@ -203,9 +207,20 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    /// A temp variable the last evaluation left, fixed5; `None` when it is unset.
-    pub fn temp_value(&self, name: &[u8]) -> Option<Result<i64, String>> {
-        self.local_temps
+    /// A temp variable the last evaluation left, fixed5; `None` when it is known unset.
+    /// An uncertain writer refuses even an output whose entry it cleared.
+    pub fn temp_value(&self, name: &[u8]) -> Option<Result<i64, Failure>> {
+        if let Some(writer) = self.temps_written() {
+            writer.reached();
+            return Some(Err(writer.context(|writer| {
+                format!(
+                    "temp variable {} is unknown after {writer}",
+                    String::from_utf8_lossy(name)
+                )
+            })));
+        }
+        let value = self
+            .local_temps
             .borrow()
             .get(name)
             .map(|value| match value {
@@ -213,9 +228,17 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 Ok(super::variables::Value::Object(_)) => Err(format!(
                     "temp variable {} holds a scope, not a number",
                     String::from_utf8_lossy(name)
-                )),
-                Err(why) => Err(why.clone()),
-            })
+                )
+                .into()),
+                Err(why) => {
+                    why.reached();
+                    Err(why.clone())
+                }
+            });
+        value.or_else(|| {
+            (self.temps == Temps::Inherited)
+                .then(|| Err(super::variables::inherited_temps_failure()))
+        })
     }
 
     pub fn variable_session(&self) -> VariableSession {
@@ -247,13 +270,15 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.with_temps(session.temps)
     }
 
-    /// The evaluator of a caller outside a script context ([`Temps::Stale`]).
+    /// The caller's TLS availability, including an unreproduced outer context.
     pub fn with_temps(self, temps: Temps) -> Self {
         Self { temps, ..self }
     }
 
     pub(super) fn temps(&self) -> Temps {
-        if self.checking.get() == 0 && self.description_depth.get() == 0 {
+        if self.temps == Temps::Inherited
+            || (self.checking.get() == 0 && self.description_depth.get() == 0)
+        {
             self.temps
         } else {
             Temps::Fresh
@@ -261,7 +286,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     /// The trigger that wrote the thread-local store, if one was reached.
-    pub(super) fn temps_written(&self) -> Option<String> {
+    pub(super) fn temps_written(&self) -> Option<Failure> {
         self.written.borrow().clone()
     }
 
@@ -269,10 +294,43 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.written.replace(None);
     }
 
-    pub(super) fn taint_temps(&self, writer: String) {
+    pub(super) fn taint_temps(&self, writer: Failure) {
         self.note_variable_effect();
         self.local_temps.borrow_mut().clear();
         self.written.borrow_mut().get_or_insert(writer);
+    }
+
+    /// Run a colour callback conservatively: any reached unavailable input
+    /// refuses the target, even if Boolean logic or later writes hide it.
+    pub fn evaluate_colour(&self, items: &[Item], scopes: Scopes, seeds: &[(&[u8], i64)]) -> Eval {
+        let (result, failures) =
+            self.capture_colour_inputs(|| self.evaluate_seeded(items, scopes, seeds));
+        if failures.is_empty() {
+            result
+        } else {
+            Eval::Unknown(failures)
+        }
+    }
+
+    /// Retain every uncertain input reached while preparing or evaluating a
+    /// colour. Selection callers must refuse the layer if these failures are
+    /// nonempty, even when their ordinary Boolean filters have decided results.
+    pub fn capture_colour_inputs<T>(&self, run: impl FnOnce() -> T) -> (T, BTreeSet<Failure>) {
+        struct Restore<'c>(&'c Cell<usize>, usize);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.1);
+            }
+        }
+        let _restore = Restore(
+            &self.callback_depth,
+            self.callback_depth.replace(self.callback_depth.get() + 1),
+        );
+        super::refusal::capture(run)
+    }
+
+    pub(super) fn in_colour_callback(&self) -> bool {
+        self.callback_depth.get() > 0
     }
 
     /// A child after an unknown short-circuit condition may never run.
@@ -296,7 +354,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// What loading adds for `item` ([`Self::dispatched`]); `None` for a key
     /// that adds no child and is reported invalid; `Err`
     /// when which it is cannot be told from the recording.
-    pub(super) fn child(&self, item: &Item) -> Result<Option<Child<'a>>, String> {
+    pub(super) fn child(&self, item: &Item) -> Result<Option<Child<'a>>, Failure> {
         if item.key.is_none() {
             return Ok(Some(Child::Keyless));
         }
@@ -331,7 +389,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 Ok(Some(entered)) if entered.this == Scope::State(NULL_STATE) => Eval::False,
                 Ok(Some(entered)) => self.evaluate(item.value.items().unwrap_or_default(), entered),
                 Ok(None) => Eval::False,
-                Err(why) => Eval::unknown(fail(&why)),
+                Err(why) => Eval::unknown(why.context(|why| fail(why))),
             },
             // A count trigger reads its operator and one value
             // and a block leaves the text.
@@ -344,7 +402,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }
     }
 
-    pub fn enter_scope(&self, parsed: &Parsed, scopes: Scopes) -> Result<Option<Scopes>, String> {
+    pub fn enter_scope(&self, parsed: &Parsed, scopes: Scopes) -> Result<Option<Scopes>, Failure> {
         if scopes.cursor.is_some() {
             return self.enter_graph(parsed, scopes);
         }
@@ -374,7 +432,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// the combat scope only the combat, a unit
     /// leader's its character, the null state nothing. Only test operands
     /// the accepted mask reads; zero accepts without any getter.
-    fn carries(&self, scope: Scope, mask: u32) -> Result<&'static [ScopeKind], String> {
+    fn carries(&self, scope: Scope, mask: u32) -> Result<&'static [ScopeKind], Failure> {
         if mask == 0 {
             return Ok(&[]);
         }
@@ -408,7 +466,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Scope::Province(province) => {
                 return Err(format!(
                     "the scope kinds a province scope (province {province}) carries are not reproduced"
-                ));
+                ).into());
             }
         })
     }
@@ -426,18 +484,27 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     }
                 }
                 Err(why) if mask != 0 => {
-                    return Eval::unknown(format!("trigger {}: {why}", key_text(item)));
+                    return Eval::unknown(
+                        why.context(|why| format!("trigger {}: {why}", key_text(item))),
+                    );
                 }
                 Err(_) => {}
             }
         }
         if let Some(result) = self.temp_operation(name, item, scopes, self.uncertain.get()) {
-            return result.map_or_else(|why| Eval::unknown(fail_text(item, &why)), |_| Eval::True);
+            return result.map_or_else(
+                |why| Eval::unknown(why.context(|why| fail_text(item, why))),
+                |_| Eval::True,
+            );
         }
         if TEMP_WRITERS.contains(&name) {
             let why = "this temp writer is not reproduced; its reached use is refused";
-            self.taint_temps(format!("trigger {}: {why}", key_text(item)));
-            return Eval::unknown(super::refused(fail_text(item, why)));
+            if !self.in_colour_callback() {
+                self.taint_temps(
+                    Failure::from(why).context(|why| format!("trigger {}: {why}", key_text(item))),
+                );
+            }
+            return Eval::unknown(crate::triggers::refusal::refused(fail_text(item, why)));
         }
         if let Some(combat) = self.combat
             && let Some(value) = combat.trigger(name, item, scopes.this, self)
@@ -501,18 +568,35 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     Eval::from_bool(self.world.dlcs.contains(dlc))
                 });
             }
-            "any_owned_state" | "any_controlled_state" => {
+            "any_owned_state"
+            | "any_controlled_state"
+            | "all_owned_state"
+            | "all_controlled_state" => {
                 return block()
                     .map_or_else(unsupported, |b| self.any_country_state(name, b, scopes));
             }
+            "any_country_with_core" | "any_neighbor_country" | "all_neighbor_country" => {
+                return block().map_or_else(unsupported, |b| {
+                    self.map_country_iterator(name, b, scopes)
+                        .unwrap_or_else(Eval::unknown)
+                });
+            }
             "is_in_array" => {
                 return block().map_or_else(unsupported, |b| {
-                    self.is_in_array(b, scopes)
-                        .map_or_else(|why| Eval::unknown(fail_text(item, &why)), Eval::from_bool)
+                    self.is_in_array(b, scopes).map_or_else(
+                        |why| Eval::unknown(why.context(|why| fail_text(item, why))),
+                        Eval::from_bool,
+                    )
                 });
             }
             "any_state_in" => {
                 return block().map_or_else(unsupported, |b| self.any_state_in(b, scopes));
+            }
+            "any_of_scopes" | "all_of_scopes" => {
+                return block().map_or_else(unsupported, |b| {
+                    self.array_scope_iterator(name, b, scopes)
+                        .unwrap_or_else(Eval::unknown)
+                });
             }
             "any_country_with_original_tag" | "all_country_with_original_tag" => {
                 return block().map_or_else(unsupported, |b| {
@@ -542,14 +626,16 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             "tag" => return self.tag(item, scopes).unwrap_or_else(Eval::unknown),
             "check_variable" => {
-                return self
-                    .check_variable(item, scopes)
-                    .map_or_else(|why| Eval::unknown(fail_text(item, &why)), Eval::from_bool);
+                return self.check_variable(item, scopes).map_or_else(
+                    |why| Eval::unknown(why.context(|why| fail_text(item, why))),
+                    Eval::from_bool,
+                );
             }
             "has_variable" => {
-                return self
-                    .has_variable(item, scopes)
-                    .map_or_else(|why| Eval::unknown(fail_text(item, &why)), Eval::from_bool);
+                return self.has_variable(item, scopes).map_or_else(
+                    |why| Eval::unknown(why.context(|why| fail_text(item, why))),
+                    Eval::from_bool,
+                );
             }
             _ => {}
         }
@@ -582,12 +668,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         match scoped {
             Ok(Some(value)) => value,
             Ok(None) => unsupported(),
-            Err(why) => Eval::unknown(format!(
-                "trigger {} {} {}: {why}",
-                key_text(item),
-                String::from_utf8_lossy(item.operator.text()),
-                shown(&item.value)
-            )),
+            Err(why) => Eval::unknown(why.context(|why| fail_text(item, why))),
         }
     }
 
@@ -638,7 +719,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     /// The combat scope's country.
-    pub(super) fn combat_country(&self) -> Result<u32, String> {
+    pub(super) fn combat_country(&self) -> Result<u32, Failure> {
         match self.combat {
             Some(combat) => combat.country(),
             None => Err("the combat scope has no combat here".into()),
@@ -647,14 +728,15 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     /// The canonical country a scope holds as its country: a country, the
     /// combat's; `Err` for any other.
-    fn country_here(&self, scope: Scope) -> Result<u32, String> {
+    fn country_here(&self, scope: Scope) -> Result<u32, Failure> {
         match scope {
             Scope::Country(slot) | Scope::CountryLeader { country: slot, .. } => Ok(slot),
             Scope::Combat => self.combat_country(),
             other => Err(format!(
                 "the trigger's scope check passed in a {} scope, which holds no country",
                 self.describe(other)
-            )),
+            )
+            .into()),
         }
     }
 
@@ -682,9 +764,11 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     /// Why the raid-era country and state triggers cannot read this hour:
     /// the core tables they index are not complete.
-    pub(super) fn core(&self) -> Result<(), String> {
+    pub(super) fn core(&self) -> Result<(), Failure> {
         match self.world.core_gap() {
-            Some(gap) => Err(format!("a core table is not complete this hour: {gap}")),
+            Some(gap) => {
+                Err(gap.context(|gap| format!("a core table is not complete this hour: {gap}")))
+            }
             None => Ok(()),
         }
     }
@@ -695,7 +779,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// finds a country tag or tag alias among the recorded countries and a
     /// character by the content's character templates; it is a
     /// scope unless nothing names it.
-    fn dispatched(&self, item: &Item) -> Result<Option<Child<'a>>, String> {
+    fn dispatched(&self, item: &Item) -> Result<Option<Child<'a>>, Failure> {
         let name = key_text(item);
         let templates = || self.world.character_templates();
         let names = LoadNames {
@@ -704,23 +788,32 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             asked: RefCell::default(),
         };
         let scope = |text: &[u8], quoted| match std::str::from_utf8(text) {
-            Err(_) => ScopeStep::Unknown(format!(
-                "trigger {name} is not UTF-8, so its text cannot be read as a scope"
-            )),
-            Ok(text) => match installed_content_core::scope::parse(text, quoted, &names) {
-                Parsed::Unknown(_) => match names.asked.take() {
-                    Some(why) => ScopeStep::Unknown(why),
-                    None => ScopeStep::NotScope,
-                },
-                scope => ScopeStep::Scope(scope),
-            },
+            Err(_) => ScopeStep::Unknown(
+                format!("trigger {name} is not UTF-8, so its text cannot be read as a scope")
+                    .into(),
+            ),
+            Ok(text) => {
+                let parsed =
+                    super::refusal::deferred(|| installed_content_core::scope::parse(text, quoted, &names));
+                let asked = names.asked.take();
+                let why = (!asked.is_empty()).then(|| Failure::merge(asked));
+                // Classification can fall through to a keyword, or fail inside
+                // a chain. Neither outer variant proves those reads available.
+                if let Some(why) = &why {
+                    why.reached();
+                }
+                match parsed {
+                    Parsed::Unknown(_) => why.map_or(ScopeStep::NotScope, ScopeStep::Unknown),
+                    scope => ScopeStep::Scope(scope),
+                }
+            }
         };
         let count = |keyword: &[u8]| self.count_kind(&name, keyword);
         let keyword = item.keyword();
         let Dispatched {
             dispatch,
             unless_scope,
-        } = installed_content_core::trigger_keys::dispatch(
+        } = installed_content_core::trigger_keys::dispatch_with_error(
             installed_content_core::trigger_keys::Key {
                 keyword: keyword.as_ref().map(|keyword| keyword.text()),
                 text: item.key.as_deref().unwrap_or_default(),
@@ -755,9 +848,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Dispatch::Scripted(template) => Some(Child::Scripted(template)),
             // An invalid trigger is reported and its block is skipped.
             Dispatch::Absent => {
-                self.world
-                    .triggers
-                    .map_err(|why| format!("trigger {name}: {why}"))?;
+                self.world.triggers.map_err(|why| {
+                    Failure::from(why).context(|why| format!("trigger {name}: {why}"))
+                })?;
                 None
             }
         })
@@ -767,34 +860,31 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// bare key over the recorded hour: the key's token (the recorded
     /// lexical dictionary), the content's building and ideology names, the
     /// recorded resource database and the equipment categories.
-    fn count_kind(&self, name: &str, keyword: &[u8]) -> Result<Option<Count>, String> {
+    fn count_kind(&self, name: &str, keyword: &[u8]) -> Result<Option<Count>, Failure> {
         // The key's token ID: none for bare text the dictionary lacks;
         // no lookup by token finds it.
-        let Some(id) = self.world.token_of(keyword).map_err(|why| {
-            format!(
+        let Some(id) = self.world.token_of(keyword).map_err(|why| why.context(|why| format!(
                 "whether trigger {name} is a token (count lookups are keyed by token ID) is unknown: {why}"
-            )
-        })?
+            )))?
         else {
             return Ok(None);
         };
-        let counts = self.world.triggers.map_err(str::to_owned)?.counts.as_ref().ok_or_else(|| {
+        let counts = self.world.triggers.map_err(Failure::from)?.counts.as_ref().ok_or_else(|| -> Failure {
             format!(
                 "whether trigger {name} names a building or an ideology is unknown: the content's building and ideology databases are not loaded"
-            )
+            ).into()
         })?;
         let text = keyword;
         // In trigger-loading order.
         Ok(if counts.is_building(text) {
             Some(Count::Building(id))
-        } else if let Some(index) = self
-            .resource_index(id)
-            .map_err(|why| format!("whether trigger {name} names a resource is unknown: {why}"))?
-        {
+        } else if let Some(index) = self.resource_index(id).map_err(|why| {
+            why.context(|why| format!("whether trigger {name} names a resource is unknown: {why}"))
+        })? {
             Some(Count::Resource { index, token: id })
         } else if counts
             .is_ideology(text)
-            .map_err(|why| format!("trigger {name}: {why}"))?
+            .map_err(|why| Failure::from(why).context(|why| format!("trigger {name}: {why}")))?
         {
             Some(Count::Ideology(text.to_ascii_lowercase()))
         } else {
@@ -804,7 +894,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     /// The index of the active resource whose token
     /// is `token`, found in ResourceDefinitions.
-    fn resource_index(&self, token: u32) -> Result<Option<u32>, String> {
+    fn resource_index(&self, token: u32) -> Result<Option<u32>, Failure> {
         let definitions =
             counted::<tables::ResourceDefinitions>(self.world, "ResourceDefinitions")?;
         Ok(definitions
@@ -818,7 +908,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// it names nothing in the recorded facts (the resolver clears
     /// target validity: an invalid event target, no refusal); `Err` names the
     /// target and the recorded input it lacks.
-    pub fn enter(&self, parsed: &Parsed, scopes: Scopes) -> Result<Option<Scope>, String> {
+    pub fn enter(&self, parsed: &Parsed, scopes: Scopes) -> Result<Option<Scope>, Failure> {
         if scopes.cursor.is_some() && self.event_graph.borrow().is_some() {
             return self
                 .enter_scope(parsed, scopes)
@@ -831,7 +921,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         &self,
         parsed: &Parsed,
         scopes: Scopes,
-    ) -> Result<Option<Scope>, String> {
+    ) -> Result<Option<Scope>, Failure> {
         let world = self.world;
         if let Parsed::Prefixed { prefix, value } = parsed
             && matches!(prefix.as_str(), "mio" | "sp")
@@ -842,13 +932,13 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 Scope::Country(slot) | Scope::CountryLeader { country: slot, .. } => slot,
                 Scope::Combat => self.combat_country()?,
                 Scope::Province(_) => {
-                    return Err(format!("{parsed}: province scope country is not known"));
+                    return Err(format!("{parsed}: province scope country is not known").into());
                 }
                 _ => return Ok(Some(scopes.this)),
             };
-            let raw = world
-                .raw_country(country)
-                .ok_or_else(|| format!("{parsed}: Countries lacks THIS country {country}"))?;
+            let raw = world.raw_country(country).ok_or_else(|| -> Failure {
+                format!("{parsed}: Countries lacks THIS country {country}").into()
+            })?;
             if (raw as i32) < 1 {
                 return Ok(Some(scopes.this));
             }
@@ -872,7 +962,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 return world
                     .slot(raw)
                     .map(|slot| Some(Scope::Country(slot)))
-                    .ok_or_else(|| format!("CountryLinks lacks scope owner {raw}"));
+                    .ok_or_else(|| -> Failure {
+                        format!("CountryLinks lacks scope owner {raw}").into()
+                    });
             }
         }
         match parsed {
@@ -927,7 +1019,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     .filter(|id| world.state_row(*id).is_some());
                 match (state, world.table_gap("States")) {
                     (None, Some(gap)) => {
-                        Err(format!("state {id} has no recorded States row: {gap}"))
+                        Err(gap
+                            .context(|gap| format!("state {id} has no recorded States row: {gap}")))
                     }
                     (state, _) => Ok(state.map(Scope::State)),
                 }
@@ -962,7 +1055,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                             Scope::Province(province) => {
                                 return Err(format!(
                                     "faction_leader: province {province}'s carried country/faction is not reproduced"
-                                ));
+                                ).into());
                             }
                         };
                         Context {
@@ -992,7 +1085,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// as the invalid reference with clearing, leaving the empty scope
     /// ([`NULL_STATE`]) still a valid target. The context trigger
     /// then rejects that empty target by its own mask.
-    fn character_target(&self, parsed: &Parsed, scopes: Scopes) -> Result<Option<Scope>, String> {
+    fn character_target(&self, parsed: &Parsed, scopes: Scopes) -> Result<Option<Scope>, Failure> {
         match scopes.this {
             Scope::Country(_) | Scope::CountryLeader { .. } | Scope::Combat => {}
             Scope::State(_)
@@ -1007,7 +1100,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Scope::Province(province) => {
                 return Err(format!(
                     "{parsed}: whether province {province}'s scope holds a country, which the character lookup needs, is not reproduced"
-                ));
+                ).into());
             }
         }
         match self
@@ -1019,7 +1112,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Ok(other) => Err(format!(
                 "{parsed} resolved to {}, not a character",
                 self.world.recorded().describe(other)
-            )),
+            )
+            .into()),
             Err(Unresolved::Nothing(_)) => Ok(Some(Scope::State(NULL_STATE))),
             Err(Unresolved::Missing(why)) => Err(why),
         }
@@ -1030,7 +1124,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// takes from the scopes) and a character (reading only THIS's
     /// country). The combat scope is its
     /// country; the links are never read, so none is required.
-    fn context(&self, scopes: Scopes) -> Result<Context, String> {
+    fn context(&self, scopes: Scopes) -> Result<Context, Failure> {
         let this = match scopes.this {
             Scope::Country(slot) | Scope::CountryLeader { country: slot, .. } => {
                 Target::Country(slot)
@@ -1047,7 +1141,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 return Err(format!(
                     "a scope keyword read from a {} is not reproduced",
                     self.describe(other)
-                ));
+                )
+                .into());
             }
         };
         Ok(Context {
@@ -1067,7 +1162,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         what: &str,
         fields: &[Item],
         scopes: Scopes,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, Failure> {
         if !fields
             .iter()
             .any(|item| item.keyword_is("modifier") && item.value.items().is_some())
@@ -1096,7 +1191,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     .filter(|item| !item.keyword_is("factor") && !item.keyword_is("add"))
                     .cloned()
                     .collect();
-                if self.evaluate(&conditions, scopes).decided()? {
+                if self.evaluate(&conditions, scopes).decided_input()? {
                     let factor = self.mtth_operand(what, items, "factor", ONE, scopes)?;
                     let add = self.mtth_operand(what, items, "add", 0, scopes)?;
                     value = (value.wrapping_mul(factor) / ONE).wrapping_add(add);
@@ -1123,14 +1218,16 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             Err(why) => return Eval::unknown(why),
         }
-        let fail = |why: String| {
-            Eval::unknown(format!(
-                "trigger {} {} {}: {}: {why}",
-                key_text(item),
-                String::from_utf8_lossy(item.operator.text()),
-                shown(&item.value),
-                count.describe()
-            ))
+        let fail = |why: Failure| {
+            Eval::unknown(why.context(|why| {
+                format!(
+                    "trigger {} {} {}: {}: {why}",
+                    key_text(item),
+                    String::from_utf8_lossy(item.operator.text()),
+                    shown(&item.value),
+                    count.describe()
+                )
+            }))
         };
         let bytes = item.value.scalar().unwrap_or_default();
         let target = || match scopes.this {
@@ -1140,7 +1237,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             }
             Scope::State(id) => Ok(Target::State(id)),
             Scope::Character(id) => Ok(Target::Character(id)),
-            other => Err(format!("reads no {} scope", self.describe(other))),
+            other => Err(format!("reads no {} scope", self.describe(other)).into()),
         };
         let (actual, fixed) = match count {
             Count::Building(token) => {
@@ -1186,15 +1283,22 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     /// Whether a raw owner link names `slot`; link 0 is no country, a link
     /// CountryLinks lacks is unknown.
-    fn owned_by(&self, link: u32, slot: u32) -> Result<bool, String> {
+    fn owned_by(&self, link: u32, slot: u32) -> Result<bool, Failure> {
         if link == 0 {
             return Ok(false);
         }
         match self.world.slot(link) {
             Some(owner) => Ok(owner == slot),
             None => Err(match self.world.table_gap("CountryLinks") {
-                Some(gap) => format!("country link {link} has no CountryLinks row, and {gap}"),
-                None => format!("country link {link} has no CountryLinks row"),
+                Some(gap) => gap.context(|gap| {
+                    format!("country link {link} has no CountryLinks row, and {gap}")
+                }),
+                None => Failure::input(
+                    replay_data::rows::TableId::CountryLinks,
+                    "canonical_slot",
+                    None,
+                    format!("country link {link} has no CountryLinks row"),
+                ),
             }),
         }
     }
@@ -1207,7 +1311,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// is a state building or a province building, so its
     /// rows are in StateBuildings or ProvinceBuildings, never both. The sum
     /// is a 32-bit int.
-    fn building_level(&self, token: u32, target: Target) -> Result<i32, String> {
+    fn building_level(&self, token: u32, target: Target) -> Result<i32, Failure> {
         let world = self.world;
         let state_rows = counted::<tables::StateBuildings>(world, "StateBuildings")?;
         let province_rows = counted::<tables::ProvinceBuildings>(world, "ProvinceBuildings")?;
@@ -1216,19 +1320,17 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Target::Country(slot) => {
                 let mut states = BTreeSet::new();
                 for state in counted::<tables::States>(world, "States")? {
-                    if self
-                        .owned_by(state.owner, slot)
-                        .map_err(|why| format!("the owner of state {}: {why}", state.id))?
-                    {
+                    if self.owned_by(state.owner, slot).map_err(|why| {
+                        why.context(|why| format!("the owner of state {}: {why}", state.id))
+                    })? {
                         states.insert(state.id);
                     }
                 }
                 let mut owned = BTreeSet::new();
                 for province in provinces {
-                    if self
-                        .owned_by(province.owner, slot)
-                        .map_err(|why| format!("the owner of province {}: {why}", province.id))?
-                    {
+                    if self.owned_by(province.owner, slot).map_err(|why| {
+                        why.context(|why| format!("the owner of province {}: {why}", province.id))
+                    })? {
                         owned.insert(province.id);
                     }
                 }
@@ -1267,7 +1369,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// controller's building overrides. Those tables are sliced
     /// (replay_data::cadence): the operands are the state's and its controller's
     /// at their daily reads, so an amount can lag up to a day.
-    fn resource_amount(&self, index: u32, token: u32, target: Target) -> Result<i64, String> {
+    fn resource_amount(&self, index: u32, token: u32, target: Target) -> Result<i64, Failure> {
         let slot = match target {
             Target::Country(slot) => slot,
             Target::State(state) => return self.state_resource_amount(state, token),
@@ -1278,16 +1380,16 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         let rows = counted::<tables::CountryResources>(self.world, "CountryResources")?;
         let mut found = None;
         for row in rows.iter().filter(|row| row.resource == index) {
-            if self
-                .owned_by(row.country, slot)
-                .map_err(|why| format!("a CountryResources row of resource {index}: {why}"))?
-            {
+            if self.owned_by(row.country, slot).map_err(|why| {
+                why.context(|why| format!("a CountryResources row of resource {index}: {why}"))
+            })? {
                 found = Some(row);
                 break;
             }
         }
-        let row = found.ok_or_else(|| {
+        let row = found.ok_or_else(|| -> Failure {
             format!("CountryResources has no row for resource {index} of country slot {slot}")
+                .into()
         })?;
         Ok(row.produced.wrapping_add(row.adjustment))
     }
@@ -1296,20 +1398,19 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// the state's controller's (States.controller, 0 for none); their rows
     /// join through CountryLinks, which must be whole, since a row of a
     /// country it lacks could be the controller's.
-    fn state_resource_amount(&self, state: u32, token: u32) -> Result<i64, String> {
-        self.core().map_err(|why| {
-            format!("the controllers' building overrides (CountryBuildingResources) join through CountryLinks: {why}")
-        })?;
+    fn state_resource_amount(&self, state: u32, token: u32) -> Result<i64, Failure> {
+        self.core().map_err(|why| why.context(|why| format!("the controllers' building overrides (CountryBuildingResources) join through CountryLinks: {why}")))?;
         let world = self.world;
         let (_, controller) = world
             .state_row(state)
-            .ok_or_else(|| format!("state {state} has no States row"))?;
+            .ok_or_else(|| -> Failure { format!("state {state} has no States row").into() })?;
         let controller = match controller {
             0 => None,
-            link => Some(world.slot(link).ok_or_else(|| {
+            link => Some(world.slot(link).ok_or_else(|| -> Failure {
                 format!(
                     "the controller of state {state}: country link {link} has no CountryLinks row"
                 )
+                .into()
             })?),
         };
         world.state_resource_amount(state, token, controller)
@@ -1321,17 +1422,16 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// (recorded as PoliticalParties.token) times 100000 over the
     /// sum of every party's; 0 without popularity, the out-of-range sentinel past its
     /// range check.
-    fn ideology_support(&self, group: &[u8], target: Target) -> Result<i64, String> {
+    fn ideology_support(&self, group: &[u8], target: Target) -> Result<i64, Failure> {
         let Target::Country(slot) = target else {
             return Err("reads only a country scope (mask 4)".into());
         };
         let parties = counted::<tables::PoliticalParties>(self.world, "PoliticalParties")?;
         let (mut total, mut matching) = (0_i64, 0_i64);
         for party in parties {
-            if !self
-                .owned_by(party.country, slot)
-                .map_err(|why| format!("the country of a PoliticalParties row: {why}"))?
-            {
+            if !self.owned_by(party.country, slot).map_err(|why| {
+                why.context(|why| format!("the country of a PoliticalParties row: {why}"))
+            })? {
                 continue;
             }
             // Group names compare without case.
@@ -1369,7 +1469,11 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         } else {
             match trigger_boolean(item) {
                 Ok(desired) => desired,
-                Err(why) => return Eval::unknown(format!("scripted trigger {name}: {why}")),
+                Err(why) => {
+                    return Eval::unknown(
+                        why.context(|why| format!("scripted trigger {name}: {why}")),
+                    );
+                }
             }
         };
         let checked = if scopes.this == Scope::State(NULL_STATE) {
@@ -1394,7 +1498,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Eval::Unknown(reasons) => Eval::Unknown(
                 reasons
                     .into_iter()
-                    .map(|why| format!("scripted trigger {name}: {why}"))
+                    .map(|why| why.context(|why| format!("scripted trigger {name}: {why}")))
                     .collect(),
             ),
             value if desired => value,
@@ -1410,7 +1514,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// tag the country database holds, resolved by crate::scope,
     /// which substitutes for a country without a state;
     /// otherwise a scoped variable evaluated at run time.
-    pub fn country_operand(&self, item: &Item, scopes: Scopes) -> Result<Option<u32>, String> {
+    pub fn country_operand(&self, item: &Item, scopes: Scopes) -> Result<Option<u32>, Failure> {
         let shown = String::from_utf8_lossy(item.value.scalar().unwrap_or_default()).into_owned();
         match scope_selector(item) {
             Some(Selected::Keyword(selector)) => {
@@ -1440,9 +1544,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             return self.resolve_tag(tag, scopes);
         }
         if let Some(gap) = self.world.table_gap("Countries") {
-            return Err(format!(
-                "whether {shown} is a country tag is unknown: {gap}"
-            ));
+            return Err(
+                gap.context(|gap| format!("whether {shown} is a country tag is unknown: {gap}"))
+            );
         }
         // Evaluate a scoped variable as a country.
         self.scoped_country(item.value.scalar().unwrap_or_default(), scopes)
@@ -1462,7 +1566,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         selector: Selector,
         name: &str,
         scopes: Scopes,
-    ) -> Result<Option<u32>, String> {
+    ) -> Result<Option<u32>, Failure> {
         if scopes.cursor.is_some() {
             let keyword = match selector {
                 Selector::This => Some(ScopeKeyword::This),
@@ -1521,16 +1625,16 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 };
                 match owner {
                     0 => Ok(None),
-                    link => self.world.slot(link).map(Some).ok_or_else(|| {
+                    link => self.world.slot(link).map(Some).ok_or_else(|| -> Failure {
                         format!(
                             "the operand is the scope selector {name}, and the owner link {link} of state {id} has no CountryLinks row"
-                        )
+                        ).into()
                     }),
                 }
             }
             Scope::Province(province) => Err(format!(
                 "the operand is the scope selector {name} in province {province}'s scope, which is not reproduced"
-            )),
+            ).into()),
         }
     }
 
@@ -1542,21 +1646,21 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         selector: Selector,
         name: &str,
         this: Scope,
-    ) -> Result<Option<u32>, String> {
+    ) -> Result<Option<u32>, Failure> {
         let state = match this {
             Scope::State(NULL_STATE) => return Ok(None),
             Scope::State(id) => id,
             Scope::Province(province) => {
                 return Err(format!(
                     "the operand is the scope selector {name} in province {province}'s scope, which is not reproduced"
-                ));
+                ).into());
             }
             _ => return Ok(None),
         };
         if selector == Selector::StateOccupier {
             return Err(format!(
                 "the operand is the scope selector {name}: the occupier of state {state} is not read"
-            ));
+            ).into());
         }
         self.core()?;
         let Some((owner, controller)) = self.world.state_row(state) else {
@@ -1569,10 +1673,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         };
         match link {
             0 => Ok(None),
-            link => self.world.slot(link).map(Some).ok_or_else(|| {
+            link => self.world.slot(link).map(Some).ok_or_else(|| -> Failure {
                 format!(
                     "the operand is the scope selector {name}, and state {state}'s link {link} has no CountryLinks row"
-                )
+                ).into()
             }),
         }
     }
@@ -1585,14 +1689,16 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     /// (UnitLeaders.owner; 0 is false); only a character
     /// with neither is compared by its own country. No
     /// table records the operative role pointer.
-    fn tag(&self, item: &Item, scopes: Scopes) -> Result<Eval, String> {
-        let fail = |why: String| {
-            format!(
-                "trigger {} {} {}: {why}",
-                key_text(item),
-                String::from_utf8_lossy(item.operator.text()),
-                shown(&item.value)
-            )
+    fn tag(&self, item: &Item, scopes: Scopes) -> Result<Eval, Failure> {
+        let fail = |why: Failure| {
+            why.context(|why| {
+                format!(
+                    "trigger {} {} {}: {why}",
+                    key_text(item),
+                    String::from_utf8_lossy(item.operator.text()),
+                    shown(&item.value)
+                )
+            })
         };
         let Some(tagged) = self.country_operand(item, scopes).map_err(fail)? else {
             return Ok(Eval::False);
@@ -1615,19 +1721,18 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     /// A raw country link's canonical slot, or why it has none.
-    fn canonical(&self, raw: u32) -> Result<u32, String> {
-        self.world
-            .slot(raw)
-            .ok_or_else(|| format!("country link {raw} has no CountryLinks row"))
+    fn canonical(&self, raw: u32) -> Result<u32, Failure> {
+        self.world.slot(raw).ok_or_else(|| -> Failure {
+            format!("country link {raw} has no CountryLinks row").into()
+        })
     }
 
     /// Where a character's `has_trait` looks its operand up
     /// (character_scope::TraitNames).
-    fn trait_names(&self) -> Result<TraitNames<'_>, String> {
-        let (units, country_leaders) = self
-            .world
-            .character_traits
-            .map_err(|why| format!("the trait databases are unread: {why}"))?;
+    fn trait_names(&self) -> Result<TraitNames<'_>, Failure> {
+        let (units, country_leaders) = self.world.character_traits.map_err(|why| {
+            Failure::from(why).context(|why| format!("the trait databases are unread: {why}"))
+        })?;
         Ok(TraitNames {
             units,
             country_leaders: Ok(country_leaders),
@@ -1637,7 +1742,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     /// The character a character-kind scope holds: its own, or a unit
     /// leader's.
-    fn character_of(&self, scope: Scope) -> Result<u32, String> {
+    fn character_of(&self, scope: Scope) -> Result<u32, Failure> {
         match scope {
             Scope::Character(id) => Ok(id),
             Scope::Leader(reference)
@@ -1647,8 +1752,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 .world
                 .unit_leader(reference)?
                 .map(|row| row.character_id)
-                .ok_or_else(|| format!("unit leader {reference:#x} is not recorded")),
-            other => Err(format!("{} holds no character", self.describe(other))),
+                .ok_or_else(|| -> Failure {
+                    format!("unit leader {reference:#x} is not recorded").into()
+                }),
+            other => Err(format!("{} holds no character", self.describe(other)).into()),
         }
     }
 
@@ -1663,7 +1770,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         name: &str,
         item: &Item,
         scopes: Scopes,
-    ) -> Result<Option<Eval>, String> {
+    ) -> Result<Option<Eval>, Failure> {
         let character = self.character_of(scopes.this)?;
         let bytes = item.value.scalar().unwrap_or_default();
         Ok(Some(match name {
@@ -1695,7 +1802,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     let counts = self
                         .world
                         .triggers
-                        .map_err(str::to_owned)?
+                        .map_err(Failure::from)?
                         .counts
                         .as_ref()
                         .ok_or("has_ideology content ideology database is unavailable")?;
@@ -1712,10 +1819,12 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                                 .iter()
                                 .filter(|role| role.character == character)
                         {
-                            let ideology = role
-                                .current_ideology
-                                .require("CountryLeaderRoles.current_ideology")?
-                                .ok_or("CountryLeaderRoles.current_ideology capture refused")?;
+                            let ideology = *super::refusal::optional(
+                                &role.current_ideology,
+                                replay_data::rows::TableId::CountryLeaderRoles,
+                                "current_ideology",
+                                Some(super::Store::Character(character)),
+                            )?;
                             if ideology == Some(token) {
                                 found = true;
                                 break;
@@ -1742,8 +1851,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         &self,
         character: u32,
         operand: &[u8],
-        assigned: impl FnOnce() -> Result<Option<Vec<i32>>, String>,
-    ) -> Result<bool, String> {
+        assigned: impl FnOnce() -> Result<Option<Vec<i32>>, Failure>,
+    ) -> Result<bool, Failure> {
         self.world.character_tables().character_traits(
             character,
             operand,
@@ -1758,6 +1867,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 fn counted<'a, T: replay_data::rows::TableSchema>(
     world: &World<'a>,
     name: &str,
-) -> Result<&'a [T::Row], String> {
-    table::<T>(world.frame()).map_err(|error| format!("{name} is not complete this hour: {error}"))
+) -> Result<&'a [T::Row], Failure> {
+    table::<T>(world.frame()).map_err(|error| {
+        error.context(|error| format!("{name} is not complete this hour: {error}"))
+    })
 }

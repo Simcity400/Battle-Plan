@@ -42,7 +42,7 @@ impl<'a> ScriptedText<'a> {
             entries::entry_scopes(scopes, start, false),
         );
         scopes.session.replace(Some(evaluator.variable_session()));
-        let value = value.map_err(within)?;
+        let value = value.map_err(|why| within(why.to_string()))?;
         // Numeric output is appended directly, without another scripted-text
         // recursion step. Colour controls and surrounding newlines survive.
         Ok(installed_content_localisation::localisation::format_scripted_variable(value, format))

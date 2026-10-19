@@ -18,6 +18,7 @@ engine-allocation.workspace = true
 engine-dlc.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
+engine-occupation.workspace = true
 engine-railways.workspace = true
 installed-content-abilities.workspace = true
 installed-content-core.workspace = true

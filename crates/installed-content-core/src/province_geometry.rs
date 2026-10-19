@@ -204,13 +204,15 @@ pub fn native_fixed_sqrt(squared: u32) -> i64 {
     } else {
         i64::from(squared as i32) * 100_000
     };
-    let root = sqrt_fixed5(input);
+    let root = native_fixed5_sqrt(input);
     if shifted { root << 5 } else { root }
 }
 
-fn sqrt_fixed5(mut input: i64) -> i64 {
+/// Fixed5 square root, including the small-value and large-value scaling
+/// used by geometry and simulation consumers, with wrapping signed arithmetic.
+pub fn native_fixed5_sqrt(mut input: i64) -> i64 {
     if input < 10_001 {
-        return sqrt_newton(input * 100) * 10_000 / 100_000;
+        return sqrt_newton(input.wrapping_mul(100)).wrapping_mul(10_000) / 100_000;
     }
     let mut decades = 0;
     while input > 2_999_999_999 {
@@ -231,7 +233,7 @@ fn sqrt_newton(input: i64) -> i64 {
     let mut root = input.wrapping_mul(100_000) / 200_000;
     let tolerance = input.wrapping_mul(1_000) / 100_000;
     loop {
-        let error = root.wrapping_mul(root) / 100_000 - input;
+        let error = (root.wrapping_mul(root) / 100_000).wrapping_sub(input);
         let denominator = root.wrapping_mul(2);
         let step = if denominator == 0
             || (error as u64).wrapping_add(0x7fff_ffff_ffff_fffe) > 0xffff_ffff_ffff_fffc
@@ -692,5 +694,13 @@ mod tests {
         assert_eq!(native_fixed_sqrt(0), 0);
         assert_eq!(native_fixed_sqrt(4), 200_000);
         assert_eq!(native_fixed_sqrt(2), 141_422);
+        assert_eq!(native_fixed5_sqrt(-1), 0);
+        assert_eq!(native_fixed5_sqrt(i64::MIN), 0);
+        assert_eq!(native_fixed5_sqrt(i64::MAX), 0);
+        assert_eq!(native_fixed5_sqrt(1), 317);
+        assert_eq!(native_fixed5_sqrt(10_000), 31_622);
+        assert_eq!(native_fixed5_sqrt(10_001), 31_625);
+        assert_eq!(native_fixed5_sqrt(22_222), 47_141);
+        assert_eq!(native_fixed5_sqrt(3_000_000_000), 17_320_530);
     }
 }

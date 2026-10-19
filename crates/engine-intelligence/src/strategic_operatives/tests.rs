@@ -127,6 +127,7 @@ fn every_slot_reads_its_activity_and_both_maps_in_table_order() {
         rows[..2],
         [
             Row {
+                native_pointer: fixture.objects[0],
                 country: 1,
                 slot: 1,
                 mission_activity: 123_456,
@@ -136,6 +137,7 @@ fn every_slot_reads_its_activity_and_both_maps_in_table_order() {
                 pressure_len: 1,
             },
             Row {
+                native_pointer: fixture.objects[1],
                 country: 2,
                 slot: 2,
                 entries_start: 3,

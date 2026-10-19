@@ -1,5 +1,6 @@
 //! Map events: the simulation edges behind the game's floating map text and
-//! the critical shore bombardment explosion, recorded as one hourly interval.
+//! the critical shore bombardment explosion and scripted-map refresh calls,
+//! recorded as one hourly interval.
 //!
 //! [`MapEventsRow`] is a singleton (key 0) holding the events the collector
 //! published since the previous interval, in their one global sequence, and
@@ -7,13 +8,17 @@
 //! events certifies that none happened; an incomplete one is unknown, though
 //! the events it does list happened. Each event is captured where the game
 //! decides it, before the game's own local-viewpoint filter, so a replay can
-//! show what any country would have seen.
+//! show what any country would have seen. Scripted refreshes instead observe
+//! the successful call after its selected-mode and script-limit gates.
 use crate::{
     codec::{Decoder, invalid_static as invalid},
     value::{Value, value_struct},
 };
 use engine_allocation as allocation;
 use std::io;
+
+#[cfg(test)]
+mod scripted_tests;
 
 /// The event families, in the order of [`MapEventsRow::health`] and their payload tags.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,10 +32,11 @@ pub enum MapEventFamily {
     ParadropLanding = 4,
     ResistanceActivity = 5,
     BuildingDamage = 6,
+    ScriptedMapRefresh = 7,
 }
 
 impl MapEventFamily {
-    pub const COUNT: usize = 7;
+    pub const COUNT: usize = 8;
     pub const ALL: [Self; Self::COUNT] = [
         Self::FakeDivisionRevealed,
         Self::RailwayGunOverrun,
@@ -39,6 +45,7 @@ impl MapEventFamily {
         Self::ParadropLanding,
         Self::ResistanceActivity,
         Self::BuildingDamage,
+        Self::ScriptedMapRefresh,
     ];
 
     pub const fn index(self) -> usize {
@@ -61,6 +68,7 @@ impl MapEventFamily {
             Self::ParadropLanding => "paradrop_landing",
             Self::ResistanceActivity => "resistance_activity",
             Self::BuildingDamage => "building_damage",
+            Self::ScriptedMapRefresh => "scripted_map_refresh",
         }
     }
 }
@@ -385,6 +393,8 @@ pub enum MapEventPayload {
     ParadropLanding(MapEventParadrop),
     ResistanceActivity(MapEventResistance),
     BuildingDamage(MapEventBuildingDamage),
+    /// Zero-based scripted mode declaration ordinal, after its effect passed every native gate.
+    ScriptedMapRefresh(u32),
 }
 
 impl Default for MapEventPayload {
@@ -403,6 +413,7 @@ impl MapEventPayload {
             Self::ParadropLanding(_) => MapEventFamily::ParadropLanding,
             Self::ResistanceActivity(_) => MapEventFamily::ResistanceActivity,
             Self::BuildingDamage(_) => MapEventFamily::BuildingDamage,
+            Self::ScriptedMapRefresh(_) => MapEventFamily::ScriptedMapRefresh,
         }
     }
 }
@@ -418,6 +429,7 @@ impl Value for MapEventPayload {
             Self::ParadropLanding(value) => Value::heap_bytes(value),
             Self::ResistanceActivity(value) => Value::heap_bytes(value),
             Self::BuildingDamage(value) => Value::heap_bytes(value),
+            Self::ScriptedMapRefresh(value) => Value::heap_bytes(value),
         }
     }
     const MINIMUM_ENCODED_BYTES: usize = 5;
@@ -431,6 +443,7 @@ impl Value for MapEventPayload {
             Self::ParadropLanding(value) => value.encoded_bytes(),
             Self::ResistanceActivity(value) => value.encoded_bytes(),
             Self::BuildingDamage(value) => value.encoded_bytes(),
+            Self::ScriptedMapRefresh(value) => value.encoded_bytes(),
         }?;
         allocation::add(1, bytes)
     }
@@ -443,6 +456,7 @@ impl Value for MapEventPayload {
             Self::ParadropLanding(value) => Self::ParadropLanding(*value),
             Self::ResistanceActivity(value) => Self::ResistanceActivity(value.try_clone()?),
             Self::BuildingDamage(value) => Self::BuildingDamage(*value),
+            Self::ScriptedMapRefresh(value) => Self::ScriptedMapRefresh(*value),
         })
     }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
@@ -456,6 +470,7 @@ impl Value for MapEventPayload {
             Self::ParadropLanding(value) => value.encode_reserved(output),
             Self::ResistanceActivity(value) => value.encode_reserved(output),
             Self::BuildingDamage(value) => value.encode_reserved(output),
+            Self::ScriptedMapRefresh(value) => value.encode_reserved(output),
         }
     }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
@@ -478,6 +493,7 @@ impl Value for MapEventPayload {
             MapEventFamily::ResistanceActivity => {
                 Self::ResistanceActivity(MapEventResistance::decode(input)?)
             }
+            MapEventFamily::ScriptedMapRefresh => Self::ScriptedMapRefresh(u32::decode(input)?),
             MapEventFamily::BuildingDamage => {
                 Self::BuildingDamage(MapEventBuildingDamage::decode(input)?)
             }

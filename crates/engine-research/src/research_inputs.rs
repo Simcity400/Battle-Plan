@@ -43,6 +43,8 @@ pub struct Row {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BonusRow {
+    /// Same-pass authenticated grant object; never serialized.
+    pub source_pointer: usize,
     pub country: u32,
     pub index: u32,
     pub ordinal: u32,
@@ -144,9 +146,32 @@ pub fn walk_country_buffer(
     country_pointer: usize,
     country: u32,
     context: Result<Context, &'static str>,
+    output: crate::walk::Buffer<'_, Row>,
+    bonuses: crate::walk::Buffer<'_, BonusRow>,
+) -> (Outcome, Outcome) {
+    let (inputs, bonuses, _) = walk_country_buffer_with_status(
+        memory,
+        base,
+        country_pointer,
+        country,
+        context,
+        output,
+        bonuses,
+    );
+    (inputs, bonuses)
+}
+
+/// Same acquisition with its authenticated status retained for inventory capture, including zero-slot countries.
+pub fn walk_country_buffer_with_status(
+    memory: &impl Memory,
+    base: usize,
+    country_pointer: usize,
+    country: u32,
+    context: Result<Context, &'static str>,
     mut output: crate::walk::Buffer<'_, Row>,
     mut bonuses: crate::walk::Buffer<'_, BonusRow>,
-) -> (Outcome, Outcome) {
+) -> (Outcome, Outcome, usize) {
+    let mut status_pointer = 0;
     let mut bonus_len = 0_usize;
     let mut bonus_missing = 0_u32;
     let mut bonus_error = None;
@@ -154,6 +179,7 @@ pub fn walk_country_buffer(
         let context = context?;
         let raw = ctechnology_status::copy_status(memory, country_pointer)?;
         let status = ctechnology_status::decode_status(base, country_pointer, &raw)?;
+        status_pointer = status;
         let slots = Array::read(
             memory,
             at(status, ctechnology_status::RESEARCH_SLOTS_DATA)?,
@@ -222,6 +248,7 @@ pub fn walk_country_buffer(
                 let index = slot.index;
                 let mut row = Row {
                     slot,
+                    status_pointer: status,
                     cost_scale_raw: context.cost_scale_raw,
                     cost_debug: context.cost_debug,
                     ..Row::default()
@@ -251,7 +278,6 @@ pub fn walk_country_buffer(
                     row.classifier = instance.row.classifier;
                     row.technology_pointer = technology;
                     row.template_pointer = instance.template;
-                    row.status_pointer = status;
                     row.template_year = template.year;
                     row.template_index = template.database_index;
                     row.slot.database_index = template.database_index;
@@ -361,7 +387,7 @@ pub fn walk_country_buffer(
         },
         _ => Outcome::Rows { len: bonus_len },
     };
-    (inputs, attributed)
+    (inputs, attributed, status_pointer)
 }
 
 fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
@@ -479,6 +505,7 @@ fn resolve_bonus_roster(
                     if row.resolved != 0 {
                         return Err("duplicate research bonus ID");
                     }
+                    row.source_pointer = pointer;
                     row.value = value.clone();
                     row.cost_reduction_raw = cost_reduction;
                     row.resolved = 1;

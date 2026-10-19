@@ -8,6 +8,8 @@ pub const VTABLE_RVA: usize = 0x0296_5ca0;
 pub const ENABLED_MASK: usize = 0x10;
 /// Current type or mask, i32; training clears it independently of the enabled mask.
 pub const CURRENT_TYPE: usize = 0x14;
+/// Effective aircraft retained by an admitted simulation mission update, i32.
+pub const EFFECTIVE_AIRCRAFTS: usize = 0xe0;
 /// Saved active byte required by regional missions outside the training path.
 pub const ACTIVE: usize = 0x20;
 /// Context-mode byte; two is unrestricted, zero and one select complementary gates.

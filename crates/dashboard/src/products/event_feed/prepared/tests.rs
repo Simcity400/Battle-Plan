@@ -281,6 +281,7 @@ pub(crate) fn frame(hour: i32, count: u32) -> DecodedFrame {
     }
     let events = if hour == 102 {
         vec![EventFeedEvent {
+            script: None,
             sequence: 1,
             generation: 9,
             hour: 101,
@@ -297,6 +298,9 @@ pub(crate) fn frame(hour: i32, count: u32) -> DecodedFrame {
     let acquired = events.len() as u64;
     *frame.tables[TableId::EventFeedHistory.index()] =
         TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+            script_refusals: 0,
+            script_tokens: Vec::new(),
+            script_scopes: Vec::new(),
             generation: 9,
             read_hour: hour,
             coverage: EventFeedCoverage::Complete,
@@ -475,6 +479,9 @@ fn prepared_feed_sources_equal_their_change_builders_across_commits_resume_appen
                     .unwrap();
             }
             original.fold_held(&cancelled).unwrap();
+            // The debug trace follows country folds; published calls follow
+            // their stable chronological order, including the same-hour ties.
+            original.seen.sort_by_key(|completion| completion.hour);
             assert_eq!(completions, original.seen);
             let facts: Vec<Fact> = rows(&fixture, "event-feed-facts-1", &FACT_KEYS, &cancelled);
             assert_eq!(
@@ -660,6 +667,7 @@ fn prepared_feed_pages_reach_late_facts_past_their_read_and_keep_live_cutoffs() 
                 &Fact {
                     row,
                     nuke_type: None,
+                    script: None,
                 },
             )
             .unwrap();

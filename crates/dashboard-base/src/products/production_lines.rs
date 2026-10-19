@@ -92,8 +92,9 @@ use crate::{
 };
 use replay::{container::BlockIndex, container::Replay};
 use replay_data::{
-    rows::IndustrialOrganisationRow, rows::LexicalTokenRow, rows::ProductionLineOutputRow,
-    rows::ProductionLineRow, rows::TableId, rows::VariantDefinitionRow, rows::tables,
+    rows::IndustrialOrganisationDetailsRow, rows::IndustrialOrganisationRow, rows::LexicalTokenRow,
+    rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::TableId,
+    rows::VariantDefinitionRow, rows::tables,
 };
 use replay_frame::{
     frame::DecodedFrame, frame::FrameDecoder, frame::FrameSource, frame::SharedView,
@@ -221,6 +222,12 @@ pub struct ScannedLine {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LineRun {
+    /// Frozen design authorship, independently observed from the line assignment.
+    pub design_author: Option<String>,
+    /// Supplying VariantStats read, independent of the production-line census.
+    pub design_read_hour: Option<i32>,
+    pub design_trait_count: Option<i32>,
+    pub design_bonus_count: Option<u32>,
     pub first_hour: i32,
     pub last_hour: i32,
     /// The run follows a gap, a missing read or another country identity.
@@ -251,6 +258,10 @@ pub struct LineRun {
 impl From<&RawRun> for LineRun {
     fn from(run: &RawRun) -> Self {
         Self {
+            design_author: None,
+            design_read_hour: None,
+            design_trait_count: None,
+            design_bonus_count: None,
             first_hour: run.first_hour,
             last_hour: run.last_hour,
             starts_segment: run.starts_segment,
@@ -368,6 +379,7 @@ pub struct LineHistory {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LineDetail {
+    pub organisations: Vec<OrganisationStateRead>,
     /// The line's key in `production-lines`.
     pub key: String,
     pub runs: Vec<LineRun>,
@@ -415,6 +427,35 @@ pub struct OrganisationName {
     pub icon: Option<String>,
     /// Why the icon cannot be determined from this read.
     pub icon_unknown: Option<String>,
+}
+
+/// MIO states demanded by a line's bounded detail window.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganisationStateRead {
+    pub id: String,
+    pub first_hour: i32,
+    pub state: Option<OrganisationState>,
+}
+
+/// Stored MIO operands at a daily census; absent state remains unknown.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganisationState {
+    pub read_hour: Option<i32>,
+    pub size: i32,
+    pub funds_raw: String,
+    pub unspent_points: i32,
+    pub base_task_capacity: i32,
+    pub active_tasks: u32,
+    pub task_slots: u32,
+    pub unlocked: Vec<String>,
+    pub planned: Vec<String>,
+    pub queue_index: i32,
+    pub policy_token: Option<String>,
+    pub policy_name: Option<String>,
+    pub cooldown_hour: Option<i32>,
+    pub auto_update_designs: bool,
 }
 
 /// One picture, shared by every variant or organisation showing it.
@@ -519,13 +560,25 @@ pub struct RawOrganisation {
     pub owner_tag: Option<String>,
     /// A positive owner reference the read cannot resolve, rather than no owner.
     pub owner_unknown: bool,
+    pub state: Option<OrganisationState>,
 }
 
 /// A variant's icon at a read: the icon, none, or why it is unknown.
 pub type IconAt = (i32, Result<Option<Icon>, String>);
 
+/// A demanded design's own observation, including explicit unavailable intervals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct DesignRead {
+    pub first_hour: i32,
+    pub read_hour: Option<i32>,
+    pub author: Option<u64>,
+    pub trait_count: Option<i32>,
+    pub bonus_count: Option<u32>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ScannedLines {
+    pub designs: BTreeMap<u64, Vec<DesignRead>>,
     pub lines: Vec<ScannedLine>,
     pub modifiers: BTreeMap<String, Vec<breakdown::RawModifierRun>>,
     /// Counts supplying reads whose fixed modifier names did not authenticate.
@@ -634,6 +687,100 @@ fn output_of(rows: &[(&ProductionLineOutputRow, bool)], hour: i32) -> RawOutput 
 fn version<T: Clone + PartialEq>(versions: &mut Vec<T>, value: T, same: impl Fn(&T, &T) -> bool) {
     if versions.last().is_none_or(|last| !same(last, &value)) {
         versions.push(value);
+    }
+}
+
+/// Observe only designs demanded by this country's active lines, on a design
+/// read/availability change or the first line census naming that design.
+fn observe_design(scanned: &mut ScannedLines, hour: &ScanHour, variant: u64) {
+    let row = hour.designs.as_ref().and_then(|view| match &**view {
+        replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::VariantStats(
+            rows,
+        )) => rows
+            .binary_search_by_key(&variant, |row| row.variant)
+            .ok()
+            .map(|index| &rows[index]),
+        _ => None,
+    });
+    let read = DesignRead {
+        first_hour: hour.hour,
+        read_hour: row.and(hour.design_read_hour),
+        author: row.map(|row| row.organisation),
+        trait_count: row.map(|row| row.organisation_trait_count),
+        bonus_count: row.map(|row| row.organisation_bonuses.len() as u32),
+    };
+    version(scanned.designs.entry(variant).or_default(), read, |a, b| {
+        DesignRead {
+            first_hour: 0,
+            ..*a
+        } == DesignRead {
+            first_hour: 0,
+            ..*b
+        }
+    });
+    // A newly observed author need not have been assigned to any line at hour 8.
+    // Name it from the retained MIO observation without replacing its daily state.
+    if let Some(author) = read.author.filter(|&id| id != 0)
+        && !scanned.organisations.contains_key(&author)
+        && let Some(frame) = hour.frame.as_ref()
+        && let (Ok(rows), Ok(countries), Ok(links), Ok(lexical)) = (
+            frame.complete::<tables::IndustrialOrganisations>(),
+            frame.complete::<tables::Countries>(),
+            frame.complete::<tables::CountryLinks>(),
+            frame.complete::<tables::LexicalTokens>(),
+        )
+        && let Ok(index) = rows.binary_search_by_key(&author, |row| row.organisation)
+    {
+        let tags = Tags::new(
+            countries,
+            links,
+            frame.complete::<tables::CountryAppearance>().ok(),
+        );
+        scanned.organisations.insert(
+            author,
+            vec![raw_organisation(&rows[index], hour.hour, &tags, lexical)],
+        );
+    }
+}
+
+/// Overlay the design's independent versions only in the requested line detail.
+/// The underlying line runs and branch-wide factory steps keep their own cadence.
+fn append_design_runs(
+    result: &mut Vec<LineRun>,
+    run: &RawRun,
+    versions: &[DesignRead],
+    window_first: i32,
+    window_last: i32,
+) {
+    let start = run.first_hour.max(window_first);
+    let end = run.last_hour.min(window_last);
+    if start > end {
+        return;
+    }
+    let mut next = versions.partition_point(|read| read.first_hour <= start);
+    let mut first = next.checked_sub(1).map_or(run.first_hour, |index| {
+        run.first_hour.max(versions[index].first_hour)
+    });
+    loop {
+        let last = versions.get(next).map_or(run.last_hour, |read| {
+            run.last_hour.min(read.first_hour.saturating_sub(1))
+        });
+        let mut value = LineRun::from(run);
+        value.first_hour = first;
+        value.last_hour = last;
+        value.starts_segment &= first == run.first_hour;
+        if let Some(read) = next.checked_sub(1).and_then(|index| versions.get(index)) {
+            value.design_author = read.author.map(|id| id.to_string());
+            value.design_read_hour = read.read_hour;
+            value.design_trait_count = read.trait_count;
+            value.design_bonus_count = read.bonus_count;
+        }
+        result.push(value);
+        if last >= end {
+            break;
+        }
+        first = last + 1;
+        next += 1;
     }
 }
 
@@ -841,6 +988,9 @@ struct ScanHour {
     /// Both modifier tables are complete.
     modifiers_complete: bool,
     modifiers_read: bool,
+    /// Frozen design observations follow VariantStats, including availability.
+    designs: Option<SharedView>,
+    design_read_hour: Option<i32>,
     /// The frame, kept at a complete variant read, a read of the variant
     /// table, and a read of this country's lines.
     frame: Option<DecodedFrame>,
@@ -862,6 +1012,12 @@ impl ScanHour {
             && self.output_complete == next.output_complete
             && self.organisations_complete == next.organisations_complete
             && self.modifiers_complete == next.modifiers_complete
+            && self.design_read_hour == next.design_read_hour
+            && match (&self.designs, &next.designs) {
+                (Some(before), Some(now)) => SharedView::ptr_eq(before, now),
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
@@ -955,11 +1111,27 @@ fn scan_hour_selected(
         Some(Country::Unresolved) | None => false,
     });
     let variants = VariantCatalogue::hour_read(decoded, read(TableId::VariantDefinitions));
-    let definitions_read = read(TableId::VariantDefinitions)
+    let definitions_read = (equipment::design_changed(decoded)
+        || read(TableId::VariantDefinitions))
         && decoded.complete::<tables::VariantDefinitions>().is_ok();
     let lines_of_country =
         matches!(country, Some(Country::Found(..))) && lines_complete && lines_read;
-    let keep = variants == VariantHour::Read || definitions_read || lines_of_country;
+    let designs = decoded
+        .complete::<tables::VariantStats>()
+        .ok()
+        .map(|_| decoded.tables[TableId::VariantStats.index()].clone());
+    // The variant worker charges its modules/stats/upgrades read group to
+    // VariantModules. This producer-specific anchor supplies an uncharged stats
+    // read's date; never substitute the ProductionLines or current frame hour.
+    let design_read_hour = designs.as_ref().and_then(|view| {
+        view.sampled_at()
+            .or_else(|| decoded.tables[TableId::VariantModules.index()].sampled_at())
+    });
+    let keep = variants == VariantHour::Read
+        || definitions_read
+        || lines_of_country
+        || read(TableId::VariantStats)
+        || read(TableId::VariantModules);
     ScanHour {
         hour,
         last_hour: hour,
@@ -967,6 +1139,8 @@ fn scan_hour_selected(
         output_due,
         variants,
         definitions_read,
+        designs,
+        design_read_hour,
         lines_complete,
         lines_read,
         output_complete,
@@ -1029,6 +1203,9 @@ fn scan_blocks_mode(
         TableId::ProductionLines,
         TableId::ProductionLineOutput,
         TableId::IndustrialOrganisations,
+        TableId::IndustrialOrganisationDetails,
+        TableId::IndustrialOrganisationPolicies,
+        TableId::VariantStats,
         TableId::CountryProductionModifiers,
         TableId::ProductionLineModifiers,
         TableId::ModifierDefinitions,
@@ -1075,6 +1252,8 @@ fn scan_blocks_mode(
     // The variant table's view at the last read whose rows were stored.
     let mut last_definitions: Option<SharedView> = None;
     let mut variant_reads = VariantReads::default();
+    let mut last_designs: Option<SharedView> = None;
+    let mut last_design_read_hour = None;
     #[cfg(any(test, feature = "test-support"))]
     crate::blocks::SCANNED_BLOCKS.with_borrow_mut(|scanned| {
         scanned.extend(blocks.iter().map(|block| block.offset));
@@ -1276,10 +1455,31 @@ fn scan_blocks_mode(
                         output_open = false;
                         organisations_open = false;
                     }
+                    let designs_changed = match (&last_designs, &scan_hour.designs) {
+                        (Some(before), Some(now)) => {
+                            !SharedView::ptr_eq(before, now)
+                                || last_design_read_hour != scan_hour.design_read_hour
+                        }
+                        (None, None) => false,
+                        _ => true,
+                    };
+                    last_designs = scan_hour.designs.clone();
+                    last_design_read_hour = scan_hour.design_read_hour;
                     let (Some(identity), true) = (identity, scan_hour.lines_complete) else {
                         continue;
                     };
                     let slot = identity.0;
+                    if carried && designs_changed {
+                        let demanded: BTreeSet<_> = open
+                            .values()
+                            .filter_map(|line| {
+                                result.lines[line.index].runs.last().map(|run| run.variant)
+                            })
+                            .collect();
+                        for variant in demanded {
+                            observe_design(&mut result, scan_hour, variant);
+                        }
+                    }
                     if !scan_hour.lines_read {
                         // Carried: the last read still holds, but only after a read of this identity.
                         if carried {
@@ -1406,6 +1606,7 @@ fn scan_blocks_mode(
                             (result.lines.len() - 1, true)
                         };
                         latest.insert(row.handle, index);
+                        observe_design(&mut result, scan_hour, row.variant);
                         let values = RawRun {
                             first_hour: hour,
                             last_hour: hour,
@@ -1601,7 +1802,18 @@ fn scan_blocks_mode(
                         mark(&mut result.organisation_hours, hour);
                         let named: BTreeSet<u64> = mine
                             .iter()
-                            .map(|row| row.mio)
+                            .flat_map(|row| {
+                                let author = decoded
+                                    .complete::<tables::VariantStats>()
+                                    .ok()
+                                    .and_then(|stats| {
+                                        stats
+                                            .binary_search_by_key(&row.variant, |s| s.variant)
+                                            .ok()
+                                            .map(|index| stats[index].organisation)
+                                    });
+                                std::iter::once(row.mio).chain(author)
+                            })
                             .filter(|mio| *mio != 0)
                             .collect();
                         for row in organisations
@@ -1610,7 +1822,53 @@ fn scan_blocks_mode(
                         {
                             version(
                                 result.organisations.entry(row.organisation).or_default(),
-                                raw_organisation(row, hour, &naming_tags, lexical),
+                                {
+                                    let mut raw =
+                                        raw_organisation(row, hour, &naming_tags, lexical);
+                                    raw.state = decoded
+                                        .complete::<tables::IndustrialOrganisationDetails>()
+                                        .ok()
+                                        .and_then(|details| {
+                                            details
+                                                .binary_search_by_key(
+                                                    &row.organisation,
+                                                    |details| details.organisation,
+                                                )
+                                                .ok()
+                                                .map(|index| &details[index])
+                                                .filter(|details| details.country == row.country)
+                                        })
+                                        .map(|details| {
+                                            let mut state = organisation_state(
+                                                details,
+                                                decoded.tables
+                                                    [TableId::IndustrialOrganisationDetails
+                                                        .index()]
+                                                .sampled_at(),
+                                                lexical,
+                                            );
+                                            state.policy_name = decoded
+                                                .complete::<tables::IndustrialOrganisationPolicies>(
+                                                )
+                                                .ok()
+                                                .and_then(|rows| {
+                                                    rows.binary_search_by_key(
+                                                        &details.country,
+                                                        |policies| policies.country,
+                                                    )
+                                                    .ok()
+                                                    .map(|index| &rows[index])
+                                                })
+                                                .and_then(|policies| {
+                                                    policies.policies.iter().find(|policy| {
+                                                        policy.token == details.state.policy
+                                                    })
+                                                })
+                                                .map(|policy| text(&policy.name));
+                                            state
+                                        });
+                                    raw
+                                },
                                 |a, b| {
                                     RawOrganisation {
                                         first_hour: 0,
@@ -1720,6 +1978,46 @@ fn raw_organisation(
         icon: text(&row.icon),
         owner_unknown: (row.owner as i32) > 0 && owner_tag.is_none(),
         owner_tag,
+        state: None,
+    }
+}
+
+/// Native constructor and save-writer sentinel for no selected policy.
+const UNSELECTED_POLICY: u32 = 0x4c17;
+
+fn organisation_state(
+    row: &IndustrialOrganisationDetailsRow,
+    read_hour: Option<i32>,
+    lexical: &[LexicalTokenRow],
+) -> OrganisationState {
+    OrganisationState {
+        read_hour,
+        size: row.state.size,
+        funds_raw: row.state.funds_raw.to_string(),
+        unspent_points: row.state.points,
+        base_task_capacity: row.state.task_capacity,
+        active_tasks: row
+            .tasks
+            .iter()
+            .filter(|task| task.line.is_some() || task.technology.is_some())
+            .count() as u32,
+        task_slots: row.tasks.len() as u32,
+        unlocked: row
+            .unlocked
+            .iter()
+            .map(|&token| token_of(lexical, token))
+            .collect(),
+        planned: row
+            .queued
+            .iter()
+            .map(|&token| token_of(lexical, token))
+            .collect(),
+        queue_index: row.state.queue_index,
+        policy_token: (row.state.policy != UNSELECTED_POLICY)
+            .then(|| token_of(lexical, row.state.policy)),
+        policy_name: None,
+        cooldown_hour: row.state.cooldown_hour,
+        auto_update_designs: row.state.upgrades != 0,
     }
 }
 
@@ -2084,19 +2382,61 @@ pub fn detail_lines(scanned: &ScannedLines, first: i32, last: i32) -> Vec<LineDe
         .lines
         .iter()
         .filter_map(|line| {
-            let runs: Vec<LineRun> = line
-                .runs
-                .iter()
-                .filter(|run| overlaps(run.first_hour, run.last_hour))
-                .map(LineRun::from)
-                .collect();
+            let mut runs = Vec::new();
+            for run in &line.runs {
+                if overlaps(run.first_hour, run.last_hour) {
+                    append_design_runs(
+                        &mut runs,
+                        run,
+                        scanned
+                            .designs
+                            .get(&run.variant)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                        first,
+                        last,
+                    );
+                }
+            }
             let output: Vec<OutputRun> = line
                 .output
                 .iter()
                 .filter(|output| overlaps(output.first_hour, output.last_hour))
                 .map(OutputRun::from)
                 .collect();
+            let demanded: BTreeSet<_> = line
+                .runs
+                .iter()
+                .filter(|run| overlaps(run.first_hour, run.last_hour))
+                .map(|run| run.mio)
+                .filter(|&id| id != 0)
+                .collect();
+            let organisations = demanded
+                .into_iter()
+                .flat_map(|id| {
+                    let versions = scanned
+                        .organisations
+                        .get(&id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    versions
+                        .iter()
+                        .enumerate()
+                        .filter(move |(index, raw)| {
+                            raw.first_hour <= last
+                                && versions
+                                    .get(index + 1)
+                                    .is_none_or(|next| next.first_hour > first)
+                        })
+                        .map(move |(_, raw)| OrganisationStateRead {
+                            id: id.to_string(),
+                            first_hour: raw.first_hour,
+                            state: raw.state.clone(),
+                        })
+                })
+                .collect();
             (!runs.is_empty() || !output.is_empty()).then(|| LineDetail {
+                organisations,
                 key: line.key.clone(),
                 runs,
                 output,
@@ -2611,6 +2951,7 @@ type ScannedView = (
 
 /// As [`scanned_lines`], for `view`: with the hours the scan does not answer
 /// exactly (none for a whole scan).
+// Keep content availability, the shared scan and approximate-hour spans in one query result.
 fn scanned_view(
     source: &Source,
     params: &CountryParams,
@@ -2730,6 +3071,7 @@ impl Product for ProductionLines {
             LineHistory::decl(),
             VariantName::decl(),
             OrganisationName::decl(),
+            OrganisationState::decl(),
             EquipmentIcon::decl(),
             ProductionLinesParams::decl(),
             ProductionLinesReply::decl(),
@@ -2777,6 +3119,7 @@ impl Product for ProductionLines {
         // Organisations.
         let mut organisations = Vec::new();
         for (id, versions) in &scanned.organisations {
+            let mut previous: Option<OrganisationName> = None;
             for raw in versions {
                 let icon = catalogue
                     .as_ref()
@@ -2792,7 +3135,7 @@ impl Product for ProductionLines {
                         shown.insert(key.clone(), icon);
                         key
                     });
-                organisations.push(OrganisationName {
+                let entry = OrganisationName {
                     id: id.to_string(),
                     first_hour: raw.first_hour,
                     token: raw.token.clone(),
@@ -2800,7 +3143,16 @@ impl Product for ProductionLines {
                     name_unknown: raw.owner_unknown.then(|| "The organisation's owner is unresolved at this read; its country-specific name is unknown.".to_owned()),
                     icon_unknown: (raw.owner_unknown && icon.is_none()).then(|| "The organisation's owner is unresolved at this read; its country-specific icon is unknown.".to_owned()),
                     icon,
-                });
+                };
+                if previous.as_ref().is_none_or(|old| {
+                    OrganisationName {
+                        first_hour: entry.first_hour,
+                        ..old.clone()
+                    } != entry
+                }) {
+                    previous = Some(entry.clone());
+                    organisations.push(entry);
+                }
             }
         }
         // Pictures, decoded once per catalogue.
@@ -2927,6 +3279,7 @@ impl Product for ProductionLineDetail {
         vec![
             LineRun::decl(),
             LineDetail::decl(),
+            OrganisationStateRead::decl(),
             ProductionDetailParams::decl(),
             ProductionLineDetailReply::decl(),
         ]

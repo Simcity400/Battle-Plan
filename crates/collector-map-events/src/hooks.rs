@@ -1,4 +1,4 @@
-//! The seven map event sites and their callbacks.
+//! The map event sites and their callbacks.
 //!
 //! Each callback runs on the native thread that reaches its site, copies the
 //! event into its publication lane ([`crate::lanes`]) through guarded reads
@@ -40,10 +40,11 @@ static REJECTED: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static STRANDED: AtomicUsize = AtomicUsize::new(0);
 static UNHOOKED: [OnceLock<&'static str>; N] = [const { OnceLock::new() }; N];
-/// Native call targets of the three call sites and trampolines of the three entries.
+/// Native call targets and entry trampolines.
 static FAKE_TARGET: AtomicUsize = AtomicUsize::new(0);
 static GENERAL_TARGET: AtomicUsize = AtomicUsize::new(0);
 static PARADROP_TARGET: AtomicUsize = AtomicUsize::new(0);
+static SCRIPTED_REFRESH_TARGET: AtomicUsize = AtomicUsize::new(0);
 static RAILWAY_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static RESISTANCE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static BUILDING_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -207,6 +208,7 @@ enum Event {
         intel: engine_native::cpdx_array::Array,
     },
     Province(u32),
+    ScriptedRefresh(u32),
     General {
         owner: u32,
         captor: u32,
@@ -232,7 +234,7 @@ impl Event {
     fn len(&self) -> usize {
         match self {
             Self::Unit { intel, .. } => 17 + intel.count as usize * 5,
-            Self::Province(_) => 4,
+            Self::Province(_) | Self::ScriptedRefresh(_) => 4,
             Self::General { .. } => 12,
             Self::Paradrop { .. } => 10,
             Self::Resistance { key, .. } => 16 + key.1,
@@ -265,7 +267,7 @@ impl Event {
                     start += batch;
                 }
             }
-            Self::Province(province) => out.u32(province),
+            Self::Province(province) | Self::ScriptedRefresh(province) => out.u32(province),
             Self::General {
                 owner,
                 captor,
@@ -334,6 +336,7 @@ fn unit_event(
 }
 
 type Native1 = unsafe extern "system-unwind" fn(usize) -> usize;
+type NativeRefresh = unsafe extern "system-unwind" fn(usize, u8);
 type Native4 = unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize;
 type Native6 = unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize, usize) -> usize;
 
@@ -382,6 +385,21 @@ unsafe extern "system-unwind" fn critical_bombardment(registers: &Registers, _ta
             site::province_id(memory, province).map(Event::Province)
         });
     }
+}
+
+/// The scripted refresh's call site, after its name and limit gates passed.
+unsafe extern "system-unwind" fn scripted_refresh(manager: usize, refresh_all: u8) {
+    let timing = hook_timing::enter(Timing::MapEvents);
+    let mut call = Call::enter(Family::ScriptedMapRefresh);
+    if enabled(Family::ScriptedMapRefresh) {
+        record(Family::ScriptedMapRefresh, |memory, base, _| {
+            site::scripted_map_mode(memory, base).map(Event::ScriptedRefresh)
+        });
+    }
+    let target: NativeRefresh =
+        unsafe { std::mem::transmute(SCRIPTED_REFRESH_TARGET.load(Ordering::Acquire)) };
+    timing.original(|| unsafe { target(manager, refresh_all) });
+    call.returned = true;
 }
 
 /// The capture notification call; a null province shows no text.
@@ -544,7 +562,7 @@ impl Hooks {
             let _ = UNHOOKED[family.index()].set("map event family disabled by attach config");
         }
         let sentinel = |rva: usize, sentinel: [u8; 16]| {
-            engine_native::read::<[u8; 16]>(memory, base + rva) == Some(sentinel)
+            crate::hook::installation::sentinel(memory, base + rva, sentinel)
         };
         // A call site's target is its rel32 destination.
         let call_target = |rva: usize, sentinel: [u8; 16]| {
@@ -656,6 +674,39 @@ impl Hooks {
         } else {
             let _ = UNHOOKED[family.index()].set("map event tap sentinel differs");
         }
+        let family = Family::ScriptedMapRefresh;
+        if selected(family) {
+            if sentinel(
+                site::SCRIPTED_REFRESH_CALL_RVA,
+                site::SCRIPTED_REFRESH_CALL_SENTINEL,
+            ) {
+                SCRIPTED_REFRESH_TARGET.store(
+                    call_target(
+                        site::SCRIPTED_REFRESH_CALL_RVA,
+                        site::SCRIPTED_REFRESH_CALL_SENTINEL,
+                    ),
+                    Ordering::Release,
+                );
+                match unsafe {
+                    Hook::new_call(
+                        base + site::SCRIPTED_REFRESH_CALL_RVA,
+                        scripted_refresh as *const () as usize,
+                        site::SCRIPTED_REFRESH_CALL_SENTINEL,
+                    )
+                } {
+                    Ok(hook) => {
+                        INSTALLED[family.index()].store(true, Ordering::SeqCst);
+                        hooks.push((family, hook));
+                    }
+                    Err(_) => {
+                        let _ = UNHOOKED[family.index()]
+                            .set("scripted map refresh call hook construction failed");
+                    }
+                }
+            } else {
+                let _ = UNHOOKED[family.index()].set("scripted map refresh call sentinel differs");
+            }
+        }
         Self { hooks, taps }
     }
 
@@ -748,6 +799,7 @@ pub(crate) fn set_original_for_tests(family: Family, original: usize) {
         Family::ParadropLanding => &PARADROP_TARGET,
         Family::ResistanceActivity => &RESISTANCE_ORIGINAL,
         Family::BuildingDamage => &BUILDING_ORIGINAL,
+        Family::ScriptedMapRefresh => &SCRIPTED_REFRESH_TARGET,
         Family::CriticalShoreBombardment => return,
     };
     slot.store(original, Ordering::SeqCst);
@@ -770,4 +822,8 @@ pub(crate) fn refuse_for_tests(family: Family, refusal: Refusal) {
 #[cfg(test)]
 pub(crate) unsafe fn fake_reveal_for_tests(unit: usize) -> usize {
     unsafe { fake_reveal(unit) }
+}
+#[cfg(test)]
+pub(crate) unsafe fn scripted_refresh_for_tests(manager: usize, refresh_all: u8) {
+    unsafe { scripted_refresh(manager, refresh_all) };
 }

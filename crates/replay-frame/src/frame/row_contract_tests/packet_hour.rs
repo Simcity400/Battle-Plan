@@ -3,7 +3,7 @@ use crate::{
     cadence::{self, Cadence},
     format::FormatVersion,
     frame::{DecodedFrame, FrameDecoder, FrameEncoder, FrameInput, Metrics, TableInput, TableView},
-    rows::compatibility::{ChangeKind, PACKET_HOUR_FORMAT},
+    rows::compatibility::{ChangeKind, EXPERIENCE_FORMAT, PACKET_HOUR_FORMAT, SCRIPTED_MAP_FORMAT},
     value::Value,
 };
 
@@ -52,15 +52,19 @@ fn every_packet_host_is_hourly_never_carried_and_readable_at_the_stamped_format(
         assert_eq!(cadence::cadence(host), Cadence::Hourly, "{host:?}");
         assert!(!cadence::is_staggered(host) && !cadence::is_sliced(host));
         let change = host.last_change();
-        assert_eq!(change.kind, ChangeKind::AppendedOnly, "{host:?}");
-        // Independent host fields may have changed after the packet contract.
-        assert!(
-            (PACKET_HOUR_FORMAT..=crate::FORMAT_VERSION).contains(&change.format),
-            "{host:?}"
-        );
+        let (kind, format) = match host {
+            TableId::CountryCounterInputs
+            | TableId::DivisionMovement
+            | TableId::DivisionTemplateIcons => (ChangeKind::AppendedOnly, EXPERIENCE_FORMAT),
+            TableId::SimulationFeatures => (ChangeKind::AppendedOnly, SCRIPTED_MAP_FORMAT),
+            _ => (ChangeKind::AppendedOnly, PACKET_HOUR_FORMAT),
+        };
+        assert_eq!(change.kind, kind, "{host:?}");
+        assert_eq!(change.format, format, "{host:?}");
         assert!(stamped.table_refusal(host).is_none(), "{host:?}");
         assert!(FormatVersion::CURRENT.table_refusal(host).is_none());
     }
+    assert_eq!(PACKET_HOUR_FORMAT, 102);
 }
 
 fn host_rows(table: TableId, tick: usize) -> TableRows {

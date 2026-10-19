@@ -2953,7 +2953,7 @@ fn project_changes_project_only_changed_owners_and_publish_what_the_whole_table_
 }
 
 /// At 2,000 holders, an hour where one owner's progress moves visits that
-/// owner's row alone and emits its country alone.
+/// owner's row alone and changes only its progress series.
 #[test]
 fn project_change_of_one_owner_visits_its_rows_alone_at_2000_holders() {
     let context = LoadContext { content: None };
@@ -3063,7 +3063,13 @@ fn skipped_holders_save_what_observing_them_again_saves() {
 
 #[test]
 fn current_cards_select_the_exact_holder_before_identity_preparation() {
-    let memory = source(&[frame(100, true, 1)]);
+    let mut observed = frame(100, true, 1);
+    if let TableView::Complete(TableRows::Projects(rows)) =
+        &mut *observed.tables[TableId::Projects.index()]
+    {
+        rows[0].state.prototype_progress = 37;
+    }
+    let memory = source(&[observed]);
     let (source, root) = dashboard_base::test_fixtures::file_source(
         replay::container::Replay::open(memory.replay_ref().bytes().to_vec()).unwrap(),
     );
@@ -3076,10 +3082,84 @@ fn current_cards_select_the_exact_holder_before_identity_preparation() {
         !selected.projects.is_empty(),
         "the exact frame supplies the selected new holder"
     );
+    assert_eq!(selected.projects[0].runs[0].progress, 37);
     request.selection_tags = vec!["unseen holder".into()];
     let unselected = frame_reply(&source, &context, &request, 100, &flag).unwrap();
     assert!(unselected.projects.is_empty());
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn restored_direct_observation_rebuilds_native_joins_without_a_dictionary_revision() {
+    let first = frame(100, true, 1);
+    let mut next = first.clone();
+    next.hour = 101;
+    if let TableView::Complete(TableRows::Projects(rows)) =
+        &mut *next.tables[TableId::Projects.index()]
+    {
+        rows[0].state.prototype_progress = 71;
+    }
+    let source = source(&[first, next]);
+    let accepted = decoded(&source);
+    let context = LoadContext { content: None };
+    let flag = AtomicBool::new(false);
+    let fixture = Fixture::new();
+    let mut prepared = Prepared::new(source.replay_ref(), 1);
+    prepared
+        .observe(&source, &context, &accepted[0], &flag)
+        .unwrap();
+    publish(&fixture, &mut prepared);
+    let revision = prepared.lexical;
+    prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+    prepared.restore_views(&accepted[0]);
+    assert!(prepared.actors.is_none(), "native joins are not serialized");
+    prepared
+        .observe(&source, &context, &accepted[1], &flag)
+        .unwrap();
+    assert_eq!(prepared.lexical, revision);
+    assert!(
+        prepared
+            .actors
+            .as_ref()
+            .unwrap()
+            .tags
+            .contains_key(b"opaque-1".as_slice()),
+        "held country and link views still rebuild the restored joins"
+    );
+    publish(&fixture, &mut prepared);
+    let reply = compare(&fixture, &source, &params("opaque-1"), &context);
+    assert_eq!(reply.read_hours, vec![100, 101]);
+    assert_eq!(reply.projects[0].runs.last().unwrap().progress, 71);
+}
+
+#[test]
+fn an_unchanged_dictionary_across_decoder_handoff_keeps_its_revision() {
+    let mut prepared = Prepared::default();
+    let first = frame(100, true, 1);
+    let flag = AtomicBool::new(false);
+    let changes = FrameChanges::alone(&first, replay_data::format::FormatVersion::CURRENT);
+    prepared.observe_changed(&first, &changes, &flag).unwrap();
+    let revision = prepared.lexical;
+    let mut next = first.clone();
+    next.hour = 101;
+    next.tables[TableId::LexicalTokens.index()] = (*first.tables[TableId::LexicalTokens.index()])
+        .clone()
+        .into();
+    let mut changes = FrameChanges::alone(&next, replay_data::format::FormatVersion::CURRENT);
+    changes.rows_changed[TableId::LexicalTokens.index()] = false;
+    prepared.observe_changed(&next, &changes, &flag).unwrap();
+    assert_eq!(prepared.lexical, revision);
+    next.hour = 102;
+    next.tables[TableId::LexicalTokens.index()] = (*next.tables[TableId::LexicalTokens.index()])
+        .clone()
+        .into();
+    changes.rows_changed[TableId::LexicalTokens.index()] = true;
+    prepared.observe_changed(&next, &changes, &flag).unwrap();
+    assert_eq!(
+        prepared.lexical,
+        revision + 1,
+        "a recorded equal dictionary read still advances"
+    );
 }
 
 #[test]

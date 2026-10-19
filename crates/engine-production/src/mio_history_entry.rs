@@ -9,7 +9,9 @@ pub const STRIDE: usize = 0x40;
 pub const DISTANCE: usize = 0x04;
 /// Variant handle key, with u32 type and u32 ID.
 pub const ITEM_REFERENCE: usize = 0x08;
-/// Byte marking a set date; only set dates are serialized. Not recorded.
+/// Raw hour of the optional design date. Read only when [`ACTIVE`] is set.
+pub const DESIGN_HOUR: usize = 0x20;
+/// Byte marking a set design date; only set dates are serialized.
 pub const ACTIVE: usize = 0x30;
 /// Signed i32 completed units, incremented by production ticks on lines
 /// assigned to the organisation.

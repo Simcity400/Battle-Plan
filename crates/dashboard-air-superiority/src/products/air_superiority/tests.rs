@@ -527,6 +527,9 @@ pub(super) fn air(hour: i32, friendly: i64) -> DecodedFrame {
                 friendly: 100_000,
                 enemy: friendly,
                 impact: Default::default(),
+                friendly_missions: 0,
+                enemy_missions: 0,
+                air_spotting_scale: Some(0),
             },
             RaidAirScoreRow {
                 country: 55,
@@ -534,6 +537,9 @@ pub(super) fn air(hour: i32, friendly: i64) -> DecodedFrame {
                 friendly: 0,
                 enemy: 0,
                 impact: Default::default(),
+                friendly_missions: 0,
+                enemy_missions: 0,
+                air_spotting_scale: Some(0),
             },
             RaidAirScoreRow {
                 country: 66,
@@ -541,6 +547,9 @@ pub(super) fn air(hour: i32, friendly: i64) -> DecodedFrame {
                 friendly: 0,
                 enemy: 0,
                 impact: Default::default(),
+                friendly_missions: 0,
+                enemy_missions: 0,
+                air_spotting_scale: Some(0),
             },
             RaidAirScoreRow {
                 country: 9001,
@@ -548,6 +557,9 @@ pub(super) fn air(hour: i32, friendly: i64) -> DecodedFrame {
                 friendly,
                 enemy: 100_000,
                 impact: Default::default(),
+                friendly_missions: 0,
+                enemy_missions: 0,
+                air_spotting_scale: Some(0),
             },
         ]));
     *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![]));
@@ -657,6 +669,9 @@ fn air_superiority_indexed_daily_snapshots_match_full_reconstruction() {
                 friendly: 300_000,
                 enemy: 0,
                 impact: Default::default(),
+                friendly_missions: 0,
+                enemy_missions: 0,
+                air_spotting_scale: Some(0),
             });
         }
         if (36..40).contains(&hour) {
@@ -671,6 +686,9 @@ fn air_superiority_indexed_daily_snapshots_match_full_reconstruction() {
                 friendly: 900_000,
                 enemy: 0,
                 impact: Default::default(),
+                friendly_missions: 0,
+                enemy_missions: 0,
+                air_spotting_scale: Some(0),
             });
         }
         frames.push(frame);
@@ -989,6 +1007,9 @@ fn the_largest_region_id_never_supplies_the_absent_region_fallback() {
             friendly: 900_000,
             enemy: 0,
             impact: Default::default(),
+            friendly_missions: 0,
+            enemy_missions: 0,
+            air_spotting_scale: Some(0),
         });
         rows.sort_by_key(|row| (row.country, row.region));
     }
@@ -1710,6 +1731,9 @@ fn selected_5000_countries_are_served_and_oversize_replies_are_never_truncated()
                 friendly: 100_000,
                 enemy: 0,
                 impact: Default::default(),
+                friendly_missions: 0,
+                enemy_missions: 0,
+                air_spotting_scale: Some(0),
             })
             .collect(),
     ));
@@ -2034,6 +2058,9 @@ fn top_region_ranking_preserves_single_fixed5_unit_differences_above_f64_precisi
             friendly: smaller + 1,
             enemy: 0,
             impact: Default::default(),
+            friendly_missions: 0,
+            enemy_missions: 0,
+            air_spotting_scale: Some(0),
         });
         rows.sort_by_key(|row| (row.country, row.region));
     }

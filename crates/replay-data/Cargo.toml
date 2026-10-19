@@ -14,6 +14,7 @@ doctest = false
 test-support = []
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] }
 crc32fast = "1"
 engine-air-history.workspace = true
 engine-allocation.workspace = true
@@ -22,6 +23,8 @@ engine-executable.workspace = true
 engine-fuel.workspace = true
 engine-native.workspace = true
 engine-naval-history.workspace = true
+engine-occupation.workspace = true
+engine-scripts.workspace = true
 engine-production.workspace = true
 weather-period.workspace = true
 replay-identity.workspace = true

@@ -1,4 +1,4 @@
-//! Daily occupation joins frozen at their read; hourly owner/name projection.
+//! Occupation joins frozen at their supplying read; hourly owner/name projection.
 use super::*;
 use dashboard_text::metadata::CountryKeys;
 #[cfg(test)]
@@ -9,6 +9,23 @@ use std::collections::{BTreeSet, HashSet};
 type StateKey = (u32, u32, u32);
 type NameCache = HashMap<u32, (Vec<u8>, Vec<u8>, Result<String, String>)>;
 const HOURLY: [TableId; 3] = [TableId::States, TableId::Countries, TableId::CountryLinks];
+
+fn resistance_read(
+    format: replay_data::format::FormatVersion,
+    frame: &DecodedFrame,
+    hour: i32,
+) -> bool {
+    if replay_data::cadence::cadence_in(TableId::StateResistance, format)
+        == replay_data::cadence::Cadence::Hourly
+    {
+        // This independent worker charges its own acquisition. An untimed carry
+        // does not become a new observation merely because its cadence is hourly.
+        frame.metrics.table_ns[TableId::StateResistance.index()] != 0
+            || frame.tables[TableId::StateResistance.index()].sampled_at() == Some(hour)
+    } else {
+        slot_read(format, &frame.metrics, TableId::StateResistance, hour)
+    }
+}
 
 struct CountryInputs {
     countries: CountryKeys,
@@ -933,7 +950,7 @@ impl<'a> Scan<'a> {
         // retain only typed identity/link inputs and the latest view identities.
         self.trend
             .collaboration(self.format, frame, hour, &self.countries.identities, links)?;
-        if slot_read(self.format, &frame.metrics, TableId::StateResistance, hour) {
+        if resistance_read(self.format, frame, hour) {
             if let Some(before) = previous_hour {
                 for &index in &self.active {
                     self.result.states[index]
@@ -975,6 +992,15 @@ impl<'a> Scan<'a> {
                     changes.is_some(),
                     previous_hour,
                 );
+            } else if changes.is_none() {
+                // Balance-only country changes still carry every held state.
+                for &index in &self.active {
+                    self.result.states[index]
+                        .runs
+                        .last_mut()
+                        .expect("active state")
+                        .last_hour = hour;
+                }
             }
         }
         self.hourly = Some(HOURLY.map(|table| frame.tables[table.index()].identity()));
@@ -1161,6 +1187,29 @@ mod tests {
     use replay_data::{rows::CountryCollaborationRow, rows::StateGarrisonRow, rows::TableRows};
 
     #[test]
+    fn hourly_resistance_dates_only_its_own_acquisition_witness() {
+        let format = replay_data::format::FormatVersion::CURRENT;
+        let mut frame = dashboard_base::test_fixtures::source(1, 99, Some(1));
+        frame.metrics = Default::default();
+        // Even the former daily slot does not invent an hourly acquisition.
+        assert!(!resistance_read(format, &frame, 99));
+        frame.metrics.table_ns[TableId::StateGarrisons.index()] = 1;
+        assert!(!resistance_read(format, &frame, 99));
+        frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
+        assert!(resistance_read(format, &frame, 99));
+        frame.metrics = Default::default();
+        frame.tables[TableId::StateResistance.index()] = frame.tables
+            [TableId::StateResistance.index()]
+        .clone()
+        .with_sampled_at(Some(99));
+        assert!(resistance_read(format, &frame, 99));
+        frame.hour = 100;
+        assert!(!resistance_read(format, &frame, 100));
+        frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
+        assert!(resistance_read(format, &frame, 100));
+    }
+
+    #[test]
     fn occupation_trend_ambiguous_canonical_slots_refuse_every_holder() {
         // The current wire writer already rejects this malformed country
         // inventory. Exercise the scan's defensive guard directly, rather
@@ -1220,6 +1269,8 @@ mod tests {
                 },
             ]));
         frame.metrics.table_ns[TableId::StateResistance.index()] = 1;
+        frame.metrics.table_ns[TableId::StateGarrisons.index()] = 1;
+        frame.metrics.table_ns[TableId::CountryCollaboration.index()] = 1;
         let mut scan = Scan::new(None);
         scan.push(&frame, 100, None).unwrap();
         assert!(scan.countries.identities.is_empty());

@@ -33,10 +33,7 @@ impl Renderer<'_, '_, '_> {
                     }
                 }
                 if report {
-                    self.refuse(
-                        &key(item),
-                        "else/else_if does not follow an open if chain".into(),
-                    );
+                    self.refuse(&key(item), "else/else_if does not follow an open if chain");
                 }
                 continue;
             }
@@ -57,7 +54,10 @@ impl Renderer<'_, '_, '_> {
             .filter(|item| item.keyword_is("limit"))
             .map(children)
         {
-            if evaluator.has_children(body)? {
+            if evaluator
+                .has_children(body)
+                .map_err(|why| why.to_string())?
+            {
                 return Ok(body);
             }
         }
@@ -70,7 +70,7 @@ impl Renderer<'_, '_, '_> {
             .and_then(|body| Ok(self.evaluator()?.evaluate(body, scopes)))
         {
             Ok(result) => result,
-            Err(why) => Eval::Unknown([why].into_iter().collect()),
+            Err(why) => Eval::unknown(why),
         }
     }
 
@@ -289,7 +289,11 @@ impl Renderer<'_, '_, '_> {
         // Exists before Evaluate; modifiers apply in authored order.
         for member in &members {
             let operand = member.key.as_deref().unwrap_or_default();
-            let mut weight = if self.evaluator()?.scoped_exists(operand, scopes)? {
+            let mut weight = if self
+                .evaluator()?
+                .scoped_exists(operand, scopes)
+                .map_err(|why| why.to_string())?
+            {
                 self.scoped_value(operand, scopes)?
             } else {
                 0
@@ -383,7 +387,8 @@ impl Renderer<'_, '_, '_> {
             .unwrap_or_default();
         let Some(target) = self
             .evaluator()?
-            .scoped_array_scopes(array, scopes)?
+            .scoped_array_scopes(array, scopes)
+            .map_err(|why| why.to_string())?
             .into_iter()
             .flatten()
             .next()
@@ -431,7 +436,10 @@ impl Renderer<'_, '_, '_> {
             graph.scopes.push(selected);
             at
         };
-        let selected = self.evaluator()?.event_scopes(at)?;
+        let selected = self
+            .evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())?;
         let mut text = "   ".repeat(indent);
         text.push_str(&self.line(tooltip, &[], scopes, true)?);
         let body = self.effect_children(item);

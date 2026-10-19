@@ -118,7 +118,7 @@ fn dense_header(memory: &impl Memory, air_base: usize) -> Result<Array, &'static
     })
 }
 
-fn country_slot<M: Memory>(
+pub(super) fn country_slot<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     resolved: &mut super::Resolver<'_>,
     raw: u32,

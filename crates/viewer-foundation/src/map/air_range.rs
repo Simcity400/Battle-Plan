@@ -1,10 +1,10 @@
 //! The native wing-range law shared by raid gates and battle-plan labels.
 //! Callers retain their own lazy table admission and current-frame joins.
 
-use replay_data::{
-    rows::AceRangeInputRow, rows::AirWingRow, rows::CountryCommandPowerRow,
-    rows::RaidCountryInputRow,
+use replay_data::rows::{
+    AceRangeInputRow, AirWingRow, CountryCommandPowerRow, RaidCountryInputRow,
 };
+use std::{cell::OnceCell, collections::BTreeMap};
 
 #[derive(Clone, Copy)]
 pub struct Defines {
@@ -19,6 +19,111 @@ pub trait Sources {
     fn command_power(&self, slot: u32) -> Result<&CountryCommandPowerRow, String>;
     fn wing(&self, handle: u64) -> Result<Option<&AirWingRow>, String>;
     fn ace(&self, handle: u64) -> Result<Option<&AceRangeInputRow>, String>;
+}
+
+/// Current recorded operands for callers without a more specialised lazy source.
+pub struct FrameSources<'a> {
+    frame: &'a replay_frame::frame::DecodedFrame,
+    countries: OnceCell<Result<BTreeMap<u32, &'a RaidCountryInputRow>, String>>,
+    command_power: OnceCell<Result<BTreeMap<u32, &'a CountryCommandPowerRow>, String>>,
+    // Keep table-wide read failure distinct from each handle's conflicting observations.
+    #[allow(clippy::type_complexity)]
+    aces: OnceCell<Result<BTreeMap<u64, Result<&'a AceRangeInputRow, String>>, String>>,
+}
+
+impl<'a> FrameSources<'a> {
+    pub fn new(frame: &'a replay_frame::frame::DecodedFrame) -> Self {
+        Self {
+            frame,
+            countries: OnceCell::new(),
+            command_power: OnceCell::new(),
+            aces: OnceCell::new(),
+        }
+    }
+}
+
+impl Sources for FrameSources<'_> {
+    fn slot(&self, raw: u32) -> Option<u32> {
+        let rows = self
+            .frame
+            .complete::<replay_data::rows::tables::CountryLinks>()
+            .ok()?;
+        rows.binary_search_by_key(&raw, |row| row.id)
+            .ok()
+            .map(|at| rows[at].canonical_slot)
+    }
+    fn country(&self, slot: u32) -> Result<&RaidCountryInputRow, String> {
+        self.countries
+            .get_or_init(|| {
+                self.frame
+                    .complete::<replay_data::rows::tables::RaidCountryInputs>()
+                    .map(|rows| rows.iter().map(|row| (row.canonical_slot, row)).collect())
+                    .map_err(|e| e.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)?
+            .get(&slot)
+            .copied()
+            .ok_or_else(|| format!("country slot {slot} has no RaidCountryInputs row"))
+    }
+    fn command_power(&self, slot: u32) -> Result<&CountryCommandPowerRow, String> {
+        self.command_power
+            .get_or_init(|| {
+                self.frame
+                    .complete::<replay_data::rows::tables::CountryCommandPower>()
+                    .map(|rows| rows.iter().map(|row| (row.canonical_slot, row)).collect())
+                    .map_err(|e| e.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)?
+            .get(&slot)
+            .copied()
+            .ok_or_else(|| format!("country slot {slot} has no CountryCommandPower row"))
+    }
+    fn wing(&self, handle: u64) -> Result<Option<&AirWingRow>, String> {
+        let rows = self
+            .frame
+            .complete::<replay_data::rows::tables::AirWings>()
+            .map_err(|e| e.to_string())?;
+        Ok(rows
+            .binary_search_by_key(&handle, |row| row.id)
+            .ok()
+            .map(|at| &rows[at]))
+    }
+    fn ace(&self, handle: u64) -> Result<Option<&AceRangeInputRow>, String> {
+        let rows = self
+            .aces
+            .get_or_init(|| {
+                let rows = self
+                    .frame
+                    .complete::<replay_data::rows::tables::AceRangeInputs>()
+                    .map_err(|error| error.to_string())?;
+                // The table orders country before handle. Full references are
+                // globally identified, but are not globally sorted in that order.
+                let mut aces = BTreeMap::<u64, Result<&AceRangeInputRow, String>>::new();
+                for row in rows {
+                    match aces.entry(row.ace) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            entry.insert(Ok(row));
+                        }
+                        std::collections::btree_map::Entry::Occupied(mut entry) => {
+                            if entry.get().as_ref().is_ok_and(|previous| *previous != row) {
+                                let _ = entry.insert(Err(format!(
+                                    "ace handle {:#x} has conflicting recorded owners or operands",
+                                    row.ace
+                                )));
+                            }
+                        }
+                    }
+                }
+                Ok(aces)
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        rows.get(&handle)
+            .map(|row| row.as_ref().copied().map_err(Clone::clone))
+            .transpose()
+    }
 }
 
 /// Modified map range for an air wing.
@@ -69,7 +174,10 @@ pub fn ace_scale(
     defines: Defines,
     sources: &impl Sources,
 ) -> Result<i64, String> {
-    let Some(wing) = sources.wing(ace.wing)?.filter(|_| ace.wing != 0) else {
+    if ace.wing == 0 {
+        return Ok(100_000);
+    }
+    let Some(wing) = sources.wing(ace.wing)? else {
         return Ok(100_000);
     };
     let planes = i64::from(wing.planes);

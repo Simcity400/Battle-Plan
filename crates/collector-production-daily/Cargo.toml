@@ -20,6 +20,8 @@ replay-data.workspace = true
 replay-frame.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-extended-support.workspace = true
+collector-intel.workspace = true
+collector-observers.workspace = true
 collector-memory.workspace = true
 collector-primitives.workspace = true
 collector-projection.workspace = true

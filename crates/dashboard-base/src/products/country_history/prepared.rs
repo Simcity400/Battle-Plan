@@ -98,7 +98,8 @@ fn start(_: FormatVersion) -> Box<dyn Extract> {
 }
 
 /// One hour of a block's facts, in hour order.
-#[allow(clippy::large_enum_variant)] // Each observed hour owns its frame.
+// Keep observed frames inline to preserve kept-hour allocation and byte accounting.
+#[allow(clippy::large_enum_variant)]
 enum Hour {
     /// An hour the history observes, with its frame and change facts.
     Observed {
@@ -402,9 +403,9 @@ pub fn observed_hours() -> usize {
     crate::prepared::kept::counted("identities").0
 }
 
-/// Frames the extracts of the blocks folded on this thread were given or
-/// built: every hour of a block read whole, only the hours read and those
-/// observed between them of a block read by its changes.
+/// Frames the extracts of folded blocks were given or built, including
+/// preparation workers: every hour of a block read whole, only the hours
+/// read and those observed between them of a block read by its changes.
 #[cfg(any(test, feature = "test-support"))]
 pub fn built_frames() -> usize {
     crate::prepared::kept::counted("identities").1

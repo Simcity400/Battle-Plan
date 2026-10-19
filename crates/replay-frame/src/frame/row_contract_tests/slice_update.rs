@@ -143,6 +143,8 @@ fn a_shared_or_stale_baseline_and_a_foreign_row_are_refused_or_copied() {
         .unwrap();
     // Rows of an owner the update does not list do not fit.
     let update = SliceUpdate {
+        ranges: Vec::new(),
+        keys: Vec::new(),
         owners: vec![1],
         rows: TableRows::ResearchInputs(vec![row(2, 0, 9)]),
     };
@@ -194,4 +196,167 @@ fn a_shared_or_stale_baseline_and_a_foreign_row_are_refused_or_copied() {
         *start,
         TableRows::ResearchInputs(vec![row(1, 0, 0), row(2, 0, 0)])
     );
+}
+
+#[test]
+fn certified_key_ranges_encode_insert_edit_and_delete_exactly_like_complete_history() {
+    use crate::rows::{DivisionHistoryRow, RowCodec};
+    let row = |division, ordinal, amount| {
+        Arc::new(DivisionHistoryRow {
+            division,
+            list: 1,
+            ordinal,
+            available: 1,
+            amount,
+            ..Default::default()
+        })
+    };
+    let mut current = vec![row(1, 0, 2), row(1, 1, 3), row(2, 0, 4)];
+    let input = |hour, table| {
+        let mut frame = frame(
+            hour,
+            TableView::Unavailable {
+                reason: "unused".into(),
+            }
+            .into(),
+        );
+        frame.tables[TableId::DivisionHistory.index()] = table;
+        frame
+    };
+    let mut sparse = FrameEncoder::new();
+    let mut full = FrameEncoder::new();
+    let start = input(
+        0,
+        TableInput::SharedComplete(Arc::new(TableRows::DivisionHistory(current.clone()))),
+    );
+    assert_eq!(
+        sparse.encode_input(start.clone(), false).unwrap(),
+        full.encode_input(start, false).unwrap()
+    );
+    for hour in 1..=3 {
+        let (key, replacement) = match hour {
+            1 => {
+                let new = row(1, 2, 5);
+                (new.key(), Some(new))
+            }
+            2 => {
+                let new = row(1, 1, 9);
+                (new.key(), Some(new))
+            }
+            _ => (row(2, 0, 0).key(), None),
+        };
+        current.retain(|row| row.key() != key);
+        if let Some(new) = &replacement {
+            current.push(new.clone());
+        }
+        current.sort_by_key(RowCodec::key);
+        let (token, _) = sparse
+            .slice_baseline(TableId::DivisionHistory, 1, hour, false)
+            .unwrap();
+        #[allow(
+            clippy::single_range_in_vec_init,
+            reason = "This is one certified key interval, not a vector of the individual keys."
+        )]
+        let update = SliceUpdate {
+            owners: Vec::new(),
+            ranges: vec![key..key + 1],
+            keys: Vec::new(),
+            rows: TableRows::DivisionHistory(replacement.into_iter().collect()),
+        };
+        let actual = sparse
+            .encode_input(
+                input(
+                    hour,
+                    TableInput::SliceUpdate {
+                        token,
+                        update: Arc::new(update),
+                    },
+                ),
+                false,
+            )
+            .unwrap();
+        let expected = full
+            .encode_input(
+                input(
+                    hour,
+                    TableInput::SharedComplete(Arc::new(TableRows::DivisionHistory(
+                        current.clone(),
+                    ))),
+                ),
+                false,
+            )
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            sparse
+                .committed::<crate::rows::tables::DivisionHistory>()
+                .unwrap()
+                .1,
+            &current
+        );
+    }
+}
+
+#[test]
+fn exact_key_updates_match_full_frames_for_changes_additions_and_removals() {
+    let mut baseline =
+        TableRows::ResearchInputs((0..5000).map(|index| row(5000, index, 0)).collect());
+    let mut full = FrameEncoder::new();
+    let mut keyed = FrameEncoder::new();
+    let first = frame(0, TableView::Complete(baseline.clone()).into());
+    // Slice updates require the shared baseline used by certified producers.
+    let shared = frame(0, TableInput::SharedComplete(Arc::new(baseline.clone())));
+    assert_eq!(
+        full.encode_bytes(first, false).unwrap().bytes,
+        keyed.encode_bytes(shared, false).unwrap().bytes
+    );
+    for (hour, key, fresh) in [
+        (1, row(5000, 17, 0).key(), vec![row(5000, 17, 77)]),
+        (2, row(5000, 5000, 0).key(), vec![row(5000, 5000, 1)]),
+        (3, row(5000, 18, 0).key(), vec![]),
+        (4, row(5000, 18, 0).key(), vec![]), // deleting an absent key is a carry
+    ] {
+        let update = SliceUpdate::keyed(vec![key], TableRows::ResearchInputs(fresh));
+        assert!(update.fits(&baseline));
+        update.clone().apply(&mut baseline).unwrap();
+        let expected = full
+            .encode_bytes(
+                frame(hour, TableView::Complete(baseline.clone()).into()),
+                false,
+            )
+            .unwrap();
+        let (token, _) = keyed
+            .slice_baseline(TableId::ResearchInputs, 1, hour, false)
+            .expect("exact key updates retain their shared baseline");
+        let actual = keyed
+            .encode_bytes(
+                frame(
+                    hour,
+                    TableInput::SliceUpdate {
+                        token,
+                        update: Arc::new(update),
+                    },
+                ),
+                false,
+            )
+            .unwrap();
+        assert_eq!(actual.bytes, expected.bytes);
+        assert_eq!(
+            **keyed.shared_baseline(TableId::ResearchInputs).unwrap(),
+            baseline
+        );
+    }
+    let key = row(5000, 17, 0).key();
+    for keys in [vec![key, key], vec![key + 1, key]] {
+        let update = SliceUpdate::keyed(keys, TableRows::ResearchInputs(vec![row(5000, 17, 9)]));
+        assert!(!update.fits(&baseline));
+        assert!(
+            update
+                .encode_changes(&baseline, &mut Vec::new(), &mut Vec::new())
+                .is_err()
+        );
+        assert!(update.apply(&mut baseline).is_err());
+    }
+    let foreign = SliceUpdate::keyed(vec![key], TableRows::ResearchInputs(vec![row(5000, 19, 9)]));
+    assert!(!foreign.fits(&baseline));
 }

@@ -353,7 +353,10 @@ impl<'h, 'f> Hour<'h, 'f> {
     /// The state's first province with the greatest positive victory points, else its
     /// bounding centre at height zero.
     fn anchor(&self, state: u32, provinces: &HashMap<u32, &ProvinceRow>) -> Result<Anchor, String> {
-        let order = self.world.state_order(state)?;
+        let order = self
+            .world
+            .state_order(state)
+            .map_err(|why| why.to_string())?;
         let mut best: Option<(u32, i32)> = None;
         for &province in order {
             let points = provinces

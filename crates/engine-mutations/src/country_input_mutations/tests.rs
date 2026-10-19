@@ -187,7 +187,23 @@ fn sites_are_distinct_and_agree_with_their_layout_constants() {
         site("replace_relation").2,
         Tables::STABILITY.with(Tables::COUNTERS)
     );
-    for (site, _, tables) in &MUTATIONS {
+    assert_eq!(
+        CREW_WRITERS
+            .clone()
+            .map(|index| MUTATIONS[index].0.name)
+            .collect::<Vec<_>>(),
+        [
+            "refresh_wing_crews",
+            "refresh_ship_crews",
+            "remove_ship_crews"
+        ]
+    );
+    for (index, (site, receiver, tables)) in MUTATIONS.iter().enumerate() {
+        if CREW_WRITERS.contains(&index) {
+            assert_eq!(*tables, Tables::NONE, "{}", site.name);
+            assert_eq!(*receiver, Receiver::Every, "{}", site.name);
+            continue;
+        }
         assert!(
             tables.stability
                 || tables.research
@@ -294,12 +310,18 @@ fn appearance_and_counter_sites_reach_their_table() {
             "reload_mio_policies",
         ]
     );
-    // Only the faction sharing base setter and the weather writers follow
-    // them, reaching neither.
+    // Later sent-expeditionary writers reach counters independently of the
+    // contiguous counter range; no later writer reaches appearance.
     assert_eq!(COUNTER_SITES.end, FACTION_SHARING_BASE);
     assert_eq!(FACTION_SHARING_BASE + 1, WEATHER_WRITERS.start);
-    for (site, _, tables) in &MUTATIONS[COUNTER_SITES.end..] {
-        assert!(!tables.appearance && !tables.counters, "{}", site.name);
+    for (index, (site, receiver, tables)) in MUTATIONS.iter().enumerate().skip(COUNTER_SITES.end) {
+        let sent = matches!(index, ADD_SENT_EXPEDITIONARY | REMOVE_SENT_EXPEDITIONARY);
+        assert!(!tables.appearance, "{}", site.name);
+        assert_eq!(tables.counters, sent, "{}", site.name);
+        if sent {
+            assert_eq!(*tables, Tables::COUNTERS, "{}", site.name);
+            assert_eq!(*receiver, Receiver::Country, "{}", site.name);
+        }
     }
     for (site, _, tables) in &MUTATIONS[APPEARANCE_SITES] {
         assert_eq!(*tables, Tables::APPEARANCE, "{}", site.name);
@@ -842,7 +864,10 @@ fn research_progress_marks_its_technology_country() {
     assert_eq!(site.rva, 0xec_0500);
     assert_eq!(*receiver, Receiver::Technology);
     assert_eq!(*tables, Tables::TECHNOLOGY);
-    assert_eq!(RESEARCH_PROGRESS + 1, MUTATIONS.len());
+    assert_eq!(
+        MUTATIONS.last().unwrap().0.name,
+        "remove_sent_expeditionary"
+    );
 }
 
 #[test]
@@ -869,4 +894,26 @@ fn visibility_reaches_only_the_country_accumulator_rebuild_and_reset_tables() {
         .map(|(site, _, _)| site.name)
         .collect();
     assert_eq!(writers, ["recalculate_modifiers"]);
+}
+
+#[test]
+fn manpower_setters_name_only_the_embedded_owner_and_keep_crew_sites_separate() {
+    let mut bytes = world();
+    let embedded = START + 0x9000;
+    put_u32(
+        &mut bytes,
+        embedded + engine_native::ccountry_manpower::COUNTRY,
+        30,
+    );
+    assert_eq!(
+        named(&bytes, Receiver::Manpower, embedded, 0),
+        (true, vec![9])
+    );
+    for (site, receiver, tables) in &MUTATIONS[SET_RECRUITMENT_TARGET..ADD_EXILE_LEGITIMACY] {
+        assert_eq!(*receiver, Receiver::Manpower, "{}", site.name);
+        assert_eq!(*tables, Tables::STABILITY);
+    }
+    for (_, _, tables) in &MUTATIONS[CREW_WRITERS] {
+        assert_eq!(*tables, Tables::NONE);
+    }
 }

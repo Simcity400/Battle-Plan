@@ -253,7 +253,9 @@ impl Captured {
             }
         };
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let context = native::Context::read(memory, base, game_state, keys)?;
+        let mut context = native::Context::read(memory, base, game_state, keys)?;
+        let mut manpower_observed =
+            fingerprints.is_none() && cfg!(any(test, feature = "test-support"));
         self.changed.reset();
         let mut ids = None;
         if let Some(fingerprints) = fingerprints.as_deref_mut() {
@@ -284,12 +286,17 @@ impl Captured {
                 &mut self.selection,
                 fingerprints,
                 &mut self.changed,
-                |visit| changes.take(Table::Stability, visit),
+                |visit| {
+                    let epoch = changes.take(Table::Stability, visit);
+                    manpower_observed = epoch.is_some();
+                    epoch
+                },
                 context.digest(),
                 changes.every(Table::Stability),
             );
             self.selection.scan_ticks = qpc().saturating_sub(started).max(0) as u64;
         }
+        context.manpower_enabled = manpower_observed;
         let mut read = 0_u64;
         let mut inputs = 0;
         let mut lines = Outcome::Rows { len: 0 };
@@ -407,6 +414,12 @@ impl Captured {
                 let t = row.totals;
                 CountryStabilityInputRow {
                     country: row.country,
+                    recruitment_ratio: replay_data::rows::Recorded::Value(row.manpower.ratio),
+                    exile_host: replay_data::rows::Recorded::Value(row.manpower.host),
+                    exile_legitimacy: replay_data::rows::Recorded::Value(row.manpower.legitimacy),
+                    exile_leaders: replay_data::rows::Recorded::Value(row.manpower.leaders),
+                    exile_manpower: replay_data::rows::Recorded::Value(row.manpower.exile_pool),
+                    exile_manpower_cap: replay_data::rows::Recorded::Value(row.manpower.exile_cap),
                     stability_raw: row.stability_raw,
                     war_support_raw: row.war_support_raw,
                     at_war: u8::from(row.at_war),
@@ -505,6 +518,10 @@ fn digest(input: &native::InputRow, lines: &[native::LineRow], bytes: &[u8]) -> 
         .i64(input.convoys_q15)
         .i64(input.propaganda_war_support_q15)
         .u64(u64::from(input.children));
+    match input.manpower.host {
+        Some(host) => digest.u64(1).i64(i64::from(host)),
+        None => digest.u64(0),
+    };
     for total in input.totals {
         match total {
             Some(value) => digest.u64(1).i64(value),

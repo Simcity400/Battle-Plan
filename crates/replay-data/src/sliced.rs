@@ -14,6 +14,9 @@
 //! encoder's shared baseline, which the encoder writes and commits without
 //! materialising the merged table. Register a new sliced table here: implement [`SlicedRow`] for
 //! its row and add its variant to the dispatch below.
+//! CountryMarket, MarketContractTerms and LendLeaseAgreements also use owner
+//! updates (contracts and lend-lease select exact holder keys), but have Hourly cadence: complete writer certificates certify the
+//! current hour, without a daily slice or a stale supplying hour.
 //!
 //! TechnologyDefinitions is the one keyed table: it has no owner and no
 //! sample hour. Its rows are the templates the hour's rosters reached, so a
@@ -22,17 +25,19 @@
 
 use crate::rows::{
     AirCountryRelationRow, AirNavalPatrolHistoryRow, AvailableAdvisorRow, CombatLogEquipmentRow,
-    CompletedFocusRow, CountryBuildingResourceRow, CountryStabilityInputRow,
-    CountryStabilityLineRow, FocusRow, NavalMissionCommanderRow, NavalMissionCountryRow,
-    ProjectHistoryRow, ProjectRow, RaidAirSiteRow, RelationOpinionRow, RelationTupleRow,
-    ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow,
-    SliceReadRow, StateCoreRow, StateDynamicModifierRow, StateResourceInputRow, StateResourceRow,
-    SupplyNodeRow, TableId, TableRows, TradeRouteRow, TrainInventoryRow,
+    CompletedFocusRow, CountryBuildingResourceRow, CountryMarketRow, CountryStabilityInputRow,
+    CountryStabilityLineRow, FocusRow, LendLeaseAgreementRow, MarketContractTermsRow,
+    NavalMissionCommanderRow, NavalMissionCountryRow, ProjectHistoryRow, ProjectRow,
+    RaidAirSiteRow, RelationOpinionRow, RelationTupleRow, ResearchAppliedBonusRow,
+    ResearchInputRow, ResearchModifierRow, ResearchTechnologyRow, SliceReadRow, StateCoreRow,
+    StateDynamicModifierRow, StateResourceInputRow, StateResourceRow, SupplyNodeRow, TableId,
+    TableRows, TradeRouteRow, TrainInventoryRow,
 };
 use crate::{codec::invalid_static as invalid, rows::RowCodec};
 use engine_allocation as allocation;
 use std::io;
 
+pub(crate) mod ranges;
 mod update;
 pub use update::SliceUpdate;
 
@@ -53,7 +58,7 @@ macro_rules! sliced_by {
 }
 // Native country IDs.
 sliced_by!(
-    country: ResearchInputRow,
+    country: CountryMarketRow, MarketContractTermsRow, LendLeaseAgreementRow, ResearchInputRow,
     ResearchAppliedBonusRow,
     ResearchModifierRow,
     ResearchTechnologyRow,
@@ -180,6 +185,15 @@ macro_rules! dispatch {
             (TableRows::CompletedFocuses($old), TableRows::CompletedFocuses($new)) => {
                 Ok(TableRows::CompletedFocuses($body?))
             }
+            (TableRows::CountryMarket($old), TableRows::CountryMarket($new)) => {
+                Ok(TableRows::CountryMarket($body?))
+            }
+            (TableRows::MarketContractTerms($old), TableRows::MarketContractTerms($new)) => {
+                Ok(TableRows::MarketContractTerms($body?))
+            }
+            (TableRows::LendLeaseAgreements($old), TableRows::LendLeaseAgreements($new)) => {
+                Ok(TableRows::LendLeaseAgreements($body?))
+            }
             _ => Err(invalid("cannot merge different sliced table types")),
         }
     };
@@ -302,6 +316,9 @@ pub fn try_owners(rows: &TableRows) -> io::Result<Vec<u32>> {
         Ok(owners)
     }
     match rows {
+        TableRows::CountryMarket(rows) => collect(rows),
+        TableRows::MarketContractTerms(rows) => collect(rows),
+        TableRows::LendLeaseAgreements(rows) => collect(rows),
         TableRows::ResearchTechnologies(rows) => collect(rows),
         TableRows::ResearchInputs(rows) => collect(rows),
         TableRows::ResearchAppliedBonuses(rows) => collect(rows),
@@ -338,7 +355,7 @@ mod tests {
     use crate::rows::TableId;
 
     #[test]
-    fn every_sliced_cadence_table_is_registered_for_merging() {
+    fn every_sliced_or_certified_hourly_table_is_registered_for_merging() {
         for table in TableId::ALL {
             let merged = merge_slice(
                 &TableRows::empty(table),
@@ -347,9 +364,58 @@ mod tests {
                 |_| true,
             );
             assert_eq!(
-                crate::cadence::is_sliced(table),
+                crate::cadence::is_sliced(table)
+                    || matches!(
+                        table,
+                        TableId::CountryMarket
+                            | TableId::MarketContractTerms
+                            | TableId::LendLeaseAgreements
+                    ),
                 merged.is_ok(),
                 "{table:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn market_certified_updates_replace_and_remove_only_marked_owners() {
+        let previous = TableRows::LendLeaseAgreements(vec![
+            LendLeaseAgreementRow {
+                country: 1,
+                id: 10,
+                ..Default::default()
+            },
+            LendLeaseAgreementRow {
+                country: 2,
+                id: 20,
+                ..Default::default()
+            },
+            LendLeaseAgreementRow {
+                country: 5000,
+                id: 30,
+                ..Default::default()
+            },
+        ]);
+        let fresh = TableRows::LendLeaseAgreements(vec![LendLeaseAgreementRow {
+            country: 5000,
+            id: 31,
+            ..Default::default()
+        }]);
+        let update = SliceUpdate::new(&previous, fresh, |owner| owner != 1, |_| true).unwrap();
+        assert_eq!(update.owners(), [2, 5000]);
+        let merged = update.merged(&previous).unwrap();
+        assert_eq!(owners(&merged), [1, 5000]);
+        let mut applied = previous;
+        update.apply(&mut applied).unwrap();
+        assert_eq!(applied, merged);
+        for table in [
+            TableId::CountryMarket,
+            TableId::MarketContractTerms,
+            TableId::LendLeaseAgreements,
+        ] {
+            assert_eq!(
+                crate::cadence::cadence(table),
+                crate::cadence::Cadence::Hourly
             );
         }
     }

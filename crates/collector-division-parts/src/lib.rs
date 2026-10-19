@@ -16,6 +16,7 @@ use collector_timing::hook_timing;
 pub mod army_stat_changes;
 pub mod attack_stats;
 pub mod dig_in;
+mod division_experience;
 pub mod division_land;
 pub mod supply_inputs;
 pub mod unit_combat_references;
@@ -29,3 +30,9 @@ static TEST_ALLOCATOR: collector_test_support::FailingAllocator =
 #[used]
 #[unsafe(link_section = ".CRT$XCU")]
 static TEST_THREAD_STACK: unsafe extern "C" fn() = collector_test_support::reserve_test_stack;
+
+pub mod division_history;
+
+pub mod panel_sources;
+
+mod panel_operand_hooks;

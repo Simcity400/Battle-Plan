@@ -288,7 +288,7 @@ impl Hooks {
                 advance as *const () as usize,
             ];
             for (index, site) in MUTATIONS.iter().enumerate() {
-                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
                     return Err("air history hook sentinel differs");
                 }
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }

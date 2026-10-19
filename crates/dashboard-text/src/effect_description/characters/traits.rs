@@ -83,7 +83,7 @@ impl Renderer<'_, '_, '_> {
             },
         );
         if let Some(why) = refusal.into_inner() {
-            return Err(why);
+            return Err(why.to_string());
         }
         Ok(Cow::Owned(leaders))
     }
@@ -97,7 +97,8 @@ impl Renderer<'_, '_, '_> {
         let token = self
             .context
             .world()?
-            .token_of(name.as_bytes())?
+            .token_of(name.as_bytes())
+            .map_err(|why| why.to_string())?
             .ok_or_else(|| format!("trait modifier {name} has no recorded definition"))?;
         definitions
             .iter()
@@ -121,7 +122,10 @@ impl Renderer<'_, '_, '_> {
 
     // Custom tooltip or child blocks, or any eligible entry, make a block nonempty.
     // This includes hidden and zero entries that the line formatter will not show.
-    pub(super) fn char_trait_modifier_kept(&self, source: &Modifiers) -> Result<bool, String> {
+    pub(in crate::effect_description) fn char_trait_modifier_kept(
+        &self,
+        source: &Modifiers,
+    ) -> Result<bool, String> {
         if let Some(why) = source.unheld.cause() {
             return Err(why.to_owned());
         }
@@ -136,6 +140,14 @@ impl Renderer<'_, '_, '_> {
             }
         }
         Ok(false)
+    }
+
+    pub(super) fn char_trait_modifier_name_eligible(&self, name: &str) -> Result<bool, String> {
+        let definition = self.char_trait_modifier_definition(name)?;
+        if definition.feature_selector != 0 && definition.eligibility == 0 {
+            return Ok(false);
+        }
+        self.char_trait_modifier_eligible(definition)
     }
 
     // Pass the caller scale unchanged to the raw modifier formatter.
@@ -240,7 +252,8 @@ impl Renderer<'_, '_, '_> {
             ))?;
             let country = self
                 .evaluator()?
-                .scoped_country(tag.as_bytes(), empty)?
+                .scoped_country(tag.as_bytes(), empty)
+                .map_err(|why| why.to_string())?
                 .filter(|country| *country > 0);
             let context = if let Some(country) = country {
                 // Capitalise the stored definite country name.

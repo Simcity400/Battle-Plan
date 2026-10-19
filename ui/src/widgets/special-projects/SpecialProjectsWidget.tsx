@@ -33,6 +33,7 @@ import { closedLane, currentProjectReply, currentProjects, projectPending, proje
 import type { ProjectCard } from './specialProjectsData';
 import '../national-focus/nationalFocus.css';
 import './specialProjects.css';
+import ProjectDetails from './ProjectDetails';
 
 const ProjectTile = ({ icon }: { icon: string | null }) =>
   <span className="blueprint-tile">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
@@ -59,7 +60,7 @@ function CurrentList({ reply, at, item, preparing = null, current = null, curren
   const running = current && currentHour !== undefined ? currentProjects(current, currentHour).running : preparing ? [] : held;
   const runningReply = current ?? reply;
   const runningItem = currentItem ?? item;
-  if (!preparing && !current && !running.length && !completed.length && !earlier.length && !cancelled.length) return <WidgetState kind="empty" message="No special projects yet." />;
+  if (!reply.details && !preparing && !current && !running.length && !completed.length && !earlier.length && !cancelled.length) return <WidgetState kind="empty" message="No special projects yet." />;
   const row = (card: ProjectCard, line: string, className = '') => <div key={card.project.id} className={`focus-row special-project-row${className}`} {...item(card)}>
     <ProjectTile icon={card.info.icon} /><span className="focus-label"><strong>{card.info.name}</strong><span>{line}</span></span></div>;
   return <div className="special-project-list">
@@ -91,6 +92,7 @@ function CurrentList({ reply, at, item, preparing = null, current = null, curren
     {cancelled.length > 0 && <Section label="Cancelled" count={cancelled.length}>
       {cancelled.map(card => row(card, `Cancelled · ${dayLabel(card.run.cancellation!.hour)} · ${card.run.progress}%`, ' is-cancelled'))}
     </Section>}
+    <ProjectDetails details={reply.details} />
     {preparing && <PreparedLogCoverage coverage={preparing} />}
     {current && <p className="chart-line-key">Completed and cancelled history and start dates are still being prepared.</p>}
   </div>;
@@ -180,18 +182,18 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   else if (view === 'history' && !tags.length && historyMembershipUnknown) body = <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />;
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
   else if (!data) body = <WidgetState kind="loading" label="Loading special projects…" />;
-  else if (data.some(reply => currentProjectReply(reply)?.unavailable?.includes('still being prepared'))) body = <WidgetState kind="loading" label="This range is still being prepared." />;
-  else if (data.every(reply => reply.unavailable && (!currentProjectReply(reply) || currentProjectReply(reply)!.unavailable))) body = <WidgetState kind="unavailable" message={PROJECTS_UNRECORDED} />;
+  else if (data.some(reply => !reply.details && currentProjectReply(reply)?.unavailable?.includes('still being prepared'))) body = <WidgetState kind="loading" label="This range is still being prepared." />;
+  else if (data.every(reply => !reply.details && reply.unavailable && (!currentProjectReply(reply) || currentProjectReply(reply)!.unavailable))) body = <WidgetState kind="unavailable" message={PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
     const reply = data.find(reply => resolved.match.matches(reply.tag, at));
     const prefix = reply ? projectPrefix(reply) : null;
     const current = reply ? currentProjectReply(reply) : null;
     if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
     // Past the prepared prefix: what it holds through its last hour, the rest still being prepared.
-    else if (current && !observedAt(current, at)) body = <WidgetState kind="unavailable" message="Projects were not recorded at this time." />;
+    else if (current && !observedAt(current, at)) body = <><WidgetState kind="unavailable" message="Projects were not recorded at this time." /><ProjectDetails details={reply.details} /></>;
     else if (current) body = <CurrentList reply={reply} at={prefix?.coverage.lastHour ?? at} item={item(reply)} preparing={prefix?.coverage} current={current} currentItem={item(current, true)} />;
     else if (prefix && pendingAt(prefix, at)) body = <CurrentList reply={reply} at={prefix.coverage.lastHour} item={item(reply)} preparing={prefix.coverage} />;
-    else if (!observedAt(reply, at)) body = <WidgetState kind="unavailable" message="Projects were not recorded at this time." />;
+    else if (!observedAt(reply, at)) body = <><WidgetState kind="unavailable" message="Projects were not recorded at this time." /><ProjectDetails details={reply.details} /></>;
     else body = <CurrentList reply={reply} at={at} item={item(reply)} />;
   } else if (!pending?.length && !lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown
     ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />

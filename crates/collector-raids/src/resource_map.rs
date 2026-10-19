@@ -5,10 +5,13 @@
 //! `trade_routes` family (owner: the country holding each route): each hour reads its owner
 //! slice, an owner new to the census or whose set of referenced routes changed, and every
 //! owner one of whose routes a hooked route writer touched since the previous hour
-//! ([`crate::raid_changes`]: the route update, which is the only caller of both path
-//! builders, route construction, country resources construction and the save loader). An
-//! hour whose take of the marks does not certify the previous hour's read reads every
-//! owner. Every owner read and not marked is compared with its previous read
+//! ([`crate::raid_changes`]: the state-to-state and supply port-to-port updates,
+//! origin refresh's inline kind clear, route construction, country resources
+//! construction and the save loader). An hour whose take of the marks does not
+//! certify the previous hour's read reads every
+//! owner. A changed census marks its owner too: membership and route-storage
+//! changes legitimately change its rows. Every owner read and not marked is
+//! compared with its previous read
 //! ([`SliceSelection::compare`]); a difference disables the family's marks for the
 //! attachment. Read in the RaidState job, after the raid state inputs.
 use crate::{
@@ -301,9 +304,9 @@ impl Captured {
         outcome
     }
 
-    /// Scan the census's owners into the family's store, then mark every owner one of whose
-    /// routes a hooked writer touched; `resolve` names a mark's raw link's country, and a
-    /// mark it cannot name certifies nothing.
+    /// Mark changed route membership or storage from the census, then every owner
+    /// a hooked writer touched. `resolve` names a mark's raw link's country;
+    /// a mark it cannot name certifies nothing.
     fn select(
         &mut self,
         stores: &mut Stores<'_>,
@@ -327,7 +330,7 @@ impl Captured {
                     .u64(u64::from(*market));
             }
             self.selection
-                .scan(stores.routes, owner, Some(print.finish()));
+                .scan_marking(stores.routes, owner, Some(print.finish()));
             start = end;
         }
         stores.routes.finish_scan();

@@ -85,6 +85,7 @@ fn incomplete_held_observations_compare_only_successful_fields_and_payloads() {
             ..Heap::NONE
         },
         variants: [Object::NONE; POOL_ENTRIES],
+        naval_variants: [Object::NONE; POOL_ENTRIES],
     };
     let mut fresh = kept;
     fresh.ship.completed = 9;
@@ -365,5 +366,156 @@ fn record_gathers_go_to_the_source_unless_they_touch_a_gathered_object() {
             &mut output
         ),
         1
+    );
+}
+
+#[test]
+fn worker_power_fields_invalidate_variant_reuse_without_widening_ordinary_gathers() {
+    let pointer = 0x1000;
+    let mut bytes = vec![0; 0x2000];
+    bytes[pointer..pointer + 8]
+        .copy_from_slice(&(cequipment_variant::VTABLE_RVA as u64).to_le_bytes());
+    bytes[pointer + 8..pointer + 16].copy_from_slice(
+        &((1_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE)).to_le_bytes(),
+    );
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut ordinary = ShipFields::new(0);
+    let slot = ordinary.variant(&memory, pointer);
+    assert_eq!(ordinary.naval_variants[slot].pointer, 0);
+    let mut first = ShipFields::new(0);
+    first.enable_naval_power();
+    let slot = first.variant(&memory, pointer);
+    first.naval_variant(&memory, slot);
+    let held = HeldVariant(first.variants[slot], first.naval_variants[slot]);
+    bytes[pointer + super::super::naval_power::CARRIER_SIZE
+        ..pointer + super::super::naval_power::CARRIER_SIZE + 8]
+        .copy_from_slice(&123_i64.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut current = ShipFields::new(0);
+    current.enable_naval_power();
+    assert!(!current.held_variant_unchanged(&memory, &held));
+}
+
+#[test]
+fn power_companion_demands_only_the_selected_variant_and_selected_carrier_word() {
+    let mut bytes = vec![0; 0x5000];
+    let first = 0x1000_usize;
+    let selected = 0x2000_usize;
+    for (pointer, flags) in [
+        (first, 0),
+        (selected, super::super::naval_power::CARRIER_SIZE_SELECTOR),
+    ] {
+        bytes[pointer..pointer + 8]
+            .copy_from_slice(&(cequipment_variant::VTABLE_RVA as u64).to_le_bytes());
+        bytes[pointer + 8..pointer + 16].copy_from_slice(
+            &((pointer as u64) << 32 | u64::from(cequipment_variant::REFERENCE_TYPE)).to_le_bytes(),
+        );
+        bytes[pointer + cequipment_variant::CLASSIFIER_FLAGS
+            ..pointer + cequipment_variant::CLASSIFIER_FLAGS + 8]
+            .copy_from_slice(&flags.to_le_bytes());
+    }
+    let mut heap = Heap {
+        spans: [(0x4000, 2 * equipment_entry::STRIDE), (0, 0)],
+        completed: 1,
+        ..Heap::NONE
+    };
+    for (index, (pointer, amount)) in [(first, 3_i64), (selected, 7)].into_iter().enumerate() {
+        let at = index * equipment_entry::STRIDE;
+        heap.pool[at..at + 8].copy_from_slice(&(pointer as u64).to_le_bytes());
+        heap.pool[at + 8..at + 16].copy_from_slice(&amount.to_le_bytes());
+    }
+    let slice = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let census = ReadCensus::new(&slice);
+    let mut ordinary = ShipFields::new(0);
+    ordinary.visit_variants_of(&census, &heap);
+    let ordinary_bytes = census.bytes();
+    let ordinary_calls = census.calls();
+    census.reset();
+    let mut fields = ShipFields::new(0);
+    fields.enable_naval_power();
+    fields.visit_variants_of(&census, &heap);
+    assert_eq!(
+        census.bytes() - ordinary_bytes,
+        32,
+        "one heavy attack, speed/range and selected carrier word"
+    );
+    assert_eq!(
+        census.calls() - ordinary_calls,
+        1,
+        "only the selected variant adds a gather"
+    );
+    let held = fields.current_variants();
+    let powers = fields.current_naval_variants();
+    assert_eq!(powers[0].pointer, 0);
+    assert_eq!(powers[1].pointer, selected);
+    let selected_fields = naval_power_fields(&held[1]).unwrap();
+    assert_eq!(
+        selected_fields[2],
+        (super::super::naval_power::CARRIER_SIZE + 8, 8)
+    );
+    let unselected = HeldVariant(held[0], powers[0]);
+    let chosen = HeldVariant(held[1], powers[1]);
+    bytes[first + super::super::naval_power::CARRIER_SIZE
+        ..first + super::super::naval_power::CARRIER_SIZE + 8]
+        .copy_from_slice(&77_i64.to_le_bytes());
+    bytes[selected + super::super::naval_power::CARRIER_SIZE
+        ..selected + super::super::naval_power::CARRIER_SIZE + 8]
+        .copy_from_slice(&88_i64.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut later = ShipFields::new(0);
+    later.enable_naval_power();
+    assert!(later.held_variant_unchanged(&memory, &unselected));
+    assert!(
+        later.held_variant_unchanged(&memory, &chosen),
+        "the unselected carrier word is not an input"
+    );
+    bytes[selected + super::super::naval_power::CARRIER_SIZE + 8
+        ..selected + super::super::naval_power::CARRIER_SIZE + 16]
+        .copy_from_slice(&99_i64.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut later = ShipFields::new(0);
+    later.enable_naval_power();
+    assert!(!later.held_variant_unchanged(&memory, &chosen));
+}
+
+#[test]
+fn rejected_or_unobserved_variant_identity_and_flags_demand_no_power_read() {
+    let bytes = vec![0; 0x3000];
+    let slice = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let census = ReadCensus::new(&slice);
+    let mut fields = ShipFields::new(0);
+    fields.enable_naval_power();
+    let slot = fields.variant(&census, 0x1000);
+    census.reset();
+    fields.naval_variant(&census, slot);
+    assert_eq!(
+        census.calls(),
+        0,
+        "a rejected original identity cannot demand suffix leaves"
+    );
+    fields.variants[slot].completed = VARIANT_FLAGS;
+    fields.naval_variant(&census, slot);
+    assert_eq!(
+        census.calls(),
+        0,
+        "an original flag failure is never retried"
     );
 }

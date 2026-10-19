@@ -62,6 +62,7 @@ pub(crate) struct RegistrationStore {
     bytes: usize,
     /// Set on the game thread; the next pass drops every segment.
     forgotten: bool,
+    pub(super) state_inputs: super::state_fuel_inputs::Store,
 }
 
 /// A held segment a pass may carry.
@@ -95,6 +96,10 @@ impl Fresh<'_> {
         self.spans
             .iter()
             .filter(|span| !(span.len == 4 && self.link_table.contains(&span.addr)))
+            // An optional summary read that failed stays absent in the held
+            // snapshot, so it remains unknown without polling. Splice keeps
+            // its existing successful-span contract.
+            .filter(|span| span.ok || span.mask != 0)
     }
 
     /// Appends the bytes of `span` the registration rows consume; bytes the
@@ -153,6 +158,7 @@ impl RegistrationStore {
     pub(crate) fn begin(&mut self) {
         if std::mem::take(&mut self.forgotten) {
             self.held.clear();
+            self.state_inputs.clear();
         }
         self.pass += 1;
         self.counts = Counts::default();
@@ -207,7 +213,9 @@ impl RegistrationStore {
     /// Holds `fresh` for `handle` under `certificate`, first comparing it
     /// with the segment held under the same certificate when `compare`:
     /// returns where they differ, a write no hook observed. A read with a
-    /// failed span, or one without a certificate, is not held.
+    /// failed required span, or one without a certificate, is not held.
+    /// Failed optional summary spans are retained as absence until a writer
+    /// changes the certificate.
     pub(crate) fn hold(
         &mut self,
         handle: u64,
@@ -219,7 +227,8 @@ impl RegistrationStore {
     ) -> Option<Difference> {
         self.counts.read += 1;
         let previous = self.held.remove(&handle);
-        let certificate = certificate.filter(|_| fresh.spans.iter().all(|span| span.ok))?;
+        let certificate =
+            certificate.filter(|_| fresh.spans.iter().all(|span| span.ok || span.mask == 0))?;
         let mut held = Held {
             pointer,
             certificate,
@@ -284,8 +293,15 @@ impl RegistrationStore {
             self.bases = self.visited;
         } else {
             self.held.clear();
+            self.state_inputs.clear();
         }
-        self.bytes = self.held.capacity() * size_of::<(u64, Held)>()
+        self.refresh_allocated_bytes();
+    }
+
+    /// Worker-only accounting after an independent state-input cache grows.
+    pub(super) fn refresh_allocated_bytes(&mut self) {
+        self.bytes = self.state_inputs.bytes()
+            + self.held.capacity() * size_of::<(u64, Held)>()
             + self
                 .held
                 .values()

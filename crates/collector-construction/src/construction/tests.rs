@@ -486,7 +486,16 @@ fn construction_rest_split_copy_matches_direct_walk() {
         Outcome::Rows { len: 1 }
     );
     assert_eq!(split.railway_construction.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(split.resistance.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(
+        split.resistance.outcome,
+        Outcome::Unavailable {
+            reason: "state resistance is acquired by the state worker"
+        }
+    );
+    assert_eq!(
+        counts[TableId::StateResistance.index()],
+        engine_native::memory::ReadCounts::ZERO
+    );
     assert_eq!(split.reserve_manpower.outcome, Outcome::Rows { len: 1 });
     assert_eq!(split.collaboration.outcome, Outcome::Rows { len: 0 });
 }
@@ -1166,7 +1175,6 @@ fn cold_construction_owned_arenas_keep_original_mod_sized_queue_and_state_demand
         assert_eq!(native.finish(), reads);
         for outcome in [
             captured.base_resources.outcome,
-            captured.resistance.outcome,
             captured.building_construction.outcome,
             captured.railway_construction.outcome,
         ] {
@@ -1184,7 +1192,13 @@ fn cold_construction_owned_arenas_keep_original_mod_sized_queue_and_state_demand
         assert_eq!(captured.routes.len, count * 2);
         assert_eq!(captured.occupied.len, 1);
         assert_eq!(captured.law_bytes.len, 16);
-        assert_eq!(captured.resistance.rows[count - 1].state, count as u32);
+        assert_eq!(
+            captured.resistance.outcome,
+            Outcome::Unavailable {
+                reason: "state resistance is acquired by the state worker"
+            }
+        );
+        assert!(captured.resistance.rows.is_empty());
         typed.capture_growing(&memory, 0, kit::BASE, 0, true);
         kit::assert_matches_direct(&captured, &typed);
     }

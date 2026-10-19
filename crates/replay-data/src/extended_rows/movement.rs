@@ -638,13 +638,15 @@ pub struct DivisionMovementRow {
     /// refusal; older formats use NotRecorded.
     pub base_speed: Recorded<Option<i64>>,
     /// The division's fuel, which the movement speed's fuel ratio divides by the stat block's
-    /// capacity, read with the base speed for a division with a nonempty route; the save's `fuel`.
-    /// None is outside demand or this field's refusal; older formats use NotRecorded.
+    /// capacity; the save's `fuel`. The existing census supplies stationary units too,
+    /// for their panel speed. None is a field refusal.
     pub fuel: Recorded<Option<i64>>,
+    /// Logical owner's regional transport speed for a nonzero naval-transfer membership.
+    pub transport_speed: Recorded<Option<i64>>,
 }
 typed_codec!(DivisionMovementRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
- { 0 => (source): U32, 1 => (target): U32, 2 => (numerator): I64, 3 => (retreat): U8, 4 => (strategic_redeployment): U8, 5 => (naval_transfer): U8, 6 => (combat_count): U32, 7 => (path_total): U32, 8 => (path): U32List, 9 => (alternate_total): U32, 10 => (alternate_path): U32List, 11 => (combat_role): U8, 12 => (combat_province): U32, 13 => (map_entity): U8, 14 => (strategic_action): Opaque, 15 => (withdrawal): Opaque, 16 => (movement_priority): OptionalI32, 17 => (order_transport): Opaque, 18 => (fresh): Opaque, 19 => (combat_references): Opaque, 20 => (selected): Opaque, 21 => (transport): Opaque, 22 => (base_speed): OptionalI64, 23 => (fuel): OptionalI64 }, |row| {
+ { 0 => (source): U32, 1 => (target): U32, 2 => (numerator): I64, 3 => (retreat): U8, 4 => (strategic_redeployment): U8, 5 => (naval_transfer): U8, 6 => (combat_count): U32, 7 => (path_total): U32, 8 => (path): U32List, 9 => (alternate_total): U32, 10 => (alternate_path): U32List, 11 => (combat_role): U8, 12 => (combat_province): U32, 13 => (map_entity): U8, 14 => (strategic_action): Opaque, 15 => (withdrawal): Opaque, 16 => (movement_priority): OptionalI32, 17 => (order_transport): Opaque, 18 => (fresh): Opaque, 19 => (combat_references): Opaque, 20 => (selected): Opaque, 21 => (transport): Opaque, 22 => (base_speed): OptionalI64, 23 => (fuel): OptionalI64, 24 => (transport_speed): OptionalI64 }, |row| {
  check_unit_combat_references(&row.combat_references, row.combat_count)?;
  let reached = (row.path_total as i32) > 0 && row.target == 0
      && row.retreat == 0 && row.strategic_redeployment != 0;
@@ -1242,13 +1244,80 @@ pub struct DivisionStatusRow {
     /// step), kept with [`Self::supply_ratio_exact`]. A numeric column, so an hourly
     /// countdown stores its small difference.
     pub supply_grace_exact: Recorded<Option<i64>>,
+    /// Stored signed fixed5 XP, carried under the division experience writers. None is a counted read or certificate refusal.
+    pub experience: Recorded<Option<i64>>,
+    /// Previous full template handle during conversion; zero is no pending conversion.
+    pub pending_template: Recorded<Option<u64>>,
+    pub officer_experience: Recorded<Option<i64>>,
+    pub career_counter: Recorded<Option<i32>>,
+    /// Country source identity, selected commander kind and full handle; zero commander is known absence.
+    /// A maximum kind with zero handle refuses only commander selection, retaining the country identity.
+    pub panel_source: Recorded<Option<[u64; 3]>>,
+    /// The combat operand of the movement speed's starting term for a division in
+    /// combat and not withdrawing, whose starting one is replaced: `Some(Some(raw))`
+    /// is the combat's own raw fixed5 movement word, added to the content's combat
+    /// movement speed define, when the first combat of the division's combat list
+    /// whose attacker side holds it is a land or border-war combat; `Some(None)` when
+    /// that combat is naval, which starts the term at zero. `Some(None)` for every
+    /// other division. The outer None is a counted read refusal; older formats use
+    /// NotRecorded.
+    pub combat_movement: Recorded<Option<Option<i64>>>,
+    /// Exact current organisation only when MOVE_LOW_ORGANISATION is set.
+    /// MOVE_ORGANISATION_REFUSED distinguishes a failed decision from no factor.
+    /// Numeric columns let each operand carry independently as it changes.
+    pub organisation_exact: Recorded<Option<i64>>,
+    /// The exact effective maximum paired with organisation_exact. Display
+    /// consumers retain maximum_organisation at its existing display step.
+    pub maximum_organisation_exact: Recorded<Option<i64>>,
+    /// Width entry from the same certified commander block. Read refusal is
+    /// distinguished from native absence by commander_modifiers.
+    pub commander_width_factor: Recorded<Option<i64>>,
 }
 opaque_value!(Option<[Option<i64>; 5]>);
+opaque_value!(Option<[u64; 3]>);
 // Display steps ([`crate::display`]). Entrenchment and its cap (the spade glyph's `> 0`
 // and `<` tests), the attrition value and threshold (the attrition glyph's comparison),
 // supply_grace_maximum (the `< 1` gate), and strength_factor, dig_in_factor and
 // border_combat_stats, which only feed derived products, stay exact.
 impl DivisionStatusRow {
+    pub fn officer_experience(&self) -> Option<i64> {
+        self.officer_experience
+            .require("DivisionStatus.officer_experience")
+            .ok()
+            .copied()
+            .flatten()
+    }
+    pub fn career_counter(&self) -> Option<i32> {
+        self.career_counter
+            .require("DivisionStatus.career_counter")
+            .ok()
+            .copied()
+            .flatten()
+    }
+    pub fn panel_source(&self) -> Option<[u64; 3]> {
+        self.panel_source
+            .require("DivisionStatus.panel_source")
+            .ok()
+            .copied()
+            .flatten()
+    }
+
+    /// Native manpower-normalized fixed5 experience, including the arithmetic sentinel.
+    pub fn normalized_experience(&self, manpower: i32) -> Option<i64> {
+        let experience = *self
+            .experience
+            .require("DivisionStatus.experience")
+            .ok()?
+            .as_ref()?;
+        Some(if manpower < 1 {
+            0
+        } else if (experience as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd {
+            0xffff_ffff
+        } else {
+            experience.wrapping_mul(100_000) / (i64::from(manpower) * 100_000)
+        })
+    }
+
     /// [`Self::supply_ratio_exact`] and [`Self::supply_grace_exact`] from the exact
     /// ratio and remaining grace: kept only with nonzero days out of supply, where the
     /// out-of-supply severity reads them; with zero days (or unread days) that severity
@@ -1267,11 +1336,12 @@ impl DivisionStatusRow {
         }
     }
 
-    /// [`Self::commander_modifiers`]' entry order.
-    pub const COMMANDER_KEYS: [&'static str; 5] = [
+    /// Acquisition order of the movement entries and independent width operand.
+    pub const COMMANDER_KEYS: [&'static str; 6] = [
         "army_speed_factor",
         "army_armor_speed_factor",
         "out_of_supply_factor",
+        "combat_width_factor",
         "river_crossing_factor",
         "special_forces_out_of_supply_factor",
     ];
@@ -1327,6 +1397,16 @@ impl DivisionStatusRow {
     /// The division's noncore-supply byte is nonzero: the movement speed's out-of-supply step adds
     /// no noncore-supply term.
     pub const MOVE_NONCORE_SUPPLY_BYPASS: u8 = 4;
+    /// The division's air-supply word is positive: the noncore-supply term takes the
+    /// air noncore-supply speed define instead of the ordinary one.
+    pub const MOVE_NONCORE_AIR: u8 = 8;
+    /// The air-supply sign was refused; required only past noncore bypass/core access.
+    pub const MOVE_NONCORE_AIR_REFUSED: u8 = 64;
+    /// Ordinary movement takes the low-organisation attack factor; both exact
+    /// organisation operands are required, independently of display rounding.
+    pub const MOVE_LOW_ORGANISATION: u8 = 16;
+    /// The conditional organisation read or its native branch decision failed.
+    pub const MOVE_ORGANISATION_REFUSED: u8 = 32;
 
     /// The attrition glyph test: the division's stored attrition exceeds the threshold the row
     /// records, a signed fixed-point comparison of the same read.
@@ -1334,9 +1414,27 @@ impl DivisionStatusRow {
         self.attrition_threshold < self.attrition_value
     }
 }
+/// Deployed active-stat cache, held under one rebuild certificate independently of status.
+/// Each optional fixed5 operand has its own numeric delta; absence is a named read refusal.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DivisionPanelStatsRow {
+    pub division: u64,
+    pub panel_stats: [Option<i64>; 22],
+}
+impl DivisionPanelStatsRow {
+    /// Native panel stat selectors, resolved through executable stat metadata.
+    pub const PANEL_STAT_SELECTORS: [usize; 22] = [
+        0x3d, 0x3c, 0, 6, 0xb, 0x41, 0x42, 9, 0xe, 4, 5, 1, 2, 0x3f, 0x40, 8, 7, 0xf, 0x43, 0x45,
+        3, 0x3e,
+    ];
+}
+typed_codec!(DivisionPanelStatsRow, 64, |row| row.division as u128,
+ |key| Self { division: key as u64, ..Default::default() },
+ { 0 => (panel_stats[0]): OptionalI64, 1 => (panel_stats[1]): OptionalI64, 2 => (panel_stats[2]): OptionalI64, 3 => (panel_stats[3]): OptionalI64, 4 => (panel_stats[4]): OptionalI64, 5 => (panel_stats[5]): OptionalI64, 6 => (panel_stats[6]): OptionalI64, 7 => (panel_stats[7]): OptionalI64, 8 => (panel_stats[8]): OptionalI64, 9 => (panel_stats[9]): OptionalI64, 10 => (panel_stats[10]): OptionalI64, 11 => (panel_stats[11]): OptionalI64, 12 => (panel_stats[12]): OptionalI64, 13 => (panel_stats[13]): OptionalI64, 14 => (panel_stats[14]): OptionalI64, 15 => (panel_stats[15]): OptionalI64, 16 => (panel_stats[16]): OptionalI64, 17 => (panel_stats[17]): OptionalI64, 18 => (panel_stats[18]): OptionalI64, 19 => (panel_stats[19]): OptionalI64, 20 => (panel_stats[20]): OptionalI64, 21 => (panel_stats[21]): OptionalI64 }, |_row| Ok(()));
+
 typed_codec!(DivisionStatusRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
- { 0 => (maximum_hit_points): I64 @ Self::MAXIMUM_STEP, 1 => (maximum_organisation): I64 @ Self::MAXIMUM_STEP, 2 => (entrenchment): I64, 3 => (entrenchment_cap): I64, 4 => (supply_ratio): I64 @ Self::SUPPLY_RATIO_STEP, 5 => (attrition_value): I64, 6 => (attrition_threshold): I64, 7 => (attrition): U8, 8 => (exercising): U8, 9 => (has_order): U8, 10 => (invalid_orders): U8, 11 => (strength_factor): I64, 12 => (model_number): I32, 13 => (acclimatization_maximum): OptionalI64, 14 => (acclimatization): Opaque, 15 => (move_flags): U8, 16 => (border_combat_stats): Opaque, 17 => (naming): Opaque, 18 => (supply_grace_maximum): I64, 19 => (supply_grace_remaining): I64 @ Self::SUPPLY_GRACE_STEP, 20 => (country_ordinal): OptionalU32, 21 => (invalid_orders_reason): OptionalI32, 22 => (supply): Opaque, 23 => (attrition_inputs): Opaque, 24 => (dig_in_factor): OptionalI64, 25 => (name): Opaque, 26 => (attack): Opaque, 27 => (camouflage): Opaque, 28 => (attack_stats): Opaque, 29 => (weather_factor): OptionalI64, 30 => (name_template): Opaque, 31 => (movement_stats): Opaque, 32 => (out_of_supply_days): OptionalI32, 33 => (commander_modifiers): Opaque, 34 => (supply_ratio_exact): OptionalI64, 35 => (supply_grace_exact): OptionalI64 }, |_row| Ok(()));
+ { 0 => (maximum_hit_points): I64 @ Self::MAXIMUM_STEP, 1 => (maximum_organisation): I64 @ Self::MAXIMUM_STEP, 2 => (entrenchment): I64, 3 => (entrenchment_cap): I64, 4 => (supply_ratio): I64 @ Self::SUPPLY_RATIO_STEP, 5 => (attrition_value): I64, 6 => (attrition_threshold): I64, 7 => (attrition): U8, 8 => (exercising): U8, 9 => (has_order): U8, 10 => (invalid_orders): U8, 11 => (strength_factor): I64, 12 => (model_number): I32, 13 => (acclimatization_maximum): OptionalI64, 14 => (acclimatization): Opaque, 15 => (move_flags): U8, 16 => (border_combat_stats): Opaque, 17 => (naming): Opaque, 18 => (supply_grace_maximum): I64, 19 => (supply_grace_remaining): I64 @ Self::SUPPLY_GRACE_STEP, 20 => (country_ordinal): OptionalU32, 21 => (invalid_orders_reason): OptionalI32, 22 => (supply): Opaque, 23 => (attrition_inputs): Opaque, 24 => (dig_in_factor): OptionalI64, 25 => (name): Opaque, 26 => (attack): Opaque, 27 => (camouflage): Opaque, 28 => (attack_stats): Opaque, 29 => (weather_factor): OptionalI64, 30 => (name_template): Opaque, 31 => (movement_stats): Opaque, 32 => (out_of_supply_days): OptionalI32, 33 => (commander_modifiers): Opaque, 34 => (supply_ratio_exact): OptionalI64, 35 => (supply_grace_exact): OptionalI64, 36 => (experience): OptionalI64, 37 => (pending_template): OptionalU64, 38 => (officer_experience): OptionalI64, 39 => (career_counter): OptionalI32, 40 => (panel_source): Opaque, 41 => (combat_movement): Opaque, 42 => (organisation_exact): OptionalI64, 43 => (maximum_organisation_exact): OptionalI64, 44 => (commander_width_factor): OptionalI64 }, |_row| Ok(()));
 
 /// DivisionRetreatBans: key division (64 bits). A division whose commander
 /// bans retreat: bits of the leader modifier block selected for it,
@@ -1416,6 +1514,85 @@ typed_codec!(DivisionTemplateRow, 64, |row| row.template as u128,
  |key| Self { template: key as u64, ..Default::default() },
  { 0 => (owner): U32, 1 => (name): Bytes, 2 => (unit_type): I32, 3 => (name_key): Bytes }, |_row| Ok(()));
 
+/// Country configuration is recorded even with an empty template roster.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CountryTemplateStateRow {
+    pub garrison_priority: Recorded<Option<i32>>,
+    pub country: u32,
+    /// Full stored military-staff template reference, zero when unset.
+    pub selected_staff: u64,
+    pub next_hq_order: i32,
+    pub lock_all: u8,
+    /// Country default followed by occupied-country and state overrides.
+    /// None is an acquisition refusal; an unset template inherits its parent scope.
+    pub garrisons: Recorded<Option<std::sync::Arc<Vec<GarrisonTemplateSelection>>>>,
+}
+typed_codec!(CountryTemplateStateRow, 32, |row| row.country as u128,
+ |key| Self { country: key as u32, ..Default::default() },
+ { 0 => (selected_staff): U64, 1 => (lock_all): U8, 2 => (garrisons): Opaque, 3 => (next_hq_order): I32, 4 => (garrison_priority): OptionalI32 }, |_row| Ok(()));
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GarrisonTemplateSelection {
+    /// None denotes the country default rather than an occupied-country group.
+    pub occupied: Option<u32>,
+    /// None denotes the group selection; Some(0) is an explicit state override.
+    pub state: Option<u32>,
+    pub template: Option<u64>,
+}
+value_struct!(GarrisonTemplateSelection { occupied: Option<u32>, state: Option<u32>, template: Option<u64> });
+opaque_value!(Option<std::sync::Arc<Vec<GarrisonTemplateSelection>>>);
+
+/// Template-bound HQ context. An absent deployment is a null native holder;
+/// target references remain complete even when they no longer resolve.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TemplateHqContext {
+    pub target: u64,
+    pub deployed: u8,
+    pub queued: u8,
+    pub deployment: Option<HqDeployment>,
+    pub equipment: Vec<HqEquipment>,
+    pub required: Vec<HqRequirement>,
+}
+value_struct!(TemplateHqContext {target:u64, deployed:u8, queued:u8, deployment:Option<HqDeployment>, equipment:Vec<HqEquipment>, required:Vec<HqRequirement>});
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HqDeployment {
+    pub country: u32,
+    pub priority: i32,
+    pub allow_zero: u8,
+    pub assembled_manpower: i32,
+    pub requested_manpower: i32,
+    pub order: i32,
+    pub requisitioned: u8,
+}
+value_struct!(HqDeployment {
+    country: u32,
+    priority: i32,
+    allow_zero: u8,
+    assembled_manpower: i32,
+    requested_manpower: i32,
+    order: i32,
+    requisitioned: u8
+});
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HqEquipment {
+    pub variant: u64,
+    pub amount: i64,
+}
+value_struct!(HqEquipment {
+    variant: u64,
+    amount: i64
+});
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HqRequirement {
+    pub token: u32,
+    pub amount: i64,
+}
+value_struct!(HqRequirement {
+    token: u32,
+    amount: i64
+});
+opaque_value!(Option<std::sync::Arc<TemplateHqContext>>);
+
 /// One template (definition, count) entry. Token zero is a null-object
 /// definition.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -1430,6 +1607,98 @@ value_struct!(TemplateSubunit {
     token: u32,
     local: u8,
     count: i32
+});
+
+/// One spatial cell, including an empty pointer and a null-object definition.
+/// Those are distinct native states even though neither contributes a battalion.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TemplateCell {
+    pub token: u32,
+    pub local: u8,
+    pub occupied: bool,
+}
+value_struct!(TemplateCell {
+    token: u32,
+    local: u8,
+    occupied: bool
+});
+
+/// The game's grid stores each column's rows consecutively. Dimensions and
+/// the complete cell array are retained independently, without imposing limits
+/// on a mod's authored grid or normalizing native empty cells away.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TemplateGrid {
+    pub columns: u32,
+    pub rows: u32,
+    pub cells: Vec<TemplateCell>,
+}
+value_struct!(TemplateGrid { columns: u32, rows: u32, cells: Vec<TemplateCell> });
+
+impl TemplateGrid {
+    /// Native lookup narrows the flattened index to a signed short and
+    /// bounds it against the cell array, without separately checking either
+    /// coordinate against the declared dimensions.
+    pub fn cell(&self, column: i16, row: i16) -> Option<&TemplateCell> {
+        let index = (self.rows as i16).wrapping_mul(column).wrapping_add(row);
+        self.cells.get(usize::try_from(index).ok()?)
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TemplateLayout {
+    pub regiments: TemplateGrid,
+    pub support: TemplateGrid,
+    pub regimental_support: TemplateGrid,
+}
+value_struct!(TemplateLayout {
+    regiments: TemplateGrid,
+    support: TemplateGrid,
+    regimental_support: TemplateGrid
+});
+
+/// Stored recruitment, equipment and restriction inputs. Byte flags retain
+/// their native values; consumers use the game's nonzero tests. Priority is
+/// the shared template priority used by recruitment and equipment allocation.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TemplateSettings {
+    /// Native country-roster position, used for first display-name matches.
+    pub roster_ordinal: u32,
+    pub names_group: Option<Vec<u8>>,
+    pub priority: i32,
+    pub is_army_hq: u8,
+    pub locked: u8,
+    pub obsolete: u8,
+    pub obsolete_change_date: i32,
+    pub force_allow_recruiting: u8,
+    pub allow_new_equipment: u8,
+    pub allow_foreign_equipment: u8,
+    pub parent: u64,
+    pub creator_country: i32,
+    pub origin_type: i32,
+    pub fake_intel: u8,
+    pub division_cap: Option<i32>,
+    pub equipment_niche: u8,
+    pub role: Option<u32>,
+    pub ai_role: Option<u32>,
+    pub ai_role_fallback: u32,
+    pub total_manpower: i32,
+    /// Native fixed5 cache used to deploy an army headquarters.
+    pub command_power_cost: i64,
+    pub training_time: i32,
+    /// Definition tokens in native list order. None is an acquisition refusal.
+    pub forbidden_equipment: Option<Vec<u32>>,
+}
+value_struct!(TemplateSettings {
+    roster_ordinal: u32,
+    names_group: Option<Vec<u8>>,
+    priority: i32, is_army_hq: u8, locked: u8, obsolete: u8,
+    obsolete_change_date: i32, force_allow_recruiting: u8,
+    allow_new_equipment: u8, allow_foreign_equipment: u8,
+    parent: u64, creator_country: i32, origin_type: i32, fake_intel: u8,
+    division_cap: Option<i32>, equipment_niche: u8,
+    role: Option<u32>, ai_role: Option<u32>, ai_role_fallback: u32,
+    total_manpower: i32, command_power_cost: i64, training_time: i32,
+    forbidden_equipment: Option<Vec<u32>>
 });
 
 /// A template's three composition grids. Each lists the definitions its
@@ -1463,6 +1732,26 @@ impl TemplateGrids {
 #[cfg(test)]
 mod template_grid_tests {
     use super::*;
+
+    #[test]
+    fn spatial_lookup_keeps_column_major_holes_and_refuses_outside_cells() {
+        let grid = TemplateGrid {
+            columns: 2,
+            rows: 3,
+            cells: (0..6)
+                .map(|index| TemplateCell {
+                    token: index + 10,
+                    local: 0,
+                    occupied: index != 2,
+                })
+                .collect(),
+        };
+        assert_eq!(grid.cell(1, 0).unwrap().token, 13);
+        assert!(!grid.cell(0, 2).unwrap().occupied);
+        assert!(grid.cell(2, 0).is_none());
+        assert_eq!(grid.cell(0, 3).unwrap().token, 13);
+        assert!(grid.cell(-1, 0).is_none());
+    }
 
     #[test]
     fn ambience_slots_count_regiments_and_support_but_not_regimental_support() {
@@ -1723,7 +2012,7 @@ pub struct SentVolunteerRow {
 typed_codec!(SentVolunteerRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128, |key| Self { country: (key >> 32) as u32, ordinal: key as u32, division: Default::default() },
  { 0 => (division): U64 }, |_row| Ok(()));
 
-/// VolunteerHosts: key country:position (64 bits), 2 payload mask bits.
+/// VolunteerHosts: key country:position (64 bits), 3 payload mask bits.
 ///
 /// One position of the volunteer-host vector and its paired tally. The
 /// position is part of the key because the vector can hold a repeated host.
@@ -1736,9 +2025,11 @@ pub struct VolunteerHostRow {
     pub host: u32,
     /// Paired native word; the engine re-derives it from the sender's armies.
     pub deployed_divisions: i32,
+    /// Directed effective Air volunteer-capacity modifier.
+    pub air_capacity_modifier: Recorded<Option<i64>>,
 }
-typed_codec!(VolunteerHostRow, 64, |row| (row.country as u128) << 32 | row.position as u128, |key| Self { country: (key >> 32) as u32, position: key as u32, host: Default::default(), deployed_divisions: Default::default() },
- { 0 => (host): U32, 1 => (deployed_divisions): I32 }, |_row| Ok(()));
+typed_codec!(VolunteerHostRow, 64, |row| (row.country as u128) << 32 | row.position as u128, |key| Self { country: (key >> 32) as u32, position: key as u32, host: Default::default(), deployed_divisions: Default::default(), air_capacity_modifier: Default::default() },
+ { 0 => (host): U32, 1 => (deployed_divisions): I32, 2 => (air_capacity_modifier): OptionalI64 }, |_row| Ok(()));
 
 /// TheatreAreas: key theatre:ordinal (96 bits), 2 payload mask bits.
 ///
@@ -1834,3 +2125,33 @@ opaque_value!(SparseBytes);
 opaque_value!(Vec<DivisionAcclimatization>);
 opaque_value!(Vec<TemplateSubunit>);
 opaque_value!(TemplateGrids);
+
+#[cfg(test)]
+mod experience_tests {
+    use super::*;
+
+    #[test]
+    fn division_experience_keeps_stored_xp_separate_from_manpower_normalization() {
+        let mut row = DivisionStatusRow {
+            experience: Recorded::Value(Some(12_345_678)),
+            ..Default::default()
+        };
+        assert_eq!(row.normalized_experience(1000), Some(12_345));
+        assert_eq!(row.normalized_experience(0), Some(0));
+        assert_eq!(row.experience, Recorded::Value(Some(12_345_678)));
+        row.experience = Recorded::Value(Some(i64::MAX));
+        assert_eq!(row.normalized_experience(1), Some(0xffff_ffff));
+        row.experience = Recorded::Value(Some(-123_456));
+        assert_eq!(row.normalized_experience(10), Some(-12_345));
+        row.experience = Recorded::Value(None);
+        assert_eq!(row.normalized_experience(10), None);
+        row.experience = Recorded::NotRecorded;
+        assert_eq!(row.normalized_experience(10), None);
+    }
+}
+opaque_value!(TemplateLayout);
+opaque_value!(Option<TemplateLayout>);
+opaque_value!(TemplateSettings);
+
+opaque_value!(Option<std::sync::Arc<TemplateLayout>>);
+opaque_value!(Option<std::sync::Arc<TemplateSettings>>);

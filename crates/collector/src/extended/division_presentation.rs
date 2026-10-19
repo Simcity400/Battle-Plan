@@ -2,7 +2,10 @@
 //! movement and counter reads retain separate costs and outcomes. The
 //! commanders' retreat bans (DivisionRetreatBans) are read for every division
 //! each hour, carrying each commander's bans while no forwarded writer
-//! touched it ([`crate::retreat_ban_changes`]).
+//! touched it ([`crate::retreat_ban_changes`]). The land movement speed's
+//! shared operands (MovementStateTerms, CoreSupplyAccess,
+//! CountryUnitSpeedEntries, RiverRelations, DivisionTransportSpeeds and
+//! DivisionStatus.combat_movement) follow the status pass ([`speed_terms`]).
 use super::production::Sources;
 use crate::{
     projection::{Projection, project_table, scalar_table},
@@ -15,14 +18,15 @@ use engine_native::{
     Memory, carmy, carmy::DivisionSeed, ccountry, cname_group_member,
     corders_group_member::MembershipCapacity, cprovince, walk::Outcome,
 };
-use replay_data::{
-    rows::DivisionCamouflage, rows::DivisionMovementRow, rows::DivisionRetreatBanRow,
-    rows::DivisionStatusRow, rows::NameOperands, rows::Recorded, rows::Retired, rows::TableId,
-    rows::Witnessed, rows::tables,
+use replay_data::rows::{
+    DivisionCamouflage, DivisionMovementRow, DivisionPanelStatsRow, DivisionRetreatBanRow,
+    DivisionStatusRow, NameOperands, Recorded, Retired, TableId, Witnessed, tables,
 };
 use replay_frame::frame::TableInput;
 
-pub const N: usize = 4;
+mod speed_terms;
+
+pub const N: usize = 7 + speed_terms::N;
 /// The passes inside the DivisionStatus acquisition span.
 pub(crate) const PHASES: usize = 3;
 pub(crate) const PHASE_NAMES: [&str; PHASES] = ["status", "dig_in", "naming"];
@@ -31,6 +35,14 @@ pub const TABLES: [TableId; N] = [
     TableId::DivisionStatus,
     TableId::DivisionRetreatBans,
     TableId::DivisionLandInputs,
+    TableId::DivisionHistory,
+    TableId::DivisionPanelSources,
+    TableId::DivisionPanelStats,
+    speed_terms::TABLES[0],
+    speed_terms::TABLES[1],
+    speed_terms::TABLES[2],
+    speed_terms::TABLES[3],
+    speed_terms::TABLES[4],
 ];
 // Both depend on the shared division census; the combined source read group in
 // extended::read_groups includes their individually measured costs.
@@ -39,14 +51,25 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 static WITHDRAWAL_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static MOVEMENT_PRIORITY_REFUSALS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+static ORGANISATION_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static BASE_SPEED_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TRANSPORT_SPEED_REFUSALS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The land movement speed operands' cumulative reads, carried rows and
+/// refusals per family ([`speed_terms`]).
+pub(crate) fn speed_term_data() -> impl serde::Serialize {
+    speed_terms::status_data()
+}
 
 pub(crate) fn movement_arrow_data() -> impl serde::Serialize {
     crate::status::status!({
         "withdrawal_refused": WITHDRAWAL_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
         "movement_priority_refused": MOVEMENT_PRIORITY_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "organisation_refused": ORGANISATION_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
         "base_speed_refused": BASE_SPEED_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "scope": "cumulative field-local division movement scalar refusals (arrow style and the base speed of divisions with a route); established division movement remains available",
+        "transport_speed_refused": TRANSPORT_SPEED_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "scope": "cumulative field-local division movement scalar refusals (arrow style and the base speed and conditional exact organisation of divisions with a route); established division movement remains available",
     })
 }
 
@@ -59,6 +82,8 @@ macro_rules! status_fields {
             division: $row.division,
             maximum_hit_points: DivisionStatusRow::MAXIMUM_STEP.round($row.maximum_hit_points),
             maximum_organisation: DivisionStatusRow::MAXIMUM_STEP.round($row.maximum_organisation),
+            organisation_exact: Recorded::Value($row.movement_organisation.flatten().map(|pair| pair[0])),
+            maximum_organisation_exact: Recorded::Value($row.movement_organisation.flatten().map(|pair| pair[1])),
             entrenchment: $row.entrenchment,
             entrenchment_cap: $row.entrenchment_cap,
             supply_ratio: DivisionStatusRow::SUPPLY_RATIO_STEP.round($row.supply_ratio),
@@ -69,7 +94,9 @@ macro_rules! status_fields {
             invalid_orders: $row.invalid_orders,
             strength_factor: $row.strength_factor,
             model_number: $row.model_number,
-            move_flags: $row.move_flags,
+            move_flags: $row.move_flags
+                | (u8::from($row.movement_organisation.is_some_and(|pair| pair.is_some())) * DivisionStatusRow::MOVE_LOW_ORGANISATION)
+                | (u8::from($row.movement_organisation.is_none()) * DivisionStatusRow::MOVE_ORGANISATION_REFUSED),
         })
     };
 }
@@ -81,7 +108,8 @@ macro_rules! compare_status_fields {
 }
 
 macro_rules! project_status_fields {
-    ([$row:expr, $supply_grace:expr, $naming:expr, $supply:expr, $dig_in:expr, $block:expr, $name:expr, $attack_stats:expr, $witness:expr, $movement:expr], {$($field:ident: $value:expr),* $(,)?}) => {
+    ([$row:expr, $supply_grace:expr, $naming:expr, $supply:expr, $dig_in:expr, $block:expr, $name:expr, $attack_stats:expr, $witness:expr, $movement:expr, $experience:expr, $pending_template:expr, $officer:expr, $career:expr, $source:expr, $combat_movement:expr], {$($field:ident: $value:expr),* $(,)?}) => {{
+        let block = $block;
         DivisionStatusRow {
             $($field: $value,)*
             acclimatization_maximum: None,
@@ -106,9 +134,16 @@ macro_rules! project_status_fields {
             attack: Recorded::Value(Witnessed($witness)),
             attack_stats: Recorded::Value($attack_stats),
             movement_stats: Recorded::Value($movement),
+            experience: Recorded::Value($experience),
+            pending_template: Recorded::Value($pending_template),
+            officer_experience: Recorded::Value($officer),
+            career_counter: Recorded::Value($career),
+            panel_source: Recorded::Value($source),
             weather_factor: Recorded::Value($row.weather_factor),
             out_of_supply_days: Recorded::Value($row.out_of_supply_days),
-            commander_modifiers: Recorded::Value($block),
+            commander_modifiers: Recorded::Value(block.map(|entries: [Option<i64>; 6]| [entries[0], entries[1], entries[2], entries[4], entries[5]])),
+            commander_width_factor: Recorded::Value(block.and_then(|entries| entries[3])),
+            combat_movement: Recorded::Value($combat_movement),
             supply_ratio_exact: Recorded::Value(
                 DivisionStatusRow::exact_supply(
                     $row.out_of_supply_days,
@@ -126,7 +161,7 @@ macro_rules! project_status_fields {
                 .map(|[_, grace]| grace),
             ),
         }
-    };
+    }};
 }
 
 /// The recorded form of what the camouflage category selector takes from the division; a refused
@@ -356,6 +391,7 @@ impl Capacities {
     ) -> Result<(), &'static str> {
         let count =
             crate::country_scale::table_demand::rows(carmy::walk(memory, base, state, &mut []))?;
+        crate::army_stat_changes::demand_divisions(count);
         let mut rows = engine_allocation::default_vec::<carmy::Row>(count)
             .map_err(|_| "division name sizing allocation failed")?;
         let mut groups = cname_group_member::GroupKeys::try_with_capacity(count, count)
@@ -454,6 +490,7 @@ pub(crate) struct MovementPass {
     movement: CaptureRows<carmy::MovementRow>,
     paths: Arena<u32>,
     movement_packet: carmy::MovementPacket,
+    transport: std::collections::HashMap<(u32, u32), Result<i64, &'static str>>,
     geometry: cprovince::GeometryPacket,
     dig_in: super::dig_in::Captured,
     dig_in_ticks: u64,
@@ -464,6 +501,8 @@ impl MovementPass {
         self.land.allocated_bytes()
             + self.movement.allocated_bytes()
             + self.paths.allocated_bytes()
+            + self.transport.capacity()
+                * (std::mem::size_of::<((u32, u32), Result<i64, &'static str>)>() + 1)
             + self.movement_packet.allocated_bytes()
             + self.geometry.allocated_bytes()
             + self.dig_in.allocated_bytes()
@@ -505,7 +544,9 @@ impl MovementPass {
         let start = qpc();
         // A failed geometry root stays the movement rows' own refusal.
         let _ = self.geometry.begin(memory, base, state);
-        let movement = carmy::capture_movement_inputs_with_combat_references(
+        self.transport.clear();
+        let transport = &mut self.transport;
+        let movement = carmy::capture_movement_inputs_with_extra(
             memory,
             base,
             state,
@@ -516,6 +557,39 @@ impl MovementPass {
             &mut self.geometry,
             &mut self.movement_packet,
             hour,
+            |seed, row| {
+                if row.naval_transfer == 0 {
+                    return;
+                }
+                let acquired = (|| {
+                    let owner = seed
+                        .logical_owner
+                        .ok_or("division transport owner unavailable")?;
+                    let location = seed
+                        .location
+                        .ok_or("division transport location unavailable")?;
+                    let pointer = location
+                        .checked_add(cprovince::STRATEGIC_REGION)
+                        .and_then(|at| engine_native::read::<u64>(memory, at))
+                        .ok_or("division transport region pointer unavailable")?
+                        as usize;
+                    let region = engine_native::cstrategic_region::id(memory, base, pointer)?
+                        .ok_or("division transport source region absent")?;
+                    if !transport.contains_key(&(owner, region)) {
+                        engine_allocation::reserve_map(transport, 1)
+                            .map_err(|_| "division transport cache allocation failed")?;
+                    }
+                    *transport.entry((owner, region)).or_insert_with(|| {
+                        engine_naval_history::cnaval_unit_transfer::movement_speed(
+                            memory, base, state, owner, pointer,
+                        )
+                    })
+                })();
+                if acquired.is_err() {
+                    TRANSPORT_SPEED_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                row.transport_speed = acquired.ok();
+            },
         );
         for reason in self.movement_packet.combat_reference_failures() {
             super::unit_combat_references::observe_failure(reason);
@@ -558,6 +632,7 @@ pub struct Captured {
     cached_names: Arena<u8>,
     name_groups: cname_group_member::GroupKeys,
     movement_packet: carmy::MovementPacket,
+    transport: std::collections::HashMap<(u32, u32), Result<i64, &'static str>>,
     /// Sparse execution output from the same held pass, installed only after
     /// both Presentation and Late have joined. Never reads native memory.
     order_transport: engine_native::order_execution::UnitPacket,
@@ -578,9 +653,75 @@ pub struct Captured {
     /// DivisionStatus.supply_grace_remaining is stored against
     /// ([`DivisionStatusRow::displayed_grace`]); None when unreadable.
     supply_grace: Option<i32>,
+    /// The land movement speed's shared operands and each division's combat
+    /// movement operand, read after the status pass.
+    speed_terms: speed_terms::SpeedTerms,
+    #[cfg(feature = "movement_witness")]
+    movement_witness: Vec<(u64, Option<i64>)>,
 }
 
 impl Captured {
+    /// Native queries belong to the held game-thread callback, before either
+    /// presentation worker leaves. This entire method and its storage are absent
+    /// from ordinary builds.
+    #[cfg(feature = "movement_witness")]
+    pub(crate) unsafe fn capture_movement_witness(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+    ) {
+        self.movement_witness.clear();
+        if let Err(error) = engine_allocation::reserve(&mut self.movement_witness, seeds.len()) {
+            crate::allocation::observe(&error);
+            return;
+        }
+        for seed in seeds {
+            if seed
+                .ordinary_route
+                .and_then(|h| engine_native::cpdx_array::Array::from_header(h, 4))
+                .is_some_and(|route| route.count == 0)
+            {
+                continue;
+            }
+            // SAFETY: sampling calls us only on its held game-thread boundary.
+            let speed =
+                unsafe { carmy::movement_witness::first_edge_speed(memory, base, state, seed) };
+            self.movement_witness.push((seed.division, speed.ok()));
+        }
+        self.movement_witness.sort_unstable_by_key(|entry| entry.0);
+    }
+
+    fn speed_witness(&self, division: u64) -> Witnessed<Option<i64>> {
+        #[cfg(feature = "movement_witness")]
+        {
+            Witnessed(
+                self.movement_witness
+                    .binary_search_by_key(&division, |entry| entry.0)
+                    .ok()
+                    .map(|at| self.movement_witness[at].1),
+            )
+        }
+        #[cfg(not(feature = "movement_witness"))]
+        {
+            let _ = division;
+            Witnessed(None)
+        }
+    }
+
+    fn speed_witness_matches(
+        &self,
+        division: u64,
+        previous: &Recorded<Option<replay_data::rows::UnitCombatReferences>>,
+    ) -> bool {
+        let previous = match previous {
+            Recorded::Value(Some(packet)) => packet.speed_witness.clone(),
+            _ => Witnessed(None),
+        };
+        previous == self.speed_witness(division)
+    }
+
     #[cfg(test)]
     pub(super) fn capture_status_fixture(
         &mut self,
@@ -614,6 +755,7 @@ impl Captured {
             cached_names: Arena::new(0),
             name_groups: cname_group_member::GroupKeys::default(),
             movement_packet: carmy::MovementPacket::vacant(),
+            transport: Default::default(),
             order_transport: engine_native::order_execution::UnitPacket::vacant(),
             geometry: cprovince::GeometryPacket::vacant(),
             status_packet: carmy::StatusPacket::vacant(),
@@ -625,6 +767,9 @@ impl Captured {
             source_required: 0,
             decode_pending: false,
             supply_grace: None,
+            speed_terms: speed_terms::SpeedTerms::default(),
+            #[cfg(feature = "movement_witness")]
+            movement_witness: Vec::new(),
         }
     }
 
@@ -651,6 +796,7 @@ impl Captured {
             .map_err(crate::allocation::io)
             .unwrap_or_default(),
             movement_packet,
+            transport: Default::default(),
             order_transport: engine_native::order_execution::UnitPacket::vacant(),
             geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
                 .unwrap_or_default(),
@@ -663,10 +809,15 @@ impl Captured {
             source_required: 0,
             decode_pending: false,
             supply_grace: None,
+            speed_terms: speed_terms::SpeedTerms::default(),
+            #[cfg(feature = "movement_witness")]
+            movement_witness: Vec::new(),
         }
     }
 
     pub fn reset(&mut self) {
+        #[cfg(feature = "movement_witness")]
+        self.movement_witness.clear();
         self.land.reset();
         self.land_ticks = 0;
         self.movement.reset();
@@ -685,14 +836,28 @@ impl Captured {
         self.names.reset();
         self.cached_names.reset();
         self.attack.reset();
+        self.attack.history = None;
+        self.attack.sources = None;
+        self.attack.selected_sources.clear();
         self.phase_ticks = [0; PHASES];
         self.order_transport.reset();
+        self.speed_terms.reset();
         // Engine acquisition resets each owned packet in its measured scope.
         self.decode_pending = false;
     }
 
     pub fn allocated_bytes(&self) -> usize {
         self.land.allocated_bytes()
+            + {
+                #[cfg(feature = "movement_witness")]
+                {
+                    self.movement_witness.capacity() * std::mem::size_of::<(u64, Option<i64>)>()
+                }
+                #[cfg(not(feature = "movement_witness"))]
+                {
+                    0
+                }
+            }
             + self.movement.allocated_bytes()
             + self.status.allocated_bytes()
             + self.bans.allocated_bytes()
@@ -701,12 +866,15 @@ impl Captured {
             + self.names.allocated_bytes()
             + self.cached_names.allocated_bytes()
             + self.name_groups.allocated_bytes()
+            + self.transport.capacity()
+                * (std::mem::size_of::<((u32, u32), Result<i64, &'static str>)>() + 1)
             + self.movement_packet.allocated_bytes()
             + self.order_transport.allocated_bytes()
             + self.geometry.allocated_bytes()
             + self.status_packet.allocated_bytes()
             + self.dig_in.allocated_bytes()
             + self.attack.allocated_bytes()
+            + self.speed_terms.allocated_bytes()
     }
 
     pub fn grow(&mut self, c: &mut Capacities) {
@@ -780,6 +948,7 @@ impl Captured {
                 &mut self.movement_packet,
                 carmy::MovementPacket::vacant(),
             ),
+            transport: std::mem::take(&mut self.transport),
             geometry: std::mem::replace(&mut self.geometry, cprovince::GeometryPacket::vacant()),
             dig_in: std::mem::replace(&mut self.dig_in, super::dig_in::Captured::new(0)),
             dig_in_ticks: 0,
@@ -795,6 +964,7 @@ impl Captured {
             movement,
             paths,
             movement_packet,
+            transport,
             geometry,
             dig_in,
             dig_in_ticks,
@@ -804,6 +974,7 @@ impl Captured {
         self.movement = movement;
         self.paths = paths;
         self.movement_packet = movement_packet;
+        self.transport = transport;
         self.geometry = geometry;
         self.dig_in = dig_in;
         self.dig_in.settle(self.status.outcome);
@@ -1187,9 +1358,18 @@ impl Captured {
             Sources { rows, outcome },
             &crate::retreat_ban_changes::Observer,
         );
-        CaptureReport {
-            ticks: [0, status, bans, 0],
-        }
+        let terms = self.speed_terms.capture(
+            memory,
+            context.base,
+            context.game_state,
+            rows,
+            source_outcome(&Sources { rows, outcome }),
+        );
+        let mut ticks = [0; N];
+        ticks[1] = status;
+        ticks[2] = bans;
+        ticks[7..].copy_from_slice(&terms);
+        CaptureReport { ticks }
     }
 
     /// DivisionStatus.attack_stats after [`Self::capture_status_holding`]
@@ -1299,6 +1479,9 @@ impl Captured {
 
     /// Finish an accepted worker failure without retrying the live acquisition.
     pub(crate) fn fail_owned_capture(&mut self, reason: &'static str) -> CaptureReport {
+        self.attack.history = Some(Err(reason));
+        self.attack.sources = Some(Err(reason));
+        self.attack.selected_sources.clear();
         self.movement.outcome = Outcome::Unavailable { reason };
         self.status.outcome = Outcome::Unavailable { reason };
         self.bans.outcome = Outcome::Unavailable { reason };
@@ -1308,6 +1491,7 @@ impl Captured {
         self.cached_names.len = 0;
         self.dig_in.reset();
         self.land.fail(reason);
+        self.speed_terms.fail(reason);
         self.decode_pending = false;
         CaptureReport::default()
     }
@@ -1368,8 +1552,28 @@ impl Captured {
         self.source_required = self.source_required.max(rows.len());
         let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
         let start = qpc();
+        self.attack.sources = army_stats.as_deref_mut().map(|store| {
+            let result =
+                store
+                    .sources
+                    .capture(memory, base, state, rows, &mut self.attack.selected_sources);
+            if result.is_err() {
+                store.sources.forget();
+                self.attack.selected_sources.clear();
+            }
+            result
+        });
         self.attack
-            .certify(rows, outcome, army_stats.as_deref_mut(), changes);
+            .selected_sources
+            .sort_unstable_by_key(|row| row.0);
+        self.attack.certify(
+            memory,
+            base,
+            rows,
+            outcome,
+            army_stats.as_deref_mut(),
+            changes,
+        );
         self.status.outcome = self.status_packet.capture_holding(
             memory,
             base,
@@ -1378,7 +1582,12 @@ impl Captured {
             outcome,
             self.status.rows.len(),
             &self.attack.held_maxima,
+            &self.attack.experience,
         );
+        let refused = self
+            .status_packet
+            .capture_movement_organisation(memory, base, state, rows);
+        ORGANISATION_REFUSALS.fetch_add(refused, std::sync::atomic::Ordering::Relaxed);
         let status = &self.status_packet;
         self.attack
             .verify_maxima(|index| status.unit_maxima(index), changes);
@@ -1481,11 +1690,32 @@ impl Captured {
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
+        let [states, access, entries, rivers, transport] = self.speed_terms.outcomes();
         [
             self.movement.outcome,
             self.status.outcome,
             self.bans.outcome,
             self.land.outcome(),
+            match &self.attack.history {
+                Some(Ok(rows)) => Outcome::Rows { len: rows.len() },
+                Some(Err(reason)) => Outcome::Unavailable { reason },
+                None => Outcome::Unavailable {
+                    reason: "division history not captured",
+                },
+            },
+            match &self.attack.sources {
+                Some(Ok(rows)) => Outcome::Rows { len: rows.len() },
+                Some(Err(reason)) => Outcome::Unavailable { reason },
+                None => Outcome::Unavailable {
+                    reason: "division panel sources not captured",
+                },
+            },
+            self.status.outcome,
+            states,
+            access,
+            entries,
+            rivers,
+            transport,
         ]
     }
 
@@ -1501,7 +1731,9 @@ impl Captured {
                 unavailable("division presentation projection pending").into()
             });
         }
-        let [movement, mut status, bans, _] = self.outcomes();
+        let [movement, mut status, bans, ..] = self.outcomes();
+        let terms: [TableInput; speed_terms::N] = self.speed_terms.tables().map(Into::into);
+        let [states, access, entries, rivers, transport] = terms;
         let bans = scalar_table::<tables::DivisionRetreatBans, _>(
             projection.as_deref_mut(),
             bans,
@@ -1544,12 +1776,14 @@ impl Captured {
                 reason: "division naming spans invalid",
             };
         }
+        let status_outcome = status;
         let status = project_table::<tables::DivisionStatus, _>(
             projection.as_deref_mut(),
             status,
             &self.status.rows,
             |r| u128::from(r.division),
             |r, previous| {
+                let commander = self.commander_modifiers(r.division);
                 let (Ok(border), Ok(maximum), Ok(remaining), Ok(naming)) = (
                     previous
                         .border_combat_stats
@@ -1567,6 +1801,14 @@ impl Captured {
                 status_fields!(r, compare_status_fields, [previous])
                     && previous.attack == Recorded::Value(Witnessed(None))
                     && self.attack.witness(r.division, r.weather_factor).is_none()
+                    && Recorded::Value(self.attack.experience(r.division)) == previous.experience
+                    && Recorded::Value(self.attack.pending_template(r.division))
+                        == previous.pending_template
+                    && Recorded::Value(self.attack.officer(r.division))
+                        == previous.officer_experience
+                    && Recorded::Value(self.attack.career(r.division)) == previous.career_counter
+                    && Recorded::Value(self.attack.panel_source(r.division))
+                        == previous.panel_source
                     && self.attack.same(r.division, &previous.attack_stats)
                     && self
                         .attack
@@ -1591,8 +1833,13 @@ impl Captured {
                         self.dig_in
                             .factor(r.division, self.status_index(r.division)),
                     ) == previous.dig_in_factor
-                    && Recorded::Value(self.commander_modifiers(r.division))
-                        == previous.commander_modifiers
+                    && Recorded::Value(commander.map(|entries| {
+                        [entries[0], entries[1], entries[2], entries[4], entries[5]]
+                    })) == previous.commander_modifiers
+                    && Recorded::Value(commander.and_then(|entries| entries[3]))
+                        == previous.commander_width_factor
+                    && Recorded::Value(self.speed_terms.combat_movement(r.division))
+                        == previous.combat_movement
                     && match &previous.name {
                         Recorded::Value(name) => cached_name(r) == name.as_deref(),
                         Recorded::NotRecorded => false,
@@ -1646,16 +1893,54 @@ impl Captured {
                         self.attack.stats(r.division),
                         self.attack.witness(r.division, r.weather_factor),
                         self.attack.movement(r.division),
+                        self.attack.experience(r.division),
+                        self.attack.pending_template(r.division),
+                        self.attack.officer(r.division),
+                        self.attack.career(r.division),
+                        self.attack.panel_source(r.division),
+                        self.speed_terms.combat_movement(r.division),
                     ],
                 )
             },
         );
+        let panel = scalar_table::<tables::DivisionPanelStats, _>(
+            projection.as_deref_mut(),
+            status_outcome,
+            &self.status.rows,
+            |r| u128::from(r.division),
+            |r| DivisionPanelStatsRow {
+                division: r.division,
+                panel_stats: self.attack.panel(r.division),
+            },
+        );
+        let history = self.history_input(projection.as_deref());
+        let sources = match &self.attack.sources {
+            Some(Ok(rows)) => rows
+                .publish(|rows| match projection.as_deref() {
+                    Some(projection) => projection.certified::<tables::DivisionPanelSources>(rows),
+                    None => match rows.complete::<tables::DivisionPanelSources>() {
+                        Ok(rows) => replay_frame::frame::TableView::Complete(rows).into(),
+                        Err(reason) => unavailable(reason).into(),
+                    },
+                })
+                .unwrap_or_else(|reason| unavailable(reason).into()),
+            Some(Err(reason)) => unavailable(reason).into(),
+            None => unavailable("division panel sources not captured").into(),
+        };
         let Some(paths) = self.paths.first.get(..self.paths.len) else {
             return [
                 unavailable("movement arena invalid").into(),
                 status,
                 bans,
                 self.land.table().into(),
+                history,
+                sources,
+                panel,
+                states,
+                access,
+                entries,
+                rivers,
+                transport,
             ];
         };
         let span =
@@ -1671,6 +1956,14 @@ impl Captured {
                 status,
                 bans,
                 self.land.table().into(),
+                history,
+                sources,
+                panel,
+                states,
+                access,
+                entries,
+                rivers,
+                transport,
             ];
         }
         [
@@ -1688,9 +1981,11 @@ impl Captured {
                             r.combat_count,
                             &previous.combat_references,
                         )
+                        && self.speed_witness_matches(r.division, &previous.combat_references)
                         && previous.fresh == Recorded::Value(Retired)
                         && Recorded::Value(r.base_speed) == previous.base_speed
                         && Recorded::Value(r.fuel) == previous.fuel
+                        && Recorded::Value(r.transport_speed) == previous.transport_speed
                         && r.source == previous.source
                         && r.target == previous.target
                         && r.numerator == previous.numerator
@@ -1716,11 +2011,17 @@ impl Captured {
                 },
                 |r| DivisionMovementRow {
                     selected: Recorded::Value(Retired),
-                    combat_references: Recorded::Value(super::unit_combat_references::project(
-                        request,
-                        self.movement_packet.combat_references(r),
-                        r.combat_count,
-                    )),
+                    combat_references: Recorded::Value(
+                        super::unit_combat_references::project(
+                            request,
+                            self.movement_packet.combat_references(r),
+                            r.combat_count,
+                        )
+                        .map(|mut packet| {
+                            packet.speed_witness = self.speed_witness(r.division);
+                            packet
+                        }),
+                    ),
                     division: r.division,
                     fresh: Recorded::Value(Retired),
                     source: r.source,
@@ -1746,17 +2047,40 @@ impl Captured {
                     )),
                     base_speed: Recorded::Value(r.base_speed),
                     fuel: Recorded::Value(r.fuel),
+                    transport_speed: Recorded::Value(r.transport_speed),
                 },
             ),
             status,
             bans,
             self.land.table().into(),
+            history,
+            sources,
+            panel,
+            states,
+            access,
+            entries,
+            rivers,
+            transport,
         ]
+    }
+
+    fn history_input(&self, projection: Option<&Projection<'_>>) -> TableInput {
+        match &self.attack.history {
+            Some(Ok(rows)) if projection.is_some() => projection
+                .unwrap()
+                .certified::<tables::DivisionHistory>(rows),
+            Some(Ok(rows)) => match rows.complete::<tables::DivisionHistory>() {
+                Ok(rows) => replay_frame::frame::TableView::Complete(rows).into(),
+                Err(reason) => unavailable(reason).into(),
+            },
+            Some(Err(reason)) => unavailable(reason).into(),
+            None => unavailable("division history not captured").into(),
+        }
     }
     /// The division's selected commander block's movement entries: the block from the
     /// dig-in factor's selection, its entries from the hour's retreat-ban read of the
     /// same commander ([`carmy::StatusPacket::commander_movement`]).
-    fn commander_modifiers(&self, division: u64) -> Option<[Option<i64>; 5]> {
+    fn commander_modifiers(&self, division: u64) -> Option<[Option<i64>; 6]> {
         let block = self
             .dig_in
             .commander_block(division, self.status_index(division))?;
@@ -2008,7 +2332,7 @@ mod tests {
         captured.decode_inputs();
         let scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
-        let [_, TableInput::ComparedChanges { indices, rows, .. }, _, _] =
+        let [_, TableInput::ComparedChanges { indices, rows, .. }, ..] =
             captured.table_inputs(Some(&mut projection), None)
         else {
             panic!("a changed retained cache defeats baseline reuse");
@@ -2143,9 +2467,14 @@ mod tests {
         let mut hour = |store: &mut super::super::attack_stats::ArmyStatStore| {
             let memory = Reads(&live, Default::default());
             let outcome = Outcome::Rows { len: seeds.len() };
-            captured
-                .attack
-                .certify(&seeds, outcome, Some(&mut *store), &watches);
+            captured.attack.certify(
+                &memory,
+                world.base,
+                &seeds,
+                outcome,
+                Some(&mut *store),
+                &watches,
+            );
             captured.capture_naming_holding(&memory, world.base, &seeds, Some(store), &watches);
             store.hold(captured.attack.epoch());
             let rows: Vec<_> = captured.naming.first[..captured.naming.len]
@@ -2824,7 +3153,7 @@ mod tests {
             }),
         ] {
             captured.status.rows[0].naming = changed;
-            let [_, TableInput::ComparedChanges { indices, rows, .. }, _, _] =
+            let [_, TableInput::ComparedChanges { indices, rows, .. }, ..] =
                 captured.table_inputs(Some(&mut projection), None)
             else {
                 panic!("every naming operand must defeat reuse");
@@ -3348,7 +3677,12 @@ mod tests {
                 }))
                 .is_err()
             );
+            capture
+                .attack
+                .selected_sources
+                .push((seed.division, Some([1, 2, 3])));
             let report = capture.fail_owned_capture("worker failed");
+            assert!(capture.attack.selected_sources.is_empty());
             assert_eq!(report.ticks, [0; N]);
             assert_eq!(capture.decode_inputs(), [0; 2]);
             assert_eq!(
@@ -3444,6 +3778,90 @@ mod tests {
     /// run side by side on two threads, each through its own memory handle
     /// as their two jobs run, then the attack pass as the Presentation job
     /// runs it, they publish what the single pass publishes.
+    #[test]
+    fn cold_attach_and_post_gap_keyframes_admit_every_experience_column() {
+        use replay::{spool::Record, spool::encode_record};
+        use replay_data::{rows::RowCodec, rows::TableRows};
+        use replay_frame::{
+            branches::Gap, frame::DecodedFrame, frame::FrameEncoder, frame::Metrics,
+        };
+        let populated = Populated::new();
+        let inputs = populated.census.unit_inputs().unwrap();
+        let mut captured = populated.capture();
+        let mut encoder = FrameEncoder::new();
+        for hour in [1, 3] {
+            if hour == 3 {
+                encode_record(&Record::Gap(Gap {
+                    branch: 1,
+                    first_hour: 2,
+                    last_hour: 2,
+                    reason: "synthetic spool gap".into(),
+                }))
+                .unwrap();
+            }
+            captured.reset();
+            let context = CaptureContext {
+                hour,
+                ..populated.context()
+            };
+            let sources = || Sources {
+                rows: inputs.seeds(),
+                outcome: inputs.outcome(),
+            };
+            captured.capture_owned(&populated.world.live(), context, sources());
+            captured.capture_attack(&populated.world.live(), context, sources(), None);
+            captured.decode_inputs();
+            let views = captured.tables();
+            assert!(
+                matches!(&views[1], TableView::Complete(TableRows::DivisionStatus(rows)) if rows.len() == PRESENTED)
+            );
+            let mut tables = std::array::from_fn(|_| unavailable("outside first-hour audit"));
+            for (table, view) in TABLES.into_iter().zip(views) {
+                match &view {
+                    TableView::Complete(rows) => {
+                        for row in rows.iter() {
+                            assert_eq!(row.not_recorded_fields(), 0, "{table:?} at {hour}");
+                        }
+                    }
+                    TableView::Unavailable { reason } => assert!(!reason.is_empty(), "{table:?}"),
+                    _ => panic!("{table:?} has no admitted cold baseline"),
+                }
+                tables[table.index()] = view;
+            }
+            // Commander progression rows have no historically-absent current
+            // columns; empty acquisition is distinct from a refused table.
+            let leader = replay_data::rows::UnitLeaderRow {
+                id: 7,
+                experience: -11,
+                ..Default::default()
+            };
+            assert_eq!(leader.not_recorded_fields(), 0);
+            tables[TableId::UnitLeaders.index()] =
+                TableView::Complete(TableRows::UnitLeaders(vec![leader]));
+            tables[TableId::UnitLeaderTraitExperience.index()] =
+                TableView::Complete(TableRows::UnitLeaderTraitExperience(vec![
+                    replay_data::rows::UnitLeaderTraitExperienceRow {
+                        leader_reference: 7,
+                        experience: -17,
+                        ..Default::default()
+                    },
+                ]));
+            let encoded = encoder
+                .encode(
+                    DecodedFrame {
+                        branch: 1,
+                        hour,
+                        tables: tables.map(Into::into),
+                        metrics: Metrics::default(),
+                    },
+                    true,
+                )
+                .unwrap();
+            assert!(encoded.keyframe);
+            encode_record(&Record::Frame(encoded)).unwrap();
+        }
+    }
+
     #[test]
     fn presentation_movement_pass_runs_beside_the_status_side() {
         let populated = Populated::new();
@@ -3812,6 +4230,8 @@ mod tests {
             TableView::Complete(TableRows::DivisionStatus(s)),
             _,
             land,
+            ..,
+            _,
         ] = capture.tables()
         else {
             panic!("complete companions");
@@ -3868,9 +4288,10 @@ mod tests {
         let scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
         // The fixture has no country census, so the bans table is unavailable.
-        let [movement, status, bans, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, bans, _, _, _, panel, ..] =
+            capture.table_inputs(Some(&mut projection), None);
         assert!(
-            [movement, status]
+            [movement, status, panel]
                 .iter()
                 .all(|input| matches!(input, TableInput::ComparedEqual(_)))
         );
@@ -3882,7 +4303,7 @@ mod tests {
         // baseline; a printed change publishes the row.
         for (asked, equal) in [(123_499, true), (123_500, false), (123_456, true)] {
             capture.status.rows[0].supply.as_mut().unwrap().asked = asked;
-            let [_, status, _, _] = capture.table_inputs(Some(&mut projection), None);
+            let [_, status, ..] = capture.table_inputs(Some(&mut projection), None);
             assert_eq!(
                 matches!(status, TableInput::ComparedEqual(_)),
                 equal,
@@ -3903,7 +4324,7 @@ mod tests {
                 country_modifier: i64::MAX,
                 ..Default::default()
             });
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, ..] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("current modifier-only change must publish movement");
         };
@@ -3912,7 +4333,7 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.movement.rows[0].strategic_action =
             carmy::StrategicAction::Withheld(carmy::StrategicActionFailure::CountryModifier);
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, ..] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("a refused query must publish the movement row");
         };
@@ -3927,7 +4348,7 @@ mod tests {
         // A path-only mutation and an independently changing status must both
         // defeat reuse, without changing their keys or arena spans.
         capture.paths.first[3] ^= 1;
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, ..] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("changed movement must replace its freshly compared row");
         };
@@ -3936,7 +4357,7 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.paths.first[3] ^= 1;
         capture.status.rows[0].has_order = 1;
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, ..] = capture.table_inputs(Some(&mut projection), None);
         assert!(matches!(movement, TableInput::ComparedEqual(_)));
         let TableInput::ComparedChanges { indices, rows, .. } = status else {
             panic!("changed status must replace its freshly compared row");
@@ -3945,7 +4366,7 @@ mod tests {
         assert_eq!(TableView::Complete(rows), capture.tables()[1]);
         capture.status.rows[0].has_order = 0;
         capture.movement.rows[0].alternate_start = usize::MAX;
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, status, ..] = capture.table_inputs(Some(&mut projection), None);
         assert!(matches!(
             movement,
             TableInput::Sampled(TableView::Unavailable { .. })
@@ -4056,7 +4477,7 @@ mod tests {
             .unwrap();
         let scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
-        let [movement, _, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let [movement, ..] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("an unavailable current suffix cannot reuse the prior row");
         };
@@ -4107,8 +4528,7 @@ mod tests {
         capture.movement.outcome = Outcome::Rows { len: 2 };
         let [
             TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(rows))),
-            _,
-            _,
+            ..,
             _,
         ] = capture.table_inputs(None, Some(12))
         else {
@@ -4134,14 +4554,14 @@ mod tests {
             .unwrap();
         let scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 13, false, &scratch);
-        let [movement, _, _, _] = capture.table_inputs(Some(&mut projection), Some(13));
+        let [movement, ..] = capture.table_inputs(Some(&mut projection), Some(13));
         assert!(
             matches!(movement, TableInput::ComparedEqual(_)),
             "an equal base speed reuses the unchanged rows"
         );
         capture.movement.rows[0].base_speed = Some(-3_000_000);
         let mut projection = Projection::new(&encoder, 1, 13, false, &scratch);
-        let [movement, _, _, _] = capture.table_inputs(Some(&mut projection), Some(13));
+        let [movement, ..] = capture.table_inputs(Some(&mut projection), Some(13));
         let TableInput::ComparedChanges {
             indices,
             rows: TableRows::DivisionMovement(rows),
@@ -4207,5 +4627,29 @@ mod combat_reference_capacity_tests {
             capture.movement_packet.allocated_bytes() > 0,
             "the optional arena failure must not replace the legacy packet with vacant"
         );
+    }
+}
+
+#[cfg(all(test, feature = "movement_witness"))]
+mod movement_witness_tests {
+    use super::*;
+
+    #[test]
+    fn movement_witness_projection_rejects_changed_missing_and_refused_samples() {
+        let mut capture = Captured::vacant();
+        capture.movement_witness.push((7, Some(12_785)));
+        let previous = Recorded::Value(Some(replay_data::rows::UnitCombatReferences {
+            speed_witness: Witnessed(Some(Some(12_785))),
+            ..Default::default()
+        }));
+        assert!(capture.speed_witness_matches(7, &previous));
+        capture.movement_witness[0].1 = Some(12_786);
+        assert!(!capture.speed_witness_matches(7, &previous));
+        capture.movement_witness[0].1 = None;
+        assert_eq!(capture.speed_witness(7), Witnessed(Some(None)));
+        assert!(!capture.speed_witness_matches(7, &previous));
+        capture.reset();
+        assert_eq!(capture.speed_witness(7), Witnessed(None));
+        assert!(!capture.speed_witness_matches(7, &previous));
     }
 }

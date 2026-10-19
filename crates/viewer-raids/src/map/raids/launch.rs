@@ -1782,7 +1782,11 @@ impl<'w, 'a> Context<'w, 'a> {
             .map(|archetype| &equipment.equipment[archetype])
             .ok_or_else(|| format!("essential equipment {name} has no archetype in the content"))?;
         let mask = equipment.category(kind);
-        let have = match self.world.token_of(&archetype.name)? {
+        let have = match self
+            .world
+            .token_of(&archetype.name)
+            .map_err(|why| why.to_string())?
+        {
             None => 0,
             Some(token) => lazy(&self.archetypes, || {
                 let mut out = BTreeMap::new();
@@ -2039,7 +2043,8 @@ impl<'w, 'a> Context<'w, 'a> {
             }
             let name = self
                 .world
-                .token(token)?
+                .token(token)
+                .map_err(|why| why.to_string())?
                 .and_then(|name| std::str::from_utf8(name).ok())
                 .ok_or("a pool archetype token has no literal")?;
             let admits = members.is_empty()
@@ -2069,7 +2074,8 @@ impl<'w, 'a> Context<'w, 'a> {
                     for row in table::<tables::VariantModules>(self.world)? {
                         let name = self
                             .world
-                            .token(row.definition_token)?
+                            .token(row.definition_token)
+                            .map_err(|why| why.to_string())?
                             .ok_or("an installed module token has no literal")?;
                         out.entry(row.variant).or_default().push(name);
                     }
@@ -2338,7 +2344,7 @@ impl<'w, 'a> Context<'w, 'a> {
                 // Distance and division reach do not read the source's raw holder country.
                 // Keep its recorded bits without demanding CountryLinks here.
                 Ok(province) => path_source(2, province),
-                Err(reason) => Source::unknown(reason),
+                Err(reason) => Source::unknown(reason.to_string()),
             };
             if !visit(source) {
                 return Ok(false);
@@ -2405,7 +2411,7 @@ impl<'w, 'a> Context<'w, 'a> {
                     Ok(false) => return Ok(false),
                     Ok(true) => {}
                     Err(reason) => {
-                        if !visit(Source::unknown(reason)) {
+                        if !visit(Source::unknown(reason.to_string())) {
                             return Ok(false);
                         }
                     }
@@ -2431,7 +2437,7 @@ impl<'w, 'a> Context<'w, 'a> {
                         }
                     }
                     Err(reason) => {
-                        if !visit(Source::unknown(reason)) {
+                        if !visit(Source::unknown(reason.to_string())) {
                             return Ok(false);
                         }
                     }
@@ -2452,7 +2458,7 @@ impl<'w, 'a> Context<'w, 'a> {
         if Self::has_air_sources(kind) {
             let continued = match self.air_sources(kind, visit) {
                 Ok(continued) => continued,
-                Err(reason) => visit(Source::unknown(reason)),
+                Err(reason) => visit(Source::unknown(reason.to_string())),
             };
             if !continued {
                 return false;
@@ -2464,7 +2470,7 @@ impl<'w, 'a> Context<'w, 'a> {
                 .and_then(|faction| self.naval_sources(faction, visit))
             {
                 Ok(continued) => continued,
-                Err(reason) => visit(Source::unknown(reason)),
+                Err(reason) => visit(Source::unknown(reason.to_string())),
             };
             if !continued {
                 return false;
@@ -2480,7 +2486,7 @@ impl<'w, 'a> Context<'w, 'a> {
                 .and_then(|faction| self.building_sources(kind, faction, visit, true))
             {
                 Ok(continued) => continued,
-                Err(reason) => visit(Source::unknown(reason)),
+                Err(reason) => visit(Source::unknown(reason.to_string())),
             };
             if !continued {
                 return false;
@@ -2593,7 +2599,7 @@ impl<'w, 'a> Context<'w, 'a> {
                 Ok(LaunchCountry::Reserved) => match self.reserved_owned_states() {
                     Ok(states) => states,
                     Err(reason) => {
-                        if !visit(Source::unknown(reason)) {
+                        if !visit(Source::unknown(reason.to_string())) {
                             return Ok(false);
                         }
                         continue;
@@ -2602,7 +2608,7 @@ impl<'w, 'a> Context<'w, 'a> {
                 Ok(LaunchCountry::Linked(country)) => match self.owned_states() {
                     Ok(owned) => owned.0.get(country).map_or(&[][..], Vec::as_slice),
                     Err(reason) => {
-                        if !visit(Source::unknown(reason)) {
+                        if !visit(Source::unknown(reason.to_string())) {
                             return Ok(false);
                         }
                         continue;
@@ -2627,7 +2633,7 @@ impl<'w, 'a> Context<'w, 'a> {
             if matches!(country, Ok(LaunchCountry::Reserved))
                 && let Err(reason) = table::<tables::Provinces>(self.world)
             {
-                if !visit(Source::unknown(reason)) {
+                if !visit(Source::unknown(reason.to_string())) {
                     return Ok(false);
                 }
                 continue;
@@ -2635,7 +2641,11 @@ impl<'w, 'a> Context<'w, 'a> {
             let (tokens, buildings, wanted) = lazy(&building_inputs, || {
                 let mut tokens = BTreeSet::new();
                 for name in &kind.starting_point.building_types {
-                    if let Some(token) = self.world.token_of(name.as_bytes())? {
+                    if let Some(token) = self
+                        .world
+                        .token_of(name.as_bytes())
+                        .map_err(|why| why.to_string())?
+                    {
                         tokens.insert(token);
                     }
                 }
@@ -2670,7 +2680,7 @@ impl<'w, 'a> Context<'w, 'a> {
             for &state in states {
                 if matches!(country, Ok(LaunchCountry::Reserved)) {
                     if let Err(reason) = table::<tables::States>(self.world) {
-                        if !visit(Source::unknown(reason)) {
+                        if !visit(Source::unknown(reason.to_string())) {
                             return Ok(false);
                         }
                         continue;
@@ -2711,7 +2721,7 @@ impl<'w, 'a> Context<'w, 'a> {
                 let provinces = match self.world.state_order(state) {
                     Ok(provinces) => provinces,
                     Err(reason) => {
-                        if !visit(Source::unknown(reason)) {
+                        if !visit(Source::unknown(reason.to_string())) {
                             return Ok(false);
                         }
                         continue;

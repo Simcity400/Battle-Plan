@@ -330,8 +330,8 @@ function leaderData(): UnitLeadersData {
       attributeNames: ['Attack', 'Defence', 'Planning', 'Logistics'] }],
     traits: [{ token: 'mod_trait', name: 'Synthetic trait', icon: null, missing: null }],
     leaders: [{ reference: '21474841193', runs: [
-      { firstHour: 100, lastHour: 131, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], traits: [] } },
-      { firstHour: 132, lastHour: 160, value: { person: 0, role: 0, skill: 4, components: [1, 2, 3, 4], traits: [0] } },
+      { firstHour: 100, lastHour: 131, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [] } },
+      { firstHour: 132, lastHour: 160, value: { person: 0, role: 0, skill: 4, components: [1, 2, 3, 4], progress: null, traits: [0] } },
     ], traitGains: [{ hour: 132, token: 0, date: 'gained' }], commands: [{ formation: '99', kind: 'army', name: 'Synthetic formation',
       firstHour: 110, lastHour: 160, nameReadHour: 110, nameUnknown: [] }],
     battleStarts: [132], battleStartReadHours: [132], unknownBattleStarts: [], battleWon: [true], battleResultHours: [135],

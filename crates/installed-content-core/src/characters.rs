@@ -1586,6 +1586,7 @@ fn character_templates(
     tag: &str,
     value: &Value,
     lines: &BTreeMap<*const Value, parser::BlockLines>,
+    roles: &[&str],
 ) -> Vec<LeaderTemplate> {
     let template = |line: Option<u32>, role| LeaderTemplate {
         path: path.to_owned(),
@@ -1610,7 +1611,7 @@ fn character_templates(
             .cloned()
             .collect();
         let line = lines.get(&(value as *const Value)).map(|lines| lines.open);
-        return vec![template(line, template_role(&body))];
+        return vec![template(line, template_role_for(&body, roles))];
     }
     let trailing = leading < items.len();
     items[..leading]
@@ -1630,7 +1631,7 @@ fn character_templates(
                         .get(&(&allowed.value as *const Value))
                         .map(|lines| lines.close);
                     match line {
-                        Some(line) => template(Some(line), template_role(rest)),
+                        Some(line) => template(Some(line), template_role_for(rest, roles)),
                         None => template(None, Err("its allowed is not a block".into())),
                     }
                 }
@@ -1645,23 +1646,31 @@ fn character_templates(
 /// `visible` conjunction. Each role field replaces the preceding role;
 /// repeated `visible` fields append to one AND trigger in order. An empty
 /// conjunction holds.
-fn template_role(items: &[Item]) -> Result<Option<Triggers>, String> {
+fn template_role_for(items: &[Item], roles: &[&str]) -> Result<Option<Triggers>, String> {
     let Some(role) = items
         .iter()
-        .rfind(|item| UNIT_LEADER_ROLES.iter().any(|key| is_key(item, key)))
+        .rfind(|item| roles.iter().any(|key| is_key(item, key)))
     else {
         return Ok(None);
     };
-    let role = role
-        .value
-        .items()
-        .ok_or_else(|| "its unit leader role is not a block".to_owned())?;
+    let role = role.value.items().ok_or_else(|| {
+        if roles == UNIT_LEADER_ROLES {
+            "its unit leader role is not a block".to_owned()
+        } else {
+            "its scientist role is not a block".to_owned()
+        }
+    })?;
     let mut visible = Vec::new();
     for item in role.iter().filter(|item| is_key(item, "visible")) {
         // The tree reader cannot follow a trigger-body value that
         // opens no block, so the template is refused by name.
-        let block = triggers::body(&item.value)
-            .ok_or_else(|| "its unit leader role's visible is not a block".to_owned())?;
+        let block = triggers::body(&item.value).ok_or_else(|| {
+            if roles == UNIT_LEADER_ROLES {
+                "its unit leader role's visible is not a block".to_owned()
+            } else {
+                "its scientist role's visible is not a block".to_owned()
+            }
+        })?;
         visible.extend(block);
     }
     Ok(Some(visible))
@@ -1688,6 +1697,13 @@ fn index_lines(
 /// The templates of one characters file, in database order. Only `characters`
 /// roots are read; others are reported.
 pub fn parse_leader_templates(path: &str, input: &[u8]) -> io::Result<Vec<LeaderTemplate>> {
+    parse_visibility_templates(path, input, &UNIT_LEADER_ROLES)
+}
+fn parse_visibility_templates(
+    path: &str,
+    input: &[u8],
+    roles: &[&str],
+) -> io::Result<Vec<LeaderTemplate>> {
     let (document, spans, _) = parser::parse_unclosed_lines(input)?;
     let mut lines = BTreeMap::new();
     let mut next = 0;
@@ -1712,16 +1728,76 @@ pub fn parse_leader_templates(path: &str, input: &[u8]) -> io::Result<Vec<Leader
                 continue;
             };
             let tag = String::from_utf8_lossy(tag);
-            templates.extend(character_templates(path, &tag, &character.value, &lines));
+            templates.extend(character_templates(
+                path,
+                &tag,
+                &character.value,
+                &lines,
+                roles,
+            ));
         }
     }
     Ok(templates)
+}
+
+/// A scientist role's retained visible conjunction, identified by the last
+/// visible block the native reader loaded. Role effects have their own origin.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScientistVisibilityTemplate {
+    pub line: u32,
+    pub triggers: Result<Triggers, String>,
+}
+
+pub fn parse_scientist_visibility_templates(
+    input: &[u8],
+) -> io::Result<Vec<ScientistVisibilityTemplate>> {
+    let (document, spans, _) = parser::parse_unclosed_lines(input)?;
+    let mut lines = BTreeMap::new();
+    let mut next = 0;
+    index_lines(&document.items, &spans, &mut next, &mut lines);
+    if next != spans.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "scientist visibility block lines differ",
+        ));
+    }
+    fn visit(
+        items: &[Item],
+        lines: &BTreeMap<*const Value, parser::BlockLines>,
+        out: &mut Vec<ScientistVisibilityTemplate>,
+    ) {
+        for item in items {
+            let Some(body) = item.value.items() else {
+                continue;
+            };
+            if is_key(item, "scientist")
+                && let Some(last) = body.iter().rfind(|item| is_key(item, "visible"))
+                && let Some(line) = lines.get(&(&last.value as *const Value))
+            {
+                out.push(ScientistVisibilityTemplate {
+                    line: line.open,
+                    triggers: template_role_for(std::slice::from_ref(item), &["scientist"])
+                        .and_then(|role| role.ok_or_else(|| "scientist role missing".into())),
+                });
+            }
+            visit(body, lines, out);
+        }
+    }
+    let mut out = Vec::new();
+    visit(&document.items, &lines, &mut out);
+    Ok(out)
 }
 
 /// Every character template of the recorded content, in database order. A
 /// file that cannot be read or parsed refuses the whole reader, since the
 /// templates it holds could be any character's.
 pub fn leader_templates(layers: &ResolvedLayers) -> Result<Vec<LeaderTemplate>, String> {
+    visibility_templates(layers, &UNIT_LEADER_ROLES)
+}
+fn visibility_templates(
+    layers: &ResolvedLayers,
+    roles: &[&str],
+) -> Result<Vec<LeaderTemplate>, String> {
     let paths = layers
         .directory_files("common/characters", ".txt")
         .map_err(|error| format!("common/characters cannot be listed: {error}"))?;
@@ -1731,7 +1807,7 @@ pub fn leader_templates(layers: &ResolvedLayers) -> Result<Vec<LeaderTemplate>, 
             .read_uncovered(&path)
             .map_err(|error| format!("{path} cannot be read: {error}"))?;
         templates.extend(
-            parse_leader_templates(&path, &bytes)
+            parse_visibility_templates(&path, &bytes, roles)
                 .map_err(|error| format!("{path} cannot be parsed: {error}"))?,
         );
     }
@@ -1740,7 +1816,49 @@ pub fn leader_templates(layers: &ResolvedLayers) -> Result<Vec<LeaderTemplate>, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scientist_visible_sources_include_effect_roles_and_append_repeated_visible_blocks() {
+        let templates = super::parse_scientist_visibility_templates(
+            br#"
+characters={ original={scientist={visible={always=yes}}} }
+add_scientist_role={scientist={
+ visible={always=no}
+ visible={is_ai=yes}
+}}
+"#,
+        )
+        .unwrap();
+        assert_eq!(templates.len(), 2);
+        assert_eq!((templates[0].line, templates[1].line), (2, 5));
+        let triggers = templates[1].triggers.as_ref().unwrap();
+        assert_eq!(triggers.len(), 2);
+        assert_eq!(triggers[0].value.read_string(), Some(&b"no"[..]));
+    }
+
     use super::*;
+
+    #[test]
+    fn scientist_visibility_uses_its_own_role_and_retains_instance_origin() {
+        let input=b"characters={c={field_marshal={visible={always=no}} scientist={visible={always=yes} VISIBLE={has_country_flag=mod_science}}} d={instance={allowed={} scientist={}}}}";
+        let templates =
+            parse_visibility_templates("common/characters/mod.txt", input, &["scientist"]).unwrap();
+        assert_eq!(templates.len(), 2);
+        assert_eq!(
+            templates[0].role.as_ref().unwrap().as_ref().unwrap().len(),
+            2
+        );
+        assert!(
+            templates[1]
+                .role
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(templates[0].path, "common/characters/mod.txt");
+        assert!(templates.iter().all(|template| template.line == Some(1)));
+    }
 
     #[test]
     fn advisor_case_aliases_preserve_first_spelling_and_role_identity() {

@@ -13,6 +13,7 @@ doctest = false
 test-support = []
 
 [dependencies]
+engine-native.workspace = true
 engine-allocation.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-primitives.workspace = true
@@ -21,6 +22,7 @@ retour = "0.3"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+engine-events.workspace = true
 engine-mutations.workspace = true
 serde_json.workspace = true
 collector-test-support.workspace = true

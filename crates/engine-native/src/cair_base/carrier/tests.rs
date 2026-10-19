@@ -624,3 +624,37 @@ fn growing_carrier_arenas_publish_first_and_later_mod_sized_suffixes() {
         );
     }
 }
+
+#[test]
+fn state_pool_projection_preserves_empty_boundaries_without_reading_any_fuel_operand() {
+    let memory = Fixture::new();
+    let countries = ccountry::Reader::new(&memory, 0, GAME).unwrap();
+    let mut resolved = [None; 10];
+    for count in [0, 3] {
+        let pool = crate::cair_base::state_pool_inputs(
+            &memory,
+            0,
+            memory.indexed()[2].unwrap(),
+            POOL,
+            Array {
+                data: 0xdead0000,
+                count,
+            },
+            17,
+            &countries,
+            &mut resolved,
+        )
+        .unwrap();
+        assert_eq!((pool.type_index, pool.subunit_index), (i32::MIN, 1));
+        assert_eq!((pool.wings_start, pool.wings_len), (17, count));
+        assert_eq!(pool.fuel.current, None);
+        assert_eq!(pool.fuel.maximum, None);
+    }
+    assert!(
+        !memory
+            .reads
+            .borrow()
+            .iter()
+            .any(|(address, _)| *address >= 0xdead0000)
+    );
+}

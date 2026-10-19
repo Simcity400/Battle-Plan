@@ -77,7 +77,7 @@ pub fn compare(
     complete &= report.attempt("air RaidAirScores", |report| {
         let rows = super::complete::<tables::RaidAirScores>(frame)?;
         for row in rows { required_country_tag(row.country, links)?; }
-        report.limitation("the strategic air save writer omits the entire regional-score array; fresh saves cannot certify the stored superiority operands", "RaidAirScores.friendly / enemy / impact");
+        report.limitation("the strategic air save writer omits the entire regional-score array; fresh saves cannot certify the stored superiority and spotting operands", "RaidAirScores.friendly / enemy / impact / air_spotting_scale");
         Ok(())
     });
     if complete {
@@ -124,7 +124,7 @@ fn compare_bases(frame: &DecodedFrame, save: &Pack, report: &mut Report) -> io::
     }
     extra(report, "air base", &actual);
     report.compared("AirBases", matched);
-    report.limitation("air base province is a cached pointer-derived location omitted by the air-base writer; a state base's host reference is also omitted", "AirBases.province / state-base host");
+    report.limitation("air base province is a cached pointer-derived location omitted by the air-base writer; a state base's host reference and dense registered-country order are also omitted. Country order is certified by the existing registration writers and needs a matched native base hover", "AirBases.province / state-base host / carrier.registered_countries");
     Ok(())
 }
 

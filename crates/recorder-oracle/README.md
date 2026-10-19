@@ -1,6 +1,10 @@
 # recorder-oracle
 
+The relation comparison groups include FactionAccounts, FactionVariables, FactionResearch, FactionMinimumUpgrades, FactionDoctrine, FactionProjection FactionResources and FactionAdvisorModifiers independently. A missing or failed group remains a named oracle failure; unsaved held caches have separate screen checks.
+
 Composes exact-hour text-save comparisons in their native comparison order. [oracle.rs](src/oracle.rs) selects the recording branch/hour, authenticates identities/content, prepares shared operands and calls each comparison family. It keeps whole-oracle integration tests and fresh-load checks.
+
+Demanded patrol mission save fields and retained radar/Air caches bind through the recording's lexical tokens and authenticated physical-country projection before comparisons run. Missing or ambiguous demanded token bindings fail preparation.
 
 [recorder-oracle-support](../recorder-oracle-support/README.md) owns exact joins, country-emission projection, Report coverage/verdicts and feature-gated shared synthetic fixtures. Differences and incomplete comparisons fail the command; saved inputs and unsaved limits remain distinct. Only verified recorded content stacks compare, with mods resolved through installed-content.
 
@@ -57,3 +61,11 @@ Composes exact-hour text-save comparisons in their native comparison order. [ora
 | [recorder-oracle-weather](../recorder-oracle-weather/README.md) | Recorded weather and temperature save comparisons. |
 
 Shared rules live in [AGENTS.md](../../AGENTS.md). The [recorder guide](../recorder/README.md#fresh-save-oracle) defines the required fresh-save/load, native-observation and smoke workflow.
+
+The war-goal inventory group compares CountryWargoals, WargoalTargets and WargoalJustifications through recorder-oracle-wars.
+The naval management family compares the saved standing repair/refit/reinforcement controls and ordered native lists independently, including ship-to-work-order links and signed fixed5 refit progress.
+The event-feed comparison includes retained pending, fired-once and country delayed-event state from the projected save, in addition to occurrence accounting.
+
+Air mission comparisons receive the mission spotting-factor vector from the same verified recorded content defines as other content-dependent checks, preserving mod array length and zero/nonzero values without another captured fact.
+
+Validation-refused and failed-hook-family tables remain incomplete comparisons, including tables whose normal event publication is deferred. Zero value differences cannot pass a run with these refusals; the report retains their full reasons.

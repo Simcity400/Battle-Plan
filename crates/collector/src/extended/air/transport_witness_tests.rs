@@ -19,6 +19,25 @@ impl Memory for NullBases {
 }
 
 #[test]
+fn an_unregistered_wing_with_a_selected_mission_still_demands_its_range_origin() {
+    let wing = WingIdentity {
+        wing: (3_u64 << 32) | 45,
+        region: None,
+        mission_mask: 1,
+        air_base: (5_u64 << 32) | u64::from(cair_base::TYPE),
+        ..Default::default()
+    };
+    let memory = NullBases::default();
+    let mut output = [BaseWitness::default(); 1];
+    assert_eq!(
+        capture_references(&memory, 0, 0, &[wing], Some(&[]), &mut [0; 2], &mut output),
+        Ok(Outcome::Rows { len: 1 })
+    );
+    assert_eq!(output[0].handle, wing.air_base);
+    assert_eq!(memory.0.get(), 1);
+}
+
+#[test]
 fn idle_pool_with_retained_region_is_probed_once_with_or_without_registration() {
     let wings = [WingIdentity {
         wing: (3_u64 << 32) | 45,

@@ -141,6 +141,8 @@ mod tests {
     fn fixture() -> (DecodedFrame, Save) {
         let (frame, mut save, _, _) = super::super::fixtures::fixture();
         let faction = |id, icon: &[u8], theatres| installed_content_save::Faction {
+            goals: Default::default(),
+            companions: Default::default(),
             advisor_slots: Vec::new(),
             id,
             name: None,

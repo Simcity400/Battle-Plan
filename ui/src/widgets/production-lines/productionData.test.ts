@@ -8,6 +8,7 @@ import { approximateWithin, bandScale, breakdownItems, breakdownTooltip, detailO
   unreadNote, validateProductionReply, validateBreakdownReply, variantAt, variantName, variantParts, weeklyOutput, weeklyText, windowOf, withNote, productionLineLabel } from './productionData.ts';
 
 const run = (firstHour: number, lastHour: number, values: Partial<LineRun> = {}): LineRun => ({
+  designAuthor: null, designReadHour: null, designTraitCount: null, designBonusCount: null,
   firstHour, lastHour, startsSegment: false, variant: '70', mio: '79', activeFactories: 8, requestedFactories: 10, maxFactories: 150,
   costRaw: '50000', speedRaw: '310000', weeklyRaw: '4340000', efficiencyRaw: '1736704', priority: 0, amount: -1, ...values,
 });
@@ -36,7 +37,7 @@ function line(key: string, runs: LineRun[], values: Partial<LineHistory> & { out
   return {
     history: { key, handle: key.split('#')[0], kind: 'military', steps: stepsOf(runs), finalOutput: null, endedBy: null, beforeRecording: true,
       betweenReads: null, variants: [], ...rest },
-    detail: { key, runs, output: outputs },
+    detail: { key, runs, output: outputs, organisations: [] },
   };
 }
 const variant = (id: string, firstHour: number, name: string | null, values: Partial<VariantName> = {}): VariantName => ({
@@ -219,7 +220,7 @@ test('the line tooltip shows what the game shows, with each variant’s part of 
   assert.equal(tip.title, 'Gewehr 98');
   const rows = Object.fromEntries(tip.rows.filter(row => row.value).map(row => [row.label, row.value]));
   assert.deepEqual(rows, { Factories: '8 of 10 requested', Efficiency: '54%', Output: '27.1 per week', Cost: '0.8 IC per unit', Priority: '2',
-    Ordered: 'No limit', 'Military-industrial organisation': 'Mauser', 'Produced so far': '10', 'Infantry Equipment I': '6', 'Gewehr 98': '4' });
+    Ordered: 'No limit', 'Military-industrial organisation': 'Mauser', 'Organisation state': 'Not recorded', 'Design author': 'Not recorded', 'Produced so far': '10', 'Infantry Equipment I': '6', 'Gewehr 98': '4' });
   assert.equal(tip.rows.find(row => row.label === 'Military-industrial organisation')?.icon, PNG);
   assert.doesNotMatch(tip.note ?? '', /since day 100/);
 });
@@ -539,4 +540,33 @@ test("a history without lanes over a first view's approximate hours is still bei
   assert.equal(emptyHistoryState({ ...REPLY, lines: [] }, [0, 200]), 'empty');
   assert.equal(approximateWithin(first, 100, 100), true);
   assert.equal(approximateWithin(first, 101, 150), false);
+});
+
+test('MIO tooltips preserve daily state, unknown supplying dates and frozen design authorship', () => {
+  const state = { readHour: null, size: 6, fundsRaw: '1234567', unspentPoints: 2,
+    baseTaskCapacity: 3, activeTasks: 2, taskSlots: 4, unlocked: ['a'], planned: ['b', 'a', 'b'],
+    queueIndex: 1, policyToken: 'policy_a', policyName: null, cooldownHour: 190,
+    autoUpdateDesigns: true };
+  const reply = REPLY;
+  const detail = { ...LINES[0].detail, organisations: [{ id: '79', firstHour: 100, state }] };
+  validateDetailReply({ ...DETAIL, lines: [detail] });
+  const text = tooltipText(lineTooltip(reply, LINES[0].history, detail,
+    run(100, 123, { designAuthor: '79', designTraitCount: 7, designBonusCount: 5 }), 110, {}, day)[0]);
+  for (const value of ['Unspent trait points', 'Planned trait queue', '2 active / 4 slots',
+    'Policy name unavailable', 'Daily sample; date unavailable', 'Design author', 'Traits frozen into design']) assert.ok(text.includes(value), text);
+  assert.throws(() => validateDetailReply({ ...DETAIL, lines: [{ ...detail, organisations: [{ id: '79', firstHour: 100, state: { ...state, fundsRaw: '1.5' } }] }] }));
+  assert.throws(() => validateDetailReply({ ...DETAIL, lines: [{ key: '5#1', runs: [run(100, 110, { designTraitCount: 0.5 })], output: [] }] }));
+});
+
+test('design tooltips use their own supplying date and preserve unavailability', () => {
+  const observed = run(122, 123, { designAuthor: '79', designReadHour: 122, designTraitCount: 7, designBonusCount: 5 });
+  const detail = { ...LINES[0].detail, runs: [run(100, 121), observed, run(124, 130)] };
+  const reply = { ...DETAIL, lines: [detail] };
+  validateDetailReply(reply);
+  const tooltip = lineTooltip(REPLY, LINES[0].history, detail, observed, 122, {}, day)[0];
+  assert.equal(tooltip.rows.find(row => row.label === 'Design recorded')?.value, day(122));
+  const unavailable = lineTooltip(REPLY, LINES[0].history, detail, detail.runs[2], 125, {}, day)[0];
+  assert.equal(unavailable.rows.find(row => row.label === 'Design author')?.value, 'Not recorded');
+  assert.ok(!unavailable.rows.some(row => row.label === 'Design recorded'));
+  assert.throws(() => validateDetailReply({ ...reply, lines: [{ ...detail, runs: [{ ...observed, designReadHour: 122.5 }] }] }));
 });

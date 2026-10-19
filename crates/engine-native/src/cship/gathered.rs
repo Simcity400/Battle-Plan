@@ -109,6 +109,31 @@ const VARIANT: [(usize, usize); 8] = [
     (cequipment_variant::VERSION, 1),
     (0x4b0, 4),
 ];
+/// Independent worker-only dominance fields; ordinary synchronous gathers do not touch them.
+const NAVAL_POWER: [(usize, usize); 3] = [
+    (super::naval_power::HEAVY_ATTACK, 8),
+    (super::naval_power::SPEED_RANGE, 16),
+    (super::naval_power::CARRIER_SIZE, 8),
+];
+const VARIANT_FLAGS: usize = 4;
+
+fn naval_power_fields(variant: &Object<8>) -> Option<[(usize, usize); 3]> {
+    if variant.completed <= VARIANT_FLAGS {
+        return None;
+    }
+    let mut fields = NAVAL_POWER;
+    fields[2].0 += usize::from(
+        variant.word(VARIANT_FLAGS) as u64 & super::naval_power::CARRIER_SIZE_SELECTOR != 0,
+    ) * 8;
+    Some(fields)
+}
+
+fn same_naval_power(variant: &Object<8>, left: &Object<3>, right: &Object<3>) -> bool {
+    if left.pointer == 0 && right.pointer == 0 {
+        return true;
+    }
+    naval_power_fields(variant).is_some_and(|fields| left.same(right, &fields))
+}
 /// Variants kept for later ships of the capture.
 const VARIANT_SLOTS: usize = 16;
 
@@ -442,13 +467,14 @@ pub struct HeldShip {
     /// The variants read from its pool entries, by entry; not the ship's
     /// own, so [`Self::same`] leaves them out.
     variants: [Object<8>; POOL_ENTRIES],
+    naval_variants: [Object<3>; POOL_ENTRIES],
 }
 
 /// One variant's exact gathered observation from a held ship. Its pointer
 /// selects the same model-selection and hull-variant fields; equality includes the copied
 /// prefix and failure position, as a ship's variant comparison does.
 #[derive(Clone, Copy)]
-pub struct HeldVariant(Object<8>);
+pub struct HeldVariant(Object<8>, Object<3>);
 
 impl HeldVariant {
     pub fn pointer(&self) -> usize {
@@ -456,7 +482,7 @@ impl HeldVariant {
     }
 
     pub fn same(&self, other: &Self) -> bool {
-        self.0.same(&other.0, &VARIANT)
+        self.0.same(&other.0, &VARIANT) && same_naval_power(&self.0, &self.1, &other.1)
     }
 }
 
@@ -464,7 +490,12 @@ impl HeldShip {
     /// Every pool-selected variant is represented by the held observations.
     /// Larger pools and incomplete entry or variant gathers use the model reader.
     pub fn variants_complete(&self) -> bool {
-        pool_complete(&self.ship, &self.heap) && self.variants.iter().all(variant_complete)
+        pool_complete(&self.ship, &self.heap)
+            && self.variants.iter().all(variant_complete)
+            && self
+                .naval_variants
+                .iter()
+                .all(|v| v.pointer == 0 || v.completed == NAVAL_POWER.len())
     }
 
     /// A moved certificate can be revalidated only when every owned byte
@@ -479,7 +510,7 @@ impl HeldShip {
 
     /// The pool-selected observations, without copying the ship or heap.
     pub fn variants(&self) -> [HeldVariant; POOL_ENTRIES] {
-        self.variants.map(HeldVariant)
+        std::array::from_fn(|index| HeldVariant(self.variants[index], self.naval_variants[index]))
     }
 
     /// The task force the ship named.
@@ -560,10 +591,13 @@ pub struct ShipFields {
     globals: Object<1>,
     heap: Heap,
     variants: [Object<8>; VARIANT_SLOTS],
+    naval_variants: [Object<3>; VARIANT_SLOTS],
+    naval_power: bool,
     /// The next slot a new variant replaces.
     next_variant: usize,
     /// The slots of the visited ship's gathered variants, by pool entry.
     current: [Option<usize>; POOL_ENTRIES],
+    current_power: Option<usize>,
 }
 
 impl ShipFields {
@@ -577,9 +611,17 @@ impl ShipFields {
             globals: Object::NONE,
             heap: Heap::NONE,
             variants: [Object::NONE; VARIANT_SLOTS],
+            naval_variants: [Object::NONE; VARIANT_SLOTS],
+            naval_power: false,
             next_variant: 0,
             current: [None; POOL_ENTRIES],
+            current_power: None,
         }
+    }
+
+    /// Worker-only suffix admission; call before the first variant observation.
+    pub fn enable_naval_power(&mut self) {
+        self.naval_power = true;
     }
 
     /// Before reading the ship at `ship`: gather its fields, its task
@@ -631,6 +673,7 @@ impl ShipFields {
             ship: self.ship,
             heap: self.heap,
             variants: self.current_variants(),
+            naval_variants: self.current_naval_variants(),
         }
     }
 
@@ -655,7 +698,14 @@ impl ShipFields {
             return true;
         }
         let slot = self.variant(memory, held.pointer());
-        variant_complete(&self.variants[slot]) && self.variants[slot].same(&held.0, &VARIANT)
+        if held.1.pointer != 0 {
+            self.naval_variant(memory, slot);
+        }
+        variant_complete(&self.variants[slot])
+            && self.variants[slot].same(&held.0, &VARIANT)
+            && (held.1.pointer == 0
+                || same_naval_power(&self.variants[slot], &self.naval_variants[slot], &held.1)
+                    && self.naval_variants[slot].completed == NAVAL_POWER.len())
     }
 
     /// Whether the visited ship's variants were gathered with the same bytes
@@ -671,6 +721,25 @@ impl ShipFields {
             .iter()
             .zip(&held.variants)
             .all(|(current, held)| variant_complete(current) && current.same(held, &VARIANT))
+            && self
+                .current_naval_variants()
+                .iter()
+                .zip(&held.naval_variants)
+                .zip(self.current_variants())
+                .all(|((current, held), variant)| {
+                    (current.pointer == 0 || current.completed == NAVAL_POWER.len())
+                        && same_naval_power(&variant, current, held)
+                })
+    }
+
+    fn current_naval_variants(&self) -> [Object<3>; POOL_ENTRIES] {
+        std::array::from_fn(|index| {
+            if self.current_power == Some(index) {
+                self.current[index].map_or(Object::NONE, |slot| self.naval_variants[slot])
+            } else {
+                Object::NONE
+            }
+        })
     }
 
     fn current_variants(&self) -> [Object<8>; POOL_ENTRIES] {
@@ -728,6 +797,7 @@ impl ShipFields {
     /// [`Self::visit_variants`] for the pool entries `heap` holds.
     fn visit_variants_of(&mut self, memory: &impl Memory, heap: &Heap) {
         self.current = [None; POOL_ENTRIES];
+        self.current_power = None;
         let Some(copied) = heap.entries() else {
             return;
         };
@@ -753,6 +823,14 @@ impl ShipFields {
                 self.current[index] = Some(self.variant(memory, variant));
             }
         }
+        // Power does not participate in model selection. Only the completed
+        // pool's selected occurrence demands this independent suffix.
+        if self.naval_power
+            && let Some(slot) = self.current[selected]
+        {
+            self.current_power = Some(selected);
+            self.naval_variant(memory, slot);
+        }
     }
 
     /// The slot holding `variant`, gathering it into the next slot no
@@ -771,7 +849,28 @@ impl ShipFields {
         let slot = self.next_variant;
         self.next_variant = (slot + 1) % VARIANT_SLOTS;
         self.variants[slot] = Object::gather(memory, variant, VARIANT);
+        self.naval_variants[slot] = Object::NONE;
         slot
+    }
+
+    fn naval_variant(&mut self, memory: &impl Memory, slot: usize) {
+        if !self.naval_power || self.naval_variants[slot].pointer != 0 {
+            return;
+        }
+        let original = &self.variants[slot];
+        let Some(fields) = naval_power_fields(original) else {
+            return;
+        };
+        let Some(expected) = self.base.checked_add(cequipment_variant::VTABLE_RVA) else {
+            return;
+        };
+        let header: [u8; 16] = original.bytes[0][..16]
+            .try_into()
+            .expect("variant identity span");
+        if cequipment_variant::identity_from_header(expected, header).is_err() {
+            return;
+        }
+        self.naval_variants[slot] = Object::gather(memory, original.pointer, fields);
     }
 
     /// The readers' memory for the visited ship over `source`.
@@ -807,6 +906,13 @@ impl Served for ShipFields {
         }
         for &slot in self.current.iter().flatten() {
             match self.variants[slot].lookup(&VARIANT, address, len) {
+                Lookup::Source => {}
+                found => return found,
+            }
+            let Some(fields) = naval_power_fields(&self.variants[slot]) else {
+                continue;
+            };
+            match self.naval_variants[slot].lookup(&fields, address, len) {
                 Lookup::Source => {}
                 found => return found,
             }

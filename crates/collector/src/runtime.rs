@@ -8,7 +8,8 @@ use crate::{
     spool_phases::Phase,
     spooling::{Distribution, Processor, WallTotals},
 };
-use engine_executable::{build::PINNED_BUILD, build::hash_executable};
+use engine_executable::build::PINNED_BUILD;
+use engine_executable::build::hash_executable;
 use engine_native::{cgame_state, country_memory::SeedStatus, memory::LiveMemory, read};
 use replay_data::identity::IdentityCodec;
 use replay_data::{codec::Decoder, identity::SessionStart};
@@ -52,6 +53,7 @@ macro_rules! refuse_detach {
     ($reason:expr, $retain:expr) => {{
         let reason = $reason;
         crate::land_events::stop_observation();
+        collector_combat_log::history_events::stop();
         ($retain)(reason);
         return Err(reason);
     }};
@@ -65,6 +67,8 @@ pub(crate) fn refuse_land_detach_for_test(retain: impl FnOnce()) -> Result<(), &
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    #[serde(default)]
+    scripted_maps: crate::scripted_maps::Demand,
     #[serde(default = "observer_default")]
     operation_outcomes: bool,
     #[serde(default = "observer_default")]
@@ -185,7 +189,19 @@ fn module_path(module: HMODULE) -> Result<PathBuf, &'static str> {
 /// A failed installation's message, naming the family, kept for the
 /// attachment: status and the terminal error borrow it until unload. Built
 /// once, on the runtime thread, only when installation fails.
-fn installation_message(message: String) -> &'static str {
+fn installation_deadline_message(family: &str, busy_sites: &[&str]) -> String {
+    let detail = if busy_sites.is_empty() {
+        String::new()
+    } else {
+        format!("/{}", busy_sites.join(", "))
+    };
+    format!(
+        "{family}{detail} hooks were still not ready when the 15 s installation deadline expired"
+    )
+}
+
+pub(crate) fn installation_message(message: impl Into<String>) -> &'static str {
+    let message = message.into();
     Box::leak(message.into_boxed_str())
 }
 
@@ -342,7 +358,7 @@ mod bootstrap_witness_tests {
         let _ = fs::remove_dir_all(&directory);
     }
 }
-fn write_status(path: &Path, status: &impl serde::Serialize) -> io::Result<()> {
+pub(crate) fn write_status(path: &Path, status: &impl serde::Serialize) -> io::Result<()> {
     write_status_bytes(path, &crate::status::serialize(status)?)
 }
 pub(crate) fn write_status_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -652,6 +668,14 @@ fn run(
         return Err("collector config executable identity differs from running build");
     }
     // Prepare immutable metadata on this loader worker before publishing hooks.
+    crate::territory_changes::scripted_capture(
+        config.scripted_maps.victory_point,
+        config.scripted_maps.all_controllers || !config.scripted_maps.controller_states.is_empty(),
+    );
+    crate::scripted_maps::configure(config.scripted_maps.clone());
+    engine_research::research_modifiers::scripted_sharing_roster(
+        config.scripted_maps.sharing_roster,
+    );
     engine_executable::executable_tables::initialize_executable(&executable_path)
         .map_err(|error| error_reason(error, "collector executable tables preparation failed"))?;
     let dll = hash_executable(
@@ -666,6 +690,7 @@ fn run(
     let detach = Event::create(&config.detach_event)?;
     let done = Event::create(&config.done_event)?;
     let status_path = config.output_dir.join("status.json");
+    crate::hook_failures::configure(&config.output_dir, session.id, process_start);
     write_status(
         &status_path,
         &crate::status::status!({"state":"starting", "session":session.id, "hours":0}),
@@ -678,6 +703,11 @@ fn run(
     let rva = cgame_state::HOURLY_UPDATE_RVA;
     let sentinel = cgame_state::HOURLY_UPDATE_SENTINEL;
     if read::<[u8; 16]>(&memory, base + rva) != Some(sentinel) {
+        let _ = crate::hook_failures::refuse(
+            RestoreFamily::Hourly,
+            "sentinel",
+            "hourly boundary sentinel differs",
+        );
         return Err("hourly boundary sentinel differs");
     }
     // The recorder uses this same exclusive handle before every finalization.
@@ -706,89 +736,219 @@ fn run(
     let event_feed_sequence = history.event_feed_sequence();
     let event_feed_generation = history.event_feed_generation().unwrap_or(1).max(1);
     let event_feed_counts = history.event_feed_counts();
-    let [air_loss_sequence, bombing_sequence, nuclear_sequence] = history.event_ledger_sequences();
+    let [
+        air_loss_sequence,
+        bombing_sequence,
+        nuclear_sequence,
+        market_sequence,
+    ] = history.event_ledger_sequences();
     crate::air_losses::restore_sequence(air_loss_sequence)?;
     crate::building_bombing::restore_sequence(bombing_sequence)?;
     crate::nuclear_strikes::restore_sequence(nuclear_sequence)?;
+    crate::market_changes::restore_sequence(market_sequence)?;
     let mut processor = Processor::new(&config.output_dir, history, session.clone())
         .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
+    let validation_refusals = processor.validation_refusals();
     let mut hook = unsafe { Hook::new(base + rva, sampling::tick as *const () as usize, sentinel) }
-        .map_err(|_| "hourly hook construction failed")?;
-    let mut portrait_hooks = unsafe { crate::portrait_changes::Hooks::new(&memory, base) }?;
-    let mut advisor_hooks = unsafe { crate::advisor_changes::Hooks::new(&memory, base) }?;
-    let mut relation_hooks = unsafe { crate::relation_changes::Hooks::new(&memory, base) }?;
-    let mut history_hooks = unsafe { crate::history_changes::Hooks::new(&memory, base) }?;
-    let mut flag_hooks = unsafe { crate::flag_changes::Hooks::new(&memory, base) }?;
-    let mut building_hooks = unsafe { crate::building_changes::Hooks::new(&memory, base) }?;
-    let mut advisor_pool_hooks = unsafe { crate::advisor_pool_changes::Hooks::new(&memory, base) }?;
-    let mut party_leader_hooks = unsafe { crate::party_leader_changes::Hooks::new(&memory, base) }?;
-    let mut variable_hooks = unsafe { crate::variable_changes::Hooks::new(&memory, base) }?;
-    let mut party_hooks = unsafe { crate::party_changes::Hooks::new(&memory, base) }?;
-    let mut wing_hooks = unsafe { crate::wing_changes::Hooks::new(&memory, base) }?;
-    let mut roster_hooks = unsafe { crate::roster_changes::Hooks::new(&memory, base) }?;
-    let mut political_status_hooks =
-        unsafe { crate::political_status_changes::Hooks::new(&memory, base) }?;
-    let mut mission_hooks = unsafe { crate::mission_changes::Hooks::new(&memory, base) }?;
-    let mut rail_hooks = unsafe { crate::rail_changes::Hooks::new(&memory, base) }?;
-    let mut territory_hooks = unsafe { crate::territory_changes::Hooks::new(&memory, base) }?;
-    let mut army_stat_hooks = unsafe { crate::army_stat_changes::Hooks::new(&memory, base) }?;
-    let mut country_input_hooks =
-        unsafe { crate::country_input_changes::Hooks::new(&memory, base) }?;
-    let mut raid_hooks = unsafe { crate::raid_changes::Hooks::new(&memory, base) }?;
-    let mut naval_tree_hooks = unsafe { crate::naval_tree_changes::Hooks::new(&memory, base) }?;
-    let mut unit_leader_hooks = unsafe { crate::unit_leader_changes::Hooks::new(&memory, base) }?;
-    let mut census_hooks = unsafe { crate::census_changes::Hooks::new(&memory, base) }?;
-    let mut world_input_hooks = unsafe { crate::world_input_changes::Hooks::new(&memory, base) }?;
-    let mut air_record_hooks = unsafe { crate::air_record_changes::Hooks::new(&memory, base) }?;
-    let mut local_subunit_hooks =
-        unsafe { crate::local_subunit_changes::Hooks::new(&memory, base) }?;
-    let mut template_hooks = unsafe { crate::template_changes::Hooks::new(&memory, base) }?;
-    let mut ship_model_hooks = unsafe { crate::ship_model_changes::Hooks::new(&memory, base) }?;
-    let mut province_unit_hooks =
-        unsafe { crate::province_unit_changes::Hooks::new(&memory, base) }?;
-    let mut air_base_carry_hooks =
-        unsafe { crate::air_base_carry_changes::Hooks::new(&memory, base) }?;
+        .map_err(|cause| {
+            let _ = crate::hook_failures::refuse(RestoreFamily::Hourly, "construction", &cause);
+            installation_message(format!("hourly hook construction failed: {cause}"))
+        })?;
+    let mut portrait_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::portrait_changes::Hooks::new(&memory, base)
+    })?;
+    let mut advisor_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::advisor_changes::Hooks::new(&memory, base)
+    })?;
+    let mut relation_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::relation_changes::Hooks::new(&memory, base)
+    })?;
+    let mut history_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::history_changes::Hooks::new(&memory, base)
+    })?;
+    let mut flag_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::flag_changes::Hooks::new(&memory, base)
+    })?;
+    let mut building_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::building_changes::Hooks::new(&memory, base)
+    })?;
+    let mut advisor_pool_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::advisor_pool_changes::Hooks::new(&memory, base)
+    })?;
+    let mut party_leader_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::party_leader_changes::Hooks::new(&memory, base)
+    })?;
+    let mut variable_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::variable_changes::Hooks::new(&memory, base)
+    })?;
+    let mut party_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::party_changes::Hooks::new(&memory, base)
+    })?;
+    let mut wing_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::wing_changes::Hooks::new(&memory, base)
+    })?;
+    let mut roster_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::roster_changes::Hooks::new(&memory, base)
+    })?;
+    let mut political_status_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::political_status_changes::Hooks::new(&memory, base)
+    })?;
+    let mut mission_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::mission_changes::Hooks::new(&memory, base)
+    })?;
+    let mut rail_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::rail_changes::Hooks::new(&memory, base)
+    })?;
+    let mut territory_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::territory_changes::Hooks::new(&memory, base)
+    })?;
+    let mut army_stat_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::army_stat_changes::Hooks::new(&memory, base)
+    })?;
+    let mut country_input_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::country_input_changes::Hooks::new(&memory, base).map_err(installation_message)
+    })?;
+    let mut raid_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::raid_changes::Hooks::new(&memory, base)
+    })?;
+    let mut naval_tree_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::naval_tree_changes::Hooks::new(&memory, base).map_err(installation_message)
+    })?;
+    let mut unit_leader_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::unit_leader_changes::Hooks::new(&memory, base)
+    })?;
+    let mut census_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::census_changes::Hooks::new(&memory, base)
+    })?;
+    let mut world_input_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::world_input_changes::Hooks::new(&memory, base)
+    })?;
+    let mut air_record_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::air_record_changes::Hooks::new(&memory, base)
+    })?;
+    let mut local_subunit_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::local_subunit_changes::Hooks::new(&memory, base)
+    })?;
+    let mut template_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::template_changes::Hooks::new(&memory, base)
+    })?;
+    let mut ship_model_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::ship_model_changes::Hooks::new(&memory, base)
+    })?;
+    let mut province_unit_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::province_unit_changes::Hooks::new(&memory, base)
+    })?;
+    let mut air_base_carry_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::air_base_carry_changes::Hooks::new(&memory, base)
+    })?;
+
+    let mut propaganda_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::propaganda_changes::Hooks::new(&memory, base)
+    })?;
+    let mut intel_source_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::intel_source_changes::Hooks::new(&memory, base)
+    })?;
+    let mut network_auxiliary_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::network_auxiliary::Hooks::new(&memory, base)
+    })?;
+    let naval_state = read::<u64>(&memory, base + cgame_state::SINGLETON_RVA)
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .unwrap_or(0);
+    let mut naval_management_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::naval_management_changes::Hooks::new(&memory, base, naval_state)
+    })?;
+    let mut participation_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::war_participation::Hooks::new(&memory, base)
+    })?;
+    let mut design_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::design_changes::Hooks::new(&memory, base)
+    })?;
+    let mut faction_goal_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::faction_goal_changes::Hooks::new(&memory, base)
+    })?;
+    let mut faction_companion_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::faction_companion_changes::Hooks::new(&memory, base)
+    })?;
+    let _division_panel_forwarder = crate::division_panel_forwarder::attach();
     // A family whose sentinels differ is left uninstalled; it reads as before.
-    let mut opinion_hooks = unsafe { crate::opinion_changes::Hooks::new(&memory, base) }?;
-    let mut destruction_hooks = unsafe { crate::equipment_destruction::Hooks::new(&memory, base) };
-    let mut naval_result_hooks = unsafe { crate::naval_result_sources::Hooks::new(&memory, base) };
-    let mut experience_hooks = unsafe { crate::experience_gains::Hooks::new(&memory, base) };
-    let mut air_loss_hooks = unsafe { crate::air_losses::Hooks::new(&memory, base) };
-    let mut bombing_hooks = unsafe { crate::building_bombing::Hooks::new(&memory, base) };
-    let mut nuclear_hooks = unsafe { crate::nuclear_strikes::Hooks::new(&memory, base) };
-    let mut map_event_hooks = unsafe {
-        crate::map_events::hooks::Hooks::new(&memory, base, |family| {
-            config
-                .map_events
-                .as_ref()
-                .is_none_or(|selected| selected.iter().any(|name| name == family.name()))
+    let mut opinion_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::opinion_changes::Hooks::new(&memory, base)
+    })?;
+    let mut destruction_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::equipment_destruction::Hooks::new(&memory, base) })
+    })?;
+    let mut naval_result_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::naval_result_sources::Hooks::new(&memory, base) })
+    })?;
+    let mut experience_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::experience_gains::Hooks::new(&memory, base) })
+    })?;
+    let mut air_loss_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::air_losses::Hooks::new(&memory, base) })
+    })?;
+    let mut bombing_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::building_bombing::Hooks::new(&memory, base) })
+    })?;
+    let mut nuclear_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::nuclear_strikes::Hooks::new(&memory, base) })
+    })?;
+    let mut map_event_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe {
+            crate::map_events::hooks::Hooks::new(&memory, base, |family| {
+                config
+                    .map_events
+                    .as_ref()
+                    .is_none_or(|selected| selected.iter().any(|name| name == family.name()))
+            })
         })
-    };
+    })?;
+    let mut market_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::market_changes::Hooks::new(&memory, base) })
+    })?;
     let events = crate::country_scale::observe_production_output(&memory, base).unwrap_or(0);
-    let mut line_hooks = unsafe { crate::line_output::Hooks::new(&memory, base, events) };
-    let mut world_hooks =
-        unsafe { crate::world_lifetime::Hooks::new(&memory, base, event_feed_generation) }?;
-    let mut land_hooks = unsafe { crate::land_events::Hooks::new(&memory, base) };
-    let mut prune_hooks = unsafe { crate::combat_log_prune::Hooks::new(&memory, base) };
-    let mut construction_hooks = unsafe { crate::construction_ic::Hooks::new(&memory, base) };
+    let mut line_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::line_output::Hooks::new(&memory, base, events) })
+    })?;
+    let mut world_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::world_lifetime::Hooks::new(&memory, base, event_feed_generation)
+    })?;
+    let mut land_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::land_events::Hooks::new(&memory, base) })
+    })?;
+    let mut prune_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::combat_log_prune::Hooks::new(&memory, base) })
+    })?;
+    let mut construction_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::construction_ic::Hooks::new(&memory, base) })
+    })?;
     let logistics_rows = crate::logistics_balance::prepare(&memory, base)
         .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?;
-    let mut logistics_hooks = unsafe { crate::logistics_balance::Hooks::new(&memory, base) }?;
-    let mut fuel_hooks = unsafe { crate::fuel_awards::Hooks::new(&memory, base) };
-    let mut operation_hooks =
-        unsafe { crate::operation_outcomes::Hooks::new(&memory, base, config.operation_outcomes) };
-    let mut politics_hooks =
-        unsafe { crate::politics_changes::Hooks::new(&memory, base, config.politics_capture) };
+    let mut logistics_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::logistics_balance::Hooks::new(&memory, base)
+    })?;
+    let mut fuel_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::fuel_awards::Hooks::new(&memory, base) })
+    })?;
+    let mut operation_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe {
+            crate::operation_outcomes::Hooks::new(&memory, base, config.operation_outcomes)
+        })
+    })?;
+    let mut politics_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::politics_changes::Hooks::new(&memory, base, config.politics_capture) })
+    })?;
     progress.step("hooks_prepared", None);
     // Size every country-proportional buffer from the live registry before
     // the hook exists. At the main menu the registry may still be empty; the
     // spool thread then raises capacities as soon as a save fills it.
     let slots = crate::country_scale::observe(&memory, base).unwrap_or(0);
     crate::country_scale::note_slots(slots);
+    collector_observers::wargoal_changes::note_countries(slots);
+    collector_observers::wargoal_changes::presize();
     // Size the live weather boundary before installing the hourly hook;
     // attachment after a native rebuild still captures its retained edges.
     let _ = crate::extended::weather::observe_display_capacity(&memory, base);
-    let mut event_feed_hooks = unsafe {
+    let mut event_feed_hooks = FamilyHooks::construct(base, || unsafe {
         crate::event_feed_observer::Hooks::new(
             &memory,
             base,
@@ -796,7 +956,7 @@ fn run(
             event_feed_counts,
             slots,
         )
-    }?;
+    })?;
     crate::politics_changes::resize(
         crate::country_scale::observe_politics_demand(&memory, base, slots).unwrap_or(slots),
         processor
@@ -814,6 +974,10 @@ fn run(
         Ok(None) => {}
         Err(reason) => processor.observe_input_demand_error(reason),
     }
+    // Reuse the state demand already observed above. Prepare watches off-thread so the
+    // first callback can certify its initial hover rows without an unobserved fallback.
+    collector_observers::occupation_changes::demand(sizing.core[3].saturating_mul(9));
+    collector_observers::occupation_changes::prepare();
     if let Err(reason) = crate::country_scale::presize_table_inputs(
         &memory,
         base,
@@ -855,6 +1019,8 @@ fn run(
     sizing.extended.air_losses.events = crate::air_losses::capacity();
     sizing.extended.building_bombing = crate::building_bombing::capacity();
     sizing.extended.nuclear_strikes = crate::nuclear_strikes::capacity();
+    crate::market_changes::presize(slots, slots);
+    sizing.extended.market = crate::market_changes::capacity();
     sizing.content = engine_dlc::cdlc_manager::observe_counts(&memory, base);
     if let Some(rows) = processor
         .observe_input_demand(crate::country_scale::observe_country_intel(&memory, base))
@@ -991,8 +1157,9 @@ fn run(
     let peace_capacity = crate::peace_settlements::capacity_for_world(&memory, base);
     sizing.extended.peace_settlements = peace_capacity;
     sizing.extended.peace_bids = peace_capacity;
-    let mut peace_hooks =
-        unsafe { crate::peace_settlements::Hooks::new(&memory, base, peace_capacity) };
+    let mut peace_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::peace_settlements::Hooks::new(&memory, base, peace_capacity) })
+    })?;
     let pe_offset = read::<u32>(&memory, module as usize + 0x3c).unwrap_or(0) as usize;
     let image_size = read::<u32>(&memory, module as usize + pe_offset + 0x50).unwrap_or(0) as usize;
     let [relay, trampoline] = hook.executable_ranges();
@@ -1006,6 +1173,9 @@ fn run(
     ranges.extend(relation_hooks.executable_ranges());
     ranges.extend(history_hooks.executable_ranges());
     ranges.extend(flag_hooks.executable_ranges());
+    ranges.extend(propaganda_hooks.executable_ranges());
+    ranges.extend(intel_source_hooks.executable_ranges());
+    ranges.extend(network_auxiliary_hooks.executable_ranges());
     ranges.extend(building_hooks.executable_ranges());
     ranges.extend(advisor_pool_hooks.executable_ranges());
     ranges.extend(party_leader_hooks.executable_ranges());
@@ -1022,11 +1192,16 @@ fn run(
     ranges.extend(raid_hooks.executable_ranges());
     ranges.extend(naval_tree_hooks.executable_ranges());
     ranges.extend(unit_leader_hooks.executable_ranges());
+    ranges.extend(naval_management_hooks.executable_ranges());
     ranges.extend(census_hooks.executable_ranges());
     ranges.extend(world_input_hooks.executable_ranges());
     ranges.extend(air_record_hooks.executable_ranges());
+    ranges.extend(participation_hooks.executable_ranges());
     ranges.extend(local_subunit_hooks.executable_ranges());
+    ranges.extend(design_hooks.executable_ranges());
     ranges.extend(template_hooks.executable_ranges());
+    ranges.extend(faction_goal_hooks.executable_ranges());
+    ranges.extend(faction_companion_hooks.executable_ranges());
     ranges.extend(ship_model_hooks.executable_ranges());
     ranges.extend(province_unit_hooks.executable_ranges());
     ranges.extend(air_base_carry_hooks.executable_ranges());
@@ -1037,6 +1212,7 @@ fn run(
     ranges.extend(air_loss_hooks.executable_ranges());
     ranges.extend(bombing_hooks.executable_ranges());
     ranges.extend(nuclear_hooks.executable_ranges());
+    ranges.extend(market_hooks.executable_ranges());
     ranges.extend(map_event_hooks.executable_ranges());
     ranges.extend(line_hooks.executable_ranges());
     ranges.extend(event_feed_hooks.executable_ranges());
@@ -1141,11 +1317,13 @@ fn run(
             )
         })
         .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
+    let decode_panic_hook = decode::PanicHook::install();
     let mut installation_error = decode::start_worker().err();
     while spool_id.load(Ordering::Acquire) == 0 && !spool.is_finished() {
         std::thread::yield_now();
     }
     owned_workers.extend([spool_id.load(Ordering::Acquire), decode::worker_id()]);
+    crate::hook_failures::workers_started();
     progress.step("workers_started", None);
     // The sampler starts paused: hook publication below suspends the process,
     // so no sampler suspension may overlap it. Activate only once every hook
@@ -1172,7 +1350,7 @@ fn run(
         installation_error = Some("collector allocation failed before hooks");
     }
     SHARED.store(Arc::as_ptr(&shared).cast_mut(), Ordering::Release);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut deadline = Instant::now() + Duration::from_secs(15);
     // The family each attempt reached: the one that failed, or that was
     // still not ready when the deadline expired.
     let stage = crate::progress::Stage::new(&progress, "world_lifetime");
@@ -1189,6 +1367,15 @@ fn run(
                     ("relation_changes", &mut || relation_hooks.set_enabled(true)),
                     ("history_changes", &mut || history_hooks.set_enabled(true)),
                     ("flag_changes", &mut || flag_hooks.set_enabled(true)),
+                    ("network_auxiliary", &mut || {
+                        network_auxiliary_hooks.set_enabled(true)
+                    }),
+                    ("intel_sources", &mut || {
+                        intel_source_hooks.set_enabled(true)
+                    }),
+                    ("propaganda_changes", &mut || {
+                        propaganda_hooks.set_enabled(true)
+                    }),
                     ("building_changes", &mut || building_hooks.set_enabled(true)),
                     ("advisor_pool_changes", &mut || {
                         advisor_pool_hooks.set_enabled(true)
@@ -1212,18 +1399,27 @@ fn run(
                         army_stat_hooks.set_enabled(true)
                     }),
                     ("country_input_changes", &mut || {
-                        country_input_hooks.set_enabled(true)
+                        country_input_hooks
+                            .set_enabled(true)
+                            .map_err(installation_message)
                     }),
                     ("raid_changes", &mut || raid_hooks.set_enabled(true)),
                     ("naval_tree_changes", &mut || {
-                        naval_tree_hooks.set_enabled(true)
+                        naval_tree_hooks
+                            .set_enabled(true)
+                            .map_err(installation_message)
                     }),
                     ("unit_leader_changes", &mut || {
                         unit_leader_hooks.set_enabled(true)
                     }),
+                    ("naval_management_changes", &mut || {
+                        naval_management_hooks.set_enabled(true)
+                    }),
                     ("census_changes", &mut || census_hooks.set_enabled(true)),
                     ("world_input_changes", &mut || {
-                        world_input_hooks.set_enabled(true)
+                        world_input_hooks
+                            .set_enabled(true)
+                            .map_err(installation_message)
                     }),
                     ("local_subunit_changes", &mut || {
                         local_subunit_hooks.set_enabled(true)
@@ -1231,10 +1427,20 @@ fn run(
                     ("province_unit_changes", &mut || {
                         province_unit_hooks.set_enabled(true)
                     }),
+                    ("war_participation", &mut || {
+                        participation_hooks.set_enabled(true)
+                    }),
                     ("air_record_changes", &mut || {
                         air_record_hooks.set_enabled(true)
                     }),
+                    ("variant_changes", &mut || design_hooks.set_enabled(true)),
                     ("template_changes", &mut || template_hooks.set_enabled(true)),
+                    ("faction_goals", &mut || {
+                        faction_goal_hooks.set_enabled(true)
+                    }),
+                    ("faction_companions", &mut || {
+                        faction_companion_hooks.set_enabled(true)
+                    }),
                     ("ship_model_changes", &mut || {
                         ship_model_hooks.set_enabled(true)
                     }),
@@ -1243,20 +1449,13 @@ fn run(
                     }),
                     ("opinion_changes", &mut || opinion_hooks.set_enabled(true)),
                     ("line_output", &mut || line_hooks.set_enabled(true)),
-                    ("peace_settlements", &mut || {
-                        peace_hooks
-                            .set_enabled(true)
-                            .map_err(|_| "peace hook installation failed")
-                    }),
+                    ("peace_settlements", &mut || peace_hooks.set_enabled(true)),
                 ],
             )? {
                 return Ok(false);
             }
             stage.set("land_events");
-            if !land_hooks
-                .set_enabled(true)
-                .map_err(|_| "land event hook installation failed")?
-            {
+            if !land_hooks.set_enabled(true)? {
                 return Ok(false);
             }
             stage.set("construction_ic");
@@ -1272,10 +1471,7 @@ fn run(
                 return Ok(false);
             }
             stage.set("equipment_destruction");
-            if !destruction_hooks
-                .set_enabled(true)
-                .map_err(|_| "equipment destruction hook installation failed")?
-            {
+            if !destruction_hooks.set_enabled(true)? {
                 return Ok(false);
             }
             if !install_attach_batch(
@@ -1288,9 +1484,7 @@ fn run(
                         experience_hooks.set_enabled(true)
                     }),
                     ("operation_outcomes", &mut || {
-                        operation_hooks
-                            .set_enabled(true)
-                            .map_err(|_| "operation outcome hook installation failed")
+                        operation_hooks.set_enabled(true)
                     }),
                     ("politics_changes", &mut || politics_hooks.set_enabled(true)),
                 ],
@@ -1307,32 +1501,59 @@ fn run(
                     ("air_losses", &mut || air_loss_hooks.set_enabled(true)),
                     ("building_bombing", &mut || bombing_hooks.set_enabled(true)),
                     ("nuclear_strikes", &mut || nuclear_hooks.set_enabled(true)),
+                    ("market_changes", &mut || market_hooks.set_enabled(true)),
                     ("map_events", &mut || map_event_hooks.set_enabled(true)),
                 ],
             )? {
                 return Ok(false);
             }
             stage.set("hourly");
-            hook.set_enabled(true)
-                .map_err(|_| "hourly hook installation failed")
+            hook.set_enabled(true).map_err(installation_message)
         })() {
             Ok(true) => break,
             Ok(false) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
             // Recorded in status and, as the terminal error, in
             // collector.error.txt, which the recorder prints to stderr.
             Ok(false) => {
-                installation_error = Some(installation_message(format!(
-                    "{} hooks were still not ready when the 15 s installation deadline expired",
-                    stage.get()
-                )));
-                break;
+                let busy_sites = match stage.get() {
+                    "faction_goals" => faction_goal_hooks.busy_sites(),
+                    "faction_companions" => faction_companion_hooks.busy_sites(),
+                    _ => Vec::new(),
+                };
+                let reason = installation_deadline_message(stage.get(), &busy_sites);
+                let family = RestoreFamily::ALL
+                    .into_iter()
+                    .find(|family| family.name() == stage.get())
+                    .unwrap();
+                if crate::hook_failures::failed(family) {
+                    installation_error = Some(installation_message(format!(
+                        "{} rollback failed: {reason}",
+                        family.name()
+                    )));
+                    break;
+                }
+                match crate::hook_failures::refuse(family, "publication deadline", &reason) {
+                    Ok(()) => deadline = Instant::now() + Duration::from_secs(15),
+                    Err(_) => {
+                        installation_error =
+                            Some(installation_message(format!("{}: {reason}", stage.get())));
+                        break;
+                    }
+                }
             }
             Err(reason) => {
-                installation_error = Some(installation_message(format!(
-                    "{} hook installation failed: {reason}",
-                    stage.get()
-                )));
-                break;
+                let family = RestoreFamily::ALL
+                    .into_iter()
+                    .find(|family| family.name() == stage.get())
+                    .unwrap();
+                match crate::hook_failures::install_failed(family, reason) {
+                    Ok(()) => deadline = Instant::now() + Duration::from_secs(15),
+                    Err(error) => {
+                        installation_error =
+                            Some(crate::hook_failures::fatal_installation_error().unwrap_or(error));
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1391,7 +1612,7 @@ fn run(
         ($reason:expr, $fault:expr, $workers:expr) => {{
             let reason: &'static str = $reason;
             let fault: Option<&'static str> = $fault;
-            let error = fault.unwrap_or(reason);
+            let error = fault.or_else(decode::panic_failure).unwrap_or(reason);
             refuse_detach!(error, |_error| {
                 shared.recording.store(false, Ordering::Release);
                 shared.cancel_buffer_wait.store(true, Ordering::Release);
@@ -1401,7 +1622,11 @@ fn run(
                         "state":"detach_refused", "session":session_id,
                         "drain_complete":false, "original_bytes_verified":false,
                         "error":error, "detach_refusal":reason,
+                        "decode_failure":decode::panic_failure(),
+                        "event_feed_failure":crate::event_feed_observer::status(),
                         "installation_error":installation_error,
+            "failed_hook_families":crate::hook_failures::status(),
+            "validation_refusals": &validation_refusals,
                         "hook_publication":crate::hook::publication::status(),
                         "land_events":crate::land_events::status(),
                         "event_feed_detach":event_feed_detach,
@@ -1415,11 +1640,11 @@ fn run(
                 }
                 std::mem::forget((
                     $workers, hook, portrait_hooks, advisor_hooks, relation_hooks,
-                    history_hooks, flag_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, template_hooks, ship_model_hooks, province_unit_hooks, air_base_carry_hooks, unit_leader_hooks, census_hooks,
-                    air_loss_hooks, bombing_hooks, nuclear_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
+                    history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
+                    air_loss_hooks, bombing_hooks, nuclear_hooks, market_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
                     construction_hooks, experience_hooks, event_feed_hooks, world_hooks,
                     fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
-                    peace_hooks, shared, output_lock, _payload_pools,
+                    peace_hooks, shared, output_lock, _payload_pools, decode_panic_hook,
                 ));
             });
         }};
@@ -1484,6 +1709,9 @@ fn run(
             RestoreFamily::Relation => relation_hooks.set_enabled(false),
             RestoreFamily::History => history_hooks.set_enabled(false),
             RestoreFamily::Flags => flag_hooks.set_enabled(false),
+            RestoreFamily::Propaganda => propaganda_hooks.set_enabled(false),
+            RestoreFamily::IntelSources => intel_source_hooks.set_enabled(false),
+            RestoreFamily::NetworkAuxiliary => network_auxiliary_hooks.set_enabled(false),
             RestoreFamily::Buildings => building_hooks.set_enabled(false),
             RestoreFamily::AdvisorPools => advisor_pool_hooks.set_enabled(false),
             RestoreFamily::PartyLeaders => party_leader_hooks.set_enabled(false),
@@ -1496,15 +1724,26 @@ fn run(
             RestoreFamily::Rails => rail_hooks.set_enabled(false),
             RestoreFamily::Territory => territory_hooks.set_enabled(false),
             RestoreFamily::ArmyStats => army_stat_hooks.set_enabled(false),
-            RestoreFamily::CountryInputs => country_input_hooks.set_enabled(false),
+            RestoreFamily::CountryInputs => country_input_hooks
+                .set_enabled(false)
+                .map_err(installation_message),
             RestoreFamily::Raid => raid_hooks.set_enabled(false),
-            RestoreFamily::NavalTrees => naval_tree_hooks.set_enabled(false),
+            RestoreFamily::NavalTrees => naval_tree_hooks
+                .set_enabled(false)
+                .map_err(installation_message),
             RestoreFamily::UnitLeaders => unit_leader_hooks.set_enabled(false),
+            RestoreFamily::NavalManagement => naval_management_hooks.set_enabled(false),
             RestoreFamily::Census => census_hooks.set_enabled(false),
-            RestoreFamily::WorldInputs => world_input_hooks.set_enabled(false),
+            RestoreFamily::WorldInputs => world_input_hooks
+                .set_enabled(false)
+                .map_err(installation_message),
+            RestoreFamily::WarParticipation => participation_hooks.set_enabled(false),
             RestoreFamily::AirRecords => air_record_hooks.set_enabled(false),
             RestoreFamily::LocalSubunits => local_subunit_hooks.set_enabled(false),
+            RestoreFamily::Designs => design_hooks.set_enabled(false),
             RestoreFamily::Templates => template_hooks.set_enabled(false),
+            RestoreFamily::FactionGoals => faction_goal_hooks.set_enabled(false),
+            RestoreFamily::FactionCompanions => faction_companion_hooks.set_enabled(false),
             RestoreFamily::ShipModels => ship_model_hooks.set_enabled(false),
             RestoreFamily::ProvinceUnits => province_unit_hooks.set_enabled(false),
             RestoreFamily::AirBaseCarry => air_base_carry_hooks.set_enabled(false),
@@ -1523,6 +1762,7 @@ fn run(
             RestoreFamily::AirLosses => air_loss_hooks.set_enabled(false),
             RestoreFamily::BuildingBombing => bombing_hooks.set_enabled(false),
             RestoreFamily::NuclearStrikes => nuclear_hooks.set_enabled(false),
+            RestoreFamily::Market => market_hooks.set_enabled(false),
             RestoreFamily::MapEvents => map_event_hooks.set_enabled(false),
             RestoreFamily::WorldLifetime => world_hooks.set_enabled(false),
         };
@@ -1715,11 +1955,19 @@ fn run(
     progress.step("release_quiet", None);
     if hooks.restored {
         // Spool/status readers joined and every family passed the final quiet check.
-        experience_hooks.release_after_quiet();
-        event_feed_detach = Some(match event_feed_hooks.release_after_quiet() {
-            Ok(losses) => losses,
-            Err(reason) => retain_detach!(reason, spool_result.as_ref().err().copied(), ()),
-        });
+        if let Some(hooks) = experience_hooks.inner.as_mut() {
+            hooks.release_after_quiet();
+        }
+        event_feed_detach = Some(
+            match event_feed_hooks
+                .inner
+                .as_mut()
+                .map_or(Ok(Default::default()), |hooks| hooks.release_after_quiet())
+            {
+                Ok(losses) => losses,
+                Err(reason) => retain_detach!(reason, spool_result.as_ref().err().copied(), ()),
+            },
+        );
         unsafe {
             crate::logistics_balance::release();
             crate::operation_outcomes::release();
@@ -1727,6 +1975,7 @@ fn run(
             crate::map_events::lanes::release();
         }
         if let Err(reason) = crate::land_events::release()
+            .and_then(|()| collector_combat_log::history_events::release_storage())
             .and_then(|()| crate::equipment_destruction::release())
             .and_then(|()| crate::naval_result_sources::release())
             .and_then(|()| crate::fuel_awards::release())
@@ -1742,6 +1991,9 @@ fn run(
             relation_hooks,
             history_hooks,
             flag_hooks,
+            propaganda_hooks,
+            intel_source_hooks,
+            network_auxiliary_hooks,
             building_hooks,
             advisor_pool_hooks,
             party_leader_hooks,
@@ -1758,11 +2010,16 @@ fn run(
             raid_hooks,
             naval_tree_hooks,
             unit_leader_hooks,
+            naval_management_hooks,
             census_hooks,
             world_input_hooks,
             air_record_hooks,
+            participation_hooks,
             local_subunit_hooks,
+            design_hooks,
             template_hooks,
+            faction_goal_hooks,
+            faction_companion_hooks,
             ship_model_hooks,
             province_unit_hooks,
             air_base_carry_hooks,
@@ -1772,6 +2029,7 @@ fn run(
             air_loss_hooks,
             bombing_hooks,
             nuclear_hooks,
+            market_hooks,
             map_event_hooks,
             line_hooks,
             land_hooks,
@@ -1787,6 +2045,7 @@ fn run(
             peace_hooks,
             shared,
             _payload_pools,
+            decode_panic_hook,
         ),
         || {},
     );
@@ -1804,7 +2063,11 @@ fn run(
             "state":if pinned { "pinned" } else { "detached" },"session":session_id,
             "process_start_time":process_start,"drain_complete":drain_complete,
             "error":spool_result.as_ref().err().copied(),
+            "decode_failure":decode::panic_failure(),
+            "event_feed_failure":restore_result.is_err().then(crate::event_feed_observer::status),
             "installation_error":installation_error,
+            "failed_hook_families":crate::hook_failures::status(),
+            "validation_refusals": &validation_refusals,
             "hook_publication":crate::hook::publication::status(),
             "restoration_error":restore_result.err(),"collector_pinned":pinned,
             "recording_stopped":true,"spool_closed":true,
@@ -1861,59 +2124,7 @@ fn append_event_feed_detach_status(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(usize)]
-enum RestoreFamily {
-    Hourly,
-    EquipmentDestruction,
-    Land,
-    Portrait,
-    Opinion,
-    Construction,
-    LineOutput,
-    CombatLogPrune,
-    Advisor,
-    Relation,
-    History,
-    Flags,
-    Buildings,
-    AdvisorPools,
-    PartyLeaders,
-    Variables,
-    Parties,
-    Wings,
-    Roster,
-    PoliticalStatus,
-    Missions,
-    Rails,
-    Territory,
-    ArmyStats,
-    CountryInputs,
-    Raid,
-    NavalTrees,
-    UnitLeaders,
-    Census,
-    WorldInputs,
-    AirRecords,
-    LocalSubunits,
-    Templates,
-    ShipModels,
-    ProvinceUnits,
-    AirBaseCarry,
-    Experience,
-    Fuel,
-    OperationOutcomes,
-    Politics,
-    Logistics,
-    Peace,
-    NavalResultSources,
-    AirLosses,
-    BuildingBombing,
-    NuclearStrikes,
-    MapEvents,
-    EventFeed,
-    WorldLifetime,
-}
+use crate::hook_failures::{Family as RestoreFamily, FamilyHooks};
 
 impl RestoreFamily {
     fn observer_state(self) -> (bool, &'static str) {
@@ -1948,7 +2159,9 @@ impl RestoreFamily {
                 "production output callbacks did not quiesce; collector retained",
             ),
             Self::CombatLogPrune => (
-                crate::combat_log_prune::ACTIVE.load(Ordering::SeqCst) != 0,
+                crate::combat_log_prune::ACTIVE.load(Ordering::SeqCst) != 0
+                    || collector_combat_log::history_events::ACTIVE.load(Ordering::SeqCst) != 0
+                    || collector_combat_log::history_events::retention_required(),
                 "combat log prune callbacks did not quiesce; collector retained",
             ),
             Self::Advisor => (
@@ -1963,6 +2176,18 @@ impl RestoreFamily {
             Self::History => (
                 crate::history_changes::active() != 0,
                 "history callbacks did not quiesce; collector retained",
+            ),
+            Self::NetworkAuxiliary => (
+                collector_intel::network_auxiliary::active() != 0,
+                "network auxiliary callbacks did not quiesce; collector retained",
+            ),
+            Self::IntelSources => (
+                collector_intel::source_changes::active() != 0,
+                "intel source callbacks did not quiesce; collector retained",
+            ),
+            Self::Propaganda => (
+                collector_intel::propaganda_changes::active() != 0,
+                "propaganda callbacks did not quiesce; collector retained",
             ),
             Self::Flags => (
                 crate::flag_changes::active() != 0,
@@ -2035,6 +2260,10 @@ impl RestoreFamily {
                 crate::unit_leader_changes::active() != 0,
                 "unit leader callbacks did not quiesce; collector retained",
             ),
+            Self::NavalManagement => (
+                collector_naval_management::changes::active() != 0,
+                "naval management callbacks did not quiesce; collector retained",
+            ),
             Self::Census => (
                 crate::census_changes::active() != 0,
                 "role census callbacks did not quiesce; collector retained",
@@ -2043,6 +2272,10 @@ impl RestoreFamily {
                 crate::world_input_changes::active() != 0,
                 "province name, region access and world tension callbacks did not quiesce; collector retained",
             ),
+            Self::WarParticipation => (
+                crate::war_participation::active() != 0,
+                "war participation callbacks did not quiesce; collector retained",
+            ),
             Self::AirRecords => (
                 crate::air_record_changes::active() != 0,
                 "air combat record callbacks did not quiesce; collector retained",
@@ -2050,6 +2283,18 @@ impl RestoreFamily {
             Self::LocalSubunits => (
                 crate::local_subunit_changes::active() != 0,
                 "local sub-unit clone callbacks did not quiesce; collector retained",
+            ),
+            Self::Designs => (
+                crate::design_changes::active() != 0,
+                "equipment design callbacks did not quiesce; collector retained",
+            ),
+            Self::FactionCompanions => (
+                crate::faction_companion_changes::active() != 0,
+                "faction companion callbacks did not quiesce; collector retained",
+            ),
+            Self::FactionGoals => (
+                crate::faction_goal_changes::active() != 0,
+                "faction goal callbacks did not quiesce; collector retained",
             ),
             Self::Templates => (
                 crate::template_changes::active() != 0,
@@ -2107,6 +2352,10 @@ impl RestoreFamily {
                 crate::nuclear_strikes::active() != 0,
                 "nuclear strike callbacks did not quiesce; collector retained",
             ),
+            Self::Market => (
+                crate::market_changes::active() != 0,
+                "market callbacks did not quiesce; collector retained",
+            ),
             Self::MapEvents => (
                 crate::map_events::hooks::active() != 0,
                 "map event callbacks did not quiesce; collector retained",
@@ -2136,6 +2385,9 @@ impl RestoreFamily {
                 | Self::Relation
                 | Self::History
                 | Self::Flags
+                | Self::Propaganda
+                | Self::IntelSources
+                | Self::NetworkAuxiliary
                 | Self::Buildings
                 | Self::AdvisorPools
                 | Self::PartyLeaders
@@ -2155,67 +2407,86 @@ impl RestoreFamily {
                 | Self::Census
                 | Self::WorldInputs
                 | Self::AirRecords
+                | Self::WarParticipation
                 | Self::LocalSubunits
+                | Self::Designs
                 | Self::Templates
+                | Self::FactionGoals
+                | Self::FactionCompanions
                 | Self::ShipModels
                 | Self::ProvinceUnits
                 | Self::AirBaseCarry
                 | Self::AirLosses
                 | Self::NuclearStrikes
+                | Self::Market
         )
     }
+}
 
-    const ALL: [Self; 49] = [
-        Self::Hourly,
-        Self::EquipmentDestruction,
-        Self::Land,
-        Self::Portrait,
-        Self::Opinion,
-        Self::Construction,
-        Self::LineOutput,
-        Self::CombatLogPrune,
-        Self::Advisor,
-        Self::Relation,
-        Self::History,
-        Self::Flags,
-        Self::Buildings,
-        Self::AdvisorPools,
-        Self::PartyLeaders,
-        Self::Variables,
-        Self::Parties,
-        Self::Wings,
-        Self::Roster,
-        Self::PoliticalStatus,
-        Self::Missions,
-        Self::Rails,
-        Self::Territory,
-        Self::ArmyStats,
-        Self::CountryInputs,
-        Self::Raid,
-        Self::NavalTrees,
-        Self::UnitLeaders,
-        Self::Census,
-        Self::WorldInputs,
-        Self::AirRecords,
-        Self::LocalSubunits,
-        Self::Templates,
-        Self::ShipModels,
-        Self::ProvinceUnits,
-        Self::AirBaseCarry,
-        Self::Experience,
-        Self::Fuel,
-        Self::OperationOutcomes,
-        Self::Politics,
-        Self::Logistics,
-        Self::Peace,
-        Self::NavalResultSources,
-        Self::AirLosses,
-        Self::BuildingBombing,
-        Self::NuclearStrikes,
-        Self::MapEvents,
-        Self::EventFeed,
-        Self::WorldLifetime,
-    ];
+/// Patch owners from the same inventory used for restoration and quiescence.
+/// The exhaustive mapping makes a new restoration family require a guard name.
+#[cfg(test)]
+pub(crate) fn hook_patch_families() -> impl Iterator<Item = &'static str> {
+    RestoreFamily::ALL.into_iter().map(|family| match family {
+        RestoreFamily::Hourly => "hourly",
+        RestoreFamily::EquipmentDestruction => "equipment_destruction",
+        RestoreFamily::Land => "land_events",
+        RestoreFamily::Portrait => "portrait_changes",
+        RestoreFamily::Opinion => "opinion_changes",
+        RestoreFamily::Construction => "construction_ic",
+        RestoreFamily::LineOutput => "line_output",
+        RestoreFamily::CombatLogPrune => "combat_log_prune",
+        RestoreFamily::Advisor => "advisor_changes",
+        RestoreFamily::Relation => "relation_changes",
+        RestoreFamily::History => "history_changes",
+        RestoreFamily::Flags => "flag_changes",
+        RestoreFamily::Buildings => "building_changes",
+        RestoreFamily::AdvisorPools => "advisor_pool_changes",
+        RestoreFamily::PartyLeaders => "party_leader_changes",
+        RestoreFamily::Variables => "variable_changes",
+        RestoreFamily::Parties => "party_changes",
+        RestoreFamily::Wings => "wing_changes",
+        RestoreFamily::Roster => "roster_changes",
+        RestoreFamily::PoliticalStatus => "political_status_changes",
+        RestoreFamily::Missions => "mission_changes",
+        RestoreFamily::Rails => "rail_changes",
+        RestoreFamily::Territory => "territory_changes",
+        RestoreFamily::ArmyStats => "army_stat_changes",
+        RestoreFamily::CountryInputs => "country_input_changes",
+        RestoreFamily::Raid => "raid_changes",
+        RestoreFamily::NavalTrees => "naval_tree_changes",
+        RestoreFamily::UnitLeaders => "unit_leader_changes",
+        RestoreFamily::Census => "census_changes",
+        RestoreFamily::WorldInputs => "world_input_changes",
+        RestoreFamily::AirRecords => "air_record_changes",
+        RestoreFamily::LocalSubunits => "local_subunit_changes",
+        RestoreFamily::Templates => "template_changes",
+        RestoreFamily::ShipModels => "ship_model_changes",
+        RestoreFamily::ProvinceUnits => "province_unit_changes",
+        RestoreFamily::AirBaseCarry => "air_base_carry_changes",
+        RestoreFamily::Experience => "experience_gains",
+        RestoreFamily::Fuel => "fuel_awards",
+        RestoreFamily::OperationOutcomes => "operation_outcomes",
+        RestoreFamily::Politics => "politics_changes",
+        RestoreFamily::Logistics => "logistics_balance",
+        RestoreFamily::Peace => "peace_settlements",
+        RestoreFamily::NavalResultSources => "naval_result_sources",
+        RestoreFamily::AirLosses => "air_losses",
+        RestoreFamily::BuildingBombing => "building_bombing",
+        RestoreFamily::NuclearStrikes => "nuclear_strikes",
+        RestoreFamily::MapEvents => "map_events",
+        RestoreFamily::EventFeed => "event_feed_observer",
+        RestoreFamily::Propaganda => "propaganda_changes",
+        RestoreFamily::IntelSources => "intel_sources",
+        RestoreFamily::NetworkAuxiliary => "network_auxiliary",
+        RestoreFamily::NavalManagement => "naval_management_changes",
+        RestoreFamily::WarParticipation => "war_participation",
+        RestoreFamily::Designs => "design_changes",
+        RestoreFamily::FactionGoals => "faction_goals",
+        RestoreFamily::FactionCompanions => "faction_companions",
+        RestoreFamily::Market => "market_changes",
+        RestoreFamily::WorldLifetime => "world_lifetime",
+    })
 }
 
 type AttachFamily<'a> = (
@@ -2226,7 +2497,7 @@ type AttachFamily<'a> = (
 /// Collect one-publication families, then report their outcomes in the
 /// original chain order. A collect error ends the candidate prefix; report
 /// keeps each family's original refusal mapping and post-write bookkeeping.
-fn install_attach_batch(
+pub(crate) fn install_attach_batch(
     stage: &crate::progress::Stage<'_>,
     families: &mut [AttachFamily<'_>],
 ) -> Result<bool, &'static str> {
@@ -2237,6 +2508,10 @@ fn install_attach_batch(
             crate::hook::publication::select_family(Some(*name));
             let _ = crate::hook::shared::take_collect_allocation_failure();
             let outcome = install();
+            if let Some(error) = crate::hook_failures::fatal_installation_error() {
+                stage.set(name);
+                return Err(error);
+            }
             let allocation_failure = crate::hook::shared::take_collect_allocation_failure();
             if let Err(reason) = outcome {
                 collect_error = Some((index, reason, allocation_failure));
@@ -2244,6 +2519,20 @@ fn install_attach_batch(
             }
         }
         round.publish();
+        let mut rollback_error = None;
+        round.for_each_attach_rollback_failure(|family, failure| {
+            // Visit every group even after one error; ordered reporting must
+            // never discard a later family's first failed rollback.
+            if let Err(error) = crate::hook_failures::shared_rollback_failed(family, failure)
+                && rollback_error.is_none()
+            {
+                stage.set(family.unwrap_or("unregistered shared rollback"));
+                rollback_error = Some(error);
+            }
+        });
+        if let Some(error) = rollback_error {
+            return Err(error);
+        }
     }
     let report_count = collect_error.map_or(families.len(), |(index, _, _)| index);
     for (name, install) in families.iter_mut().take(report_count) {
@@ -2540,6 +2829,9 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "relation_changes": crate::relation_changes::status(),
         "history_changes": crate::history_changes::status(),
         "flag_changes": crate::flag_changes::status(),
+        "propaganda_changes": collector_intel::propaganda_changes::status(),
+        "intel_sources": collector_intel::source_changes::status(),
+        "network_auxiliary": collector_intel::network_auxiliary::status(),
         "building_changes": crate::building_changes::status(),
         "advisor_pool_changes": crate::advisor_pool_changes::status(),
         "party_leader_changes": crate::party_leader_changes::status(),
@@ -2549,6 +2841,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "roster_changes": crate::roster_changes::status(),
         "political_status_changes": crate::political_status_changes::status(),
         "war_changes": crate::war_changes::status(),
+        "war_participation": crate::war_participation::status(),
         "mission_changes": crate::mission_changes::status(),
         "navy_ledger_changes": crate::navy_ledger_changes::status(),
         "air_base_changes": crate::air_base_changes::status(),
@@ -2560,17 +2853,24 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "stability_batches": crate::extended::country_stability::status(),
         "raid_changes": crate::raid_changes::status(),
         "naval_tree_changes": crate::naval_tree_changes::status(),
+        "occupation_changes": collector_observers::occupation_changes::status(),
+        "naval_escort_sources": crate::extended::naval_escort_trees::status(),
         "raid_intel_changes": crate::extended::raid_intel_carry::status(),
         "unit_leader_changes": crate::unit_leader_changes::status(),
+        "naval_management_changes": collector_naval_management::changes::status(),
         "census_changes": crate::census_changes::status(),
         "unit_leader_trait_changes": crate::unit_leader_trait_changes::status(),
         "world_input_changes": crate::world_input_changes::status(),
         "retreat_ban_changes": crate::retreat_ban_changes::status(),
         "local_subunit_changes": crate::local_subunit_changes::status(),
         "province_unit_changes": crate::province_unit_changes::status(),
+        "variant_changes": crate::design_changes::status(),
         "template_changes": crate::template_changes::status(),
+        "faction_goals": crate::faction_goal_changes::status(),
+        "faction_companions":crate::faction_companion_changes::status(),
         "ship_model_changes": crate::ship_model_changes::status(),
         "air_base_carry_changes": crate::air_base_carry_changes::status(),
+        "state_air_base_fuel": crate::extended::air::state_fuel_capture_status(),
         "area_changes": crate::area_changes::status(),
         "province_changes": crate::province_changes::status(),
         "character_changes": crate::character_changes::status(),
@@ -2583,10 +2883,12 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "operation_outcomes": crate::operation_outcomes::status(),
         "operative_capture": crate::extended::intel::operative_capture_diagnostics(),
         "agency_upgrade_capture": crate::extended::intel::agency_upgrade_capture_diagnostics(),
+        "network_summary_capture": crate::extended::intel::network_summary_capture_diagnostics(),
         "country_scale_demand": crate::country_scale::demand_diagnostics(),
         "air_losses": crate::air_losses::status(),
         "building_bombing": crate::building_bombing::status(),
         "nuclear_strikes": crate::nuclear_strikes::status(),
+        "market_changes": crate::market_changes::status(),
         "map_events": crate::map_events::hooks::status(),
         "line_output": crate::line_output::status(),
         "fuel_awards": crate::fuel_awards::status(),
@@ -2635,7 +2937,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "by_reason": map(models.reasons.into_iter().filter(|(_, rows)| *rows != 0)),
                 "other_reasons": models.other,
                 "missed_hours": shared.template_models_missed.load(Ordering::Relaxed),
-                "scope": "cumulative DivisionTemplateIcons rows since attach whose 3D-model inputs could not be read: that row's model fields are empty and its counter fields stand; the viewer draws no model for its divisions. missed_hours counts hours not folded because this status write held the counters",
+                "scope": "cumulative template model, spatial, settings and country-context refusals since attach, by reason; independent counter and model fields remain available when extension acquisition fails. missed_hours counts hours not folded because this status write held the counters",
             },
             "background_priority": background_priority_status(),
             "collector_thread_cpu": crate::thread_cpu::status(
@@ -2965,6 +3267,7 @@ fn wait_quiet(
     crate::air_losses::mark_stranded();
     crate::building_bombing::mark_stranded();
     crate::nuclear_strikes::mark_stranded();
+    crate::market_changes::mark_stranded();
     loop {
         if let Some(reason) =
             observer_detach_refusal(started.elapsed(), |family| family.observer_state().0)
@@ -3113,8 +3416,17 @@ mod detach_tests {
         restored[RestoreFamily::WorldLifetime as usize] = false;
         assert!(!world_restore_ready(&restored, true));
         assert!(world_restore_ready(&restored, false));
-        restored[RestoreFamily::AirLosses as usize] = false;
-        assert!(!world_restore_ready(&restored, false));
+        for family in RestoreFamily::ALL {
+            if family == RestoreFamily::WorldLifetime {
+                continue;
+            }
+            restored[family as usize] = false;
+            assert!(
+                !world_restore_ready(&restored, false),
+                "{family:?} must restore before world lifetime"
+            );
+            restored[family as usize] = true;
+        }
     }
 
     #[test]
@@ -4000,20 +4312,19 @@ fn spool_loop(
                 shared
                     .pool_bytes
                     .fetch_sub(roster.allocated_bytes() as u64, Ordering::Relaxed);
-                // Verification errors are recorded as Unverified, allowing an honest capture.
-                roster
-                    .verify(
-                        &mut session.identity,
-                        &config.expected_mounts,
-                        &config.mod_descriptors,
-                        config.content_order_note.as_deref(),
-                    )
-                    .map_err(|e| error_reason(e, "content verification failed"))?;
+                // Preserve the local diagnostic even when verification refuses capture.
+                let verification = roster.verify(
+                    &mut session.identity,
+                    &config.expected_mounts,
+                    &config.mod_descriptors,
+                    config.content_order_note.as_deref(),
+                );
                 let diagnostic =
                     roster.diagnostics(&config.expected_mounts, &session.identity.verification);
                 writer
                     .publish(&config.output_dir.join("content.json"), diagnostic)
                     .map_err(|e| error_reason(e, "content status allocation failed"))?;
+                verification.map_err(|e| error_reason(e, "content verification failed"))?;
                 processor.set_verified_session(
                     session
                         .try_clone()
@@ -4085,6 +4396,7 @@ fn spool_loop(
                         crate::air_losses::lost_drain();
                         crate::building_bombing::lost_drain();
                         crate::nuclear_strikes::lost_drain();
+                        crate::market_changes::lost_drain();
                         crate::map_events::interval::lost_output();
                         last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     }
@@ -4104,6 +4416,7 @@ fn spool_loop(
                     crate::air_losses::lost_drain();
                     crate::building_bombing::lost_drain();
                     crate::nuclear_strikes::lost_drain();
+                    crate::market_changes::lost_drain();
                     crate::map_events::interval::lost_output();
                     last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     None
@@ -4147,6 +4460,7 @@ fn spool_loop(
                 crate::air_losses::lost_drain();
                 crate::building_bombing::lost_drain();
                 crate::nuclear_strikes::lost_drain();
+                crate::market_changes::lost_drain();
                 crate::map_events::interval::lost_output();
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
@@ -4173,6 +4487,7 @@ fn spool_loop(
             crate::air_losses::lost_drain();
             crate::building_bombing::lost_drain();
             crate::nuclear_strikes::lost_drain();
+            crate::market_changes::lost_drain();
             crate::map_events::interval::lost_output();
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
@@ -4722,6 +5037,7 @@ fn sizing_pass(
     crate::naval_tree_changes::collect();
     crate::unit_leader_changes::presize();
     crate::unit_leader_changes::collect();
+    collector_naval_management::changes::collect();
     crate::opinion_changes::collect();
     crate::retreat_ban_changes::presize();
     crate::retreat_ban_changes::collect();
@@ -4731,6 +5047,10 @@ fn sizing_pass(
     crate::local_subunit_changes::collect();
     crate::province_unit_changes::presize();
     crate::province_unit_changes::collect();
+    crate::faction_goal_changes::presize();
+    crate::faction_goal_changes::collect();
+    crate::faction_companion_changes::presize();
+    crate::faction_companion_changes::collect();
     crate::template_changes::presize();
     crate::template_changes::collect();
     crate::ship_model_changes::presize();
@@ -4743,6 +5063,7 @@ fn sizing_pass(
     crate::air_losses::presize(0);
     crate::building_bombing::presize(0);
     crate::nuclear_strikes::presize(0);
+    crate::market_changes::presize(0, collector_primitives::country_slots::census_rows(0));
     // Growth from refused demand and the live country population.
     if let Err(reason) =
         crate::map_events::presize(collector_primitives::country_slots::census_rows(0))
@@ -4884,12 +5205,15 @@ fn sizing_pass(
         let source = crate::country_scale::source_demand::Demand::observe(&live, base);
         let air_loss_capacity = crate::air_losses::capacity();
         let bombing_capacity = crate::building_bombing::capacity();
+        crate::market_changes::presize(0, registry.slots);
+        let market_capacity = crate::market_changes::capacity();
         let nuclear_capacity = crate::nuclear_strikes::capacity();
         sizing.raise(shared, |capacities| {
             let extended = &mut capacities.extended;
             extended.air_losses.events = extended.air_losses.events.max(air_loss_capacity);
             extended.building_bombing = extended.building_bombing.max(bombing_capacity);
             extended.nuclear_strikes = extended.nuclear_strikes.max(nuclear_capacity);
+            extended.market = extended.market.max(market_capacity);
             if let Ok(Some(demand)) = &source {
                 demand.apply_parts(&mut capacities.core, &mut capacities.extended);
             }
@@ -5225,6 +5549,14 @@ mod equipment_destruction_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn installation_deadline_names_only_the_busy_sites() {
+        let message =
+            super::installation_deadline_message("faction_goals", &["refresh_goal_progress"]);
+        assert!(message.contains("faction_goals/refresh_goal_progress"));
+        assert!(!message.contains("construct_goal_status"));
+        assert!(message.contains("15 s"));
+    }
     use super::*;
 
     static ATTACH_PREPARATIONS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
@@ -6291,6 +6623,8 @@ mod tests {
             .unwrap();
         assert_eq!(initial.rows, 66);
         memory.array(roster, 0x6000, 71);
+        // Pin an active throttle independently of observation/scheduling time.
+        watch.last_combat_hints = Some(Instant::now() + Duration::from_secs(3600));
         assert!(watch.poll_combat_hints(&memory, 0).is_none()); // throttled
         watch.last_combat_hints = None;
         assert_eq!(
@@ -6347,6 +6681,8 @@ mod tests {
         assert_eq!(initial.rows, 1);
         assert!(initial.ships > 0);
         memory.array(roster, 0x4000, 2);
+        // Pin an active throttle independently of observation/scheduling time.
+        watch.last_combat_hints = Some(Instant::now() + Duration::from_secs(3600));
         assert!(watch.poll_combat_hints(&memory, IMAGE).is_none());
         watch.last_combat_hints = None;
         let raised = watch

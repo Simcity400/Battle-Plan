@@ -980,9 +980,12 @@ fn sinking_and_loss_queries_answer_prefixes_before_the_branch_is_prepared() {
         let prefix = query(&source, "ships-sunk-manifest", manifest.clone()).unwrap();
         assert_eq!(prefix["coverage"]["lastHour"], BASE + 5);
         assert!(!prefix["pending"].as_array().unwrap().is_empty());
+        let approximate = serde_json::json!([{"firstHour": BASE, "lastHour": BASE + 5}]);
+        assert_eq!(prefix["approximate"], approximate);
         let window = serde_json::json!({"branchId":"1", "hour":BASE + 5});
         let page = query(&source, "ships-sunk", window.clone()).unwrap();
         assert_eq!(page["window"], 0);
+        assert_eq!(page["approximate"], approximate);
         let unreached = query(
             &source,
             "ships-sunk",
@@ -997,13 +1000,15 @@ fn sinking_and_loss_queries_answer_prefixes_before_the_branch_is_prepared() {
         let values = query(&source, "naval-losses", reached.clone()).unwrap();
         assert!(!values.is_null());
         assert_eq!(values["coverage"]["complete"], false);
+        assert_eq!(values["pending"], serde_json::json!([]));
+        assert_eq!(values["approximate"], approximate);
         // The prefix uses the same saved rows and numerical values as direct
         // reads, without waiting for the branch's full identity history.
         let (store, key) = super::super::super::files(&source, None).unwrap();
         let flag = AtomicBool::new(false);
         let context = crate::products::LoadContext { content: None };
         let mut bare = page;
-        for field in ["coverage", "pending"] {
+        for field in ["coverage", "pending", "approximate"] {
             bare.as_object_mut().unwrap().remove(field);
         }
         assert_eq!(
@@ -1019,7 +1024,7 @@ fn sinking_and_loss_queries_answer_prefixes_before_the_branch_is_prepared() {
             .unwrap()
         );
         let mut bare = values;
-        for field in ["coverage", "pending"] {
+        for field in ["coverage", "pending", "approximate"] {
             bare.as_object_mut().unwrap().remove(field);
         }
         assert_eq!(
@@ -1041,6 +1046,7 @@ fn sinking_and_loss_queries_answer_prefixes_before_the_branch_is_prepared() {
             let full = query(&source, product, params).unwrap();
             assert_eq!(full["coverage"]["complete"], true);
             assert_eq!(full["pending"], serde_json::json!([]));
+            assert_eq!(full["approximate"], serde_json::json!([]));
         }
         clear(source);
     });

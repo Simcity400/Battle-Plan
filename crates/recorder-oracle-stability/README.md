@@ -5,3 +5,5 @@ Country stability operand comparisons. Owns [stability.rs](src/stability.rs) and
 Table completeness, exact joins, differences and named limitations use [shared oracle support](../recorder-oracle-support/README.md). Content-dependent facts resolve through the recorded content stack. Synthetic fixtures are dev-only through the support crate's `test-support` feature.
 
 Shared rules live in [AGENTS.md](../../AGENTS.md); the [recorder guide](../recorder/README.md) defines fresh-save/load and matched-native-observation checks.
+
+At each country's supplying read hour, recruitment and exile comparisons check the saved ratio, host, legitimacy, recruited-leader count, exile manpower and cap. Non-exiles demand no exile-only resources; omission rules preserve the native signed-positive pool/cap predicate.

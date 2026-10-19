@@ -477,6 +477,7 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
             character_type: 73,
             character_id: u32::MAX,
             category: 2,
+            experience: -9_007_199_254_740_993,
             kind: 2,
             skill_status: 2,
             skill_valid: 1,
@@ -493,15 +494,17 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
             token: b"separate unsaved token bytes".to_vec(),
             ..Default::default()
         }]));
-    // A current recording refuses the retired table by name; the save still
-    // holds the leader's experience and trait experience, which no recorded
-    // value answers and no comparison reads.
-    *frame.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Unavailable {
-        reason: format!(
-            "UnitLeaderTraitExperience retired at format {0}; this recording is format {0}",
-            replay_data::FORMAT_VERSION
-        ),
-    };
+    *frame.tables[TableId::UnitLeaderTraitExperience.index()] =
+        TableView::Complete(TableRows::UnitLeaderTraitExperience(vec![
+            replay_data::rows::UnitLeaderTraitExperienceRow {
+                list: 0,
+                leader_reference: leader,
+                ordinal: 0,
+                token_id: 7,
+                definition_ordinal: 0,
+                experience: 1,
+            },
+        ]));
     let pack = saved::Pack {
         portraits: Default::default(),
         manager: Some(saved::Manager {
@@ -536,6 +539,7 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
                     experience: Decimal::parse(b"-90071992547.40993").unwrap(),
                     components: [i32::MIN, 3, 2, 1],
                     traits: vec![b"assigned".to_vec()],
+                    trait_factors: Vec::new(),
                     trait_experience: vec![saved::TraitExperience {
                         token: b"progress".to_vec(),
                         experience: Decimal::parse(b"0.00001").unwrap(),
@@ -711,6 +715,7 @@ fn role_traits_and_operative_references_compare_with_the_save() {
         traits: vec![b"captain".to_vec()],
     }];
     saved.scientist = Some(saved::Scientist {
+        injury_days: None,
         active: false,
         traits: Some(vec![b"inventor".to_vec()]),
         skills: Vec::new(),
@@ -1194,7 +1199,7 @@ fn nonempty_dictionary_checks_character_and_trait_spellings_and_preserves_missin
     );
     assert_eq!(
         report.limitations["trait lexer literal contains an interior NUL; the text stream's projection is unproved, so this token spelling is unverified"].len(),
-        1
+        2
     );
     let wrong = BTreeMap::from([
         (5, b"wrong character".as_slice()),
@@ -1203,7 +1208,7 @@ fn nonempty_dictionary_checks_character_and_trait_spellings_and_preserves_missin
     ]);
     let mut report = Report::default();
     compare(&frame, &pack, &links, &wrong, NO_TRAITS, &mut report).unwrap();
-    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
     let TableView::Complete(TableRows::Characters(rows)) =
         &mut *frame.tables[TableId::Characters.index()]
     else {
@@ -1288,8 +1293,8 @@ fn missing_dictionary_keeps_position_census_and_raw_value_comparisons() {
         .find(|(reason, _)| reason.contains("lexer literal is not recorded"))
         .unwrap()
         .1;
-    // Character token and template tag, and trait.
-    assert_eq!(missing_names.len(), 3);
+    // Character token and template tag, assigned trait and independent training.
+    assert_eq!(missing_names.len(), 4);
     let TableView::Complete(TableRows::UnitLeaders(rows)) =
         &mut *frame.tables[TableId::UnitLeaders.index()]
     else {
@@ -1405,4 +1410,47 @@ fn unavailable_leader_categories_do_not_invent_extra_trait_owners() {
             .keys()
             .any(|reason| reason.contains("native category cannot establish"))
     );
+}
+
+#[test]
+fn experience_factor_oracle_compares_repeated_override_positions_and_raw_values() {
+    let (mut frame, mut pack, _) = fixture();
+    let manager = pack.manager.as_mut().unwrap();
+    let (&id, leader) = manager.unit_leaders.iter_mut().next().unwrap();
+    leader.trait_factors = vec![
+        saved::TraitExperience {
+            token: b"progress".to_vec(),
+            experience: Decimal::parse(b"-0.25").unwrap()
+        };
+        2
+    ];
+    let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
+        &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
+    else {
+        panic!()
+    };
+    for ordinal in 0..2 {
+        rows.push(replay_data::rows::UnitLeaderTraitExperienceRow {
+            leader_reference: id,
+            list: 1,
+            ordinal,
+            token_id: 7,
+            definition_ordinal: 0,
+            experience: -25_000,
+        });
+    }
+    let tokens = BTreeMap::from([(7, b"progress".as_slice())]);
+    let mut report = Report::default();
+    compare_trait_progress(&frame, manager, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    let TableView::Complete(TableRows::UnitLeaderTraitExperience(rows)) =
+        &mut *frame.tables[TableId::UnitLeaderTraitExperience.index()]
+    else {
+        panic!()
+    };
+    rows.last_mut().unwrap().experience -= 1;
+    let mut report = Report::default();
+    compare_trait_progress(&frame, manager, &tokens, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("experience"));
 }

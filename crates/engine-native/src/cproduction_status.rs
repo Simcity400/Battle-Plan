@@ -19,6 +19,8 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
+pub mod design_templates;
+
 pub use cequipment_production_license::Row as LicenseRecordRow;
 
 pub use crate::cequipment_production_line::Row as LineRow;

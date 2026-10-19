@@ -72,9 +72,10 @@ pub struct IndustrialOrganisationHistoryRow {
     pub organisation: u64,
     pub variant: u64,
     pub units: i32,
+    pub design_hour: Option<i32>,
 }
 typed_codec!(IndustrialOrganisationHistoryRow, 128, |row| (row.organisation as u128) << 64 | row.variant as u128, |key| Self { organisation: (key >> 64) as u64, variant: key as u64, ..Default::default() },
- { 0 => (units): I32 }, |_row| Ok(()));
+ { 0 => (units): I32, 1 => (design_hour): OptionalI32 }, |_row| Ok(()));
 
 /// ProductionLineOutput: key line:ordinal (96 bits), 11 payload mask bits.
 ///
@@ -441,9 +442,11 @@ pub struct VariantDefinitionRow {
     /// Stored variant version byte. Older formats use NotRecorded; zero is
     /// a recorded version.
     pub version: Recorded<u8>,
+    /// Stored ancestry, attribution, role and bonus state.
+    pub design: Recorded<VariantDesignState>,
 }
 typed_codec!(VariantDefinitionRow, 64, |row| row.id as u128, |key| Self { id: key as u64, ..Default::default() },
- { 0 => (equipment_token): U32, 1 => (creator_link): U32, 2 => (origin_link): U32, 3 => (append_variant_name): U8, 4 => (obsolete): U8, 5 => (classifier_flags): U64, 6 => (mission_mask): U32, 7 => (display_name): Bytes, 8 => (variant_name): Bytes, 9 => (explicit_entity): Bytes, 10 => (archetype_token): U32, 11 => (icon_active): U8, 12 => (icon_kind): U32, 13 => (icon): Bytes, 14 => (version): U8 }, |_row| Ok(()));
+ { 0 => (equipment_token): U32, 1 => (creator_link): U32, 2 => (origin_link): U32, 3 => (append_variant_name): U8, 4 => (obsolete): U8, 5 => (classifier_flags): U64, 6 => (mission_mask): U32, 7 => (display_name): Bytes, 8 => (variant_name): Bytes, 9 => (explicit_entity): Bytes, 10 => (archetype_token): U32, 11 => (icon_active): U8, 12 => (icon_kind): U32, 13 => (icon): Bytes, 14 => (version): U8, 15 => (design): Opaque }, |row| check_design_state(&row.design));
 
 /// Daily: a country's local sub-unit clone whose ordered requirements differ
 /// from its global definition's. Every other clone is absent, so a complete
@@ -499,14 +502,17 @@ pub struct VariantModuleRow {
 typed_codec!(VariantModuleRow, 96, |row| (row.variant as u128) << 32 | row.source_ordinal as u128, |key| Self { variant: (key >> 32) as u64, source_ordinal: key as u32, slot: Default::default(), definition_token: Default::default(), definition_active: Default::default() },
  { 0 => (slot): U32, 1 => (definition_token): U32, 2 => (definition_active): U8 }, |_row| Ok(()));
 
-/// VariantStats: key variant (64 bits), 10 payload mask bits.
+/// VariantStats: key variant (64 bits), 13 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct VariantStatsRow {
     pub variant: u64,
     pub values: [i64; 10],
+    pub organisation: u64,
+    pub organisation_trait_count: i32,
+    pub organisation_bonuses: Vec<IndustrialOrganisationBonus>,
 }
-typed_codec!(VariantStatsRow, 64, |row| row.variant as u128, |key| Self { variant: key as u64, values: Default::default() },
- { 0 => (values[0]): I64, 1 => (values[1]): I64, 2 => (values[2]): I64, 3 => (values[3]): I64, 4 => (values[4]): I64, 5 => (values[5]): I64, 6 => (values[6]): I64, 7 => (values[7]): I64, 8 => (values[8]): I64, 9 => (values[9]): I64 }, |_row| Ok(()));
+typed_codec!(VariantStatsRow, 64, |row| row.variant as u128, |key| Self { variant: key as u64, ..Default::default() },
+ { 0 => (values[0]): I64, 1 => (values[1]): I64, 2 => (values[2]): I64, 3 => (values[3]): I64, 4 => (values[4]): I64, 5 => (values[5]): I64, 6 => (values[6]): I64, 7 => (values[7]): I64, 8 => (values[8]): I64, 9 => (values[9]): I64, 10 => (organisation): U64, 11 => (organisation_trait_count): I32, 12 => (organisation_bonuses): Opaque }, |_row| Ok(()));
 
 /// VariantUpgrades: key variant:source_ordinal (96 bits), 2 payload mask bits.
 /// The upgrade's name is content: `definition_token` spelled by `LexicalTokens`.
@@ -1028,6 +1034,10 @@ typed_codec!(RailwayConstructionRow, 64, |row| row.id as u128, |key| Self { id: 
 /// has no origin, so neither factor applies to it (`origin` is zero).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct StateResourceInputRow {
+    pub local_manpower: Recorded<Option<i64>>,
+    pub local_noncore_manpower: Recorded<Option<i64>>,
+    pub recruitment_add: Recorded<Option<i64>>,
+    pub recruitment_factor: Recorded<Option<i64>>,
     pub state: u32,
     /// The additive keys count only when this state gate is set.
     pub gate: u8,
@@ -1047,7 +1057,7 @@ pub struct StateResourceInputRow {
 }
 typed_codec!(StateResourceInputRow, 32, |row| row.state as u128,
  |key| Self { state: key as u32, ..Default::default() },
- { 0 => (gate): U8, 1 => (global_factor): I64, 2 => (origin): U8, 3 => (infrastructure_level): OptionalI32, 4 => (infrastructure_modifier): I64, 5 => (supply_route): U8 }, |_row| Ok(()));
+ { 0 => (gate): U8, 1 => (global_factor): I64, 2 => (origin): U8, 3 => (infrastructure_level): OptionalI32, 4 => (infrastructure_modifier): I64, 5 => (supply_route): U8, 6 => (local_manpower): OptionalI64, 7 => (local_noncore_manpower): OptionalI64, 8 => (recruitment_add): OptionalI64, 9 => (recruitment_factor): OptionalI64 }, |_row| Ok(()));
 
 /// StateResources: key state:resource lexer token (64 bits).
 ///
@@ -1424,3 +1434,679 @@ typed_codec!(LogisticsEquipmentRow, 64, |row| (row.country as u128) << 32 | row.
     if matches!(row.available_raw, Recorded::Value(Some(value)) if value < 0) { return Err(invalid("logistics available operand is negative")) }
     Ok(())
 });
+
+pub use engine_native::cequipment_variant::{
+    VariantBonusSource, VariantMissionStats, VariantModuleMissionExclusion, VariantNamedBonus,
+    VariantStatEntry,
+};
+pub type VariantDesignState = engine_native::cequipment_variant::VariantDesignState<u64>;
+type NativeVariantDesignState = engine_native::cequipment_variant::VariantDesignState;
+value_struct!(VariantStatEntry {
+    index: u32,
+    value: i64
+});
+value_struct!(VariantModuleMissionExclusion {
+    module_token: u32,
+    mask: u32
+});
+value_struct!(VariantMissionStats { mask: u32, stats: Vec<VariantStatEntry> });
+value_struct!(VariantNamedBonus { owner: u32, handle: u32, name: Vec<u8>, description: Vec<u8> });
+value_struct!(VariantBonusSource { named: Option<VariantNamedBonus>, idea: Option<Vec<u8>>, idea_token: Option<u32>, stats: Vec<VariantStatEntry>, terrain_attrition: Vec<i64> });
+macro_rules! design_value {
+    ($state:ty, $sources:ty) => { value_struct!($state {
+    parent: Option<u64>, max_version: u8, is_frame: u8, manpower: i32,
+    auto_upgraded: u8, highlight: u8, can_upgrade_type: u8,
+    can_upgrade_variant: u8, can_upgrade_modules: u8, role_icon_index: i32,
+    division_names_group: Option<Vec<u8>>, pending_parent_version: i16,
+    module_priority_sum: i32, module_mission_exclusions: Vec<VariantModuleMissionExclusion>,
+    terrain_attrition: Vec<i64>, niches: Vec<u32>, build_cost: i64,
+    build_resources: Vec<VariantStatEntry>, design_team: u64, design_team_serialized: bool, design_team_traits: i32,
+    design_team_bonus: Vec<VariantStatEntry>, named_bonuses: Vec<u32>,
+    bonus_sources: $sources, named_sources: $sources, mission_stats: Vec<VariantMissionStats>, unresolved_stats: Vec<VariantStatEntry>
+    }); };
+}
+design_value!(VariantDesignState, Vec<u64>);
+design_value!(NativeVariantDesignState, Vec<VariantBonusSource>);
+opaque_value!(VariantDesignState);
+
+fn check_design_state(value: &Recorded<VariantDesignState>) -> io::Result<()> {
+    let Recorded::Value(state) = value else {
+        return Ok(());
+    };
+    if state.design_team_serialized && state.design_team == 0 {
+        return Err(invalid("resolved design team has a null reference"));
+    }
+    if state.bonus_sources.contains(&0) || state.named_sources.contains(&0) {
+        return Err(invalid("design has a null bonus snapshot reference"));
+    }
+    for entry in state.mission_stats.iter().flat_map(|source| &source.stats) {
+        if entry.index >= engine_native::cequipment_variant::STAT_COUNT as u32 {
+            return Err(invalid("design stat index outside native metadata"));
+        }
+    }
+    let expected = (0..engine_native::cequipment_variant::STAT_COUNT as u32).filter(|index| {
+        ![0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d].contains(index)
+    });
+    if (state.named_bonuses.is_empty() && !state.unresolved_stats.is_empty())
+        || (!state.named_bonuses.is_empty()
+            && !state
+                .unresolved_stats
+                .iter()
+                .map(|entry| entry.index)
+                .eq(expected))
+    {
+        return Err(invalid(
+            "named bonus stat residuals are incomplete or unordered",
+        ));
+    }
+    Ok(())
+}
+
+/// Immutable applied-source snapshots shared by every design that holds them.
+/// Keys describe exact values and attribution; native pointers are not identities.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantBonusSnapshotRow {
+    pub id: u64,
+    pub source: VariantBonusSource,
+}
+typed_codec!(VariantBonusSnapshotRow, 64, |row| row.id as u128,
+|key| Self { id: key as u64, ..Default::default() }, { 0 => (source): Opaque }, |row| {
+    if row.id == 0
+        || row.source.stats.iter().any(|entry| entry.index >= engine_native::cequipment_variant::STAT_COUNT as u32) {
+        return Err(invalid("invalid applied equipment bonus snapshot"));
+    }
+    Ok(())
+});
+opaque_value!(VariantBonusSource);
+
+/// Effective country operands requested by published equipment designs.
+/// The key joins ModifierDefinitions; an absent native accumulator key is a
+/// known zero. Failed owner/key reads retain a named scope and no value.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DesignCountryModifierRow {
+    /// Raw creator-country reference, matching VariantDefinitions.creator_link.
+    /// Several raw scopes may resolve to one native notification owner.
+    pub country: u32,
+    pub modifier: u32,
+    pub value: Option<i64>,
+    /// Zero: complete; one: country unavailable; two: modifier unavailable.
+    pub failure: u8,
+}
+typed_codec!(DesignCountryModifierRow, 64,
+|row| (row.country as u128) << 32 | row.modifier as u128,
+|key| Self { country: (key >> 32) as u32, modifier: key as u32, ..Default::default() },
+{ 0 => (value): OptionalI64, 1 => (failure): U8 }, |row| {
+    if row.failure > 2 || (row.failure == 0) != row.value.is_some() {
+        return Err(invalid("design country modifier availability inconsistent"));
+    }
+    Ok(())
+});
+
+opaque_value!(Vec<Vec<u32>>);
+/// One demanded raw country scope. Independent columns keep consumption of a
+/// use from rewriting unchanged factors and equipment rosters.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DesignCountryTemplatesRow {
+    pub country: u32,
+    pub uses: Vec<i32>,
+    pub factors: Vec<i64>,
+    pub equipment: Vec<Vec<u32>>,
+    /// Zero: complete, including empty; one: owner unavailable; two: roster unreadable.
+    pub failure: u8,
+}
+impl DesignCountryTemplatesRow {
+    pub fn entries(&self) -> impl Iterator<Item = (i32, i64, &[u32])> {
+        self.uses
+            .iter()
+            .copied()
+            .zip(self.factors.iter().copied())
+            .zip(&self.equipment)
+            .map(|((uses, factor), equipment)| (uses, factor, equipment.as_slice()))
+    }
+}
+typed_codec!(DesignCountryTemplatesRow, 32, |row| row.country as u128,
+|key| Self { country: key as u32, ..Default::default() },
+{ 0 => (uses): Opaque, 1 => (factors): Opaque, 2 => (equipment): Opaque, 3 => (failure): U8 }, |row| {
+    if row.failure > 2 || row.uses.len() != row.factors.len()
+        || row.uses.len() != row.equipment.len() || (row.failure != 0 && !row.uses.is_empty()) {
+        return Err(invalid("design country template availability inconsistent"));
+    }
+    Ok(())
+});
+
+/// Process-wide observation used by selected-observer design reveal queries.
+/// Unavailable capture is a table refusal, never an assumed enabled switch.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DesignObserverContextRow {
+    pub fog: u8,
+}
+typed_codec!(DesignObserverContextRow, 0, |_row| 0, |_key| Self::default(),
+ { 0 => (fog): U8 }, |_row| Ok(()));
+
+/// Stable value identity. A capture refuses a collision after comparing the
+/// complete payload, so equal keys never stand in for unequal source values.
+pub fn variant_bonus_snapshot_id(source: &VariantBonusSource) -> u64 {
+    struct Digest(u64);
+    impl Digest {
+        fn bytes(&mut self, bytes: &[u8]) {
+            for byte in bytes {
+                self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        fn word(&mut self, word: u64) {
+            self.bytes(&word.to_le_bytes());
+        }
+    }
+    let mut digest = Digest(0xcbf2_9ce4_8422_2325);
+    match &source.named {
+        None => digest.word(0),
+        Some(named) => {
+            digest.word(1);
+            digest.word(u64::from(named.owner));
+            digest.word(u64::from(named.handle));
+            digest.word(named.name.len() as u64);
+            digest.bytes(&named.name);
+            digest.word(named.description.len() as u64);
+            digest.bytes(&named.description);
+        }
+    }
+    match &source.idea {
+        None => digest.word(0),
+        Some(text) => {
+            digest.word(1);
+            digest.word(text.len() as u64);
+            digest.bytes(text);
+        }
+    }
+    match source.idea_token {
+        None => digest.word(0),
+        Some(token) => {
+            digest.word(1);
+            digest.word(u64::from(token));
+        }
+    }
+    digest.word(source.stats.len() as u64);
+    for entry in &source.stats {
+        digest.word(u64::from(entry.index));
+        digest.word(entry.value as u64);
+    }
+    digest.word(source.terrain_attrition.len() as u64);
+    for value in &source.terrain_attrition {
+        digest.word(*value as u64);
+    }
+    digest.0.max(1)
+}
+
+/// A design state at a native mutation boundary. The copied definition is a
+/// typed nested value so history survives deletion and repeated edits in an hour.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantSnapshotDefinition {
+    pub id: u64,
+    pub equipment_token: u32,
+    pub creator_link: u32,
+    pub origin_link: u32,
+    pub append_variant_name: u8,
+    pub obsolete: u8,
+    pub classifier_flags: u64,
+    pub mission_mask: u32,
+    pub display_name: Vec<u8>,
+    pub variant_name: Vec<u8>,
+    pub explicit_entity: Vec<u8>,
+    pub archetype_token: u32,
+    pub icon_active: u8,
+    pub icon_kind: u32,
+    pub icon: Vec<u8>,
+    pub version: Recorded<u8>,
+    pub design: Recorded<VariantDesignState>,
+}
+value_struct!(VariantSnapshotDefinition { id: u64, equipment_token: u32, creator_link: u32, origin_link: u32, append_variant_name: u8, obsolete: u8, classifier_flags: u64, mission_mask: u32, display_name: Vec<u8>, variant_name: Vec<u8>, explicit_entity: Vec<u8>, archetype_token: u32, icon_active: u8, icon_kind: u32, icon: Vec<u8>, version: Recorded<u8>, design: Recorded<VariantDesignState> });
+impl From<VariantDefinitionRow> for VariantSnapshotDefinition {
+    fn from(value: VariantDefinitionRow) -> Self {
+        Self {
+            id: value.id,
+            equipment_token: value.equipment_token,
+            creator_link: value.creator_link,
+            origin_link: value.origin_link,
+            append_variant_name: value.append_variant_name,
+            obsolete: value.obsolete,
+            classifier_flags: value.classifier_flags,
+            mission_mask: value.mission_mask,
+            display_name: value.display_name,
+            variant_name: value.variant_name,
+            explicit_entity: value.explicit_entity,
+            archetype_token: value.archetype_token,
+            icon_active: value.icon_active,
+            icon_kind: value.icon_kind,
+            icon: value.icon,
+            version: value.version,
+            design: value.design,
+        }
+    }
+}
+impl From<VariantSnapshotDefinition> for VariantDefinitionRow {
+    fn from(value: VariantSnapshotDefinition) -> Self {
+        Self {
+            id: value.id,
+            equipment_token: value.equipment_token,
+            creator_link: value.creator_link,
+            origin_link: value.origin_link,
+            append_variant_name: value.append_variant_name,
+            obsolete: value.obsolete,
+            classifier_flags: value.classifier_flags,
+            mission_mask: value.mission_mask,
+            display_name: value.display_name,
+            variant_name: value.variant_name,
+            explicit_entity: value.explicit_entity,
+            archetype_token: value.archetype_token,
+            icon_active: value.icon_active,
+            icon_kind: value.icon_kind,
+            icon: value.icon,
+            version: value.version,
+            design: value.design,
+        }
+    }
+}
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantSnapshotModule {
+    pub ordinal: u32,
+    pub slot: u32,
+    pub definition_token: u32,
+    pub active: u8,
+}
+value_struct!(VariantSnapshotModule {
+    ordinal: u32,
+    slot: u32,
+    definition_token: u32,
+    active: u8
+});
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantSnapshotUpgrade {
+    pub ordinal: u32,
+    pub definition_token: i32,
+    pub level: u8,
+}
+value_struct!(VariantSnapshotUpgrade {
+    ordinal: u32,
+    definition_token: i32,
+    level: u8
+});
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantSnapshot {
+    pub definition: VariantSnapshotDefinition,
+    pub modules: Vec<VariantSnapshotModule>,
+    pub stats: Vec<i64>,
+    pub upgrades: Vec<VariantSnapshotUpgrade>,
+}
+value_struct!(VariantSnapshot { definition: VariantSnapshotDefinition, modules: Vec<VariantSnapshotModule>, stats: Vec<i64>, upgrades: Vec<VariantSnapshotUpgrade> });
+opaque_value!(Option<VariantSnapshot>);
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantSourceReferences {
+    pub direct: Vec<u64>,
+    pub named: Vec<u64>,
+}
+value_struct!(VariantSourceReferences { direct: Vec<u64>, named: Vec<u64> });
+opaque_value!(Option<VariantSourceReferences>);
+
+/// Independently current registry liveness for demanded raw design authors.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DesignOrganisationLivenessRow {
+    pub organisation: u64,
+    pub live: bool,
+}
+typed_codec!(DesignOrganisationLivenessRow, 64, |row| row.organisation as u128, |key| Self { organisation: key as u64, ..Default::default() },
+    { 0 => (live): Bool }, |row| if row.organisation == 0 { Err(invalid("null design organisation liveness")) } else { Ok(()) });
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantOrganisationChange {
+    pub organisation: u64,
+    pub live: bool,
+}
+value_struct!(VariantOrganisationChange {
+    organisation: u64,
+    live: bool
+});
+opaque_value!(Option<VariantOrganisationChange>);
+
+/// A saved design edit that leaves its dependency population unchanged.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantIconChange {
+    pub active: u8,
+    pub kind: u32,
+    pub text: Vec<u8>,
+}
+value_struct!(VariantIconChange { active: u8, kind: u32, text: Vec<u8> });
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantScalarChange {
+    pub obsolete: Option<u8>,
+    pub auto_upgraded: Option<u8>,
+    pub highlight: Option<u8>,
+    pub max_version: Option<u8>,
+    pub role_icon_index: Option<i32>,
+    pub display_name: Option<Vec<u8>>,
+    pub model: Option<Vec<u8>>,
+    pub icon: Option<VariantIconChange>,
+    pub names_group: Option<Option<Vec<u8>>>,
+    pub niches: Option<Vec<u32>>,
+}
+value_struct!(VariantScalarChange {
+    obsolete: Option<u8>, auto_upgraded: Option<u8>, highlight: Option<u8>,
+    max_version: Option<u8>, role_icon_index: Option<i32>, display_name: Option<Vec<u8>>,
+    model: Option<Vec<u8>>, icon: Option<VariantIconChange>,
+    names_group: Option<Option<Vec<u8>>>, niches: Option<Vec<u32>>
+});
+opaque_value!(Option<VariantScalarChange>);
+impl VariantScalarChange {
+    pub fn changes_design(&self) -> bool {
+        self.auto_upgraded.is_some()
+            || self.highlight.is_some()
+            || self.max_version.is_some()
+            || self.role_icon_index.is_some()
+            || self.names_group.is_some()
+            || self.niches.is_some()
+    }
+    pub fn apply_design(&self, state: &mut VariantDesignState) -> std::io::Result<()> {
+        if let Some(value) = self.auto_upgraded {
+            state.auto_upgraded = value;
+        }
+        if let Some(value) = self.highlight {
+            state.highlight = value;
+        }
+        if let Some(value) = self.max_version {
+            state.max_version = value;
+        }
+        if let Some(value) = self.role_icon_index {
+            state.role_icon_index = value;
+        }
+        if let Some(value) = &self.names_group {
+            state.division_names_group = crate::value::Value::try_clone(value)?;
+        }
+        if let Some(value) = &self.niches {
+            state.niches = crate::value::Value::try_clone(value)?;
+        }
+        Ok(())
+    }
+    pub fn apply_definition(&self, row: &mut VariantDefinitionRow) -> std::io::Result<()> {
+        if let Some(value) = self.obsolete {
+            row.obsolete = value;
+        }
+        if let Some(value) = &self.display_name {
+            row.display_name = crate::value::Value::try_clone(value)?;
+        }
+        if let Some(value) = &self.model {
+            row.explicit_entity = crate::value::Value::try_clone(value)?;
+        }
+        if let Some(value) = &self.icon {
+            row.icon_active = value.active;
+            row.icon_kind = value.kind;
+            row.icon = crate::value::Value::try_clone(&value.text)?;
+        }
+        if self.changes_design() {
+            self.apply_design(
+                row.design
+                    .require_mut("VariantDefinitions.design")
+                    .map_err(std::io::Error::other)?,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Ordered native changes since the preceding hourly boundary. Sequence zero
+/// is reserved for a named observation failure; no missing interval proves that
+/// a design stayed unchanged. Removal is an identity tombstone; preceding rows
+/// retain the last readable design state.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VariantChangeRow {
+    pub sequence: u64,
+    pub hour: i32,
+    pub variant: u64,
+    pub flags: Option<[u8; 3]>,
+    pub scalar: Option<VariantScalarChange>,
+    pub sources: Option<VariantSourceReferences>,
+    pub organisation: Option<VariantOrganisationChange>,
+    pub removed: bool,
+    pub snapshot: Option<VariantSnapshot>,
+    pub failure: Vec<u8>,
+}
+typed_codec!(VariantChangeRow, 64, |row| row.sequence as u128,
+|key| Self { sequence: key as u64, ..Default::default() },
+{ 0 => (hour): I32, 1 => (removed): Bool, 2 => (snapshot): Opaque, 3 => (failure): Bytes, 4 => (variant): U64, 5 => (flags): Opaque, 6 => (sources): Opaque, 7 => (organisation): Opaque, 8 => (scalar): Opaque }, |row| {
+   if let Some(change) = &row.scalar {
+       if row.sequence == 0 || row.variant == 0 || row.organisation.is_some() || row.snapshot.is_some() || row.flags.is_some() || row.sources.is_some() || row.removed || !row.failure.is_empty() || change == &VariantScalarChange::default() {
+           return Err(invalid("invalid variant scalar change"));
+       }
+   } else if let Some(change) = &row.organisation {
+       if row.sequence == 0 || row.variant != 0 || change.organisation == 0 || row.snapshot.is_some() || row.flags.is_some() || row.sources.is_some() || row.removed || !row.failure.is_empty() { return Err(invalid("invalid design organisation liveness change")); }
+   } else if let Some(snapshot) = &row.snapshot {
+       if row.sequence == 0 || row.variant != snapshot.definition.id || (row.flags.is_some() || row.sources.is_some()) || snapshot.stats.len() != 10 || !row.failure.is_empty() {
+           return Err(invalid("invalid variant change snapshot"));
+       }
+       check_design_state(&snapshot.definition.design)?;
+       if snapshot.modules.iter().enumerate().any(|(index, row)| row.ordinal as usize != index)
+           || snapshot.upgrades.iter().enumerate().any(|(index, row)| row.ordinal as usize != index) {
+           return Err(invalid("variant snapshot child ordinals are not contiguous"));
+       }
+   } else if row.sources.is_some() {
+       if row.sequence == 0 || row.variant == 0 || row.flags.is_some() || row.removed || !row.failure.is_empty() { return Err(invalid("invalid variant source change")); }
+   } else if row.flags.is_some() {
+       if row.sequence == 0 || row.variant == 0 || row.removed || !row.failure.is_empty() { return Err(invalid("invalid variant flag change")); }
+   } else if row.removed {
+       if row.sequence == 0 || row.variant == 0 || !row.failure.is_empty() { return Err(invalid("invalid variant removal")); }
+   } else if row.sequence != 0 || row.failure.is_empty() {
+       return Err(invalid("variant change lacks its snapshot or observation failure"));
+   }
+   Ok(())
+});
+
+impl VariantSnapshot {
+    pub fn try_definition(&self) -> std::io::Result<VariantDefinitionRow> {
+        crate::value::Value::try_clone(&self.definition).map(Into::into)
+    }
+}
+
+opaque_value!(Option<[u8; 3]>);
+
+impl VariantSnapshotDefinition {
+    pub fn matches(&self, row: &VariantDefinitionRow) -> bool {
+        self.id == row.id
+            && self.equipment_token == row.equipment_token
+            && self.creator_link == row.creator_link
+            && self.origin_link == row.origin_link
+            && self.append_variant_name == row.append_variant_name
+            && self.obsolete == row.obsolete
+            && self.classifier_flags == row.classifier_flags
+            && self.mission_mask == row.mission_mask
+            && self.display_name == row.display_name
+            && self.variant_name == row.variant_name
+            && self.explicit_entity == row.explicit_entity
+            && self.archetype_token == row.archetype_token
+            && self.icon_active == row.icon_active
+            && self.icon_kind == row.icon_kind
+            && self.icon == row.icon
+            && self.version == row.version
+            && self.design == row.design
+    }
+}
+
+#[cfg(test)]
+mod design_contract_tests {
+    use super::*;
+
+    #[test]
+    fn scalar_edits_round_trip_and_preserve_unwritten_fields() {
+        let mut row = VariantChangeRow {
+            sequence: 1,
+            variant: 70,
+            scalar: Some(VariantScalarChange {
+                auto_upgraded: Some(1),
+                names_group: Some(None),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        row.check_key_fields().unwrap();
+        let delta = row.delta(None).unwrap().unwrap();
+        assert_eq!(VariantChangeRow::apply_delta(&delta, None).unwrap(), row);
+        let mut definition = VariantDefinitionRow {
+            design: Recorded::Value(VariantDesignState {
+                manpower: 99,
+                division_names_group: Some(b"old".to_vec()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        row.scalar
+            .as_ref()
+            .unwrap()
+            .apply_definition(&mut definition)
+            .unwrap();
+        let state = definition.design.require("design").unwrap();
+        assert_eq!(state.auto_upgraded, 1);
+        assert_eq!(state.manpower, 99);
+        assert_eq!(state.division_names_group, None);
+        row.flags = Some([0; 3]);
+        assert!(row.check_key_fields().is_err());
+        row.flags = None;
+        row.scalar = Some(Default::default());
+        assert!(row.check_key_fields().is_err());
+    }
+    #[test]
+    fn compact_sources_and_shared_liveness_have_separate_valid_row_contracts() {
+        let mut source = VariantChangeRow {
+            sequence: 1,
+            variant: 7,
+            sources: Some(VariantSourceReferences {
+                direct: vec![8, 8],
+                named: vec![9],
+            }),
+            ..Default::default()
+        };
+        source.check_key_fields().unwrap();
+        let delta = source.delta(None).unwrap().unwrap();
+        assert_eq!(VariantChangeRow::apply_delta(&delta, None).unwrap(), source);
+        source.organisation = Some(VariantOrganisationChange {
+            organisation: 99,
+            live: false,
+        });
+        assert!(source.check_key_fields().is_err());
+        let life = VariantChangeRow {
+            sequence: 2,
+            organisation: Some(VariantOrganisationChange {
+                organisation: 99,
+                live: false,
+            }),
+            ..Default::default()
+        };
+        life.check_key_fields().unwrap();
+        let delta = life.delta(None).unwrap().unwrap();
+        assert_eq!(VariantChangeRow::apply_delta(&delta, None).unwrap(), life);
+        let row = DesignOrganisationLivenessRow {
+            organisation: 99,
+            live: false,
+        };
+        row.check_key_fields().unwrap();
+    }
+
+    #[test]
+    fn variant_removal_is_an_identity_tombstone_without_a_snapshot() {
+        let mut row = VariantChangeRow {
+            sequence: 1,
+            hour: 7,
+            variant: u64::MAX,
+            removed: true,
+            ..Default::default()
+        };
+        row.check_key_fields().unwrap();
+        let delta = row.delta(None).unwrap().unwrap();
+        assert_eq!(VariantChangeRow::apply_delta(&delta, None).unwrap(), row);
+        row.variant = 0;
+        assert!(row.check_key_fields().is_err());
+        row.variant = u64::MAX;
+        row.removed = false;
+        assert!(row.check_key_fields().is_err());
+    }
+
+    #[test]
+    fn variant_country_modifier_availability_never_confuses_a_failure_with_zero() {
+        let mut row = DesignCountryModifierRow {
+            country: 5_000,
+            modifier: u32::MAX,
+            value: Some(0),
+            failure: 0,
+        };
+        row.check_key_fields().unwrap();
+        assert_eq!(row.key(), (5_000_u128 << 32) | u128::from(u32::MAX));
+        row.value = None;
+        assert!(row.check_key_fields().is_err());
+        for failure in [1, 2] {
+            row.failure = failure;
+            row.check_key_fields().unwrap();
+            row.value = Some(0);
+            assert!(row.check_key_fields().is_err());
+            row.value = None;
+        }
+        row.failure = 3;
+        assert!(row.check_key_fields().is_err());
+    }
+
+    #[test]
+    fn design_template_consumption_changes_only_uses_and_checks_parallel_rosters() {
+        let previous = DesignCountryTemplatesRow {
+            country: 5_000,
+            uses: vec![2, -1],
+            factors: vec![123_457, -1],
+            equipment: vec![vec![8, 8], vec![]],
+            failure: 0,
+        };
+        previous.check_key_fields().unwrap();
+        let mut next = previous.clone();
+        next.uses[0] -= 1;
+        let delta = next.delta(Some(&previous)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1);
+        assert_eq!(
+            DesignCountryTemplatesRow::apply_delta(&delta, Some(previous)).unwrap(),
+            next
+        );
+        next.factors.pop();
+        assert!(next.check_key_fields().is_err());
+        let mut empty = DesignCountryTemplatesRow::default();
+        empty.check_key_fields().unwrap();
+        empty.failure = 2;
+        empty.check_key_fields().unwrap();
+        empty.uses.push(0);
+        assert!(empty.check_key_fields().is_err());
+    }
+
+    #[test]
+    fn variant_design_contract_refuses_bad_stat_residuals_and_null_live_team() {
+        let mut row = VariantDefinitionRow {
+            id: 70,
+            design: Recorded::Value(VariantDesignState::default()),
+            ..Default::default()
+        };
+        row.check_key_fields().unwrap();
+        row.design
+            .require_mut("design")
+            .unwrap()
+            .design_team_serialized = true;
+        assert!(row.check_key_fields().is_err());
+        let state = row.design.require_mut("design").unwrap();
+        state.design_team_serialized = false;
+        state.design_team = u64::MAX; // An unresolved raw reference is retained.
+        state.named_bonuses.push(9);
+        assert!(row.check_key_fields().is_err());
+        let state = row.design.require_mut("design").unwrap();
+        state.unresolved_stats = (0..engine_native::cequipment_variant::STAT_COUNT as u32)
+            .filter(|index| {
+                ![0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d].contains(index)
+            })
+            .map(|index| VariantStatEntry {
+                index,
+                value: i64::MIN,
+            })
+            .collect();
+        row.check_key_fields().unwrap();
+        row.design.require_mut("design").unwrap().unresolved_stats[0].index = 1;
+        assert!(row.check_key_fields().is_err());
+    }
+}

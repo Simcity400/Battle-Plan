@@ -1,4 +1,19 @@
 #[test]
+fn experience_pending_conversion_reads_full_template_handle_and_null_absence() {
+    use super::*;
+    let mut bytes = fixture();
+    let run =
+        |bytes: &[u8]| pending_template(&crate::memory::SliceMemory { base: 0, bytes }, 0, A1);
+    p64(&mut bytes, A1 + PREVIOUS_TEMPLATE, 0);
+    assert_eq!(run(&bytes), Ok(0));
+    p64(&mut bytes, A1 + PREVIOUS_TEMPLATE, T1 as u64);
+    p64(&mut bytes, T1 + 8, handle(u32::MAX, u32::MAX));
+    assert_eq!(run(&bytes), Ok(u64::MAX));
+    p64(&mut bytes, T1, 0);
+    assert_eq!(run(&bytes), Err("division template vtable mismatch"));
+}
+
+#[test]
 fn icon_inputs_keep_raw_byte_and_full_alternate_template_handle() {
     use super::*;
     let mut bytes = fixture();
@@ -1684,6 +1699,7 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry(
             [
                 (pointer + crate::cunit::WITHDRAWAL, 1),
                 (pointer + crate::cunit::MOVEMENT_PRIORITY, 4),
+                (pointer + carmy::FUEL_CANDIDATE, 8),
             ]
         })
         .collect::<Vec<_>>();
@@ -3090,6 +3106,15 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
     let base_flags =
         super::StatusRow::MOVE_EXILED | super::StatusRow::MOVE_CAN_EXFILTRATE_FROM_COAST;
     assert_eq!(run(&memory), (rows, base_flags));
+    // Only a positive air-supply word selects the air noncore-supply define.
+    p64(&mut memory.bytes, A1 + carmy::AIR_SUPPLY, (-1_i64) as u64);
+    assert_eq!(run(&memory), (rows, base_flags));
+    p64(&mut memory.bytes, A1 + carmy::AIR_SUPPLY, 1);
+    assert_eq!(
+        run(&memory),
+        (rows, base_flags | super::StatusRow::MOVE_NONCORE_AIR)
+    );
+    p64(&mut memory.bytes, A1 + carmy::AIR_SUPPLY, 0);
     // No commander bans nothing: no row.
     assert_eq!(bans(&memory, &|_| Ok(Some(3))).0, Outcome::Rows { len: 0 });
     // The group's commander bans retreat while defending in both blocks; its
@@ -3103,7 +3128,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         (
             carmy_leader::MOVEMENT_MODIFIER,
             0x21000,
-            (crate::modifier_keys::ARMY_SPEED_FACTOR, -10_000),
+            (crate::modifier_keys::ARMY_SPEED_FACTOR, -10_000_i64),
         ),
         (
             carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER,
@@ -3157,15 +3182,15 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
     let division = seeds[0].division;
     assert_eq!(
         packet.commander_movement(division, super::COMMANDER_BLOCK_ORDINARY),
-        Some([Some(-10_000), None, None, None, None])
+        Some([Some(-10_000), None, None, None, None, None])
     );
     assert_eq!(
         packet.commander_movement(division, super::COMMANDER_BLOCK_SEPARATE_HQ),
-        Some([None, None, None, Some(5_000), None])
+        Some([None, None, None, None, Some(5_000), None])
     );
     assert_eq!(
         packet.commander_movement(division, super::COMMANDER_BLOCK_NONE),
-        Some([None; 5])
+        Some([None; 6])
     );
     assert_eq!(
         packet.commander_movement(division + 1, super::COMMANDER_BLOCK_ORDINARY),
@@ -3221,7 +3246,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
                 leader,
                 ordinary: carmy_leader::RETREAT_BANNED_ATTACKING,
                 alternate: carmy_leader::RETREAT_BANNED_ATTACKING,
-                movement: [[None; 5]; 2],
+                movement: [[None; 6]; 2],
             })
         },
     );
@@ -3942,7 +3967,7 @@ fn movement_rejects_a_null_next_province() {
 #[test]
 fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace() {
     use super::*;
-    assert_eq!(DIVISION_SEED_STRIDE, 363);
+    assert_eq!(DIVISION_SEED_STRIDE, 371);
     assert_eq!(
         DIVISION_SEED_FIELDS.map(|field| (
             field.source_offset,
@@ -3993,19 +4018,22 @@ fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace
             (NONCORE_SUPPLY_BYPASS, 350, 1),
             (OUT_OF_SUPPLY_DAYS, 351, 4),
             (FUEL_CANDIDATE, 355, 8),
+            (AIR_SUPPLY, 363, 8),
         ]
     );
 }
 
 /// The census gathers the supply and fuel operands of the movement speed and
-/// attrition with the seed: the noncore bypass byte, the signed out-of-supply days
-/// and the fuel word, each its own field outcome.
+/// attrition with the seed: the noncore bypass byte, the air-supply word, the
+/// signed out-of-supply days and the fuel word, each its own field outcome.
 #[test]
 fn division_seeds_gather_supply_days_bypass_and_fuel() {
     use super::*;
     const POINTER: usize = 0x100;
     let mut bytes = vec![0_u8; 0x800];
     bytes[POINTER + NONCORE_SUPPLY_BYPASS] = 1;
+    bytes[POINTER + AIR_SUPPLY..POINTER + AIR_SUPPLY + 8]
+        .copy_from_slice(&7_654_321_i64.to_le_bytes());
     bytes[POINTER + OUT_OF_SUPPLY_DAYS..POINTER + OUT_OF_SUPPLY_DAYS + 4]
         .copy_from_slice(&(-3_i32).to_le_bytes());
     bytes[POINTER + FUEL_CANDIDATE..POINTER + FUEL_CANDIDATE + 8]
@@ -4023,10 +4051,11 @@ fn division_seeds_gather_supply_days_bypass_and_fuel() {
     assert_eq!(
         (
             seeds[0].noncore_supply_bypass,
+            seeds[0].air_supply,
             seeds[0].out_of_supply_days,
             seeds[0].fuel
         ),
-        (Some(1), Some(-3), Some(1_234_567))
+        (Some(1), Some(7_654_321), Some(-3), Some(1_234_567))
     );
     // A fuel word past the readable memory refuses only that field.
     let short = crate::memory::SliceMemory {
@@ -4308,4 +4337,180 @@ fn a_pass_reads_each_acclimatization_category_factor_once() {
     }
     assert_eq!(memory.1.borrow().len(), 3);
     assert_eq!(factors.len, 1);
+}
+
+/// The movement speed keys are the movement priority sub-unit's own key when
+/// nonzero, then each nonzero key of its categories in native order with
+/// repeats kept; a refused read appends nothing to the caller's keys.
+#[test]
+fn movement_speed_keys_read_the_priority_sub_unit_then_its_categories_in_order() {
+    use crate::csub_unit_definition as unit;
+    const UNIT: usize = 0x1a000;
+    const CATEGORIES: usize = 0x2c000;
+    let mut memory = normal_route_fixture();
+    let b = &mut memory.bytes;
+    p32(b, UNIT + unit::SPEED_MODIFIER_KEY, 0x31);
+    array(b, UNIT + unit::CATEGORIES, CATEGORIES, 4);
+    for (slot, category, key) in [
+        (0, 0x2c100, 0x40_u32),
+        (1, 0x2c200, 0),
+        (2, 0x2c100, 0x40),
+        (3, 0x2c300, 0x41),
+    ] {
+        p64(b, CATEGORIES + slot * 8, category as u64);
+        p32(b, category + unit::CATEGORY_MODIFIER_KEY, key);
+    }
+    let mut keys = vec![7];
+    super::movement_speed_keys(&memory, 0, T1, &mut keys).unwrap();
+    assert_eq!(keys, [7, 0x31, 0x40, 0x40, 0x41]);
+    // Without its own key, only its categories' keys.
+    p32(&mut memory.bytes, UNIT + unit::SPEED_MODIFIER_KEY, 0);
+    keys.clear();
+    super::movement_speed_keys(&memory, 0, T1, &mut keys).unwrap();
+    assert_eq!(keys, [0x40, 0x40, 0x41]);
+    // An unreadable category refuses the whole read.
+    p64(&mut memory.bytes, CATEGORIES + 3 * 8, 0x7fff_0000);
+    let mut keys = vec![7];
+    assert!(super::movement_speed_keys(&memory, 0, T1, &mut keys).is_err());
+    assert_eq!(keys, [7]);
+    // Demand keeps healthy earlier category keys while the full list refuses.
+    assert!(super::movement_speed_key_demands(&memory, 0, T1, &mut keys).is_err());
+    assert_eq!(keys, [7, 0x40, 0x40]);
+    // A refused category header cannot erase the priority unit's own demand.
+    p32(&mut memory.bytes, UNIT + unit::SPEED_MODIFIER_KEY, 0x31);
+    p32(
+        &mut memory.bytes,
+        UNIT + unit::CATEGORIES + crate::cpdx_array::COUNT,
+        5,
+    );
+    let mut keys = vec![7];
+    assert!(super::movement_speed_key_demands(&memory, 0, T1, &mut keys).is_err());
+    assert_eq!(keys, [7, 0x31]);
+    let mut keys = vec![7];
+    assert!(super::movement_speed_keys(&memory, 0, T1, &mut keys).is_err());
+    assert_eq!(keys, [7]);
+}
+
+#[test]
+fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_refusals() {
+    use super::*;
+    use crate::{cdiplomacy_status as diplomacy, crelation_status as relation};
+    const LAST: usize = 0x2e000;
+    const DEFINITION: usize = 0x2e200;
+    const DIPLOMACY: usize = 0x2d000;
+    const RELATIONS: usize = 0x2d200;
+    const RELATION: usize = 0x2d300;
+    const WAR: usize = 0x2d500;
+    let mut source = normal_route_fixture();
+    let b = &mut source.bytes;
+    array(b, GS + crate::cgame_state::PROVINCES, PROVINCES, 5);
+    p64(b, PROVINCES + 4 * 8, LAST as u64);
+    p64(b, LAST, cprovince::VTABLE_RVA as u64);
+    p32(b, LAST + cprovince::ID, 4);
+    p64(b, LAST + cprovince::DEFINITION, DEFINITION as u64);
+    p32(b, DEFINITION + crate::province_definition::ID, 4);
+    b[DEFINITION + crate::province_definition::TERRAIN_FLAGS] = 1;
+    b[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 0;
+    p32(b, LAST + cprovince::CONTROLLER, 2);
+    p64(b, C2 + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
+    p64(b, DIPLOMACY, diplomacy::VTABLE_RVA as u64);
+    p64(b, DIPLOMACY + diplomacy::COUNTRY, C2 as u64);
+    array(b, DIPLOMACY + diplomacy::RELATIONS, RELATIONS, 4);
+    p64(b, RELATIONS + 8, RELATION as u64);
+    p64(b, RELATION, relation::VTABLE_RVA as u64);
+    p64(b, RELATION + relation::DIPLOMACY_STATUS, DIPLOMACY as u64);
+    p32(b, RELATION + relation::TARGET_COUNTRY, 3);
+    p64(b, RELATION + relation::WAR_RELATION, WAR as u64);
+    p64(b, WAR, crate::cwar_relation::VTABLE_RVA as u64);
+    p32(
+        b,
+        WAR + crate::crelation::TYPE_ID,
+        crate::cwar_relation::TYPE,
+    );
+    array(b, A1 + cunit::ORDINARY_ROUTE_DATA, 0x1f000, 3);
+    p32(b, 0x1f000, 2);
+    p32(b, 0x1f004, 3);
+    p32(b, 0x1f008, 4);
+    let mut header = [0; 16];
+    header
+        .copy_from_slice(&b[A1 + cunit::ORDINARY_ROUTE_DATA..A1 + cunit::ORDINARY_ROUTE_DATA + 16]);
+    let seed = DivisionSeed {
+        pointer: A1,
+        ordinary_route: Some(header),
+        location: Some(P1),
+        naval_transfer_membership: Some(0),
+        strategic_redeployment: Some(0),
+        organisation: Some(0),
+        ..Default::default()
+    };
+    let mut packet = StatusPacket::vacant();
+    packet.units.push(StatusUnitInputs::default());
+    packet
+        .maxima
+        .push(crate::csub_unit_definition::DivisionMaxima {
+            organisation: 1_000_000,
+            ..Default::default()
+        });
+    assert_eq!(
+        packet.capture_movement_organisation(&source, 0, GS, &[seed]),
+        0
+    );
+    assert_eq!(
+        packet.units[0].movement_organisation,
+        Some(Some([0, 1_000_000]))
+    );
+    // Lake -> land -> land is not an invasion: preserve the exact pair.
+    source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] =
+        crate::province_definition::LAKE_FLAG;
+    source.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] =
+        crate::province_definition::LAND_FLAG;
+    assert_eq!(
+        packet.capture_movement_organisation(&source, 0, GS, &[seed]),
+        0
+    );
+    assert_eq!(
+        packet.units[0].movement_organisation,
+        Some(Some([0, 1_000_000]))
+    );
+    source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] =
+        crate::province_definition::LAND_FLAG;
+    // A bad earlier position cannot hide the later readable ordinary edge.
+    p32(&mut source.bytes, 0x1f000, 99);
+    assert_eq!(
+        packet.capture_movement_organisation(&source, 0, GS, &[seed]),
+        1
+    );
+    assert_eq!(
+        packet.units[0].movement_organisation,
+        Some(Some([0, 1_000_000]))
+    );
+    // Known transfer bypasses organisation, location and owner dependencies.
+    let transfer = DivisionSeed {
+        naval_transfer_membership: Some(1),
+        organisation: None,
+        location: None,
+        ..seed
+    };
+    assert_eq!(
+        packet.capture_movement_organisation(&source, 0, GS, &[transfer]),
+        0
+    );
+    assert_eq!(packet.units[0].movement_organisation, Some(None));
+    // A wholly sea itinerary needs no pair even if transfer/org fields refused.
+    source.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 0;
+    source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = 0;
+    p32(&mut source.bytes, 0x1f000, 2);
+    let mut sea_header = header;
+    sea_header[12..16].copy_from_slice(&1_u32.to_le_bytes());
+    let sea = DivisionSeed {
+        ordinary_route: Some(sea_header),
+        naval_transfer_membership: None,
+        organisation: None,
+        ..seed
+    };
+    assert_eq!(
+        packet.capture_movement_organisation(&source, 0, GS, &[sea]),
+        0
+    );
+    assert_eq!(packet.units[0].movement_organisation, Some(None));
 }

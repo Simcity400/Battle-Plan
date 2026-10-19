@@ -74,7 +74,7 @@ pub fn build_from(input: Inputs<'_>) -> Tooltip {
         Ok(world) => world,
         Err(reason) => {
             let mut out = Tooltip::default();
-            out.refuse("raid tooltip", reason);
+            out.refuse("raid tooltip", reason.to_string());
             return out;
         }
     };
@@ -100,7 +100,7 @@ pub fn build_from(input: Inputs<'_>) -> Tooltip {
     };
     result.unwrap_or_else(|reason| {
         let mut out = Tooltip::default();
-        out.refuse("raid tooltip", reason);
+        out.refuse("raid tooltip", reason.to_string());
         out
     })
 }
@@ -482,7 +482,8 @@ impl Context<'_, '_> {
             Some((program, token)) => {
                 let key = self
                     .world
-                    .token(token)?
+                    .token(token)
+                    .map_err(|why| why.to_string())?
                     .ok_or("ongoing project definition token is absent")?;
                 let key = std::str::from_utf8(key).map_err(|e| e.to_string())?;
                 // The reader authenticates the selected project's owner against

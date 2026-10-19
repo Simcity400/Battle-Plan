@@ -6,13 +6,17 @@ use crate::{
     ctask_force, cunit, msvc_string::Descriptor, read, recent::Recent,
 };
 
+mod air_capacity;
 mod gathered;
 mod hull_variant;
+mod naval_power;
+pub use air_capacity::{MODULE_PREDICATE, air_capacity_kind};
 pub use gathered::{
     GatheredMemory, GatheredObject, HeldShip, HeldVariant, Lookup, Served, ShipFields,
     SwitchedObject, TaskForceFields,
 };
 pub use hull_variant::{HullVariantInputs, read_hull_variant};
+pub use naval_power::{NavalPowerCache, read_naval_power};
 
 /// CShip primary vtable.
 pub const VTABLE_RVA: usize = 0x0294_1748;
@@ -20,6 +24,8 @@ pub const VTABLE_RVA: usize = 0x0294_1748;
 pub const HANDLE: usize = 0x08;
 /// CShip reference type 51.
 pub const HANDLE_TYPE: u32 = 51;
+/// Stored signed acquired crew, independent of equipment demand.
+pub const ACQUIRED_MANPOWER: usize = 0x808;
 /// Sunk-convoy tally, signed i32, serialized with negative values intact.
 pub const SUNK_CONVOYS: usize = 0x3c;
 /// Embedded equipment-variant pool used by model selection.
@@ -192,6 +198,8 @@ pub struct Row {
     pub category: u32,
     pub sunk_convoys: i32,
     pub class_id: i32,
+    pub acquired_manpower: Option<i32>,
+    pub required_manpower: Option<i32>,
     /// Position in the task force's ship vector (`ctask_force::SHIPS`) before any replay key sorting.
     pub roster_ordinal: u32,
 }
@@ -210,11 +218,17 @@ pub struct ModelRow {
     pub maximum_strength: i64,
     pub anti_air_base: i64,
     pub maximum_organisation: i64,
+    /// Existing maximum-organisation observation; no independent native read.
+    pub has_criticals: Option<u32>,
+    /// Independently certified carrier-base subtype; absent for non-carriers.
+    pub air_capacity_kind: Option<u32>,
     pub positive_equipment_flags: u64,
     /// Independent guarded suffix; None never invalidates the model prefix.
     pub subunit_index: Option<i32>,
     /// Current selected-variant tuple; acquired independently after max-org.
     pub hull_variant: Option<HullVariantInputs>,
+    /// Independently certified current design dominance operands.
+    pub naval_power: Option<[i64; 5]>,
 }
 
 /// Inline fixed-reader text or a complete worker-owned native string payload.
@@ -988,6 +1002,8 @@ pub(crate) fn decode_row(
         category: half(40),
         sunk_convoys: half(44) as i32,
         class_id: half(48) as i32,
+        acquired_manpower: None,
+        required_manpower: None,
         roster_ordinal: 0,
     })
 }
@@ -1080,6 +1096,8 @@ pub(crate) fn read_row(
         sunk_convoys: i32::from_le_bytes(sunk),
         class_id: i32::from_le_bytes(class),
         roster_ordinal: 0,
+        acquired_manpower: None,
+        required_manpower: None,
     })
 }
 

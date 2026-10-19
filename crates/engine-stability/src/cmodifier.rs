@@ -6,3 +6,72 @@ pub const VTABLE_RVA: usize = 0x0270_25d0;
 pub const ACCUMULATOR: usize = 0x10;
 /// CModifier display-name std::string.
 pub const DISPLAY_NAME: usize = 0x58;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Entry {
+    pub key: u32,
+    pub raw: i64,
+}
+
+/// Stored modifier operands and their literal display name. This is distinct
+/// from a recalculated modifier or a tooltip over the current content.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    pub name: Vec<u8>,
+    pub entries: Vec<Entry>,
+}
+
+/// Worker-only acquisition of a demanded, owner-selected embedded modifier.
+/// The caller retains storage and supplies its writer certificate.
+pub fn read_into(
+    memory: &impl crate::Memory,
+    base: usize,
+    modifier: usize,
+    output: &mut Snapshot,
+) -> Result<(), &'static str> {
+    let expected = base
+        .checked_add(VTABLE_RVA)
+        .ok_or("faction modifier vtable address overflow")? as u64;
+    if crate::read::<u64>(memory, modifier) != Some(expected) {
+        return Err("faction slot modifier vtable mismatch");
+    }
+    let source = modifier
+        .checked_add(ACCUMULATOR)
+        .and_then(|address| {
+            crate::cpdx_array::Array::read(memory, address, crate::modifier_entry::STRIDE)
+        })
+        .ok_or("faction slot modifier entries unreadable or invalid")?;
+    crate::allocation::resize_default(&mut output.entries, source.count as usize)
+        .map_err(|_| "faction slot modifier storage allocation failed")?;
+    for (ordinal, entry) in output.entries.iter_mut().enumerate() {
+        let address = source
+            .element(ordinal as u32, crate::modifier_entry::STRIDE)
+            .ok_or("faction slot modifier address overflow")?;
+        let key = crate::read(
+            memory,
+            address
+                .checked_add(crate::modifier_entry::KEY)
+                .ok_or("faction modifier key address overflow")?,
+        )
+        .ok_or("faction slot modifier key unreadable")?;
+        let raw = crate::read(
+            memory,
+            address
+                .checked_add(crate::modifier_entry::VALUE)
+                .ok_or("faction modifier value address overflow")?,
+        )
+        .ok_or("faction slot modifier value unreadable")?;
+        *entry = Entry { key, raw };
+    }
+    let address = modifier
+        .checked_add(DISPLAY_NAME)
+        .ok_or("faction modifier name address overflow")?;
+    let name = crate::msvc_string::Descriptor::read(memory, address)?;
+    name.copy_buffer(
+        memory,
+        &mut crate::walk::Buffer::Growing(&mut output.name),
+        0,
+    )?;
+    output.name.truncate(name.len);
+    Ok(())
+}

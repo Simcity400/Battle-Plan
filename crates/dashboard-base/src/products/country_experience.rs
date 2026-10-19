@@ -1041,6 +1041,7 @@ impl Sampler {
             keys.insert((key.clone(), measure.clone()));
             keys.insert((key.clone(), READ_HOUR.to_owned()));
         }
+        // Keep this scan-local grouping of native identity, encoded key and measure explicit.
         type Wanted = ((u32, u32), String, String);
         let mut wanted: BTreeMap<String, Vec<Wanted>> = BTreeMap::new();
         for (key, measure) in &keys {

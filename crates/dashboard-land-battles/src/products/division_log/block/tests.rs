@@ -1,6 +1,6 @@
 //! Block folds of the division log against hourly observation: the same
 //! pages, totals and saved scan, through a division seen again in a later
-//! block, presentations dated before a block's first template read, a block
+//! block, presentations dated by their hourly or carried template read, a block
 //! whose census is unavailable at its first hour, a block whose country
 //! tables are not read at its first hour, a gap and a removal witness; with
 //! only each block's first hour observed on the carried scan where it
@@ -41,9 +41,8 @@ fn template_read(hour: i32) -> bool {
     .is_refresh(hour)
 }
 
-/// The scenario's hours, from `base` (the hour after a template read): its
-/// blocks, a gap of two hours before the third, and each hour's live
-/// divisions and events.
+/// The scenario's hours, from `base`: its blocks, a gap of two hours before
+/// the third, and each hour's live divisions and events.
 struct Scenario {
     base: i32,
 }
@@ -52,13 +51,13 @@ impl Scenario {
     fn new() -> Self {
         let read = (100..148)
             .find(|&hour| template_read(hour))
-            .expect("a template read every day");
+            .expect("a scheduled template read");
         Self { base: read + 1 }
     }
 
-    /// The blocks' hours: a day ending at the next template read, four
-    /// hours without one, then after the gap a day starting with an
-    /// unavailable census, and a day starting without country links.
+    /// The blocks' hours: a day, four hours, then after the gap a day
+    /// starting with an unavailable census, and a day starting without
+    /// country links.
     fn blocks(&self) -> Vec<Vec<i32>> {
         let base = self.base;
         vec![
@@ -374,11 +373,10 @@ fn folded(source: &Source, fixture: &Fixture, commit: usize) -> (Vec<u8>, Vec<Op
 fn division_block_folds_publish_and_save_what_hourly_observation_does() {
     let scenario = Scenario::new();
     let blocks = scenario.blocks();
-    // The scenario's template reads: the first block's first hour follows
-    // one and its last hour is one; the second block has none.
-    assert!(!template_read(blocks[0][0]) && template_read(*blocks[0].last().unwrap()));
-    assert!(blocks[1].iter().all(|&hour| !template_read(hour)));
-    assert!(blocks[2][1..].iter().any(|&hour| template_read(hour)));
+    assert!(
+        blocks.iter().flatten().all(|&hour| template_read(hour)),
+        "the current format reads templates every hour"
+    );
     let source = source(scenario.replay());
     let replay = source.replay_ref();
     assert_eq!(replay.index.len(), blocks.len());
@@ -467,15 +465,39 @@ fn division_block_folds_date_presentations_by_the_carried_template_read() {
     };
     assert!(!dates(&own).contains(&Some(INHERITED)));
     assert_eq!(dates(&own), dates(&hourly));
-    // Events of the second block, which reads no template, are dated by the
-    // first block's last template read.
-    let read = *scenario.blocks()[0].last().unwrap();
-    assert!(
-        own.events
-            .iter()
-            .filter(|event| scenario.blocks()[1].contains(&event.row.read_hour))
-            .all(|event| event.row.template_hour == Some(read))
-    );
+    // The second block's creations use their own hourly template read.
+    let blocks = scenario.blocks();
+    let creations: Vec<_> = own
+        .events
+        .iter()
+        .filter(|event| blocks[1].contains(&event.row.read_hour))
+        .collect();
+    assert!(!creations.is_empty());
+    for event in creations {
+        let read = event.row.read_hour;
+        assert_eq!(event.row.kind, DivisionLogKind::Created);
+        assert_eq!(event.row.template_hour, Some(read));
+        assert_eq!(
+            event.presentation.as_ref().unwrap().template_hour,
+            Some(read)
+        );
+    }
+    // Loss and transfer witnesses carry the preceding complete census's
+    // presentation, including that census's template read hour.
+    let removals: Vec<_> = own
+        .events
+        .iter()
+        .filter(|event| event.row.kind != DivisionLogKind::Created)
+        .collect();
+    assert_eq!(removals.len(), 2);
+    for event in removals {
+        let read = event.row.read_hour - 1;
+        assert_eq!(event.row.template_hour, Some(read));
+        assert_eq!(
+            event.presentation.as_ref().unwrap().template_hour,
+            Some(read)
+        );
+    }
 }
 
 #[test]

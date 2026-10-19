@@ -1,3 +1,4 @@
+import CombatLogDetails from './CombatLogDetails';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { formatDateTime } from '../../dashboard/calendar';
 import BattleLogView from '../battles/BattleLogView';
@@ -38,5 +39,5 @@ const adapter: BattleViewAdapter<LandBattleRow, LandBattlesWindow, LandBattlesRa
   },
 };
 export default function LandBattlesWidget(props: WidgetProps) {
-  return <BattleLogView {...props} adapter={adapter} />;
+  return <><BattleLogView {...props} adapter={adapter} /><CombatLogDetails {...props} view="battles" /></>;
 }

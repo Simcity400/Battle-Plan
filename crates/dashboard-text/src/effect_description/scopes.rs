@@ -189,7 +189,8 @@ impl Renderer<'_, '_, '_> {
             installed_content_core::collections::compile(input, self.context.content.collections)?;
         let Some(selected) = self
             .evaluator()?
-            .collection_representative(&collection, scopes)?
+            .collection_representative(&collection, scopes)
+            .map_err(|why| why.to_string())?
         else {
             return Ok(String::new());
         };
@@ -232,6 +233,7 @@ impl Renderer<'_, '_, '_> {
             at
         };
         crate::triggers::event_scopes::project(&self.graph.borrow(), at)
+            .map_err(|why| why.to_string())
     }
 
     pub(super) fn is_context(&self, item: &Item) -> bool {
@@ -252,7 +254,11 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
     ) -> Result<Option<(Scopes, String)>, String> {
         let parsed = scope::parse(&key(item), item.key_quoted, self.context.text.recorded());
-        let Some(selected) = self.evaluator()?.enter_scope(&parsed, scopes)? else {
+        let Some(selected) = self
+            .evaluator()?
+            .enter_scope(&parsed, scopes)
+            .map_err(|why| why.to_string())?
+        else {
             return Ok(None);
         };
         let header = match selected.this {
@@ -290,7 +296,8 @@ impl Renderer<'_, '_, '_> {
                     Scope::Leader(id) => {
                         self.context
                             .world()?
-                            .unit_leader(id)?
+                            .unit_leader(id)
+                            .map_err(|why| why.to_string())?
                             .ok_or("UnitLeaders lacks context leader")?
                             .character_id
                     }
@@ -299,7 +306,8 @@ impl Renderer<'_, '_, '_> {
                 let country = self
                     .context
                     .world()?
-                    .character(id)?
+                    .character(id)
+                    .map_err(|why| why.to_string())?
                     .ok_or("Characters lacks context character")?
                     .country;
                 let slot = self
@@ -320,7 +328,11 @@ impl Renderer<'_, '_, '_> {
                 )?
             }
             Scope::IndustrialOrganisation(reference) => {
-                let row = self.context.world()?.industrial_organisation(reference)?;
+                let row = self
+                    .context
+                    .world()?
+                    .industrial_organisation(reference)
+                    .map_err(|why| why.to_string())?;
                 let country = self
                     .context
                     .world()?
@@ -514,7 +526,9 @@ impl Renderer<'_, '_, '_> {
                 else {
                     return Ok(Vec::new());
                 };
-                let inputs = world.country_counter_inputs(caller)?;
+                let inputs = world
+                    .country_counter_inputs(caller)
+                    .map_err(|why| why.to_string())?;
                 // copies these arrays;
                 // random preserves the same order.
                 let (recorded, name) = if owned {
@@ -581,7 +595,9 @@ impl Renderer<'_, '_, '_> {
                         {
                             if row.id as i32 > 0
                                 && row.canonical_slot != caller
-                                && world.exists(row.canonical_slot)?
+                                && world
+                                    .exists(row.canonical_slot)
+                                    .map_err(|why| why.to_string())?
                             {
                                 count += 1;
                             }
@@ -593,7 +609,9 @@ impl Renderer<'_, '_, '_> {
                     if repeats == 0 {
                         return Ok(out);
                     }
-                    let inputs = world.country_counter_inputs(caller)?;
+                    let inputs = world
+                        .country_counter_inputs(caller)
+                        .map_err(|why| why.to_string())?;
                     for _ in 0..repeats {
                         for (enabled, recorded, name) in [
                             (
@@ -615,9 +633,14 @@ impl Renderer<'_, '_, '_> {
                                 .as_deref()
                                 .ok_or_else(|| format!("{name} capture unavailable"))?;
                             for &reference in leaders {
-                                let row = world.unit_leader(reference)?.ok_or_else(|| {
-                                    format!("iterator unit leader {reference:#x} is not recorded")
-                                })?;
+                                let row = world
+                                    .unit_leader(reference)
+                                    .map_err(|why| why.to_string())?
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "iterator unit leader {reference:#x} is not recorded"
+                                        )
+                                    })?;
                                 // Collect visible armies before navies.
                                 if invisible || self.evaluator()?.leader_visible(row).decided()? {
                                     out.push(Scope::Leader(reference));
@@ -646,9 +669,12 @@ impl Renderer<'_, '_, '_> {
                         .copied()
                 });
                 for member in members {
-                    world.unit_leader(member.id)?.ok_or_else(|| {
-                        format!("iterator operative {:#x} is not recorded", member.id)
-                    })?;
+                    world
+                        .unit_leader(member.id)
+                        .map_err(|why| why.to_string())?
+                        .ok_or_else(|| {
+                            format!("iterator operative {:#x} is not recorded", member.id)
+                        })?;
                     out.push(Scope::Leader(member.id));
                 }
                 Ok(out)
@@ -708,7 +734,7 @@ impl Renderer<'_, '_, '_> {
                 possible,
             } => {
                 // Ascending slots.
-                let slots = world.country_slots()?;
+                let slots = world.country_slots().map_err(|why| why.to_string())?;
                 let caller = if other || enemy {
                     Some(country()?)
                 } else {
@@ -735,7 +761,7 @@ impl Renderer<'_, '_, '_> {
                 let mut out = Vec::new();
                 for target in slots {
                     if target == 0
-                        || (!possible && !world.exists(target)?)
+                        || (!possible && !world.exists(target).map_err(|why| why.to_string())?)
                         || (other && Some(target) == caller)
                     {
                         continue;
@@ -749,7 +775,7 @@ impl Renderer<'_, '_, '_> {
             }
             Roster::Faction { allied } => {
                 let caller = country()?;
-                let Some(faction) = world.faction(caller)? else {
+                let Some(faction) = world.faction(caller).map_err(|why| why.to_string())? else {
                     return Ok(if allied {
                         Vec::new()
                     } else {
@@ -766,7 +792,9 @@ impl Renderer<'_, '_, '_> {
                 let mut out = Vec::new();
                 for row in rows {
                     let target = slot(row.country)?;
-                    if (!allied || target != caller) && world.exists(target)? {
+                    if (!allied || target != caller)
+                        && world.exists(target).map_err(|why| why.to_string())?
+                    {
                         out.push(Scope::Country(target));
                     }
                 }
@@ -776,7 +804,8 @@ impl Renderer<'_, '_, '_> {
                 let caller = country()?;
                 let mut out = Vec::new();
                 for &raw in world
-                    .appearance(caller)?
+                    .appearance(caller)
+                    .map_err(|why| why.to_string())?
                     .subjects
                     .require("CountryAppearance.subjects")?
                 {
@@ -787,14 +816,15 @@ impl Renderer<'_, '_, '_> {
                     let target = slot(raw as u32)?;
                     // Read subject count before
                     // excludes the caller, including aliases.
-                    if world.exists(target)? && target != caller {
+                    if world.exists(target).map_err(|why| why.to_string())? && target != caller {
                         out.push(Scope::Country(target));
                     }
                 }
                 Ok(out)
             }
             Roster::Characters => Ok(world
-                .country_characters(country()?)?
+                .country_characters(country()?)
+                .map_err(|why| why.to_string())?
                 .into_iter()
                 .map(|id| Scope::Character(id.unwrap_or(0)))
                 .collect()),
@@ -826,7 +856,10 @@ impl Renderer<'_, '_, '_> {
                 {
                     return Ok(out);
                 }
-                for party in world.party_leaders(country()?)? {
+                for party in world
+                    .party_leaders(country()?)
+                    .map_err(|why| why.to_string())?
+                {
                     // politics status.
                     if let Some(first) = party.leaders.iter().min_by_key(|leader| leader.ordinal) {
                         if first.ordinal != 0 {
@@ -953,7 +986,7 @@ impl Renderer<'_, '_, '_> {
                 // state_order verifies runtime membership against the native
                 // content order. Divisions authenticates class-0 full handles;
                 // the reference type alone cannot distinguish unit classes.
-                for &province in world.state_order(state)? {
+                for &province in world.state_order(state).map_err(|why| why.to_string())? {
                     let row = order.get(&province).ok_or_else(|| {
                         format!("ProvinceUnitOrder lacks state {state} province {province}")
                     })?;
@@ -997,10 +1030,16 @@ impl Renderer<'_, '_, '_> {
                 let operand = field(children(item), "original_tag")
                     .and_then(|field| field.value.scalar())
                     .unwrap_or(b"THIS");
-                let Some(target) = self.evaluator()?.scoped_country(operand, scopes)? else {
+                let Some(target) = self
+                    .evaluator()?
+                    .scoped_country(operand, scopes)
+                    .map_err(|why| why.to_string())?
+                else {
                     return Ok(Vec::new());
                 };
-                let selected = world.original_reference(target)?;
+                let selected = world
+                    .original_reference(target)
+                    .map_err(|why| why.to_string())?;
                 if selected <= 0 {
                     return Ok(Vec::new());
                 }
@@ -1009,7 +1048,8 @@ impl Renderer<'_, '_, '_> {
                 // skip signed-nonpositive raw entries
                 // before resolving and testing existence; preserve duplicates.
                 for raw in recorded
-                    .original_bucket(selected)?
+                    .original_bucket(selected)
+                    .map_err(|why| why.to_string())?
                     .iter()
                     .copied()
                     .chain(std::iter::once(selected as u32))
@@ -1017,8 +1057,8 @@ impl Renderer<'_, '_, '_> {
                     if (raw as i32) <= 0 {
                         continue;
                     }
-                    let slot = recorded.raw_slot(raw)?;
-                    if world.exists(slot)? {
+                    let slot = recorded.raw_slot(raw).map_err(|why| why.to_string())?;
+                    if world.exists(slot).map_err(|why| why.to_string())? {
                         out.push(Scope::Country(slot));
                     }
                 }
@@ -1051,7 +1091,10 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<Vec<Scope>, String> {
         let mut out = Vec::new();
         for target in roster {
-            let selected = self.evaluator()?.with_this(scopes, target)?;
+            let selected = self
+                .evaluator()?
+                .with_this(scopes, target)
+                .map_err(|why| why.to_string())?;
             match self.condition(items, selected) {
                 Eval::True => {
                     if active_scientist {
@@ -1115,7 +1158,8 @@ impl Renderer<'_, '_, '_> {
                 let leader = self
                     .context
                     .world()?
-                    .unit_leader(id)?
+                    .unit_leader(id)
+                    .map_err(|why| why.to_string())?
                     .ok_or("UnitLeaders lacks iterator target")?;
                 String::from_utf8_lossy(&leader.inherited_text_a).into_owned()
             }
@@ -1136,7 +1180,8 @@ impl Renderer<'_, '_, '_> {
         let row = self
             .context
             .world()?
-            .character(id)?
+            .character(id)
+            .map_err(|why| why.to_string())?
             .ok_or("Characters lacks scope target")?;
         String::from_utf8(row.name.clone()).map_err(|_| "character name is not UTF-8".into())
     }
@@ -1165,7 +1210,9 @@ impl Renderer<'_, '_, '_> {
             graph.scopes.push(selected);
             at
         };
-        self.evaluator()?.event_scopes(at)
+        self.evaluator()?
+            .event_scopes(at)
+            .map_err(|why| why.to_string())
     }
 
     fn organisation_visible(
@@ -1174,7 +1221,8 @@ impl Renderer<'_, '_, '_> {
     ) -> Result<bool, String> {
         let world = self.context.world()?;
         let token = world
-            .token(row.token)?
+            .token(row.token)
+            .map_err(|why| why.to_string())?
             .ok_or("LexicalTokens lacks industrial organisation token")?;
         let database = self
             .context
@@ -1186,7 +1234,11 @@ impl Renderer<'_, '_, '_> {
         // selects own, else the direct inherited
         // pointer. The reader installs that pointer
         // only for no children and no delete_included_values visible token.
-        let visible = if !evaluator.has_children(&template.visible)? && !template.delete_visible {
+        let visible = if !evaluator
+            .has_children(&template.visible)
+            .map_err(|why| why.to_string())?
+            && !template.delete_visible
+        {
             match &template.include {
                 Some(parent) => database.template(parent)?.visible.as_slice(),
                 None => &template.visible,
@@ -1194,7 +1246,10 @@ impl Renderer<'_, '_, '_> {
         } else {
             &template.visible
         };
-        if !evaluator.has_children(visible)? {
+        if !evaluator
+            .has_children(visible)
+            .map_err(|why| why.to_string())?
+        {
             return Ok(true);
         }
         evaluator
@@ -1204,10 +1259,13 @@ impl Renderer<'_, '_, '_> {
 
     pub(super) fn organisation_name(&self, reference: u64) -> Result<String, String> {
         let world = self.context.world()?;
-        let row = world.industrial_organisation(reference)?;
+        let row = world
+            .industrial_organisation(reference)
+            .map_err(|why| why.to_string())?;
         let name = if row.name.is_empty() {
             world
-                .token(row.token)?
+                .token(row.token)
+                .map_err(|why| why.to_string())?
                 .ok_or("LexicalTokens lacks industrial organisation name")?
         } else {
             row.name.as_slice()
@@ -1371,7 +1429,8 @@ impl Renderer<'_, '_, '_> {
             }
             let selected = self
                 .evaluator()?
-                .with_this(scopes, target.unwrap_or(scopes.this))?;
+                .with_this(scopes, target.unwrap_or(scopes.this))
+                .map_err(|why| why.to_string())?;
             let text = if let Some(tooltip) = tooltip {
                 let mut text = self.custom_tooltip(tooltip, selected)?;
                 text.push_str(":\n");
@@ -1404,7 +1463,10 @@ impl Renderer<'_, '_, '_> {
                 == Some(true)
         });
         let mut text = String::new();
-        let mut selected = self.evaluator()?.with_this(scopes, scopes.this)?;
+        let mut selected = self
+            .evaluator()?
+            .with_this(scopes, scopes.this)
+            .map_err(|why| why.to_string())?;
         if let Some(tooltip) = tooltip {
             text.push_str(&self.custom_tooltip(tooltip, selected)?);
             text.push_str(":\n");
@@ -1435,12 +1497,18 @@ impl Renderer<'_, '_, '_> {
             text.push_str(&self.group(&body, selected, indent + 1));
         } else if individual {
             for target in targets {
-                selected = self.evaluator()?.repoint_this(selected, target)?;
+                selected = self
+                    .evaluator()?
+                    .repoint_this(selected, target)
+                    .map_err(|why| why.to_string())?;
                 text.push_str(&format!("({}):\n", self.label(target, scopes, true)?));
                 text.push_str(&self.group(&body, selected, indent + 1));
             }
         } else {
-            selected = self.evaluator()?.repoint_this(selected, targets[0])?;
+            selected = self
+                .evaluator()?
+                .repoint_this(selected, targets[0])
+                .map_err(|why| why.to_string())?;
             text.push_str(&self.group(&body, selected, indent + 1));
         }
         Ok(indent_nonempty_lines(&text, indent))
@@ -1457,7 +1525,8 @@ impl Renderer<'_, '_, '_> {
             .unwrap_or_default();
         let roster = self
             .evaluator()?
-            .scoped_array_scopes(operand, scopes)?
+            .scoped_array_scopes(operand, scopes)
+            .map_err(|why| why.to_string())?
             .into_iter()
             .flatten()
             .collect();
@@ -1466,7 +1535,10 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         }
         let target = targets[self.draw(scopes)? as usize % targets.len()];
-        let selected = self.evaluator()?.with_this(scopes, target)?;
+        let selected = self
+            .evaluator()?
+            .with_this(scopes, target)
+            .map_err(|why| why.to_string())?;
         let label = self.label(target, scopes, false)?;
         let mut text = format!("\u{11}H{label}:\n\u{11}!");
         let body = self.effect_children(item);
@@ -1490,7 +1562,7 @@ impl Renderer<'_, '_, '_> {
                 Scope::Character(id) => id,
                 _ => continue,
             };
-            if let Some(leader) = tables.unit_leader(id)?
+            if let Some(leader) = tables.unit_leader(id).map_err(|why| why.to_string())?
                 && leader.category() < 3
             {
                 // reads these independent assignment references,
@@ -1556,7 +1628,8 @@ impl Renderer<'_, '_, '_> {
                         for token in &row.tokens {
                             names.push(
                                 world
-                                    .token(*token)?
+                                    .token(*token)
+                                    .map_err(|why| why.to_string())?
                                     .ok_or("LexicalTokens lacks advisor trait")?,
                             );
                         }
@@ -1577,7 +1650,8 @@ impl Renderer<'_, '_, '_> {
                 }) {
                     for token in &row.tokens {
                         let name = world
-                            .token(*token)?
+                            .token(*token)
+                            .map_err(|why| why.to_string())?
                             .ok_or("LexicalTokens lacks advisor sort trait")?;
                         let suffix = name.rsplit(|byte| *byte == b'_').next().unwrap_or_default();
                         if !suffix.is_empty()

@@ -2,7 +2,7 @@
 //! NavalModifierTrees carries: a country's modifier tree (`ccountry::MODIFIER_ACCUMULATOR`) and a
 //! commander's ([`engine_mutations::naval_tree_mutations`]). A detour only notifies the shared watch registry
 //! ([`WatchRegistry`]) for the CCountry or CUnitLeader its first argument names, counts its site
-//! and calls the original; it never changes game behaviour. This family patches only the commander
+//! and calls the original; it never changes game behaviour. This observer patches the commander
 //! sites: the two country sites belong to families that already patch them and forward Each call
 //! ([`forwarded`]): country modifier recalculation to country_input_changes, country appearance
 //! reset to politics. The family observes only while its own patches and both forwarders are
@@ -12,6 +12,8 @@
 //! writers of the retreat bans' blocks, so they forward each call to
 //! [`crate::retreat_ban_changes`]; the leader constructors and destructor forward theirs to
 //! [`crate::unit_leader_changes`].
+//! Its hook lifecycle also owns [`crate::occupation_changes`], whose separate certificates
+//! receive these same country writers and the state, relation and exile forwarders.
 //!
 //! The same certificates key the naval mission country and commander rows
 //! ([`crate::extended::naval_mission_inputs`]): a country whose own and
@@ -66,6 +68,7 @@ static MISSION_RECEIVERS: AtomicUsize = AtomicUsize::new(0);
 static SHIP_MODEL_RECEIVERS: AtomicUsize = AtomicUsize::new(0);
 /// Countries and commanders the latest ReserveModifierTrees capture keyed
 /// (collector-combat), whose certificates carry their trees.
+static DIVISION_RECEIVERS: AtomicUsize = AtomicUsize::new(0);
 static RESERVE_RECEIVERS: AtomicUsize = AtomicUsize::new(0);
 /// Countries the latest RaidIntelInputs walk keyed
 /// ([`crate::extended::raid_intel_carry`]).
@@ -98,7 +101,9 @@ pub const ORACLE: bool = cfg!(feature = "naval_tree_oracle");
 
 /// Notifications running now.
 pub fn active() -> usize {
-    WATCHES.active()
+    WATCHES
+        .active()
+        .saturating_add(crate::occupation_changes::active())
 }
 
 /// Game thread, in the hourly callback before any capture. `invalidate`
@@ -106,12 +111,14 @@ pub fn active() -> usize {
 /// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.boundary(invalidate);
+    crate::occupation_changes::boundary(invalidate);
 }
 
 /// Off the game thread: size the watches for the receivers the latest
 /// capture reached. Nothing is offered before a capture reached any: the
 /// first table installs at once, a later larger one at an invalidating hour.
 pub fn presize() {
+    crate::occupation_changes::prepare();
     let receivers = demand();
     if receivers != 0 {
         WATCHES.offer(receivers);
@@ -128,10 +135,14 @@ fn demand() -> usize {
         .saturating_add(SHIP_MODEL_RECEIVERS.load(Ordering::Relaxed))
         .saturating_add(RAID_INTEL_RECEIVERS.load(Ordering::Relaxed))
         .saturating_add(RESERVE_RECEIVERS.load(Ordering::Relaxed))
+        .saturating_add(DIVISION_RECEIVERS.load(Ordering::Relaxed))
 }
 
 /// A ReserveModifierTrees capture that keyed `receivers` countries and
 /// commanders.
+pub fn division_trees(receivers: usize) {
+    DIVISION_RECEIVERS.fetch_max(receivers, Ordering::Relaxed);
+}
 pub fn reserve_trees(receivers: usize) {
     if receivers != 0 {
         RESERVE_RECEIVERS.store(receivers, Ordering::Relaxed);
@@ -338,12 +349,10 @@ pub fn status() -> impl serde::Serialize {
 /// Observe while this family's patches and every forwarder's are enabled.
 /// Enabling starts a new epoch, so nothing held from before a gap certifies.
 fn observe() {
-    WATCHES.set_enabled(
-        PATCHED.load(Ordering::SeqCst)
-            && FORWARDERS
-                .iter()
-                .all(|forwarder| forwarder.load(Ordering::SeqCst)),
-    );
+    let enabled =
+        PATCHED.load(Ordering::SeqCst) && FORWARDERS.iter().all(|f| f.load(Ordering::SeqCst));
+    WATCHES.set_enabled(enabled);
+    crate::occupation_changes::forwarder(crate::occupation_changes::Forwarder::Countries, enabled);
 }
 
 /// The family patching country site `site` (< [`COUNTRY_SITES`]) enabled or
@@ -356,6 +365,7 @@ pub fn forwarder(site: usize, enabled: bool) {
 
 pub struct Hooks {
     hooks: Vec<Hook>,
+    occupation: crate::occupation_changes::Hooks,
 }
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
@@ -366,11 +376,11 @@ impl Hooks {
     /// The memory source and base must identify the authenticated executable in
     /// this process. The caller owns this family exclusively and must restore
     /// its hooks and quiesce native calls before releasing code or unloading.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, String> {
         let mut hooks = Vec::new();
         if cfg!(feature = "naval_tree_changes")
             && MUTATIONS[COUNTRY_SITES..].iter().all(|site| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             let callbacks: [usize; PATCHED_SITES] = [
@@ -382,14 +392,25 @@ impl Hooks {
             ];
             for (offset, site) in MUTATIONS[COUNTRY_SITES..].iter().enumerate() {
                 let hook = unsafe { Hook::new(base + site.rva, callbacks[offset], site.sentinel) }
-                    .map_err(|_| "native hook construction failed")?;
+                    .map_err(|cause| {
+                        format!(
+                            "naval_tree_changes hook {} construction failed: {cause}",
+                            site.name
+                        )
+                    })?;
                 ORIGINAL[COUNTRY_SITES + offset].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
         }
-        Ok(Self { hooks })
+        Ok(Self {
+            hooks,
+            occupation: unsafe { crate::occupation_changes::Hooks::new(memory, base) }?,
+        })
     }
-    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+    pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
+        if !self.occupation.set_enabled(enabled)? {
+            return Ok(false);
+        }
         if !enabled {
             PATCHED.store(false, Ordering::SeqCst);
             observe();
@@ -401,9 +422,12 @@ impl Hooks {
         // other families in a runtime round (`hook::shared`): a thread at any
         // of its sites, or in a tap, holds every site back until the next
         // attempt.
-        if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
-            .map_err(|_| "native hook state change failed")?
-        {
+        if !Hook::set_family_enabled_shared_named(
+            &mut self.hooks,
+            enabled,
+            "naval_tree_changes",
+            &std::array::from_fn::<_, PATCHED_SITES, _>(|i| MUTATIONS[COUNTRY_SITES + i].name),
+        )? {
             return Ok(false);
         }
         PATCHED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
@@ -416,7 +440,10 @@ impl Hooks {
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
-        self.hooks.iter().flat_map(Hook::executable_ranges)
+        self.hooks
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .chain(self.occupation.executable_ranges())
     }
 }
 impl Drop for Hooks {
@@ -465,9 +492,10 @@ fn notify(
 /// Hook path, allocation-free: the forwarded country writer `site`
 /// (< [`COUNTRY_SITES`]) is about to change `country`'s tree. The patching
 /// family's detour holds the guard across the original.
-pub fn forwarded(site: usize, country: usize) -> Notification<'static> {
+pub fn forwarded(site: usize, country: usize) -> (Notification<'static>, Notification<'static>) {
+    let occupation = crate::occupation_changes::changed(country);
     // A country site forwards to no commander family.
-    notify(country, site).0
+    (notify(country, site).0, occupation)
 }
 
 // Every site takes its receiver in RCX and at most three more integer or

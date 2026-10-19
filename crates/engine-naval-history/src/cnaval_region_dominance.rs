@@ -10,6 +10,10 @@ pub const ENTRIES: usize = 0x40;
 pub const ENTRY_CAPACITY: usize = 0x48;
 /// CNavalRegionDominance signed entry count.
 pub const ENTRY_COUNT: usize = 0x4c;
+/// In the verified executable, headquarters source storage is constructed
+/// zero/empty and has no publishing writer. Content can alter the coefficients
+/// of live sources but cannot introduce another native storage writer.
+pub const HEADQUARTERS_SOURCES_EMPTY: bool = true;
 
 use crate::{
     Memory, cdominance_values as values, cgame_state, cpdx_array::Array, cstrategic_region,

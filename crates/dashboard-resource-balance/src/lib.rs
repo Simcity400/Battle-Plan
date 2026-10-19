@@ -7,11 +7,13 @@
 //! re-exports them, registers them and prepares and queries them.
 
 pub mod products {
+    pub mod market_lendlease;
     pub mod resource_balance;
     pub mod trade_flows;
 
     dashboard_base::reply_warnings!(
         resource_balance::ResourceBalanceReply,
         trade_flows::TradeFlowsReply,
+        market_lendlease::MarketLendLeaseReply,
     );
 }

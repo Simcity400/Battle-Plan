@@ -199,6 +199,8 @@ impl Capacities {
         })?;
         demand.task_forces = demand.task_forces.max(tasks);
         demand.fleets = demand.fleets.max(fleets);
+        collector_observers::fleet_region_changes::demand(fleets);
+        collector_observers::fleet_region_changes::presize();
         demand.rosters = demand.rosters.max(tasks);
         demand.motion = demand.motion.max(tasks);
         demand.paths = demand.paths.max(paths);
@@ -234,7 +236,61 @@ impl Capacities {
     }
 }
 
+#[derive(Clone)]
+struct HeldFleetRegions {
+    pointer: usize,
+    certificate: Option<(u64, u64)>,
+    regions: Option<std::sync::Arc<Vec<u32>>>,
+}
+
+/// The existing fleet census supplies identities; this helper acquires no
+/// payload while its writer certificate holds or observation is unavailable.
+fn observe_fleet_regions(
+    store: &mut std::collections::BTreeMap<u64, HeldFleetRegions>,
+    pointer: usize,
+    id: u64,
+    before_header: Option<(u64, u64)>,
+    mut certificate: impl FnMut() -> Option<(u64, u64)>,
+    read: impl FnOnce() -> Result<Vec<u32>, &'static str>,
+) -> Option<(usize, usize)> {
+    let after_header = certificate();
+    let header_certified = before_header.is_some() && before_header == after_header;
+    if header_certified
+        && store
+            .get(&id)
+            .is_some_and(|held| held.pointer == pointer && held.certificate == before_header)
+    {
+        return None;
+    }
+    let bytes = |held: &HeldFleetRegions| {
+        held.regions
+            .as_ref()
+            .map_or(0, |rows| rows.capacity() * size_of::<u32>())
+            + size_of::<HeldFleetRegions>()
+    };
+    let previous = store.get(&id).map_or(0, bytes);
+    let regions = header_certified
+        .then(|| read().ok())
+        .flatten()
+        .map(std::sync::Arc::new);
+    let after = certificate();
+    let certified = header_certified && before_header == after;
+    let regions = certified.then_some(regions).flatten();
+    let held = HeldFleetRegions {
+        pointer,
+        // A race cannot certify the stale header under the writer's newer
+        // token. Leave it unheld so the next stable census can acquire it.
+        certificate: certified.then_some(after).flatten(),
+        regions,
+    };
+    let next = bytes(&held);
+    store.insert(id, held);
+    Some((previous, next))
+}
+
 pub struct Captured {
+    fleet_regions: std::collections::BTreeMap<u64, HeldFleetRegions>,
+    fleet_region_bytes: usize,
     task_forces: CaptureRows<ctask_force::CounterRow>,
     fleets: CaptureRows<cfleet::CounterRow>,
     rosters: Arena<u64>,
@@ -392,9 +448,15 @@ impl Captured {
     }
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
+        if capacity.fleets != 0 {
+            collector_observers::fleet_region_changes::demand(capacity.fleets);
+            collector_observers::fleet_region_changes::presize();
+        }
         Self {
             task_forces: CaptureRows::new(capacity.task_forces),
             fleets: CaptureRows::new(capacity.fleets),
+            fleet_regions: Default::default(),
+            fleet_region_bytes: 0,
             rosters: Arena::new(capacity.rosters),
             motion: CaptureRows::new(capacity.motion),
             paths: Arena::new(capacity.paths),
@@ -418,6 +480,8 @@ impl Captured {
     /// them.
     pub fn forget_censuses(&mut self) {
         self.censuses.forget();
+        self.fleet_regions.clear();
+        self.fleet_region_bytes = 0;
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -449,6 +513,7 @@ impl Captured {
     }
     pub fn allocated_bytes(&self) -> usize {
         self.task_forces.allocated_bytes()
+            + self.fleet_region_bytes
             + self.fleets.allocated_bytes()
             + self.rosters.allocated_bytes()
             + self.motion.allocated_bytes()
@@ -591,7 +656,7 @@ impl Captured {
                 &mut self.port_answers.first,
             )
         });
-        let captured = cfleet::walk_counter_inputs_with_port_observed_growing(
+        let captured = cfleet::walk_counter_inputs_with_port_and_fleet_observed_growing(
             memory,
             base,
             state,
@@ -616,6 +681,22 @@ impl Captured {
                 let started = qpc();
                 motion.visit(pointer, id);
                 motion_ticks += qpc().saturating_sub(started).max(0) as u64;
+            },
+            |pointer, _id| collector_observers::fleet_region_changes::sequence(pointer),
+            |pointer, id, header, before_header| {
+                if let Some((previous, next)) = observe_fleet_regions(
+                    &mut self.fleet_regions,
+                    pointer,
+                    id,
+                    before_header,
+                    || collector_observers::fleet_region_changes::sequence(pointer),
+                    || cfleet::read_mission_regions(memory, base, header),
+                ) {
+                    self.fleet_region_bytes = self
+                        .fleet_region_bytes
+                        .saturating_sub(previous)
+                        .saturating_add(next);
+                }
             },
         );
 
@@ -667,6 +748,29 @@ impl Captured {
             }
         }
         self.fleets.outcome = captured.fleets;
+        collector_observers::fleet_region_changes::demand(self.fleets.outcome.len());
+        if !matches!(self.fleets.outcome, Outcome::Rows { .. }) {
+            self.fleet_regions.clear();
+            self.fleet_region_bytes = 0;
+        }
+        // Retired receivers are compacted only when they materially outnumber live fleets.
+        if self.fleet_regions.len() > self.fleets.outcome.len().saturating_mul(2) {
+            let live: std::collections::BTreeSet<_> = self.fleets.rows[..self.fleets.outcome.len()]
+                .iter()
+                .map(|row| row.id)
+                .collect();
+            self.fleet_regions.retain(|id, _| live.contains(id));
+            self.fleet_region_bytes = self
+                .fleet_regions
+                .values()
+                .map(|held| {
+                    held.regions
+                        .as_ref()
+                        .map_or(0, |rows| rows.capacity() * size_of::<u32>())
+                        + size_of::<HeldFleetRegions>()
+                })
+                .sum();
+        }
         self.rosters.len = captured.roster_len;
         self.rosters.required = captured.roster_required;
         self.motion.outcome = walked.outcome;
@@ -863,6 +967,11 @@ impl Captured {
                     blue: r.rgba[2],
                     alpha: r.rgba[3],
                     mission_region_count: r.mission_region_count,
+                    mission_regions: (self
+                        .fleet_regions
+                        .get(&r.id)
+                        .and_then(|held| held.regions.clone()))
+                    .into(),
                     task_forces: owned_vec(copy_vec(&rosters[r.start..r.start + r.len])),
                 }
             }),
@@ -2139,5 +2248,121 @@ mod tests {
         let (_, counts) = census_capture(&mut store, &registry, Check::Every, &trees, &mut reads);
         assert_eq!(counts, (0, RECEIVERS as u64, 0));
         assert_eq!(store.held.len(), RECEIVERS);
+    }
+    #[test]
+    fn quiet_fleet_region_payloads_carry_without_reads_or_allocations() {
+        use std::sync::Arc;
+        let mut store = std::collections::BTreeMap::new();
+        let _ = observe_fleet_regions(
+            &mut store,
+            16,
+            7,
+            Some((1, 2)),
+            || Some((1, 2)),
+            || Ok(vec![3, 3, 4]),
+        );
+        let held = store[&7].regions.clone().unwrap();
+        collector_test_support::with_allocations_denied(|| {
+            let _ = observe_fleet_regions(
+                &mut store,
+                16,
+                7,
+                Some((1, 2)),
+                || Some((1, 2)),
+                || panic!("quiet fleet payload reread"),
+            );
+            assert!(Arc::ptr_eq(store[&7].regions.as_ref().unwrap(), &held));
+            let cloned = store[&7].regions.clone().unwrap();
+            assert!(Arc::ptr_eq(&cloned, &held));
+        });
+        let _ = observe_fleet_regions(
+            &mut store,
+            16,
+            7,
+            Some((1, 3)),
+            || Some((1, 3)),
+            || Ok(vec![3, 4]),
+        );
+        assert_eq!(store[&7].regions.as_ref().unwrap().as_slice(), [3, 4]);
+        let _ = observe_fleet_regions(
+            &mut store,
+            16,
+            7,
+            None,
+            || None,
+            || panic!("disabled observation polled a fleet"),
+        );
+        assert!(store[&7].regions.is_none());
+        let mut calls = 0;
+        let _ = observe_fleet_regions(
+            &mut store,
+            16,
+            7,
+            Some((1, 1)),
+            || {
+                calls += 1;
+                Some((1, calls))
+            },
+            || Ok(vec![5]),
+        );
+        assert!(store[&7].regions.is_none());
+    }
+
+    #[test]
+    fn fleet_writer_finishing_during_header_read_cannot_certify_the_old_header() {
+        use std::cell::Cell;
+        struct HeaderRace {
+            sequence: Cell<u64>,
+            changed: Cell<bool>,
+            reads: Cell<usize>,
+        }
+        impl Memory for HeaderRace {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                assert_eq!(address, 16 + cfleet::MISSION_REGIONS);
+                assert_eq!(output.len(), 16);
+                self.reads.set(self.reads.get() + 1);
+                let count = if self.changed.get() { 2_u32 } else { 1 };
+                output[..8].copy_from_slice(&0x300_u64.to_le_bytes());
+                output[8..12].copy_from_slice(&count.to_le_bytes());
+                output[12..16].copy_from_slice(&count.to_le_bytes());
+                // The original header has been copied, then a writer completes
+                // before the independent payload observer receives that header.
+                if !self.changed.replace(true) {
+                    self.sequence.set(self.sequence.get() + 1);
+                }
+                true
+            }
+        }
+        let memory = HeaderRace {
+            sequence: Cell::new(1),
+            changed: Cell::new(false),
+            reads: Cell::new(0),
+        };
+        let token = || Some((1, memory.sequence.get()));
+        let mut store = std::collections::BTreeMap::new();
+        // Include a quiet held value: a race must not return it as if the
+        // original header had been acquired under the writer's new token.
+        let _ = observe_fleet_regions(&mut store, 16, 7, token(), token, || Ok(vec![9]));
+        let before_header = token();
+        let old = engine_native::cpdx_array::Array::read(&memory, 16 + cfleet::MISSION_REGIONS, 8)
+            .unwrap();
+        assert_eq!(old.count, 1);
+        let _ = observe_fleet_regions(&mut store, 16, 7, before_header, token, || {
+            panic!("raced header payload must not be read")
+        });
+        assert!(store[&7].regions.is_none());
+        assert_eq!(store[&7].certificate, None);
+        // A later quiet writer interval retries the original census header;
+        // the aborted observation must not pin an empty result forever.
+        let before_header = token();
+        let current =
+            engine_native::cpdx_array::Array::read(&memory, 16 + cfleet::MISSION_REGIONS, 8)
+                .unwrap();
+        let _ = observe_fleet_regions(&mut store, 16, 7, before_header, token, || {
+            Ok((0..current.count).collect())
+        });
+        assert_eq!(store[&7].regions.as_ref().unwrap().as_slice(), [0, 1]);
+        assert_eq!(store[&7].certificate, token());
+        assert_eq!(memory.reads.get(), 2);
     }
 }

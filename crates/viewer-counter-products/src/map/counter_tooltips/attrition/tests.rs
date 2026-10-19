@@ -125,6 +125,15 @@ fn frame(province: u32, path_total: u32, path: Vec<u32>) -> DecodedFrame {
             ..Default::default()
         }]),
     );
+    // Moving fixtures exercise the native mode-zero owned-war fallback.
+    put(
+        &mut frame,
+        TableRows::WarOwnedRelations(vec![replay_data::rows::WarOwnedRelationRow {
+            owner: 100,
+            retired: 1,
+            ..Default::default()
+        }]),
+    );
     // Every built-in modifier, each token spelling its script name.
     engine_executable::executable_tables::initialize_for_tests()
         .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
@@ -180,6 +189,7 @@ fn render_with(frame: &DecodedFrame, lookups: Result<&Lookups<'_>, String>) -> T
         ("ATTRITION_TOTAL", "total $TOT|%2$\n"),
         ("ATTRITION_UPKEEP", "upkeep $VALUE|%2$"),
         ("ATTRITION_TERRAIN", "terrain $TERR$ $ATT|%2$"),
+        ("ATTRITION_EQUIPMENT", "equipment $ATT|%2$"),
         ("ATTRITION_SUPPLY", "supply $ATT$"),
         ("TRAINING_ATTRITION", "train $VALUE$"),
         ("BORDER_WAR_HEADER", "border war"),
@@ -195,6 +205,7 @@ fn render_with(frame: &DecodedFrame, lookups: Result<&Lookups<'_>, String>) -> T
     let context = Context {
         nato: false,
         content: None,
+        reads: None,
         dig_in_factor: Err("unused".into()),
         loc: &loc,
         recorded_language: "english",
@@ -555,4 +566,48 @@ fn a_missing_status_row_refuses_the_total_by_name() {
             .copied(),
         Some(1)
     );
+}
+
+#[test]
+fn shared_membership_and_country_roots_replace_blanket_counter_refusals() {
+    use replay_data::{
+        rows::DivisionPanelSourceNode, rows::DivisionPanelSourceRow, rows::DivisionPanelSourceValue,
+    };
+    let mut frame = frame(5, 1, vec![7]);
+    let row = |kind, owner, ordinal, values| {
+        std::sync::Arc::new(DivisionPanelSourceRow {
+            kind,
+            owner,
+            ordinal,
+            node: Some(DivisionPanelSourceNode {
+                values,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    };
+    put(
+        &mut frame,
+        TableRows::DivisionPanelSources(vec![
+            row(0, 100, 0, Vec::new()),
+            row(
+                3,
+                70,
+                2,
+                vec![DivisionPanelSourceValue { key: 0, raw: 4_000 }],
+            ),
+            row(5, 1, 0, Vec::new()),
+            row(5, 1, 1, vec![DivisionPanelSourceValue { key: 0, raw: 70 }]),
+            row(5, 1, 4, vec![DivisionPanelSourceValue { key: 0, raw: 70 }]),
+        ]),
+    );
+    let out = rendered(&frame);
+    assert!(out.title.contains("equipment 8.00%"), "{}", out.title);
+    for line in [
+        "attrition equipment",
+        "attrition upkeep modifiers",
+        "attrition country modifiers",
+    ] {
+        assert!(!refused(&out, line), "{line}: {:?}", out.refused);
+    }
 }

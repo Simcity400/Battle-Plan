@@ -117,6 +117,16 @@ pub fn storage_demand(
     base: usize,
     state: usize,
 ) -> Result<[usize; 3], &'static str> {
+    storage_demand_with_country(memory, base, state, |_, _| Ok(()))
+}
+
+/// Share this existing sizing census with dependent holder storage.
+pub fn storage_demand_with_country(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut visit: impl FnMut(ccountry::Country, usize) -> Result<(), &'static str>,
+) -> Result<[usize; 3], &'static str> {
     let definitions = crate::cstrategic_resource_database::Reader::new(memory, base)?
         .count()
         .saturating_sub(1) as usize;
@@ -128,6 +138,7 @@ pub fn storage_demand(
             continue;
         };
         let manager = resources(memory, base, &countries, country)?;
+        visit(country, manager)?;
         let routes = manager
             .checked_add(IMPORT_ROUTES)
             .and_then(|at| Array::read(memory, at, 8))
@@ -179,7 +190,20 @@ pub fn walk_buffer(
     base: usize,
     game_state: usize,
     descriptors: &[cstrategic_resource::Row],
+    output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
+    walk_buffer_with_country(memory, base, game_state, descriptors, output, |_, _| {})
+}
+
+/// Visit each authenticated country/resource holder inside this census. The
+/// caller demand-filters any extra operands; no independent roster is walked.
+pub fn walk_buffer_with_country(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    descriptors: &[cstrategic_resource::Row],
     mut output: crate::walk::Buffer<'_, Row>,
+    mut visit: impl FnMut(ccountry::Country, usize),
 ) -> Outcome {
     let result = (|| {
         let count = u32::try_from(descriptors.len())
@@ -209,6 +233,7 @@ pub fn walk_buffer(
             };
             found_country = true;
             let pointer = resources_linked(memory, base, &countries, country, link)?;
+            visit(country, pointer);
             let pools = pools(memory, base, pointer, count)?;
             ahead = Ahead::read(
                 memory,

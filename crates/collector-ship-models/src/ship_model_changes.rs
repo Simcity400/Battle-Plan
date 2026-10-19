@@ -68,6 +68,13 @@ impl Watches {
         self.registry.notify(receiver)
     }
 
+    /// The existing refit patch also certifies the carrier-capacity predicate.
+    /// Other ship writers do not move this independent inline-field receiver.
+    pub fn capacity_refit(&self, ship: usize) -> Notification<'_> {
+        self.registry
+            .notify(ship.wrapping_add(engine_native::cship::MODULE_PREDICATE))
+    }
+
     /// An enabled domain with a table for `receivers` installed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn enabled(receivers: usize) -> Self {
@@ -424,7 +431,7 @@ impl Hooks {
         let mut hooks = Vec::new();
         if CARRY
             && MUTATIONS.iter().all(|site| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
             let callbacks: [usize; SITES] = [
@@ -448,6 +455,7 @@ impl Hooks {
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
+            crate::unit_history_changes::forwarder(false);
             WATCHES.registry.set_enabled(false);
             crate::air_base_carry_changes::forwarder(
                 crate::air_base_carry_changes::Forwarder::ShipModel,
@@ -466,6 +474,7 @@ impl Hooks {
         WATCHES
             .registry
             .set_enabled(enabled && !self.hooks.is_empty());
+        crate::unit_history_changes::forwarder(enabled && !self.hooks.is_empty());
         // The air base registrations observe base destruction only through
         // this family's destructor patch.
         crate::air_base_carry_changes::forwarder(
@@ -492,6 +501,8 @@ impl Drop for Hooks {
 unsafe fn forward(site: usize, arguments: [usize; 4]) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::ShipModelChanges);
     let _notification = WATCHES.notify(arguments[RECEIVER_ARGUMENT[site]], site);
+    let _history = (site == 5).then(|| crate::unit_history_changes::notify(arguments[0]));
+    let _capacity = (site == 1).then(|| WATCHES.capacity_refit(arguments[0]));
     // Air base destruction retires the base's registration vectors
     // ([`crate::air_base_carry_changes`]).
     let _carry = (site == DESTROY_AIR_BASE)
@@ -533,6 +544,24 @@ detours! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_refit_moves_the_independent_carrier_capacity_certificate() {
+        let watches = Watches::enabled(16);
+        let ship = 0x1000;
+        let receiver = ship + engine_native::cship::MODULE_PREDICATE;
+        let capacity = watches.sequence(receiver).unwrap();
+        for site in [0, 2, 3, 5] {
+            drop(watches.notify(ship, site));
+            assert_eq!(watches.sequence(receiver), Some(capacity));
+        }
+        let own = watches.sequence(ship).unwrap();
+        let notification = watches.capacity_refit(ship);
+        assert_eq!(watches.sequence(receiver), None);
+        drop(notification);
+        assert_ne!(watches.sequence(receiver), Some(capacity));
+        assert_eq!(watches.sequence(ship), Some(own));
+    }
 
     /// A writer moves only its receiver's certificate, so a ship's
     /// certificate moves with its own, its medal store's or its carrier

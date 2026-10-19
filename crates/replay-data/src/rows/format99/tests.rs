@@ -35,7 +35,10 @@ fn check_version<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(
         .fold(0, |mask, field| mask | (1 << field.index));
     assert_eq!(decoded.not_recorded_fields(), gaps);
     assert_eq!(decoded.recorded_fields_bytes().unwrap(), prefix.len());
-    assert!(decoded.encode_fields(&mut Vec::new()).is_err());
+    assert!(
+        decoded.encode_fields(&mut Vec::new()).is_err(),
+        "{table:?} at {version}"
+    );
     assert!(decoded.delta(None).is_err());
 
     let delta = row.delta(None).unwrap().unwrap();
@@ -55,6 +58,18 @@ fn check_version<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(
     assert_eq!(delta.apply::<T>(None).unwrap(), decoded);
 }
 
+fn check_current<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(table: TableId, row: T) {
+    assert_eq!(table.field_count(), T::SCHEMA.len());
+    let mut bytes = Vec::new();
+    row.encode_fields(&mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    assert_eq!(T::decode_fields(row.key(), &mut input).unwrap(), row);
+    input.finish().unwrap();
+    let delta = row.delta(None).unwrap().unwrap();
+    assert_eq!(delta.mask, table.full_mask());
+    assert_eq!(delta.apply::<T>(None).unwrap(), row);
+}
+
 #[test]
 fn format101_air_scenario_operands_keep_format99_absence_distinct_from_zero() {
     for version in [EFFECT_INPUTS_FORMAT, WIDGET_CAPTURE_FORMAT] {
@@ -64,15 +79,6 @@ fn format101_air_scenario_operands_keep_format99_absence_distinct_from_zero() {
             AirWingRow {
                 id: 7,
                 strategic_bombing_raw: Recorded::Value(Some(0)),
-                ..Default::default()
-            },
-        );
-        check_version(
-            version,
-            TableId::AirMissionInputs,
-            AirMissionInputRow {
-                wing: 7,
-                cas_ratio_raw: Recorded::Value(Some(0)),
                 ..Default::default()
             },
         );
@@ -184,7 +190,7 @@ fn widget_format_keeps_transport_fields_and_native_null_launch_not_recorded() {
 }
 
 #[test]
-fn format99_appends_leave_format98_prefixes_and_values_available() {
+fn format99_supported_prefixes_and_current_country_values_round_trip() {
     check98(
         TableId::CountryAppearance,
         CountryAppearanceRow {
@@ -265,7 +271,7 @@ fn format99_appends_leave_format98_prefixes_and_values_available() {
             ..Default::default()
         },
     );
-    check98(
+    check_current(
         TableId::CountryCounterInputs,
         CountryCounterInputRow {
             forward_visibility: crate::rows::Recorded::Value(None),
@@ -295,18 +301,6 @@ fn format99_appends_leave_format98_prefixes_and_values_available() {
         },
     );
     check98(
-        TableId::DivisionStatus,
-        DivisionStatusRow {
-            division: u64::MAX,
-            supply_grace_remaining: Recorded::Value(i64::MIN),
-            country_ordinal: Recorded::Value(Some(u32::MAX)),
-            invalid_orders_reason: Recorded::Value(Some(i32::MIN)),
-            dig_in_factor: Recorded::Value(Some(i64::MIN)),
-            name: Recorded::Value(Some(vec![0xff, 0, b'C'])),
-            ..Default::default()
-        },
-    );
-    check98(
         TableId::OrdersGroupCounterInputs,
         OrdersGroupCounterInputRow {
             group: u64::MAX,
@@ -318,6 +312,8 @@ fn format99_appends_leave_format98_prefixes_and_values_available() {
             attack: Default::default(),
             commander_attack: Default::default(),
             commander_movement: Default::default(),
+            hq_nearest_front: Default::default(),
+            template_context: Default::default(),
         },
     );
     check98(
@@ -455,7 +451,7 @@ fn format99_current_ideology_distinguishes_null_tokens_and_refusal() {
 }
 
 #[test]
-fn format99_invalid_order_reason_preserves_signed_bits_and_field_local_gaps() {
+fn invalid_order_reason_preserves_signed_bits_in_current_rows_and_deltas() {
     let old = DivisionStatusRow {
         division: u64::MAX,
         invalid_orders: 0xff,
@@ -484,7 +480,6 @@ fn format99_invalid_order_reason_preserves_signed_bits_and_field_local_gaps() {
         let delta = row.delta(Some(&old)).unwrap().unwrap();
         assert_eq!(delta.mask, 1 << 21);
         assert_eq!(delta.apply(Some(old.clone())).unwrap(), row);
-        check98(TableId::DivisionStatus, row);
     }
 }
 

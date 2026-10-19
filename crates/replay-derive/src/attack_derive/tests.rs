@@ -630,6 +630,9 @@ fn frame() -> DecodedFrame {
             friendly: 0,
             enemy: 30_000,
             impact: Default::default(),
+            friendly_missions: 0,
+            enemy_missions: 0,
+            air_spotting_scale: Some(0),
         }]),
     );
     frame

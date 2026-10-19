@@ -479,6 +479,8 @@ pub struct OrderVertex {
 /// One order's draw: its arrow type, its colour and its slice of the buffers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrderDraw {
+    /// Air map controls share this manager, independently of battle-plan switches.
+    pub air_mode: bool,
     pub arrow_type: String,
     pub texture_choice: usize,
     pub color: [f32; 4],
@@ -579,6 +581,8 @@ pub struct OrderReport {
     pub raid_arrows: RaidArrowReport,
     /// The trade-route lines' warning-area lines, drawn in this field's arrow manager.
     pub trade_routes: Vec<String>,
+    /// Air map arrows sharing the same type buckets.
+    pub air_orders: Vec<String>,
 }
 
 impl OrderReport {
@@ -632,6 +636,7 @@ impl OrderReport {
         }
         out.extend(self.raid_arrows.warnings());
         out.extend(self.trade_routes.iter().cloned());
+        out.extend(self.air_orders.iter().cloned());
         out
     }
 }
@@ -693,6 +698,165 @@ pub struct OrderAssets {
     /// The raid arrows' defines ([`super::raid_arrows`]), or why they
     /// cannot be read; the battle plan does not need them.
     pub raid_defines: Result<installed_content_raids::raids::RaidGraphicsDefines, String>,
+    pub radar: Result<SymbolPage, String>,
+    pub air_range: Result<SymbolPage, String>,
+    pub air_transfer: Result<SymbolPage, String>,
+}
+
+/// One map symbol definition and its runtime texture, through the recorded content stack.
+#[derive(Debug)]
+pub struct SymbolPage {
+    pub technique: String,
+    pub size: f32,
+    pub texture: dds::Texture,
+    /// Own, allied and selected colours.
+    pub colors: [[f32; 4]; 3],
+    /// Fixed5 angular step per presentation frame.
+    pub rotation: i64,
+}
+
+impl SymbolPage {
+    fn radar(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        recorded: &Defines,
+        graphics: &Defines,
+    ) -> io::Result<Self> {
+        Self::load(
+            layers,
+            decode,
+            recorded,
+            graphics,
+            "radar",
+            [
+                "RADAR_RANGE_COLOR",
+                "RADAR_RANGE_ALLIED_COLOR",
+                "RADAR_RANGE_SELECTED_COLOR",
+            ],
+            Some("RADAR_ROTATION_SPEED"),
+        )
+    }
+
+    fn air_range(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        recorded: &Defines,
+        graphics: &Defines,
+    ) -> io::Result<Self> {
+        Self::load(
+            layers,
+            decode,
+            recorded,
+            graphics,
+            "air_range",
+            [
+                "AIR_RANGE_INDICATOR_DEFAULT_COLOR",
+                "AIR_RANGE_INDICATOR_NO_WINGS_COLOR",
+                "AIR_RANGE_INDICATOR_DEFAULT_COLOR",
+            ],
+            Some("AIR_RANGE_INDICATOR_ROTATION_SPEED"),
+        )
+    }
+
+    fn air_transfer(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        recorded: &Defines,
+        graphics: &Defines,
+    ) -> io::Result<Self> {
+        Self::load(
+            layers,
+            decode,
+            recorded,
+            graphics,
+            "air_transfer_progress",
+            ["AIR_TRANSFER_ARROW_COLOR"; 3],
+            None,
+        )
+    }
+
+    fn load(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        recorded: &Defines,
+        graphics: &Defines,
+        symbol: &str,
+        colors: [&str; 3],
+        rotation: Option<&str>,
+    ) -> io::Result<Self> {
+        let document = parser::parse(&layers.read_uncovered(MAPARROWS)?)?;
+        let mut selected = None;
+        for declaration in document.get_all("symbolType").filter_map(Value::items) {
+            let mut name = String::new();
+            let mut technique = String::new();
+            let mut texture = String::new();
+            let mut size = 0.;
+            let mut text = false;
+            for entry in declaration {
+                match entry.key.as_deref() {
+                    Some(b"name") => name = entry.value.scalar_str().unwrap_or_default().into(),
+                    Some(b"technique") => {
+                        technique = entry.value.scalar_str().unwrap_or_default().into()
+                    }
+                    Some(b"texture") => {
+                        texture = entry.value.scalar_str().unwrap_or_default().into()
+                    }
+                    Some(b"size") => {
+                        size = entry
+                            .value
+                            .scalar_str()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0.)
+                    }
+                    Some(b"text") => text = true,
+                    _ => {}
+                }
+            }
+            if name == symbol {
+                selected = Some((technique, texture, size, text));
+            }
+        }
+        let (technique, texture, size, text) = selected
+            .ok_or_else(|| invalid(format!("maparrows declares no {symbol} symbolType")))?;
+        if text {
+            return Err(invalid(format!(
+                "{symbol} symbolType text attachments are not drawn"
+            )));
+        }
+        let texture = load_file(&texture, &|path| layers.read_uncovered_path(path), decode)?;
+        if texture.format != dds::TextureFormat::Rgba8 {
+            return Err(invalid(format!("{symbol} symbol texture: expected RGBA8")));
+        }
+        super::textures::check_upload("radar symbol", &texture, super::textures::ColorSpace::Srgb)?;
+        let (colors, rotation) =
+            layers.graphics_define("radar symbols", graphics, recorded, |defines| {
+                let color = |name| -> io::Result<[f32; 4]> {
+                    match defines.numbers("NMapMode", name)?.as_slice() {
+                        [r, g, b, a, ..] => Ok([*r as f32, *g as f32, *b as f32, *a as f32]),
+                        _ => Err(invalid(format!(
+                            "NMapMode.{name} is not a four-component colour"
+                        ))),
+                    }
+                };
+                let speed = rotation
+                    .map(|name| defines.number("NMapMode", name))
+                    .transpose()?
+                    .unwrap_or(0.) as f32;
+                let rotation =
+                    ((if speed >= 0. { 1. } else { 0. }) + speed * 100_000. - 0.5) as i64;
+                Ok::<_, io::Error>((
+                    [color(colors[0])?, color(colors[1])?, color(colors[2])?],
+                    rotation,
+                ))
+            })?;
+        Ok(Self {
+            technique,
+            size,
+            texture,
+            rotation,
+            colors,
+        })
+    }
 }
 
 /// One texture choice. Authored internal variants use vTextureVariantScale;
@@ -724,6 +888,7 @@ pub const DRAWN_ARROW_TYPES: &[&str] = &[
     "ag_move_thick",
     "invasion",
     "paradrop",
+    "air_mission_direction",
 ];
 
 impl OrderAssets {
@@ -797,6 +962,40 @@ impl OrderAssets {
             )
             .map_err(|error| error.to_string());
         Ok(Self {
+            air_transfer: layers
+                .artwork_item(
+                    "air transfer progress symbol",
+                    below.is_some(),
+                    |from_recording| {
+                        let stack = if from_recording {
+                            below.as_ref().unwrap_or(layers)
+                        } else {
+                            layers
+                        };
+                        SymbolPage::air_transfer(stack, decode, defines_source, graphics)
+                    },
+                )
+                .map_err(|error| error.to_string()),
+            air_range: layers
+                .artwork_item("air range symbol", below.is_some(), |from_recording| {
+                    let stack = if from_recording {
+                        below.as_ref().unwrap_or(layers)
+                    } else {
+                        layers
+                    };
+                    SymbolPage::air_range(stack, decode, defines_source, graphics)
+                })
+                .map_err(|e| e.to_string()),
+            radar: layers
+                .artwork_item("radar symbol", below.is_some(), |from_recording| {
+                    let stack = if from_recording {
+                        below.as_ref().unwrap_or(layers)
+                    } else {
+                        layers
+                    };
+                    SymbolPage::radar(stack, decode, defines_source, graphics)
+                })
+                .map_err(|e| e.to_string()),
             types,
             pages,
             defines,

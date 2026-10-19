@@ -1,4 +1,5 @@
 //! Event scope copies and description-only target storage.
+use crate::triggers::Failure;
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -27,7 +28,7 @@ pub(super) fn object(value: EventObject) -> Scope {
     }
 }
 
-pub(super) fn event_object(value: Scope) -> Result<EventObject, String> {
+pub(super) fn event_object(value: Scope) -> Result<EventObject, Failure> {
     Ok(match value {
         Scope::Country(id) => EventObject::Country(id),
         Scope::State(id) => EventObject::State(id),
@@ -45,7 +46,7 @@ pub(super) fn event_object(value: Scope) -> Result<EventObject, String> {
     })
 }
 
-pub(super) fn linked(graph: &EventScopes, at: usize, link: Link) -> Result<usize, String> {
+pub(super) fn linked(graph: &EventScopes, at: usize, link: Link) -> Result<usize, Failure> {
     match link {
         Link::Itself if at < graph.scopes.len() => Ok(at),
         Link::Scope(to) if to < graph.scopes.len() => Ok(to),
@@ -54,7 +55,7 @@ pub(super) fn linked(graph: &EventScopes, at: usize, link: Link) -> Result<usize
     }
 }
 
-fn terminal(graph: &EventScopes, mut at: usize, root: bool) -> Result<usize, String> {
+fn terminal(graph: &EventScopes, mut at: usize, root: bool) -> Result<usize, Failure> {
     // Both storage walks stop after 101 links.
     for _ in 0..101 {
         let current = graph.scopes.get(at).ok_or("event scope is not given")?;
@@ -74,7 +75,7 @@ fn lookup(rows: &[(Vec<u8>, EventObject)], name: &[u8]) -> Option<EventObject> {
 }
 
 /// Graph projection needs no World; unavailable operands are checked when read.
-pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, String> {
+pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, Failure> {
     let scope = graph.scopes.get(at).ok_or("event scope is not given")?;
     let selected = |link| {
         linked(graph, at, link)
@@ -111,7 +112,7 @@ pub(crate) fn project(graph: &EventScopes, at: usize) -> Result<Scopes, String> 
 }
 
 /// Outer completion is independent of whether an operand needed World.
-pub(crate) fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<(), String> {
+pub(crate) fn cleanup_description(graph: &mut EventScopes, at: usize) -> Result<(), Failure> {
     if !graph.tooltip_targets.is_empty() {
         let owner = terminal(graph, at, false)?;
         graph.tooltip_targets.remove(&owner);
@@ -125,7 +126,7 @@ pub(crate) fn event_tooltip_target(
     graph: &EventScopes,
     at: usize,
     name: &[u8],
-) -> Result<Option<EventObject>, String> {
+) -> Result<Option<EventObject>, Failure> {
     let owner = terminal(graph, at, false)?;
     Ok(graph
         .tooltip_targets
@@ -169,7 +170,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     /// Project only the immediate links; the cursor keeps deeper links intact.
-    pub fn event_scopes(&self, at: usize) -> Result<Scopes, String> {
+    pub fn event_scopes(&self, at: usize) -> Result<Scopes, Failure> {
         let binding = self.event_graph.borrow();
         let graph = binding
             .as_ref()
@@ -198,7 +199,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     /// Clear only terminal FROM storage and global tooltip targets.
-    pub fn end_description(&self, scopes: Scopes) -> Result<(), String> {
+    pub fn end_description(&self, scopes: Scopes) -> Result<(), Failure> {
         let depth = self.description_depth.get();
         if depth == 0 {
             return Err("description session was not opened".into());
@@ -217,7 +218,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     /// Save the current object on terminal ROOT.
-    pub fn save_tooltip_target(&self, name: &[u8], scopes: Scopes) -> Result<(), String> {
+    pub fn save_tooltip_target(&self, name: &[u8], scopes: Scopes) -> Result<(), Failure> {
         let at = scopes
             .cursor
             .ok_or("description target needs caller scope graph")?;
@@ -260,7 +261,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         &self,
         name: &[u8],
         scopes: Scopes,
-    ) -> Result<(), String> {
+    ) -> Result<(), Failure> {
         let at = scopes
             .cursor
             .ok_or("global description target needs caller scope graph")?;
@@ -308,7 +309,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         name: &[u8],
         reader: Reader,
         scopes: Scopes,
-    ) -> Result<Option<Scope>, String> {
+    ) -> Result<Option<Scope>, Failure> {
         let Some(at) = scopes.cursor else {
             return Ok(None);
         };
@@ -335,7 +336,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         }))
     }
 
-    pub(super) fn local_saved_exists(&self, name: &[u8], scopes: Scopes) -> Result<bool, String> {
+    pub(super) fn local_saved_exists(&self, name: &[u8], scopes: Scopes) -> Result<bool, Failure> {
         let Some(at) = scopes.cursor else {
             return Ok(false);
         };
@@ -369,7 +370,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         &self,
         parsed: &Parsed,
         scopes: Scopes,
-    ) -> Result<Option<Scopes>, String> {
+    ) -> Result<Option<Scopes>, Failure> {
         let at = scopes.cursor.ok_or("scope graph cursor is missing")?;
         {
             let binding = self.event_graph.borrow();
@@ -427,18 +428,21 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             let graph = binding.as_ref().ok_or("scope graph is missing")?.borrow();
             match parsed {
                 Parsed::Keyword(Keyword::This) => Some(at),
-                Parsed::Keyword(Keyword::Root) => Some(
-                    linked(&graph, at, graph.scopes[at].root)
-                        .map_err(|why| format!("ROOT is not known here: {why}"))?,
-                ),
-                Parsed::Keyword(Keyword::From) => Some(
-                    linked(&graph, at, graph.scopes[at].from)
-                        .map_err(|why| format!("FROM is not known here: {why}"))?,
-                ),
-                Parsed::Keyword(Keyword::Prev) => Some(
-                    linked(&graph, at, graph.scopes[at].prev)
-                        .map_err(|why| format!("PREV is not known here: {why}"))?,
-                ),
+                Parsed::Keyword(Keyword::Root) => {
+                    Some(linked(&graph, at, graph.scopes[at].root).map_err(|why| {
+                        why.context(|why| format!("ROOT is not known here: {why}"))
+                    })?)
+                }
+                Parsed::Keyword(Keyword::From) => {
+                    Some(linked(&graph, at, graph.scopes[at].from).map_err(|why| {
+                        why.context(|why| format!("FROM is not known here: {why}"))
+                    })?)
+                }
+                Parsed::Keyword(Keyword::Prev) => {
+                    Some(linked(&graph, at, graph.scopes[at].prev).map_err(|why| {
+                        why.context(|why| format!("PREV is not known here: {why}"))
+                    })?)
+                }
                 _ => None,
             }
         };
@@ -480,7 +484,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.event_scopes(index).map(Some)
     }
 
-    fn copy_scope(&self, scopes: Scopes, source: usize, this: Scope) -> Result<usize, String> {
+    fn copy_scope(&self, scopes: Scopes, source: usize, this: Scope) -> Result<usize, Failure> {
         let caller = scopes.cursor.ok_or("scope graph cursor is missing")?;
         let binding = self.event_graph.borrow();
         let mut graph = binding
@@ -516,7 +520,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         &self,
         country: Option<u32>,
         from: Option<Scopes>,
-    ) -> Result<Scopes, String> {
+    ) -> Result<Scopes, Failure> {
         let binding = self.event_graph.borrow();
         // Default construction keeps country zero.
         let this = EventObject::Country(country.unwrap_or(0));
@@ -571,7 +575,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     /// Set each target on the same copied scope.
-    pub(crate) fn repoint_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, String> {
+    pub(crate) fn repoint_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, Failure> {
         let Some(at) = scopes.cursor else {
             return Ok(scopes.with_this(this));
         };
@@ -590,7 +594,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
     }
 
     /// Collection setters keep caller ROOT/FROM and install PREV.
-    pub fn with_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, String> {
+    pub fn with_this(&self, scopes: Scopes, this: Scope) -> Result<Scopes, Failure> {
         let Some(at) = scopes.cursor else {
             return Ok(scopes.with_this(this));
         };
@@ -608,7 +612,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         scopes: Scopes,
         this: Scope,
         terminal: bool,
-    ) -> Result<Scopes, String> {
+    ) -> Result<Scopes, Failure> {
         let Some(caller) = scopes.cursor else {
             return Err("collection description needs its event graph".into());
         };

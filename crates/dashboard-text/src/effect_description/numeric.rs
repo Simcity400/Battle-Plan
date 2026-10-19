@@ -163,7 +163,8 @@ impl Renderer<'_, '_, '_> {
         };
         let Some(target) = self
             .evaluator()?
-            .scoped_country(scalar_operand(target)?, scopes)?
+            .scoped_country(scalar_operand(target)?, scopes)
+            .map_err(|why| why.to_string())?
             .filter(|target| *target > 0)
         else {
             return Ok(String::new());
@@ -194,7 +195,8 @@ impl Renderer<'_, '_, '_> {
         };
         let Some(target) = self
             .evaluator()?
-            .scoped_country(scalar_operand(target)?, scopes)?
+            .scoped_country(scalar_operand(target)?, scopes)
+            .map_err(|why| why.to_string())?
             .filter(|target| *target > 0)
         else {
             return Ok(String::new());
@@ -238,7 +240,13 @@ impl Renderer<'_, '_, '_> {
         else {
             return Ok(String::new());
         };
-        if source == 0 || !self.context.world()?.exists(source)? {
+        if source == 0
+            || !self
+                .context
+                .world()?
+                .exists(source)
+                .map_err(|why| why.to_string())?
+        {
             return Ok(String::new());
         }
         let Some(target) = field(children(item), "target") else {
@@ -246,12 +254,18 @@ impl Renderer<'_, '_, '_> {
         };
         let Some(target) = self
             .evaluator()?
-            .scoped_country(scalar_operand(target)?, scopes)?
+            .scoped_country(scalar_operand(target)?, scopes)
+            .map_err(|why| why.to_string())?
             .filter(|target| *target > 0)
         else {
             return Ok(String::new());
         };
-        if !self.context.world()?.exists(target)? {
+        if !self
+            .context
+            .world()?
+            .exists(target)
+            .map_err(|why| why.to_string())?
+        {
             return Ok(String::new());
         }
         let mut values = Vec::new();

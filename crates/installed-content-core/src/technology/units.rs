@@ -13,7 +13,7 @@ use crate::{
 };
 
 #[derive(Default)]
-pub(super) struct Registry {
+pub(crate) struct Registry {
     pub units: BTreeSet<Vec<u8>>,
     pub categories: BTreeSet<Vec<u8>>,
     pub terrains: BTreeSet<Vec<u8>>,
@@ -21,7 +21,7 @@ pub(super) struct Registry {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum Node {
+pub(crate) enum Node {
     File,
     Units,
     Unit,

@@ -178,120 +178,26 @@ pub fn walk_buffer(
                 .and_then(|p| usize::try_from(p).ok())
                 .filter(|&p| p != 0)
                 .ok_or("sunk-ship history pointer unreadable or null")?;
-            let raw =
-                read::<[u8; SIZE]>(memory, pointer).ok_or("sunk-ship history record unreadable")?;
-            if u64_at(&raw, 0)
-                != base
-                    .checked_add(VTABLE_RVA)
-                    .ok_or("module address overflow")? as u64
-            {
-                return Err("sunk-ship history vtable mismatch");
-            }
-            if u64_at(&raw, SINK_DATE)
-                != base
-                    .checked_add(cgame_date::VTABLE_RVA)
-                    .ok_or("module address overflow")? as u64
-                || u64_at(&raw, SINK_DATE_PERSISTENT)
-                    != base
-                        .checked_add(cgame_date::PERSISTENT_VTABLE_RVA)
-                        .ok_or("module address overflow")? as u64
-            {
-                return Err("sunk-ship history date vtable mismatch");
-            }
-            let sink_hour = u32_at(&raw, SINK_HOUR) as i32;
-            if sink_hour <= 0 || sink_hour > current_hour {
-                return Err("sunk-ship history date outside recorded hour");
-            }
-            if raw[CAUSE_RECORD] > 1 || raw[ASSISTED_KILL] > 1 {
-                return Err("sunk-ship history boolean invalid");
-            }
-            let (class_token, class_text) = class(memory, base, u64_at(&raw, SHIP_CLASS))?;
-            let attribution = u64_at(&raw, ATTRIBUTION_CLASS);
-            let (attribution_class_token, attribution_text) = if attribution == 0 {
-                (0, Source::default())
-            } else {
-                class(memory, base, attribution)?
-            };
-            let sources = [
-                string(memory, pointer + SHIP_NAME, &raw[SHIP_NAME..VICTIM_COUNTRY])?,
-                string(
-                    memory,
-                    pointer + ATTRIBUTION_SOURCE_NAME,
-                    &raw[ATTRIBUTION_SOURCE_NAME..VICTIM_COUNTRY],
-                )?,
-                class_text,
-                attribution_text,
-            ];
-            let required_bytes = sources.iter().try_fold(bytes_len, |total, source| {
-                total
-                    .checked_add(source.len)
-                    .ok_or("sunk-ship text size overflow")
-            })?;
-            bytes.ensure(required_bytes)?;
-            if required_bytes > bytes.len() {
-                return Ok(ListWalk {
-                    outcome: Outcome::Truncated {
-                        len,
-                        unread_rows: array.count - index,
-                    },
-                    bytes_len,
-                    required_bytes,
-                });
-            }
-            let mut ranges = [TextRange::default(); 4];
-            for (source, range) in sources.into_iter().zip(&mut ranges) {
-                if !read_slice(
-                    memory,
-                    source.pointer,
-                    &mut bytes[bytes_len..bytes_len + source.len],
-                ) {
-                    return Err("sunk-ship text bytes unreadable");
+            match read_record(
+                memory,
+                base,
+                pointer,
+                Some(current_hour),
+                &mut bytes,
+                &mut bytes_len,
+            )? {
+                RecordRead::Ready(record) => output[len] = record,
+                RecordRead::NeedsBytes(required_bytes) => {
+                    return Ok(ListWalk {
+                        outcome: Outcome::Truncated {
+                            len,
+                            unread_rows: array.count - index,
+                        },
+                        bytes_len,
+                        required_bytes,
+                    });
                 }
-                *range = TextRange {
-                    start: bytes_len,
-                    len: source.len,
-                };
-                bytes_len += source.len;
             }
-            let province_pointer = u64_at(&raw, PROVINCE);
-            let province = if province_pointer == 0 {
-                0
-            } else {
-                let province_pointer = usize::try_from(province_pointer)
-                    .map_err(|_| "sunk-ship province pointer overflow")?;
-                if read::<u64>(memory, province_pointer)
-                    != Some(
-                        base.checked_add(cprovince::VTABLE_RVA)
-                            .ok_or("module address overflow")? as u64,
-                    )
-                {
-                    return Err("sunk-ship province vtable mismatch");
-                }
-                province_pointer
-                    .checked_add(cprovince::ID)
-                    .and_then(|p| read::<u32>(memory, p))
-                    .ok_or("sunk-ship province id unreadable")?
-            };
-            output[len] = Record {
-                ship_name: ranges[0],
-                attribution_name: ranges[1],
-                class_name: ranges[2],
-                attribution_class_name: ranges[3],
-                victim_country: u32_at(&raw, VICTIM_COUNTRY),
-                attacker_country: u32_at(&raw, ATTACKER_COUNTRY),
-                sink_hour,
-                class_token,
-                attribution_class_token,
-                attribution_class_present: u8::from(attribution != 0),
-                model_level: u32_at(&raw, MODEL_LEVEL) as i32,
-                victim_equipment_variant: u64_at(&raw, VICTIM_EQUIPMENT_VARIANT),
-                damage_source_reference: u64_at(&raw, DAMAGE_SOURCE_REFERENCE),
-                province,
-                province_present: u8::from(province_pointer != 0),
-                battle: u64_at(&raw, BATTLE),
-                cause_record: raw[CAUSE_RECORD],
-                assisted_kill: raw[ASSISTED_KILL],
-            };
         }
         Ok(ListWalk {
             outcome: Outcome::Rows {
@@ -310,6 +216,148 @@ pub fn walk_buffer(
 
 /// Row/full-string floors for attach/cadence only. Serialization emits both
 /// retained strings and selected class names for each occurrence.
+enum RecordRead {
+    Ready(Record),
+    NeedsBytes(usize),
+}
+
+/// One embedded sunk-ship record, independent of the global retained list's
+/// pruning/date admission. The caller supplies its lifetime certificate.
+pub fn read_one_growing(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    bytes: &mut Vec<u8>,
+) -> Result<(Record, usize), &'static str> {
+    let mut used = 0;
+    match read_record(
+        memory,
+        base,
+        pointer,
+        None,
+        &mut crate::walk::Buffer::Growing(bytes),
+        &mut used,
+    )? {
+        RecordRead::Ready(record) => Ok((record, used)),
+        RecordRead::NeedsBytes(_) => Err("embedded sunk-ship text capacity exhausted"),
+    }
+}
+
+fn read_record(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    current_hour: Option<i32>,
+    bytes: &mut crate::walk::Buffer<'_, u8>,
+    bytes_len: &mut usize,
+) -> Result<RecordRead, &'static str> {
+    let mut used = *bytes_len;
+    let raw = read::<[u8; SIZE]>(memory, pointer).ok_or("sunk-ship history record unreadable")?;
+    if u64_at(&raw, 0)
+        != base
+            .checked_add(VTABLE_RVA)
+            .ok_or("module address overflow")? as u64
+    {
+        return Err("sunk-ship history vtable mismatch");
+    }
+    if u64_at(&raw, SINK_DATE)
+        != base
+            .checked_add(cgame_date::VTABLE_RVA)
+            .ok_or("module address overflow")? as u64
+        || u64_at(&raw, SINK_DATE_PERSISTENT)
+            != base
+                .checked_add(cgame_date::PERSISTENT_VTABLE_RVA)
+                .ok_or("module address overflow")? as u64
+    {
+        return Err("sunk-ship history date vtable mismatch");
+    }
+    let sink_hour = u32_at(&raw, SINK_HOUR) as i32;
+    if current_hour.is_some_and(|hour| sink_hour <= 0 || sink_hour > hour) {
+        return Err("sunk-ship history date outside recorded hour");
+    }
+    if raw[CAUSE_RECORD] > 1 || raw[ASSISTED_KILL] > 1 {
+        return Err("sunk-ship history boolean invalid");
+    }
+    let (class_token, class_text) = class(memory, base, u64_at(&raw, SHIP_CLASS))?;
+    let attribution = u64_at(&raw, ATTRIBUTION_CLASS);
+    let (attribution_class_token, attribution_text) = if attribution == 0 {
+        (0, Source::default())
+    } else {
+        class(memory, base, attribution)?
+    };
+    let sources = [
+        string(memory, pointer + SHIP_NAME, &raw[SHIP_NAME..VICTIM_COUNTRY])?,
+        string(
+            memory,
+            pointer + ATTRIBUTION_SOURCE_NAME,
+            &raw[ATTRIBUTION_SOURCE_NAME..VICTIM_COUNTRY],
+        )?,
+        class_text,
+        attribution_text,
+    ];
+    let required_bytes = sources.iter().try_fold(used, |total, source| {
+        total
+            .checked_add(source.len)
+            .ok_or("sunk-ship text size overflow")
+    })?;
+    bytes.ensure(required_bytes)?;
+    if required_bytes > bytes.len() {
+        return Ok(RecordRead::NeedsBytes(required_bytes));
+    }
+    let mut ranges = [TextRange::default(); 4];
+    for (source, range) in sources.into_iter().zip(&mut ranges) {
+        if !read_slice(memory, source.pointer, &mut bytes[used..used + source.len]) {
+            return Err("sunk-ship text bytes unreadable");
+        }
+        *range = TextRange {
+            start: used,
+            len: source.len,
+        };
+        used += source.len;
+    }
+    let province_pointer = u64_at(&raw, PROVINCE);
+    let province = if province_pointer == 0 {
+        0
+    } else {
+        let province_pointer =
+            usize::try_from(province_pointer).map_err(|_| "sunk-ship province pointer overflow")?;
+        if read::<u64>(memory, province_pointer)
+            != Some(
+                base.checked_add(cprovince::VTABLE_RVA)
+                    .ok_or("module address overflow")? as u64,
+            )
+        {
+            return Err("sunk-ship province vtable mismatch");
+        }
+        province_pointer
+            .checked_add(cprovince::ID)
+            .and_then(|p| read::<u32>(memory, p))
+            .ok_or("sunk-ship province id unreadable")?
+    };
+    let record = Record {
+        ship_name: ranges[0],
+        attribution_name: ranges[1],
+        class_name: ranges[2],
+        attribution_class_name: ranges[3],
+        victim_country: u32_at(&raw, VICTIM_COUNTRY),
+        attacker_country: u32_at(&raw, ATTACKER_COUNTRY),
+        sink_hour,
+        class_token,
+        attribution_class_token,
+        attribution_class_present: u8::from(attribution != 0),
+        model_level: u32_at(&raw, MODEL_LEVEL) as i32,
+        victim_equipment_variant: u64_at(&raw, VICTIM_EQUIPMENT_VARIANT),
+        damage_source_reference: u64_at(&raw, DAMAGE_SOURCE_REFERENCE),
+        province,
+        province_present: u8::from(province_pointer != 0),
+        battle: u64_at(&raw, BATTLE),
+        cause_record: raw[CAUSE_RECORD],
+        assisted_kill: raw[ASSISTED_KILL],
+    };
+    *bytes_len = used;
+    Ok(RecordRead::Ready(record))
+}
+
 pub fn storage_demand(
     memory: &impl Memory,
     base: usize,
@@ -586,6 +634,43 @@ mod tests {
             rows,
             arena,
         )
+    }
+
+    #[test]
+    fn experience_embedded_record_keeps_its_own_date_without_global_list_admission() {
+        let mut memory = fixture();
+        put(&mut memory, FIRST + SINK_HOUR, &0_i32.to_le_bytes());
+        assert!(matches!(
+            capture(&memory, &mut [Record::default(); 2], &mut [0; 128]).outcome,
+            Outcome::Unavailable {
+                reason: "sunk-ship history date outside recorded hour"
+            }
+        ));
+        let source = SliceMemory {
+            base: 0,
+            bytes: &memory,
+        };
+        let mut text = Vec::new();
+        let (record, len) = read_one_growing(&source, 0, FIRST, &mut text).unwrap();
+        assert_eq!(record.sink_hour, 0);
+        assert_eq!(
+            &text[record.ship_name.start..record.ship_name.start + record.ship_name.len],
+            b"First"
+        );
+        assert!(len <= text.len());
+        put(&mut memory, FIRST, &0_u64.to_le_bytes());
+        assert_eq!(
+            read_one_growing(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &memory
+                },
+                0,
+                FIRST,
+                &mut text
+            ),
+            Err("sunk-ship history vtable mismatch")
+        );
     }
 
     #[test]

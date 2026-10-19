@@ -26,6 +26,7 @@ pub(super) fn opened(frames: Vec<DecodedFrame>) -> Source {
 
 fn params(measure: ArmyMeasure, count_for: ArmyAttribution) -> ArmySizeParams {
     ArmySizeParams {
+        template_at: None,
         branch_id: "1".into(),
         tags: vec!["origin".into(), "host".into(), "empty".into()],
         top: None,

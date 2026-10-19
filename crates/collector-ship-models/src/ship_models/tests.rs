@@ -41,7 +41,7 @@ fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {
         frame.tables[TABLES[0].index()] = table;
         frame
     };
-    for change in 0..30 {
+    for change in 0..34 {
         let mut current = fixture();
         match change {
             0 => {}
@@ -87,6 +87,10 @@ fn projection_compares_every_model_field_and_preserves_encoded_boundaries() {
             27 => current.rows.rows[0].anti_air_base = i64::MIN,
             28 => current.rows.rows[0].subunit_index = Some(i32::MIN),
             29 => current.rows.rows[0].subunit_index = Some(0),
+            30 => current.rows.rows[0].has_criticals = Some(0),
+            31 => current.rows.rows[0].has_criticals = Some(1),
+            32 => current.rows.rows[0].air_capacity_kind = Some(1),
+            33 => current.rows.rows[0].air_capacity_kind = Some(2),
             _ => unreachable!(),
         }
         let mut baseline = frame(1, 100, fixture().table_inputs(None));

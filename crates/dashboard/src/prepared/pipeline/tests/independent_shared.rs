@@ -456,9 +456,10 @@ fn families_reading_together_refuse_where_each_reading_alone_refuses() {
     }
 }
 
-/// Prepared together, every block is read once for all three families, none
-/// reads a block alone, and each observes every recorded hour once; reading
-/// alone, as before, no block is read for them together.
+/// Prepared together, every block is read once for all three families, by a
+/// dedicated reader or a pre-pass task depositing its read. None reads a block
+/// alone, and each observes every recorded hour once; reading alone, as before,
+/// no block is read for them together.
 #[test]
 fn each_block_is_read_once_for_every_family_observing_it_hour_by_hour() {
     let replay = full();
@@ -497,7 +498,7 @@ fn each_block_is_read_once_for_every_family_observing_it_hour_by_hour() {
             prepass::noted(shared::SHARED_READ) - reads + prepass::noted(shared::SHARED_DEPOSITED)
                 - deposited,
             replay.index.len(),
-            "{label}: every block read once for all three families"
+            "{label}: every block read once for all three families, by a reader or deposited task"
         );
         assert_eq!(
             prepass::noted(shared::SHARED_ALONE) - apart,
@@ -515,19 +516,21 @@ fn each_block_is_read_once_for_every_family_observing_it_hour_by_hour() {
     }
     let source = fixture.source(revision);
     let reads = prepass::noted(shared::SHARED_READ);
+    let deposits = prepass::noted(shared::SHARED_DEPOSITED);
     alone(|| prepass::with_test_prepass(2, None, || families(|| plain(&source))));
     assert_eq!(
-        prepass::noted(shared::SHARED_READ) - reads,
+        (prepass::noted(shared::SHARED_READ) - reads)
+            + (prepass::noted(shared::SHARED_DEPOSITED) - deposits),
         0,
-        "read alone, no block is read for them together"
+        "read alone, no block is read or deposited for them together"
     );
     clear(source);
 }
 
 /// With no read-ahead budget only each family's next block is read ahead,
-/// and the families publish the same. A measured run times the shared reads
-/// apart (one per block), and each evaluated family's own read row still
-/// counts one read per block.
+/// and the families publish the same. A measured run times dedicated shared
+/// reads apart from task deposits (together one per block), and each evaluated
+/// family's own read row still counts one read per block.
 #[test]
 fn shared_reads_hold_to_their_budget_and_are_timed_apart() {
     let replay = full();
@@ -562,7 +565,6 @@ fn shared_reads_hold_to_their_budget_and_are_timed_apart() {
         blocks,
         "shared reads, including those deposited by the pre-pass"
     );
-    let row = "occupation.read";
-    assert_eq!(rows[row].calls, blocks, "{row}");
+    assert_eq!(rows["occupation.read"].calls, blocks, "occupation.read");
     clear(source);
 }

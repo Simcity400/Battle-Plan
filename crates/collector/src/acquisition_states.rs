@@ -8,7 +8,9 @@ use crate::{acquisition_gather, extended::state_flags, sampling};
 use engine_native::{Memory, cstate, walk::Outcome};
 use engine_railways::crailway_manager::fresh_inputs;
 
+mod occupation;
 mod state_store;
+pub(crate) use occupation::Store as OccupationStore;
 pub(crate) use state_store::StateStore;
 
 pub(crate) struct Request {
@@ -18,13 +20,17 @@ pub(crate) struct Request {
     pub inputs: Inputs,
     /// The held rows, lent by the callback; absent reads every state.
     pub store: Option<Box<StateStore>>,
+    pub countries: Option<std::sync::Arc<engine_native::country_memory::Cache>>,
+    pub occupation_store: Option<Box<OccupationStore>>,
 }
 
-/// Numeric supplement only; the existing visitor owns all callback pointers.
+/// State supplements acquired from the existing visitor; occupation receiver identities
+/// survive only under their writer certificates.
 pub(crate) struct Inputs {
     rows: Vec<fresh_inputs::StateFractionRow>,
     outcome: Outcome,
     required: usize,
+    pub(crate) occupation: occupation::Occupation,
 }
 
 impl Default for Inputs {
@@ -35,6 +41,7 @@ impl Default for Inputs {
                 reason: "clock unavailable",
             },
             required: 0,
+            occupation: Default::default(),
         }
     }
 }
@@ -48,6 +55,7 @@ impl Inputs {
     }
 
     pub(crate) fn reset(&mut self) {
+        self.occupation.reset();
         self.outcome = Outcome::Unavailable {
             reason: "clock unavailable",
         };
@@ -55,6 +63,7 @@ impl Inputs {
     }
 
     pub(crate) fn fail(&mut self, reason: &'static str) {
+        self.occupation.fail(reason);
         self.outcome = Outcome::Unavailable { reason };
     }
 
@@ -72,6 +81,7 @@ impl Inputs {
 
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.rows.capacity() * std::mem::size_of::<fresh_inputs::StateFractionRow>()
+            + self.occupation.bytes()
     }
 
     fn acquire(
@@ -237,6 +247,7 @@ impl Names {
 pub(crate) struct Report {
     pub census: acquisition_gather::Report,
     pub ticks: i64,
+    pub occupation_ticks: i64,
 }
 impl Report {
     pub(crate) fn failed(reason: &'static str) -> Self {
@@ -245,6 +256,7 @@ impl Report {
                 result: Outcome::Unavailable { reason },
             },
             ticks: 0,
+            occupation_ticks: 0,
         }
     }
 }
@@ -266,6 +278,8 @@ impl Request {
             visitor,
             inputs,
             store,
+            countries,
+            occupation_store,
         } = self;
         let (base, game_state) = (census.base, census.game_state);
         let begin = sampling::qpc();
@@ -303,11 +317,19 @@ impl Request {
             cstate::read_continents(memory, base, game_state, outcome, rows);
             let outcome =
                 cstate::read_movement_infrastructure(memory, base, game_state, outcome, rows);
-            let walk = if growing {
-                cstate::read_names_growing(memory, game_state, outcome, rows, &mut names.bytes)
-            } else {
-                cstate::read_names(memory, game_state, outcome, rows, &mut names.bytes)
-            };
+            let walk = cstate::read_names_carried_scripted(
+                memory,
+                game_state,
+                outcome,
+                rows,
+                engine_native::walk::Buffer::for_worker(&mut names.bytes, growing),
+                |_| None,
+                |id| {
+                    store
+                        .as_deref()
+                        .map_or((false, false), |store| store.scripted(id))
+                },
+            );
             names.len = walk.bytes_len;
             names.required = walk.required_bytes;
             inputs.acquire(memory, base, visitor, growing);
@@ -318,10 +340,35 @@ impl Request {
             walk.outcome
         });
         let ticks = sampling::qpc() - begin;
+        let occupation_begin = sampling::qpc();
+        let (sources, source_outcome, _) = visitor.completed_sources();
+        {
+            let _reads = crate::read_accounting::table(replay_data::rows::TableId::StateResistance);
+            if let Some(store) = occupation_store.as_deref_mut() {
+                if let Some(countries) = countries.as_deref() {
+                    let cached = countries.view(memory);
+                    store.acquire(
+                        &cached,
+                        base,
+                        game_state,
+                        sources,
+                        source_outcome,
+                        Some(countries),
+                    );
+                } else {
+                    store.acquire(memory, base, game_state, sources, source_outcome, None);
+                }
+                inputs.occupation.publish(store);
+            } else {
+                inputs.occupation.reset();
+            }
+        }
+        let occupation_ticks = sampling::qpc() - occupation_begin;
         visitor.acquire_owned(memory, base, game_state, growing);
         Report {
             census: report,
             ticks,
+            occupation_ticks,
         }
     }
 }
@@ -500,6 +547,8 @@ pub(crate) mod tests {
             visitor: state_flags::Captured::with_capacities(&flags),
             inputs: Inputs::default(),
             store: None,
+            countries: None,
+            occupation_store: None,
         }
     }
 
@@ -831,6 +880,12 @@ pub(crate) mod tests {
         });
         assert_eq!(request.inputs.required(), 0);
         frame.restore_states_request(request, Report::default(), Some("states worker panicked"));
+        assert_eq!(
+            frame.state_inputs.occupation.outcome(),
+            Outcome::Unavailable {
+                reason: "states worker panicked",
+            }
+        );
         assert_eq!(frame.state_inputs.required(), 4097);
         assert_eq!(frame.state_inputs.fraction(1), None);
         let visitor = frame.extended.take_state_visitor();

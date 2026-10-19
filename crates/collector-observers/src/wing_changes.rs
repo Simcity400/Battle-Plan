@@ -15,8 +15,8 @@ use crate::{
     hook::Hook,
     watch_registry::{Notification, WatchRegistry},
 };
-use engine_mutations::{
-    air_wing_equipment_mutations::MUTATIONS, air_wing_equipment_mutations::pools,
+use engine_mutations::air_wing_equipment_mutations::{
+    ATTACHMENT_COVERAGE, MAP_MUTATIONS, MISSION, MUTATIONS, TRAINING_STOP, pools,
 };
 use engine_native::Memory;
 use std::{
@@ -26,6 +26,8 @@ use std::{
 
 const SITES: usize = MUTATIONS.len();
 static WATCHES: Watches = Watches::new();
+static MAP_ORIGINAL: [AtomicUsize; MAP_MUTATIONS.len()] =
+    [const { AtomicUsize::new(0) }; MAP_MUTATIONS.len()];
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
 /// Reused, read, verified and mismatched wings; reused and read rows.
 static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
@@ -167,11 +169,21 @@ impl Changes for Observer {
 
 /// Whether captures read every carryable wing afresh and compare, rather
 /// than the hour's sampled slice ([`crate::sampled_verify`]).
+/// A flag receiver is its inline address, distinct from any equipment pool.
+/// These notifications never invalidate WingEquipment certificates.
+pub fn map_sequence(address: usize) -> Option<(u64, u64)> {
+    WATCHES.registry.sequence(address)
+}
+/// Guards initial reference resolution before its lifetime receiver is registered.
+pub fn map_quiet() -> Option<(u64, u64)> {
+    WATCHES.registry.quiet()
+}
+
 pub const VERIFY: bool = cfg!(feature = "wing_verify");
 
 /// Notifications running now.
 pub fn active() -> usize {
-    WATCHES.registry.active()
+    WATCHES.registry.active() + crate::wing_preferences::active()
 }
 
 /// The equipment-destruction family's `air` detour, on every path before
@@ -184,6 +196,7 @@ pub fn kill_airplanes(wing: usize) -> Option<Notification<'static>> {
 /// detour is live: after enabling its writers with that site installed, and
 /// before disabling them.
 pub fn observe_kills(observed: bool) {
+    crate::crew_changes::observe_kills(observed);
     WATCHES.set_kills_observed(observed);
 }
 
@@ -191,6 +204,9 @@ pub fn observe_kills(observed: bool) {
 /// after a load, gap or recovery: nothing observed before it certifies
 /// anything.
 pub fn boundary(invalidate: bool) {
+    if invalidate {
+        crate::wing_preferences::invalidate();
+    }
     WATCHES.registry.boundary(invalidate);
 }
 
@@ -200,7 +216,9 @@ pub fn boundary(invalidate: bool) {
 pub fn presize() {
     let wings = WINGS.load(Ordering::Relaxed);
     if wings != 0 {
-        WATCHES.registry.offer(wings);
+        // Pool, stop, coverage, raid reference, a distinct live raid lifetime,
+        // and at most one distinct incoming destination per wing.
+        WATCHES.registry.offer(wings.saturating_mul(6));
     }
 }
 
@@ -274,6 +292,7 @@ pub fn status() -> impl serde::Serialize {
         "reused_rows": reads[4],
         "read_rows": reads[5],
         "events": events,
+        "replacement_preference": crate::wing_preferences::status(),
         "kill_airplanes": WATCHES.kills.load(Ordering::Relaxed),
         "kills_observed": WATCHES.kills_observed.load(Ordering::SeqCst),
         "watches": WATCHES.registry.status(),
@@ -283,7 +302,13 @@ pub fn status() -> impl serde::Serialize {
 
 pub struct Hooks {
     hooks: Vec<Hook>,
+    preferences: crate::wing_preferences::Hooks,
 }
+
+pub(crate) fn publish_preference_lifetime(enabled: bool, installed: usize) {
+    crate::wing_preferences::lifetime_enabled(enabled && installed == SITES + MAP_MUTATIONS.len());
+}
+
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
     /// A differing sentinel leaves the family uninstalled; WingEquipment then
@@ -301,9 +326,14 @@ impl Hooks {
         let mut hooks = Vec::new();
         if cfg!(feature = "wing_changes")
             && MUTATIONS.iter().all(|(site, _)| {
-                engine_native::read::<[u8; 16]>(memory, base + site.rva) == Some(site.sentinel)
+                crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel)
             })
         {
+            for site in MAP_MUTATIONS {
+                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                    return Err(map_hook_error(site.name, "entry verification failed"));
+                }
+            }
             SUBTRACT.store(base + SUBTRACT_VARIANT_RVA, Ordering::Release);
             let callbacks: [usize; SITES] = [
                 add_airplanes as *const () as usize,
@@ -330,30 +360,56 @@ impl Hooks {
                 hooks.push(hook);
             }
         }
-        Ok(Self { hooks })
+        if !hooks.is_empty() {
+            let callbacks = [
+                training_stop as *const () as usize,
+                attachment_coverage as *const () as usize,
+                raid_reference as *const () as usize,
+                raid_lifetime as *const () as usize,
+                append_incoming as *const () as usize,
+                erase_incoming as *const () as usize,
+            ];
+            for (index, site) in MAP_MUTATIONS.into_iter().enumerate() {
+                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                    .map_err(|reason| map_hook_error(site.name, &reason))?;
+                MAP_ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
+                hooks.push(hook);
+            }
+        }
+        Ok(Self {
+            hooks,
+            preferences: unsafe { crate::wing_preferences::Hooks::new(memory, base) }?,
+        })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
             WATCHES.set_hooks(false);
+            crate::wing_preferences::lifetime_enabled(false);
         }
+        let preferences = self.preferences.set_enabled(enabled)?;
         // One census and suspension for the whole family, shared with the
         // other families in a runtime round (`hook::shared`): a thread at any
         // of its sites, or in a tap, holds every site back until the next
         // attempt.
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
-            .map_err(|_| "native hook state change failed")?
+            .map_err(|reason| map_hook_error("equipment and map flag sites", &reason))?
         {
-            return Ok(false);
+            return Ok(preferences);
         }
         WATCHES.set_hooks(enabled && !self.hooks.is_empty());
+        publish_preference_lifetime(enabled, self.hooks.len());
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
-        self.hooks.iter().flat_map(Hook::executable_ranges)
+        self.hooks
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .chain(self.preferences.executable_ranges())
     }
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        crate::wing_preferences::lifetime_enabled(false);
         // SAFETY: like each Hook's relay, the watch tables are dropped only
         // once the hooks were never enabled, or were removed and drained
         // after the last capture.
@@ -366,11 +422,22 @@ static SUBTRACT: AtomicUsize = AtomicUsize::new(0);
 
 /// Hook path: the notifications of a site's pools, covering the original
 /// in flight.
-fn notify(site: usize, first: usize, second: usize) -> [Option<Notification<'static>>; 2] {
+fn notify(site: usize, first: usize, second: usize) -> [Option<Notification<'static>>; 5] {
     let [pool, other] = pools(MUTATIONS[site].1, first, second);
     [
         Some(WATCHES.notify(pool, site)),
         (other != 0).then(|| WATCHES.notify(other, site)),
+        (site == 6).then(|| WATCHES.registry.notify(first.wrapping_add(TRAINING_STOP))),
+        (site == 6).then(|| {
+            WATCHES
+                .registry
+                .notify(first.wrapping_add(ATTACHMENT_COVERAGE))
+        }),
+        (site == 6).then(|| {
+            WATCHES.registry.notify(
+                first.wrapping_add(engine_mutations::air_wing_equipment_mutations::RAID_REFERENCE),
+            )
+        }),
     ]
 }
 
@@ -379,7 +446,7 @@ fn notify(site: usize, first: usize, second: usize) -> [Option<Notification<'sta
 // as its [`engine_mutations::air_wing_equipment_mutations::Receiver`] says.
 macro_rules! callback {
     ($name:ident, $site:expr) => {
-        unsafe extern "system" fn $name(
+        unsafe extern "system-unwind" fn $name(
             first: usize,
             second: usize,
             third: usize,
@@ -387,9 +454,16 @@ macro_rules! callback {
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::WingChanges);
             let _notifications = notify($site, first, second);
-            let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
+            let preference = ($site == 6)
+                .then(|| crate::wing_preferences::destruction(first))
+                .flatten();
+            let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
-            timing.original(|| unsafe { original(first, second, third, fourth) })
+            let result = timing.original(|| unsafe { original(first, second, third, fourth) });
+            if let Some(preference) = preference {
+                preference.finish(result);
+            }
+            result
         }
     };
 }
@@ -427,3 +501,95 @@ macro_rules! call_site {
 call_site!(trim_airplanes, 4);
 // The daily aircraft return subtraction call.
 call_site!(return_airplanes, 5);
+
+fn map_hook_error(site: &str, reason: &str) -> &'static str {
+    Box::leak(format!("wing_changes {site}: {reason}").into_boxed_str())
+}
+
+macro_rules! map_writer {
+    ($name:ident, $index:expr, $key:expr) => {
+        unsafe extern "system" fn $name(
+            first: usize,
+            second: usize,
+            third: usize,
+            fourth: usize,
+        ) -> usize {
+            let timing = crate::hook_timing::enter(crate::hook_timing::Family::WingChanges);
+            let key: fn(usize, usize) -> usize = $key;
+            let _notification = WATCHES.registry.notify(key(first, third));
+            let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
+                unsafe { std::mem::transmute(MAP_ORIGINAL[$index].load(Ordering::Acquire)) };
+            timing.original(|| unsafe { original(first, second, third, fourth) })
+        }
+    };
+}
+map_writer!(training_stop, 0, |mission, _| mission
+    .wrapping_sub(MISSION)
+    .wrapping_add(TRAINING_STOP));
+map_writer!(attachment_coverage, 1, |_, wing| wing
+    .wrapping_add(ATTACHMENT_COVERAGE));
+map_writer!(raid_reference, 2, |wing, _| wing.wrapping_add(
+    engine_mutations::air_wing_equipment_mutations::RAID_REFERENCE
+));
+map_writer!(raid_lifetime, 3, |raid, _| raid.wrapping_add(
+    engine_mutations::air_wing_equipment_mutations::RAID_LIFETIME_KEY
+));
+map_writer!(append_incoming, 4, |base, _| base
+    .wrapping_add(engine_native::cair_base::INCOMING_WINGS));
+map_writer!(erase_incoming, 5, |base, _| base
+    .wrapping_add(engine_native::cair_base::INCOMING_WINGS));
+
+#[cfg(test)]
+mod map_flag_tests {
+    use super::*;
+    #[test]
+    fn incoming_writers_have_a_disjoint_receiver_from_equipment_and_flags() {
+        let watches = Watches::enabled(4);
+        let base = 0x1000usize;
+        let pool = base + engine_mutations::air_wing_equipment_mutations::POOL;
+        let key = base + engine_native::cair_base::INCOMING_WINGS;
+        let equipment = watches.sequence(pool);
+        let incoming = watches.registry.sequence(key);
+        drop(watches.registry.notify(key));
+        assert_eq!(watches.sequence(pool), equipment);
+        assert_ne!(watches.registry.sequence(key), incoming);
+    }
+    #[test]
+    fn flag_writes_preserve_equipment_observations() {
+        let watches = Watches::enabled(30_000);
+        for wing in (1..=5000).map(|id| id * 0x1000) {
+            let pool = wing + engine_mutations::air_wing_equipment_mutations::POOL;
+            let equipment = watches.sequence(pool);
+            let stop = watches.registry.sequence(wing + TRAINING_STOP);
+            let coverage = watches.registry.sequence(wing + ATTACHMENT_COVERAGE);
+            let raid_key = wing + engine_mutations::air_wing_equipment_mutations::RAID_REFERENCE;
+            let raid = watches.registry.sequence(raid_key);
+            let lifetime_key =
+                wing + engine_mutations::air_wing_equipment_mutations::RAID_LIFETIME_KEY;
+            assert!(watches.registry.sequence(lifetime_key).is_some());
+            let incoming_key = wing + engine_native::cair_base::INCOMING_WINGS;
+            let incoming = watches.registry.sequence(incoming_key);
+            drop(watches.registry.notify(wing + TRAINING_STOP));
+            assert_eq!(watches.sequence(pool), equipment);
+            assert_ne!(watches.registry.sequence(wing + TRAINING_STOP), stop);
+            assert_eq!(
+                watches.registry.sequence(wing + ATTACHMENT_COVERAGE),
+                coverage
+            );
+            drop(watches.registry.notify(wing + ATTACHMENT_COVERAGE));
+            assert_eq!(watches.sequence(pool), equipment);
+            assert_eq!(watches.registry.sequence(raid_key), raid);
+            drop(watches.registry.notify(raid_key));
+            assert_eq!(watches.sequence(pool), equipment);
+            assert_ne!(watches.registry.sequence(raid_key), raid);
+            drop(watches.registry.notify(incoming_key));
+            assert!(incoming.is_some());
+            assert_ne!(watches.registry.sequence(incoming_key), incoming);
+            assert_eq!(watches.sequence(pool), equipment);
+            assert_ne!(
+                watches.registry.sequence(wing + ATTACHMENT_COVERAGE),
+                coverage
+            );
+        }
+    }
+}

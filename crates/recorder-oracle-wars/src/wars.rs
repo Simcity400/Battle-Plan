@@ -1,4 +1,5 @@
 //! Ordered goal references joined to goal objects.
+mod participation;
 #[cfg(test)]
 mod tests;
 use std::{
@@ -39,6 +40,7 @@ pub fn compare(
     tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
+    participation::compare_participation(frame, save, countries, report)?;
     for reason in LIMITATIONS {
         report.limitation(reason, "war overview");
     }

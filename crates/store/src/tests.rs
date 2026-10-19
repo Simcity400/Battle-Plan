@@ -796,6 +796,7 @@ fn writer_is_exclusive_and_clear_cannot_split_the_lock() {
 fn append_refuses_unchanged_recording_changed_content_or_wrong_prefix() {
     let fixture = Fixture::new();
     let old = fixture.save(b"prepared");
+    let names = fixture.names();
     assert!(fixture.store.append(&old, old.clone()).is_err());
     fs::write(&fixture.recording, b"synthetic recording appended").unwrap();
     let grown = fixture.key();
@@ -805,7 +806,7 @@ fn append_refuses_unchanged_recording_changed_content_or_wrong_prefix() {
     assert!(fixture.store.append(&wrong_prefix, grown).is_err());
     fs::write(&fixture.content[1], b"changed mod archive").unwrap();
     assert!(fixture.store.append(&old, fixture.key()).is_err());
-    assert_eq!(fixture.names().len(), 4);
+    assert_eq!(fixture.names(), names);
 }
 
 #[test]

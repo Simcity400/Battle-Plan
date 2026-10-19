@@ -941,6 +941,20 @@ impl Catalogue {
             .map_err(Clone::clone)
     }
 
+    /// Participation factors from the recording's complete evaluated content stack.
+    pub fn war_participation_factors(
+        &self,
+    ) -> Result<replay_data::war_participation::Factors, String> {
+        let defines = self.scripted_content()?.environment()?.defines();
+        let factor = |name| defines.fixed5("NMilitary", name).map_err(|e| e.to_string());
+        Ok(replay_data::war_participation::Factors {
+            industry_given: factor("WAR_SCORE_LEND_LEASE_GIVEN_IC_FACTOR")?,
+            fuel_given: factor("WAR_SCORE_LEND_LEASE_GIVEN_FUEL_FACTOR")?,
+            industry_received: factor("WAR_SCORE_LEND_LEASE_RECEIVED_IC_FACTOR")?,
+            fuel_received: factor("WAR_SCORE_LEND_LEASE_RECEIVED_FUEL_FACTOR")?,
+        })
+    }
+
     pub fn cached_states(&self) -> Result<&crate::scripted_text::StateContent, String> {
         used(Reader::States);
         self.state_content
@@ -2028,6 +2042,37 @@ pub mod tests {
             state_content: Arc::new(OnceLock::new()),
             content_loads: Default::default(),
         }
+    }
+
+    #[test]
+    fn participation_factors_follow_the_evaluated_military_define_stack() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let (_, base) = folder_catalogue(&[(
+            "common/defines/00_base.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NMilitary={
+                WAR_SCORE_LEND_LEASE_GIVEN_IC_FACTOR=1.25,
+                WAR_SCORE_LEND_LEASE_GIVEN_FUEL_FACTOR=0.5,
+                WAR_SCORE_LEND_LEASE_RECEIVED_IC_FACTOR=2.5,
+                WAR_SCORE_LEND_LEASE_RECEIVED_FUEL_FACTOR=0.25}}",
+        )]);
+        let (_, overlay) = folder_catalogue(&[(
+            "common/defines/99_override.lua",
+            "NDefines.NMilitary.WAR_SCORE_LEND_LEASE_GIVEN_IC_FACTOR =
+                NDefines.NMilitary.WAR_SCORE_LEND_LEASE_GIVEN_IC_FACTOR * 2
+             NDefines.NMilitary.WAR_SCORE_LEND_LEASE_RECEIVED_FUEL_FACTOR = -0.125",
+        )]);
+        let layers =
+            ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&overlay.0, &[][..])]).unwrap();
+        let catalogue = layers_catalogue(layers);
+        assert_eq!(
+            catalogue.war_participation_factors().unwrap(),
+            replay_data::war_participation::Factors {
+                industry_given: 250_000,
+                fuel_given: 50_000,
+                industry_received: 250_000,
+                fuel_received: -12_500,
+            }
+        );
     }
 
     #[test]

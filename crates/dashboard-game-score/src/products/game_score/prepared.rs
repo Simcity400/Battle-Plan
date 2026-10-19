@@ -993,8 +993,8 @@ fn values_at(
 mod state_tests {
     use super::*;
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source as frame};
-    use replay_data::{rows::CampaignRow, rows::TableRows};
-    use replay_frame::frame::TableView;
+    use replay_data::rows::{CampaignRow, TableRows};
+    use replay_frame::frame::{FrameDecoder, TableUpdate};
     use std::sync::Arc;
 
     #[test]
@@ -1011,24 +1011,33 @@ mod state_tests {
             warnings: Vec::new(),
         };
         for switches in [false, true] {
-            let frames = (0..=10)
-                .map(|hour| {
-                    let mut frame = frame(1, hour, Some(1));
-                    if switches && hour == 2 {
-                        *frame.tables[TableId::Campaign.index()] =
-                            TableView::Complete(TableRows::Campaign(vec![CampaignRow {
-                                id: b"another-synthetic-campaign".to_vec(),
-                            }]));
-                    }
-                    frame
-                })
-                .collect();
+            let frames = (0..=10).map(|hour| frame(1, hour, Some(1))).collect();
             let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
             assert_eq!(replay.index.len(), 1);
             assert_eq!(
                 (replay.index[0].first_hour, replay.index[0].last_hour),
                 (0, 10)
             );
+            let mut frames = replay.read_block(&replay.index[0]).unwrap();
+            if switches {
+                frames[2].tables[TableId::Campaign.index()] =
+                    TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
+                        id: b"another-synthetic-campaign".to_vec(),
+                    }]));
+                frames[3].tables[TableId::Campaign.index()] =
+                    TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
+                        id: CAMPAIGN.into(),
+                    }]));
+            }
+            let replay = replay::container::test_work::with_block_frames(&replay, &frames).unwrap();
+            let mut decoder = FrameDecoder::new();
+            for frame in replay.read_block(&replay.index[0]).unwrap() {
+                let decoded = decoder.advance(&frame).unwrap();
+                assert_eq!(
+                    metadata::validate_campaign(decoded, &replay).is_err(),
+                    switches && decoded.hour == 2
+                );
+            }
             let source = Source::from_replay(
                 dashboard_base::SourceKey {
                     source_id: "score-campaign-check".into(),

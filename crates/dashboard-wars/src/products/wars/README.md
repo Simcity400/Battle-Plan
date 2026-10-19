@@ -17,6 +17,7 @@ including retired occurrences and swap removals.
 | [published.rs](published.rs) | The recorded viewpoint's walk published while preparing: closed wars, resume points and the tail. |
 | [walks.rs](walks.rs) | Each requested viewpoint's walk over the change inputs, kept on the source with resume points; the published walk's reads; the change input row format. |
 | [native.rs](native.rs) | Grouping, representative selection and indexed deduplication. |
+| [participation.rs](participation.rs) | Requested-hour contribution components, totals and shares from directional ledgers, sparse delivery histories and recorded content factors. |
 | [naming.rs](naming.rs) | Recorded native name operands and content-resolved war names. |
 | [labels.rs](labels.rs) | Historical country names for label measurement. |
 | [tests.rs](tests.rs) | Synthetic grouping properties, continuity, naming, kept walks, scale and reply-budget cases. |
@@ -59,6 +60,14 @@ warn, and missing capitulation coverage has its own spans.
 
 ## Prepared queries
 
+Every requested-hour read returns native snapshots (`current`, `WarsAtHour`,
+`prepared::current`) independently of the prepared prefix, including after
+preparation completes. Contributions match by the native side arrays and preserve
+exact signed fixed-point strings, maximum unknown-casualty credit, wrapped totals and native
+binary fixed-point share rounding. Complete sparse delivery-history absence
+means zero; unavailable inputs retain their reason. Contribution changes do not
+add structural history inputs.
+
 The pipeline observes native inputs once for the branch. Shared events retain
 changed topology/naming tables and capitulation evidence. Each change input is
 a raw event row, not JSON: the number of changed tables and their numbers as
@@ -78,9 +87,9 @@ is partial, the query answers the walk of the change inputs it holds, through
 its last hour: the walk's hours after its last input are `pending`, not
 unobserved, and a war open there has no end yet. App continuity needs every
 consecutive observed hour, so no later hour joins the lanes; a requested read
-past the prefix instead lists the groups at that hour, read from its frame
-alone (`current`, `WarsAtHour`, `prepared::current`): their sides, names and
-casualty counters are the hour's operands, their ids transient
+past the prefix instead displays the requested snapshot's groups at that hour,
+read from its frame alone: their sides, names and casualty counters are the
+hour's operands, their ids transient
 (`@<hour>:<index>`), every bound a "by" bound, and no capitulation listed. A block is read at
 the hours a field the observer compares changes: every field of the war
 relations (whose counters are published), the overview, goal, name-rule,

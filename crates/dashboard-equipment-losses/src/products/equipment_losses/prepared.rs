@@ -1468,6 +1468,40 @@ fn read_scanned(
             metadata.scanned.variants.versions.insert(handle, versions);
         }
     }
+    // Metadata is replaced as preparation advances. An earlier requested head
+    // must not acquire a gap or unread interval observed only after that head.
+    let last = reads.iter().copied().max().unwrap_or(to.ceil() as i32);
+    let scanned = &mut metadata.scanned;
+    scanned.last_hour = scanned.last_hour.map(|hour| hour.min(last));
+    scanned.coverage.retain_mut(|span| {
+        span.last_hour = span.last_hour.min(last);
+        span.first_hour <= span.last_hour
+    });
+    scanned.destruction_coverage.retain_mut(|span| {
+        span.last_hour = span.last_hour.min(last);
+        span.first_hour <= span.last_hour
+    });
+    scanned.destruction_unknown.retain_mut(|span| {
+        span.last_hour = span.last_hour.min(last);
+        span.first_hour <= span.last_hour
+    });
+    for spans in scanned.unread.values_mut() {
+        spans.retain_mut(|span| {
+            span.last_hour = span.last_hour.min(last);
+            span.first_hour <= span.last_hour
+        });
+    }
+    scanned.ended.retain(|exchange| exchange.from <= last);
+    scanned.destruction_counted_from = scanned
+        .destruction_counted_from
+        .filter(|hour| *hour <= last);
+    scanned.events.retain(|_, events| {
+        events.retain(|(hour, _)| *hour <= last);
+        !events.is_empty()
+    });
+    for versions in scanned.variants.versions.values_mut() {
+        versions.retain(|version| version.first_hour <= last);
+    }
     Ok(Some(metadata.scanned))
 }
 

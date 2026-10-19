@@ -645,6 +645,10 @@ fn observe_block(
 
 /// What the recorded viewpoint's walk starts from when the branch's first
 /// block binds it.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "The one-time restore state stays inline with its branch start."
+)]
 enum Start {
     /// New, with the observer.
     New,

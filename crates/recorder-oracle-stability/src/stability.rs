@@ -78,6 +78,76 @@ fn inputs(
             Some(row.war_support_raw),
             saved.war_support.as_ref(),
         );
+        if let Some(&ratio) = report.recorded(
+            &row.recruitment_ratio,
+            "CountryStabilityInputs.recruitment_ratio",
+            &label,
+        ) {
+            let expected = saved.recruitment_ratio.unwrap_or(0);
+            report.scalar_checks += 1;
+            if ratio != Some(expected) {
+                report.difference(format!("{label}.manpower.ratio"), ratio, Some(expected));
+            }
+        }
+        if let Some(&host) =
+            report.recorded(&row.exile_host, "CountryStabilityInputs.exile_host", &label)
+        {
+            let diplomacy = save
+                .intel
+                .countries
+                .get(tag)
+                .and_then(|country| country.diplomacy.as_ref());
+            let actual_host = host
+                .filter(|host| *host > 0)
+                .map(|host| required_country_tag(host as u32, links))
+                .transpose()?;
+            let expected_host = diplomacy.and_then(|diplomacy| diplomacy.exile_host.as_deref());
+            report.scalar_checks += 1;
+            if host.is_none() || actual_host != expected_host {
+                report.difference(format!("{label}.exile_host"), actual_host, expected_host);
+            }
+            if host.is_some_and(|host| host > 0) {
+                if let Some(&legitimacy) = report.recorded(
+                    &row.exile_legitimacy,
+                    "CountryStabilityInputs.exile_legitimacy",
+                    &label,
+                ) {
+                    let expected = diplomacy
+                        .and_then(|diplomacy| diplomacy.legitimacy.as_ref())
+                        .map(|value| value.raw);
+                    report.scalar_checks += 1;
+                    if legitimacy != expected {
+                        report.difference(format!("{label}.legitimacy"), legitimacy, expected);
+                    }
+                }
+                if let Some(&leaders) = report.recorded(
+                    &row.exile_leaders,
+                    "CountryStabilityInputs.exile_leaders",
+                    &label,
+                ) {
+                    let expected = diplomacy.and_then(|diplomacy| diplomacy.exile_army_leaders);
+                    report.scalar_checks += 1;
+                    if leaders != expected {
+                        report.difference(format!("{label}.exile_army_leaders"), leaders, expected);
+                    }
+                }
+                for (name, recorded, expected) in [
+                    ("exile_manpower", &row.exile_manpower, saved.exile_manpower),
+                    (
+                        "exile_manpower_cap",
+                        &row.exile_manpower_cap,
+                        saved.exile_manpower_cap,
+                    ),
+                ] {
+                    if let Some(&actual) = report.recorded(recorded, name, &label) {
+                        report.scalar_checks += 1;
+                        if actual.is_none() || actual.filter(|value| *value > 0) != expected {
+                            report.difference(format!("{label}.{name}"), actual, expected);
+                        }
+                    }
+                }
+            }
+        }
         let terms = &saved.stability_terms;
         let fixed = |value: &Option<installed_content_save::Decimal>| value.as_ref().map(|value| value.raw);
         // The save truncates a Q15 word to five decimals (see `q15_to_saved_fixed5`).
@@ -172,6 +242,8 @@ states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }
     fn row() -> CountryStabilityInputRow {
         CountryStabilityInputRow {
             country: 102,
+            recruitment_ratio: Some(0).into(),
+            exile_host: Some(0).into(),
             stability_raw: 50_000,
             war_support_raw: 40_000,
             propaganda_stability_q15: -3277,
@@ -238,5 +310,13 @@ states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }
         let report = run(changed, HOUR - 3);
         assert!(report.differences.is_empty());
         assert_eq!(report.compared_tables["CountryStabilityInputs"], 0);
+    }
+    #[test]
+    fn manpower_oracle_rejects_wrong_ratio_and_missing_host_at_its_supplied_hour() {
+        let mut changed = row();
+        changed.recruitment_ratio = Some(17).into();
+        changed.exile_host = None.into();
+        let report = run(changed, HOUR);
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
     }
 }

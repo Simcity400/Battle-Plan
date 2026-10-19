@@ -11,6 +11,8 @@ pub const TOKEN: usize = 0x120;
 pub const VTABLE_RVA: usize = 0x027d_4f00;
 /// Native fixed_random_seed content byte.
 pub const FIXED_RANDOM_SEED: usize = 0x962;
+/// Activation selects the timed targeted container when this byte is nonzero.
+pub const TARGETED_TIMED: usize = 0xb00;
 
 /// Exact token location. The caller copies bytes into its preallocated arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,4 +89,38 @@ pub const TARGETED_TIMEOUT_EFFECT_RVA: usize = 0x0071_c130;
 /// Exact targeted timeout-effect entry bytes.
 pub const TARGETED_TIMEOUT_EFFECT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x55, 0x41, 0x56,
+];
+/// Targeted decision's execute-effect entry.
+pub const TARGETED_EXECUTE_EFFECT_RVA: usize = 0x0071_baf0;
+/// The ordinary timed-mission success caller of execution.
+pub const MISSION_COMPLETION_RETURN_RVA: usize = 0x0072_a5e9;
+
+/// Event-feed-owned decision entries. Targeted timeout is forwarded by the
+/// politics owner and therefore has no second patch here.
+pub const EVENT_FEED_ENTRIES: [(&str, usize, [u8; 16]); 5] = [
+    (
+        "DecisionCancellationEffects",
+        CANCEL_EFFECT_RVA,
+        TERMINAL_EFFECT_SENTINEL,
+    ),
+    (
+        "DecisionRemovalEffects",
+        REMOVE_EFFECT_RVA,
+        TERMINAL_EFFECT_SENTINEL,
+    ),
+    (
+        "TargetedDecisionCancellationEffects",
+        TARGETED_CANCEL_EFFECT_RVA,
+        TARGETED_TERMINAL_EFFECT_SENTINEL,
+    ),
+    (
+        "TargetedDecisionRemovalEffects",
+        TARGETED_REMOVE_EFFECT_RVA,
+        TARGETED_TERMINAL_EFFECT_SENTINEL,
+    ),
+    (
+        "TargetedDecisionExecuted",
+        TARGETED_EXECUTE_EFFECT_RVA,
+        TARGETED_TERMINAL_EFFECT_SENTINEL,
+    ),
 ];

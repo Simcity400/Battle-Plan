@@ -1,5 +1,8 @@
 use super::test_fixtures::{research_frame, sliced_research_frame};
-use super::{Country, Inventory, MAX_BYTES, base_cost, check_budget, history_bytes, remaining};
+use super::{
+    Country, Inventory, MAX_BYTES, Scan, base_cost, check_budget, country_bytes, history_bytes,
+    remaining,
+};
 use crate::ResearchOutcome;
 use crate::test_fixtures::{CAMPAIGN, fixture_research_inputs, records};
 use replay::container::Replay;
@@ -1221,5 +1224,38 @@ fn completed_same_name_occurrence_cannot_supply_former_assignment_progress() {
             .unwrap()
             .entry_first_observed_hour,
         Some(0)
+    );
+}
+
+#[test]
+fn restored_scan_recounts_allocation_budgets_without_persisting_capacity() {
+    let mut country = Country {
+        entry_occurrences: Vec::with_capacity(97),
+        ..Default::default()
+    };
+    country.entry_occurrences.push(Some(3));
+    country.charge(&mut 0);
+    let mut scan = Scan::default();
+    scan.countries.insert("SYN".into(), country);
+    let encoded = serde_json::to_value(&scan).unwrap();
+    assert!(encoded.get("bytes").is_none());
+    assert!(encoded["countries"]["SYN"].get("budget_bytes").is_none());
+    assert!(encoded["countries"]["SYN"].get("retained_bytes").is_none());
+    let mut restored: Scan = serde_json::from_value(encoded.clone()).unwrap();
+    restored.begin_hour(100);
+    let country = &restored.countries["SYN"];
+    assert_eq!(
+        country.retained_bytes, 0,
+        "an empty history has no heap allocations or second fixed header"
+    );
+    assert_eq!(
+        restored.bytes,
+        128 + country.entry_occurrences.capacity() * size_of::<Option<u32>>(),
+        "the country's fixed allocation is charged exactly once after restoration"
+    );
+    assert_eq!(restored.bytes, country_bytes(country));
+    assert_eq!(
+        serde_json::to_value(restored).unwrap()["countries"],
+        encoded["countries"]
     );
 }

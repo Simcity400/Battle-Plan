@@ -19,6 +19,8 @@ test = false
 alloc-fault-injection = []
 
 [dependencies]
+installed-content-localisation.workspace = true
+installed-content-scripted-localisation.workspace = true
 replay.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true

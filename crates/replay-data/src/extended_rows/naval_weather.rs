@@ -290,9 +290,18 @@ pub struct WeatherRegionRow {
     /// selected army's attack list scales by acclimatization. None is a read
     /// refusal; older formats use NotRecorded.
     pub combat: Recorded<Option<RegionCombatWeather>>,
+    /// Raw regional Air detection modifier. Outer absence refuses the accumulator;
+    /// inner absence is a known missing key, evaluated as zero.
+    pub air_detection: Recorded<Option<Option<i64>>>,
+    /// Complete raw regional accumulator observation for the independent map terms below.
+    /// False refuses them; true with an absent scalar proves a missing key.
+    pub map_modifiers_known: Recorded<bool>,
+    pub naval_detection: Recorded<Option<i64>>,
+    pub air_attack: Recorded<Option<i64>>,
+    pub air_defence: Recorded<Option<i64>>,
 }
 typed_codec!(WeatherRegionRow, 32, |row| row.id as u128, |key| Self { id: key as u32, ..Default::default() },
- { 0 => (max_snow): I64, 1 => (light_rain): U8, 2 => (heavy_rain): U8, 3 => (snow): U8, 4 => (blizzard): U8, 5 => (sandstorm): U8, 6 => (arctic_water): U8, 7 => (attack): Opaque, 8 => (combat): Opaque }, |_row| Ok(()));
+ { 0 => (max_snow): I64, 1 => (light_rain): U8, 2 => (heavy_rain): U8, 3 => (snow): U8, 4 => (blizzard): U8, 5 => (sandstorm): U8, 6 => (arctic_water): U8, 7 => (attack): Opaque, 8 => (combat): Opaque, 9 => (air_detection): Opaque, 10 => (map_modifiers_known): Bool, 11 => (naval_detection): OptionalI64, 12 => (air_attack): OptionalI64, 13 => (air_defence): OptionalI64 }, |_row| Ok(()));
 
 /// Live display boundary, carried only by WeatherProvinces slot zero.
 /// These cells are excluded from dirty updates and rebuilt separately.
@@ -313,6 +322,39 @@ pub struct WeatherDisplay {
 value_struct!(WeatherDisplay { width: u32, height: u32, refresh_interval: i64,
     refresh_identity: u64, edges: Vec<u8> });
 opaque_value!(Option<WeatherDisplay>);
+
+/// Forecast direction from the shared native day/night manager. A clear
+/// update gate proves the direction from the hour; an independently failed
+/// held observation never becomes a calendar-derived value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct WeatherDaylight {
+    pub updated: bool,
+    pub held: Option<[i64; 3]>,
+    pub held_feather: Option<[i64; 2]>,
+}
+value_struct!(WeatherDaylight { updated: bool, held: Option<[i64; 3]>, held_feather: Option<[i64; 2]> });
+opaque_value!(Option<WeatherDaylight>);
+
+impl WeatherDaylight {
+    pub fn direction(self, hour: i32) -> Result<[i64; 3], &'static str> {
+        if self.updated {
+            Ok(crate::day_night::seasonal_direction(hour))
+        } else {
+            self.held
+                .ok_or("held weather daylight direction unavailable")
+        }
+    }
+    pub fn feather(self, defines: &crate::day_night::Defines) -> Result<[i64; 2], &'static str> {
+        if self.updated {
+            Ok(crate::day_night::forecast_feather(
+                defines.day_night_feather,
+            ))
+        } else {
+            self.held_feather
+                .ok_or("held weather daylight feather unavailable")
+        }
+    }
+}
 
 /// WeatherProvinces: the snow word the province weather record holds (winter grading, movement
 /// snow, combat terrain), its permanent snow (set at load; movement snow adds it) and the two
@@ -343,9 +385,12 @@ pub struct WeatherProvinceRow {
     /// afresh, the rest carried). None is this province's read refusal; older formats
     /// use NotRecorded.
     pub modifiers: Recorded<Option<ProvinceWeatherModifiers>>,
+    /// Slot zero's seasonal forecast direction. Updated direction derives
+    /// from the frame's hour; held direction retains suspension/startup state.
+    pub daylight: Recorded<Option<WeatherDaylight>>,
 }
 typed_codec!(WeatherProvinceRow, 32, |row| row.id as u128, |key| Self { id: key as u32, ..Default::default() },
-{ 0 => (snow): I64, 1 => (permanent_snow): I64, 2 => (display_snow): U8, 3 => (display_mud): U8, 4 => (temperature.temperature): I64, 5 => (raw_mud): U8, 6 => (clock.local_hour): I32, 7 => (clock.night_factor): I64, 8 => (display): Opaque, 9 => (clock.source): U8, 10 => (temperature.drift): I64, 11 => (temperature.staged): I64, 12 => (temperature.working): I64, 13 => (temperature_pass): Opaque, 14 => (modifiers): Opaque },
+{ 0 => (snow): I64, 1 => (permanent_snow): I64, 2 => (display_snow): U8, 3 => (display_mud): U8, 4 => (temperature.temperature): I64, 5 => (raw_mud): U8, 6 => (clock.local_hour): I32, 7 => (clock.night_factor): I64, 8 => (display): Opaque, 9 => (clock.source): U8, 10 => (temperature.drift): I64, 11 => (temperature.staged): I64, 12 => (temperature.working): I64, 13 => (temperature_pass): Opaque, 14 => (modifiers): Opaque, 15 => (daylight): Opaque },
 |row| {
    row.clock.canonical().map_err(invalid)?;
    row.temperature.record().map(|_| ()).map_err(invalid)?;

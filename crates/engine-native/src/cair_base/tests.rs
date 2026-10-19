@@ -2319,3 +2319,62 @@ fn a_kept_state_base_is_walked_when_its_countries_plan_or_arenas_differ() {
     assert_eq!(walk.reused_bases, 0);
     assert_eq!((walk, &rows, &wings), (plain, &plain_rows, &plain_wings));
 }
+
+#[test]
+fn state_summary_country_order_preserves_repeats_zero_slots_and_zero_capacity() {
+    const DENSE: usize = 0x2b00;
+    let mut bytes = registration_fixture();
+    array(&mut bytes, STATE_BASE + REGISTERED_CONTAINERS, DENSE, 3, 3);
+    for (index, pointer) in [CONTAINER_B, CONTAINER_A, CONTAINER_B]
+        .into_iter()
+        .enumerate()
+    {
+        qword(&mut bytes, DENSE + index * 8, pointer as u64);
+    }
+    let run = |bytes: &[u8], handle| {
+        let memory = SliceMemory { base: GAME, bytes };
+        let countries = ccountry::Reader::new(&memory, IMAGE, GAME).unwrap();
+        let mut output = [CountryOccurrence::default(); 3];
+        let result = state_country_order(
+            &memory,
+            IMAGE,
+            STATE_BASE,
+            &Row {
+                id: handle,
+                state: Some(1),
+                ..Default::default()
+            },
+            &countries,
+            &mut [None; 10],
+            &mut output,
+            &mut [0; 24],
+        );
+        (result, output)
+    };
+    let handle = (7_u64 << 32) | u64::from(TYPE);
+    let (result, output) = run(&bytes, handle);
+    assert_eq!(result, Ok(3));
+    assert_eq!(
+        output,
+        [
+            CountryOccurrence {
+                country: 9,
+                slot: 2
+            },
+            CountryOccurrence {
+                country: 0,
+                slot: 0
+            },
+            CountryOccurrence {
+                country: 9,
+                slot: 2
+            }
+        ]
+    );
+    assert!(run(&bytes, handle + (1_u64 << 32)).0.is_err());
+    qword(&mut bytes, CONTAINER_TABLE + 16, 0);
+    assert_eq!(
+        run(&bytes, handle).0,
+        Err("state air-base dense country differs from its indexed container")
+    );
+}

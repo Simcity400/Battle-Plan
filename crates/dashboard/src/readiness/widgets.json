@@ -285,6 +285,12 @@
       ]
     },
     {
+      "kind": "war-goals",
+      "requests": [
+        {"product": "wargoals", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "tag": "$tag", "hour": "$last"}}
+      ]
+    },
+    {
       "kind": "world-tension",
       "requests": [
         {"product": "series-summary", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch", "share": true, "family": {"kind": "world-tension"}, "from": "$first", "to": "$last", "width": 1, "within": {}}},

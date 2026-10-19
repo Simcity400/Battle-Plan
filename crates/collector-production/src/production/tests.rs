@@ -61,7 +61,7 @@ fn production_daily_groups_skip_native_reads_outside_their_slots() {
 }
 
 #[test]
-fn variant_definitions_read_hourly_while_details_wait_for_their_slot() {
+fn variant_census_reads_only_its_daily_slot_or_an_explicit_recovery() {
     use production_rest_test_kit as kit;
     let bytes = kit::fixture();
     let memory = engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
@@ -87,10 +87,13 @@ fn variant_definitions_read_hourly_while_details_wait_for_their_slot() {
             force_full,
         );
         let counts = native.finish();
-        assert_ne!(captured.variants.definitions.outcome, skipped);
-        assert!(counts[TABLES[3].index()].spans > 0);
+        assert_eq!(
+            captured.variants.definitions.outcome != skipped,
+            details_active
+        );
+        assert_eq!(counts[TABLES[3].index()].spans > 0, details_active);
         assert_eq!(counts[TABLES[4].index()].spans > 0, details_active);
-        for (index, table) in TABLES.iter().enumerate().take(7).skip(4) {
+        for (index, table) in TABLES.iter().enumerate().take(7).skip(3) {
             if details_active {
                 assert_ne!(captured.outcomes()[index], skipped);
             } else {
@@ -247,7 +250,8 @@ fn conversion_preserves_native_precision_full_keys_and_raw_control_bytes() {
     captured.variants.stats.outcome = Outcome::Rows { len: 1 };
     captured.variants.stats.rows[0] = cequipment_variant::StatsRow {
         variant,
-        values: [i64::MIN, -100_001, -1, 0, 1, 100_001, 7, 8, 9, i64::MAX],
+        values: std::array::from_fn(|i| if i == 0 { i64::MIN } else { i as i64 }),
+        ..Default::default()
     };
     let views = captured.tables();
     let line = &complete::<tables::ProductionLines>(&views[0])[0];
@@ -620,6 +624,10 @@ fn arenas_preserve_bytes_and_native_ordinals_and_refuse_out_of_bounds_spans() {
         icon_kind: u32::MAX,
         icon: TextSpan { start: 1, len: 3 },
         version: u8::MAX,
+        design: Default::default(),
+        archetype_pointer: 0,
+        organisation_pointer: None,
+        source_links: None,
     };
     captured.variants.modules.outcome = Outcome::Rows { len: 2 };
     captured.variants.modules.rows[0] = equipment_module_container::Row {
@@ -628,6 +636,7 @@ fn arenas_preserve_bytes_and_native_ordinals_and_refuse_out_of_bounds_spans() {
         slot: 3,
         definition_token: u32::MAX,
         definition_active: 0xfe,
+        definition_pointer: 0,
     };
     captured.variants.modules.rows[1] = equipment_module_container::Row {
         source_ordinal: 1,
@@ -640,6 +649,7 @@ fn arenas_preserve_bytes_and_native_ordinals_and_refuse_out_of_bounds_spans() {
         source_ordinal: u32::MAX,
         definition_token: i32::MIN,
         level: u8::MAX,
+        definition_pointer: usize::MAX,
     };
     let views = captured.tables();
     let definition = &complete::<tables::VariantDefinitions>(&views[3])[0];
@@ -687,6 +697,9 @@ fn arenas_preserve_bytes_and_native_ordinals_and_refuse_out_of_bounds_spans() {
     assert!(matches!(
         captured.tables()[3],
         TableView::Unavailable { .. }
+    ));
+    captured.variants.dictionary = Some(std::sync::Arc::new(
+        rows::TableRows::VariantBonusSnapshots(Vec::new()),
     ));
     captured.reset();
     assert!(
@@ -1314,4 +1327,22 @@ fn cold_production_owned_buffers_keep_mod_sized_original_occurrences_and_later_g
         let direct = kit::direct(&memory, &enough);
         kit::assert_matches_direct(&captured, &direct);
     }
+}
+
+#[test]
+fn production_daily_groups_keep_design_certificates_between_scheduled_reads() {
+    let mut variants = Variants::vacant();
+    variants.organisations_complete = true;
+    for hour in 0..24 {
+        if !replay_data::cadence::should_walk(TableId::VariantStats, hour, false) {
+            variants.fail(replay_data::cadence::SKIPPED_REASON, hour, false);
+            assert!(variants.organisations_complete, "skipped hour {hour}");
+        }
+    }
+    let slot = replay_data::cadence::refresh_slot(TableId::VariantStats).unwrap() as i32;
+    variants.fail("scheduled read failed", slot, false);
+    assert!(!variants.organisations_complete);
+    variants.organisations_complete = true;
+    variants.fail("requested full read failed", 0, true);
+    assert!(!variants.organisations_complete);
 }

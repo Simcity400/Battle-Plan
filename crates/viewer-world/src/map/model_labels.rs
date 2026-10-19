@@ -105,17 +105,19 @@ impl<'a> Labels<'a> {
         labels
     }
 
-    fn localise(&self, key: &[u8]) -> Vec<u8> {
-        self.localisation.localise_bytes(key, &[])
+    fn localise(&self, key: &[u8]) -> Label {
+        self.localisation
+            .localise_bytes(key, &[])
+            .map_err(|error| error.to_string())
     }
 
     /// The first row's label.
-    pub fn default_label(&self) -> Vec<u8> {
+    pub fn default_label(&self) -> Label {
         self.localise(DEFAULT_MODEL_KEY)
     }
 
     /// A graphics-database candidate's label.
-    pub fn archetype(&self, equipment: &EquipmentModel<'_>) -> Vec<u8> {
+    pub fn archetype(&self, equipment: &EquipmentModel<'_>) -> Label {
         self.localise(equipment.archetype.as_bytes())
     }
 
@@ -134,10 +136,10 @@ impl<'a> Labels<'a> {
         } else {
             &self.country(country)?.tag
         };
-        Ok(self.prefixed_tag(tag, key))
+        self.prefixed_tag(tag, key)
     }
 
-    fn prefixed_tag(&self, tag: &[u8], key: &[u8]) -> Vec<u8> {
+    fn prefixed_tag(&self, tag: &[u8], key: &[u8]) -> Label {
         let mut prefixed = tag.to_vec();
         prefixed.push(b'_');
         prefixed.extend_from_slice(key);
@@ -175,7 +177,7 @@ impl<'a> Labels<'a> {
                     creator.tag.clone()
                 }
             };
-            self.prefixed_tag(&tag, equipment_name.as_bytes())
+            self.prefixed_tag(&tag, equipment_name.as_bytes())?
         } else {
             variant.display_name.clone()
         };
@@ -348,10 +350,10 @@ mod tests {
         let localisation = localisation();
         let dynamic = BTreeSet::from(["D01".to_owned()]);
         let labels = Labels::read(&frame, &localisation, Ok(&dynamic));
-        assert_eq!(labels.default_label(), b"Use default model");
+        assert_eq!(labels.default_label(), label("Use default model"));
         assert_eq!(
             labels.archetype(&equipment(b"", b"")),
-            b"Infantry Equipment"
+            label("Infantry Equipment")
         );
         assert_eq!(labels.subunit(1, "infantry"), label("Infantry"));
         let mut variant = VariantDefinitionRow {

@@ -41,6 +41,8 @@ fn check(
                         used_saved_points: None,
                         points_factor: None,
                     }],
+                    next_bonus_id: Some(0),
+                    grants: Vec::new(),
                 }),
                 ..Default::default()
             },
@@ -79,6 +81,17 @@ fn check(
         TableView::Complete(TableRows::ResearchTechnologies(research));
     *frame.tables[TableId::ResearchSlots.index()] =
         TableView::Complete(TableRows::ResearchSlots(slots));
+    *frame.tables[TableId::ResearchModifiers.index()] =
+        TableView::Complete(TableRows::ResearchModifiers(
+            (1..=count)
+                .map(|country| replay_data::rows::ResearchModifierRow {
+                    country,
+                    index: engine_research::research_modifiers::grants::INVENTORY_INDEX,
+                    kind: replay_data::rows::ResearchModifierRow::GRANT_COUNTER,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
     let links = countries.iter().map(|r| (r.id, r)).collect();
     let names = names.iter().copied().collect();
     let mut report = refreshed_report();

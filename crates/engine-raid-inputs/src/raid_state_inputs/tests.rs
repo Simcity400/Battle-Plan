@@ -472,6 +472,7 @@ fn reads_every_stored_operand_and_the_state_container() {
                 state: 1,
                 gate: 1,
                 global_factor: -300,
+                recruitment: Some([0; 4]),
                 origin: 1,
                 infrastructure_level: Some(3),
                 infrastructure_modifier: 0,
@@ -1536,4 +1537,38 @@ fn fixture_capacity() -> Capacity {
 fn default_capacity_has_no_chosen_state_or_content_population() {
     let capacity = Capacity::default();
     assert_eq!(capacity, Capacity::zero());
+}
+
+#[test]
+fn manpower_without_state_certificate_adds_no_country_hash_probe() {
+    let mut memory = fixture();
+    memory.u64(0x4300_2000 + cresource_origin::STATE, STATE_B as u64);
+    struct NoProbe<'a> {
+        memory: &'a Mem,
+        forbidden: [usize; 2],
+    }
+    impl Memory for NoProbe<'_> {
+        fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
+            assert!(
+                !self.forbidden.contains(&address),
+                "uncertified recruitment probe"
+            );
+            self.memory.copy(address, bytes)
+        }
+    }
+    let forbidden = [STATE_A, STATE_B]
+        .map(|state| read::<u64>(&memory, state + cstate::COUNTRY_MODIFIERS).unwrap() as usize + 4);
+    let guarded = NoProbe {
+        memory: &memory,
+        forbidden,
+    };
+    let mut buffers = Buffers::new(&fixture_capacity()).unwrap();
+    buffers.recruitment_enabled = false;
+    let result = walk(&guarded, 0, GS, &mut buffers, Selection::ALL);
+    assert_eq!(result.outcomes[0], Outcome::Rows { len: 2 });
+    assert!(
+        buffers.inputs[..2]
+            .iter()
+            .all(|row| row.recruitment.is_none())
+    );
 }

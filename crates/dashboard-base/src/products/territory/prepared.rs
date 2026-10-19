@@ -1601,6 +1601,7 @@ mod tests {
             std::env::temp_dir().join(format!("territory-area-binding-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("user")).unwrap();
         std::fs::write(root.join("hoi4.exe"), "test").unwrap();
+        std::fs::write(root.join("user/settings.txt"), "language=l_english").unwrap();
         std::fs::write(
             root.join("user/dlc_load.json"),
             r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,

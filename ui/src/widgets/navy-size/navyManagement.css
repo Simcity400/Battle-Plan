@@ -1,0 +1,7 @@
+.navy-management { border-top: 1px solid var(--border); margin-top: .75rem; padding-top: .5rem; }
+.navy-management summary { cursor: pointer; font-weight: 600; }
+.navy-management section { padding: .4rem 0; }
+.navy-management h4 { margin: .25rem 0; }
+.navy-management ul { margin: .25rem 0; padding-left: 1.25rem; }
+.navy-management li { overflow-wrap: anywhere; }
+.navy-management-content { max-block-size: min(28vh, 16rem); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }

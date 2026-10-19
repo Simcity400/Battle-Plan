@@ -111,7 +111,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                         .operand
                         .as_deref()
                         .map(|operand| self.evaluator()?.scoped_country(operand, Scopes::empty()))
-                        .transpose()?
+                        .transpose()
+                        .map_err(|why| why.to_string())?
                         .flatten()
                         .unwrap_or(0);
                     let selected = self.fresh_country_state_scope(country, 0)?;

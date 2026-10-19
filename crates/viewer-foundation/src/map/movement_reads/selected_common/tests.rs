@@ -761,6 +761,7 @@ fn selected_primary_combat_scan_keeps_order_and_border_duration_uses_its_own_gat
             division: FORCE,
             combat_count: 2,
             combat_references: Recorded::Value(Some(UnitCombatReferences {
+                speed_witness: Default::default(),
                 sample_hour: replay_data::rows::PacketHour::Stamped(12),
                 entries: vec![
                     UnitCombatReference { combat: 8, kind: 1 },

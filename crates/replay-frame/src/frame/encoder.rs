@@ -17,6 +17,38 @@ use std::{
     },
 };
 
+/// A row payload failed validation, rather than frame/encoder bookkeeping.
+#[derive(Debug)]
+struct RowValidationError(io::Error);
+impl std::fmt::Display for RowValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for RowValidationError {}
+fn row_validation(error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::InvalidData {
+        io::Error::new(io::ErrorKind::InvalidData, RowValidationError(error))
+    } else {
+        error
+    }
+}
+
+/// Payload codecs attach row/column context. Their bookkeeping errors (for
+/// example replacement indices) remain encoder errors, even inside a table.
+fn row_encoding(error: io::Error) -> io::Error {
+    if error.kind() != io::ErrorKind::InvalidData {
+        return error;
+    }
+    match crate::codec::try_format(format_args!("{error}")) {
+        Ok(detail) if detail.starts_with("row ") && detail.contains(" column ") => {
+            row_validation(error)
+        }
+        Ok(_) => error,
+        Err(error) => error,
+    }
+}
+
 pub(super) enum BaselineRows {
     Owned(TableRows),
     Shared(Arc<TableRows>),
@@ -202,6 +234,40 @@ impl FrameEncoder {
         Some((*hour, values.as_ref().rows::<T>()?))
     }
 
+    /// Branch-local state for a producer's complete native mutation ledger.
+    /// A keyframe requires re-encoding the state, without withdrawing the
+    /// preceding committed state from a continuous observation interval.
+    pub fn observed_baseline<T: TableSchema>(
+        &self,
+        branch: BranchId,
+        hour: Hour,
+    ) -> Option<&[T::Row]> {
+        if self.state.branch != Some(branch)
+            || self
+                .state
+                .last_hour
+                .and_then(|previous| previous.checked_add(1))
+                != Some(hour)
+        {
+            return None;
+        }
+        self.committed::<T>().map(|(_, rows)| rows)
+    }
+
+    /// Replacement input for a producer with complete mutation observation.
+    /// Unlike a census comparison, the certificate covers unvisited rows of a
+    /// daily table. Keyframes still require a materialized complete state.
+    pub fn observed_comparison_baseline<T: TableSchema>(
+        &self,
+        branch: BranchId,
+        hour: Hour,
+        force: bool,
+    ) -> Option<(BaselineToken, &[T::Row])> {
+        let (mut token, values) = self.token(T::ID, branch, hour, force)?;
+        token.row_updates = matches!(values, BaselineRows::Owned(_)) && T::ID != TableId::Countries;
+        Some((token, values.as_ref().rows::<T>()?))
+    }
+
     /// Borrow a complete baseline for comparison with a new native sample.
     /// Callers must check all current acquisition/arena/uniqueness verdicts and
     /// exact row payloads before submitting `ComparedEqual`. The borrow is used
@@ -239,6 +305,26 @@ impl FrameEncoder {
         }
     }
 
+    /// A certified update may materialize this baseline at an encoding
+    /// keyframe. A keyframe is not a native acquisition: continuity still
+    /// requires the same branch, the next hour and a complete shared table.
+    /// This grants no delta token and does not change keyframe encoding.
+    pub fn certified_keyframe_baseline(
+        &self,
+        table: TableId,
+        branch: BranchId,
+        hour: Hour,
+        force: bool,
+    ) -> Option<&Arc<TableRows>> {
+        if !self.needs_keyframe(branch, hour, force)
+            || self.state.branch != Some(branch)
+            || self.state.last_hour?.checked_add(1) != Some(hour)
+        {
+            return None;
+        }
+        self.shared_baseline(table)
+    }
+
     fn encode_complete(
         &self,
         table: TableId,
@@ -248,21 +334,24 @@ impl FrameEncoder {
         output: &mut Vec<u8>,
         deleted: &mut Vec<u8>,
     ) -> io::Result<bool> {
-        validate_complete(table, values, hour)?;
+        validate_complete(table, values, hour).map_err(row_validation)?;
         let Some((baseline, previous)) = self.state.tables[table.index()]
             .as_ref()
             .filter(|_| !keyframe)
         else {
             output.push(0);
             put_count(output, values.len())?;
-            values.encode_rows(output)?;
+            values.encode_rows(output).map_err(row_encoding)?;
             return Ok(false);
         };
         let start = output.len();
         if values != previous.as_ref() {
             output.push(1);
             output.extend_from_slice(&baseline.to_le_bytes());
-            if values.encode_changes(previous.as_ref(), output, deleted)? {
+            if values
+                .encode_changes(previous.as_ref(), output, deleted)
+                .map_err(row_encoding)?
+            {
                 return Ok(false);
             }
             output.truncate(start);
@@ -384,9 +473,22 @@ impl FrameEncoder {
     /// the others here. The bytes are those `prepare_bytes` writes.
     pub fn prepare_bytes_with(
         &mut self,
+        source: FrameInput,
+        force_keyframe: bool,
+        segments: &mut [Option<TableSegment>; TABLE_COUNT],
+    ) -> io::Result<PreparedFrame> {
+        self.prepare_contained(source, force_keyframe, segments, |_, error| Err(error))
+    }
+
+    /// Encode normally; only a non-clock row validation error calls `refuse`.
+    /// Its returned text replaces that table with the existing Unavailable form.
+    /// Frame, baseline-token, allocation and I/O errors remain errors.
+    pub fn prepare_contained(
+        &mut self,
         mut source: FrameInput,
         force_keyframe: bool,
         segments: &mut [Option<TableSegment>; TABLE_COUNT],
+        mut refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
     ) -> io::Result<PreparedFrame> {
         // Owned rows are stored at their display steps (crate::display), so
         // the committed baseline is what decoders rebuild and a row that later
@@ -441,16 +543,39 @@ impl FrameEncoder {
                 }
                 None => {
                     allocation::reserve(&mut output, 9)?;
-                    self.encode_table(
+                    let start = output.len();
+                    let result = self.encode_table(
                         &context,
                         table,
                         &source.tables[table.index()],
                         &mut output,
                         &mut deleted,
-                    )
-                    .map_err(|error| {
-                        crate::codec::error_context(error, format_args!("{table:?}"))
-                    })?
+                    );
+                    match result {
+                        Err(error)
+                            if table != TableId::Clock
+                                && error
+                                    .get_ref()
+                                    .is_some_and(|inner| inner.is::<RowValidationError>()) =>
+                        {
+                            let error =
+                                crate::codec::error_context(error, format_args!("{table:?}"));
+                            let reason = refuse(table, error)?;
+                            output.truncate(start);
+                            deleted.clear();
+                            source.tables[table.index()] = TableView::Unavailable { reason }.into();
+                            self.encode_table(
+                                &context,
+                                table,
+                                &source.tables[table.index()],
+                                &mut output,
+                                &mut deleted,
+                            )?
+                        }
+                        result => result.map_err(|error| {
+                            crate::codec::error_context(error, format_args!("{table:?}"))
+                        })?,
+                    }
                 }
             };
         }
@@ -496,7 +621,7 @@ impl FrameEncoder {
                         self.state.tables[table.index()].as_ref()
                     && Arc::ptr_eq(values, previous)
                 {
-                    validate_singleton(table, values, hour)?;
+                    validate_singleton(table, values, hour).map_err(row_validation)?;
                     output.push(2);
                     output.extend_from_slice(&baseline.to_le_bytes());
                     true
@@ -524,11 +649,14 @@ impl FrameEncoder {
                 if !token.allows_row_updates() {
                     return Err(invalid("table does not allow row replacements"));
                 }
-                validate_rows(table, rows)?;
+                validate_rows(table, rows).map_err(row_validation)?;
                 let start = output.len();
                 output.push(1);
                 output.extend_from_slice(&token.baseline.to_le_bytes());
-                if rows.encode_replacements(previous, indices, output)? {
+                if rows
+                    .encode_replacements(previous, indices, output)
+                    .map_err(row_encoding)?
+                {
                     false
                 } else {
                     output.truncate(start);
@@ -547,11 +675,14 @@ impl FrameEncoder {
                 if !update.fits(previous) {
                     return Err(invalid("slice update does not fit its baseline"));
                 }
-                validate_rows(table, update.rows())?;
+                validate_rows(table, update.rows()).map_err(row_validation)?;
                 let start = output.len();
                 output.push(1);
                 output.extend_from_slice(&token.baseline.to_le_bytes());
-                if update.encode_changes(previous, output, deleted)? {
+                if update
+                    .encode_changes(previous, output, deleted)
+                    .map_err(row_encoding)?
+                {
                     false
                 } else {
                     output.truncate(start);
@@ -564,7 +695,7 @@ impl FrameEncoder {
                 self.encode_complete(table, values, hour, keyframe, output, deleted)?
             }
             TableInput::Sampled(TableView::Truncated { rows, missing }) => {
-                validate_rows(table, rows)?;
+                validate_rows(table, rows).map_err(row_validation)?;
                 if *missing == 0 {
                     return Err(invalid("truncated table has no missing rows"));
                 }
@@ -593,7 +724,7 @@ impl FrameEncoder {
                     output.push(3);
                     output.extend_from_slice(&missing.to_le_bytes());
                     put_count(output, rows.len())?;
-                    rows.encode_rows(output)?;
+                    rows.encode_rows(output).map_err(row_encoding)?;
                 }
                 false
             }

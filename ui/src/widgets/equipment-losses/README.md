@@ -47,3 +47,5 @@ native country selection, counting window, coverage and referenced content.
 The provider starts no reads. Ordinary builds expose no model provider.
 Its label is "Equipment losses"; prepared replies identify their exact reached
 dates separately from chart samples.
+
+The expandable Game's retained Combat Log section shows explicit month membership, including entries with no amount rows, own loss reasons and recoveries, and enemy equipment dealt by the group. Equipment labels use recorded identities and content; own quantities retain their sliced acquisition cadence.

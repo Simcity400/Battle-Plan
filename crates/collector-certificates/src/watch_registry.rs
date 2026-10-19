@@ -56,8 +56,9 @@
 //! The hook path never allocates or frees. Tables are allocated off-thread
 //! ([`WatchRegistry::offer`]); a replaced table is freed off-thread
 //! ([`WatchRegistry::collect`]) once no notification can still hold it.
-//! Bounded probing refuses a registration when the table is full; that
-//! receiver is then read afresh every hour, and the refusal is counted.
+//! Bounded probing refuses a registration when the table is full; the
+//! refusal is counted. Consumers either refuse the receiver or explicitly
+//! reacquire it according to their own capture contract.
 //!
 //! A [`WatchRegistry::marking`] registry also keeps one bit per slot, which a
 //! notification of a registered receiver sets on entry and again on return,
@@ -156,8 +157,9 @@ impl Table {
             return Lookup::Unwatched;
         }
         let mask = self.slots.len() - 1;
-        // Strided receivers spread like random ones (`table_hash`).
-        let first = crate::table_hash::slot((address >> 3) as u64, self.slots.len());
+        // Keep every receiver bit: dense country identities share this
+        // registry with aligned holder pointers.
+        let first = crate::table_hash::slot(address as u64, self.slots.len());
         for probe in 0..PROBES.min(self.slots.len()) {
             let index = (first + probe) & mask;
             let slot = &self.slots[index];
@@ -614,6 +616,74 @@ impl WatchRegistry {
         false
     }
 
+    /// Install prepared growth on a worker while preserving every registered
+    /// receiver's sequence and the quiet token. Retire the old allocation for
+    /// off-lease collection. This performs no allocation and touches no native
+    /// object. Marking registries keep their existing boundary protocol.
+    ///
+    /// # Safety
+    /// The caller holds the native world's quiescent acquisition lease and
+    /// exclusively owns this registry's capture/registration side. No notifier,
+    /// certificate query, boundary or release may run during the call. Status
+    /// readers, offers and collection of an earlier retired table may run.
+    pub unsafe fn install_growth_quiescent(&self) -> bool {
+        if self.marking
+            || !self.observing()
+            || !self.draining.load(SeqCst).is_null()
+            || !self.retired.load(SeqCst).is_null()
+        {
+            return false;
+        }
+        let Some(state) = self.quiet_state() else {
+            return false;
+        };
+        let epoch = self.epoch.load(SeqCst);
+        let previous = self.table.load(SeqCst);
+        let Some(old) = (unsafe { previous.as_ref() }) else {
+            return false;
+        };
+        let offered = self.offered.swap(ptr::null_mut(), SeqCst);
+        let Some(next) = (unsafe { offered.as_ref() }) else {
+            return false;
+        };
+        let copied = next.slots.len() > old.slots.len()
+            && old.slots.iter().all(|slot| {
+                let receiver = slot.address.load(SeqCst);
+                if receiver == 0 {
+                    return true;
+                }
+                match next.find(receiver, true) {
+                    Lookup::Watched(_, sequence) | Lookup::Registered(_, sequence) => {
+                        sequence.store(slot.sequence.load(SeqCst), SeqCst);
+                        true
+                    }
+                    _ => false,
+                }
+            });
+        if !copied
+            || self.quiet_state() != Some(state)
+            || self.epoch.load(SeqCst) != epoch
+            || self.table.load(SeqCst) != previous
+        {
+            // Keep destruction off the lease, including a rejected offer. A
+            // concurrent larger offer retains its requested size; otherwise
+            // permit the same demand to prepare another table after collection.
+            self.requested
+                .compare_exchange(next.slots.len(), old.slots.len(), SeqCst, SeqCst)
+                .ok();
+            self.failed_offers.fetch_add(1, Relaxed);
+            self.retired.store(offered, SeqCst);
+            return false;
+        }
+        self.table.store(offered, SeqCst);
+        self.capacity.store(next.slots.len(), Relaxed);
+        self.installs.fetch_add(1, Relaxed);
+        // The lease excludes every user of old slots; publication precedes
+        // making their allocation available to the off-thread collector.
+        self.retired.store(previous, SeqCst);
+        true
+    }
+
     /// Hand a drained table to [`Self::collect`] once the previous one is
     /// gone. Only while no notification is running.
     fn retire_drained(&self) {
@@ -731,7 +801,7 @@ impl WatchRegistry {
             "deferred_boundaries": self.deferred.load(Relaxed),
             "held_for_full_hour": self.held.load(Relaxed),
             "failed_offers": self.failed_offers.load(Relaxed),
-            "scope": "cumulative since attach; a refused receiver is read afresh every hour; a clear or install starts an epoch, so every receiver is read afresh once, and waits for an invalidating hour (attach, load, gap or recovery)"
+            "scope": "cumulative since attach; refused registrations cannot certify a carry; a clear or boundary install starts an epoch and waits for an invalidating hour (attach, load, gap or recovery); exclusive quiescent growth preserves live certificates"
         })
     }
 }
@@ -760,6 +830,30 @@ pub struct Running<'a> {
     counted: bool,
 }
 
+impl Running<'_> {
+    /// A registered dependency's stamp while this guard is the only writer.
+    /// This is for a hook's before/after change proof, never native acquisition:
+    /// ordinary captures still require `sequence` and a fully quiet registry.
+    pub fn dependency_stamp(&self, receiver: usize) -> Option<(u64, u64)> {
+        if !self.counted || !self.registry.observing() {
+            return None;
+        }
+        let epoch = self.registry.epoch.load(SeqCst);
+        let before = self.registry.state.0.load(SeqCst);
+        if before & UNTRUSTED != 0 || running(before) != 1 {
+            return None;
+        }
+        let sequence = match self.registry.table()?.find(receiver, false) {
+            Lookup::Watched(_, sequence) => sequence.load(SeqCst),
+            _ => return None,
+        };
+        (self.registry.state.0.load(SeqCst) == before
+            && self.registry.epoch.load(SeqCst) == epoch
+            && self.registry.observing())
+        .then_some((epoch, sequence))
+    }
+}
+
 impl Drop for Running<'_> {
     fn drop(&mut self) {
         self.registry.leave(self.counted);
@@ -782,6 +876,25 @@ impl Drop for Notification<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hook_dependency_stamp_excludes_other_writers_and_is_not_an_acquisition_certificate() {
+        let watches = registry(64);
+        let before = watches.sequence(0x1000).unwrap();
+        let running = watches.running();
+        assert!(watches.sequence(0x1000).is_none());
+        assert_eq!(running.dependency_stamp(0x1000), Some(before));
+        let writer = watches.notify(0x1000);
+        assert!(running.dependency_stamp(0x1000).is_none());
+        drop(writer);
+        assert_ne!(running.dependency_stamp(0x1000), Some(before));
+        let other = watches.running();
+        assert!(running.dependency_stamp(0x1000).is_none());
+        drop(other);
+        assert!(running.dependency_stamp(0x1000).is_some());
+        drop(running);
+        assert!(watches.sequence(0x1000).is_some());
+    }
 
     /// An enabled registry with a `len`-slot table installed.
     fn registry(len: usize) -> WatchRegistry {
@@ -968,6 +1081,29 @@ mod tests {
             assert_eq!(registry.refused.load(Relaxed), 0, "stride {stride:#x}");
             assert_eq!(registry.registered(), RECEIVERS);
         }
+    }
+
+    #[test]
+    fn dense_country_ids_and_aligned_holders_at_5000_countries_register_without_allocating() {
+        const COUNTRIES: usize = 5_000;
+        let registry = WatchRegistry::new();
+        registry.offer(COUNTRIES * 2);
+        registry.boundary(false);
+        registry.set_enabled(true);
+        let refused = crate::test_support::with_allocations_denied(|| {
+            for country in 1..=COUNTRIES {
+                let holder = 0x21800 + (country - 1) * 0x2000;
+                for receiver in [country, holder] {
+                    if registry.sequence(receiver).is_none() {
+                        return Some(receiver);
+                    }
+                }
+            }
+            None
+        });
+        assert_eq!(refused, None);
+        assert_eq!(registry.refused.load(Relaxed), 0);
+        assert_eq!(registry.registered(), COUNTRIES * 2);
     }
 
     #[test]
@@ -1354,5 +1490,85 @@ mod tests {
         assert!(registry.sequence(8).is_some());
         registry.poison();
         assert!(registry.sequence(8).is_none() && registry.quiet().is_none());
+    }
+    #[test]
+    fn faction_goal_worker_growth_preserves_live_certificates_and_quiet_token() {
+        let registry = WatchRegistry::enabled(64);
+        let first = registry.sequence(0x1000).unwrap();
+        drop(registry.notify(0x2000));
+        let second = registry.sequence(0x2000).unwrap();
+        drop(registry.notify(0x2000));
+        let second = registry
+            .sequence(0x2000)
+            .filter(|value| *value != second)
+            .unwrap();
+        let quiet = registry.quiet().unwrap();
+        registry.offer(5000);
+        // SAFETY: all users of the synthetic registry are on this thread.
+        crate::test_support::with_allocations_denied(|| {
+            assert!(unsafe { registry.install_growth_quiescent() });
+        });
+        assert_eq!(registry.quiet(), Some(quiet));
+        assert_eq!(registry.sequence(0x1000), Some(first));
+        assert_eq!(registry.sequence(0x2000), Some(second));
+        for index in 0..5000 {
+            assert!(registry.sequence(0x10000 + index * 0x2000).is_some());
+        }
+        registry.collect();
+        // SAFETY: this test has no remaining queries or native callbacks.
+        unsafe {
+            registry.release();
+        }
+    }
+    #[test]
+    fn faction_goal_worker_growth_waits_for_writers_and_never_takes_marking_storage() {
+        let registry = WatchRegistry::enabled(64);
+        registry.offer(5000);
+        let running = registry.notify(0x1000);
+        // SAFETY: this test is the only caller; the running guard is deliberate.
+        assert!(!unsafe { registry.install_growth_quiescent() });
+        assert!(!registry.offered.load(SeqCst).is_null());
+        drop(running);
+        assert!(unsafe { registry.install_growth_quiescent() });
+        registry.collect();
+        unsafe {
+            registry.release();
+        }
+        let marking = WatchRegistry::marking();
+        marking.offer(1);
+        marking.boundary(false);
+        marking.set_enabled(true);
+        marking.offer(5000);
+        assert!(!unsafe { marking.install_growth_quiescent() });
+        assert!(!marking.offered.load(SeqCst).is_null());
+        unsafe {
+            marking.release();
+        }
+    }
+    #[test]
+    fn faction_goal_worker_growth_rejection_retires_off_lease_and_allows_retry() {
+        let registry = WatchRegistry::enabled(64);
+        let certificate = registry.sequence(0x1000).unwrap();
+        // An unpublished replacement whose probe ranges cannot accept the
+        // live receiver must not prevent preparation of the same size again.
+        let rejected = Table::new(128, false).unwrap();
+        for (index, slot) in rejected.slots.iter().enumerate() {
+            slot.address.store(0x10000 + index * 8, SeqCst);
+        }
+        registry.offered.store(Box::into_raw(rejected), SeqCst);
+        registry.requested.store(128, SeqCst);
+        crate::test_support::with_allocations_denied(|| {
+            assert!(!unsafe { registry.install_growth_quiescent() });
+        });
+        assert!(!registry.retired.load(SeqCst).is_null());
+        assert_eq!(registry.sequence(0x1000), Some(certificate));
+        registry.collect();
+        registry.offer_slots(128);
+        assert!(unsafe { registry.install_growth_quiescent() });
+        assert_eq!(registry.sequence(0x1000), Some(certificate));
+        registry.collect();
+        unsafe {
+            registry.release();
+        }
     }
 }

@@ -676,6 +676,7 @@ const STOCKPILE_TABLES: &[TableId] = &[
     TableId::VariantDefinitions,
     TableId::VariantModules,
     TableId::VariantUpgrades,
+    TableId::VariantChanges,
     TableId::Stockpiles,
     TableId::ProductionLines,
     TableId::LogisticsEquipment,
@@ -717,6 +718,7 @@ fn stockpile_fields() -> io::Result<Vec<TableFields>> {
         TableFields::all(TableId::VariantDefinitions).when_read(),
         TableFields::all(TableId::VariantModules),
         TableFields::all(TableId::VariantUpgrades),
+        TableFields::all(TableId::VariantChanges),
     ])
 }
 
@@ -1374,7 +1376,7 @@ impl Branch for FuelBranch {
 
 // --- Test counts -------------------------------------------------------------
 
-/// What one family's folds did on this thread.
+/// What one family's folds did, including work carried from its worker.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(in crate::prepared::pipeline) struct Counts {
@@ -1386,36 +1388,54 @@ pub(in crate::prepared::pipeline) struct Counts {
     pub quiet: usize,
 }
 
+/// Shared note names let the independent worker's existing count transfer
+/// carry all three measurements back to the caller.
 #[cfg(test)]
-thread_local! {
-    static COUNTS: std::cell::RefCell<std::collections::BTreeMap<&'static str, Counts>> =
-        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+fn count_names(family: &str) -> Option<[&'static str; 3]> {
+    Some(match family {
+        "construction" => [
+            "construction.frames",
+            "construction.observed",
+            "construction.quiet",
+        ],
+        "stockpile" => ["stockpile.frames", "stockpile.observed", "stockpile.quiet"],
+        "production" => [
+            "production.frames",
+            "production.observed",
+            "production.quiet",
+        ],
+        "experience" => [
+            "experience.frames",
+            "experience.observed",
+            "experience.quiet",
+        ],
+        "fuel" => ["fuel.frames", "fuel.observed", "fuel.quiet"],
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
 fn count(family: &'static str, update: impl FnOnce(&mut Counts)) {
-    COUNTS.with(|counts| update(counts.borrow_mut().entry(family).or_default()));
+    let mut delta = Counts::default();
+    update(&mut delta);
+    let [frames, observed, quiet] = count_names(family).expect("counted ledger family");
+    prepass::add_notes(&std::collections::BTreeMap::from([
+        (frames, delta.frames),
+        (observed, delta.observed),
+        (quiet, delta.quiet),
+    ]));
 }
 
-/// `family`'s counts on this thread so far.
+/// `family`'s counts, including work carried from preparation workers.
 #[cfg(test)]
 pub(in crate::prepared::pipeline) fn counts(family: &str) -> Counts {
-    COUNTS.with(|counts| counts.borrow().get(family).copied().unwrap_or_default())
-}
-
-#[cfg(test)]
-pub(super) fn all_counts() -> std::collections::BTreeMap<&'static str, Counts> {
-    COUNTS.with(|counts| counts.borrow().clone())
-}
-
-#[cfg(test)]
-pub(super) fn add_counts(other: &std::collections::BTreeMap<&'static str, Counts>) {
-    for (&family, added) in other {
-        count(family, |counts| {
-            counts.frames += added.frames;
-            counts.observed += added.observed;
-            counts.quiet += added.quiet;
-        });
+    let Some([frames, observed, quiet]) = count_names(family) else {
+        return Counts::default();
+    };
+    Counts {
+        frames: prepass::noted(frames),
+        observed: prepass::noted(observed),
+        quiet: prepass::noted(quiet),
     }
 }
 

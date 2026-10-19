@@ -18,6 +18,7 @@ use engine_native::{read_census, reference_bucket};
 use engine_stability::cmodifier;
 
 pub mod cdominance_values;
+pub mod cnaval_accident_report;
 pub mod cnaval_combat_air_entry;
 pub mod cnaval_combat_result_side;
 pub mod cnaval_combat_results;

@@ -10,6 +10,7 @@ use collector_test_support as _;
 pub mod air_losses;
 pub mod building_bombing;
 pub mod event_feed;
+pub mod market;
 pub mod nuclear_strikes;
 
 #[cfg(test)]

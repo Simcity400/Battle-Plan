@@ -110,6 +110,10 @@ impl World {
         1 + (index / 4) % 2
     }
 
+    pub(super) fn factors(index: usize) -> usize {
+        EXPERIENCE + index * 0x100 + 0x80
+    }
+
     fn experience(index: usize) -> usize {
         4 + index % 2
     }
@@ -191,7 +195,7 @@ impl World {
             return false;
         }
         match region {
-            _ if index >= self.characters => return false,
+            _ if region != DEFINITION && index >= self.characters => return false,
             CHARACTER => self.render_character(&mut window, index, object),
             LEADER_HEAD => {
                 let target = if Self::leader(index) {
@@ -260,6 +264,14 @@ impl World {
                     let entry = object + ordinal * 16;
                     window.pointer(entry, self.definition(index * 3 + ordinal));
                     window.put(entry + 8, &((index * 100 + ordinal) as i64).to_le_bytes());
+                }
+                for ordinal in 0..2 {
+                    let entry = object + 0x80 + ordinal * 16;
+                    window.pointer(entry, self.definition(index * 3));
+                    window.put(
+                        entry + 8,
+                        &((index as i64 - ordinal as i64) * 1000).to_le_bytes(),
+                    );
                 }
             }
             DEFINITION if index < self.definitions => {
@@ -356,6 +368,11 @@ impl World {
             object + cunit_leader::TRAIT_EXPERIENCE_DATA,
             EXPERIENCE + index * 0x100,
             Self::experience(index),
+        );
+        window.array(
+            object + cunit_leader::TRAIT_EXPERIENCE_FACTORS,
+            Self::factors(index),
+            2,
         );
         window.put(
             object + cunit_leader::EXPERIENCE,
@@ -569,12 +586,12 @@ impl advisors::Changes for Quiet {
 /// Pooled capacities that hold a 5,000-country roster without truncation.
 pub(super) fn capacities() -> Capacities {
     Capacities {
-        rows: [1 << 18, 1 << 16, 1 << 13, 1 << 16, 1 << 17],
-        bytes: [1 << 23, 0, 1 << 20, 1 << 21, 1 << 20],
+        rows: [1 << 18, 1 << 16, 1 << 13, 1 << 16, 1 << 17, 0],
+        bytes: [1 << 23, 0, 1 << 20, 1 << 21, 1 << 20, 0],
     }
 }
 
-pub(super) fn context(active: [bool; 5]) -> CharactersCopyContext {
+pub(super) fn context(active: [bool; N]) -> CharactersCopyContext {
     let capacities = capacities();
     CharactersCopyContext {
         force_full: false,
@@ -589,7 +606,7 @@ pub(super) fn context(active: [bool; 5]) -> CharactersCopyContext {
 /// Grow a job until its staging holds the whole capture, as recycling does.
 fn settle(
     memory: &impl Memory,
-    active: [bool; 5],
+    active: [bool; N],
     job: &mut CharactersJob,
     roles: Roles<&census::RoleCensus>,
 ) {
@@ -631,27 +648,35 @@ fn best_time(
 
 fn decode(job: &CharactersJob) -> Captured {
     let mut captured = Captured::with_capacities(&capacities());
-    captured.decode_characters_payload(MODULE, job, &mut [0; 5]);
+    captured.decode_characters_payload(MODULE, job, &mut [0; N]);
     captured
 }
 
 /// The typed walk of one part's tables against live memory.
 pub(super) fn typed(memory: &impl Memory, part: usize) -> Captured {
-    let mut captured = Captured::with_capacities(&capacities());
-    let results = walk_family(
-        memory,
-        MODULE,
-        GAME_STATE,
-        captured.family().select(PART_MASKS[part]),
-        None,
-        None,
-    );
-    captured.install_family(PART_MASKS[part], results);
-    captured.fail_character_tables(
-        PART_MASKS[part].map(|active| !active),
-        replay_data::cadence::SKIPPED_REASON,
-    );
-    captured
+    let mut capacities = capacities();
+    let mut captured = Captured::with_capacities(&capacities);
+    loop {
+        let results = walk_family(
+            memory,
+            MODULE,
+            GAME_STATE,
+            captured.family().select(PART_MASKS[part]),
+            None,
+            None,
+        );
+        captured.install_family(PART_MASKS[part], results);
+        captured.fail_character_tables(
+            PART_MASKS[part].map(|active| !active),
+            replay_data::cadence::SKIPPED_REASON,
+        );
+        let before = captured.allocated_bytes();
+        captured.grow(&mut capacities);
+        if captured.allocated_bytes() == before {
+            return captured;
+        }
+        captured.reset();
+    }
 }
 
 /// The roster job's payload after a role-hour pass.
@@ -686,7 +711,7 @@ fn assert_part(memory: &impl Memory, part: usize, loan: Option<&census::RoleCens
 }
 
 /// Decoded tables of one payload, checked against the fixture's role counts.
-fn check(world: &World, captured: &Captured, active: [bool; 5]) {
+fn check(world: &World, captured: &Captured, active: [bool; N]) {
     let outcomes = captured.outcomes();
     let n = world.characters;
     let expected = [

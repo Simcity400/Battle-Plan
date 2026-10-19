@@ -93,8 +93,8 @@ pub struct UnitLeaderRow {
     pub character_type: u32,
     pub character_id: u32,
     pub category: i32,
-    /// Retired: only the save comparison read it.
-    pub experience: RetiredI64,
+    /// Signed residual experience in fixed5, independent of skill level.
+    pub experience: i64,
     pub kind: u8,
     pub skill_status: u8,
     pub skill_valid: u8,
@@ -143,21 +143,20 @@ pub struct UnitLeaderTraitRow {
 typed_codec!(UnitLeaderTraitRow, 96, |row| (row.leader_reference as u128) << 32 | row.ordinal as u128, |key| Self { leader_reference: (key >> 32) as u64, ordinal: key as u32, token_id: Default::default(), definition_ordinal: Default::default(), token: Default::default() },
  { 0 => (token_id): I32, 1 => (definition_ordinal): I32, 2 => (token): Bytes }, |_row| Ok(()));
 
-/// Retired: only the save comparison read it. Kept for older recordings'
-/// framing.
-///
-/// UnitLeaderTraitExperience: key leader_reference:ordinal (96 bits), 4 payload mask bits.
+/// Complete ordered native commander training progress, independent of assigned traits.
+/// Tokens resolve through LexicalTokens and the recorded content stack.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct UnitLeaderTraitExperienceRow {
     pub leader_reference: u64,
+    /// Native progress (0) or per-trait XP-factor overrides (1).
+    pub list: u8,
     pub ordinal: u32,
     pub token_id: i32,
     pub definition_ordinal: i32,
-    pub token: Vec<u8>,
     pub experience: i64,
 }
-typed_codec!(UnitLeaderTraitExperienceRow, 96, |row| (row.leader_reference as u128) << 32 | row.ordinal as u128, |key| Self { leader_reference: (key >> 32) as u64, ordinal: key as u32, token_id: Default::default(), definition_ordinal: Default::default(), token: Default::default(), experience: Default::default() },
- { 0 => (token_id): I32, 1 => (definition_ordinal): I32, 2 => (token): Bytes, 3 => (experience): I64 }, |_row| Ok(()));
+typed_codec!(UnitLeaderTraitExperienceRow, 97, |row| (row.leader_reference as u128) << 33 | (row.list as u128) << 32 | row.ordinal as u128, |key| Self { leader_reference: (key >> 33) as u64, list: ((key >> 32) & 1) as u8, ordinal: key as u32, ..Default::default() },
+ { 0 => (token_id): I32, 1 => (definition_ordinal): I32, 2 => (experience): I64 }, |_row| Ok(()));
 
 /// ActiveAbilities: key country:ordinal (64 bits), 12 payload mask bits.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -337,6 +336,52 @@ pub struct StrategicOperativeRow {
 typed_codec!(StrategicOperativeRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
  { 0 => (slot): U32, 1 => (mission_activity): I64, 2 => (operation_activity): I64, 3 => (trade_influence): Opaque, 4 => (diplomatic_pressure): Opaque }, |_row| Ok(()));
 
+/// Logical saved propaganda entries. Real sequences retain their keys across
+/// daily appends/removals. The final sequence is an owner header: it preserves
+/// the independent loaded weekly cache until `derived_drift` becomes one, when
+/// the weekly drift is exactly the wrapping Q15 sum of the retained entries.
+/// A missing header is unobserved, not an observed empty history.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PropagandaEffortRow {
+    pub slot: u32,
+    pub country: u32,
+    pub sequence: u64,
+    pub stability: i64,
+    pub war_support: i64,
+    pub derived_drift: u8,
+}
+typed_codec!(PropagandaEffortRow, 96, |row| (row.slot as u128) << 64 | row.sequence as u128,
+|key| Self { slot: (key >> 64) as u32, sequence: key as u64, ..Default::default() },
+{ 0 => (stability): I64, 1 => (war_support): I64, 2 => (derived_drift): U8, 3 => (country): U32 }, |row| {
+   if row.derived_drift > 1 || (row.sequence != u64::MAX && row.derived_drift != 0)
+       || (row.derived_drift == 1 && (row.stability != 0 || row.war_support != 0)) {
+       return Err(crate::codec::invalid("invalid propaganda effort header"));
+   }
+   Ok(())
+});
+
+impl PropagandaEffortRow {
+    /// `rows` is the table's ordinary key-ordered complete snapshot.
+    pub fn weekly_drift(rows: &[Self], slot: u32) -> Option<(i64, i64)> {
+        let begin = rows.partition_point(|row| row.slot < slot);
+        let end = rows.partition_point(|row| row.slot <= slot);
+        let group = rows.get(begin..end)?;
+        let header = group.last().filter(|row| row.sequence == u64::MAX)?;
+        if header.derived_drift == 0 {
+            return Some((header.stability, header.war_support));
+        }
+        Some(group[..group.len() - 1].iter().fold(
+            (0_i64, 0_i64),
+            |(stability, war_support), row| {
+                (
+                    stability.wrapping_add(row.stability),
+                    war_support.wrapping_add(row.war_support),
+                )
+            },
+        ))
+    }
+}
+
 /// One control-trade influence entry: the influencing country's raw
 /// reference and its fixed5 influence, saved under
 /// `trade_influence_modifier_of_buyers`.
@@ -417,6 +462,28 @@ pub struct IntelNetworkRow {
 }
 typed_codec!(IntelNetworkRow, 96, |row| (row.owner_country as u128) << 64 | (row.target_country as u128) << 32 | row.state_id as u32 as u128, |key| Self { owner_country: (key >> 64) as u32, target_country: (key >> 32) as u32, state_id: key as u32 as i32, ..Default::default() },
  { 0 => (strength_raw): OptionalI64, 1 => (subnetwork_selector): I32, 2 => (local_strength_raw): I64, 3 => (gain_raw): I64, 4 => (gain_from_operatives_raw): I64, 5 => (gain_from_adjacency_raw): I64, 6 => (local_quiet): U8, 7 => (gain_factor_raw): OptionalI64, 8 => (strength_target_raw): OptionalI64, 9 => (target_from_operatives_raw): OptionalI64, 10 => (target_from_counterintelligence_raw): OptionalI64, 11 => (subnetwork_quiet): U8 }, |_row| Ok(()));
+
+/// Independent retained national coverage and strength caches, one row per
+/// actual network, including an empty network. These are not recomputed from
+/// state rows: the native caches can be stale. Acquired with IntelNetworks at
+/// its daily/reset/growth boundary, carried otherwise; ordinary row deltas
+/// write only changed fields. Country references retain the census identities.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IntelNetworkSummaryRow {
+    pub owner_country: u32,
+    pub target_country: u32,
+    pub ordinal: u32,
+    pub covered_core_states: i32,
+    pub covered_controlled_states: i32,
+    pub covered_worth: i32,
+    pub controlled_strength_sum: i64,
+    pub core_strength_sum: i64,
+    pub max_state_strength: i64,
+}
+typed_codec!(IntelNetworkSummaryRow, 64, |row| (row.owner_country as u128) << 32 | row.target_country as u128,
+ |key| Self { owner_country: (key >> 32) as u32, target_country: key as u32, ..Default::default() },
+ { 0 => (covered_core_states): I32, 1 => (covered_controlled_states): I32, 2 => (covered_worth): I32,
+   3 => (controlled_strength_sum): I64, 4 => (core_strength_sum): I64, 5 => (max_state_strength): I64, 6 => (ordinal): U32 }, |_row| Ok(()));
 
 /// Operations: key id (64 bits), 21 payload mask bits.
 ///
@@ -811,7 +878,16 @@ pub struct UnitIntelRow {
 typed_codec!(UnitIntelRow, 96, |row| (row.unit as u128) << 32 | row.ordinal as u128, |key| Self { unit: (key >> 32) as u64, ordinal: key as u32, viewer: Default::default(), level: Default::default() },
  { 0 => (viewer): U32, 1 => (level): I8 }, |_row| Ok(()));
 
-/// Scientists: key character (32 bits), 4 payload mask bits.
+/// Source of the retained scientist role's nonempty visible conjunction.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ScientistTemplateOrigin {
+    pub file: Vec<u8>,
+    pub line: u32,
+}
+value_struct!(ScientistTemplateOrigin { file: Vec<u8>, line: u32 });
+opaque_value!(Option<ScientistTemplateOrigin>);
+
+/// Scientists: key character (32 bits), 5 payload mask bits.
 ///
 /// `trait_count` and `skill_count` are the live vector counts, not capacities.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -827,8 +903,23 @@ pub struct ScientistRow {
     /// refusal; membership and skill counts remain available.
     pub active: Recorded<Option<u8>>,
 }
+
 typed_codec!(ScientistRow, 32, |row| row.character as u128, |key| Self { character: key as u32, ..Default::default() },
  { 0 => (country): U32, 1 => (ordinal): U32, 2 => (trait_count): I32, 3 => (skill_count): I32, 4 => (active): Opaque }, |_row| Ok(()));
+
+/// Daily scientist operands, dated by this table's supplying read.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ScientistDailyRow {
+    pub character: u32,
+    pub country: u32,
+    /// None is an independent guarded-read refusal.
+    pub injury_days: Recorded<Option<i32>>,
+    /// Retained conjunction: 0 null, 1 nonempty, 2 empty (native true).
+    pub template_visibility: Recorded<Option<u8>>,
+    pub template_origin: Recorded<Option<ScientistTemplateOrigin>>,
+}
+typed_codec!(ScientistDailyRow, 32, |row| row.character as u128, |key| Self { character: key as u32, ..Default::default() },
+ { 0 => (country): U32, 1 => (injury_days): OptionalI32, 2 => (template_visibility): Opaque, 3 => (template_origin): Opaque }, |_row| Ok(()));
 opaque_value!(Option<u8>);
 
 /// Stored agency roster order. The full reference pair is retained even
@@ -954,3 +1045,107 @@ pub struct AgencyBufferedOperation {
 }
 value_struct!(AgencyBufferedOperation { operation: u64, state: Option<u32> });
 opaque_value!(Vec<AgencyBufferedOperation>);
+
+/// Independent contribution vectors. Kinds are allied, cryptology, static,
+/// dynamic, prior-day dynamic, pending dynamic values and accumulators. A final
+/// ordinal header stores the native extent in `target`; the outer contribution
+/// extent uses the final pool. Dense missing entries within the extent are zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IntelContributionRow {
+    pub owner: u32,
+    pub kind: u8,
+    pub pool: u32,
+    pub ordinal: u32,
+    pub target: i32,
+    pub civilian: i64,
+    pub army: i64,
+    pub navy: i64,
+    pub air: i64,
+}
+typed_codec!(IntelContributionRow,104,|row| (row.owner as u128)<<72 | (row.kind as u128)<<64 | (row.pool as u128)<<32 | row.ordinal as u128,
+ |key| Self {owner:(key>>72) as u32,kind:(key>>64) as u8,pool:(key>>32) as u32,ordinal:key as u32,..Default::default()},
+ {0=>(target):I32,1=>(civilian):I64,2=>(army):I64,3=>(navy):I64,4=>(air):I64},|_row|Ok(()));
+
+/// Static pool/source identities and ordered keyed values. Final entry ordinal
+/// is a source header; final source ordinal is a pool header. The all-final key
+/// is the root's independently retained discriminator and pool extents.
+/// Final pool with source ordinal 0/1/2/3 is the held cheat/radar/token/network
+/// source reference, keyed by its target in `ordinal` (zero for country roots).
+/// No process pointer is a recording input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IntelSourceRow {
+    pub owner: u32,
+    pub pool: u32,
+    pub source: u32,
+    pub ordinal: u32,
+    pub target: i32,
+    pub civilian: i64,
+    pub army: i64,
+    pub navy: i64,
+    pub air: i64,
+    pub id: i32,
+    pub removed: u8,
+    pub next_id: i32,
+    pub discriminant: u32,
+    pub count: u32,
+    pub other_count: u32,
+    pub reference_country: u32,
+    pub reference_pool: i32,
+}
+typed_codec!(IntelSourceRow,128,|row| (row.owner as u128)<<96 | (row.pool as u128)<<64 | (row.source as u128)<<32 | row.ordinal as u128,
+ |key| Self {owner:(key>>96) as u32,pool:(key>>64) as u32,source:(key>>32) as u32,ordinal:key as u32,..Default::default()},
+ {0=>(target):I32,1=>(civilian):I64,2=>(army):I64,3=>(navy):I64,4=>(air):I64,5=>(id):I32,6=>(removed):U8,7=>(next_id):I32,8=>(discriminant):U32,9=>(count):U32,10=>(other_count):U32,11=>(reference_country):U32,12=>(reference_pool):I32},|_row|Ok(()));
+
+/// Saved network auxiliary occurrences. The stable id is allocated on workers
+/// for an actual (kind, subnetwork, ordinal), never a country/state product.
+/// National scope is u32::MAX. Kinds: network metadata (0), vertex/state-depth-
+/// selector (1), edge endpoints (2), prior source (3), local quiet flag (4),
+/// operative handle/selector (5), country record (6), subnetwork presence (7),
+/// coverage/coverable core-controlled-worth counts (8/9), controlled/core sums
+/// and national coverage (10), detection chance/factor (11), state/strength
+/// occurrences (12), core states (13), and otherwise-unselected strength/gain/
+/// target terms (14/15) and quiet (16). Existing IntelNetworks supplies selected
+/// terms and per-state strengths/gains. Unused carriers are canonical zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IntelNetworkAuxiliaryRow {
+    pub owner: u32,
+    pub target: u32,
+    pub id: u64,
+    pub kind: u8,
+    pub subnetwork: u32,
+    pub ordinal: u64,
+    pub country: u32,
+    pub count_a: i32,
+    pub count_b: i32,
+    pub count_c: i32,
+    pub first: i64,
+    pub second: i64,
+    pub third: i64,
+}
+impl IntelNetworkAuxiliaryRow {
+    pub fn label(&self) -> Option<&'static str> {
+        Some(match self.kind {
+            0 => "Network topology",
+            1 => "Vertex",
+            2 => "Edge",
+            3 => "Previous gain source",
+            4 => "Local quiet flag",
+            5 => "Operative",
+            6 => "Country record",
+            7 => "Subnetwork",
+            8 => "Coverage",
+            9 => "Total coverable",
+            10 => "Strength aggregates and national coverage",
+            11 => "Operative detection",
+            12 => "State",
+            13 => "Core state",
+            14 => "Unselected subnetwork strength",
+            15 => "Unselected subnetwork target",
+            16 => "Unselected subnetwork quiet",
+            _ => return None,
+        })
+    }
+}
+typed_codec!(IntelNetworkAuxiliaryRow,128,|row| (row.owner as u128)<<96 | (row.target as u128)<<64 | row.id as u128,
+ |key| Self{owner:(key>>96) as u32,target:(key>>64) as u32,id:key as u64,..Default::default()},
+ {0=>(kind):U8,1=>(subnetwork):U32,2=>(ordinal):U64,3=>(country):U32,4=>(count_a):I32,5=>(count_b):I32,6=>(count_c):I32,7=>(first):I64,8=>(second):I64,9=>(third):I64},|_row|Ok(()));

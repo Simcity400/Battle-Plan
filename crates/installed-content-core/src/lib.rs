@@ -21,7 +21,9 @@ pub mod doctrines;
 pub mod dynamic_modifiers;
 pub mod effect_keys;
 pub mod equipment;
+pub mod faction_goals;
 pub mod faction_templates;
+pub mod faction_upgrades;
 #[doc(hidden)]
 pub mod fields;
 pub mod fixed5;
@@ -42,6 +44,7 @@ pub mod modifiers;
 pub mod movement;
 pub mod names;
 pub mod occupation_laws;
+pub mod occupation_modifiers;
 pub mod opinion_modifiers;
 pub mod parser;
 pub mod particles;
@@ -75,6 +78,7 @@ pub mod train_gfx;
 pub mod trigger_keys;
 pub mod triggers;
 pub mod unit_leader;
+pub mod unit_medals;
 pub mod variable_builtins;
 
 pub use content::{

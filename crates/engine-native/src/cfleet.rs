@@ -190,7 +190,7 @@ pub fn walk_timed_with(
     task_forces: &mut [ctask_force::Row],
     ships: &mut [cship::Row],
     now: impl FnMut(usize) -> u64,
-    visit: impl FnMut(usize, &cship::Row),
+    visit: impl FnMut(usize, &mut cship::Row),
 ) -> TimedCapture {
     walk_named(
         memory,
@@ -218,7 +218,7 @@ pub fn walk_timed_with_names(
     task_forces: &mut [ctask_force::Row],
     ships: &mut [cship::Row],
     now: impl FnMut(usize) -> u64,
-    visit: impl FnMut(usize, &cship::Row),
+    visit: impl FnMut(usize, &mut cship::Row),
     names: &mut Vec<u8>,
 ) -> TimedCapture {
     walk_named(
@@ -317,7 +317,7 @@ impl ShipRun {
         memory: &impl Memory,
         base: usize,
         ships: &mut Output<'_, cship::Row>,
-        visit: &mut impl FnMut(usize, &cship::Row),
+        visit: &mut impl FnMut(usize, &mut cship::Row),
     ) {
         if self.len == SHIP_RUN {
             self.flush(memory, base, ships, visit);
@@ -333,7 +333,7 @@ impl ShipRun {
         memory: &impl Memory,
         base: usize,
         ships: &mut Output<'_, cship::Row>,
-        visit: &mut impl FnMut(usize, &cship::Row),
+        visit: &mut impl FnMut(usize, &mut cship::Row),
     ) {
         let mut count = 0;
         for entry in &self.pending[..self.len] {
@@ -378,7 +378,7 @@ impl ShipRun {
                             continue;
                         }
                     }
-                    let row = match expected {
+                    let mut row = match expected {
                         Some(expected) if at < complete => cship::decode_row(
                             &self.records[at * cship::ROW_STRIDE..(at + 1) * cship::ROW_STRIDE],
                             expected,
@@ -395,7 +395,7 @@ impl ShipRun {
                         row.roster_ordinal = ordinal;
                         row
                     });
-                    if let Ok(row) = &row {
+                    if let Ok(row) = &mut row {
                         visit(ship, row);
                     }
                     ships.push(row);
@@ -421,7 +421,7 @@ pub fn walk_timed_growing_with_names(
     task_forces: &mut Vec<ctask_force::Row>,
     ships: &mut Vec<cship::Row>,
     now: impl FnMut(usize) -> u64,
-    visit: impl FnMut(usize, &cship::Row),
+    visit: impl FnMut(usize, &mut cship::Row),
     names: &mut Vec<u8>,
 ) -> TimedCapture {
     walk_named(
@@ -446,10 +446,69 @@ fn walk_named(
     fleets: crate::walk::Buffer<'_, Row>,
     task_forces: crate::walk::Buffer<'_, ctask_force::Row>,
     ships: crate::walk::Buffer<'_, cship::Row>,
+    now: impl FnMut(usize) -> u64,
+    visit: impl FnMut(usize, &mut cship::Row),
+    names: Option<&mut Vec<u8>>,
+    batched: bool,
+) -> TimedCapture {
+    walk_named_observed(
+        memory,
+        base,
+        game_state,
+        fleets,
+        task_forces,
+        ships,
+        now,
+        visit,
+        names,
+        batched,
+        |_| {},
+    )
+}
+
+/// Shares the core census's authenticated selecting objects with an independent settings
+/// observer. Its own refusals never change Fleets, TaskForces or Ships.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_timed_growing_with_management(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    fleets: &mut Vec<Row>,
+    task_forces: &mut Vec<ctask_force::Row>,
+    ships: &mut Vec<cship::Row>,
+    now: impl FnMut(usize) -> u64,
+    visit: impl FnMut(usize, &mut cship::Row),
+    names: &mut Vec<u8>,
+    management: impl FnMut(crate::naval_management::CensusVisit),
+) -> TimedCapture {
+    walk_named_observed(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(fleets),
+        crate::walk::Buffer::Growing(task_forces),
+        crate::walk::Buffer::Growing(ships),
+        now,
+        visit,
+        Some(names),
+        true,
+        management,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_named_observed(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    fleets: crate::walk::Buffer<'_, Row>,
+    task_forces: crate::walk::Buffer<'_, ctask_force::Row>,
+    ships: crate::walk::Buffer<'_, cship::Row>,
     mut now: impl FnMut(usize) -> u64,
-    mut visit: impl FnMut(usize, &cship::Row),
+    mut visit: impl FnMut(usize, &mut cship::Row),
     mut names: Option<&mut Vec<u8>>,
     batched: bool,
+    mut management: impl FnMut(crate::naval_management::CensusVisit),
 ) -> TimedCapture {
     let mut names_used = 0;
     let invalid_reference = if names.is_some() {
@@ -492,6 +551,7 @@ fn walk_named(
                 continue;
             };
             found_country = true;
+            management(crate::naval_management::CensusVisit::Country(country));
             let fleet_roster = country
                 .pointer
                 .checked_add(ccountry::FLEETS)
@@ -519,6 +579,10 @@ fn walk_named(
                 if owner_pointer != country.pointer {
                     return Err("fleet owner differs from country roster");
                 }
+                management(crate::naval_management::CensusVisit::Fleet {
+                    pointer: fleet,
+                    handle: id,
+                });
                 let tasks = Array::read(memory, at(TASK_FORCES)?, 8)
                     .ok_or("task force roster unreadable or invalid")?;
                 if fleet_output.needs_row()? {
@@ -568,6 +632,10 @@ fn walk_named(
                             }
                         }
                         let task_id = task_reader.identity(task, fleet)?;
+                        management(crate::naval_management::CensusVisit::TaskForce {
+                            pointer: task,
+                            handle: task_id,
+                        });
                         if task_output.needs_row()? {
                             task_output.push(task_reader.row(
                                 task,
@@ -652,14 +720,14 @@ fn walk_named(
                                     }
                                     if ship_output.needs_row()? {
                                         let ship_index = first + index as u32;
-                                        let row = cship::read_row(
+                                        let mut row = cship::read_row(
                                             memory, base, ship, task, task_id,
                                         )
                                         .map(|mut row| {
                                             row.roster_ordinal = ship_index;
                                             row
                                         });
-                                        if let Ok(row) = &row {
+                                        if let Ok(row) = &mut row {
                                             visit(ship, row);
                                         }
                                         ship_output.push(row);
@@ -1170,6 +1238,8 @@ pub fn walk_counter_inputs_with_port_observed<M: Memory>(
         ),
         visit,
         observe,
+        |_, _| (),
+        |_, _, _, _| {},
     );
     let counts = arena.map(|arena| (arena.len, arena.required));
     if let (Some(names), Some((len, required))) = (names, counts) {
@@ -1188,9 +1258,38 @@ pub fn walk_counter_inputs_with_port_observed_growing<M: Memory>(
     game_state: usize,
     fleets: &mut Vec<CounterRow>,
     rosters: &mut Vec<u64>,
+    inputs: GrowingPortCounterInputs<'_, '_, '_, '_, '_, '_, '_, M>,
+    visit: impl FnMut(usize, u64),
+    observe: impl FnMut(usize, u64, Option<Result<ctask_force::CounterRow, &'static str>>),
+) -> CounterWalk {
+    walk_counter_inputs_with_port_and_fleet_observed_growing(
+        memory,
+        base,
+        game_state,
+        fleets,
+        rosters,
+        inputs,
+        visit,
+        observe,
+        |_, _| (),
+        |_, _, _, _| {},
+    )
+}
+
+/// Brackets the original fleet-region header with the borrower's opaque token;
+/// its observer can certify the header and payload without reacquiring the header.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_counter_inputs_with_port_and_fleet_observed_growing<M: Memory, T>(
+    memory: &M,
+    base: usize,
+    game_state: usize,
+    fleets: &mut Vec<CounterRow>,
+    rosters: &mut Vec<u64>,
     (task_forces, names, supply, port): GrowingPortCounterInputs<'_, '_, '_, '_, '_, '_, '_, M>,
     visit: impl FnMut(usize, u64),
     observe: impl FnMut(usize, u64, Option<Result<ctask_force::CounterRow, &'static str>>),
+    fleet_regions_before: impl FnMut(usize, u64) -> T,
+    fleet_regions: impl FnMut(usize, u64, Array, T),
 ) -> CounterWalk {
     walk_counter_buffers_with_port_observed(
         memory,
@@ -1206,11 +1305,13 @@ pub fn walk_counter_inputs_with_port_observed_growing<M: Memory>(
         ),
         visit,
         observe,
+        fleet_regions_before,
+        fleet_regions,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn walk_counter_buffers_with_port_observed<M: Memory>(
+fn walk_counter_buffers_with_port_observed<M: Memory, T>(
     memory: &M,
     base: usize,
     game_state: usize,
@@ -1228,6 +1329,8 @@ fn walk_counter_buffers_with_port_observed<M: Memory>(
     >,
     mut visit: impl FnMut(usize, u64),
     mut observe: impl FnMut(usize, u64, Option<Result<ctask_force::CounterRow, &'static str>>),
+    mut fleet_regions_before: impl FnMut(usize, u64) -> T,
+    mut fleet_regions: impl FnMut(usize, u64, Array, T),
 ) -> CounterWalk {
     let mut roster_len = 0usize;
     let mut roster_required = 0_usize;
@@ -1325,8 +1428,10 @@ fn walk_counter_buffers_with_port_observed<M: Memory>(
                 let at = |offset| fleet.checked_add(offset).ok_or("fleet address overflow");
                 let colour = read::<[u8; 16]>(memory, at(COLOR_COMPONENTS)?)
                     .ok_or("fleet colour unreadable")?;
+                let region_token = fleet_regions_before(fleet, id);
                 let regions = Array::read(memory, at(MISSION_REGIONS)?, 8)
                     .ok_or("fleet mission regions invalid")?;
+                fleet_regions(fleet, id, regions, region_token);
                 fleet_output.push(Ok(CounterRow {
                     id,
                     rgba: std::array::from_fn(|n| {
@@ -1360,3 +1465,25 @@ fn walk_counter_buffers_with_port_observed<M: Memory>(
 
 #[cfg(test)]
 mod tests;
+
+/// A changed fleet's already-observed region vector, acquired only under its
+/// writer certificate inside the existing authenticated census.
+pub fn read_mission_regions(
+    memory: &impl Memory,
+    base: usize,
+    regions: Array,
+) -> Result<Vec<u32>, &'static str> {
+    let mut output = crate::allocation::vec(regions.count as usize)
+        .map_err(|_| "fleet region allocation failed")?;
+    for index in 0..regions.count {
+        let pointer = regions
+            .element(index, 8)
+            .and_then(|at| read::<u64>(memory, at))
+            .ok_or("fleet mission region pointer unreadable")?;
+        let id = crate::cstrategic_region::id(memory, base, pointer as usize)?
+            .ok_or("fleet mission region is null")?;
+        output.push(id);
+    }
+    output.sort_unstable();
+    Ok(output)
+}

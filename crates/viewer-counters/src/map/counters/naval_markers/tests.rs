@@ -111,7 +111,6 @@ fn with_context<T>(test: impl FnOnce(&MarkerContext<'_>) -> T) -> T {
         mission_skips: Default::default(),
         forces: &[],
         forces_complete: true,
-        coarse: false,
     };
     let countries = Countries::default();
     test(&MarkerContext {

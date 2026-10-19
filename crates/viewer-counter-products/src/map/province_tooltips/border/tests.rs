@@ -33,6 +33,11 @@ fn fixture() -> (super::super::Content, DecodedFrame, BTreeMap<u32, u32>) {
         ]
         .into_iter()
         .collect(),
+        labels: std::sync::Arc::new(
+            viewer_foundation::recorded_labels::RecordedLabels::from_localisation(
+                &Default::default(),
+            ),
+        ),
         impassable: Default::default(),
         neighbors: Ok([(1, vec![2, 3, 4])].into_iter().collect()),
         temperature: Err("unused".into()),
@@ -45,6 +50,10 @@ fn fixture() -> (super::super::Content, DecodedFrame, BTreeMap<u32, u32>) {
             victory: 80_000,
         }),
         air_log_timeout: Err("unused".into()),
+        air_detection: Err("unused".into()),
+        air_range: Err("unused".into()),
+        air_fuel: Err("unused".into()),
+        navy: super::super::strategic_navy::Defines::default(),
         occupation: Err("unused".into()),
         network_base_target: Err("unused".into()),
         resources: Err("unused".into()),

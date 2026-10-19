@@ -1613,3 +1613,105 @@ fn native_complete_wing_prefix_is_observed_before_a_later_backlink_read_failure(
         "owned decode makes no native retry"
     );
 }
+
+#[test]
+fn quiet_base_projection_reuses_nested_country_order_without_allocating_a_payload() {
+    use crate::projection::{Projection, ProjectionScratch};
+    use replay_frame::frame::{FrameEncoder, FrameInput, Metrics, TableInput};
+    let (bases, _) = outputs();
+    let mut captured =
+        super::super::Captured::with_capacities(&super::super::Capacities::fixture());
+    captured.carrier = bases;
+    captured.bases.rows[0] = cair_base::Row {
+        id: 17,
+        state: Some(1),
+        ..Default::default()
+    };
+    captured.bases.outcome = Outcome::Rows { len: 1 };
+    let input = |hour, base| {
+        let mut frame = FrameInput {
+            branch: 1,
+            hour,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|_| crate::spooling::unavailable("fixture table").into()),
+        };
+        frame.tables[TableId::AirBases.index()] = base;
+        frame
+    };
+    let mut encoder = FrameEncoder::new();
+    encoder
+        .encode_input(input(1, captured.base_input(None)), false)
+        .unwrap();
+    let scratch = ProjectionScratch::default();
+    let mut projection = Projection::new(&encoder, 1, 2, false, &scratch);
+    assert!(matches!(
+        captured.base_input(Some(&mut projection)),
+        TableInput::ComparedEqual(_)
+    ));
+    crate::test_support::with_allocations_denied(|| {
+        assert!(matches!(
+            captured.base_input(Some(&mut projection)),
+            TableInput::ComparedEqual(_)
+        ));
+    });
+    captured.carrier.countries.swap(0, 1);
+    assert!(!matches!(
+        captured.base_input(Some(&mut projection)),
+        TableInput::ComparedEqual(_)
+    ));
+}
+
+#[test]
+fn state_packets_override_only_their_keys_and_refresh_even_after_a_carrier_memo_restore() {
+    let (bases, mut registrations) = outputs();
+    let mut memo = Memo::default();
+    let log = RawLog::<2>::default();
+    assert!(memo.save(&bases, &registrations, &log, CarrierDemand::default()));
+    let source = cair_base::RegistrationRow {
+        base: 29,
+        slot: 3,
+        wings_len: 0,
+        ..Default::default()
+    };
+    let mut state = super::super::state_fuel_inputs::Packet::default();
+    state.rows.push(CarrierRegistration {
+        base: 29,
+        slot: 3,
+        country: 8,
+        pools: Ok((0, 1)),
+        fuel: ContainerFuel {
+            demand: Ok(-19),
+            allocated: Ok(7),
+        },
+    });
+    state.pools.push(CarrierPool {
+        type_index: -4,
+        subunit_index: 8,
+        ..Default::default()
+    });
+    registrations.install_states(&state);
+    let packet = registrations.packet(&source);
+    let rows::Recorded::Value(Some(ref packet)) = packet else {
+        panic!("state packet");
+    };
+    assert_eq!(packet.fuel_demand_raw, None);
+    assert_eq!(registrations.state_fuel(&source), [Some(-19), Some(7)]);
+    assert_eq!(packet.pools.as_ref().unwrap()[0].type_index, -4);
+    assert_eq!(packet.pools.as_ref().unwrap()[0].current_fuel_raw, None);
+    state.rows[0].fuel.allocated = Ok(11);
+    let mut restored_bases = Bases::new(0);
+    restored_bases.prepare(CarrierDemand {
+        bases: memo.bases.len(),
+        countries: memo.countries.len(),
+        ..Default::default()
+    });
+    memo.restore(&mut restored_bases, &mut registrations);
+    registrations.install_states(&state);
+    let rows::Recorded::Value(Some(packet)) = registrations.packet(&source) else {
+        panic!("refreshed state packet");
+    };
+    assert_eq!(packet.fuel_allocated_raw, None);
+    assert_eq!(registrations.state_fuel(&source), [Some(-19), Some(11)]);
+    registrations.install_states(&super::super::state_fuel_inputs::Packet::default());
+    assert_eq!(registrations.packet(&source), rows::Recorded::Value(None));
+}

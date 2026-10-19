@@ -52,6 +52,164 @@ fn copy_divisions_worker_refresh(
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    failure::reset();
+    let _hook = PanicHook::install();
+    let shared = Shared::new(0, 0, 1);
+    let interrupted = shared.free.pop().unwrap();
+    let queued = shared.free.pop().unwrap();
+    let frame = unsafe { &mut *shared.frames[interrupted].load(Ordering::Acquire) };
+    frame.world_generation = 12;
+    frame.clock = Some(engine_native::cgame_state::Clock {
+        game_state: 0,
+        hour: 900,
+        play_time: 0,
+        play_session_started_at: 321,
+        seed: 0,
+        campaign_id: engine_native::capture_text::Owned::default(),
+        speed: 0,
+        tick_busy: 0,
+    });
+    let mut job = bare_job(interrupted, 74, 900, 17);
+    job.force_full = true;
+    // Inject after the lease was taken, before any family can finish it.
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        failure::worker(|| {
+            failure::fail_at("air copies");
+            process_owned_job(&shared, job, &mut AirBasesMemo::default());
+        });
+    }))
+    .unwrap_err();
+    assert_eq!(shared.ready.pop(), None);
+    assert_eq!(shared.completed[interrupted].load(Ordering::Acquire), 0);
+    for _ in 0..shared.free.len() {
+        let free = shared.free.pop().unwrap();
+        assert_ne!(free, interrupted);
+        shared.free.push(free).unwrap();
+    }
+    let first = failure::joined(panic, "worker failed");
+    for expected in [
+        "worker=decode worker",
+        "stage=air copies",
+        "seq=74",
+        "hour=900",
+        "force_full=true",
+        "load_signal=Some(321)",
+        "world_generation=Some(12)",
+        "synthetic decode failure",
+        "location=Some(Location",
+        "line:",
+        "column:",
+    ] {
+        assert!(first.contains(expected), "{expected}: {first}");
+    }
+
+    // A successful later handoff does not publish the interrupted frame or
+    // overwrite its identity with another world/hour. A drain panic follows.
+    let later = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _drain = failure::Scope::worker("decode detach drain");
+        process_owned_job(
+            &shared,
+            bare_job(queued, 75, 100, 19),
+            &mut AirBasesMemo::default(),
+        );
+        assert_eq!(shared.ready.pop(), Some(queued));
+        failure::stage("drain progress", None);
+        panic!("later drain failure");
+    }))
+    .unwrap_err();
+    assert_eq!(failure::joined(later, "drain failed"), first);
+    assert_eq!(panic_failure(), Some(first));
+    assert_eq!(shared.completed[interrupted].load(Ordering::Acquire), 0);
+    failure::reset();
+}
+
+#[test]
+fn decode_failure_context_ends_at_handoff_and_ignores_contained_panics() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    failure::reset();
+    let _hook = PanicHook::install();
+    let shared = Shared::new(0, 0, 1);
+    let index = shared.free.pop().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        failure::worker(|| {
+            let _ = std::panic::catch_unwind(|| panic!("contained inner panic"));
+            assert_eq!(panic_failure(), None);
+            process_owned_job(
+                &shared,
+                bare_job(index, 3, 4, 5),
+                &mut AirBasesMemo::default(),
+            );
+            assert_eq!(shared.ready.pop(), Some(index));
+            panic!("after handoff");
+        });
+    }))
+    .unwrap_err();
+    let first = failure::joined(panic, "worker failed");
+    assert!(first.contains("after handoff"), "{first}");
+    assert!(
+        first.contains("stage=after ready handoff; frame=none"),
+        "{first}"
+    );
+    assert!(!first.contains("contained inner panic"), "{first}");
+    assert!(!first.contains("seq=3"), "{first}");
+    failure::reset();
+}
+
+#[test]
+fn decode_join_preserves_string_and_opaque_payloads_without_running_their_drop() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    struct Payload;
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            panic!("panic payload destructor must not run");
+        }
+    }
+    failure::reset();
+    assert!(
+        failure::joined(
+            Box::new(String::from("owned panic reason")),
+            "worker failed"
+        )
+        .contains("owned panic reason")
+    );
+    failure::reset();
+    assert!(
+        failure::joined(Box::new(Payload), "worker failed").contains("non-string panic payload")
+    );
+    failure::reset();
+}
+
+#[test]
+fn decode_detach_keeps_worker_panic_after_drain_panic_and_a_later_empty_drain() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    failure::reset();
+    let _hook = PanicHook::install();
+    let shared = Shared::new(0, 0, 1);
+    let index = shared.free.pop().unwrap();
+    shared
+        .decode_queue
+        .push(bare_job(index, 10, 20, 30))
+        .unwrap();
+    assert!(sampling::SHARED.load(Ordering::Acquire).is_null());
+    assert!(WORKER.lock().unwrap().is_none());
+    *WORKER.lock().unwrap() = Some(std::thread::spawn(|| {
+        failure::worker(|| panic!("original worker failure"));
+    }));
+    sampling::SHARED.store((&shared as *const Shared).cast_mut(), Ordering::Release);
+    let first = detach_drain(|_| panic!("later detach progress failure")).unwrap_err();
+    let later = detach_drain(|_| unreachable!());
+    sampling::SHARED.store(std::ptr::null_mut(), Ordering::Release);
+    assert!(first.contains("original worker failure"), "{first}");
+    assert!(!first.contains("later detach progress failure"), "{first}");
+    assert_eq!(later, Err(first));
+    assert_eq!(shared.ready.pop(), Some(index));
+    assert_eq!(shared.completed[index].load(Ordering::Acquire), 30);
+    failure::reset();
+}
+
+#[test]
 fn advisor_payload_storage_survives_pool_preparation_and_recycling() {
     let _guard = TEST_LOCK.lock().unwrap();
     let saved = std::mem::take(&mut CHARACTERS_JOB_POOL.lock().unwrap()[2]);
@@ -605,7 +763,7 @@ fn missing_declared_payloads_fail_only_the_frozen_active_tables() {
     let shared = Shared::new(0, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let characters = [true, false, false, true, false];
+    let characters = [true, false, false, true, false, true];
     let relations = [false, true];
     frame
         .extended
@@ -1094,8 +1252,8 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
     let index = shared.free.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     let capacities = crate::extended::characters::Capacities {
-        rows: [4096; 5],
-        bytes: [131_072; 5],
+        rows: [4096; crate::extended::characters::N],
+        bytes: [131_072; crate::extended::characters::N],
     };
     let direct = characters_test_kit::direct(&memory, &capacities);
     let mut initial = capacities;
@@ -1110,7 +1268,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         force_full: false,
         base: characters_test_kit::BASE,
         game_state: characters_test_kit::GAME_STATE,
-        active: [true; 5],
+        active: [true; crate::extended::characters::N],
         trait_rows,
         trait_bytes,
     };
@@ -1122,7 +1280,7 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         crate::extended::characters::Roles::Independent,
     );
     assert!(report.raw_ok);
-    frame.extended.characters_pilot().raw_active = [true; 5];
+    frame.extended.characters_pilot().raw_active = [true; crate::extended::characters::N];
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
         index,
@@ -1202,8 +1360,8 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let capacities = characters::Capacities {
-        rows: [4096; 5],
-        bytes: [131_072; 5],
+        rows: [4096; crate::extended::characters::N],
+        bytes: [131_072; crate::extended::characters::N],
     };
     for (missing, missing_mask) in CHARACTER_MASKS.into_iter().enumerate() {
         let bytes = kit::mapped_fixture();
@@ -1214,8 +1372,8 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.characters_pilot();
         *captured = characters::Captured::with_capacities(&capacities);
-        captured.set_character_activity([true; 5]);
-        captured.raw_active = [true; 5];
+        captured.set_character_activity([true; crate::extended::characters::N]);
+        captured.raw_active = [true; crate::extended::characters::N];
         captured.capture(&memory, kit::BASE, kit::GAME_STATE, 0, false);
         let (trait_rows, trait_bytes) = captured.trait_capture_capacities();
         let mut job = bare_job(index, next_seq(), 0, 37);
@@ -1249,7 +1407,10 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
         assert_eq!(shared.ready.pop(), None);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         kit::assert_matches_direct(frame.extended.characters_pilot(), &expected);
-        assert_eq!(frame.extended.characters_pilot().raw_active, [false; 5]);
+        assert_eq!(
+            frame.extended.characters_pilot().raw_active,
+            [false; crate::extended::characters::N]
+        );
     }
 }
 
@@ -1266,8 +1427,8 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let capacities = characters::Capacities {
-        rows: [4096; 5],
-        bytes: [131_072; 5],
+        rows: [4096; crate::extended::characters::N],
+        bytes: [131_072; crate::extended::characters::N],
     };
     for (hour, force_full) in [(0, false), (21, false), (7, true)] {
         let active =
@@ -1298,7 +1459,7 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
                 assert_eq!(report.raw_bytes[slot], 0);
             }
         }
-        frame.extended.characters_pilot().raw_active = [true; 5];
+        frame.extended.characters_pilot().raw_active = [true; crate::extended::characters::N];
         let mut job = bare_job(index, next_seq(), 23, 39);
         job.force_full = !force_full;
         job.characters_refresh = [true, false, false, false];

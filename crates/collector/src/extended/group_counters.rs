@@ -15,6 +15,9 @@ use replay_data::{
 };
 use replay_frame::frame::TableView;
 use std::mem::size_of;
+#[cfg(test)]
+mod startup_tests;
+mod templates;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::OrdersGroupCounterInputs];
@@ -24,6 +27,9 @@ static COOLDOWN_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 static BORDER_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static INVASION_DISTANCE_REFUSALS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+static HQ_NEAREST_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HQ_CONTEXT_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HQ_CONTEXT_REASON: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 static COMMANDER_ATTACK_REFUSALS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -32,6 +38,9 @@ pub(crate) fn tooltip_data() -> impl serde::Serialize {
         "leader_enroute_days_refused": COOLDOWN_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
         "border_war_presence_refused": BORDER_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
         "invasion_source_distance_refused": INVASION_DISTANCE_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "hq_nearest_front_refused": HQ_NEAREST_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "hq_template_context_refused": HQ_CONTEXT_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "hq_template_context_last_refusal": *HQ_CONTEXT_REASON.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
         "commander_attack_refused": COMMANDER_ATTACK_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
         "scope": "cumulative independent orders-group tooltip input refusals; existing withdrawing and HQ-distance operands remain available",
     })
@@ -57,6 +66,7 @@ impl Capacities {
             Outcome::Unavailable { reason } => return Err(reason),
         };
         self.rows = self.rows.max(count);
+        crate::template_changes::prepare_hq_groups(count);
         Ok(())
     }
 }
@@ -68,6 +78,8 @@ pub struct Captured {
     /// `Some(None)` without a commander, `None` for a read refusal.
     commanders: Vec<(u64, Option<Option<carmy_leader::AttackStats>>)>,
     required: usize,
+    templates: templates::Store,
+    refresh_templates: bool,
 }
 
 /// The direct commander lookup for a group and its
@@ -118,6 +130,8 @@ impl Captured {
             roots: owned_vec(default_vec(capacity.rows)),
             commanders: Vec::new(),
             required: 0,
+            templates: templates::Store::default(),
+            refresh_templates: false,
         }
     }
     pub fn reset(&mut self) {
@@ -126,8 +140,12 @@ impl Captured {
         self.commanders.clear();
         self.required = 0;
     }
+    pub(crate) fn prepare_hour(&mut self, force: bool) {
+        self.refresh_templates |= force;
+    }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
+            + self.templates.allocated_bytes()
             + self.roots.capacity() * size_of::<corders_group::Root>()
             + self.commanders.capacity()
                 * size_of::<(u64, Option<Option<carmy_leader::AttackStats>>)>()
@@ -168,11 +186,27 @@ impl Captured {
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
+        if std::mem::take(&mut self.refresh_templates) {
+            self.templates.forget();
+        }
         self.rows.outcome = self.read(memory, base, state);
         // The census rows follow the roots one for one.
         self.commanders.clear();
         let len = self.rows.outcome.len();
+        crate::template_changes::record_hq_groups(len);
         for (row, root) in self.rows.rows[..len].iter().zip(&self.roots) {
+            if row.hq_nearest_front.is_none() {
+                HQ_NEAREST_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Err(reason) =
+                self.templates
+                    .read(memory, base, *root, &crate::template_changes::Observer)
+            {
+                HQ_CONTEXT_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                *HQ_CONTEXT_REASON
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+            }
             let commander = commander(memory, base, *root);
             if commander.is_none() {
                 COMMANDER_ATTACK_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -180,6 +214,9 @@ impl Captured {
             self.commanders.push((row.group, commander));
         }
         self.commanders.sort_unstable_by_key(|(group, _)| *group);
+        if matches!(self.rows.outcome, Outcome::Rows { .. }) {
+            self.templates.prune(&self.roots[..len]);
+        }
         // No later consumer borrows the root controls.
         self.roots.fill(Default::default());
         let rows = &self.rows.rows[..self.rows.outcome.len()];
@@ -253,6 +290,8 @@ impl Captured {
                 leader_enroute_days: Recorded::Value(r.leader_enroute_days),
                 border_war_presence: Recorded::Value(r.border_war_presence),
                 invasion_source_distance: Recorded::Value(r.invasion_source_distance),
+                hq_nearest_front: Recorded::Value(r.hq_nearest_front),
+                template_context: Recorded::Value(self.templates.value(r.group)),
             },
         )]
     }
@@ -280,6 +319,7 @@ mod tests {
             leader_enroute_days: Some(-3),
             border_war_presence: Some(1),
             invasion_source_distance: Some(-17),
+            hq_nearest_front: Some(99),
         };
         capture.rows.outcome = Outcome::Rows { len: 1 };
         let [TableView::Complete(replay_data::rows::TableRows::OrdersGroupCounterInputs(rows))] =
@@ -293,6 +333,7 @@ mod tests {
         assert_eq!(rows[0].leader_enroute_days, Recorded::Value(Some(-3)));
         assert_eq!(rows[0].border_war_presence, Recorded::Value(Some(1)));
         assert_eq!(rows[0].invasion_source_distance, Recorded::Value(Some(-17)));
+        assert_eq!(rows[0].hq_nearest_front, Recorded::Value(Some(99)));
         // No commander was read: the operands are refused, never zero.
         assert_eq!(rows[0].attack, Recorded::Value(Witnessed(None)));
         assert_eq!(rows[0].commander_attack, Recorded::Value(None));

@@ -948,6 +948,7 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
         &memory,
         BASE,
         0x1_0000,
+        0,
         captured.buffers(),
         &enabled,
         Slices {
@@ -1030,6 +1031,7 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
             memory,
             BASE,
             0x1_0000,
+            hour,
             captured.buffers(),
             enabled,
             Slices {
@@ -1112,6 +1114,7 @@ fn a_marked_technology_roster_is_read_within_the_hour_and_an_unmarked_change_poi
             &fixture.memory(),
             focus_test_kit::BASE,
             0x1_0000,
+            hour,
             captured.buffers(),
             &enabled,
             Slices {
@@ -1178,6 +1181,7 @@ fn focus_hour(
         &fixture.memory(),
         focus_test_kit::BASE,
         0x1_0000,
+        hour,
         captured.buffers(),
         &enabled,
         Slices {
@@ -1325,6 +1329,7 @@ fn an_unmarked_technology_slice_reads_only_progress() {
             &memory,
             focus_test_kit::BASE,
             0x1_0000,
+            hour,
             captured.buffers(),
             &enabled,
             Slices {
@@ -1424,6 +1429,7 @@ fn a_carried_roster_reads_progress_in_roster_order_and_keeps_a_persistent_failur
             &memory,
             focus_test_kit::BASE,
             0x1_0000,
+            hour,
             captured.buffers(),
             &enabled,
             Slices {
@@ -1494,6 +1500,7 @@ fn a_carried_roster_fails_as_the_full_walk_at_each_fault() {
             &memory,
             focus_test_kit::BASE,
             0x1_0000,
+            hour,
             captured.buffers(),
             &enabled,
             Slices {
@@ -1585,6 +1592,7 @@ fn two_slots_on_one_technology_read_its_progress_once_in_the_carried_roster() {
             &memory,
             focus_test_kit::BASE,
             0x1_0000,
+            hour,
             captured.buffers(),
             &enabled,
             Slices {

@@ -58,7 +58,7 @@ pub fn validate_sentinels(
     sentinel_error: &'static str,
 ) -> Result<(), &'static str> {
     for site in sites {
-        if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+        if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
             return Err(sentinel_error);
         }
     }
@@ -142,6 +142,11 @@ impl<const N: usize> Hooks<N> {
             Ok(hooks)
         };
         let hooks = install().unwrap_or_else(|reason| {
+            crate::hook::installation::refused(
+                crate::hook::installation::Kind::Construction,
+                None,
+                reason,
+            );
             let _ = domain.unhooked.set(reason);
             Vec::new()
         });
@@ -194,14 +199,12 @@ impl<const N: usize> Hooks<N> {
         match publication {
             Ok(true) => {}
             Ok(false) => return Ok(false),
-            Err(_) if enabled && matches!(domain.failure, Failure::Unavailable) => {
+            Err(reason) if enabled && matches!(domain.failure, Failure::Unavailable) => {
                 domain.observation.enabled.store(false, Ordering::SeqCst);
                 let _ = domain.unhooked.set("native hook state change failed");
-                if !Hook::set_family_enabled(&mut self.hooks, false)
-                    .map_err(|_| "native hook rollback failed")?
-                {
-                    return Err("output hook rollback is still in use");
-                }
+                rollback_after_publication_error(&reason, || {
+                    Hook::set_family_enabled(&mut self.hooks, false)
+                })?;
                 if let Some(installed) = domain.installed {
                     for value in installed {
                         value.store(false, Ordering::Relaxed);
@@ -219,6 +222,27 @@ impl<const N: usize> Hooks<N> {
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.hooks.iter().flat_map(Hook::executable_ranges)
+    }
+}
+
+/// Retain a failed publication and distinguish its rollback outcome. A later
+/// successful disable cannot erase a Rollback diagnostic from this attempt.
+pub fn rollback_after_publication_error(
+    cause: &str,
+    rollback: impl FnOnce() -> Result<bool, String>,
+) -> Result<(), &'static str> {
+    use crate::hook::installation::{Kind, refused};
+    refused(Kind::Publication, None, cause);
+    match rollback() {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            refused(Kind::Rollback, None, "output hook rollback is still in use");
+            Err("output hook rollback is still in use")
+        }
+        Err(cause) => {
+            refused(Kind::Rollback, None, &cause);
+            Err("native hook rollback failed")
+        }
     }
 }
 
@@ -247,5 +271,33 @@ impl<const N: usize> crate::status::Fields for InstalledStatus<N> {
             map.serialize_entry("installed", &installed.as_slice())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod installation_tests {
+    use super::*;
+    #[test]
+    fn successful_internal_rollback_still_reports_failed_publication() {
+        let (result, report) = crate::hook::installation::capture(|| {
+            rollback_after_publication_error("enable failed", || Ok(true))
+        });
+        assert!(result.is_ok());
+        assert_eq!(
+            report.failure.unwrap().kind,
+            crate::hook::installation::Kind::Publication
+        );
+    }
+    #[test]
+    fn first_internal_rollback_error_is_fatal_even_before_family_refusal() {
+        let (result, report) = crate::hook::installation::capture(|| {
+            rollback_after_publication_error("enable failed", || {
+                Err("initial restore failed".into())
+            })
+        });
+        assert!(result.is_err());
+        let failure = report.failure.unwrap();
+        assert_eq!(failure.kind, crate::hook::installation::Kind::Rollback);
+        assert!(failure.cause.contains("initial restore failed"));
     }
 }

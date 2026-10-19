@@ -295,6 +295,8 @@ pub struct Captured {
     pub(crate) wars_snapshot_sampled: bool,
     pub factions: Vec<cfaction::Row>,
     pub faction_names: Vec<u8>,
+    pub faction_goals: crate::faction_goals::Captured,
+    pub faction_companions: crate::faction_companions::Captured,
     pub faction_names_len: usize,
     pub faction_names_required: usize,
     pub faction_members: Vec<cfaction_system::MemberRow>,
@@ -521,6 +523,8 @@ impl Captured {
             wars_snapshot_sampled: false,
             factions: engine_allocation::default_vec::<cfaction::Row>(capacities[6])?,
             faction_names: engine_allocation::default_vec(capacities[8])?,
+            faction_goals: Default::default(),
+            faction_companions: Default::default(),
             faction_names_len: 0,
             faction_names_required: 0,
             faction_members: engine_allocation::default_vec::<cfaction_system::MemberRow>(
@@ -607,6 +611,8 @@ impl Captured {
             visitor: self.extended.take_state_visitor(),
             inputs: std::mem::take(&mut self.state_inputs),
             store: None,
+            countries: None,
+            occupation_store: None,
         }
     }
 
@@ -1097,6 +1103,10 @@ pub struct Shared {
     /// Only the game thread takes and returns it.
     script_variable_store: UnsafeCell<Option<Box<extended::intel::VariableStore>>>,
     script_variable_store_bytes: AtomicU64,
+    faction_goal_store: UnsafeCell<Option<Box<crate::faction_goals::Store>>>,
+    faction_goal_store_bytes: AtomicU64,
+    faction_companion_store: UnsafeCell<Option<Box<crate::faction_companions::Store>>>,
+    faction_companion_store_bytes: AtomicU64,
     /// Held StateBuildings and ProvinceBuildings rows, loaned to the
     /// Governance job each hour. Only the game thread takes and returns it.
     building_store: UnsafeCell<Option<Box<extended::construction::BuildingStore>>>,
@@ -1138,6 +1148,9 @@ pub struct Shared {
     /// thread takes and returns it.
     state_store: UnsafeCell<Option<Box<acquisition_states::StateStore>>>,
     state_store_bytes: AtomicU64,
+    /// One acquisition store is lent across frame-buffer rotation; frames retain immutable handles.
+    occupation_store: UnsafeCell<Option<Box<acquisition_states::OccupationStore>>>,
+    occupation_store_bytes: AtomicU64,
     /// Held WarRelations rows, lent to the Wars job each hour. Only the game
     /// thread takes and returns it.
     war_store: UnsafeCell<Option<Box<acquisition_wars::WarStore>>>,
@@ -1182,6 +1195,8 @@ pub struct Shared {
     /// Only the game thread takes and returns it.
     local_subunit_store: UnsafeCell<Option<Box<extended::model_inputs::LocalStore>>>,
     local_subunit_store_bytes: AtomicU64,
+    doctrine_store: UnsafeCell<Option<Box<Mutex<collector_slow_tables::doctrines::Store>>>>,
+    doctrine_store_bytes: AtomicU64,
     /// Held CountryCounterInputs rows, loaned to the Ordinary counter part
     /// each hour. Only the game thread takes and returns it.
     counter_store: UnsafeCell<Option<Box<extended::country_counters::CounterStore>>>,
@@ -1285,6 +1300,8 @@ impl Shared {
         let fixed_layout_buffer = engine_allocation::default_vec::<u8>(fixed_layout_bytes)?;
         let roster = engine_allocation::boxed(Roster::with_counts(sizing.content))?;
         let country_cache = Arc::new(Cache::try_with_capacity(sizing.country_cells)?);
+        crate::faction_goal_changes::prime();
+        crate::faction_companion_changes::prime();
         let country_cells = country_cache.capacity();
         // Frame 0 allocates the CountryIntel buffer; the others borrow it.
         let first = Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended)?;
@@ -1310,6 +1327,12 @@ impl Shared {
             cfg!(feature = "flag_changes").then(|| Box::new(extended::intel::FlagStore::new()));
         let script_variable_store = cfg!(feature = "variable_changes")
             .then(|| Box::new(extended::intel::VariableStore::new()));
+        let faction_goal_store = cfg!(feature = "faction_changes")
+            .then(|| engine_allocation::boxed(crate::faction_goals::Store::default()))
+            .transpose()?;
+        let faction_companion_store = cfg!(feature = "faction_changes")
+            .then(|| engine_allocation::boxed(crate::faction_companions::Store::default()))
+            .transpose()?;
         let building_store = cfg!(feature = "building_changes")
             .then(|| Box::new(extended::construction::BuildingStore::new()));
         let leader_store = cfg!(feature = "party_leader_changes")
@@ -1335,6 +1358,24 @@ impl Shared {
             .then(|| Box::new(extended::hired_advisors::AdvisorStore::new()));
         let local_subunit_store = cfg!(feature = "local_subunit_changes")
             .then(|| Box::new(extended::model_inputs::LocalStore::default()));
+        let doctrine_store = Box::new(Mutex::new(
+            collector_slow_tables::doctrines::Store::default(),
+        ));
+        // SAFETY: Shared owns this stable box through hook restoration and
+        // native callback quiescence; loans move the box without moving it.
+        unsafe {
+            collector_observers::doctrine_changes::bind(
+                (&*doctrine_store as *const Mutex<collector_slow_tables::doctrines::Store>)
+                    as usize,
+                collector_slow_tables::doctrines::observe,
+            );
+            collector_observers::doctrine_changes::bind_cost_consumption(
+                collector_slow_tables::doctrines::observe_cost_consumption,
+            );
+            collector_observers::doctrine_changes::bind_gain(
+                collector_slow_tables::doctrines::observe_gain,
+            );
+        }
         let counter_store = cfg!(feature = "counter_changes")
             .then(|| Box::new(extended::country_counters::CounterStore::observed()));
         let appearance_store = cfg!(feature = "appearance_changes")
@@ -1421,6 +1462,10 @@ impl Shared {
             script_flag_store_bytes: AtomicU64::new(0),
             script_variable_store: UnsafeCell::new(script_variable_store),
             script_variable_store_bytes: AtomicU64::new(0),
+            faction_goal_store: UnsafeCell::new(faction_goal_store),
+            faction_goal_store_bytes: AtomicU64::new(0),
+            faction_companion_store: UnsafeCell::new(faction_companion_store),
+            faction_companion_store_bytes: AtomicU64::new(0),
             building_store: UnsafeCell::new(building_store),
             building_store_bytes: AtomicU64::new(0),
             leader_store: UnsafeCell::new(leader_store),
@@ -1445,6 +1490,8 @@ impl Shared {
             rail_store_bytes: AtomicU64::new(0),
             state_store: UnsafeCell::new(state_store),
             state_store_bytes: AtomicU64::new(0),
+            occupation_store: UnsafeCell::new(Some(Box::default())),
+            occupation_store_bytes: AtomicU64::new(0),
             war_store: UnsafeCell::new(war_store),
             war_store_bytes: AtomicU64::new(0),
             army_stat_store: UnsafeCell::new(army_stat_store),
@@ -1465,6 +1512,8 @@ impl Shared {
             advisor_store_bytes: AtomicU64::new(0),
             local_subunit_store: UnsafeCell::new(local_subunit_store),
             local_subunit_store_bytes: AtomicU64::new(0),
+            doctrine_store: UnsafeCell::new(Some(doctrine_store)),
+            doctrine_store_bytes: AtomicU64::new(0),
             counter_store: UnsafeCell::new(counter_store),
             counter_store_bytes: AtomicU64::new(0),
             appearance_store: UnsafeCell::new(appearance_store),
@@ -1862,6 +1911,7 @@ fn lost_observer_interval() {
     crate::air_losses::lost_drain();
     crate::building_bombing::lost_drain();
     crate::nuclear_strikes::lost_drain();
+    crate::market_changes::lost_drain();
     crate::map_events::interval::lost_output();
 }
 
@@ -1948,6 +1998,7 @@ impl ClockCapture {
 
 struct Dispatch<'a> {
     world_generation: u64,
+    campaign_epoch: u64,
     index: Option<usize>,
     entry: Option<Clock<&'a [u8]>>,
     entry_ticks: i64,
@@ -2115,6 +2166,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         // the extern boundary into the game: contain it and drop the hour.
         let job = Dispatch {
             world_generation,
+            campaign_epoch,
             index,
             entry,
             entry_ticks,
@@ -2256,6 +2308,7 @@ unsafe fn finish_observer_boundary(
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
     let Dispatch {
         world_generation,
+        campaign_epoch,
         index,
         entry,
         entry_ticks,
@@ -2453,12 +2506,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             frame.extended.seal_map_events(clock.hour);
             let acquisition = shared.acquisition.get().expect("initialized before hook");
             let mut batch = acquisition::Batch::new(acquisition);
-            let boundary_request = frame.extended.take_observer_boundary_request(
+            let mut boundary_request = frame.extended.take_observer_boundary_request(
                 shared.base,
                 clock.hour,
                 continuous,
                 recovery,
             );
+            boundary_request.market_clock = Some(clock.with_campaign_id(campaign_epoch));
+            boundary_request.market_refresh = force_full;
             let boundary_begin = qpc();
             // SAFETY: the native hourly call stays parked through the boundary job.
             let boundary_pending =
@@ -2955,6 +3010,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     .take(),
                     advisors: (*shared.advisor_store.get()).take(),
                     local_subunits: (*shared.local_subunit_store.get()).take(),
+                    doctrine_bytes: 0,
+                    doctrines: (*shared.doctrine_store.get()).take(),
                 }
             };
             let slow_pending = queue!(acquisition::Job::Slow(frame.extended.take_slow_request(
@@ -3092,6 +3149,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         state,
                         &mut frame.faction_members
                     ),
+                    // SAFETY: the callback alone loans and restores this store.
+                    goal_store: unsafe { (*shared.faction_goal_store.get()).take() },
+                    goals: std::mem::take(&mut frame.faction_goals),
+                    // SAFETY: the callback alone loans and restores this store.
+                    companion_store: unsafe { (*shared.faction_companion_store.get()).take() },
+                    companions: std::mem::take(&mut frame.faction_companions),
+                    force_full,
                 }));
             let players_ctx = crate::map_capture::PlayersCopyContext {
                 base: shared.base,
@@ -3444,8 +3508,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             }));
             let states_pending = queue!(acquisition::Job::States({
                 let mut request = frame.take_states_request(shared.base, state);
+                request.countries = Some(Arc::clone(&country_snapshot));
                 // SAFETY: only this callback takes and returns the store.
                 request.store = unsafe { (*shared.state_store.get()).take() };
+                request.occupation_store = unsafe { (*shared.occupation_store.get()).take() };
                 request
             }));
             let weather_ctx = extended::weather::WeatherCopyContext {
@@ -3568,6 +3634,19 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     // SAFETY: only this callback takes and returns the store.
                     unsafe { (*shared.army_stat_store.get()).take() },
                 );
+                #[cfg(feature = "movement_witness")]
+                if let Some(inputs) = presentation_request.inputs.as_deref() {
+                    // SAFETY: this is the stopped simulation's callback thread;
+                    // native queries finish before workers borrow its census.
+                    unsafe {
+                        presentation_request.captured.capture_movement_witness(
+                            &memory,
+                            shared.base,
+                            state,
+                            inputs.seeds(),
+                        );
+                    }
+                }
                 let movement_request = presentation_request.take_movement();
                 let presentation_bytes =
                     presentation_request.allocated_bytes() + movement_request.allocated_bytes();
@@ -4550,9 +4629,26 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 // SAFETY: the States job has joined; no worker retains this store.
                 unsafe { *shared.state_store.get() = Some(store) };
             }
+            if let Some(mut store) = states_request.occupation_store.take() {
+                if states_failure.is_some() {
+                    store.forget();
+                }
+                let bytes = store.bytes() as u64;
+                let previous = shared.occupation_store_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the States worker has joined; frame snapshots contain no store borrow.
+                unsafe { *shared.occupation_store.get() = Some(store) };
+            }
             let states_report =
                 frame.restore_states_request(states_request, states_report, states_failure);
             frame.table_ns[5] = shared.ns(states_report.ticks);
+            // A completed worker needs its own supplying-read witness even
+            // when its duration rounds below the clock's resolution.
+            frame.table_ns[TableId::StateResistance.index()] = shared
+                .ns(states_report.occupation_ticks)
+                .max(u64::from(states_failure.is_none()));
             let (mut wars_request, wars_report, wars_failure) = completed!(wars_pending, Wars);
             if let Some(mut store) = wars_request.store.take() {
                 if wars_failure.is_some() {
@@ -4568,11 +4664,49 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             }
             let wars_report = frame.restore_wars_request(wars_request, wars_report, wars_failure);
             frame.table_ns[7] = shared.ns(wars_report.table_ticks);
-            let (factions_request, mut factions_report, factions_failure) =
+            let (mut factions_request, mut factions_report, factions_failure) =
                 completed!(factions_pending, Factions);
             if let Some(reason) = factions_failure {
                 factions_report = acquisition_factions::Report::failed(reason);
             }
+            if let Some(mut store) = factions_request.goal_store.take() {
+                if let Some(reason) = factions_failure {
+                    store.invalidate();
+                    factions_request.goals.failure = Some(reason);
+                }
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared
+                    .faction_goal_store_bytes
+                    .swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Factions job has joined and returned exclusive ownership.
+                unsafe { *shared.faction_goal_store.get() = Some(store) };
+            }
+            if let Some(mut store) = factions_request.companion_store.take() {
+                if let Some(reason) = factions_failure {
+                    store.invalidate();
+                    factions_request.companions.refuse(reason);
+                }
+                let bytes = store.allocated_bytes() as u64;
+                let previous = shared
+                    .faction_companion_store_bytes
+                    .swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the Factions job joined and returned exclusive ownership.
+                unsafe { *shared.faction_companion_store.get() = Some(store) };
+            }
+            frame.faction_companions = std::mem::take(&mut factions_request.companions);
+            frame.table_ns[TableId::FactionRules.index()] =
+                shared.ns(factions_report.companion_ticks as i64);
+            frame.faction_goals = std::mem::take(&mut factions_request.goals);
+            // Both tables share one acquisition; charge its work once.
+            frame.table_ns[TableId::FactionGoalStatus.index()] = 0;
+            frame.table_ns[TableId::FactionGoalEntries.index()] =
+                shared.ns(factions_report.goal_ticks as i64);
             (frame.faction_names_len, frame.faction_names_required) = factions_request.restore(
                 &mut frame.factions,
                 &mut frame.faction_names,
@@ -4693,6 +4827,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
                 // SAFETY: the Slow job has joined; no worker retains this store.
                 unsafe { *shared.local_subunit_store.get() = Some(store) };
+            }
+            if let Some(store) = stores.doctrines {
+                let bytes = stores.doctrine_bytes;
+                let previous = shared.doctrine_store_bytes.swap(bytes, Ordering::Relaxed);
+                shared
+                    .pool_bytes
+                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                // SAFETY: the existing Slow job has joined and returned its loan.
+                unsafe { *shared.doctrine_store.get() = Some(store) };
             }
             let (war_overview_request, _, war_overview_failure) =
                 completed!(war_overview_pending, WarOverview);
@@ -5215,7 +5358,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 }
                 divisions_report.raw_ok = false;
             }
-            for table in extended::TABLES {
+            for table in extended::PACK_TABLES {
+                if table == TableId::StateResistance {
+                    continue;
+                }
                 let index = table.index();
                 let walk = replay_data::cadence::should_walk(table, clock.hour, force_full);
                 frame.table_ns[index] = exported_table_ticks(table, walk, ticks[index])
@@ -5372,6 +5518,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             // read-group convention.
             if construction_rest_report.raw_ok {
                 for (slot, table) in decode::CONSTRUCTION_REST.iter().enumerate() {
+                    if *table == TableId::StateResistance {
+                        continue;
+                    }
                     let index = table.index();
                     let ns = shared.ns(construction_rest_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
@@ -6007,94 +6156,93 @@ unsafe fn finish_rejected(
     ticket: acquisition::Ticket,
     out: &mut Option<acquisition::Completion<acquisition::Job, acquisition::Report>>,
 ) {
-    let mut request = batch.unpark(ticket).expect("parked acquisition request");
-    let report = match &mut request {
-        acquisition::Job::Governance(governance) => {
-            let report = governance.fail("governance worker admission failed");
-            acquisition::Report::Governance(report)
-        }
-        acquisition::Job::Variants(variants) => {
-            let ticks = variants.fail("variant worker admission failed");
-            acquisition::Report::Variants(ticks)
-        }
-        acquisition::Job::Orders(orders) => {
-            let report = orders.fail("army order worker admission failed");
-            acquisition::Report::Orders(report)
-        }
-        // A census an earlier job already failed keeps that reason: a failed
-        // job stops the pool, which then refuses this one.
-        acquisition::Job::OrdersStitch(orders) => {
-            if !orders.orders.failed() {
-                orders.fail("army order worker admission failed");
+    let completed = batch.finish_parked_into(ticket, out, |request| {
+        let report = match request {
+            acquisition::Job::Governance(governance) => {
+                let report = governance.fail("governance worker admission failed");
+                acquisition::Report::Governance(report)
             }
-            acquisition::Report::OrdersStitch(acquisition::StitchReport::default())
-        }
-        // The part returns unrun; the join fails the census with the
-        // admission reason a refused Orders job has.
-        acquisition::Job::OrdersPart(part) => {
-            part.rejected = true;
-            acquisition::Report::OrdersPart(acquisition::OrdersReport)
-        }
-        // An inline part could copy megabytes of vectors on the game
-        // thread; its countries are copied afresh at the next hour.
-        acquisition::Job::AirRelations(relations) => {
-            relations
-                .staging
-                .fail("air relation worker admission failed");
-            extended::air_relations::certificates(relations.part).forget();
-            acquisition::Report::AirRelations(acquisition::AirRelationsReport)
-        }
-        // Likewise for a history part: the hour's settle then withdraws
-        // every part's certificates and the next hour copies afresh.
-        acquisition::Job::AirHistories(histories) => {
-            extended::air_histories::refuse(&mut histories.staging);
-            acquisition::Report::AirHistories(acquisition::AirHistoriesReport)
-        }
-        acquisition::Job::AirMissions(missions) => {
-            missions.refuse();
-            acquisition::Report::AirMissions(acquisition::AirMissionsReport)
-        }
-        acquisition::Job::Ordinary(ordinary) => {
-            let report = ordinary.fail("ordinary worker admission failed");
-            acquisition::Report::Ordinary(report)
-        }
-        acquisition::Job::OrdinaryPart(part) => {
-            let report = part.fail("ordinary worker admission failed");
-            acquisition::Report::OrdinaryPart(report)
-        }
-        acquisition::Job::Countries(countries) if countries.has_naming() => {
-            let report = countries.fail_naming("country naming worker admission failed");
-            acquisition::Report::Countries(report)
-        }
-        acquisition::Job::Templates(templates) => {
-            let report = templates.fail("division template worker admission failed");
-            acquisition::Report::Templates(report)
-        }
-        _ => {
-            if request.worker_only() {
-                *out = Some(acquisition::Completion {
-                    request,
-                    report: Err(acquisition::Failure::Stopped),
-                    table_reads: crate::read_accounting::ZERO,
-                    timeline: Default::default(),
-                    #[cfg(feature = "callback_profile")]
-                    profile: Default::default(),
-                });
-                return;
+            acquisition::Job::Variants(variants) => {
+                let ticks = variants.fail("variant worker admission failed");
+                acquisition::Report::Variants(ticks)
             }
-            // SAFETY: this request was rejected before acquiring any live state.
-            *out = Some(unsafe { batch.run_inline(request) });
-            return;
-        }
-    };
-    *out = Some(acquisition::Completion {
-        request,
-        report: Ok(report),
-        table_reads: crate::read_accounting::ZERO,
-        timeline: Default::default(),
-        #[cfg(feature = "callback_profile")]
-        profile: Default::default(),
+            acquisition::Job::Orders(orders) => {
+                let report = orders.fail("army order worker admission failed");
+                acquisition::Report::Orders(report)
+            }
+            // A census an earlier job already failed keeps that reason: a failed
+            // job stops the pool, which then refuses this one.
+            acquisition::Job::OrdersStitch(orders) => {
+                if !orders.orders.failed() {
+                    orders.fail("army order worker admission failed");
+                }
+                acquisition::Report::OrdersStitch(acquisition::StitchReport::default())
+            }
+            // The part returns unrun; the join fails the census with the
+            // admission reason a refused Orders job has.
+            acquisition::Job::OrdersPart(part) => {
+                part.rejected = true;
+                acquisition::Report::OrdersPart(acquisition::OrdersReport)
+            }
+            // An inline part could copy megabytes of vectors on the game
+            // thread; its countries are copied afresh at the next hour.
+            acquisition::Job::AirRelations(relations) => {
+                relations
+                    .staging
+                    .fail("air relation worker admission failed");
+                extended::air_relations::certificates(relations.part).forget();
+                acquisition::Report::AirRelations(acquisition::AirRelationsReport)
+            }
+            // Likewise for a history part: the hour's settle then withdraws
+            // every part's certificates and the next hour copies afresh.
+            acquisition::Job::AirHistories(histories) => {
+                extended::air_histories::refuse(&mut histories.staging);
+                acquisition::Report::AirHistories(acquisition::AirHistoriesReport)
+            }
+            acquisition::Job::AirMissions(missions) => {
+                missions.refuse();
+                acquisition::Report::AirMissions(acquisition::AirMissionsReport)
+            }
+            acquisition::Job::Ordinary(ordinary) => {
+                let report = ordinary.fail("ordinary worker admission failed");
+                acquisition::Report::Ordinary(report)
+            }
+            acquisition::Job::OrdinaryPart(part) => {
+                let report = part.fail("ordinary worker admission failed");
+                acquisition::Report::OrdinaryPart(report)
+            }
+            acquisition::Job::Countries(countries) if countries.has_naming() => {
+                let report = countries.fail_naming("country naming worker admission failed");
+                acquisition::Report::Countries(report)
+            }
+            acquisition::Job::Templates(templates) => {
+                let report = templates.fail("division template worker admission failed");
+                acquisition::Report::Templates(report)
+            }
+            _ if request.worker_only() => return Some(Err(acquisition::Failure::Stopped)),
+            _ => return None,
+        };
+        Some(Ok(report))
     });
+    if !completed {
+        // SAFETY: the unhandled request remains parked and is eligible inline.
+        unsafe { finish_rejected_inline(batch, ticket, out) };
+    }
+}
+
+/// Eligible inline work retains its separate completion frame. Worker-only
+/// rejections never reach this path or allocate new payload storage.
+#[inline(never)]
+unsafe fn finish_rejected_inline(
+    batch: &mut acquisition::Batch<'_>,
+    ticket: acquisition::Ticket,
+    out: &mut Option<acquisition::Completion<acquisition::Job, acquisition::Report>>,
+) {
+    let request = batch
+        .unpark(ticket)
+        .expect("parked inline acquisition request");
+    // SAFETY: this request was rejected before acquiring any live state.
+    *out = Some(unsafe { batch.run_inline(request) });
 }
 
 pub(crate) fn acquisition_failure_reason(failure: acquisition::Failure) -> &'static str {

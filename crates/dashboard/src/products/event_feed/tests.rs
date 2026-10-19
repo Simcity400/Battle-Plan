@@ -1141,6 +1141,9 @@ fn event_feed_native_war_end_replaces_the_derived_peace_row_of_its_pair_only() {
     }
     *frames[3].tables[TableId::EventFeedHistory.index()] =
         TableView::Complete(TableRows::EventFeedHistory(vec![EventFeedHistoryRow {
+            script_refusals: 0,
+            script_tokens: Vec::new(),
+            script_scopes: Vec::new(),
             generation: 1,
             read_hour: 103,
             coverage: EventFeedCoverage::Complete,
@@ -1152,6 +1155,7 @@ fn event_feed_native_war_end_replaces_the_derived_peace_row_of_its_pair_only() {
             outstanding: 0,
             failure: None,
             events: vec![EventFeedEvent {
+                script: None,
                 sequence: 1,
                 generation: 1,
                 hour: 102,

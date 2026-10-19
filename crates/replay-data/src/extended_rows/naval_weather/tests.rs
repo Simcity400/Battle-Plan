@@ -2,6 +2,94 @@ use super::*;
 use crate::rows::{decode_row, encode_row};
 
 #[test]
+fn regional_weather_map_terms_delta_without_repeating_quiet_siblings() {
+    let previous = WeatherRegionRow {
+        id: 17,
+        map_modifiers_known: true.into(),
+        naval_detection: Some(-33_333).into(),
+        air_attack: Some(i64::MIN).into(),
+        air_defence: Some(i64::MAX).into(),
+        ..Default::default()
+    };
+    for (next, mask) in [
+        (
+            WeatherRegionRow {
+                naval_detection: Some(-33_334).into(),
+                ..previous.clone()
+            },
+            1 << 11,
+        ),
+        (
+            WeatherRegionRow {
+                air_attack: None.into(),
+                ..previous.clone()
+            },
+            1 << 12,
+        ),
+        (
+            WeatherRegionRow {
+                air_defence: Some(0).into(),
+                ..previous.clone()
+            },
+            1 << 13,
+        ),
+        (
+            WeatherRegionRow {
+                map_modifiers_known: false.into(),
+                ..previous.clone()
+            },
+            1 << 10,
+        ),
+    ] {
+        let delta = next.delta(Some(&previous)).unwrap().unwrap();
+        assert_eq!(delta.mask, mask);
+        assert_eq!(
+            delta
+                .apply::<WeatherRegionRow>(Some(previous.clone()))
+                .unwrap(),
+            next
+        );
+    }
+    let mut fields = Vec::new();
+    previous.encode_fields(&mut fields).unwrap();
+    assert_eq!(
+        WeatherRegionRow::decode_fields(previous.key(), &mut Decoder::new(&fields)).unwrap(),
+        previous
+    );
+}
+
+#[test]
+fn daylight_forecast_direction_preserves_held_state_and_independent_unavailability() {
+    let held = WeatherDaylight {
+        updated: false,
+        held: Some([1, -2, i64::MIN]),
+        held_feather: Some([-3, i64::MAX]),
+    };
+    assert_eq!(held.direction(60_000_000), Ok([1, -2, i64::MIN]));
+    assert_eq!(held.direction(60_000_024), held.direction(60_000_000));
+    assert!(WeatherDaylight::default().direction(60_000_000).is_err());
+    let updated = WeatherDaylight {
+        updated: true,
+        held: None,
+        held_feather: None,
+    };
+    assert_eq!(
+        updated.direction(60_000_000),
+        Ok(crate::day_night::seasonal_direction(60_000_000))
+    );
+    let row = WeatherProvinceRow {
+        daylight: Recorded::Value(Some(held)),
+        ..Default::default()
+    };
+    let mut fields = Vec::new();
+    row.encode_fields(&mut fields).unwrap();
+    assert_eq!(
+        WeatherProvinceRow::decode_fields(row.key(), &mut Decoder::new(&fields)).unwrap(),
+        row
+    );
+}
+
+#[test]
 fn weather_display_boundary_deltas_keep_zero_bytes_and_refresh_identity() {
     let before = WeatherProvinceRow {
         display: Recorded::Value(None),
@@ -180,7 +268,7 @@ fn format_101_clocks_decode_as_held_recorded_values() {
     let historical =
         crate::format::FormatVersion::read(crate::rows::compatibility::POLITICAL_FORMAT).unwrap();
     assert_eq!(historical.fields(table), 9);
-    assert_eq!(crate::format::FormatVersion::CURRENT.fields(table), 15);
+    assert_eq!(crate::format::FormatVersion::CURRENT.fields(table), 16);
     let row = WeatherProvinceRow {
         id: 9,
         clock: DayNightClock::held(crate::day_night::Clock {
@@ -202,7 +290,7 @@ fn format_101_clocks_decode_as_held_recorded_values() {
     input.recorded_fields = 9;
     let decoded = WeatherProvinceRow::decode_fields(row.key(), &mut input).unwrap();
     input.finish().unwrap();
-    assert_eq!(decoded.not_recorded_fields(), 0b111111 << 9);
+    assert_eq!(decoded.not_recorded_fields(), 0b1111111 << 9);
     // Its temperature is the one the record held at the row's hour.
     assert_eq!(
         decoded.temperature.record(),
@@ -384,6 +472,9 @@ fn the_temperature_pass_rides_slot_zero_with_its_checksum_last_before_the_modifi
     // The pass ends with its checksum; the province's modifier entries follow it.
     let mut tail = Vec::new();
     crate::rows::NativeValue::field(&row.modifiers)
+        .encode(&mut tail)
+        .unwrap();
+    crate::rows::NativeValue::field(&row.daylight)
         .encode(&mut tail)
         .unwrap();
     let pass_end = fields.len() - tail.len();

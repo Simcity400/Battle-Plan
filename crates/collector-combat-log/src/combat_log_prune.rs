@@ -258,6 +258,7 @@ pub fn status() -> impl serde::Serialize {
         })
     };
     crate::status::status!({
+        "history_events": crate::history_events::status(),
         "unhooked": UNHOOKED.get(),
         "enabled": ENABLED.load(Ordering::SeqCst),
         "prune_calls": c[0],
@@ -278,6 +279,7 @@ pub fn status() -> impl serde::Serialize {
 
 pub struct Hooks {
     hook: Option<Hook>,
+    history: crate::history_events::Hooks,
 }
 
 impl Hooks {
@@ -294,11 +296,14 @@ impl Hooks {
                 let _ = UNHOOKED.set(reason);
             })
             .ok();
-        Self { hook }
+        Self {
+            hook,
+            history: unsafe { crate::history_events::Hooks::new(memory, base) },
+        }
     }
 
     unsafe fn install(memory: &impl Memory, base: usize) -> Result<Hook, &'static str> {
-        if engine_native::read::<[u8; 16]>(memory, base + PRUNE_RVA) != Some(PRUNE_SENTINEL) {
+        if !crate::hook::installation::sentinel(memory, base + PRUNE_RVA, PRUNE_SENTINEL) {
             return Err("combat log prune sentinel differs");
         }
         BASE.store(base, Ordering::Relaxed);
@@ -315,6 +320,13 @@ impl Hooks {
     }
 
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        if !self
+            .history
+            .set_enabled(enabled)
+            .map_err(|_| "combat log history hook publication failed")?
+        {
+            return Ok(false);
+        }
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
@@ -333,7 +345,10 @@ impl Hooks {
     }
 
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
-        self.hook.iter().flat_map(Hook::executable_ranges)
+        self.hook
+            .iter()
+            .flat_map(Hook::executable_ranges)
+            .chain(self.history.executable_ranges())
     }
 }
 

@@ -52,6 +52,660 @@ fn ready(capacity: usize) -> Store {
     store
 }
 
+fn script_fact(frame: usize, scope: usize, option: Option<i32>) -> ScriptFact {
+    let mut header = [0; 32];
+    header[..11].copy_from_slice(b"synthetic.1");
+    header[16..24].copy_from_slice(&11_u64.to_le_bytes());
+    header[24..32].copy_from_slice(&15_u64.to_le_bytes());
+    ScriptFact {
+        source: if option.is_some() {
+            EventFeedSource::EventOption
+        } else {
+            EventFeedSource::ScriptEvent
+        },
+        actor: operands(0, 1).actor,
+        target: operands(0, 2).actor,
+        token: engine_native::msvc_string::Descriptor::from_header(&NoReads, 0, header).unwrap(),
+        scope: Some(scope),
+        dispatch_frame: frame,
+        dispatch_definition: 123,
+        cause: Default::default(),
+        script: EventFeedScript {
+            native_event: Some(replay_data::event_feed_rows::EventFeedEventIdentity {
+                kind: 99,
+                id: 123,
+            }),
+            option,
+            ..Default::default()
+        },
+    }
+}
+
+fn script_image() -> WarImage {
+    let mut image = WarImage::default();
+    let scope = 0x80000;
+    image.bytes(scope, &[0; engine_events::cevent_scope::SIZE]);
+    image.q(scope, BASE + engine_events::cevent_scope::VTABLE_RVA);
+    for offset in [
+        engine_events::cevent_scope::ROOT,
+        engine_events::cevent_scope::FROM,
+        engine_events::cevent_scope::PREV,
+    ] {
+        image.q(scope + offset, scope);
+    }
+    image
+}
+
+#[test]
+fn script_reentrant_instances_and_options_share_receipts_without_losing_repeats() {
+    let mut store = ready(8);
+    store.prepare_scripts(128, 8, 1).unwrap();
+    let image = script_image();
+    store
+        .script_known(&image, BASE, 7, 1, script_fact(100, 0x80000, None))
+        .unwrap();
+    store
+        .script_known(&image, BASE, 7, 1, script_fact(200, 0x80000, None))
+        .unwrap();
+    store.registered_instance(7, 0x80000, 123, 91);
+    store.script_instance(7, 100, 90);
+    store
+        .script_known(&image, BASE, 7, 1, script_fact(0, 0x80000, Some(-1)))
+        .unwrap();
+    let mut snapshot = Snapshot::new(0);
+    store
+        .snapshot_growing(&mut snapshot, boundary(7, 2))
+        .unwrap();
+    let first = snapshot.prepare_pack().unwrap();
+    let row = first.row();
+    assert_eq!(row.events.len(), 3);
+    assert_eq!(row.events[0].script.unwrap().instance, Some(90));
+    assert_eq!(row.events[1].script.unwrap().instance, Some(91));
+    assert_eq!(row.events[2].script.unwrap().option, Some(-1));
+    assert_eq!(row.script_scopes.len(), 3);
+    assert!(
+        row.script_scopes
+            .iter()
+            .all(|scope| scope.bindings == [0; 3])
+    );
+    assert_eq!(row.counts.unwrap().settled, 3);
+    store.acknowledged(first.publication());
+    store
+        .snapshot_growing(&mut snapshot, boundary(7, 3))
+        .unwrap();
+    assert!(snapshot.prepare_pack().unwrap().row().events.is_empty());
+    assert_eq!(store.tokens_used, 0);
+    assert_eq!(store.scopes_used, 0);
+    // Later callbacks can overwrite staging; an immutable publication owns all
+    // of its payload, including the original negative option and zero country.
+    store
+        .script_known(&image, BASE, 7, 3, script_fact(300, 0x80000, None))
+        .unwrap();
+    assert_eq!(first.row().events[2].script.unwrap().option, Some(-1));
+    assert_eq!(first.row().script_scopes[0].country, 0);
+}
+
+#[test]
+fn script_pressure_refuses_once_and_reports_exact_reached_demand() {
+    let mut store = ready(1);
+    store.prepare_scripts(0, 0, 0).unwrap();
+    store
+        .script_known(&NoReads, BASE, 7, 1, script_fact(100, 0x80000, None))
+        .unwrap();
+    assert_eq!(store.token_demand, 11);
+    assert_eq!(store.scope_demand, 0);
+    assert_eq!(store.counts.rejected, 2);
+    assert_eq!(store.entries.len(), 1);
+    let script = store.entries[0].event.script.unwrap();
+    assert_eq!(
+        script.native_event,
+        Some(replay_data::event_feed_rows::EventFeedEventIdentity { kind: 99, id: 123 })
+    );
+    assert!(script.token_unrecorded);
+    assert!(script.scope_unrecorded);
+}
+
+#[test]
+fn script_continuous_occurrences_reclaim_acknowledged_arena_spans() {
+    let mut store = ready(8);
+    store.prepare_scripts(64, 4, 1).unwrap();
+    let image = script_image();
+    let mut snapshot = Snapshot::new(8);
+    for hour in 1..50 {
+        store
+            .script_known(
+                &image,
+                BASE,
+                7,
+                hour,
+                script_fact(hour as usize, 0x80000, None),
+            )
+            .unwrap();
+        store
+            .snapshot_growing(&mut snapshot, boundary(7, hour))
+            .unwrap();
+        let pack = snapshot.prepare_pack().unwrap();
+        assert_eq!(pack.row().script_tokens, b"synthetic.1");
+        assert_eq!(pack.row().script_scopes.len(), 1);
+        assert_eq!((store.tokens_used, store.scopes_used), (11, 1));
+        store.acknowledged(pack.publication());
+    }
+    assert_eq!(store.counts.rejected, 0);
+}
+
+#[test]
+fn script_delayed_baseline_reads_only_first_seen_census_owners_and_carries_empty() {
+    let mut store = ready(8);
+    store.prepare_delayed(5001).unwrap();
+    store.registry_state = Some(GAME);
+    let country = engine_native::ccountry::Country {
+        pointer: 0x80000,
+        canonical_slot: 4999,
+        id: 5000,
+    };
+    let mut image = WarImage::default();
+    image.bytes(
+        country.pointer + engine_native::ccountry::DELAYED_EVENTS,
+        &[0; 16],
+    );
+    image.d(country.pointer + engine_native::ccountry::ID_INSTANCE, 88);
+    store
+        .delayed_baseline(&image, BASE, 7, GAME, 1, country)
+        .unwrap();
+    // A carried owner never rereads its identity, header or timer payload.
+    store
+        .delayed_baseline(&NoReads, BASE, 7, GAME, 1, country)
+        .unwrap();
+    let mut snapshot = Snapshot::new(8);
+    store
+        .snapshot_growing(&mut snapshot, boundary(7, 2))
+        .unwrap();
+    let pack = snapshot.prepare_pack().unwrap();
+    assert_eq!(pack.row().events.len(), 1);
+    assert_eq!(
+        pack.row().events[0].script.unwrap().change,
+        Some(replay_data::event_feed_rows::EventFeedScriptChange::DelayedEmpty)
+    );
+    assert_eq!(pack.row().events[0].target.instance, 88);
+}
+
+#[test]
+fn script_registry_bootstrap_waits_for_the_failed_interval_receipt_without_polling() {
+    let mut store = ready(8);
+    store.reject("synthetic pre-observation refusal");
+    let mut snapshot = Snapshot::new(8);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 1), &NoReads, BASE)
+        .unwrap();
+    assert!(snapshot.events.is_empty());
+    assert_eq!(store.registry_baseline, None);
+    store.acknowledged(snapshot.publication());
+
+    let mut image = WarImage::new();
+    image.bytes(GAME + cgame_state::PENDING_EVENTS, &[0; 16]);
+    image.bytes(GAME + cgame_state::FIRED_EVENTS, &[0; 16]);
+    image.d(GAME + cgame_state::CURRENT_HOUR, 2);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 2), &image, BASE)
+        .unwrap();
+    let pack = snapshot.prepare_pack().unwrap();
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+    state.observe(pack.row()).unwrap();
+    assert!(state.pending().unwrap().is_empty());
+    assert!(state.fired().unwrap().is_empty());
+    store.acknowledged(pack.publication());
+
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 3), &NoReads, BASE)
+        .unwrap();
+    assert!(snapshot.events.is_empty());
+}
+
+fn retained_registry_image(hour: i32) -> WarImage {
+    let mut image = WarImage::new();
+    image.0.extend(script_image().0);
+    image.d(GAME + cgame_state::CURRENT_HOUR, hour as u32);
+    let definition = 0x90000;
+    image.q(definition, BASE + engine_decisions::cevent::VTABLE_RVA);
+    image.d(definition + engine_decisions::cevent::REFERENCE, 99);
+    image.d(definition + engine_decisions::cevent::REFERENCE + 4, 123);
+    let mut token = [0; 32];
+    token[..11].copy_from_slice(b"synthetic.1");
+    token[16..24].copy_from_slice(&11_u64.to_le_bytes());
+    token[24..32].copy_from_slice(&15_u64.to_le_bytes());
+    image.bytes(definition + engine_decisions::cevent::TOKEN, &token);
+    let pending = 0xa0000;
+    image.array(GAME + cgame_state::PENDING_EVENTS, pending, 1);
+    image.bytes(
+        pending,
+        &[0; engine_events::script_event_registry::PENDING_STRIDE],
+    );
+    image.d(pending, 11);
+    image.q(
+        pending + engine_events::script_event_registry::PENDING_DEFINITION,
+        definition,
+    );
+    image.q(
+        pending + engine_events::script_event_registry::PENDING_SCOPE,
+        0x80000,
+    );
+    image.d(
+        pending + engine_events::script_event_registry::PENDING_ORIGINATOR,
+        1,
+    );
+    image.d(
+        pending + engine_events::script_event_registry::PENDING_DUE,
+        40,
+    );
+    image.d(GAME + cgame_state::FIRED_EVENTS, 1);
+    image.d(GAME + cgame_state::FIRED_EVENTS + 4, 1);
+    image.q(GAME + cgame_state::FIRED_EVENTS + 8, 0xb0000);
+    image.q(0xb0000, 0xb1000);
+    image.q(0xb1000, definition);
+    image.q(0xb1008, 0);
+    image
+}
+
+#[test]
+fn retained_registry_writer_loss_requires_receipt_then_a_fresh_native_baseline() {
+    let mut store = ready(8);
+    let mut image = retained_registry_image(1);
+    let mut snapshot = Snapshot::new(0);
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 1), &image, BASE)
+        .unwrap();
+    let first = snapshot.prepare_pack().unwrap();
+    state.observe(first.row()).unwrap();
+    assert_eq!(state.pending().unwrap()[0].instance, 11);
+    assert_eq!(state.fired().unwrap().len(), 1);
+    store.acknowledged(first.publication());
+
+    // Exercise the actual writer's prepared-token refusal after a complete
+    // baseline, rather than pretending that a sample proves the missed call.
+    store
+        .prepare_scripts(
+            store.script_tokens.len(),
+            store.scopes_used + 1,
+            store.scope_nodes.len(),
+        )
+        .unwrap();
+    store.script_tokens.truncate(store.tokens_used);
+    store
+        .script_known(&image, BASE, 7, 2, script_fact(0, 0x80000, None))
+        .unwrap();
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 2), &NoReads, BASE)
+        .unwrap();
+    let lost = snapshot.prepare_pack().unwrap();
+    assert_eq!(lost.row().coverage, EventFeedCoverage::Unavailable);
+    assert_eq!(lost.row().counts.unwrap().rejected, 1);
+    state.observe(lost.row()).unwrap();
+    assert!(state.pending().is_err());
+    assert!(state.fired().is_err());
+    // An unsettled refusal cannot admit a baseline, even on another boundary.
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 3), &NoReads, BASE)
+        .unwrap();
+    let waiting = snapshot.prepare_pack().unwrap();
+    state.observe(waiting.row()).unwrap();
+    assert_eq!(waiting.row().coverage, EventFeedCoverage::Unavailable);
+    store.acknowledged(lost.publication());
+    store.acknowledged(waiting.publication());
+
+    image.d(GAME + cgame_state::CURRENT_HOUR, 4);
+    image.d(0xa0000, 22);
+    image.d(
+        0xa0000 + engine_events::script_event_registry::PENDING_DUE,
+        80,
+    );
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 4), &image, BASE)
+        .unwrap();
+    let recovered = snapshot.prepare_pack().unwrap();
+    state.observe(recovered.row()).unwrap();
+    assert_eq!(state.pending().unwrap()[0].instance, 22);
+    assert_eq!(state.pending().unwrap()[0].due_hour, 80);
+    assert_eq!(state.fired().unwrap().len(), 1);
+    assert_eq!(recovered.row().counts.unwrap().rejected, 1);
+    store.acknowledged(recovered.publication());
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 5), &NoReads, BASE)
+        .unwrap();
+    let quiet = snapshot.prepare_pack().unwrap();
+    assert_eq!(quiet.row().coverage, EventFeedCoverage::Complete);
+    assert!(quiet.row().events.is_empty());
+    state.observe(quiet.row()).unwrap();
+    assert_eq!(state.pending().unwrap()[0].instance, 22);
+}
+
+#[test]
+fn unsupported_registry_baseline_remains_refused_without_periodic_retries() {
+    let mut store = ready(8);
+    let mut image = retained_registry_image(1);
+    image
+        .0
+        .remove(&(0x80000 + engine_events::cevent_scope::COUNTRY_TAG));
+    let mut snapshot = Snapshot::new(0);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 1), &image, BASE)
+        .unwrap();
+    let failed = snapshot.prepare_pack().unwrap();
+    assert_eq!(failed.row().coverage, EventFeedCoverage::Unavailable);
+    assert_eq!(
+        failed.row().failure.as_deref(),
+        Some(b"pending event scope country unreadable".as_slice())
+    );
+    assert_eq!(failed.row().counts.unwrap().rejected, 1);
+    store.acknowledged(failed.publication());
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 2), &NoReads, BASE)
+        .unwrap();
+    let next = snapshot.prepare_pack().unwrap();
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+    state.observe(failed.row()).unwrap();
+    state.observe(next.row()).unwrap();
+    assert!(next.row().events.is_empty());
+    assert!(state.pending().is_err());
+    assert_eq!(next.row().counts.unwrap().rejected, 1);
+}
+
+#[test]
+fn unavailable_boundary_rebases_only_after_its_refusal_receipt() {
+    let mut store = ready(8);
+    let mut image = retained_registry_image(1);
+    let mut snapshot = Snapshot::new(0);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 1), &image, BASE)
+        .unwrap();
+    store.acknowledged(snapshot.publication());
+    let mut unavailable = boundary(7, 2);
+    unavailable.failure = Some("synthetic boundary observation unavailable");
+    store.snapshot_growing(&mut snapshot, unavailable).unwrap();
+    let refused = snapshot.prepare_pack().unwrap();
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 3), &NoReads, BASE)
+        .unwrap();
+    let waiting = snapshot.prepare_pack().unwrap();
+    assert_eq!(waiting.row().coverage, EventFeedCoverage::Unavailable);
+    store.acknowledged(refused.publication());
+    store.acknowledged(waiting.publication());
+    image.d(GAME + cgame_state::CURRENT_HOUR, 4);
+    image.d(0xa0000, 33);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 4), &image, BASE)
+        .unwrap();
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+    state
+        .observe(snapshot.prepare_pack().unwrap().row())
+        .unwrap();
+    assert_eq!(state.pending().unwrap()[0].instance, 33);
+}
+
+#[test]
+fn partial_boundary_reseeds_after_receipt_and_preserves_its_fresh_first_baseline() {
+    let mut store = Store::new(None).unwrap();
+    let mut image = retained_registry_image(1);
+    let mut snapshot = Snapshot::new(0);
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 1), &image, BASE)
+        .unwrap();
+    let first = snapshot.prepare_pack().unwrap();
+    assert_eq!(first.row().coverage, EventFeedCoverage::Partial);
+    state.observe(first.row()).unwrap();
+    assert_eq!(state.pending().unwrap()[0].instance, 11);
+    assert_eq!(state.fired().unwrap().len(), 1);
+    store.acknowledged(first.publication());
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 2), &NoReads, BASE)
+        .unwrap();
+    let quiet = snapshot.prepare_pack().unwrap();
+    assert_eq!(quiet.row().coverage, EventFeedCoverage::Complete);
+    assert!(quiet.row().events.is_empty());
+    state.observe(quiet.row()).unwrap();
+    store.acknowledged(quiet.publication());
+
+    // This is the production boundary shape for a withdrawn forwarder or
+    // partial input: no explicit failure and no newly acquired baseline.
+    let mut partial = boundary(7, 3);
+    partial.coverage = EventFeedCoverage::Partial;
+    store
+        .snapshot_with_registry(&mut snapshot, partial, &NoReads, BASE)
+        .unwrap();
+    let refused = snapshot.prepare_pack().unwrap();
+    assert_eq!(refused.row().coverage, EventFeedCoverage::Partial);
+    assert!(refused.row().failure.is_none());
+    assert_eq!(refused.row().counts.unwrap().rejected, 0);
+    state.observe(refused.row()).unwrap();
+    assert!(state.pending().is_err());
+    assert!(state.fired().is_err());
+    // Healthy forwarders do not admit a read ahead of the loss's receipt.
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 4), &NoReads, BASE)
+        .unwrap();
+    let waiting = snapshot.prepare_pack().unwrap();
+    assert_eq!(waiting.row().coverage, EventFeedCoverage::Unavailable);
+    state.observe(waiting.row()).unwrap();
+    store.acknowledged(refused.publication());
+    store.acknowledged(waiting.publication());
+
+    // An unsupported interval must not become an hourly registry walk,
+    // including after its output receipt has arrived.
+    partial.read_hour = 5;
+    store
+        .snapshot_with_registry(&mut snapshot, partial, &NoReads, BASE)
+        .unwrap();
+    let still_partial = snapshot.prepare_pack().unwrap();
+    state.observe(still_partial.row()).unwrap();
+    assert_eq!(still_partial.row().coverage, EventFeedCoverage::Partial);
+    assert!(still_partial.row().events.is_empty());
+    store.acknowledged(still_partial.publication());
+
+    image.d(GAME + cgame_state::CURRENT_HOUR, 6);
+    image.d(0xa0000, 22);
+    image.d(
+        0xa0000 + engine_events::script_event_registry::PENDING_DUE,
+        80,
+    );
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 6), &image, BASE)
+        .unwrap();
+    let recovered = snapshot.prepare_pack().unwrap();
+    state.observe(recovered.row()).unwrap();
+    assert_eq!(state.pending().unwrap()[0].instance, 22);
+    assert_eq!(state.pending().unwrap()[0].due_hour, 80);
+    assert_eq!(state.fired().unwrap().len(), 1);
+    assert_eq!(recovered.row().counts.unwrap().rejected, 0);
+    store.acknowledged(recovered.publication());
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 7), &NoReads, BASE)
+        .unwrap();
+    let quiet = snapshot.prepare_pack().unwrap();
+    state.observe(quiet.row()).unwrap();
+    assert_eq!(quiet.row().coverage, EventFeedCoverage::Complete);
+    assert!(quiet.row().events.is_empty());
+    assert_eq!(state.pending().unwrap()[0].instance, 22);
+}
+
+#[test]
+fn older_publication_receipt_cannot_unlock_a_later_boundary_refusal() {
+    let mut store = ready(8);
+    let mut image = retained_registry_image(1);
+    let mut snapshot = Snapshot::new(0);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 1), &image, BASE)
+        .unwrap();
+    store.acknowledged(snapshot.publication());
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 2), &NoReads, BASE)
+        .unwrap();
+    let older = snapshot.prepare_pack().unwrap();
+    let mut unavailable = boundary(7, 3);
+    unavailable.failure = Some("synthetic later boundary observation unavailable");
+    store.snapshot_growing(&mut snapshot, unavailable).unwrap();
+    let refused = snapshot.prepare_pack().unwrap();
+    // This old receipt used to clear failure_revision before the refused
+    // boundary had any receipt, allowing the next boundary to read native state.
+    store.acknowledged(older.publication());
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 4), &NoReads, BASE)
+        .unwrap();
+    let waiting = snapshot.prepare_pack().unwrap();
+    assert_eq!(waiting.row().coverage, EventFeedCoverage::Unavailable);
+    assert_eq!(
+        waiting.row().failure.as_deref(),
+        Some(b"synthetic later boundary observation unavailable".as_slice())
+    );
+    store.acknowledged(refused.publication());
+    store.acknowledged(waiting.publication());
+    image.d(GAME + cgame_state::CURRENT_HOUR, 5);
+    image.d(0xa0000, 44);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 5), &image, BASE)
+        .unwrap();
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+    state
+        .observe(snapshot.prepare_pack().unwrap().row())
+        .unwrap();
+    assert_eq!(state.pending().unwrap()[0].instance, 44);
+}
+
+#[test]
+fn unsupported_delayed_owner_is_attempted_once_through_refusal_and_registry_recovery() {
+    struct Reads {
+        image: WarImage,
+        failed_owner: std::cell::Cell<usize>,
+        healthy_owner: std::cell::Cell<usize>,
+    }
+    impl Memory for Reads {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == TARGET + ccountry::DELAYED_EVENTS {
+                self.failed_owner.set(self.failed_owner.get() + 1);
+            } else if address == ACTOR + ccountry::DELAYED_EVENTS {
+                self.healthy_owner.set(self.healthy_owner.get() + 1);
+            }
+            self.image.copy(address, output)
+        }
+    }
+    let mut image = retained_registry_image(1);
+    image.bytes(ACTOR + ccountry::DELAYED_EVENTS, &[0; 16]);
+    image.array(TARGET + ccountry::DELAYED_EVENTS, 0xc0000, 1);
+    image.q(0xc0000, 0xc1000);
+    image.q(0xc1000, 0); // Populated, unsupported delayed object.
+    let mut memory = Reads {
+        image,
+        failed_owner: Default::default(),
+        healthy_owner: Default::default(),
+    };
+    let healthy = ccountry::Country {
+        pointer: ACTOR,
+        canonical_slot: 1,
+        id: 1,
+    };
+    let unsupported = ccountry::Country {
+        pointer: TARGET,
+        canonical_slot: 2,
+        id: 2,
+    };
+    let owner = EventFeedCountry {
+        reference: 1,
+        id: 1,
+        instance: 44,
+    };
+    let unsupported_owner = EventFeedCountry {
+        reference: 2,
+        id: 2,
+        instance: 55,
+    };
+    let mut store = ready(8);
+    let mut snapshot = Snapshot::new(0);
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 1), &memory, BASE)
+        .unwrap();
+    state
+        .observe(snapshot.prepare_pack().unwrap().row())
+        .unwrap();
+    store.acknowledged(snapshot.publication());
+    store
+        .delayed_baseline(&memory, BASE, 7, GAME, 1, healthy)
+        .unwrap();
+    let reason = store
+        .delayed_baseline(&memory, BASE, 7, GAME, 1, unsupported)
+        .unwrap_err();
+    assert_eq!(reason, "delayed-event vtable differs");
+    // The existing census forwarder records this actual baseline failure.
+    store.reject(reason);
+    assert_eq!(memory.failed_owner.get(), 1);
+    assert_eq!(memory.healthy_owner.get(), 1);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 2), &NoReads, BASE)
+        .unwrap();
+    let refused = snapshot.prepare_pack().unwrap();
+    assert_eq!(refused.row().coverage, EventFeedCoverage::Unavailable);
+    assert_eq!(refused.row().failure.as_deref(), Some(reason.as_bytes()));
+    assert_eq!(refused.row().counts.unwrap().rejected, 1);
+    state.observe(refused.row()).unwrap();
+    assert!(state.delayed(owner).is_err());
+    store.acknowledged(refused.publication());
+
+    memory.image.d(GAME + cgame_state::CURRENT_HOUR, 3);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 3), &memory, BASE)
+        .unwrap();
+    state
+        .observe(snapshot.prepare_pack().unwrap().row())
+        .unwrap();
+    assert!(state.pending().is_ok());
+    assert!(state.fired().is_ok());
+    store.acknowledged(snapshot.publication());
+    store
+        .delayed_baseline(&memory, BASE, 7, GAME, 3, unsupported)
+        .unwrap();
+    assert_eq!(memory.failed_owner.get(), 1);
+    // Previously ready owners lost their certificate and acquire it afresh.
+    store
+        .delayed_baseline(&memory, BASE, 7, GAME, 3, healthy)
+        .unwrap();
+    assert_eq!(memory.healthy_owner.get(), 2);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 4), &NoReads, BASE)
+        .unwrap();
+    let recovered = snapshot.prepare_pack().unwrap();
+    state.observe(recovered.row()).unwrap();
+    assert_eq!(recovered.row().coverage, EventFeedCoverage::Complete);
+    assert!(state.delayed(owner).unwrap().is_empty());
+    assert!(state.delayed(unsupported_owner).is_err());
+    assert_eq!(recovered.row().counts.unwrap().rejected, 1);
+    store.acknowledged(recovered.publication());
+    for hour in 5..8 {
+        store
+            .delayed_baseline(&NoReads, BASE, 7, GAME, hour, unsupported)
+            .unwrap();
+        store
+            .delayed_baseline(&NoReads, BASE, 7, GAME, hour, healthy)
+            .unwrap();
+        store
+            .snapshot_with_registry(&mut snapshot, boundary(7, hour), &NoReads, BASE)
+            .unwrap();
+        state
+            .observe(snapshot.prepare_pack().unwrap().row())
+            .unwrap();
+        store.acknowledged(snapshot.publication());
+    }
+    assert_eq!(memory.failed_owner.get(), 1);
+    assert_eq!(memory.healthy_owner.get(), 2);
+    store.invalidate_delayed_country(TARGET);
+    let reason = store
+        .delayed_baseline(&memory, BASE, 7, GAME, 8, unsupported)
+        .unwrap_err();
+    assert_eq!(reason, "delayed-event vtable differs");
+    store.reject(reason);
+    assert_eq!(memory.failed_owner.get(), 2);
+    assert_eq!(store.counts.rejected, 2);
+}
+
 fn acquire(store: &mut Store, hour: i32, actor: u32) -> Ticket {
     store
         .acquire(
@@ -942,4 +1596,17 @@ fn proved_provenance_events_are_settled_facts_with_their_cause() {
         store.known(7, 5, fact(EventFeedSource::Release, 8)).err(),
         Some("Event feed world observation unavailable")
     );
+}
+
+#[test]
+fn certified_intervals_have_no_unconditional_decision_family_refusals() {
+    let mut store = ready(8);
+    for hour in [1, 2] {
+        let output = pack(&mut store, boundary(7, hour));
+        assert_eq!(output.row().script_refusals, 0);
+        assert_eq!(output.row().refused_script_families().count(), 0);
+        assert_eq!(output.row().coverage, EventFeedCoverage::Complete);
+        assert!(output.row().events.is_empty());
+        store.acknowledged(output.publication());
+    }
 }

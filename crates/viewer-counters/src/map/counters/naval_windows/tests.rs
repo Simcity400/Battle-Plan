@@ -2597,3 +2597,108 @@ fn a_failed_hull_selection_restores_the_remembered_unknown_sprite() {
         None
     );
 }
+
+/// Region grids reuse retained item windows without sharing slots with a
+/// combat icon, and clearing one region removes every prior child attachment.
+#[test]
+fn regional_grids_keep_three_item_pools_separate_and_clear_together() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let native = NativeWindows::read(GUI.as_bytes(), VIEWPORT).unwrap();
+    let fixture = fixture();
+    let mut windows = Windows::default();
+    windows.build(&native, VIEWPORT, &fixture).unwrap();
+    let region_gui = native::read_at(
+        br#"guiTypes={containerWindowType={name=region size={width=100 height=100}
+        gridBoxType={name=unit_grid size={width=40 height=40} slotsize={width=20 height=10}}
+        gridBoxType={name=enemy_unit_grid size={width=40 height=40} slotsize={width=20 height=10}}
+        gridBoxType={name=enemy_convoy_grid size={width=40 height=40} slotsize={width=10 height=10}}
+    }}"#,
+        VIEWPORT,
+    );
+    let root = region_gui.template("region").unwrap();
+    let mut instance = Instance::construct(root, VIEWPORT, &fixture).unwrap();
+    instance.gui_show(root, root).unwrap();
+    let slot = windows.combats.as_mut().unwrap().request((1, 99)).unwrap();
+    let update = |path: String, frame: i32| {
+        Ok(gui_windows::Update {
+            calls: vec![(path, Call::SetFrame(frame))],
+            ..Default::default()
+        })
+    };
+    let hull = native
+        .navy()
+        .find(native::Kind::Icon, "type")
+        .unwrap()
+        .path
+        .clone();
+    let tiny = native
+        .tiny()
+        .unwrap()
+        .find(native::Kind::Icon, "icon")
+        .unwrap()
+        .path
+        .clone();
+    let fills: Vec<_> = [
+        ("unit_grid", Some(0), hull.clone(), 1),
+        ("enemy_unit_grid", Some(1), hull, 2),
+        ("enemy_convoy_grid", None, tiny, 3),
+    ]
+    .into_iter()
+    .map(|(name, side, path, frame)| GridFill {
+        grid: root.find(native::Kind::Grid, name).unwrap().path.clone(),
+        side,
+        items: vec![update(path, frame)],
+    })
+    .collect();
+    let mut report = CounterReport::default();
+    fill_grids_in(
+        &fixture,
+        &mut windows,
+        &instance,
+        root,
+        IconSlot::Mission(slot),
+        &fills,
+        &mut report,
+    )
+    .unwrap();
+    assert_eq!(
+        windows
+            .grids
+            .iter()
+            .filter(|((icon, _), _)| *icon == IconSlot::Mission(slot))
+            .count(),
+        3
+    );
+    let keys: Vec<_> = windows.items.keys().copied().collect();
+    assert_eq!(keys.len(), 3);
+    assert!(keys.iter().all(|key| key.icon == IconSlot::Mission(slot)));
+    assert!(
+        keys.iter()
+            .map(|key| key.pool)
+            .collect::<BTreeSet<_>>()
+            .len()
+            == 3
+    );
+    fill_grids_in(
+        &fixture,
+        &mut windows,
+        &instance,
+        root,
+        IconSlot::Mission(slot),
+        &[],
+        &mut report,
+    )
+    .unwrap();
+    assert!(
+        !windows
+            .grids
+            .keys()
+            .any(|(icon, _)| *icon == IconSlot::Mission(slot))
+    );
+    assert_eq!(
+        windows.items.len(),
+        3,
+        "detached item windows remain available for reuse"
+    );
+}

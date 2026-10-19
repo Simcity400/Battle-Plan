@@ -212,12 +212,10 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
     );
 }
 
-/// The game drops the line when the source already owns a covering goal,
-/// and the owned-wargoal roster is not recorded: once the target, type and
-/// source resolve, the line refuses by name, whatever rows an older
-/// recording's table held. The earlier native exits still give no line.
+/// Reached inventory predicates require both complete tables. Earlier native
+/// exits do not require the inventory at all.
 #[test]
-fn create_wargoal_refuses_at_the_unrecorded_owned_goal_test() {
+fn create_wargoal_refuses_without_complete_inventory_tables() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
@@ -248,9 +246,11 @@ fn create_wargoal_refuses_at_the_unrecorded_owned_goal_test() {
         wargoals: Some(&database),
         ..Default::default()
     };
-    // An empty complete roster once showed the line; it is no longer read.
-    *fixture.frame.tables[TableId::OwnedWargoals.index()] =
-        TableView::Complete(TableRows::OwnedWargoals(vec![]));
+    for table in [TableId::CountryWargoals, TableId::WargoalTargets] {
+        *fixture.frame.tables[table.index()] = TableView::Unavailable {
+            reason: "synthetic inventory not recorded".into(),
+        };
+    }
     for (body, refused) in [
         (
             "create_wargoal={target=BBB type=SynGoal generator={1}}",
@@ -2280,4 +2280,159 @@ fn diplomacy_ordered_subjects_at_5000_countries() {
         out.text
             .ends_with(&format!("Join {last}\nGuarantee {last}\n"))
     );
+}
+
+#[test]
+fn create_wargoal_hover_reads_complete_unused_goal_membership() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            "\u{feff}l_english:\n AAA:0 \"Alpha\"\n BBB:0 \"Beta\"\n SynGoal:0 \"Custom goal\"\n EFFECT_CREATE_WARGOAL:0 \"Goal $COUNTRY$/$WARGOAL$/$TARGET$\"\n",
+        ),
+    ]);
+    fixture.catalogue = catalogue;
+    fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
+    let names = installed_content_core::key_names::KeyNames::default();
+    let database =
+        installed_content_wargoals::wargoals::parse(b"wargoal_types={SynGoal={}}", &names).unwrap();
+    let content = Content {
+        key_names: Some(&names),
+        wargoals: Some(&database),
+        ..Default::default()
+    };
+    *fixture.frame.tables[TableId::CountryWargoals.index()] =
+        TableView::Complete(TableRows::CountryWargoals(vec![]));
+    *fixture.frame.tables[TableId::WargoalTargets.index()] =
+        TableView::Complete(TableRows::WargoalTargets(vec![]));
+    let render = |fixture: &Fixture| {
+        fixture.render_native(
+            "create_wargoal={target=BBB type=SynGoal}",
+            &mut EventScopes::new(vec![EventScope::of(C(1))]),
+            content,
+        )
+    };
+    let shown = render(&fixture);
+    assert!(shown.refusals.is_empty(), "{:?}", shown.refusals);
+    assert!(shown.text.contains("Alpha"));
+    assert!(shown.text.contains("Custom goal"));
+    let handle = (4u64 << 32) | 123;
+    *fixture.frame.tables[TableId::CountryWargoals.index()] =
+        TableView::Complete(TableRows::CountryWargoals(vec![CountryWargoalRow {
+            country: 100,
+            handle,
+            actor: 100,
+            recipient: 200,
+            goal_type: 42,
+            name_token: 42,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::WargoalTargets.index()] =
+        TableView::Complete(TableRows::WargoalTargets(vec![WargoalTargetRow {
+            country: 100,
+            kind: 3,
+            value: handle,
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 42,
+            literal: b"SynGoal".to_vec(),
+        }]));
+    for table in [TableId::CountryWargoals, TableId::WargoalTargets] {
+        assert!(
+            crate::triggers::RECORDED_TABLES.contains(&table),
+            "effect-description consumers must request {table:?}"
+        );
+    }
+    let suppressed = render(&fixture);
+    assert_eq!(suppressed.text, "");
+    assert!(suppressed.refusals.is_empty());
+    // The object can remain owned after its unused membership was consumed.
+    *fixture.frame.tables[TableId::WargoalTargets.index()] =
+        TableView::Complete(TableRows::WargoalTargets(vec![]));
+    let consumed = render(&fixture);
+    assert!(consumed.refusals.is_empty(), "{:?}", consumed.refusals);
+    assert!(consumed.text.contains("Custom goal"));
+    let duplicate =
+        installed_content_wargoals::wargoals::parse(b"wargoal_types={SynGoal={} SynGoal={}}", &names)
+            .unwrap();
+    let duplicate_content = Content {
+        wargoals: Some(&duplicate),
+        ..content
+    };
+    for (unused, refused) in [(false, false), (true, true)] {
+        *fixture.frame.tables[TableId::WargoalTargets.index()] =
+            TableView::Complete(TableRows::WargoalTargets(if unused {
+                vec![WargoalTargetRow {
+                    country: 100,
+                    kind: 3,
+                    value: handle,
+                    ..Default::default()
+                }]
+            } else {
+                vec![]
+            }));
+        let out = fixture.render_native(
+            "create_wargoal={target=BBB type=SynGoal}",
+            &mut EventScopes::new(vec![EventScope::of(C(1))]),
+            duplicate_content,
+        );
+        assert_eq!(
+            out.refusals.values().sum::<usize>(),
+            usize::from(refused),
+            "{:?}",
+            out.refusals
+        );
+        assert_eq!(out.text.is_empty(), refused);
+    }
+    *fixture.frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+        StateRow {
+            id: 1,
+            ..Default::default()
+        },
+        StateRow {
+            id: 2,
+            ..Default::default()
+        },
+    ]));
+    *fixture.frame.tables[TableId::WargoalTargets.index()] =
+        TableView::Complete(TableRows::WargoalTargets(vec![
+            WargoalTargetRow {
+                country: 100,
+                kind: 3,
+                value: handle,
+                ..Default::default()
+            },
+            WargoalTargetRow {
+                country: 100,
+                kind: 0,
+                value: 1,
+                ..Default::default()
+            },
+        ]));
+    // Partial state coverage is decidably false even with duplicate types.
+    let partial = fixture.render_native(
+        "create_wargoal={target=BBB type=SynGoal generator={1 2}}",
+        &mut EventScopes::new(vec![EventScope::of(C(1))]),
+        duplicate_content,
+    );
+    assert!(partial.refusals.is_empty(), "{:?}", partial.refusals);
+    assert!(partial.text.contains("Custom goal"));
+    let covered = fixture.render_native(
+        "create_wargoal={target=BBB type=SynGoal generator={1}}",
+        &mut EventScopes::new(vec![EventScope::of(C(1))]),
+        content,
+    );
+    assert!(covered.refusals.is_empty(), "{:?}", covered.refusals);
+    assert!(covered.text.is_empty());
 }

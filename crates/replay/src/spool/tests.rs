@@ -1303,4 +1303,180 @@ fn periodic_syncs_reuse_one_persistent_durability_thread() {
     ));
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn occupation_keyframe_then_delta_spool_preserves_nested_packets_and_carry() {
+    use replay_data::rows::*;
+    use replay_frame::frame::{DecodedFrame, FrameDecoder, FrameEncoder, TableView};
+    let table = TableId::StateResistance;
+    let hover = OccupationHover {
+        exile_host: 3,
+        legitimacy: 50_000,
+        flow_from: 8,
+        flow: 20_000,
+        gain_ratio: 99_000,
+        added: vec![OccupationAddedTarget {
+            value: -100_000,
+            controller: 1,
+            occupied: 2,
+            localisation: b"fixture_target".to_vec(),
+        }],
+        compliance_effects: vec![OccupationEffect {
+            key: 7,
+            value: 5_000,
+        }],
+        compliance_extra: OccupationEffectExtra {
+            child_sources: 1,
+            custom_tooltips: 0,
+        },
+        ..Default::default()
+    };
+    let mut row = StateResistanceRow {
+        state: 9,
+        country: 2,
+        level: 4_106_000,
+        speed: -10,
+        compliance: 901_000,
+        compliance_speed: 8,
+        active: 1,
+        hover: Recorded::Value(Some(hover)),
+        map: Recorded::Value(Some(OccupationMap {
+            stored_target: Some(5_000_000),
+            core_country: Some(3),
+            resistance: vec![
+                b"fixture_resistance".to_vec(),
+                b"fixture_resistance".to_vec(),
+            ],
+            compliance: vec![b"fixture_compliance".to_vec()],
+        })),
+        modifier_sources: Recorded::Value(vec![OccupationModifierSource {
+            section: 2,
+            source: 0,
+            key: engine_occupation::cresistance::hover::DECAY,
+            total: Some(123),
+            nodes: vec![
+                ModifierBreakdownNode {
+                    children: 1,
+                    value: 123,
+                    name: Vec::new(),
+                },
+                ModifierBreakdownNode {
+                    children: 0,
+                    value: 123,
+                    name: b"fixture source".to_vec(),
+                },
+            ],
+            failure: Vec::new(),
+        }]),
+    };
+    let inactive = StateResistanceRow {
+        state: 10,
+        hover: Recorded::Value(None),
+        map: Recorded::Value(None),
+        modifier_sources: Recorded::Value(Vec::new()),
+        ..Default::default()
+    };
+    let mut encoder = FrameEncoder::new();
+    let backend = MemoryBackend::default();
+    let shared = backend.0.clone();
+    let mut spool = SegmentedSpool::new(backend);
+    let mut frames = Vec::new();
+    let mut expected = Vec::new();
+    for hour in 10..14 {
+        if hour == 11 {
+            row.level += 1;
+        }
+        if hour == 12 {
+            let Recorded::Value(Some(hover)) = &mut row.hover else {
+                unreachable!()
+            };
+            hover.compliance_effects[0].value = 7_500;
+            hover.added[0].localisation = b"changed_target".to_vec();
+            let Recorded::Value(sources) = &mut row.modifier_sources else {
+                unreachable!()
+            };
+            sources[0].total = None;
+            sources[0].failure = b"fixture root total unavailable".to_vec();
+            sources[0].nodes.clear();
+            let Recorded::Value(Some(map)) = &mut row.map else {
+                unreachable!()
+            };
+            map.stored_target = None;
+            map.core_country = Some(4);
+            map.resistance.remove(0);
+            map.compliance.push(b"fixture_added_compliance".to_vec());
+        }
+        let rows = TableRows::StateResistance(vec![row.clone(), inactive.clone()]);
+        let mut source = DecodedFrame {
+            branch: 7,
+            hour,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Unavailable {
+                    reason: match crate::frame::current_absence(TableId::ALL[index]) {
+                        Some(TableView::Unavailable { reason }) => reason,
+                        _ => "unused".into(),
+                    },
+                }
+                .into()
+            }),
+        };
+        if hour != 13 {
+            source.metrics.table_ns[table.index()] = 1;
+        }
+        source.tables[table.index()] = TableView::Complete(rows.clone()).into();
+        // Match recording: prepare encoded bytes, write the spool, then
+        // commit the new baseline only after the complete write succeeds.
+        let mut prepared = encoder.prepare_bytes(source.into(), hour == 10).unwrap();
+        let encoded = prepared.take_frame();
+        frames.push(encoded.decode().unwrap());
+        if hour == 10 {
+            spool.start_encoded_segment(&[branch()], encoded).unwrap();
+        } else {
+            spool.append_encoded_frame(encoded).unwrap();
+        }
+        encoder.commit(prepared).unwrap();
+        expected.push(rows);
+    }
+    assert!(matches!(
+        frames[0].tables[table.index()],
+        TableUpdate::Snapshot(_)
+    ));
+    for (frame, mask) in [
+        (&frames[1], 1 << 1),
+        (&frames[2], (1 << 6) | (1 << 7) | (1 << 8)),
+    ] {
+        let TableUpdate::Delta {
+            changed, deleted, ..
+        } = &frame.tables[table.index()]
+        else {
+            panic!("changed occupation row must be a delta");
+        };
+        assert!(deleted.is_empty());
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].mask, mask);
+    }
+    assert!(matches!(
+        frames[3].tables[table.index()],
+        TableUpdate::Unchanged { .. }
+    ));
+    spool.finish_segment().unwrap();
+    let recovered = recover_prefix(&shared.borrow().files[&0]);
+    assert!(recovered.damage.is_none(), "{:?}", recovered.damage);
+    assert_eq!(recovered.records.len(), 5);
+    let mut decoder = FrameDecoder::new();
+    let mut count = 0;
+    for record in recovered.records {
+        if let Record::Frame(frame) = record {
+            let output = decoder.apply(&frame).unwrap();
+            assert_eq!(
+                output.tables[table.index()],
+                TableView::Complete(expected[count].clone())
+            );
+            count += 1;
+        }
+    }
+    assert_eq!(count, 4);
+}
+
 use replay_data::FORMAT_VERSION;

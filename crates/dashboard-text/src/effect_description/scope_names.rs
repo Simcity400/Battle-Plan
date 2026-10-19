@@ -11,9 +11,10 @@ impl Renderer<'_, '_, '_> {
     /// TAG_key when defined, expanded in a fresh owner country environment.
     pub(super) fn project_name(&self, owner: u32, id: u32) -> Result<String, String> {
         let world = self.context.world()?;
-        let row = world.project(owner, id)?;
+        let row = world.project(owner, id).map_err(|why| why.to_string())?;
         let token = world
-            .token(row.definition_id)?
+            .token(row.definition_id)
+            .map_err(|why| why.to_string())?
             .ok_or("LexicalTokens lacks project definition")?;
         let token = std::str::from_utf8(token).map_err(|_| "project definition is not UTF-8")?;
         let cached = self.context.text.content().effects()?;
@@ -72,7 +73,11 @@ impl Renderer<'_, '_, '_> {
                     ));
                 }
                 replay_data::rows::Recorded::NotRecorded => {
-                    let bytes = self.context.world()?.raid_wing_name(reference)?;
+                    let bytes = self
+                        .context
+                        .world()?
+                        .raid_wing_name(reference)
+                        .map_err(|why| why.to_string())?;
                     return crate::scripted_text::stored_text(
                         self.context.localisation,
                         self.context.text.recorded_language(),
@@ -117,7 +122,9 @@ impl Renderer<'_, '_, '_> {
             );
         }
         crate::unit_names::army_name(
-            world.unit_status(reference)?,
+            world
+                .unit_status(reference)
+                .map_err(|why| why.to_string())?,
             self.context.localisation,
             self.context.text.recorded_language(),
             || {
@@ -138,7 +145,10 @@ impl Renderer<'_, '_, '_> {
         reason = "shared carrier name entry point for raid effect ports"
     )]
     pub(super) fn raid_name(&self, reference: u64) -> Result<String, String> {
-        self.context.world()?.raid(reference)?;
+        self.context
+            .world()?
+            .raid(reference)
+            .map_err(|why| why.to_string())?;
         let target = self
             .context
             .text
@@ -154,7 +164,8 @@ impl Renderer<'_, '_, '_> {
             let token = self
                 .context
                 .world()?
-                .token(target.raid_type)?
+                .token(target.raid_type)
+                .map_err(|why| why.to_string())?
                 .ok_or("LexicalTokens lacks raid type")?;
             let token = std::str::from_utf8(token).map_err(|_| "raid type is not UTF-8")?;
             let cache = self.context.text.content().effects()?;
@@ -263,7 +274,8 @@ impl Renderer<'_, '_, '_> {
         if scope.building_type != 0 {
             let world = self.context.world()?;
             let token = world
-                .token(scope.building_type)?
+                .token(scope.building_type)
+                .map_err(|why| why.to_string())?
                 .ok_or("LexicalTokens lacks raid building type")?;
             let cached = self.context.text.content().effects()?;
             let buildings = self

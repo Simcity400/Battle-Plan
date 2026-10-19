@@ -1,5 +1,9 @@
 # viewer-world
 
+A hovered accessible air base supplies ranges from its registered pools; when it supplies no groups, selected-wing ranges remain. Selected air-wing ranges use the current recorded wing/ace/country range law and the pool base's state centre or carrier province. Equal origins and radii share the game's range-group scratch entry, with empty-wing colour and alternating symbol rotation. Textures, technique, size and colours come from the recorded content stack.
+
+Hovering an at-sea task-force source gathers each member's first carrier base in ship roster order, including missile carriers selected by positive equipment flags. A first carrier with a null air base stops that member's search. The bases share the range-group scratch in source order; with no admitted groups the selected-wing ranges remain. Missing ship, base or registration operands refuse the hovered range field independently.
+
 The GPU scene, world labels, immutable scene content, draw passes and native shader adapters, political fill, terrain and weather, borders, names, rivers, trees, static and animated model rendering, model selection, buildings, railways, trains, strike effects, floating map text and post-processing. Content and shader sources resolve through the recorded installed-content stack.
 
 [Terrain](src/map/terrain.rs) is the approved uniform grid for the game's camera and, for a free camera, the content shader's 64-cell blocks at the coarsest step their distance allows with snapped edges, on every map copy the view reaches; a free camera over a map whose sides are not whole blocks refuses its terrain pass by name. A free camera's [shadow](src/map/shadow.rs) light is fitted as the game camera's is, to its capped water-plane footprint with the same padding and backoff, and never extended for casters; its shadows turn on and fade by eye height against `DRAW_SHADOWS_CUTOFF` and `DRAW_SHADOWS_FADE_LENGTH`.
@@ -10,4 +14,54 @@ The [scene](src/map/scene.rs) draws the model a free camera mode's user steers (
 
 Shared synthetic GPU inputs come from foundation's opt-in `test-support`; world test helpers are enabled through the same feature for host composition tests. Follow the workspace [working rules](../../AGENTS.md).
 
+Scripted colour layers select their country/state targets before running callbacks.
+Selection, including root and per-target filters, captures the same input
+refusals as colour callbacks. Any uncertain selection refuses the whole layer,
+clears retained borders, and names each distinct input once for that layer.
+An absent or empty targets block leaves the layer unrestricted.
+A state-controller layer follows the captured cached single-group branch: the whole
+state with its state controller when set, otherwise positive province controllers
+grouped by canonical country. Borders retain colours between initial, daily and
+recorded forced refreshes. Incomplete refresh-event coverage refuses retained colour
+layers until a known refresh rebuilds them. A seek or mode selection starts a fresh
+presentation, as a game load does.
+An effect-driven refresh inherits its caller's temporary store, which the event
+does not record. Forced callbacks and target filters therefore refuse unwritten
+temporary reads by name instead of assuming zero. Each callback is proved
+independently: outputs established solely by earlier targets are conservatively
+refused too. Callbacks assigning all consumed outputs still paint, and a proved
+zero alpha reads no RGB or highlight values. No transient script or UI state is
+captured. A matching refresh event is checked even on a first/scheduled repaint.
+When refresh-event coverage cannot exclude an effect refresh on a first or daily
+repaint, its callbacks and filters use the same inherited-unknown temporary store.
+Any reached uncertain input refuses the affected colour target, including an
+uncertified sharing roster (ResearchModifiers). Each distinct input is named and
+counted once per target, regardless of how many outputs it could affect. A refusal
+withholds any previously painted border for that target. Later known assignments
+do not cancel an earlier input refusal; this conservative limitation is accepted
+because uncertain control flow must never invent a colour.
+
 Aircraft declaration admission uses `Roster::refused_declaration` for ordinary and lazy bakes, recorded-roster fallbacks, recorded mesh retries and draw counterparts. Fly resolves through that same admission before requiring geometry in the accepted bake, so a plane recovered from the recording can be flown too; meshless actors still retain their events in recorded flights.
+
+The Air and Navy modes fit strategic-region names through the ordinary connected-component name pass. Drawing follows the local `strategic_regions` preference: with it off, a picked province restricts names to its connected name area and a region change restarts the layer fade; with it on, or with no picked province, the native whole layer remains. Sorted component membership stays shared with the cached glyphs, so moving the pointer selects draws without rebuilding placements. This is viewer-local state. Air colours land and water regions from the viewing country's recorded superiority weights and zero-weight active-mission counters; Navy retains the country layer and the sea regions' naval-control and gaining-side effects. Strategic-region attributes join the gradient field by the same nonzero region key as its membership. Missing colour inputs withhold and count the affected regions.
+
+Radar coverage uses the content's radar map symbol, texture, effect, size and own/allied/selected colours in the shared map-arrow manager, after main arrows and before entities. The picker controls these ranges separately from station icons; a station hover keeps its range visible with the switch off. Radius comes from the writer-certified RadarCoverage column. The host centre derives from the recorded state definitions and province pixel bounds, choosing the narrower seam-shifted box with ordinary ties and integer halving; missing certification or unproved bounds refuse the affected group by name. Rotations retain pooled draw-slot angles and start a fresh presentation because the native initial phase is unsaved.
+
+The enabled Radar overlay admits own and direct family groups. With Radar off, a hovered station can supply any recorded group's range in the ordinary radar colour, including a foreign group; this hover path does not require family admission.
+
+Air assignment stripes choose the longest-range selected wing at each resolved base before applying carrier activity, raid and training restrictions. Region reach shares foundation's transport geometry. Content supplies the allowed and blocked colours; an unknown reached operand withholds and counts affected regions. Province colour pixels share the political pass's immutable ID image and refresh only changed province tiles; terrain, water, trees and meshes consume the existing native secondary-colour shader input. Selection stays local to each viewer.
+
+Province colour compute writes a linear storage view; its sRGB sampling view explicitly permits sampling only. Strategic selection opacity occupies the gradient FX texture's green channel, while naval control and contested bytes remain independent. Equal local styles share fills; differing styles and later clearing preserve each view's own textures.
+
+Air mission arrows preserve the owning country's all-active registration order, coalesce equal base/region pairs in first-occurrence order and use any member's active byte. The transient bases reached by Air range preparation control their selected colour: occupied hovered bases and hovered first-carrier bases replace selection; without hovered groups the selected wings supply their pool bases. Gold base frames retain their separate local reference list. State endpoints search the ordinary Air-base building queue in their first listed province; hosted endpoints use the host task force's province centre. Both directions retain the native half-map seam rule. Arrows share type buckets, textures, lighting and submission with the other map ribbons and draw in Air mode independently of battle-plan switches.
+
+Selected Air transfers traverse the recorded country base list and certified direct incoming order. Their lines coalesce source/destination pairs; progress symbols preserve fixed-point interpolation, total-distance gates, native seam scratch and orientation. Arrows and symbols use the existing shared map-arrow passes and appear only in Air mode. Selection stays local to the view.
+
+Navy local selection colours distinguish selected hold missions from selected active missions and fade unselected regions through the content define. Assigned-region stripes combine every selected task force's accessible-region occurrences and each selected fleet's certified mission-region multiset; empty sources leave the denominator unchanged, repeated memberships retain their weight, and overlaps use the native fixed colours and clamped fractional blend. These feedback products share the existing political palette and province-colour passes and record no UI state.
+
+Navy selected-region styles apply only when the recorded template's valid province occurrences are at least one percent sea, including duplicate occurrences and excluding invalid references. The native fixed5 fraction is prepared once from map kinds; it uses province counts rather than pixel areas.
+
+Resistance and Compliance country stripes follow the viewing country's recorded controlled-state roster and each member province's canonical controller. Occupied states use the occupied country's primary map colour through the shared current-autonomy colour chain; the content's NMapMode.OCCUPATION_MAP_MODE_COUNTRY_STRIPE_ALPHA clamps before byte packing. Resistance level, compliance level and the resistance-active flag do not gate these stripes. They use the existing local province-colour texture; changing mode clears the previous field. Missing reached identities, rosters, colours or inheritance inputs withhold and count the affected stripes.
+
+Resistance and Compliance draw state percentage labels and active definition badges through occupation_icons and the shared native GUI pool. The graphical-state anchor shares resource_icons' integer centroid selection, with native wrapping, integer mean conversion, signed distance arithmetic and authored-order ties. Admission uses canonical controller identity, the recorded occupied reference and the cached-target zero-level edge; neither active byte nor reconstructed thresholds substitute. Content defines supply strict parent/badge cutoffs, TOP_MAP_ICON priority and level gradients. Labels truncate whole percentages, preserve resistance trend icons and use the gradient's RGB with opaque text; badges stably sort retained occurrences by definition threshold before the authored grid admits them. Hover geometry belongs independently to the text and each badge icon.
+A free view presents occupation markers through the existing world-icon scale, sight and hit transformations, with their anchor distance replacing the game camera height.

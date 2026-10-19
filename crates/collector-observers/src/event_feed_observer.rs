@@ -1,9 +1,11 @@
 //! Native Event feed CALL observers, with hourly owned copies and output receipts.
 
 pub use crate::event_feed_history::Fact;
+pub mod decisions;
+
 use crate::{
-    event_feed_history::{DetachLosses, Snapshot, Store, Ticket},
-    hook::{Hook, TapSafety},
+    event_feed_history::{DetachLosses, ScriptFact, Snapshot, Store, Ticket},
+    hook::{Hook, Tap, TapSafety},
 };
 use engine_events::event_feed_sites as native;
 use engine_native::Memory;
@@ -15,7 +17,7 @@ use std::{
     ptr,
     sync::{
         Arc, LazyLock, Mutex,
-        atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -36,8 +38,187 @@ static RECEIPTS: LazyLock<crossbeam_queue::ArrayQueue<(u64, bool)>> = LazyLock::
 });
 static DEMAND: AtomicUsize = AtomicUsize::new(0);
 static CAPACITY: AtomicUsize = AtomicUsize::new(0);
+static SCRIPT_TOKEN_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static SCRIPT_SCOPE_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static SCRIPT_GRAPH_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static SCRIPT_CAPACITY: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 static SPARE: Mutex<Option<Store>> = Mutex::new(None);
 static RETIRED: Mutex<Option<Store>> = Mutex::new(None);
+
+fn script_demands(store: &Store) {
+    DEMAND.fetch_max(store.capacity_demand(), Ordering::Relaxed);
+    SCRIPT_TOKEN_DEMAND.fetch_max(store.token_demand, Ordering::Relaxed);
+    SCRIPT_SCOPE_DEMAND.fetch_max(store.scope_demand, Ordering::Relaxed);
+    SCRIPT_GRAPH_DEMAND.fetch_max(store.graph_demand, Ordering::Relaxed);
+}
+fn script_capacities(store: &Store) {
+    CAPACITY.store(store.capacity(), Ordering::Release);
+    for (capacity, value) in SCRIPT_CAPACITY.iter().zip(store.script_capacity()) {
+        capacity.store(value, Ordering::Release);
+    }
+}
+
+/// Existing decision-census worker only; an already certified owner does no
+/// additional native read. Never called from the hourly critical path.
+#[derive(Clone, Copy)]
+pub struct DelayedCensus {
+    base: usize,
+    state: usize,
+    hour: i32,
+    generation: u64,
+}
+pub fn begin_delayed_census(base: usize, state: usize, hour: i32) -> Option<DelayedCensus> {
+    let owner = unsafe { SHARED.load(Ordering::SeqCst).as_ref() }?;
+    owner
+        .observe(|store| {
+            let generation = observed(owner, store)?;
+            // Bootstrap waits for the boundary worker's world certificate.
+            // This is not a failed timer read and must not poison that first
+            // retained baseline with an unrelated interval refusal.
+            store.registry_state?;
+            if owner.base != base || store.registry_state != Some(state) {
+                store.reject("delayed-event census world certificate unavailable");
+                return None;
+            }
+            Some(DelayedCensus {
+                base,
+                state,
+                hour,
+                generation,
+            })
+        })
+        .ok()
+        .flatten()
+}
+pub fn baseline_delayed_country(
+    memory: &impl Memory,
+    context: DelayedCensus,
+    country: engine_native::ccountry::Country,
+) {
+    let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
+        return;
+    };
+    let _ = owner.observe(|store| {
+        let Some(generation) = observed(owner, store) else {
+            return;
+        };
+        let result = if owner.base == context.base && generation == context.generation {
+            store
+                .decision_baseline(
+                    memory,
+                    context.base,
+                    generation,
+                    context.state,
+                    context.hour,
+                    country,
+                )
+                .and_then(|()| {
+                    store.delayed_baseline(
+                        memory,
+                        context.base,
+                        generation,
+                        context.state,
+                        context.hour,
+                        country,
+                    )
+                })
+        } else {
+            Err("delayed-event census executable or generation differs")
+        };
+        if let Err(reason) = result {
+            store.reject(reason);
+        }
+        script_demands(store);
+        script_capacities(store);
+    });
+}
+pub fn scheduled_delayed(country: usize) {
+    let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
+        return;
+    };
+    let _ = owner.observe(|store| {
+        let Some(generation) = observed(owner, store) else {
+            return;
+        };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let result = (|| {
+            let world = native::provenance::World::new(&memory, owner.base)?;
+            let identity = world.country_object(country)?;
+            let array = engine_events::script_event_registry::delayed_array(&memory, country)?;
+            let ordinal = array
+                .count
+                .checked_sub(1)
+                .ok_or("delayed-event native append is empty")?;
+            let row = engine_events::script_event_registry::delayed_at(
+                &memory, owner.base, array, ordinal,
+            )?;
+            store.delayed_stored(
+                &world,
+                &memory,
+                owner.base,
+                generation,
+                world.hour()?,
+                identity,
+                row,
+                false,
+            )
+        })();
+        if let Err(reason) = result {
+            store.reject(reason);
+        }
+        script_demands(store);
+    });
+}
+pub fn retired_delayed(pointer: usize, iteration: bool, visited: bool) {
+    let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
+        return;
+    };
+    let _ = owner.observe(|store| {
+        let Some(generation) = observed(owner, store) else {
+            return;
+        };
+        if !iteration && !store.has_delayed(pointer) {
+            return;
+        }
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let result = native::provenance::World::new(&memory, owner.base).and_then(|world| {
+            store.delayed_removed(
+                &world, &memory, owner.base, generation, pointer, iteration, visited,
+            )
+        });
+        if let Err(reason) = result {
+            store.reject(reason);
+        }
+        script_demands(store);
+    });
+}
+pub fn reset_delayed_country(pointer: usize) {
+    let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
+        return;
+    };
+    let _ = owner.observe(|store| {
+        store.invalidate_delayed_country(pointer);
+        let Some(generation) = observed(owner, store) else {
+            return;
+        };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let result = (|| {
+            let world = native::provenance::World::new(&memory, owner.base)?;
+            let mut fact = crate::event_feed_history::registry::marker(
+                &world,
+                &memory,
+                replay_data::event_feed_rows::EventFeedScriptChange::DelayedBaseline,
+                None,
+            )?;
+            fact.target = world.country_object(pointer)?;
+            store.script_known(&memory, owner.base, generation, world.hour()?, fact)
+        })();
+        if let Err(reason) = result {
+            store.reject(reason);
+        }
+        script_demands(store);
+    });
+}
 
 /// Snapshot offsets are duplicated only in the matching ASM/header.
 /// The ticket bytes are opaque to C++; only Rust creates/consumes the ticket.
@@ -75,6 +256,7 @@ struct Owner {
     base: usize,
     armed: AtomicBool,
     busy: AtomicBool,
+    missed: AtomicU64,
     store: UnsafeCell<Store>,
 }
 // Each short store phase has exclusive checked access. No lease crosses native.
@@ -88,23 +270,57 @@ impl Owner {
             base,
             armed: AtomicBool::new(false),
             busy: AtomicBool::new(false),
+            missed: AtomicU64::new(0),
             store: UnsafeCell::new(store),
         })
     }
 
     fn access<T>(&self, apply: impl FnOnce(&mut Store) -> T) -> Result<T, &'static str> {
+        self.access_mode(apply, true)
+    }
+
+    /// Failure to enter acquires no store entry or ticket. The native call
+    /// still runs and releases its own flight on normal return. Only the
+    /// missed interval is lost; settlement and escape faults stay terminal.
+    fn observe<T>(&self, apply: impl FnOnce(&mut Store) -> T) -> Result<T, &'static str> {
+        self.access_mode(apply, false)
+    }
+
+    fn access_mode<T>(
+        &self,
+        apply: impl FnOnce(&mut Store) -> T,
+        retain_overlap: bool,
+    ) -> Result<T, &'static str> {
         if self
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            fault(OWNERSHIP_FAULT);
-            return Err("Event feed store overlap; owner retained");
+            if retain_overlap {
+                fault(OWNERSHIP_FAULT);
+                return Err("Event feed store overlap; owner retained");
+            }
+            self.armed.store(false, Ordering::SeqCst);
+            if self
+                .missed
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                    count.checked_add(1)
+                })
+                .is_err()
+            {
+                fault(OWNERSHIP_FAULT);
+                return Err("Event feed declined observation count exhausted; owner retained");
+            }
+            return Err(OBSERVATION_OVERLAP);
         }
         // A Rust panic is contained. A foreign escape is contained by the C++
         // observer-only guard; it may leave busy set, which retains the owner.
         let result = catch_unwind(AssertUnwindSafe(|| {
-            apply(unsafe { &mut *self.store.get() })
+            let store = unsafe { &mut *self.store.get() };
+            if !retain_overlap {
+                self.take_missed(store);
+            }
+            apply(store)
         }));
         match result {
             Ok(value) => {
@@ -120,12 +336,24 @@ impl Owner {
         }
     }
 
+    fn take_missed(&self, store: &mut Store) -> bool {
+        let missed = self.missed.swap(0, Ordering::SeqCst);
+        if missed == 0 {
+            return false;
+        }
+        store.invalidate(OBSERVATION_OVERLAP);
+        store.reject_many(OBSERVATION_OVERLAP, missed);
+        true
+    }
+
     /// Revoke before any unobserved mutation. This atomic operation does not
     /// settle tickets/flights or establish that a world replacement succeeded.
     fn revoke_world(&self) {
         self.armed.store(false, Ordering::SeqCst);
     }
 }
+
+const OBSERVATION_OVERLAP: &str = "Event feed observation overlapped another acquisition";
 
 fn fault(code: u32) {
     // Static pointer-free, allocation-free sink. Even an unacquired escape
@@ -139,7 +367,7 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
         fault(BEFORE_FAULT);
         return Err("Event feed owner unavailable");
     };
-    owner.access(|store| {
+    owner.observe(|store| {
         if frame.owned_flight != 1 || FAULT.load(Ordering::SeqCst) != 0 {
             return Err(store.reject("Event feed native flight unavailable"));
         }
@@ -200,7 +428,7 @@ pub fn record(
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         return;
     };
-    let _ = owner.access(|store| {
+    let _ = owner.observe(|store| {
         let Some(generation) = observed(owner, store) else {
             return;
         };
@@ -223,10 +451,90 @@ pub fn record(
     });
 }
 
+/// Same owned occurrence stream and receipt boundary as diplomacy events.
+/// Only the native writer's reached definition and bound graph are acquired.
+pub fn record_script(
+    observe: impl FnOnce(
+        &native::provenance::World<'_, engine_native::memory::LiveMemory>,
+        &engine_native::memory::LiveMemory,
+        usize,
+    ) -> Result<Option<ScriptFact>, &'static str>,
+) {
+    let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
+        return;
+    };
+    let _ = owner.observe(|store| {
+        let Some(generation) = observed(owner, store) else {
+            return;
+        };
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let fact = native::provenance::World::new(&memory, owner.base).and_then(|world| {
+            let hour = world.hour()?;
+            Ok(observe(&world, &memory, owner.base)?.map(|fact| (hour, fact)))
+        });
+        match fact {
+            Ok(Some((hour, fact))) => {
+                let _ = store.script_known(&memory, owner.base, generation, hour, fact);
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                store.reject(reason);
+            }
+        }
+        DEMAND.fetch_max(store.capacity_demand(), Ordering::Relaxed);
+        SCRIPT_TOKEN_DEMAND.fetch_max(store.token_demand, Ordering::Relaxed);
+        SCRIPT_SCOPE_DEMAND.fetch_max(store.scope_demand, Ordering::Relaxed);
+        SCRIPT_GRAPH_DEMAND.fetch_max(store.graph_demand, Ordering::Relaxed);
+    });
+}
+
+pub fn script_instance(frame: usize, instance: u32) {
+    if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
+        let _ = owner.observe(|store| {
+            if let Some(generation) = observed(owner, store) {
+                store.script_instance(generation, frame, instance);
+            }
+        });
+    }
+}
+
+pub fn registered_script_instance(state: usize, event: usize, scope: usize, instance: u32) {
+    if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
+        let _ = owner.observe(|store| {
+            let Some(generation) = observed(owner, store) else {
+                return;
+            };
+            store.registered_instance(generation, scope, event, instance);
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let result = (|| {
+                let world = native::provenance::World::new(&memory, owner.base)?;
+                if world.state_pointer() != state {
+                    return Err("pending event registration world differs");
+                }
+                let row =
+                    engine_events::script_event_registry::pending_last(&memory, state, instance)?;
+                if row.definition != event {
+                    return Err("pending event registered definition differs");
+                }
+                let fact =
+                    crate::event_feed_history::registry::pending(&world, &memory, owner.base, row)?;
+                store.script_known(&memory, owner.base, generation, world.hour()?, fact)
+            })();
+            if let Err(reason) = result {
+                store.reject(reason);
+            }
+            DEMAND.fetch_max(store.capacity_demand(), Ordering::Relaxed);
+            SCRIPT_TOKEN_DEMAND.fetch_max(store.token_demand, Ordering::Relaxed);
+            SCRIPT_SCOPE_DEMAND.fetch_max(store.scope_demand, Ordering::Relaxed);
+            SCRIPT_GRAPH_DEMAND.fetch_max(store.graph_demand, Ordering::Relaxed);
+        });
+    }
+}
+
 /// Refuse a provenance event whose operands did not read.
 pub fn refuse(reason: &'static str) {
     if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
-        let _ = owner.access(|store| store.reject(reason));
+        let _ = owner.observe(|store| store.reject(reason));
     }
 }
 
@@ -327,6 +635,7 @@ unsafe extern "system-unwind" {
 struct Held {
     /// The two CALL hooks, then the provenance entry detours.
     hooks: Vec<Hook>,
+    taps: Vec<Tap>,
     owner: Arc<Owner>,
     restored: bool,
 }
@@ -356,6 +665,18 @@ impl Hooks {
         store
             .prepare_capacity(capacity)
             .map_err(|_| "Event feed staging allocation failed")?;
+        store
+            .prepare_scripts(capacity.saturating_mul(32), capacity, slots.max(1))
+            .map_err(|_| "Event feed script staging allocation failed")?;
+        store
+            .prepare_delayed(capacity)
+            .map_err(|_| "Event feed delayed-event certificate allocation failed")?;
+        store
+            .prepare_decisions(capacity)
+            .map_err(|_| "Event feed decision certificate allocation failed")?;
+        for (capacity, value) in SCRIPT_CAPACITY.iter().zip(store.script_capacity()) {
+            capacity.store(value, Ordering::Release);
+        }
         let owner = Owner::new(base, store);
         let range = unsafe { &event_stub_start } as *const u8 as usize
             ..unsafe { &event_stub_end } as *const u8 as usize;
@@ -379,6 +700,8 @@ impl Hooks {
             make(native::ANNEX, event_annex_entry as *const () as usize)?,
         ];
         hooks.extend(unsafe { crate::war_provenance::hooks(memory, base) }?);
+        let (script_hooks, taps) = unsafe { crate::script_event_observer::hooks(memory, base) }?;
+        hooks.extend(script_hooks);
         if FLIGHT.load(Ordering::SeqCst) != 0
             || FAULT.load(Ordering::SeqCst) != 0
             || !SHARED.load(Ordering::SeqCst).is_null()
@@ -392,6 +715,7 @@ impl Hooks {
         Ok(Self {
             held: Some(ManuallyDrop::new(Held {
                 hooks,
+                taps,
                 owner,
                 restored: true,
             })),
@@ -402,11 +726,26 @@ impl Hooks {
         let Some(held) = self.held.as_mut() else {
             return Ok(true);
         };
+        // A delayed pass holds a cursor anchor until its original returns.
+        // Keep its observations installed until that native flight completes.
+        if !enabled && active() != 0 {
+            return Ok(false);
+        }
         if !enabled {
             held.owner.revoke_world();
         }
-        let ready = Hook::set_family_enabled_attach(&mut held.hooks, enabled)
-            .map_err(|_| "Event feed CALL state change failed")?;
+        let Held { hooks, taps, .. } = &mut **held;
+        let mut family: Vec<_> = hooks
+            .iter_mut()
+            .chain(taps.iter_mut().map(Tap::publication_hook))
+            .collect();
+        let ready = Hook::set_enabled_batch_attach(&mut family, enabled).map_err(|cause| {
+            let label = family
+                .iter()
+                .find_map(|hook| hook.snapshot_failure())
+                .unwrap_or("Event feed / action, registry, decision store and pass family");
+            crate::script_event_observer::terminal_hook_failure(label, "publication", cause)
+        })?;
         if ready {
             held.restored = !enabled;
             held.owner.armed.store(enabled, Ordering::SeqCst);
@@ -418,7 +757,12 @@ impl Hooks {
         self.held
             .as_ref()
             .into_iter()
-            .flat_map(|held| held.hooks.iter().flat_map(Hook::executable_ranges))
+            .flat_map(|held| {
+                held.hooks
+                    .iter()
+                    .flat_map(Hook::executable_ranges)
+                    .chain(held.taps.iter().flat_map(Tap::executable_ranges))
+            })
             .chain(std::iter::once(
                 unsafe { &event_stub_start } as *const u8 as usize
                     ..unsafe { &event_stub_end } as *const u8 as usize,
@@ -482,7 +826,10 @@ fn take_receipts(store: &mut Store) {
 /// Native flights of the CALL hooks (bit 63 retains the owner) and the
 /// provenance entry detours in flight.
 pub fn active() -> usize {
-    FLIGHT.load(Ordering::SeqCst) + crate::war_provenance::active()
+    FLIGHT
+        .load(Ordering::SeqCst)
+        .saturating_add(crate::war_provenance::active())
+        .saturating_add(crate::script_event_observer::active())
 }
 
 /// A family whose patch forwards provenance to the event feed. While one is
@@ -496,11 +843,16 @@ pub enum Forwarder {
     /// [`crate::territory_changes`]: set owner, every state
     /// transfer.
     Territory,
+    /// The script-variable family owns and forwards delayed event passes.
+    DelayedPass,
 }
 
-static FORWARDERS: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+static FORWARDERS: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
 
 pub fn forwarder(forwarder: Forwarder, enabled: bool) {
+    if matches!(forwarder, Forwarder::Politics) && !enabled {
+        decisions::political_balance_lost();
+    }
     FORWARDERS[forwarder as usize].store(enabled, Ordering::SeqCst);
 }
 
@@ -540,8 +892,9 @@ pub fn capture_growing(output: &mut Snapshot, hour: i32, partial: bool) {
         return;
     };
     let result = owner
-        .access(|store| {
+        .observe(|store| {
             take_receipts(store);
+            owner.take_missed(store);
             if active() == 0
                 && let (Ok(mut spare), Ok(mut retired)) = (SPARE.try_lock(), RETIRED.try_lock())
                 && retired.is_none()
@@ -549,6 +902,9 @@ pub fn capture_growing(output: &mut Snapshot, hour: i32, partial: bool) {
             {
                 store.install_capacity(&mut offered);
                 CAPACITY.store(store.capacity(), Ordering::Release);
+                for (capacity, value) in SCRIPT_CAPACITY.iter().zip(store.script_capacity()) {
+                    capacity.store(value, Ordering::Release);
+                }
                 *retired = Some(offered);
             }
             let failure = if FAULT.load(Ordering::SeqCst) != 0 || active() & RETAIN != 0 {
@@ -564,10 +920,24 @@ pub fn capture_growing(output: &mut Snapshot, hour: i32, partial: bool) {
                 coverage: coverage(partial),
                 failure,
             };
-            let result = store.snapshot_growing(output, boundary);
+            let result = if failure.is_none() {
+                let memory = unsafe { engine_native::memory::LiveMemory::new() };
+                store.snapshot_with_registry(output, boundary, &memory, owner.base)
+            } else {
+                store.snapshot_growing(output, boundary)
+            };
             if let Err(reason) = result {
                 store.invalidate(reason);
             }
+            if owner.take_missed(store) {
+                // A concurrent writer may have overlapped the actual census
+                // or publication. Keep its samples, but refuse this interval.
+                output.boundary.coverage =
+                    replay_data::event_feed_rows::EventFeedCoverage::Unavailable;
+                output.boundary.failure.get_or_insert(OBSERVATION_OVERLAP);
+            }
+            script_capacities(store);
+            script_demands(store);
             owner.armed.store(true, Ordering::SeqCst);
             result
         })
@@ -617,18 +987,41 @@ fn presize_storage(slots: usize) {
             .max(1024)
             .max(DEMAND.load(Ordering::Relaxed)),
     );
-    if capacity <= CAPACITY.load(Ordering::Acquire) {
+    let script_demand = [
+        capacity
+            .saturating_mul(32)
+            .max(SCRIPT_TOKEN_DEMAND.load(Ordering::Relaxed)),
+        capacity.max(SCRIPT_SCOPE_DEMAND.load(Ordering::Relaxed)),
+        slots
+            .max(1)
+            .max(SCRIPT_GRAPH_DEMAND.load(Ordering::Relaxed)),
+    ];
+    if capacity <= CAPACITY.load(Ordering::Acquire)
+        && script_demand
+            .iter()
+            .zip(&SCRIPT_CAPACITY)
+            .all(|(demand, capacity)| *demand <= capacity.load(Ordering::Acquire))
+    {
         return;
     }
     if let Ok(mut spare) = SPARE.lock() {
-        if spare
-            .as_ref()
-            .is_some_and(|store| store.capacity() >= capacity)
-        {
+        if spare.as_ref().is_some_and(|store| {
+            store.capacity() >= capacity
+                && store
+                    .script_capacity()
+                    .into_iter()
+                    .zip(script_demand)
+                    .all(|(have, need)| have >= need)
+        }) {
             return;
         }
         if let Ok(mut store) = Store::new(None)
             && store.prepare_capacity(capacity).is_ok()
+            && store
+                .prepare_scripts(script_demand[0], script_demand[1], script_demand[2])
+                .is_ok()
+            && store.prepare_delayed(capacity).is_ok()
+            && store.prepare_decisions(capacity).is_ok()
         {
             *spare = Some(store);
         }
@@ -651,6 +1044,109 @@ mod tests {
         CONTEXT, RtlLookupFunctionEntry, RtlVirtualUnwind,
     };
 
+    struct RestoreTestGlobals {
+        shared: *mut Owner,
+        target: usize,
+        faults: u32,
+        flights: usize,
+    }
+    impl RestoreTestGlobals {
+        fn new() -> Self {
+            Self {
+                shared: SHARED.load(Ordering::SeqCst),
+                target: TARGETS[0].load(Ordering::SeqCst),
+                faults: FAULT.load(Ordering::SeqCst),
+                flights: FLIGHT.load(Ordering::SeqCst),
+            }
+        }
+    }
+    impl Drop for RestoreTestGlobals {
+        fn drop(&mut self) {
+            // Test fixture isolation only. Production never resets a terminal
+            // fault or a retained flight, including after an observation gap.
+            SHARED.store(self.shared, Ordering::SeqCst);
+            TARGETS[0].store(self.target, Ordering::SeqCst);
+            FAULT.store(self.faults, Ordering::SeqCst);
+            FLIGHT.store(self.flights, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn declined_call_observation_acquires_no_ticket_and_original_releases_its_flight() {
+        static ORIGINAL_CALLS: AtomicUsize = AtomicUsize::new(0);
+        extern "system" fn original() {
+            ORIGINAL_CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+        let _restore = RestoreTestGlobals::new();
+        assert_eq!(FAULT.load(Ordering::SeqCst), 0);
+        assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
+        assert!(SHARED.load(Ordering::SeqCst).is_null());
+        let owner = Owner::new(0, Store::new(None).unwrap());
+        owner.armed.store(true, Ordering::SeqCst);
+        SHARED.store(Arc::as_ptr(&owner).cast_mut(), Ordering::SeqCst);
+        TARGETS[0].store(original as *const () as usize, Ordering::SeqCst);
+        let before = ORIGINAL_CALLS.load(Ordering::SeqCst);
+        owner.observe(|_| unsafe { event_war_entry() }).unwrap();
+        assert_eq!(ORIGINAL_CALLS.load(Ordering::SeqCst), before + 1);
+        assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
+        assert_eq!(FAULT.load(Ordering::SeqCst), 0);
+        assert_eq!(owner.missed.load(Ordering::SeqCst), 1);
+        let mut snapshot = Snapshot::new(0);
+        owner
+            .observe(|store| {
+                assert_eq!(store.outstanding(), 0);
+                store.snapshot_growing(
+                    &mut snapshot,
+                    crate::event_feed_history::OwnerBoundary {
+                        generation: 7,
+                        read_hour: 1,
+                        coverage: replay_data::event_feed_rows::EventFeedCoverage::Complete,
+                        failure: None,
+                    },
+                )
+            })
+            .unwrap()
+            .unwrap();
+        let row = snapshot.prepare_pack().unwrap();
+        assert_eq!(row.row().counts.unwrap().rejected, 1);
+        assert_eq!(row.row().counts.unwrap().acquired, 0);
+        assert!(row.row().events.is_empty());
+        assert_eq!(
+            row.row().failure.as_deref(),
+            Some(OBSERVATION_OVERLAP.as_bytes())
+        );
+        assert_eq!(
+            row.row().coverage,
+            replay_data::event_feed_rows::EventFeedCoverage::Unavailable
+        );
+    }
+
+    #[test]
+    fn observation_gap_does_not_clear_concurrent_terminal_ownership_retention() {
+        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+        let _restore = RestoreTestGlobals::new();
+        assert_eq!(FAULT.load(Ordering::SeqCst), 0);
+        assert_eq!(FLIGHT.load(Ordering::SeqCst), 0);
+        let owner = Owner::new(0, Store::new(None).unwrap());
+        owner
+            .observe(|_| {
+                assert_eq!(
+                    owner.access(|_| panic!("overlap must never enter settlement")),
+                    Err::<(), _>("Event feed store overlap; owner retained")
+                );
+                assert_eq!(
+                    owner.observe(|_| panic!("overlap must acquire no ticket")),
+                    Err::<(), _>(OBSERVATION_OVERLAP)
+                );
+            })
+            .unwrap();
+        owner.observe(|_| ()).unwrap();
+        assert_eq!(owner.missed.load(Ordering::SeqCst), 0);
+        assert_eq!(FAULT.load(Ordering::SeqCst), OWNERSHIP_FAULT);
+        assert_eq!(FLIGHT.load(Ordering::SeqCst), RETAIN);
+    }
+
     #[test]
     fn escaped_native_flight_retains_the_event_feed_owner_without_a_ticket() {
         extern "system" fn original() {}
@@ -662,6 +1158,7 @@ mod tests {
         let (first, first_bytes) = code.stub(0, target);
         let (second, second_bytes) = code.stub(64, target);
         let held = Held {
+            taps: Vec::new(),
             hooks: unsafe {
                 vec![
                     Hook::new(first, target, first_bytes).unwrap(),
@@ -687,15 +1184,21 @@ mod tests {
         let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
         forwarder(Forwarder::Politics, true);
         forwarder(Forwarder::Territory, true);
+        forwarder(Forwarder::DelayedPass, true);
         assert_eq!(coverage(false), EventFeedCoverage::Complete);
         assert_eq!(coverage(true), EventFeedCoverage::Partial);
-        for disabled in [Forwarder::Politics, Forwarder::Territory] {
+        for disabled in [
+            Forwarder::Politics,
+            Forwarder::Territory,
+            Forwarder::DelayedPass,
+        ] {
             forwarder(disabled, false);
             assert_eq!(coverage(false), EventFeedCoverage::Partial);
             forwarder(disabled, true);
         }
         forwarder(Forwarder::Politics, false);
         forwarder(Forwarder::Territory, false);
+        forwarder(Forwarder::DelayedPass, false);
     }
 
     #[test]

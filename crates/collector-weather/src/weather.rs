@@ -98,6 +98,8 @@ pub struct Captured {
     /// hourly weather update ran `day/night update`
     /// this hour and every clock from slot 1 is the hour's derivation.
     clocks_updated: bool,
+    daylight_direction: Option<[i64; 3]>,
+    daylight_feather: Option<[i64; 2]>,
     /// Each province record's temperature words at the pass's anchor, by slot, and the pass
     /// ([`temperature::Tracker`]); `None` when the hour's temperature inputs were not read whole.
     temperature_anchor: std::sync::Arc<Vec<replay_data::temperature::State>>,
@@ -124,6 +126,8 @@ impl Captured {
             provinces: CaptureRows::new(capacity.rows[1]),
             display: DisplayCapture::new(capacity.display_bytes),
             clocks_updated: false,
+            daylight_direction: None,
+            daylight_feather: None,
             temperature_anchor: Default::default(),
             temperature_pass: None,
             temperature_read: Vec::new(),
@@ -138,6 +142,8 @@ impl Captured {
         self.provinces.reset();
         self.display.clear();
         self.clocks_updated = false;
+        self.daylight_direction = None;
+        self.daylight_feather = None;
         self.temperature_pass = None;
         self.combat.clear();
         self.province_modifiers.clear();
@@ -208,6 +214,12 @@ impl Captured {
             let _reads = read_accounting::table(TABLES[1]);
             let begin = qpc();
             self.clocks_updated = reader.suspend_flags() == Ok([0, 0]);
+            self.daylight_direction = (!self.clocks_updated)
+                .then(|| reader.daylight_direction().ok())
+                .flatten();
+            self.daylight_feather = (!self.clocks_updated)
+                .then(|| reader.daylight_feather().ok())
+                .flatten();
             self.display.capture(memory, reader.display_grid());
             ticks[1] = ticks[1].saturating_add(elapsed(begin));
         }
@@ -250,13 +262,54 @@ impl Captured {
                     // No region operand is witnessed; current writers leave it empty.
                     attack: rows::Recorded::Value(rows::Witnessed(None)),
                     combat: rows::Recorded::Value(self.combat.get(index).copied().flatten().map(
-                        |[speed, attack, breakthrough, attack_speed]| rows::RegionCombatWeather {
-                            army_attack_factor: attack,
-                            breakthrough_factor: breakthrough,
-                            army_speed_factor: speed,
-                            army_attack_speed_factor: attack_speed,
+                        |[
+                            _detection,
+                            _naval_detection,
+                            speed,
+                            _air_attack,
+                            _air_defence,
+                            attack,
+                            breakthrough,
+                            attack_speed,
+                        ]| {
+                            rows::RegionCombatWeather {
+                                army_attack_factor: attack,
+                                breakthrough_factor: breakthrough,
+                                army_speed_factor: speed,
+                                army_attack_speed_factor: attack_speed,
+                            }
                         },
                     )),
+                    air_detection: rows::Recorded::Value(
+                        self.combat
+                            .get(index)
+                            .copied()
+                            .flatten()
+                            .map(|terms| terms[0]),
+                    ),
+                    map_modifiers_known: (self.combat.get(index).is_some_and(Option::is_some))
+                        .into(),
+                    naval_detection: (self
+                        .combat
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .and_then(|terms| terms[1]))
+                    .into(),
+                    air_attack: (self
+                        .combat
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .and_then(|terms| terms[3]))
+                    .into(),
+                    air_defence: (self
+                        .combat
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .and_then(|terms| terms[4]))
+                    .into(),
                     max_snow: r.max_snow,
                     light_rain: r.light_rain,
                     heavy_rain: r.heavy_rain,
@@ -277,6 +330,15 @@ impl Captured {
                     }
                 });
                 rows::WeatherProvinceRow {
+                    daylight: rows::Recorded::Value(if r.id == 0 {
+                        Some(rows::WeatherDaylight {
+                            updated: self.clocks_updated,
+                            held: self.daylight_direction,
+                            held_feather: self.daylight_feather,
+                        })
+                    } else {
+                        None
+                    }),
                     modifiers: rows::Recorded::Value(modifiers),
                     id: r.id,
                     snow: r.snow,
@@ -713,7 +775,25 @@ fn prepare_weather_pass(
     // The two suspension gates decide whether the clocks were updated this
     // hour; a failed read fails no table and leaves every clock held.
     if let Some(address) = pointer.checked_add(cweather_manager::SUSPEND_FLAGS) {
-        let _ = log.take(memory, address, 2, 0);
+        let updated = log
+            .take(memory, address, 2, 0)
+            .is_some_and(|start| log.bytes[start..start + 2] == [0, 0]);
+        // The ordinary native update supplies this direction by date. Only
+        // suspended/unread gates need a bounded held-state observation.
+        if !updated
+            && job.manager_authenticated
+            && let Some(direction) = pointer.checked_add(cweather_manager::DAYLIGHT_DIRECTION)
+        {
+            let _ = log.take(memory, direction, 24, 0);
+            for offset in [
+                engine_native::air_fuel_defines::CONTEXT_SUBTRACT_RVA,
+                engine_native::air_fuel_defines::CONTEXT_SCALE_RVA,
+            ] {
+                if let Some(address) = base.checked_add(offset) {
+                    let _ = log.take(memory, address, 8, 0);
+                }
+            }
+        }
     }
     // The temperature pass's cursor, window and seed; a failed read fails no
     // table and records no pass for the hour.
@@ -835,13 +915,16 @@ fn copy_weather_dense(
         .faulted(sweather_per_province::CLOCK_FIELDS.len());
 }
 
-/// One region record's weather modifier entries, in [`COMBAT_KEYS`] order: army
-/// speed, army attack, breakthrough and army attack speed.
-pub type RegionModifiers = [Option<i64>; 4];
+/// One region record's raw weather modifier entries, in [`COMBAT_KEYS`] order.
+pub type RegionModifiers = [Option<i64>; 8];
 
 /// The keys of [`WeatherJob::combat`], ascending.
-const COMBAT_KEYS: [u32; 4] = [
+const COMBAT_KEYS: [u32; 8] = [
+    1,
+    engine_executable::modifier_keys::NAVAL_DETECTION,
     engine_executable::modifier_keys::ARMY_SPEED_FACTOR,
+    engine_executable::modifier_keys::AIR_ATTACK_FACTOR,
+    engine_executable::modifier_keys::AIR_DEFENCE_FACTOR,
     engine_executable::modifier_keys::ARMY_ATTACK_FACTOR,
     engine_executable::modifier_keys::BREAKTHROUGH_FACTOR,
     engine_executable::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
@@ -1054,6 +1137,12 @@ impl Captured {
             }
         };
         self.clocks_updated = reader.suspend_flags() == Ok([0, 0]);
+        self.daylight_direction = (!self.clocks_updated)
+            .then(|| reader.daylight_direction().ok())
+            .flatten();
+        self.daylight_feather = (!self.clocks_updated)
+            .then(|| reader.daylight_feather().ok())
+            .flatten();
         self.regions.outcome = bounded(self.regions.outcome, self.regions.rows.len());
         decode_ticks[1] += elapsed(started);
         reader

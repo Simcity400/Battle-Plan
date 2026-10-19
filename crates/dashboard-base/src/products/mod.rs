@@ -12,10 +12,12 @@ pub mod country_factories;
 pub mod country_groups;
 pub mod country_history;
 pub mod country_measure;
+pub mod country_people;
 pub mod country_styles;
 pub mod equipment;
 pub mod equipment_icon;
 pub mod equipment_produced;
+pub mod faction_details;
 pub mod faction_totals;
 pub mod fixed5_runs;
 pub mod force_census;
@@ -35,9 +37,11 @@ crate::reply_warnings!(
     country_factories::CountryFactoriesReply,
     country_groups::CountryGroupReply,
     country_measure::MeasureReply,
+    country_people::PeopleReply,
     country_styles::CountryStyleReply,
     equipment_produced::EquipmentProducedReply,
     faction_totals::FactionTotalsReply,
+    faction_details::FactionDetailReply,
     idea_history::IdeaHistoryReply,
     place_names::PlaceNamesReply,
     production_lines::ProductionLinesReply,

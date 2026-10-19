@@ -17,12 +17,23 @@ use super::{
     Decimal, Item, block, boolean, field, integer, invalid, object_id, scalar, typed_handle,
 };
 
+mod patrol_inputs;
+mod raiding_grid;
 mod spotting_cache;
+pub(crate) use patrol_inputs::patrol_inputs;
+pub use patrol_inputs::{PatrolMissionFields, PatrolMissionSave};
+pub(crate) use raiding_grid::raiding_grid;
+pub use raiding_grid::{RaidingGridFields, RaidingGridSave};
 pub use spotting_cache::MissionSpottingCaches;
 pub(crate) use spotting_cache::spotting_caches;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
+    /// Bound through recorded lexical keys when regional mission members demand it.
+    pub patrol_inputs: Option<PatrolMissionSave>,
+    pub spotting_caches: Option<MissionSpottingCaches>,
+    /// Present when the oracle bound the retained-grid fields through recorded lexical tokens.
+    pub raiding_grid: Option<RaidingGridSave>,
     pub task_forces: BTreeMap<u64, TaskForce>,
     /// Saved fleet leader references by fleet handle; `None` when the field was omitted.
     pub fleet_leaders: BTreeMap<u64, Option<u64>>,

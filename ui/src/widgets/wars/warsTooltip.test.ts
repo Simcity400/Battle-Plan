@@ -15,6 +15,22 @@ const war: WarTimeline = { id: 'opaque', firstHour: 10, lastHour: 20, startedBy:
   observations: [observation], casualties: [], participants: [], capitulations: [] };
 const input = { war, observation, losses: null, hour: 15, until: 40, branchLast: 40, unobserved: [], capitulationsUnobserved: [], country, day };
 
+test('participant contribution hovers preserve exact fixed-point credit and negative lend-lease', () => {
+  const content = warTooltip({ ...input,
+    participant: { tag: 'other', run: { tag: 'other', side: 'opponent', firstHour: 10, lastHour: 20, joinedBy: false, leftBy: false } },
+    contributions: { viewpointSide: ['opaque-player'], opposingSide: ['other'], reason: null, participants: [{
+      tag: 'other', side: 'opponent', equipmentDamage: '9007199254740993', occupation: '1', airDamage: '2', strategicBombing: '3',
+      shipDamage: '4', convoyDamage: '5', casualties: '6', unknownCasualties: '7', lendLeaseSent: '8', lendLeaseReceived: '-12345',
+      score: '54321', participation: '32768',
+    }] },
+  });
+  assert.equal(content.rows.find(row => row.label === 'Participation')?.value, '32.768%');
+  assert.equal(content.rows.find(row => row.label === 'Participation score')?.value, '0.54321');
+  assert.equal(content.rows.find(row => row.label === 'Lend-lease received')?.value, '\u22120.12345');
+  assert.equal(content.rows.find(row => row.label === 'Occupation')?.value, '0.00001');
+  assert.equal(content.rows.find(row => row.label === 'Equipment damage')?.value, '90,071,992,547.40993');
+});
+
 test('participant hovers show the war once and omit an absent optional capitulation row', () => {
   const content = warTooltip({ ...input, participant: { tag: 'other', run: {
     tag: 'other', side: 'defender', firstHour: 12, lastHour: 19, joinedBy: true, leftBy: true }, capitulations: [] } });

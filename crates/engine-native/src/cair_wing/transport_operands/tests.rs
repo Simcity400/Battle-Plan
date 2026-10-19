@@ -106,7 +106,7 @@ fn clone_index_and_complete_live_handle_are_authenticated_once_per_pass() {
     let mut first = super::super::Row::default();
     let mut repeated = {
         let mut pass = Pass::new(0, 3, &mut scratch);
-        pass.capture(&memory, WING, POOL, &mut first);
+        assert_eq!(pass.capture(&memory, WING, POOL, &mut first), Some(RAID));
         assert_eq!(first.pool_subunit, Some(1));
         assert_eq!(
             first.raid_reference,
@@ -117,7 +117,7 @@ fn clone_index_and_complete_live_handle_are_authenticated_once_per_pass() {
         );
         memory.reads.borrow_mut().clear();
         let mut repeated = super::super::Row::default();
-        pass.capture(&memory, WING, POOL, &mut repeated);
+        assert_eq!(pass.capture(&memory, WING, POOL, &mut repeated), Some(RAID));
         assert_eq!(repeated, first);
         assert!(memory.reads.borrow().is_empty());
         pass.capture(&memory, OTHER_WING, POOL, &mut repeated);

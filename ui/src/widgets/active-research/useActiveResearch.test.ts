@@ -10,11 +10,11 @@ const data = { history: { coverage: [{ firstHour: 100, lastHour: 105 }], slots: 
   artwork: [], folders: [], technologyFolders: [], warnings: [] };
 
 test('active research consumes the exact hour state while attribution is pending', () => {
-  const first = activeResearchReply({ states: [{ tag: 'MOD', hour: 105, data, preparing: ['assignment', 'breakdown', 'remainingDays'] }] }, 'MOD', 105);
+  const first = activeResearchReply({ states: [{ tag: 'MOD', hour: 105, data, grants: { nextId: 0, grants: [], unavailable: null }, preparing: ['assignment', 'breakdown', 'remainingDays'] }] }, 'MOD', 105);
   assert.equal(first.historyPreparing, true);
   assert.equal(first.countdownPreparing, true);
   assert.deepEqual(first.data.history, data.history);
-  const exact = activeResearchReply({ states: [{ tag: 'MOD', hour: 105, data, preparing: [] }] }, 'MOD', 105);
+  const exact = activeResearchReply({ states: [{ tag: 'MOD', hour: 105, data, grants: { nextId: 0, grants: [], unavailable: null }, preparing: [] }] }, 'MOD', 105);
   assert.equal(exact.historyPreparing, false);
   assert.deepEqual(first.data, exact.data, 'exact slot values do not change with preparation');
   assert.throws(() => activeResearchReply({ states: [{ tag: 'MOD', hour: 106, data, preparing: [] }] }, 'MOD', 105), /Invalid active research/);

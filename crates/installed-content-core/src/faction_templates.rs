@@ -59,7 +59,15 @@ enum Node {
     Mtth,
 }
 
-fn parse(bytes: &[u8], names: &KeyNames) -> native::Read {
+pub(crate) fn parse(bytes: &[u8], names: &KeyNames) -> native::Read {
+    parse_top(bytes, names, Node::File)
+}
+
+pub(crate) fn parse_goal_file(bytes: &[u8], names: &KeyNames) -> native::Read {
+    parse_top(bytes, names, Node::UniformGoal)
+}
+
+fn parse_top(bytes: &[u8], names: &KeyNames, top: Node) -> native::Read {
     let registry = |key: &[u8]| modifiers::registered(key, Some(names));
     let mut undecided = Vec::new();
     let mut triggers = combat_tactics::Shaper::new(Some(names));
@@ -67,7 +75,7 @@ fn parse(bytes: &[u8], names: &KeyNames) -> native::Read {
     native::read(
         bytes,
         native::Mode::KeepMark,
-        native::Top::File(Node::File),
+        native::Top::File(top),
         Some(names),
         &mut |node, field| match node {
             Node::File => Shape::Object(Node::Template),

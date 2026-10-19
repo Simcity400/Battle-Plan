@@ -5,3 +5,7 @@ Construction capture: the construction rest's owned raw copy and decode, state a
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-construction` and `cargo clippy -p collector-construction --all-targets -- -D warnings` for its synthetic checks.
+
+StateResistance is supplied by the host's hourly state worker. The construction rest leaves that slot unavailable and acquires none of its native resistance fields.
+The building observer also forwards its nudge-construction entry/return scope
+to the world-input fog certificate; it remains the sole owner of that patch.

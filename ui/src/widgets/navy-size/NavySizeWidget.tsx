@@ -1,3 +1,4 @@
+import NavyManagement from './NavyManagement';
 import PartsRaceView from '../../charts/race/PartsRaceView';
 import type { PartsRaceViewConfig } from '../../charts/race/PartsRaceView';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -5,6 +6,7 @@ import { OPTIONS } from './definition';
 import { formatHullTick, formatNavyValue, navyChartOptions, navyRequest, validateNavyReply } from './navyData';
 
 const config: PartsRaceViewConfig = {
+  details: NavyManagement,
   product: 'navy-size', title: 'Navy size', subject: 'navies', icon: 'flows',
   options: OPTIONS, request: navyRequest, validate: validateNavyReply,
   measure: options => options.measure === 'strength' ? 'Current hull strength (HP)' : 'Number of ships',

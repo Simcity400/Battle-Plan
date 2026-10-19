@@ -41,10 +41,11 @@ pub const MODIFIER_ACCUMULATOR: usize = 0x10;
 /// The unit-block keys the movement speed and the out-of-supply penalty read for a
 /// commander, ascending: army speed, armour speed, out of supply, river crossing and
 /// special-forces out of supply.
-pub const MOVEMENT_MODIFIER_KEYS: [u32; 5] = [
+pub const MOVEMENT_MODIFIER_KEYS: [u32; 6] = [
     crate::modifier_keys::ARMY_SPEED_FACTOR,
     crate::modifier_keys::ARMY_ARMOR_SPEED_FACTOR,
     crate::modifier_keys::OUT_OF_SUPPLY_FACTOR,
+    crate::modifier_keys::COMBAT_WIDTH_FACTOR,
     crate::modifier_keys::RIVER_CROSSING_FACTOR,
     crate::modifier_keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
 ];

@@ -37,6 +37,13 @@ pub const TIMED_IDEA_STRIDE: usize = 0x18;
 pub const TIMED_IDEA_VTABLE_RVA: usize = 0x0293_9718;
 /// Last-election raw hour, i32, written by the election and daily update paths.
 pub const LAST_ELECTION: usize = 0xa0;
+/// Cached date needed only when an initializer last date is ambiguous.
+pub const NEXT_ELECTION_CACHE: usize = 0xb8;
+/// Clearing uses the calendar's preceding-year initializer.
+pub const RESET_LAST_ELECTION: i32 = 43_800_000 - 365 * 24;
+pub fn needs_election_cache(last: i32) -> bool {
+    matches!(last, crate::cgame_date::NULL_RAW_HOUR | RESET_LAST_ELECTION)
+}
 /// Ruling-party pointer resolved from serialized party IDs.
 pub const RULING_PARTY: usize = 0xd0;
 /// Political status's signed election frequency in months; politics assignment
@@ -51,6 +58,8 @@ const RULING_SPAN: usize = ELECTIONS_ALLOWED + 1 - RULING_PARTY;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub last_election: i32,
+    pub election_interval: i32,
+    pub next_election_cache: Option<i32>,
     pub capital: i32,
     /// Alternate-capital raw reference preferred unless zero.
     pub original_capital: i32,
@@ -320,6 +329,11 @@ impl<'a, M: Memory> Reader<'a, M> {
     }
 
     pub fn row(&self) -> Result<Row, &'static str> {
+        self.row_with_election_cache(true)
+    }
+
+    /// Production enables the exceptional cache only under its structure certificate.
+    pub fn row_with_election_cache(&self, capture_cache: bool) -> Result<Row, &'static str> {
         let last_election =
             read::<i32>(self.memory, self.at(LAST_ELECTION)?).ok_or("last election unreadable")?;
         let capital_address = self
@@ -353,8 +367,18 @@ impl<'a, M: Memory> Reader<'a, M> {
         } else {
             Some(cpolitical_party::identity(self.memory, self.base, pointer)?.0)
         };
+        let next_election_cache =
+            (capture_cache && has_elections && needs_election_cache(last_election))
+                .then(|| {
+                    self.at(NEXT_ELECTION_CACHE)
+                        .ok()
+                        .and_then(|at| read(self.memory, at))
+                })
+                .flatten();
         Ok(Row {
             last_election,
+            next_election_cache,
+            election_interval: frequency,
             capital,
             original_capital,
             ruling_party,

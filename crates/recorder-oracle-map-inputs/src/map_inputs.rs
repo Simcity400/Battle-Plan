@@ -235,6 +235,21 @@ mod original_tag_tests {
     use replay_data::{rows::Recorded, rows::ReservedCountryNamingRow};
 
     #[test]
+    fn ship_critical_presence_is_compared_independently_and_never_waives_unknown() {
+        for (value, expected, differences) in [
+            (Some(0), false, 0),
+            (Some(1), true, 0),
+            (Some(0), true, 1),
+            (None, false, 1),
+            (Some(2), true, 1),
+        ] {
+            let mut report = Report::default();
+            ship_criticals(value, expected, "ShipModels 7", &mut report);
+            assert_eq!(report.differences.len(), differences);
+        }
+    }
+
+    #[test]
     fn reserved_original_tag_oracle_reports_unsaved_and_independent_refusal() {
         let (mut frame, _, _, _) = super::super::fixtures::fixture();
         for tag in [
@@ -749,6 +764,16 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
             continue;
         };
         remaining.remove(&row.ship);
+        ship_criticals(
+            row.has_criticals
+                .require("ShipModels.has_criticals")
+                .ok()
+                .copied()
+                .flatten(),
+            saved.has_criticals,
+            &label,
+            report,
+        );
         if let Some(counter) = &row.counter {
             eq(
                 report,
@@ -780,9 +805,26 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
         .collect();
     eq(report, "ShipModels Ships key census", seen, parents);
     report.compared("ShipModels", rows.len());
+    report.limitation("the ship save writer does not serialize the retained module-predicate cache or its engagement byte; rebuilding the predicate from saved designs would replace a valid stale value. The Air capacity subtype requires the matched native grid comparison", "ShipModels.air_capacity_kind");
     report.limitation("selected variant identity is independently derived from the saved equipment pool; saved registry definition keys and variant names are compared by VariantDefinitions on its refresh hours, not inferred from hull sprite bytes", "ShipModels.variant names");
     report.limitation("compared: the ship census against the save and the Ships table, each ship's roster ordinal and, where the saved pool identifies it, its selected variant. Ship hull/fallback sprite keys, model number, the full formation-selection flags, positive-equipment flag union, definition-valid byte, carrier air-base reference, strength maximum, anti-air base and derived organisation maximum have no counterpart in the ship save writer; they cannot be independently checked against this text save", "ShipModels hull_sprite, fallback_sprite, model_number, formation_flags, counter operands");
     Ok(())
+}
+
+fn ship_criticals(observed: Option<u32>, expected: bool, label: &str, report: &mut Report) {
+    match observed {
+        Some(value) if value <= 1 => eq(
+            report,
+            &format!("{label}.has_criticals"),
+            value != 0,
+            expected,
+        ),
+        _ => report.difference(
+            format!("{label}.has_criticals"),
+            "capture refused",
+            "critical-damage wrapper presence",
+        ),
+    }
 }
 
 fn ship_tooltip_suffixes(row: &replay_data::rows::ShipModelRow, save: &Save, r: &mut Report) {
@@ -1022,6 +1064,9 @@ mod tests {
         saved.ships.insert(
             ship,
             save::Ship {
+                manpower: None,
+                max_manpower: None,
+                has_criticals: false,
                 roster_ordinal: 0,
                 id: ship,
                 task_force: 9,
@@ -1059,6 +1104,7 @@ mod tests {
             }]));
         *frame.tables[TableId::ShipModels.index()] =
             TableView::Complete(TableRows::ShipModels(vec![ShipModelRow {
+                has_criticals: Some(0).into(),
                 ship,
                 variant: (3_u64 << 32) | 70,
                 counter: Some(Default::default()),

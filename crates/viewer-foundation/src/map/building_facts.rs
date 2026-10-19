@@ -41,6 +41,8 @@ struct SiteSlot {
 
 /// What a state's site of one base kind decides, or why it cannot.
 type Site = Result<[f32; 3], &'static str>;
+/// The first province of each state/kind list, independently of position lookup.
+pub type FirstProvinces = BTreeMap<(u32, usize), Result<u32, &'static str>>;
 
 const UNDECIDED: &str =
     "a site slot of its state names a building declared more than once differently";
@@ -121,6 +123,7 @@ type Reached<'a> = (&'a SiteSlot, bool);
 pub struct SiteSlots {
     /// Each state base's position by the game's finder.
     base: BTreeMap<(u32, usize), Site>,
+    first: FirstProvinces,
     /// Each listed province's icon, by base kind.
     icons: [BTreeMap<u32, SiteIcon>; ICON_KINDS],
     /// Admitted records refused because a differing repeated declaration
@@ -182,6 +185,28 @@ impl SiteSlots {
             })
             .collect();
         for (state, kind) in keys {
+            let mut possible = BTreeSet::new();
+            let mut uncertain = Vec::new();
+            let mut first = Err(UNDECIDED);
+            for slot in slots.iter().filter(|slot| slot.state == state) {
+                match slot.holds[kind] {
+                    Some(false) => (),
+                    None => {
+                        possible.insert(slot.province);
+                        uncertain.push(slot.index);
+                    }
+                    Some(true) => {
+                        if possible.iter().all(|province| *province == slot.province) {
+                            first = Ok(slot.province);
+                        }
+                        break;
+                    }
+                }
+            }
+            if first.is_err() {
+                refused.extend(uncertain);
+            }
+            out.first.insert((state, kind), first);
             let matches = |record: &SiteSlot| {
                 if kind == AIR_BASE {
                     record.own_air_base
@@ -293,6 +318,10 @@ impl SiteSlots {
     /// Every state base position the finder decides, by state and kind.
     pub fn bases(&self) -> impl Iterator<Item = ((u32, usize), Site)> + '_ {
         self.base.iter().map(|(key, site)| (*key, *site))
+    }
+
+    pub fn first_provinces(&self) -> &FirstProvinces {
+        &self.first
     }
 
     /// Every listed province's icon of `kind` (a base kind or [`RADAR`]), by
@@ -727,6 +756,23 @@ mod tests {
         let unadmitted = SiteSlots::build(&positions, &types, |_, _| Some(10), |_, _, _| false);
         assert_eq!(unadmitted.base(1, AIR_BASE), None);
         assert!(unadmitted.site_icons(AIR_BASE).is_empty());
+    }
+
+    #[test]
+    fn first_state_province_keeps_list_order_when_the_position_finder_skips_it() {
+        let types = installed_content_core::buildings::parse(
+            b"buildings={field={air_base=yes spawn_point=hangar}} spawn_points={hangar={max=1}}",
+            &installed_content_core::key_names::KeyNames::default(),
+        )
+        .unwrap();
+        let positions = [at(1, "hangar", 10.0), at(1, "field", 11.0)];
+        let sites = SiteSlots::build(&positions, &types, |x, _| Some(x as u32), |_, _, _| true);
+        assert_eq!(sites.first_provinces().get(&(1, AIR_BASE)), Some(&Ok(10)));
+        assert_eq!(sites.base(1, AIR_BASE), Some(Ok([11.0, 0.0, 0.0])));
+        assert!(!sites.first_provinces().contains_key(&(1, ROCKET_SITE)));
+        let unadmitted =
+            SiteSlots::build(&positions, &types, |x, _| Some(x as u32), |_, _, _| false);
+        assert!(unadmitted.first_provinces().is_empty());
     }
 
     fn at(state: u32, kind: &str, x: f32) -> BuildingPosition {

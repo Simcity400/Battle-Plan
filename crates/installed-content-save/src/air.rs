@@ -24,6 +24,14 @@ pub struct Pack {
     pub daily_statistics: Vec<DailyStatistics>,
     /// Daily-reader faults belong only to the air-event oracle group.
     pub daily_errors: Vec<String>,
+    pub ground_crews: Vec<GroundCrews>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroundCrews {
+    pub country: Vec<u8>,
+    pub region: u32,
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +42,15 @@ pub struct AirBase {
     pub host: Option<u64>,
     pub capacity: i32,
     pub kind: i32,
+    /// Native dense occurrence order, including repeated country containers.
+    pub containers: Vec<AirBaseCountry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AirBaseCountry {
+    pub country: Vec<u8>,
+    pub fuel_demand: Decimal,
+    pub fuel_allocated: Decimal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,7 +105,7 @@ pub struct Wing {
     pub equipment: EquipmentPool,
     /// The wing writer emits this only when its full reference resolves.
     pub ace: Option<u64>,
-    /// The writer saves `raid` only when that full reference resolves.
+    /// The writer saves `raid_instance` only when that full reference resolves.
     /// Omission does not reveal the exact null or stale bits.
     pub raid: Option<u64>,
 }
@@ -210,6 +227,28 @@ fn parse_base(fields: &[Item]) -> io::Result<AirBase> {
         host,
         capacity: number(fields, b"capacity")?,
         kind: number(fields, b"base")?,
+        containers: repeated(fields, b"countries")
+            .map(|value| {
+                let fields = block(value)?;
+                let value = |key, default| -> io::Result<Decimal> {
+                    field(fields, key)?
+                        .map(|value| Decimal::parse(scalar(value)?))
+                        .transpose()
+                        .map(|value| {
+                            value.unwrap_or(Decimal {
+                                raw: default,
+                                fractional_digits: 0,
+                                lexeme: default.to_string().into_bytes(),
+                            })
+                        })
+                };
+                Ok(AirBaseCountry {
+                    country: required_bytes(fields, b"country")?,
+                    fuel_demand: value(b"fuel_consumption", 0)?,
+                    fuel_allocated: value(b"received", 0)?,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?,
     })
 }
 
@@ -278,7 +317,9 @@ fn parse_wing(pool_type: &[u8], fields: &[Item]) -> io::Result<Wing> {
             .ok_or_else(|| invalid("air wing lacks experience"))?,
         equipment: parse_equipment(required_block(fields, b"equipment")?)?,
         ace: field(fields, b"ace")?.map(typed_handle).transpose()?,
-        raid: field(fields, b"raid")?.map(typed_handle).transpose()?,
+        raid: field(fields, b"raid_instance")?
+            .map(typed_handle)
+            .transpose()?,
     })
 }
 
@@ -438,6 +479,14 @@ pub(super) fn parse_with_countries(
             .key
             .as_deref()
             .ok_or_else(|| invalid("air ace country lacks tag"))?;
+        for region in repeated(block(&country.value)?, b"strategic_region_data") {
+            let fields = block(region)?;
+            pack.ground_crews.push(GroundCrews {
+                country: tag.to_vec(),
+                region: number(fields, b"strategic_region")?,
+                enabled: optional_flag(fields, b"more_ground_crews_enabled", false)?,
+            });
+        }
         for (ordinal, ace) in repeated(block(&country.value)?, b"ace").enumerate() {
             pack.aces.push(parse_ace(
                 tag,
@@ -504,8 +553,50 @@ pub(super) fn parse_with_countries(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn regional_ground_crews_follow_country_blocks_and_false_omission() {
+        let doc = installed_content_core::parser::parse(br#"countries={ AAA={ strategic_region_data={ strategic_region=7 more_ground_crews_enabled=yes } strategic_region_data={ strategic_region=8 } } BBB={} }"#).unwrap();
+        let pack = super::parse(&doc.items).unwrap();
+        assert_eq!(
+            pack.ground_crews,
+            [
+                super::GroundCrews {
+                    country: b"AAA".to_vec(),
+                    region: 7,
+                    enabled: true
+                },
+                super::GroundCrews {
+                    country: b"AAA".to_vec(),
+                    region: 8,
+                    enabled: false
+                }
+            ]
+        );
+    }
     use super::*;
     use installed_content_core::parser;
+
+    #[test]
+    fn state_container_fuel_preserves_order_repeats_zero_omission_and_exact_signed_words() {
+        let doc = parser::parse(
+            br#"strategic_air={ air_base={ id={id=7 type=65} state=2 capacity=400 base=0
+            countries={country=AAA fuel_consumption=-0.00003 received=1.23456}
+            countries={country=BBB}
+            countries={country=AAA fuel_consumption=-0.00003 received=1.23456}
+        }}"#,
+        )
+        .unwrap();
+        let pack = parse(&doc.items).unwrap();
+        let rows = &pack.bases[0].containers;
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].country, b"AAA");
+        assert_eq!(rows[0].fuel_demand.raw, -3);
+        assert_eq!(rows[0].fuel_allocated.raw, 123456);
+        assert_eq!(rows[1].fuel_demand.raw, 0);
+        assert_eq!(rows[1].fuel_allocated.raw, 0);
+        assert_eq!(rows[0], rows[2]);
+        assert!(parse(&parser::parse(br#"strategic_air={air_base={id={id=7 type=65} state=2 countries={country=AAA received=1 received=2}}}"#).unwrap().items).is_err());
+    }
 
     #[test]
     fn ace_callsign_preserves_omitted_and_emitted_empty_keys() {
@@ -591,7 +682,7 @@ mod tests {
             br#"strategic_air={CUSTOM={
             air_wing_pool={definition=ModTransport air_wings={id={id=1 type=69}
                 experience=0 equipment={allow_zero_entries=no}
-                raid={id=4294967295 type=2147483732}}
+                raid_instance={id=4294967295 type=2147483732}}
                 air_wings={id={id=2 type=69} experience=0
                     equipment={allow_zero_entries=no}}}
             air_wing_pool={definition=none air_wings={id={id=3 type=69}
@@ -615,7 +706,7 @@ mod tests {
     fn pool_type_presence_and_live_raid_corruption_are_never_defaulted() {
         let text = "strategic_air={CUSTOM={air_wing_pool={definition=ModTransport \
             air_wings={id={id=1 type=69} experience=0 \
-            equipment={allow_zero_entries=no} raid={id=1 type=84}}}}}";
+            equipment={allow_zero_entries=no} raid_instance={id=1 type=84}}}}}";
         for malformed in [
             text.replace("definition=ModTransport", ""),
             text.replace("definition=ModTransport", "type=ModTransport"),
@@ -624,12 +715,18 @@ mod tests {
                 "definition=ModTransport definition=Other",
             ),
             text.replace("definition=ModTransport", "definition={}"),
-            text.replace("raid={id=1 type=84}", "raid={id=0 type=0}"),
-            text.replace("raid={id=1 type=84}", "raid={id=1}"),
-            text.replace("raid={id=1 type=84}", "raid={id=4294967296 type=84}"),
             text.replace(
-                "raid={id=1 type=84}",
-                "raid={id=1 type=84} raid={id=2 type=84}",
+                "raid_instance={id=1 type=84}",
+                "raid_instance={id=0 type=0}",
+            ),
+            text.replace("raid_instance={id=1 type=84}", "raid_instance={id=1}"),
+            text.replace(
+                "raid_instance={id=1 type=84}",
+                "raid_instance={id=4294967296 type=84}",
+            ),
+            text.replace(
+                "raid_instance={id=1 type=84}",
+                "raid_instance={id=1 type=84} raid_instance={id=2 type=84}",
             ),
         ] {
             let doc = parser::parse(malformed.as_bytes()).unwrap();

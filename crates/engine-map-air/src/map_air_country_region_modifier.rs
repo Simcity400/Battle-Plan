@@ -30,6 +30,41 @@ const REGION_OBJECT_VTABLE_RVA: usize = 0x027d_0c50;
 /// Modifier key used for country/region sortie efficiency.
 pub const SORTIE_EFFICIENCY_KEY: u32 = 0x11;
 
+/// Regional Ground Crews writers and the supported entry fingerprints.
+pub const GROUND_CREWS_ENABLE_RVA: usize = 0x006d_cc70;
+pub const GROUND_CREWS_DISABLE_RVA: usize = 0x006d_c700;
+pub const GROUND_CREWS_CONSTRUCTOR_RVA: usize = 0x006b_e9e0;
+pub const GROUND_CREWS_COMMAND_PREFIX_HASH: u64 = 0x68a8_be43_5f6a_b8f5;
+pub const GROUND_CREWS_CONSTRUCTOR_PREFIX_HASH: u64 = 0x12f8_397e_4ae0_8b63;
+const GROUND_CREWS_ENABLED: usize = 0x38;
+
+/// An authenticated regional object. Its pointer is acquisition context;
+/// a writer certificate may retain it, but it never enters a recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+    object: usize,
+}
+
+impl Region {
+    pub fn object(self) -> usize {
+        self.object
+    }
+    pub fn ground_crews(self, memory: &impl Memory) -> Option<u8> {
+        read::<u8>(memory, self.object.checked_add(GROUND_CREWS_ENABLED)?)
+            .map(|value| u8::from(value != 0))
+    }
+    pub fn efficiency(
+        self,
+        memory: &impl Memory,
+    ) -> Result<modifier_accumulator::Value, &'static str> {
+        let accumulator = self
+            .object
+            .checked_add(REGION_ACCUMULATOR)
+            .ok_or("air modifier accumulator address overflow")?;
+        modifier_accumulator::lookup_at(memory, accumulator, SORTIE_EFFICIENCY_KEY)
+    }
+}
+
 /// One country's authenticated region map header, read once for all of that
 /// country's regions in an hour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +134,18 @@ impl CountryMap {
         base: usize,
         region: usize,
     ) -> Result<modifier_accumulator::Value, &'static str> {
+        self.region(memory, base, region)?
+            .map_or(Ok(modifier_accumulator::Value::default()), |object| {
+                object.efficiency(memory)
+            })
+    }
+
+    pub fn region(
+        self,
+        memory: &impl Memory,
+        base: usize,
+        region: usize,
+    ) -> Result<Option<Region>, &'static str> {
         let Self {
             sentinel,
             size,
@@ -135,7 +182,7 @@ impl CountryMap {
         let last = word(&pair, 0)?;
         let first = word(&pair, 8)?;
         if first == sentinel && last == sentinel {
-            return Ok(modifier_accumulator::Value::default());
+            return Ok(None);
         }
         if size == 0 || first == 0 || last == 0 || first == sentinel || last == sentinel {
             return Err("air modifier bucket bounds invalid");
@@ -181,7 +228,7 @@ impl CountryMap {
             return Err("air modifier bucket exceeds map size");
         }
         let Some(value) = selected else {
-            return Ok(modifier_accumulator::Value::default());
+            return Ok(None);
         };
         authenticate(
             memory,
@@ -190,10 +237,7 @@ impl CountryMap {
             REGION_OBJECT_VTABLE_RVA,
             "air modifier region object identity invalid",
         )?;
-        let accumulator = value
-            .checked_add(REGION_ACCUMULATOR)
-            .ok_or("air modifier accumulator address overflow")?;
-        modifier_accumulator::lookup_at(memory, accumulator, SORTIE_EFFICIENCY_KEY)
+        Ok(Some(Region { object: value }))
     }
 }
 
@@ -299,6 +343,49 @@ mod tests {
     ) -> Result<modifier_accumulator::Value, &'static str> {
         let memory = SliceMemory { base: 0, bytes };
         country_map(&memory, 0, COUNTRY)?.lookup(&memory, 0, region)
+    }
+
+    #[test]
+    fn ground_crews_are_a_separate_optional_byte_of_the_authenticated_region() {
+        let mut bytes = fixture();
+        present(&mut bytes, REGION, -27_500);
+        for (stored, expected) in [(0, 0), (1, 1), (9, 1)] {
+            bytes[VALUE + GROUND_CREWS_ENABLED] = stored;
+            let memory = SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            let object = country_map(&memory, 0, COUNTRY)
+                .unwrap()
+                .region(&memory, 0, REGION)
+                .unwrap()
+                .unwrap();
+            assert_eq!(object.object(), VALUE);
+            assert_eq!(object.ground_crews(&memory), Some(expected));
+            assert_eq!(object.efficiency(&memory).unwrap().raw, -27_500);
+        }
+        struct MissingByte<'a>(SliceMemory<'a>);
+        impl Memory for MissingByte<'_> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                if address <= VALUE + GROUND_CREWS_ENABLED
+                    && address.saturating_add(destination.len()) > VALUE + GROUND_CREWS_ENABLED
+                {
+                    return false;
+                }
+                self.0.copy(address, destination)
+            }
+        }
+        let memory = MissingByte(SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        });
+        let object = country_map(&memory, 0, COUNTRY)
+            .unwrap()
+            .region(&memory, 0, REGION)
+            .unwrap()
+            .unwrap();
+        assert_eq!(object.ground_crews(&memory), None);
+        assert_eq!(object.efficiency(&memory).unwrap().raw, -27_500);
     }
 
     #[test]

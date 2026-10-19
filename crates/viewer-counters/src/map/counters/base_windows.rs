@@ -3,7 +3,6 @@
 
 use super::*;
 use std::collections::HashMap;
-use viewer_foundation::map::gui_resources::count_refused;
 use viewer_foundation::map::gui_resources::hit_rectangle;
 use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
 use viewer_foundation::map::icon_windows::PoolView;
@@ -19,6 +18,7 @@ use viewer_foundation::map::{
 #[derive(Default)]
 pub(super) struct PreparedBases {
     placed: [Vec<Placed>; FAMILIES],
+    pub(super) air_grids: BTreeMap<(usize, u32), Result<Vec<air_grid::PreparedItem>, String>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,9 +31,39 @@ pub(super) enum Family {
     Radar,
     StrategicLocation,
 }
+impl Family {
+    pub(super) fn wing_grid(self) -> Option<(usize, &'static str)> {
+        match self {
+            Self::AirBase => Some((0, "wings_box")),
+            Self::RocketSite => Some((1, "rockets_box")),
+            _ => None,
+        }
+    }
+}
 
 /// How many [`Family`] kinds there are, one pool view each.
 pub(super) const FAMILIES: usize = 7;
+
+#[derive(Default, Debug)]
+pub struct View {
+    pools: [PoolView; FAMILIES],
+    wings: [air_grid::View; 2],
+}
+impl View {
+    pub fn retries(&self) -> Vec<viewer_foundation::map::icon_windows::Retry> {
+        self.pools.iter().filter_map(PoolView::retry).collect()
+    }
+    pub fn take_running(&mut self) -> bool {
+        let mut running = false;
+        for wings in &mut self.wings {
+            running |= wings.take_running();
+        }
+        for pool in &mut self.pools {
+            running |= pool.take_running();
+        }
+        running
+    }
+}
 
 /// The radar icon's priority: the game's per-mode priority tables leave the
 /// radar icon's entry zero in every mode, and no define sets it.
@@ -52,6 +82,7 @@ pub(super) struct State {
     pub frame: i32,
     pub enabled: bool,
     pub sprite: Option<String>,
+    pub air: Option<bases::AirBaseCount>,
 }
 
 impl PreparedBases {
@@ -92,12 +123,13 @@ impl PreparedBases {
     pub(super) fn draw(
         &self,
         inputs: &CounterInputs<'_>,
-        views: &mut [PoolView; FAMILIES],
+        views: &mut View,
         time: f32,
         countries: Option<&Countries>,
         batch: &mut Batch,
         report: &mut CounterReport,
     ) {
+        let ticks: [_; 2] = std::array::from_fn(|at| views.wings[at].tick(time));
         let flags = gui_windows::window_flags(inputs, countries);
         let resources = gui_windows::gui_assets(inputs, flags.as_ref());
         let context = Context {
@@ -183,7 +215,12 @@ impl PreparedBases {
             // A strategic location's icon fixes its location when its window is
             // acquired and keeps it while that window lives, as the game's icon
             // keeps the list it gathered when it was made.
-            let view = &mut views[family as usize];
+            let view = &mut views.pools[family as usize];
+            if let Some((at, _)) = family.wing_grid()
+                && !view.same(&context)
+            {
+                views.wings[at].clear();
+            }
             let mut acquired = std::mem::take(&mut view.acquired_sprites);
             let drawn = view.present(
                 &context,
@@ -197,10 +234,28 @@ impl PreparedBases {
                 |owner, slot, instance, root| {
                     let state = &placed[&owner].state;
                     if family != Family::StrategicLocation {
-                        return update(instance, root, family, state);
+                        update(instance, root, family, state)?;
+                        if family == Family::AirBase {
+                            air_text(instance, root, state, &resources)?;
+                        }
+                        if let Some((at, grid)) = family.wing_grid() {
+                            views.wings[at].update(
+                                owner,
+                                slot,
+                                instance,
+                                root,
+                                grid,
+                                self.air_grids.get(&(at, owner)),
+                                inputs,
+                                countries,
+                                &resources,
+                            )?;
+                        }
+                        return Ok(());
                     }
                     let sprite = acquired_sprite(&mut acquired, owner, slot, &state.sprite);
                     let state = State {
+                        air: None,
                         frame: state.frame,
                         enabled: state.enabled,
                         sprite,
@@ -211,6 +266,9 @@ impl PreparedBases {
             );
             forget_released(&mut acquired, &view.live());
             view.acquired_sprites = acquired;
+            if let Some((at, _)) = family.wing_grid() {
+                views.wings[at].retain(&view.live());
+            }
             layouts.extend(
                 drawn
                     .into_iter()
@@ -223,10 +281,58 @@ impl PreparedBases {
             let key = layer(priority, report.base_ordinal(), 0);
             batch.at_layer(key);
             batch.at_anchor(placed.anchor);
-            match native_gui::draw(&drawn.layout, drawn.origin, &resources, batch) {
+            let composed = if let Some((at, grid)) = family.wing_grid() {
+                views.wings[at].compose(
+                    placed.id, &drawn, name, grid, inputs, &resources, ticks[at], key, report,
+                )
+            } else {
+                Ok(vec![Vec::new(); drawn.layout.holders.len()])
+            };
+            let result = composed.and_then(|parts| {
+                native_gui::draw_composed(&drawn.layout, &parts, drawn.origin, &resources, batch)
+                    .map_err(|why| why.to_string())
+            });
+            match result {
                 Ok(()) => {
                     if let Some(root) = inputs.windows.gui_type(name.as_bytes()) {
+                        let first = report.base_hits.len();
                         record_hit(root, &drawn.layout, drawn.origin, &resources, key, report);
+                        if family == Family::Radar {
+                            for index in first..report.base_hits.len() {
+                                report.radar_hits.insert(index, placed.province);
+                            }
+                        }
+                        if family == Family::GunEmplacement {
+                            let mut text = viewer_foundation::tooltip_text::Tooltip::default();
+                            text.line(
+                                false,
+                                0,
+                                "gun emplacement",
+                                inputs
+                                    .localisation
+                                    .localise(b"GUN_EMPLACEMENT_BUILDING")
+                                    .map_err(|why| why.to_string()),
+                            );
+                            let text = Arc::new(text);
+                            for index in first..report.base_hits.len() {
+                                report.air_grid_hits.insert(
+                                    index,
+                                    AirGridHover {
+                                        members: None,
+                                        text: Arc::clone(&text),
+                                        family: IconFamily::Bases,
+                                    },
+                                );
+                            }
+                        }
+                        if matches!(family, Family::AirBase | Family::RocketSite) {
+                            for index in first..report.base_hits.len() {
+                                report.air_base_hits.insert(
+                                    index,
+                                    (placed.province, i32::from(family == Family::RocketSite)),
+                                );
+                            }
+                        }
                     }
                     match family {
                         Family::AirBase => report.air_bases += 1,
@@ -238,7 +344,12 @@ impl PreparedBases {
                         Family::StrategicLocation => report.strategic_locations += 1,
                     }
                 }
-                Err(why) => count_refused(&mut report.icon_gui_notes, name, &[why]),
+                Err(why) => {
+                    *report
+                        .icon_gui_notes
+                        .entry(format!("{name} withheld: {why}"))
+                        .or_default() += 1;
+                }
             }
         }
         batch.at_anchor(None);
@@ -280,22 +391,24 @@ pub(super) fn record_hit(
     layer: u64,
     report: &mut CounterReport,
 ) {
-    let Some(button) = root.find(native::Kind::Button, "bg_btn") else {
-        return;
-    };
-    if let Some(hit) = hit_rectangle(
-        button,
-        layout,
-        origin,
-        resources,
-        &mut report.icon_gui_notes,
-    ) {
-        report
-            .base_hits
-            .push(viewer_foundation::map::counter_hovers::unit_hits::Blocker {
-                rect: hit.rect,
-                layer,
-            });
+    for button in ["bg_btn", "bg_strat_btn"]
+        .into_iter()
+        .filter_map(|name| root.find(native::Kind::Button, name))
+    {
+        if let Some(hit) = hit_rectangle(
+            button,
+            layout,
+            origin,
+            resources,
+            &mut report.icon_gui_notes,
+        ) {
+            report
+                .base_hits
+                .push(viewer_foundation::map::counter_hovers::unit_hits::Blocker {
+                    rect: hit.rect,
+                    layer,
+                });
+        }
     }
 }
 
@@ -342,12 +455,18 @@ fn update(
 ) -> Result<(), String> {
     let Controls { button, air } = bind(root, family)?;
     if matches!(family, Family::RocketSite | Family::GunEmplacement) {
-        // The political-map branch: the large strategic button hides, and
-        // both buttons take the frame and enabled state.
+        // Air uses the large strategic button. Both buttons always take the
+        // frame and enabled state, including while hidden.
         let strategic = root
             .find(native::Kind::Button, "bg_strat_btn")
             .ok_or("no button named bg_strat_btn")?;
-        instance.hide(root, strategic)?;
+        if state.air.is_some() {
+            instance.hide(root, button)?;
+            instance.show(root, strategic)?;
+        } else {
+            instance.show(root, button)?;
+            instance.hide(root, strategic)?;
+        }
         instance.set_frame(root, strategic, state.frame)?;
         instance.control(root, strategic)?.enabled = Some(state.enabled);
         if family == Family::RocketSite
@@ -357,8 +476,13 @@ fn update(
         }
     }
     if let Some([strategic, wings, permission_count, permission_bg]) = air {
-        // Political-map visibility branch.
-        instance.hide(root, strategic)?;
+        if state.air.is_some() {
+            instance.hide(root, button)?;
+            instance.show(root, strategic)?;
+        } else {
+            instance.show(root, button)?;
+            instance.hide(root, strategic)?;
+        }
         instance.set_frame(root, strategic, state.frame)?;
         instance.control(root, strategic)?.enabled = Some(state.enabled);
         for control in [wings, permission_count, permission_bg] {
@@ -383,7 +507,59 @@ fn update(
         )?;
     }
     instance.control(root, button)?.enabled = Some(state.enabled);
-    instance.show(root, button)
+    if state.air.is_some() {
+        Ok(())
+    } else {
+        instance.show(root, button)
+    }
+}
+
+fn air_text(
+    instance: &mut Instance,
+    root: &native::Element,
+    state: &State,
+    resources: &dyn native_gui::Resources,
+) -> Result<(), String> {
+    let Some(count) = state.air.filter(|count| count.shown) else {
+        return Ok(());
+    };
+    let wings = root
+        .find(native::Kind::TextBox, "wings_count")
+        .ok_or("no control named wings_count")?;
+    let color = if count.planes > i64::from(count.capacity) {
+        'R'
+    } else {
+        'W'
+    };
+    let control = viewer_foundation::map::native_text::COLOR;
+    instance.set_text(
+        root,
+        wings,
+        &format!(
+            "{control}{color}{}/{}{control}!",
+            count.planes, count.capacity
+        ),
+        resources,
+    )?;
+    instance.show(root, wings)?;
+    if let Some((used, allowed)) = count.volunteers {
+        let permission = root
+            .find(native::Kind::TextBox, "permission_wings_count")
+            .ok_or("no control named permission_wings_count")?;
+        let background = root
+            .find(native::Kind::Icon, "permission_wings_bg")
+            .ok_or("no control named permission_wings_bg")?;
+        let color = if used > allowed { 'R' } else { 'W' };
+        instance.set_text(
+            root,
+            permission,
+            &format!("{control}{color}{used}/{allowed}{control}!"),
+            resources,
+        )?;
+        instance.show(root, permission)?;
+        instance.show(root, background)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -397,6 +573,51 @@ mod tests {
     fn window(children: &str) -> native::Element {
         native::read(format!("guiTypes = {{ containerWindowType = {{ name = test size = {{ width = 50 height = 40 }} {children} }} }}").as_bytes())
             .template("test").unwrap().clone()
+    }
+
+    #[test]
+    fn air_site_style_uses_strategic_buttons_and_separate_rocket_wing_grid() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let root = window(
+            r#"
+            buttonType={name=bg_btn quadTextureSprite=GFX_even}
+            buttonType={name=bg_strat_btn quadTextureSprite=GFX_even}
+            gridboxtype={name=rockets_box slotsize={width=58 height=23}}
+        "#,
+        );
+        let resources = fixture();
+        for family in [Family::RocketSite, Family::GunEmplacement] {
+            let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+            instance.gui_show(&root, &root).unwrap();
+            let mut state = State {
+                frame: 2,
+                enabled: true,
+                sprite: None,
+                air: Some(Default::default()),
+            };
+            update(&mut instance, &root, family, &state).unwrap();
+            let shown = instance.layout(&root, &resources, None).unwrap().unwrap();
+            assert!(
+                shown
+                    .parts
+                    .iter()
+                    .any(|part| part.path.ends_with("bg_strat_btn"))
+            );
+            assert!(!shown.parts.iter().any(|part| part.path.ends_with("bg_btn")));
+            state.air = None;
+            update(&mut instance, &root, family, &state).unwrap();
+            let shown = instance.layout(&root, &resources, None).unwrap().unwrap();
+            assert!(shown.parts.iter().any(|part| part.path.ends_with("bg_btn")));
+            assert!(
+                !shown
+                    .parts
+                    .iter()
+                    .any(|part| part.path.ends_with("bg_strat_btn"))
+            );
+        }
+        assert_eq!(Family::AirBase.wing_grid(), Some((0, "wings_box")));
+        assert_eq!(Family::RocketSite.wing_grid(), Some((1, "rockets_box")));
+        assert_eq!(Family::GunEmplacement.wing_grid(), None);
     }
 
     #[test]
@@ -491,6 +712,7 @@ mod tests {
                 ordinal: 0,
                 state: Some(7),
                 provinces: Vec::new(),
+                radius: None,
             }]));
         *frame.tables[TableId::States.index()] =
             TableView::Complete(TableRows::States(vec![StateRow {
@@ -571,6 +793,7 @@ mod tests {
             &root,
             Family::AirBase,
             &State {
+                air: None,
                 frame: 2,
                 enabled: false,
                 sprite: None,
@@ -619,6 +842,7 @@ mod tests {
                 &root,
                 family,
                 &State {
+                    air: None,
                     frame: 3,
                     enabled: false,
                     sprite: None,
@@ -645,6 +869,7 @@ mod tests {
         let bare = window(r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even }"#);
         let mut instance = Instance::construct(&bare, [800, 600], &resources).unwrap();
         let state = State {
+            air: None,
             frame: 1,
             enabled: true,
             sprite: None,
@@ -698,6 +923,7 @@ mod tests {
         let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
         instance.gui_show(&root, &root).unwrap();
         let state = State {
+            air: None,
             frame: 0,
             enabled: true,
             sprite: None,
@@ -729,6 +955,7 @@ mod tests {
         instance.gui_show(&root, &root).unwrap();
         let button = root.find(native::Kind::Button, "bg_btn").unwrap();
         let state = |sprite: &str| State {
+            air: None,
             frame: 0,
             enabled: true,
             sprite: Some(sprite.into()),
@@ -823,11 +1050,16 @@ mod tests {
                 &mut Instance::construct(&root, [800, 600], &fixture()).unwrap(),
                 &root,
                 &NavalBaseIcon {
+                    capacity: None,
+                    capacity_refusal: None,
                     province: 1,
                     frame: 1,
+                    highlighted: false,
                     enabled: true
                 },
                 1.0,
+                false,
+                &fixture()
             )
             .unwrap_err()
             .contains("bg_btn")
@@ -849,6 +1081,7 @@ mod tests {
             &root,
             Family::Facility,
             &State {
+                air: None,
                 frame: 0,
                 enabled: true,
                 sprite: Some("GFX_missing".into()),
@@ -864,6 +1097,7 @@ mod tests {
             &root,
             Family::Facility,
             &State {
+                air: None,
                 frame: 0,
                 enabled: true,
                 sprite: Some("GFX_odd".into()),
@@ -894,11 +1128,16 @@ mod tests {
             &mut instance,
             &root,
             &NavalBaseIcon {
+                capacity: None,
+                capacity_refusal: None,
                 province: 1,
                 frame: 10,
+                highlighted: false,
                 enabled: false,
             },
             0.5,
+            false,
+            &resources,
         )
         .unwrap();
         let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
@@ -912,5 +1151,217 @@ mod tests {
             instance.drawable_extent(&root, button, &resources).unwrap(),
             Some([10, 5])
         );
+        naval_windows::update_naval(
+            &mut instance,
+            &root,
+            &NavalBaseIcon {
+                capacity: None,
+                capacity_refusal: None,
+                province: 1,
+                frame: 10,
+                highlighted: false,
+                enabled: false,
+            },
+            0.5,
+            true,
+            &resources,
+        )
+        .unwrap();
+        let naval = instance.layout(&root, &resources, None).unwrap().unwrap();
+        assert_eq!(naval.parts.len(), 1);
+        assert!(naval.parts[0].path.ends_with("bg_strat_btn"));
+    }
+
+    #[test]
+    fn navy_mode_draws_repair_capacity_and_clears_it_when_intel_or_mode_hides_it() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let root = window(
+            r#"
+            buttonType={name=bg_btn quadTextureSprite=GFX_even}
+            buttonType={name=bg_strat_btn quadTextureSprite=GFX_even}
+            instantTextBoxType={name=txt_capacity font=Main_14 text=authored}
+        "#,
+        );
+        let resources = fixture();
+        let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+        instance.gui_show(&root, &root).unwrap();
+        let text = root.find(native::Kind::TextBox, "txt_capacity").unwrap();
+        let mut glyph = NavalBaseIcon {
+            province: 1,
+            frame: 2,
+            highlighted: false,
+            enabled: true,
+            capacity: Some(naval_repairs::Capacity {
+                used: 2,
+                level: 4,
+                colour: Some('R'),
+            }),
+            capacity_refusal: None,
+        };
+        naval_windows::update_naval(&mut instance, &root, &glyph, 1.0, true, &resources).unwrap();
+        assert_eq!(
+            instance.control(&root, text).unwrap().text.as_deref(),
+            Some(glyph.capacity.unwrap().text().as_str())
+        );
+        let shown = |instance: &Instance| {
+            instance
+                .layout(&root, &resources, None)
+                .unwrap()
+                .unwrap()
+                .parts
+                .iter()
+                .any(|part| part.path.ends_with("txt_capacity"))
+        };
+        assert!(shown(&instance));
+        naval_windows::update_naval(&mut instance, &root, &glyph, 1.0, false, &resources).unwrap();
+        assert!(!shown(&instance));
+        glyph.capacity = None;
+        naval_windows::update_naval(&mut instance, &root, &glyph, 1.0, true, &resources).unwrap();
+        assert!(!shown(&instance));
+        glyph.highlighted = true;
+        naval_windows::update_naval(&mut instance, &root, &glyph, 1.7, true, &resources).unwrap();
+        // Ordered frame setters reach both drawables in the frame's clock phase,
+        // including the hidden ordinary button.
+        instance
+            .tick_clocks(&root, &resources, Tick { time: 1.0, dt: 0.0 })
+            .unwrap();
+        for name in ["bg_btn", "bg_strat_btn"] {
+            let button = root.find(native::Kind::Button, name).unwrap();
+            let control = instance.control(&root, button).unwrap();
+            assert_eq!(control.frame, Some(11));
+            assert_eq!(control.scale, Some(1.7));
+        }
+        glyph.highlighted = false;
+        naval_windows::update_naval(&mut instance, &root, &glyph, 0.8, true, &resources).unwrap();
+        instance
+            .tick_clocks(&root, &resources, Tick { time: 1.0, dt: 0.0 })
+            .unwrap();
+        assert_eq!(
+            instance
+                .control(
+                    &root,
+                    root.find(native::Kind::Button, "bg_strat_btn").unwrap()
+                )
+                .unwrap()
+                .frame,
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn air_mode_uses_the_strategic_button_and_colors_its_aircraft_capacity_text() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let root = window(
+            r#"
+            buttonType={name=bg_btn quadTextureSprite=GFX_even}
+            buttonType={name=bg_strat_btn quadTextureSprite=GFX_even}
+            instantTextBoxType={name=wings_count font=Main_14 text=authored}
+            instantTextBoxType={name=permission_wings_count font=Main_14 text=authored}
+            iconType={name=permission_wings_bg spriteType=GFX_even}
+        "#,
+        );
+        let resources = fixture();
+        let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+        instance.gui_show(&root, &root).unwrap();
+        let color = viewer_foundation::map::native_text::COLOR;
+        for (planes, shown, expected) in [
+            (201, true, Some(format!("{color}R201/200{color}!"))),
+            (200, true, Some(format!("{color}W200/200{color}!"))),
+            (199, false, None),
+        ] {
+            let state = State {
+                frame: 2,
+                enabled: true,
+                sprite: None,
+                air: Some(bases::AirBaseCount {
+                    planes,
+                    capacity: 200,
+                    shown,
+                    ..Default::default()
+                }),
+            };
+            update(&mut instance, &root, Family::AirBase, &state).unwrap();
+            air_text(&mut instance, &root, &state, &resources).unwrap();
+            let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
+            assert!(
+                layout
+                    .parts
+                    .iter()
+                    .any(|part| part.path.ends_with("bg_strat_btn"))
+            );
+            assert!(
+                !layout
+                    .parts
+                    .iter()
+                    .any(|part| part.path.ends_with("bg_btn"))
+            );
+            let wings = root.find(native::Kind::TextBox, "wings_count").unwrap();
+            assert_eq!(
+                layout
+                    .parts
+                    .iter()
+                    .any(|part| part.path.ends_with("wings_count")),
+                shown
+            );
+            if let Some(expected) = expected {
+                assert_eq!(
+                    instance.control(&root, wings).unwrap().text.as_deref(),
+                    Some(expected.as_str())
+                );
+            }
+        }
+    }
+    #[test]
+    fn air_permission_count_and_background_follow_selection_and_native_warning_colour() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let root = window(
+            r#"
+            buttonType={name=bg_btn quadTextureSprite=GFX_even}
+            buttonType={name=bg_strat_btn quadTextureSprite=GFX_even}
+            instantTextBoxType={name=wings_count font=Main_14 text=authored}
+            instantTextBoxType={name=permission_wings_count font=Main_14 text=authored}
+            iconType={name=permission_wings_bg spriteType=GFX_even}
+        "#,
+        );
+        let resources = fixture();
+        let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+        instance.gui_show(&root, &root).unwrap();
+        let color = viewer_foundation::map::native_text::COLOR;
+        for (shown, volunteers, text) in [
+            (true, Some((2, 2)), Some(format!("{color}W2/2{color}!"))),
+            (true, Some((3, 2)), Some(format!("{color}R3/2{color}!"))),
+            (true, None, None),
+            (false, Some((1, 2)), None),
+        ] {
+            let state = State {
+                frame: 2,
+                enabled: true,
+                sprite: None,
+                air: Some(bases::AirBaseCount {
+                    shown,
+                    volunteers,
+                    capacity: 200,
+                    ..Default::default()
+                }),
+            };
+            update(&mut instance, &root, Family::AirBase, &state).unwrap();
+            air_text(&mut instance, &root, &state, &resources).unwrap();
+            let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
+            for name in ["permission_wings_count", "permission_wings_bg"] {
+                assert_eq!(
+                    layout.parts.iter().any(|part| part.path.ends_with(name)),
+                    text.is_some()
+                );
+            }
+            if let Some(text) = text {
+                let control = root
+                    .find(native::Kind::TextBox, "permission_wings_count")
+                    .unwrap();
+                assert_eq!(
+                    instance.control(&root, control).unwrap().text.as_deref(),
+                    Some(text.as_str())
+                );
+            }
+        }
     }
 }

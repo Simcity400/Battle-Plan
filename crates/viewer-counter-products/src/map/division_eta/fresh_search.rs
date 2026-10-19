@@ -267,9 +267,10 @@ impl<'a> Inputs<'a> {
         } else {
             let map = &self.content.map;
             let defines = &self.content.defines;
-            HourTerms::new(self.frame).with_terms(
+            HourTerms::new(self.frame).with_route_terms(
                 division,
                 movement,
+                &route,
                 self.content,
                 defines,
                 |terms| {

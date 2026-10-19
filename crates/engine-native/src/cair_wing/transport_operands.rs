@@ -42,7 +42,7 @@ impl<T> Default for Slot<T> {
 pub struct Scratch {
     pools: Vec<Slot<Pool>>,
     wings: Vec<Slot<Option<u64>>>,
-    handles: Vec<Slot<Option<bool>>>,
+    handles: Vec<Slot<Option<usize>>>,
     pub required_map_capacity: usize,
     pub failures: usize,
 }
@@ -110,7 +110,7 @@ impl Scratch {
     pub fn allocated_bytes(&self) -> usize {
         self.pools.capacity() * size_of::<Slot<Pool>>()
             + self.wings.capacity() * size_of::<Slot<Option<u64>>>()
-            + self.handles.capacity() * size_of::<Slot<Option<bool>>>()
+            + self.handles.capacity() * size_of::<Slot<Option<usize>>>()
     }
 }
 
@@ -212,18 +212,20 @@ impl<'a> Pass<'a> {
         Ok(())
     }
 
+    /// Returns the already authenticated raid pointer (zero for an observed
+    /// unresolved/null reference), so another worker consumer need not resolve it again.
     pub fn capture(
         &mut self,
         memory: &impl Memory,
         wing: usize,
         pool: usize,
         row: &mut super::Row,
-    ) {
+    ) -> Option<usize> {
         row.pool_subunit = None;
         row.raid_reference = None;
         if self.exhausted {
             self.scratch.failures += 1;
-            return;
+            return None;
         }
         let pool = memo(
             &mut self.scratch.pools,
@@ -233,7 +235,7 @@ impl<'a> Pass<'a> {
         );
         let Some(pool) = pool else {
             self.capacity_failure();
-            return;
+            return None;
         };
         row.pool_subunit = pool.index;
         if pool.index.is_none() {
@@ -243,13 +245,13 @@ impl<'a> Pass<'a> {
             || row.eligibility_veto != 0
             || row.eligibility_counter > row.eligibility_limit
         {
-            return;
+            return None;
         }
         match pool.transport {
-            Some(false) => return,
+            Some(false) => return None,
             None => {
                 self.scratch.failures += 1;
-                return;
+                return None;
             }
             Some(true) => (),
         }
@@ -262,21 +264,21 @@ impl<'a> Pass<'a> {
         let raw = match raw {
             None => {
                 self.capacity_failure();
-                return;
+                return None;
             }
             Some(None) => {
                 self.scratch.failures += 1;
-                return;
+                return None;
             }
             Some(Some(raw)) => raw,
         };
         let resolves = if raw == 0 {
-            Some(Some(false))
+            Some(Some(0))
         } else {
             memo(&mut self.scratch.handles, &mut self.counts[2], raw, || {
                 (|| {
                     let Some(pointer) = self.resolver.resolve(memory, raw)? else {
-                        return Ok(false);
+                        return Ok(0_usize);
                     };
                     let identity = field::<[u8; 16]>(memory, pointer, 0)?;
                     if u64::from_le_bytes(identity[..8].try_into().unwrap())
@@ -289,15 +291,27 @@ impl<'a> Pass<'a> {
                     {
                         return Err("air wing raid identity mismatch");
                     }
-                    Ok(true)
+                    Ok(pointer)
                 })()
                 .ok()
             })
         };
         match resolves {
-            Some(Some(resolves)) => row.raid_reference = Some(RaidReference { raw, resolves }),
-            Some(None) => self.scratch.failures += 1,
-            None => self.capacity_failure(),
+            Some(Some(pointer)) => {
+                row.raid_reference = Some(RaidReference {
+                    raw,
+                    resolves: pointer != 0,
+                });
+                Some(pointer)
+            }
+            Some(None) => {
+                self.scratch.failures += 1;
+                None
+            }
+            None => {
+                self.capacity_failure();
+                None
+            }
         }
     }
 

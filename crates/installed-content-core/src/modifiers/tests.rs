@@ -342,3 +342,48 @@ fn text_the_port_cannot_hold_is_named() {
         )
     );
 }
+
+#[test]
+fn modifier_empty_test_is_lazy_and_counts_hidden_zero_keys() {
+    let items = crate::parser::parse(b"hidden_modifier={synthetic=0}")
+        .unwrap()
+        .items;
+    let zero = values(&items);
+    assert!(!zero.effectively_empty(&mut |_| Ok(true)).unwrap());
+    assert!(zero.effectively_empty(&mut |_| Ok(false)).unwrap());
+    assert_eq!(
+        zero.effectively_empty(&mut |name| Err(format!("missing {name}")))
+            .unwrap_err(),
+        "missing synthetic"
+    );
+    for text in [
+        b"custom_modifier_tooltip=TIP".as_slice(),
+        b"added_modifier={synthetic=0}",
+    ] {
+        let source = values(&crate::parser::parse(text).unwrap().items);
+        assert!(
+            !source
+                .effectively_empty(&mut |_| panic!("eligibility is unreached"))
+                .unwrap()
+        );
+    }
+    assert!(
+        Modifiers::default()
+            .effectively_empty(&mut |_| panic!("no entries"))
+            .unwrap()
+    );
+}
+
+#[test]
+fn whole_modifier_copy_reinserts_tooltip_tables_at_every_depth() {
+    let source = values(&crate::parser::parse(b"hidden_modifier={synthetic=0} custom_modifier_tooltip=A custom_modifier_tooltip=B added_modifier={custom_modifier_tooltip=C synthetic=1}").unwrap().items);
+    let copy = source.copied();
+    assert_eq!(copy.values, source.values);
+    assert_eq!(copy.hidden, source.hidden);
+    assert_eq!(copy.tooltip_table(), &source.tooltip_table().copied());
+    assert_eq!(
+        copy.children[0].tooltip_table(),
+        &source.children[0].tooltip_table().copied()
+    );
+    assert_eq!(copy.children[0].values, source.children[0].values);
+}

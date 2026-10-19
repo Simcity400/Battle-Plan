@@ -730,7 +730,7 @@ impl RaidAssets {
             .collect();
             // The state's runtime province list, in content order only while
             // its membership equals the content's.
-            for province in world.state_order(state)? {
+            for province in world.state_order(state).map_err(|why| why.to_string())? {
                 if wanted.iter().any(|&site| {
                     self.sites
                         .get(&(state, site))
@@ -1083,7 +1083,7 @@ pub fn icons(
 ) -> RaidIcons {
     let world = match World::new(frame, assets.trigger_content.facts()) {
         Ok(world) => world,
-        Err(reason) => return RaidIcons::unavailable(frame, ours, reason),
+        Err(reason) => return RaidIcons::unavailable(frame, ours, reason.to_string()),
     };
     let layer = HourLayer::new(assets, &world, ours, paths);
     let mut cycle = cycle::Cycle::new(frame.branch, ours);
@@ -1110,7 +1110,7 @@ pub struct IconCache {
 /// One province's offer icon and what laying it out added to the report.
 struct CachedIcon {
     shown: Arc<cycle::Shown>,
-    order: Result<(), String>,
+    order: Result<(), dashboard_text::triggers::Failure>,
     icon: Option<RaidIcon>,
     report: RaidReport,
 }
@@ -1415,14 +1415,14 @@ fn raid_icon(
             Ok(TypeToken::Type(index)) => {
                 category_admits(assets, world, ours, &assets.catalog.types[*index])
             }
-            other => Eval::Unknown(BTreeSet::from([unusable_type(assets, other, "own")])),
+            other => Eval::unknown(unusable_type(assets, other, "own")),
         };
         match admitted {
             Eval::True => {}
             Eval::False => return None,
             Eval::Unknown(reasons) => {
                 report.withheld += 1;
-                report.note(reasons);
+                report.note(reasons.into_iter().map(|why| why.to_string()));
                 return None;
             }
         }
@@ -1584,7 +1584,7 @@ fn offer_icon(
         Eval::False => false,
         Eval::Unknown(reasons) => {
             report.unverified_tint += 1;
-            report.note(reasons.iter().cloned());
+            report.note(reasons.iter().map(|why| why.to_string()));
             false
         }
     };

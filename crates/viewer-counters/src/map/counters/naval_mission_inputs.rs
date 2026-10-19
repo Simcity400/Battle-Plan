@@ -12,6 +12,7 @@ use viewer_foundation::table_access::TokenError;
 use viewer_foundation::table_access::TokenNames;
 
 type Fact<T> = Result<T, String>;
+pub(super) mod hover;
 pub(super) const UNKNOWN: &str = "naval mission operands are undecided (see named input gaps)";
 
 type RegionTopology = (
@@ -21,8 +22,13 @@ type RegionTopology = (
 
 pub(super) struct Content {
     terrain: installed_content_core::terrain::TerrainDefinitions,
+    pub(super) allegiance_group_cutoff: f32,
     naval_terrain: BTreeMap<u32, Vec<u8>>,
     efficiencies: derive::Defines,
+    spotting: hover::patrol::Defines,
+    patrol_air: patrol_air::Defines,
+    convoy: hover::convoy::Defines,
+    dominance: replay_derive::naval_dominance_derive::Defines,
     fuel_factor: i64,
     underway_factor: i64,
     distance_factor: i64,
@@ -34,10 +40,15 @@ pub(super) struct Content {
 impl Content {
     pub(super) fn read(
         terrain: installed_content_core::terrain::TerrainDefinitions,
+        layers: &ResolvedLayers,
         regions: &BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
         defines: &installed_content_core::defines::Defines,
     ) -> io::Result<Self> {
         Ok(Self {
+            allegiance_group_cutoff: defines.number(
+                "NGraphics",
+                "NAVAL_MISSION_TASK_FORCES_GROUP_BY_ALLEGIANCE_CUTOFF",
+            )? as f32,
             terrain,
             naval_terrain: regions
                 .iter()
@@ -49,6 +60,12 @@ impl Content {
                 })
                 .collect(),
             efficiencies: derive::Defines::read(|section, name| defines.fixed5(section, name))?,
+            spotting: hover::patrol::Defines::read(defines)?,
+            patrol_air: patrol_air::Defines::read(defines, layers)?,
+            convoy: hover::convoy::Defines::read(defines)?,
+            dominance: replay_derive::naval_dominance_derive::Defines::read(|section, name| {
+                defines.fixed5(section, name)
+            })?,
             // Module globals read by the game.
             fuel_factor: defines.fixed5("NNavy", "OUT_OF_FUEL_RANGE_FACTOR")?,
             underway_factor: defines.fixed5("NNavy", "UNDERWAY_REPLENISHMENT_RANGE_FACTOR")?,
@@ -98,6 +115,9 @@ pub(super) struct Hour<'a> {
     names: Fact<TokenNames<'a>>,
     features: Option<u32>,
     combined: HashMap<(u64, u32), Fact<i64>>,
+    patrol_air: OnceLock<Fact<patrol_air::Prepared<'a>>>,
+    patrol_navy: HashMap<(u64, usize), Fact<i64>>,
+    patrol_radar: OnceLock<Fact<BTreeMap<u32, i32>>>,
     topology: Topology<'a>,
     ports: Fact<BTreeMap<u32, u32>>,
     bases: Fact<BTreeSet<u32>>,
@@ -156,6 +176,9 @@ impl<'a> Hour<'a> {
                 .and_then(|rows| rows.first())
                 .map(|row| row.dlc_mask),
             combined: HashMap::new(),
+            patrol_air: OnceLock::new(),
+            patrol_navy: HashMap::new(),
+            patrol_radar: OnceLock::new(),
             topology,
             ports: data::<tables::Provinces>(frame).map(|rows| {
                 rows.iter()
@@ -179,7 +202,15 @@ impl<'a> Hour<'a> {
         self.inputs
             .get(&handle)
             .copied()
-            .ok_or_else(|| format!("task force {handle:#x} has no NavalMissionTaskForces row"))
+            .map(Ok)
+            .unwrap_or_else(|| {
+                data::<tables::NavalDominanceTaskForceRanges>(self.frame)?
+                    .iter()
+                    .find(|row| row.task_force == handle)
+                    .ok_or_else(|| {
+                        format!("task force {handle:#x} has no naval dominance range operands")
+                    })
+            })
     }
     fn country_id(&self, raw: u32) -> Fact<u32> {
         self.links
@@ -209,7 +240,7 @@ impl<'a> Hour<'a> {
     }
     fn country_value(&self, raw: u32, key: u32) -> Fact<i64> {
         let row = self.country(raw)?;
-        self.effective(key, row.value(key))
+        self.effective(key, row.value(key)?)
     }
     fn commander_value(&self, country: u32, reference: u64, source: u8, key: u32) -> Fact<i64> {
         if reference == 0 {
@@ -243,7 +274,7 @@ impl<'a> Hour<'a> {
                     )
                 }
             })?;
-        self.effective(key, row.value(key))
+        self.effective(key, row.value(key)?)
     }
 
     fn ships(&self, handle: u64) -> Fact<&[&'a ShipRow]> {
@@ -357,7 +388,7 @@ impl<'a> Hour<'a> {
             })
         };
         let mut headquarters = Vec::with_capacity(row.headquarters.len());
-        for &reference in &row.headquarters {
+        for &reference in row.headquarters.iter() {
             let mut values = [0; 4];
             for (at, value) in values.iter_mut().enumerate() {
                 *value = self.commander_value(country, reference, at as u8 + 1, key)?;
@@ -447,6 +478,195 @@ impl<'a> Hour<'a> {
             &self.content.efficiencies,
         )
         .map_err(str::to_owned)
+    }
+
+    fn dominance_design_power(&self, handle: u64) -> Fact<i64> {
+        let models = data::<tables::ShipModels>(self.frame)?;
+        let mut power = 0_i64;
+        for ship in self.ships(handle)? {
+            let model = models
+                .binary_search_by_key(&ship.id, |row| row.ship)
+                .ok()
+                .map(|index| &models[index])
+                .ok_or_else(|| {
+                    format!("naval dominance ship {:#x} has no ShipModels row", ship.id)
+                })?;
+            if model.variant == 0 {
+                continue;
+            }
+            let raw = model
+                .naval_power
+                .require("ShipModels.naval_power")?
+                .ok_or_else(|| {
+                    format!(
+                        "naval dominance ship {:#x} selected design capture refused",
+                        ship.id
+                    )
+                })?;
+            power = power.wrapping_add(replay_derive::naval_dominance_derive::ship_power(
+                raw,
+                self.content.dominance,
+            ));
+        }
+        Ok(power)
+    }
+    fn dominance_mission_power(&mut self, handle: u64, region: u32) -> Fact<i64> {
+        let force = self.force(handle)?;
+        if self.ships(handle)?.is_empty() {
+            return Ok(0);
+        }
+        let counter = self.native.task_force(handle).ok_or_else(|| {
+            format!("naval dominance task force {handle:#x} active state unavailable")
+        })?;
+        if counter.is_in_regions == 0 {
+            return Ok(0);
+        }
+        let missions = data::<tables::TaskForceMissions>(self.frame)?;
+        let Some(mission) = missions
+            .binary_search_by_key(&handle, |row| row.task_force)
+            .ok()
+            .map(|index| &missions[index])
+        else {
+            return Ok(0);
+        };
+        if !mission.regions.contains(&region) {
+            return Ok(0);
+        }
+        let factor = match force.mission {
+            1 if mission.current_region == region => 100_000,
+            1 => return Ok(0),
+            2 => {
+                if force.fleet == 0 {
+                    100_000
+                } else {
+                    let siblings = self
+                        .fleet_forces
+                        .get(&force.fleet)
+                        .cloned()
+                        .unwrap_or_default();
+                    let total = siblings.len() as i64 * 100_000;
+                    let mut reached = 0_i64;
+                    for sibling in siblings {
+                        if self.active(sibling.id, region)? {
+                            reached = reached.wrapping_add(100_000);
+                        }
+                    }
+                    if total == 0 {
+                        0
+                    } else {
+                        if (reached as u64).wrapping_add(0x7fff_ffff_ffff_fffe)
+                            < 0xffff_ffff_ffff_fffd
+                        {
+                            reached.wrapping_mul(100_000) / total
+                        } else {
+                            0xffff_ffff
+                        }
+                    }
+                }
+            }
+            3 => self.raiding(handle)?,
+            4 => self.escort(handle)?,
+            _ => return Ok(0),
+        };
+        Ok(self.dominance_design_power(handle)?.wrapping_mul(factor) / 100_000)
+    }
+    fn dominance_region(
+        &mut self,
+        region: u32,
+        owner: u32,
+        enemies: &[u32],
+    ) -> Fact<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSources> {
+        let ledgers = data::<tables::NavalMissionLedgers>(self.frame)?;
+        let mut patrol = 0_i64;
+        let mut friendly_strike = 0_i64;
+        let mut enemy_raiding = 0_i64;
+        let mut enemy_strike = 0_i64;
+        if let Some(ledger) = ledgers
+            .iter()
+            .find(|row| row.owner == owner && row.region == region)
+        {
+            for &handle in &ledger.task_forces {
+                match self.force(handle)?.mission {
+                    1 => {
+                        patrol = patrol.wrapping_add(self.dominance_mission_power(handle, region)?)
+                    }
+                    2 => {
+                        friendly_strike =
+                            friendly_strike.wrapping_add(self.dominance_strike(handle, region)?)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for &enemy in enemies {
+            let id = self.country_id(enemy)?;
+            if let Some(ledger) = ledgers
+                .iter()
+                .find(|row| row.owner == id && row.region == region)
+            {
+                for &handle in &ledger.task_forces {
+                    let force = self.force(handle)?;
+                    if force.mission == 3
+                        && self.anchors.region_of.get(&force.province) == Some(&region)
+                    {
+                        enemy_raiding = enemy_raiding
+                            .wrapping_add(self.dominance_mission_power(handle, region)?);
+                    } else if force.mission == 2 {
+                        enemy_strike =
+                            enemy_strike.wrapping_add(self.dominance_strike(handle, region)?);
+                    }
+                }
+            }
+        }
+        Ok(
+            viewer_foundation::map::naval_dominance_sources::RegionalDominanceSources {
+                patrol,
+                strike_multiplier: 100_000_i64.wrapping_add(friendly_strike),
+                enemy_raiding: 100_000_i64
+                    .wrapping_add(enemy_strike)
+                    .wrapping_mul(enemy_raiding)
+                    / 100_000,
+            },
+        )
+    }
+    fn dominance_strike(&mut self, handle: u64, region: u32) -> Fact<i64> {
+        let missions = data::<tables::TaskForceMissions>(self.frame)?;
+        let count = missions
+            .binary_search_by_key(&handle, |row| row.task_force)
+            .ok()
+            .map_or(0, |index| missions[index].regions.len() as i32);
+        Ok(replay_derive::naval_dominance_derive::strike_effect(
+            self.dominance_mission_power(handle, region)?,
+            count,
+            self.content.dominance,
+        ))
+    }
+    fn dominance_sources(
+        &mut self,
+    ) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
+        let owner = self
+            .ids
+            .get(&self.ours)
+            .copied()
+            .ok_or_else(|| "naval dominance source viewer country unavailable".to_owned())?;
+        let enemies = viewer_foundation::map::naval_region_control::raw_roster(
+            self.frame,
+            self.ours,
+            AirCountryRelationRow::ENEMY,
+        )?;
+        let mut owners = BTreeSet::from([owner]);
+        for &enemy in &enemies {
+            owners.insert(self.country_id(enemy)?);
+        }
+        let regions: BTreeSet<_> = data::<tables::NavalMissionLedgers>(self.frame)?
+            .iter()
+            .filter(|row| owners.contains(&row.owner))
+            .map(|row| row.region)
+            .collect();
+        Ok(regions
+            .into_iter()
+            .map(|region| (region, self.dominance_region(region, owner, &enemies)))
+            .collect())
     }
     fn decorate(
         &mut self,
@@ -691,8 +911,15 @@ impl<'a> Hour<'a> {
 }
 
 pub(super) fn decorate<'a>(icons: &mut MissionIcons, hour: impl FnOnce() -> Fact<Hour<'a>>) {
-    let result = hour().and_then(|mut hour| decorate_inputs(icons, &mut hour));
+    icons.naval_dominance_sources = None;
+    let result = hour().and_then(|mut hour| {
+        icons.naval_dominance_sources = Some(std::sync::Arc::new(hour.dominance_sources()));
+        decorate_inputs(icons, &mut hour)
+    });
     if let Err(reason) = result {
+        if icons.naval_dominance_sources.is_none() {
+            icons.naval_dominance_sources = Some(std::sync::Arc::new(Err(reason.clone())));
+        }
         icons.input_gaps.insert(reason, 1);
     }
 }
@@ -706,7 +933,7 @@ fn decorate_inputs(icons: &mut MissionIcons, hour: &mut Hour<'_>) -> Fact<()> {
         let Some(entries) = icons.regions.get_mut(&ledger.region) else {
             continue;
         };
-        for entry in entries {
+        for entry in entries.iter_mut() {
             let result = hour.decorate(entry, ledger);
             if let Err(reason) = result {
                 *icons
@@ -718,6 +945,30 @@ fn decorate_inputs(icons: &mut MissionIcons, hour: &mut Hour<'_>) -> Fact<()> {
                     .or_default() += 1;
             }
         }
+        hover::prepare(hour, ledger, entries, Arc::make_mut(&mut icons.hovers));
+        for &handle in &ledger.task_forces {
+            if icons.convoy_hovers.contains_key(&handle) {
+                continue;
+            }
+            let admitted = (|| -> Fact<bool> {
+                if hour.force(handle)?.mission != 3 {
+                    return Ok(false);
+                }
+                let row = hour.input(handle)?;
+                Ok(hour
+                    .native
+                    .task_force(handle)
+                    .is_some_and(|row| row.is_in_regions != 0)
+                    && row.raiding_region == Some(ledger.region)
+                    && row
+                        .raiding_targets
+                        .is_some_and(|targets| targets.contains(&Some(true))))
+            })();
+            if admitted == Ok(true) {
+                let text = hover::convoy::prepare(hour, ledger, handle);
+                Arc::make_mut(&mut icons.convoy_hovers).insert(handle, text);
+            }
+        }
     }
     Ok(())
 }
@@ -725,3 +976,5 @@ fn decorate_inputs(icons: &mut MissionIcons, hour: &mut Hour<'_>) -> Fact<()> {
 #[cfg(test)]
 #[path = "naval_mission_inputs_tests.rs"]
 mod tests;
+
+mod patrol_air;

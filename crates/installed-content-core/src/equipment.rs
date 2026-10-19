@@ -15,7 +15,14 @@
 //! [`Groups`] reads `common/equipment_groups` and recursively expands member
 //! lists; [`Database::group_admits`] shares its membership rules.
 
+mod design;
+mod validity;
+pub use validity::{Assignment, CountKey, ModuleCountLimit, ModuleValidity};
 mod groups;
+pub use design::{
+    ModuleConversion, ModuleDesign, ModuleXpRules, StatComponents, StatContribution, StatGroup,
+    StatValue, UpgradeCurrency, UpgradeDesign, UpgradeXpRules, module_save_xp,
+};
 
 pub use groups::{GROUPS_DIRECTORY, Group, Groups};
 
@@ -164,6 +171,18 @@ pub fn stat_index(keyword: &[u8]) -> Option<usize> {
     stat_metadata()
         .iter()
         .position(|(name, _, _)| name.as_bytes() == keyword)
+}
+
+/// Equipment mission names use their own native bit domain, independently of
+/// the AI order enum. Unrecognized authored names contribute no bit.
+pub fn mission_mask(name: &[u8]) -> u32 {
+    let name = c_string(name);
+    engine_executable::executable_tables::get()
+        .auxiliary
+        .equipment_missions
+        .iter()
+        .find(|(known, _)| known.as_bytes().eq_ignore_ascii_case(name))
+        .map_or(0, |(_, mask)| *mask)
 }
 
 /// Equipment fields whose reader consumes one value token.
@@ -595,6 +614,37 @@ fn module_field(field: &Field<'_>, keyword: Option<&[u8]>) -> Shape<Node> {
     }
 }
 
+/// Slot admission operands retained from each native slot read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModuleSlot {
+    pub required: bool,
+    /// Repeated category declarations append, including duplicate tokens.
+    pub categories: Vec<Vec<u8>>,
+}
+impl ModuleSlot {
+    fn read(fields: &[Item]) -> Self {
+        let mut result = Self::default();
+        for field in fields {
+            if field.keyword_is("required") {
+                if let Some(value) = field.value.scalar().and_then(crate::parser::read_bool) {
+                    result.required = value;
+                }
+            } else if field.keyword_is("allowed_module_categories") {
+                for category in field
+                    .value
+                    .items()
+                    .unwrap_or_else(|| std::slice::from_ref(field))
+                {
+                    result.categories.push(
+                        c_string(category.value.scalar().unwrap_or_default()).to_ascii_lowercase(),
+                    );
+                }
+            }
+        }
+        result
+    }
+}
+
 /// One equipment type as the file loop leaves it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Equipment {
@@ -622,6 +672,7 @@ pub struct Equipment {
     pub module_category: u64,
     /// `allowed_types`.
     pub allowed_types: u64,
+    pub type_override: Vec<u8>,
     /// `default_modules`: each slot and its module, as the texts
     /// the reader registers. They are tokens to the
     /// game: a slot of the same [`Token`] is overwritten, keeping the first
@@ -629,6 +680,10 @@ pub struct Equipment {
     pub default_modules: Vec<(Vec<u8>, Vec<u8>)>,
     /// Module slots in declaration order, one per [`Token`].
     pub module_slots: Vec<Vec<u8>>,
+    /// Required flags and accepted categories in the same slot order.
+    pub module_slot_rules: Vec<ModuleSlot>,
+    /// Local count limits; ancestor limits join at query time.
+    pub module_count_limits: Vec<ModuleCountLimit>,
     /// An empty sprite inherits from its archetype when that field is read.
     pub sprite: Vec<u8>,
     /// The model string is retained across redefinition.
@@ -641,6 +696,10 @@ pub struct Equipment {
     pub derived_variant_name: Vec<u8>,
     /// The visual level is retained across redefinition.
     pub visual_level: i32,
+    /// Authored signed `air_map_icon_frame`, reset to zero on redefinition.
+    pub air_map_icon_frame: i32,
+    /// Authored `carrier_capable`; reset to false on redefinition.
+    pub carrier_capable: bool,
     /// Tech-level addition defaults to one and reads a signed integer.
     pub visual_tech_level_addition: i32,
     /// Model priority sums tech-level additions for the type and all parents,
@@ -667,13 +726,18 @@ impl Equipment {
             category: 0,
             module_category: 0,
             allowed_types: 0,
+            type_override: Vec::new(),
             default_modules: Vec::new(),
             module_slots: Vec::new(),
+            module_slot_rules: Vec::new(),
+            module_count_limits: Vec::new(),
             sprite: Vec::new(),
             model: Vec::new(),
             variant_name: Vec::new(),
             derived_variant_name: Vec::new(),
             visual_level: 0,
+            air_map_icon_frame: 0,
+            carrier_capable: false,
             visual_tech_level_addition: 1,
             model_priority: 1,
             depth: 0,
@@ -735,6 +799,10 @@ pub struct Database {
     by_name: BTreeMap<Vec<u8>, usize>,
     /// Registered upgrade tokens, independent of equipment aliases.
     upgrade_names: BTreeSet<Vec<u8>>,
+    upgrade_stats: BTreeMap<Vec<u8>, StatGroup>,
+    upgrade_designs: BTreeMap<Vec<u8>, UpgradeDesign>,
+    module_stats: BTreeMap<Vec<u8>, StatGroup>,
+    module_designs: BTreeMap<Vec<u8>, ModuleDesign>,
     /// Modules in registration order after the null object, retaining token,
     /// first declared name, and added equipment categories.
     modules: Vec<(Token, Vec<u8>, u64)>,
@@ -762,6 +830,28 @@ pub struct ModuleConditions {
 }
 
 impl Database {
+    pub fn upgrade_design(&self, name: impl AsRef<[u8]>) -> Option<&UpgradeDesign> {
+        let Token::Name(key) = Token::c_str(name.as_ref()) else {
+            return None;
+        };
+        self.upgrade_designs.get(&key)
+    }
+    pub fn module_design(&self, name: impl AsRef<[u8]>) -> Option<&ModuleDesign> {
+        self.module_designs
+            .get(&self.module(name)?.to_ascii_lowercase())
+    }
+    /// Authored module stat groups under the resolved first-registered token.
+    pub fn module_stats(&self, name: impl AsRef<[u8]>) -> Option<&StatGroup> {
+        self.module_stats
+            .get(&self.module(name)?.to_ascii_lowercase())
+    }
+    /// Authored upgrade stat groups; names obey the upgrade token namespace.
+    pub fn upgrade_stats(&self, name: impl AsRef<[u8]>) -> Option<&StatGroup> {
+        let Token::Name(key) = Token::c_str(name.as_ref()) else {
+            return None;
+        };
+        self.upgrade_stats.get(&key)
+    }
     pub fn module_conditions(&self, name: impl AsRef<[u8]>) -> Option<&ModuleConditions> {
         let spelling = self.module(name)?;
         self.module_conditions.get(&spelling.to_ascii_lowercase())
@@ -918,6 +1008,14 @@ impl Database {
                     if let Token::Name(name) =
                         Token::c_str(upgrade.key.as_deref().unwrap_or_default())
                     {
+                        self.upgrade_stats.insert(
+                            name.clone(),
+                            StatGroup::read(upgrade.value.items().unwrap_or_default(), true),
+                        );
+                        self.upgrade_designs.insert(
+                            name.clone(),
+                            UpgradeDesign::read(upgrade.value.items().unwrap_or_default()),
+                        );
                         self.upgrade_names.insert(name);
                     }
                 }
@@ -966,6 +1064,14 @@ impl Database {
     fn load_module(&mut self, module: &Item) {
         let key = crate::parser::c_string(module.key.as_deref().unwrap_or_default());
         let mut mask = 0;
+        self.module_stats.insert(
+            key.to_ascii_lowercase(),
+            StatGroup::read(module.value.items().unwrap_or_default(), false),
+        );
+        self.module_designs.insert(
+            key.to_ascii_lowercase(),
+            ModuleDesign::read(module.value.items().unwrap_or_default()),
+        );
         let mut conditions = ModuleConditions::default(); // Reset clears both gates.
         for field in module.value.items().unwrap_or_default() {
             if field.keyword_is("add_equipment_type") {
@@ -1015,9 +1121,14 @@ impl Database {
                 equipment.category = 0;
                 equipment.module_category = 0;
                 equipment.allowed_types = 0;
+                equipment.type_override.clear();
                 equipment.default_modules.clear();
                 equipment.module_slots.clear();
+                equipment.module_slot_rules.clear();
+                equipment.module_count_limits.clear();
                 equipment.sprite.clear();
+                equipment.air_map_icon_frame = 0;
+                equipment.carrier_capable = false;
                 equipment.visual_tech_level_addition = 1;
                 at
             }
@@ -1044,6 +1155,11 @@ impl Database {
                     b"no" => self.equipment[at].supply_truck = false,
                     _ => {}
                 },
+                b"carrier_capable" => {
+                    if let Some(value) = crate::parser::read_bool(text) {
+                        self.equipment[at].carrier_capable = value;
+                    }
+                }
                 b"is_archetype" => {
                     if let Some(value) = crate::parser::read_bool(text) {
                         self.equipment[at].is_archetype = value;
@@ -1120,20 +1236,31 @@ impl Database {
                     }
                 }
                 // A failed signed-integer scan keeps the stored value.
-                b"visual_level" | b"visual_tech_level_addition" => {
+                b"visual_level" | b"visual_tech_level_addition" | b"air_map_icon_frame" => {
                     if let Scanned::Stored(value) = scan_i32(text) {
                         let equipment = &mut self.equipment[at];
-                        if keyword == b"visual_level" {
-                            equipment.visual_level = value;
-                        } else {
-                            equipment.visual_tech_level_addition = value;
+                        match keyword.as_slice() {
+                            b"visual_level" => equipment.visual_level = value,
+                            b"air_map_icon_frame" => equipment.air_map_icon_frame = value,
+                            _ => equipment.visual_tech_level_addition = value,
                         }
                     }
                 }
                 b"allowed_types" => {
                     self.equipment[at].allowed_types = category_list(&field.value, field.quoted());
                 }
+                b"type_override" => self.equipment[at].type_override = string.to_ascii_lowercase(),
                 b"module_slots" => notes.extend(self.module_slots(at, field)),
+                b"module_count_limit" => {
+                    if let Some(limit) = ModuleCountLimit::read(field.value.items().unwrap_or_default()) {
+                        let limits = &mut self.equipment[at].module_count_limits;
+                        if let Some(previous) = limits.iter_mut().find(|entry| entry.key == limit.key) {
+                            *previous = limit;
+                        } else {
+                            limits.push(limit);
+                        }
+                    }
+                }
                 // Category tokens accumulate their masks. Quoted tokens and unknown
                 // names contribute zero and report an error.
                 b"type" => {
@@ -1222,6 +1349,9 @@ impl Database {
                         self.equipment[at].module_slots = source
                             .map(|source| self.equipment[source].module_slots.clone())
                             .unwrap_or_default();
+                        self.equipment[at].module_slot_rules = source
+                            .map(|source| self.equipment[source].module_slot_rules.clone())
+                            .unwrap_or_default();
                     }
                     None => notes.push(
                         "module_slots = inherit with no parent yet, which the equipment reader reports, keeping its slots".to_owned(),
@@ -1245,13 +1375,18 @@ impl Database {
                 ));
                 continue;
             }
-            let made = if entry.value.items().is_some() {
-                Ok(())
+            let made = if let Some(fields) = entry.value.items() {
+                Ok(ModuleSlot::read(fields))
             } else if entry.value_keyword().as_deref() == Some("inherit") {
                 // The slot of the same token in the source.
                 match source {
                     Some(Some(source)) if has(&self.equipment[source].module_slots, &token) => {
-                        Ok(())
+                        let index = self.equipment[source]
+                            .module_slots
+                            .iter()
+                            .position(|name| Token::register(name) == token)
+                            .unwrap();
+                        Ok(self.equipment[source].module_slot_rules[index].clone())
                     }
                     Some(source) => Err(format!(
                         "inherits from {}, which has no module slot of that name",
@@ -1268,7 +1403,12 @@ impl Database {
                 let alias_token = Token::register(alias);
                 if !alias_token.is_rejected() && has(&self.equipment[at].module_slots, &alias_token)
                 {
-                    Ok(())
+                    let index = self.equipment[at]
+                        .module_slots
+                        .iter()
+                        .position(|name| Token::register(name) == alias_token)
+                        .unwrap();
+                    Ok(self.equipment[at].module_slot_rules[index].clone())
                 } else {
                     Err(format!(
                         "copies undefined module slot {}",
@@ -1277,7 +1417,10 @@ impl Database {
                 }
             };
             match made {
-                Ok(()) => self.equipment[at].module_slots.push(slot.to_vec()),
+                Ok(rule) => {
+                    self.equipment[at].module_slots.push(slot.to_vec());
+                    self.equipment[at].module_slot_rules.push(rule);
+                }
                 Err(why) => notes.push(format!(
                     "module slot {shown} {why}, which the slot reader reports, making no slot"
                 )),
@@ -1405,6 +1548,7 @@ impl Database {
             // and the allowed types.
             if definition.no_slots {
                 copy.module_slots.clear();
+                copy.module_slot_rules.clear();
                 copy.default_modules.clear();
                 copy.allowed_types = 0;
             }
@@ -1560,6 +1704,32 @@ impl Database {
     /// categories and passed through [`normalize_category`].
     pub fn category(&self, equipment: &Equipment) -> u64 {
         normalize_category(self.primary_category(equipment) | equipment.module_category)
+    }
+
+    /// Designer family predicates include every archetype in the chain. Each
+    /// step uses that type's categories and its own default modules, rather
+    /// than the selected design's installed modules.
+    pub fn designer_families(&self, equipment: &Equipment) -> [bool; 3] {
+        let mut families = [false; 3];
+        let mut current = equipment;
+        loop {
+            let mask = self.category(current);
+            for (family, bits) in
+                families
+                    .iter_mut()
+                    .zip([0x0040_8000_003c_u64, 0x1f00_37fc00, 0x8000_4003c1])
+            {
+                *family |= mask & bits != 0;
+            }
+            let Some(next) = current.archetype.map(|at| &self.equipment[at]) else {
+                break;
+            };
+            if std::ptr::eq(current, next) {
+                break;
+            }
+            current = next;
+        }
+        families
     }
 
     /// Use own categories, otherwise one archetype step. Parent categories

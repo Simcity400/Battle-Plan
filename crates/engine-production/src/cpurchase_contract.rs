@@ -13,6 +13,8 @@ pub const VTABLE_RVA: usize = 0x2954c70;
 pub const ID_TYPE: usize = 0x08;
 /// CPurchaseContract persistent handle id, u32.
 pub const ID: usize = 0x0c;
+/// Native identity registration byte; cleared after contract retirement.
+pub const REGISTERED: usize = 0x10;
 /// CPurchaseContract handle type 81.
 pub const TYPE: u32 = 81;
 /// Equipment subbuffer pointer; interior amount layout unresolved.

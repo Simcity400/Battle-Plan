@@ -1421,7 +1421,15 @@ fn quiet_spans_settle_and_carry_fuel_as_observing_every_hour() {
         let mut writer = fixture.writer();
         prepared.flush(&mut writer, 1, format, &flag).unwrap();
         writer.commit().unwrap();
-        serde_json::to_value(&*prepared).unwrap()
+        let mut state = serde_json::to_value(&*prepared).unwrap();
+        // Quiet stepping deliberately skips observations. Check their test-only
+        // count separately from the complete fuel continuation below.
+        state["scan"]
+            .as_object_mut()
+            .unwrap()
+            .remove("decoded_frames")
+            .unwrap();
+        state
     };
     // Every hour observed.
     let (hourly_fixture, mut hourly) = (
@@ -1484,6 +1492,8 @@ fn quiet_spans_settle_and_carry_fuel_as_observing_every_hour() {
     );
     // The first hour, the five slot reads, the off-slot read and the
     // cession; nine spans between them and the flush.
+    assert_eq!(hourly.scan.decoded_frames, frames.len());
+    assert_eq!(stepped.scan.decoded_frames, observed);
     assert_eq!(observed, 8, "hours observed");
     assert_eq!(spans, 9, "spans stepped");
     // An off-slot read overlapping the next slot read is left out.

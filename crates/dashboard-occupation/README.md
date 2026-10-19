@@ -21,8 +21,11 @@ forward preparation covers it.
 
 Look-back read-ahead is bounded by half the available hardware threads, at least one, regardless of the proof length.
 
+Hourly StateResistance observations are dated by that worker's own acquisition timing or the decoded view's supplying-hour witness. Untimed carries keep their earlier joins and do not resume after a gap. The independent daily garrison and collaboration reads retain their own read evidence; resistance timing does not date them.
+
 Occupation look-backs read immutable shared section updates and register their current block with replay. Their selected reconstruction and proof rules are unchanged; section retention follows measured table sizes and live reader progress.
 
+Unprepared look-back windows carry held state spans through country balance changes that leave naming and state operands unchanged.
 Occupation fact markers carry equal authenticated values until publication.
 Their supplying events and the resistance and compliance read boundaries keep
 their recorded dates.

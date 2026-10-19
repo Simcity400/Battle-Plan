@@ -45,6 +45,17 @@ fn fixture() -> Fixture {
     word(&mut bytes, 0x4000, 0x5000);
     word(&mut bytes, 0x5000, native::VTABLE_RVA as u64);
     word(&mut bytes, 0x5008, 0xffff_ffff_0000_0034);
+    word(&mut bytes, 0x3000 + ccountry::DEPLOYMENT_MANAGER, 0x8400);
+    word(
+        &mut bytes,
+        0x8400,
+        engine_deployment::cdeployment_status::VTABLE_RVA as u64,
+    );
+    word(
+        &mut bytes,
+        0x8400 + engine_deployment::cdeployment_status::OWNER,
+        0x3000,
+    );
     text(&mut bytes, 0x5000 + native::NAME, &[b'A', 0, 255]);
     text(&mut bytes, 0x5000 + native::NAME_KEY, b"fallback");
     text(&mut bytes, 0x5000 + native::MODEL_ENTITY, b"GER_x_entity");
@@ -61,18 +72,456 @@ fn fixture() -> Fixture {
     word(&mut bytes, 0x8908, 0x7000);
     Fixture { bytes }
 }
+fn template_outcomes(captured: &Captured) -> [Outcome; 2] {
+    let [dictionary, icons, _] = captured.outcomes();
+    [dictionary, icons]
+}
+
 fn capacity() -> Capacities {
     Capacities {
         rows: 2,
         bytes: 32,
-        counts: 4,
+        counts: 16,
         variants: 4,
         icon_rows: 2,
+        country_rows: 2,
         icon_bytes: 32,
         name_bytes: 32,
         database: 8,
         locals: 8,
     }
+}
+
+#[test]
+fn enabled_unsized_startup_records_known_template_and_country_values_through_spool() {
+    use crate::template_changes::Changes;
+    use engine_deployment::cdeployment_status as deployment;
+    use engine_occupation::ccountry_occupation_status as occupation;
+    use replay::{spool::Record, spool::encode_record};
+    use replay_frame::{
+        frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput, frame::Metrics,
+    };
+    const TEST: &str = "extended::division_templates::tests::enabled_unsized_startup_records_known_template_and_country_values_through_spool";
+    const CHILD: &str = "BATTLE_PLAN_TEMPLATE_UNSIZED_STARTUP_TEST";
+    // Exercise the actual process-wide observers without enabling them in
+    // other tests. No native hooks are patched in this synthetic process.
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let changes = crate::template_changes::unsized_observer_for_tests();
+    let reset = crate::local_subunit_changes::unsized_observer_for_tests();
+    assert!(changes.quiet().is_some());
+    assert!(
+        changes.sequence(0x5000).is_none(),
+        "no template watch table yet"
+    );
+    assert!(crate::local_subunit_changes::Changes::quiet(&reset).is_some());
+    assert!(
+        crate::local_subunit_changes::Changes::sequence(&reset, 0x8400).is_none(),
+        "no deployment-reset watch table yet"
+    );
+
+    let mut source = fixture();
+    let staff = 0xffff_ffff_0000_0034_u64;
+    for (at, value) in [
+        (0x5000 + native::REGIMENT_DATA, 0x6100),
+        (0x5000 + native::REGIMENT_DATA + 8, (2_u64 << 32) | 2),
+        (0x6100, 0x7000),
+        (0x8400 + deployment::SELECTED_STAFF_TEMPLATE, staff),
+        (0x3000 + ccountry::OCCUPATION_STATUS, 0x8000),
+        (0x8000, occupation::VTABLE_RVA as u64),
+        (
+            0x8000 + occupation::SECONDARY_BASE,
+            occupation::SECONDARY_VTABLE_RVA as u64,
+        ),
+    ] {
+        source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    for (at, value) in [
+        (0x5000 + native::GRID_DIMENSIONS, (2_i32 << 16) | 1),
+        (0x5000 + native::PRIORITY, -7),
+        (0x8400 + deployment::NEXT_HQ_ORDER, 23),
+        (0x8000 + occupation::GARRISON_PRIORITY, -3),
+    ] {
+        source.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    source.bytes[0x3000 + ccountry::LOCK_ALL_TEMPLATES] = 1;
+
+    // The loader's existing live sizing pass precedes hook publication and
+    // the first observer boundary; there has been no capture census yet.
+    let mut capacities = Capacities::default();
+    capacities.presize(&source, 0, 0x1000).unwrap();
+    crate::local_subunit_changes::boundary(true);
+    crate::template_changes::boundary(true);
+    let mut capture = Captured::with_capacities(&capacities);
+    capture.capture_original(&source, 0, 0x1000, 1, true, &changes);
+    let mut input = FrameInput {
+        branch: 1,
+        hour: 1,
+        tables: std::array::from_fn(|_| TableInput::Sampled(unavailable("unused test table"))),
+        metrics: Metrics::default(),
+    };
+    for (table, value) in TABLES.into_iter().zip(capture.table_inputs()) {
+        input.tables[table.index()] = value;
+    }
+    let mut encoder = FrameEncoder::new();
+    let mut prepared = encoder.prepare_bytes(input, true).unwrap();
+    let frame = prepared.take_frame().decode().unwrap();
+    assert!(
+        !encode_record(&Record::Frame(frame.clone()))
+            .unwrap()
+            .is_empty()
+    );
+    encoder.commit(prepared).unwrap();
+    let decoded = FrameDecoder::new().apply(&frame).unwrap();
+    let icons = decoded.complete::<tables::DivisionTemplateIcons>().unwrap();
+    let layout = icons[0]
+        .layout
+        .require("layout")
+        .unwrap()
+        .as_ref()
+        .expect("readable layout must be known at H");
+    assert_eq!((layout.regiments.columns, layout.regiments.rows), (1, 2));
+    assert_eq!(layout.regiments.cells.len(), 2);
+    assert_eq!(layout.regiments.cells[0].token, 777);
+    assert!(layout.regiments.cells[0].occupied);
+    assert!(!layout.regiments.cells[1].occupied);
+    let settings = icons[0]
+        .settings
+        .require("settings")
+        .unwrap()
+        .as_ref()
+        .expect("readable settings must be known at H");
+    assert_eq!(settings.priority, -7);
+    let countries = decoded
+        .complete::<tables::CountryTemplateState>()
+        .expect("readable country configuration must be known at H");
+    assert_eq!(countries.len(), 1);
+    assert_eq!(countries[0].selected_staff, staff);
+    assert_eq!(countries[0].next_hq_order, 23);
+    assert_eq!(countries[0].lock_all, 1);
+    assert_eq!(countries[0].garrison_priority, Recorded::Value(Some(-3)));
+    assert!(matches!(countries[0].garrisons, Recorded::Value(Some(_))));
+}
+
+#[test]
+fn cold_and_post_gap_template_columns_pass_spool_validation_with_named_refusals() {
+    use crate::template_changes::Watches;
+    use replay::{spool::Record, spool::encode_record};
+    use replay_data::{rows::RowCodec, rows::TableRows};
+    use replay_frame::{
+        frame::FrameDecoder, frame::FrameEncoder, frame::FrameInput, frame::Metrics,
+    };
+
+    fn admit(
+        capture: &Captured,
+        encoder: &mut FrameEncoder,
+        hour: i32,
+    ) -> replay_frame::frame::DecodedFrame {
+        let mut input = FrameInput {
+            branch: 1,
+            hour,
+            tables: std::array::from_fn(|_| TableInput::Sampled(unavailable("unused test table"))),
+            metrics: Metrics::default(),
+        };
+        for (table, value) in TABLES.into_iter().zip(capture.table_inputs()) {
+            input.tables[table.index()] = value;
+        }
+        // This is the production spool's validation/prepare/commit path, not
+        // an unchecked row codec. Every present column must be encodable.
+        let mut prepared = encoder.prepare_bytes(input, true).unwrap();
+        let frame = prepared.take_frame().decode().unwrap();
+        assert!(frame.keyframe);
+        let mut wire = Vec::new();
+        Record::Frame(frame.clone()).encode(&mut wire).unwrap();
+        assert!(
+            !encode_record(&Record::Frame(frame.clone()))
+                .unwrap()
+                .is_empty()
+        );
+        encoder.commit(prepared).unwrap();
+        let decoded = FrameDecoder::new().apply(&frame).unwrap();
+        for table in [
+            TableId::DivisionTemplateIcons,
+            TableId::CountryTemplateState,
+        ] {
+            match &*decoded.tables[table.index()] {
+                TableView::Complete(rows) => {
+                    rows.validate_keys().unwrap();
+                    match rows {
+                        TableRows::DivisionTemplateIcons(rows) => {
+                            for row in rows {
+                                assert_eq!(row.not_recorded_fields(), 0);
+                            }
+                        }
+                        TableRows::CountryTemplateState(rows) => {
+                            for row in rows {
+                                assert_eq!(row.not_recorded_fields(), 0);
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                TableView::Unavailable { reason } => assert!(!reason.is_empty()),
+                _ => panic!("fixture must be complete or explicitly refused"),
+            }
+        }
+        decoded
+    }
+
+    for post_gap in [false, true] {
+        for case in [
+            "ready",
+            "template writer",
+            "country writer",
+            "unobserved",
+            "model failure",
+            "empty roster",
+            "garrisons ready",
+            "garrison writer",
+            "deployment failure",
+        ] {
+            let watches = Watches::enabled(32);
+            let unobserved = Watches::new();
+            let mut source = fixture();
+            let mut capture = Captured::with_capacities(&capacity());
+            let mut encoder = FrameEncoder::new();
+            if post_gap {
+                capture.capture_original(&source, 0, 0x1000, 0, true, &watches);
+                admit(&capture, &mut encoder, 0);
+                capture.fail_capture(1, false, "synthetic spool gap");
+                encoder = FrameEncoder::new();
+            }
+            if case == "model failure" {
+                source.bytes
+                    [0x5000 + native::SUBUNIT_COUNTS + 8..0x5000 + native::SUBUNIT_COUNTS + 12]
+                    .copy_from_slice(&1_u32.to_le_bytes());
+                source.bytes
+                    [0x5000 + native::SUBUNIT_COUNTS + 12..0x5000 + native::SUBUNIT_COUNTS + 16]
+                    .copy_from_slice(&2_u32.to_le_bytes());
+            }
+            if case == "empty roster" {
+                source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + 12
+                    ..0x3000 + ccountry::DIVISION_TEMPLATES + 16]
+                    .fill(0);
+            }
+            if matches!(case, "garrisons ready" | "garrison writer") {
+                use engine_occupation::ccountry_occupation_status as occupation;
+                for (at, value) in [
+                    (0x3000 + ccountry::OCCUPATION_STATUS, 0x8000_u64),
+                    (0x8000, occupation::VTABLE_RVA as u64),
+                    (
+                        0x8000 + occupation::SECONDARY_BASE,
+                        occupation::SECONDARY_VTABLE_RVA as u64,
+                    ),
+                ] {
+                    source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            if case == "deployment failure" {
+                source.bytes[0x8400..0x8408].fill(0);
+            }
+            let writer = match case {
+                "template writer" => Some(watches.notify(0x5000, 0)),
+                "country writer" => Some(watches.notify(1, 0)),
+                "garrison writer" => Some(watches.notify(0x8000, 0)),
+                _ => None,
+            };
+            let changes = if case == "unobserved" {
+                &unobserved
+            } else {
+                &watches
+            };
+            capture.capture_original(&source, 0, 0x1000, 2, true, changes);
+            let decoded = admit(&capture, &mut encoder, 2);
+            let icons = decoded.complete::<tables::DivisionTemplateIcons>().unwrap();
+            if case == "empty roster" {
+                assert!(icons.is_empty());
+            } else {
+                // This observer certifies only a quiet writer domain. Any
+                // active writer refuses both template and country reads.
+                let refused = matches!(
+                    case,
+                    "template writer" | "country writer" | "garrison writer" | "unobserved"
+                );
+                assert_eq!(
+                    matches!(icons[0].settings, Recorded::Value(None)),
+                    refused,
+                    "{case}"
+                );
+                assert_eq!(
+                    capture
+                        .model_failures()
+                        .reasons
+                        .iter()
+                        .any(|(reason, count)| *reason
+                            == "template details writer certificate unavailable"
+                            && *count == 1),
+                    refused,
+                    "certificate refusal must remain named and counted: {case}"
+                );
+                assert_eq!(
+                    matches!(icons[0].layout, Recorded::Value(None)),
+                    refused || case == "model failure",
+                    "{case}"
+                );
+                assert!(matches!(icons[0].display_name, Recorded::Value(Some(_))));
+            }
+            if matches!(
+                case,
+                "template writer" | "country writer" | "garrison writer" | "unobserved"
+            ) {
+                assert!(
+                    matches!(&*decoded.tables[TableId::CountryTemplateState.index()],
+                    TableView::Unavailable { reason } if reason.contains("country template writer certificate"))
+                );
+            } else if case == "deployment failure" {
+                assert!(
+                    matches!(&*decoded.tables[TableId::CountryTemplateState.index()],
+                    TableView::Unavailable { reason } if reason.contains("deployment"))
+                );
+            } else {
+                let countries = decoded.complete::<tables::CountryTemplateState>().unwrap();
+                assert_eq!(countries.len(), 1);
+                // Missing occupation input refuses only its own fields.
+                if case == "garrisons ready" {
+                    assert!(matches!(
+                        countries[0].garrison_priority,
+                        Recorded::Value(Some(_))
+                    ));
+                    assert!(matches!(countries[0].garrisons, Recorded::Value(Some(_))));
+                } else {
+                    assert_eq!(countries[0].garrison_priority, Recorded::Value(None));
+                    assert_eq!(countries[0].garrisons, Recorded::Value(None));
+                }
+            }
+            drop(writer);
+            capture.capture_original(&source, 0, 0x1000, 3, false, &watches);
+            let retry = admit(&capture, &mut encoder, 3);
+            if case != "deployment failure" {
+                assert_eq!(
+                    retry
+                        .complete::<tables::CountryTemplateState>()
+                        .unwrap()
+                        .len(),
+                    1
+                );
+            }
+            if case != "empty roster" {
+                assert!(matches!(
+                    retry.complete::<tables::DivisionTemplateIcons>().unwrap()[0].settings,
+                    Recorded::Value(Some(_))
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_is_exact() {
+    use crate::template_changes::Watches;
+    use engine_occupation::ccountry_occupation_status as occupation;
+    struct Unreadable;
+    impl Memory for Unreadable {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            panic!("quiet country template cache must make no native reads");
+        }
+    }
+    let mut source = fixture();
+    let mut put =
+        |at: usize, value: u64| source.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    put(0x3000 + ccountry::OCCUPATION_STATUS, 0x8000);
+    put(0x8000, occupation::VTABLE_RVA as u64);
+    put(
+        0x8000 + occupation::SECONDARY_BASE,
+        occupation::SECONDARY_VTABLE_RVA as u64,
+    );
+    let country = ccountry::Country {
+        pointer: 0x3000,
+        canonical_slot: 1,
+        id: 1,
+    };
+    let watches = Watches::enabled(32);
+    let mut store = countries::Store::default();
+    store.begin();
+    let first = store.read(&source, 0, 0x1000, country, &watches).unwrap();
+    assert!(first.garrison_failure.is_none());
+    store.finish();
+    assert!(store.changed);
+    for _ in 0..3 {
+        store.begin();
+        crate::test_support::with_allocations_denied(|| {
+            let row = store
+                .read(&Unreadable, 0, 0x1000, country, &watches)
+                .unwrap();
+            assert!(std::sync::Arc::ptr_eq(
+                first.garrisons.as_ref().unwrap(),
+                row.garrisons.as_ref().unwrap()
+            ));
+            store.finish();
+            assert!(!store.changed);
+        });
+    }
+    drop(watches.notify(0x8400, 34));
+    store.begin();
+    store.read(&source, 0, 0x1000, country, &watches).unwrap();
+    store.finish();
+    assert!(store.changed);
+    drop(watches.notify(0x8000, 36));
+    store.begin();
+    crate::test_support::with_allocations_denied(|| {
+        let equal = store.read(&source, 0, 0x1000, country, &watches).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            first.garrisons.as_ref().unwrap(),
+            equal.garrisons.as_ref().unwrap()
+        ));
+    });
+    store.finish();
+    source.bytes
+        [0x8000 + occupation::GARRISON_PRIORITY..0x8000 + occupation::GARRISON_PRIORITY + 4]
+        .copy_from_slice(&(-3_i32).to_le_bytes());
+    drop(watches.notify(country.id as usize, 55));
+    store.begin();
+    let reprioritized = store.read(&source, 0, 0x1000, country, &watches).unwrap();
+    assert_eq!(reprioritized.garrison_priority, Some(-3));
+    assert!(std::sync::Arc::ptr_eq(
+        first.garrisons.as_ref().unwrap(),
+        reprioritized.garrisons.as_ref().unwrap()
+    ));
+    store.finish();
+    // A removal changes membership, and restoring a previously cached country
+    // also changes it even when no native writer touched that country's state.
+    store.begin();
+    store.finish();
+    assert!(store.changed);
+    store.begin();
+    store
+        .read(&Unreadable, 0, 0x1000, country, &watches)
+        .unwrap();
+    store.finish();
+    assert!(store.changed);
+    // An observed failure cannot revive a formerly held configuration, and
+    // quiet hours must not retry its native reads.
+    drop(watches.notify(0x8400, 34));
+    source.bytes[0x8400..0x8408].fill(0);
+    store.begin();
+    assert!(store.read(&source, 0, 0x1000, country, &watches).is_err());
+    assert!(
+        store
+            .read(&Unreadable, 0, 0x1000, country, &watches)
+            .is_err()
+    );
 }
 
 /// Both tables are read every hour, the dictionary from the icon walk, and
@@ -94,11 +543,12 @@ fn every_hour_reads_both_tables_and_bad_memory_cannot_claim_empty() {
         // Unobserved, the name key behind the nonempty literal is read.
         assert!(read[TABLES[0].index()].spans > 0, "{hour}");
         assert_eq!(
-            capture.outcomes(),
+            template_outcomes(&capture),
             [Outcome::Rows { len: 1 }, Outcome::Rows { len: 1 }]
         );
         capture.capture(&missing, 0, 0x1000, hour, force);
-        let [Outcome::Unavailable { reason }, Outcome::Unavailable { .. }] = capture.outcomes()
+        let [Outcome::Unavailable { reason }, Outcome::Unavailable { .. }] =
+            template_outcomes(&capture)
         else {
             panic!("unreadable templates must fail at hour {hour}");
         };
@@ -138,7 +588,7 @@ fn hourly_template_job_publishes_direct_walk_rows() {
             hour,
             false,
         );
-        assert_eq!(capture.outcomes(), [Outcome::Rows { len: 1 }; N]);
+        assert_eq!(template_outcomes(&capture), [Outcome::Rows { len: 1 }; 2]);
         let [
             TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(dictionary)),
             TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(icons)),
@@ -178,6 +628,51 @@ fn a_failed_capture_counts_no_model_failures() {
 }
 
 #[test]
+fn edit_finishing_between_fixed_record_copy_and_demand_cannot_certify_old_settings() {
+    use crate::template_changes::Watches;
+    struct Editing<'a> {
+        source: Fixture,
+        watches: &'a Watches,
+        edited: std::cell::Cell<bool>,
+    }
+    impl Memory for Editing<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            let copied = self.source.copy(at, out);
+            if at == 0x5000 + native::REGIMENT_DATA && !self.edited.replace(true) {
+                drop(self.watches.notify(0x5000, 22));
+            }
+            copied
+        }
+    }
+    let watches = Watches::enabled(32);
+    let source = Editing {
+        source: fixture(),
+        watches: &watches,
+        edited: false.into(),
+    };
+    let mut capture = Captured::with_capacities(&capacity());
+    capture.capture_original(&source, 0, 0x1000, 1, true, &watches);
+    assert!(source.edited.get());
+    let [
+        _,
+        TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(icons)),
+    ] = capture.tables()
+    else {
+        panic!("icons");
+    };
+    assert!(matches!(icons[0].settings, Recorded::Value(None)));
+    capture.capture_original(&source, 0, 0x1000, 2, false, &watches);
+    let [
+        _,
+        TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(icons)),
+    ] = capture.tables()
+    else {
+        panic!("icons");
+    };
+    assert!(matches!(icons[0].settings, Recorded::Value(Some(_))));
+}
+
+#[test]
 fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
     let mut capture = Captured::with_capacities(&capacity());
     let mut source = fixture();
@@ -200,7 +695,13 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
             word(data as usize + index * 8, cell);
         }
     }
-    capture.capture(&source, 0, 0x1000, 3, true);
+    source.bytes[0x5000 + native::GRID_DIMENSIONS..0x5000 + native::GRID_DIMENSIONS + 4]
+        .copy_from_slice(&(1_u32 | (3 << 16)).to_le_bytes());
+    source.bytes[0x5000 + native::REGIMENTAL_SUPPORT_DATA - 8
+        ..0x5000 + native::REGIMENTAL_SUPPORT_DATA - 4]
+        .copy_from_slice(&(1_u32 | (1 << 16)).to_le_bytes());
+    let watches = crate::template_changes::Watches::enabled(32);
+    capture.capture_original(&source, 0, 0x1000, 3, true, &watches);
     let [
         TableView::Complete(replay_data::rows::TableRows::DivisionTemplates(rows)),
         TableView::Complete(replay_data::rows::TableRows::DivisionTemplateIcons(icons)),
@@ -237,6 +738,25 @@ fn conversion_preserves_exact_bytes_and_rejects_every_invalid_span() {
             regimental_support: vec![entry(1)],
         })
     );
+    let layout = icons[0].layout.require("layout").unwrap().as_ref().unwrap();
+    assert_eq!((layout.regiments.columns, layout.regiments.rows), (1, 3));
+    assert_eq!(
+        layout
+            .regiments
+            .cells
+            .iter()
+            .map(|cell| (cell.token, cell.occupied))
+            .collect::<Vec<_>>(),
+        [(777, true), (0, false), (777, true)]
+    );
+    assert_eq!(
+        (
+            layout.regimental_support.columns,
+            layout.regimental_support.rows
+        ),
+        (1, 1)
+    );
+    assert_eq!(layout.regimental_support.cells.len(), 1);
     assert_eq!(icons[0].template, 0xffff_ffff_0000_0034);
     assert_eq!(icons[0].priority_unit, 777);
     assert_eq!(icons[0].priority_unit_name, b"infantry");
@@ -394,6 +914,7 @@ fn displayed(inputs: [TableInput; N]) -> DivisionTemplateIconRow {
         TableInput::Sampled(TableView::Complete(
             replay_data::rows::TableRows::DivisionTemplateIcons(mut rows),
         )),
+        _,
     ] = inputs
     else {
         panic!("complete hourly icon fixture")
@@ -574,10 +1095,16 @@ fn live_template_demand_and_same_capture_growth_keep_five_thousand_countries() {
     assert!(capacity.counts >= 20_000);
     let mut captured = Captured::with_capacities(&capacity);
     captured.capture(&source, 0, 0x1000, 9, true);
-    assert_eq!(captured.outcomes(), [Outcome::Rows { len: 20_000 }; N]);
+    assert_eq!(
+        template_outcomes(&captured),
+        [Outcome::Rows { len: 20_000 }; 2]
+    );
     let grown = large_content(5_000, 5);
     captured.capture(&grown, 0, 0x1000, 10, true);
-    assert_eq!(captured.outcomes(), [Outcome::Rows { len: 25_000 }; N]);
+    assert_eq!(
+        template_outcomes(&captured),
+        [Outcome::Rows { len: 25_000 }; 2]
+    );
     assert_eq!(captured.name_bytes.len, 25_000 * 3);
     assert_eq!(captured.counts.len, 25_000);
 }
@@ -594,4 +1121,86 @@ fn optional_model_failure_does_not_remove_fresh_name_inputs() {
     let row = displayed(capture.table_inputs());
     assert_eq!(row.model_unreadable, 1);
     assert!(matches!(row.display_name, Recorded::Value(Some(_))));
+}
+
+#[test]
+fn country_template_state_covers_five_thousand_empty_rosters_and_is_independent_of_templates() {
+    let mut source = fixture();
+    let total = 5000;
+    source.bytes.resize(0x20000 + total * 0x2000, 0);
+    let word = |bytes: &mut [u8], at: usize, value: u64| {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes())
+    };
+    let count = total as u64 + 1;
+    for (root, data) in [
+        (cgame_state::COUNTRIES, 0x9000),
+        (cgame_state::COUNTRY_LINKS, 0x14000),
+    ] {
+        word(&mut source.bytes, 0x1000 + root, data);
+        word(&mut source.bytes, 0x1000 + root + 8, count | (count << 32));
+    }
+    for index in 0..total {
+        let id = index + 1;
+        let country = 0x20000 + index * 0x2000;
+        let manager = country + 0x1800;
+        word(&mut source.bytes, 0x9000 + id * 8, country as u64);
+        source.bytes[0x14000 + id * 4..0x14000 + id * 4 + 4]
+            .copy_from_slice(&(id as u32).to_le_bytes());
+        word(&mut source.bytes, country, ccountry::VTABLE_RVA as u64);
+        word(&mut source.bytes, country + 8, id as u64);
+        word(
+            &mut source.bytes,
+            country + ccountry::DEPLOYMENT_MANAGER,
+            manager as u64,
+        );
+        source.bytes[country + ccountry::LOCK_ALL_TEMPLATES] = (id % 3) as u8;
+        word(
+            &mut source.bytes,
+            manager,
+            engine_deployment::cdeployment_status::VTABLE_RVA as u64,
+        );
+        word(
+            &mut source.bytes,
+            manager + engine_deployment::cdeployment_status::OWNER,
+            country as u64,
+        );
+        word(
+            &mut source.bytes,
+            manager + engine_deployment::cdeployment_status::SELECTED_STAFF_TEMPLATE,
+            ((id as u64) << 32) | 52,
+        );
+    }
+    let watches = crate::template_changes::Watches::enabled(total * 4);
+    let mut captured = Captured::with_capacities(&capacity());
+    captured.capture_original(&source, 0, 0x1000, 9, true, &watches);
+    assert_eq!(
+        captured.outcomes(),
+        [
+            Outcome::Rows { len: 0 },
+            Outcome::Rows { len: 0 },
+            Outcome::Rows { len: total }
+        ]
+    );
+    let TableView::Complete(replay_data::rows::TableRows::CountryTemplateState(rows)) =
+        captured.country_state()
+    else {
+        panic!("complete country template state")
+    };
+    assert_eq!(rows.len(), total);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row.country, index as u32 + 1);
+        assert_eq!(row.selected_staff, ((index as u64 + 1) << 32) | 52);
+        assert_eq!(row.lock_all, ((index + 1) % 3) as u8);
+    }
+    // An unreadable selection fails its own table, never a complete empty
+    // country-template roster or the independent icon table.
+    word(&mut source.bytes, 0x20000 + ccountry::DEPLOYMENT_MANAGER, 0);
+    captured.capture_original(&source, 0, 0x1000, 10, true, &watches);
+    assert_eq!(template_outcomes(&captured), [Outcome::Rows { len: 0 }; 2]);
+    assert!(matches!(
+        captured.country_rows.outcome,
+        Outcome::Unavailable {
+            reason: "deployment status pointer unreadable or null"
+        }
+    ));
 }

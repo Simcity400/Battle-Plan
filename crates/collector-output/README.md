@@ -5,3 +5,5 @@ Output totals capture: the production line output and construction IC observers 
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-output` and `cargo clippy -p collector-output --all-targets -- -D warnings` for its synthetic checks.
+
+Output hook publication reports both a safely contained publication failure and an unsuccessful internal rollback through the typed installation audit. A successful internal rollback does not hide the failed family from runtime containment; a failed rollback makes attach terminal before readiness.

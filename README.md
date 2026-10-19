@@ -97,7 +97,7 @@ Each component's README describes its layout, concepts and local rules.
 | [collector-test-support](crates/collector-test-support/README.md) | The shared synthetic allocation-denial allocator, pre-main test-stack reservation and per-call benchmark helper for collector libraries. |
 | [collector-timing](crates/collector-timing/README.md) | Sampled per-thread hook timing, TSC calibration, original-call accounting and borrowed status output. |
 | [collector-visibility](crates/collector-visibility/README.md) | Country visibility with the carried raw accumulator entry of an unmarked country. |
-| [collector-war-overview](crates/collector-war-overview/README.md) | War owned relations, relation goals, overview countries and war name rules. |
+| [collector-war-overview](crates/collector-war-overview/README.md) | War relations, goals, overview countries, naming and participation accounting. |
 | [collector-weather](crates/collector-weather/README.md) | Province and region weather records with their window-following carry, region combat modifiers and the weather display. |
 | [collector-map-events](crates/collector-map-events/README.md) | The simulation edges behind the game's floating map text: callbacks, per-thread publication lanes and the hourly interval. |
 | [recorder](crates/recorder/README.md) | Attach/detach, replay finalization, inspection and save comparison. |

@@ -427,7 +427,7 @@ impl Hooks {
         ORIGINAL.store(base + native::WRITER_RVA, Ordering::Release);
         let install = || -> Result<Vec<Hook>, &'static str> {
             for site in native::SITES {
-                if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+                if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
                     return Err("air loss call sentinel differs or unreadable");
                 }
             }
@@ -451,6 +451,11 @@ impl Hooks {
                 Self { hooks }
             }
             Err(reason) => {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Construction,
+                    None,
+                    reason,
+                );
                 let _ = UNHOOKED.set(reason);
                 Self { hooks: Vec::new() }
             }

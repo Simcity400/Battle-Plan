@@ -757,21 +757,26 @@ fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_
     use dashboard_base::test_fixtures::{continuation_records, file_source};
     let first = records(1, vec![frame(0, 5000), frame(1, 5000)]);
     let replay = Replay::from_records(CAMPAIGN.into(), &[first]).unwrap();
+    let mut sampled = frame(6, 5000);
+    // This nonzero census row has no CountryLinks entry, so it supplies one
+    // attribution warning without changing any deployed battalion counts.
+    rows::<tables::DivisionCensus>(&mut sampled).push(DivisionCensusRow {
+        country: u32::MAX,
+        grouped: 1,
+        ..Default::default()
+    });
     let mut refused = frame(7, 5000);
     *refused.tables[TableId::Divisions.index()] = replay_frame::frame::TableView::Unavailable {
         reason: "synthetic window refusal".into(),
     };
     let replay = replay
-        .append(&[continuation_records(
-            &replay,
-            1,
-            vec![frame(6, 5000), refused],
-        )])
+        .append(&[continuation_records(&replay, 1, vec![sampled, refused])])
         .unwrap();
     let (source, root) = file_source(replay);
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let params = ArmySizeParams {
+        template_at: None,
         branch_id: "1".into(),
         tags: Vec::new(),
         top: Some(10),
@@ -790,6 +795,10 @@ fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_
         sampled_window(&source, &params, &context, Some(coverage), (6, 7), &flag).unwrap()
     };
     let first = read(&extent(0));
+    assert_eq!(
+        first.3.unreadable, 1,
+        "fixture must retain warning evidence"
+    );
     let (again, refused) = progressive::without_block_decodes(|| read(&extent(1)));
     assert!(
         !refused,
@@ -804,14 +813,11 @@ fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_
     assert_eq!(observations::usage(&source, "army-size:window").2, 1);
     assert_eq!(first.0.len(), 5000);
     assert!(
-        !first.3.invalid_table_reads.is_empty(),
-        "fixture must retain warning evidence"
-    );
-    assert!(
         !first.3.tracks.is_empty(),
         "cached composition metadata was lost"
     );
     let cut = read(&extent(6));
+    assert_eq!(cut.3.unreadable, 0, "the cut excludes the warning's hour");
     assert_eq!(observations::usage(&source, "army-size:window").2, 2);
     assert!(cut.0.values().flatten().all(|run| run.first_hour >= 7));
     let mut done = extent(7);

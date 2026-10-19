@@ -38,6 +38,7 @@ fn fixture(output: &str) -> (Fixture, Folder) {
                 " mod_project:0 \"Project [Root.GetTag]\"\n EFFECT_COMPLETE_SPECIAL_PROJECT:0 \"Complete $PROJECT$\"\n SPECIAL_PROJECT_RESEARCH_OUTPUT:0 \"Output\"\n",
                 " EFFECT_CONTEXT_SPECIAL_PROJECT:0 \"Project context $SPECIAL_PROJECT$\"\n EFFECT_ADD_SPECIAL_PROJECT_PROGRESS:0 \"Progress $PROJECT$ $PROGRESS|2$\"\n",
                 " PROJECT_COUNTRY:0 \"Country [Root.GetTag]/[Prev.GetTag]\"\n PROJECT_SCIENTIST:0 \"Scientist [Root.GetName]\"\n PROJECT_FACILITY:0 \"Facility [Root.GetName]/[?facility_province_id|0]\"\n",
+                " PROJECT_VARIABLE:0 \"Variable [?FROM.mod_value|2]\"\n",
                 " SPECIAL_PROJECT_OUTPUT_SUBUNITS:0 \"Subunits:\"\n SPECIAL_PROJECT_OUTPUT_EQUIPMENT:0 \"Equipment:\"\n SPECIAL_PROJECT_OUTPUT_MODULE:0 \"Modules:\"\n",
                 " mod_unit:0 \"Unit\"\n AAA_mod_unit:0 \"Alpha unit\"\n mod_equipment:0 \"Equipment\"\n AAA_mod_equipment:0 \"Alpha equipment\"\n mod_module:0 \"Module\"\n AAA_mod_module:0 \"Alpha module\"\n",
                 " STAT_ARMY_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_DIFF:0 \"$VALUE|2$\"\n",
@@ -357,4 +358,55 @@ fn project_output_reuses_equipment_and_subunit_bonus_formatters() {
         "Complete Project AAA\n  Output\n  \u{13}GFX_mod_unit_icon_small|1 Alpha unit\n     Soft:0.10\n  \u{11}YEquipment\u{11}!: \n      Soft:0.20\n  Equipment:\n  Alpha equipment\n"
     );
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}
+
+#[test]
+fn gap_research_grants_pending_output_uses_exact_selected_assignment_and_never_falls_back() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    let (mut fixture, _folder) = fixture(
+        "country_effects={custom_effect_tooltip=PROJECT_VARIABLE} scientist_effects={custom_effect_tooltip=PROJECT_SCIENTIST}",
+    );
+    if let TableView::Complete(TableRows::Projects(rows)) =
+        &mut *fixture.frame.tables[TableId::Projects.index()]
+    {
+        rows[0].runtime = Recorded::Value(ProjectRuntime {
+            variables: Some(
+                ProjectVariableStore {
+                    seed: 1,
+                    entries: vec![ProjectVariable {
+                        name: b"mod_value".to_vec(),
+                        value_raw: 125_000,
+                    }],
+                }
+                .into(),
+            ),
+            ..Default::default()
+        });
+    }
+    let scripted = fixture.catalogue.scripted_content().unwrap();
+    let cache = scripted.effects().unwrap();
+    let text = crate::scripted_text::ScriptedText::new(
+        &fixture.frame,
+        &fixture.catalogue.localisation,
+        scripted,
+        1,
+    );
+    let context = Context::new(
+        &text,
+        &fixture.catalogue.localisation,
+        1,
+        "pending output",
+        cache.view(None),
+    );
+    let definitions =
+        installed_content_core::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
+    let output = &definitions.projects["mod_project"].output;
+    let absent = project_output_description(output, &context, 100, 8, Ok(None), Ok(None));
+    assert!(!absent.text.contains("Scientist"));
+    let selected = project_output_description(output, &context, 100, 8, Ok(Some(7)), Ok(None));
+    assert!(selected.text.contains("Variable 1.25"), "{:?}", selected);
+    assert!(selected.refusals.is_empty(), "{:?}", selected.refusals);
+    assert!(selected.text.contains("Scientist Later"), "{:?}", selected);
+    assert!(!selected.text.contains("Scientist First"));
 }

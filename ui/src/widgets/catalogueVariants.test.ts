@@ -25,7 +25,7 @@ test('every widget view a setting switches to is also its own catalogue card', (
     'navy-size': ['Navy size over time', 'Navy size: One country by class', 'Navy size: Ship classes'],
     'air-kills-losses': ['Air kills & losses over time', 'Aircraft loss causes'],
     'faction-strength': ['Faction strength over time', 'Faction strength: Members', 'Faction territory'],
-    'trade-flows': ['Trade flows: Trade contributors'],
+    'trade-flows': ['Trade flows: Trade contributors', 'Market & lend-lease'],
     'territory-transfers': ['Territory transfer log'],
     wars: ['Wars by country'],
     'world-tension': ['World tension & threat: Country contributions', 'World tension contributions'],

@@ -1,4 +1,5 @@
 //! TLS variable RNG, distinct from event scopes' iterator seed.
+use crate::triggers::Failure;
 
 use super::*;
 use crate::scripted_text::{EventObject, EventScope, random};
@@ -17,16 +18,18 @@ impl Evaluator<'_, '_> {
         {
             return;
         }
-        let value = self
-            .initial_variable_seed(scopes)
+        let value = super::super::refusal::deferred(|| self.initial_variable_seed(scopes))
             .map(Value::Raw)
-            .map_err(|why| format!("random_seed: {why}"));
+            .map_err(|why| why.context(|why| format!("random_seed: {why}")));
         self.local_temps
             .borrow_mut()
             .insert(b"random_seed".to_vec(), value);
     }
 
-    fn initial_variable_seed(&self, scopes: Scopes) -> Result<i64, String> {
+    fn initial_variable_seed(&self, scopes: Scopes) -> Result<i64, Failure> {
+        if self.temps() == Temps::Inherited {
+            return Err(super::inherited_temps_failure());
+        }
         let (this, from) = if let Some(at) = scopes.cursor {
             let binding = self.event_graph.borrow();
             let graph = binding
@@ -93,18 +96,16 @@ impl Evaluator<'_, '_> {
     pub(in crate::triggers) fn variable_scope_has_country(
         &self,
         country: u32,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Failure> {
         match self.world().raw_country(country) {
             Some(raw) => Ok((raw as i32) > 0),
             None if country == 0 => Ok(false),
-            None => Err(format!(
-                "variable RNG country slot {country} is not recorded"
-            )),
+            None => Err(format!("variable RNG country slot {country} is not recorded").into()),
         }
     }
 
     /// Use the object's identity seed, falling back to the stored scope seed.
-    fn variable_scope_hash(&self, scope: EventScope) -> Result<u32, String> {
+    fn variable_scope_hash(&self, scope: EventScope) -> Result<u32, Failure> {
         let hash = match scope.this {
             EventObject::Country(country)
             | EventObject::CountryState { country, .. }
@@ -148,7 +149,7 @@ impl Evaluator<'_, '_> {
         Ok(hash)
     }
 
-    fn variable_character_hash(&self, id: u32) -> Result<u32, String> {
+    fn variable_character_hash(&self, id: u32) -> Result<u32, Failure> {
         self.world()
             .character(id)?
             .ok_or("variable RNG character is not recorded")?;
@@ -160,7 +161,7 @@ impl Evaluator<'_, '_> {
         ))
     }
 
-    pub(super) fn next_variable_random(&self, scopes: Scopes) -> Result<i64, String> {
+    pub(super) fn next_variable_random(&self, scopes: Scopes) -> Result<i64, Failure> {
         let isolated = self.checking.get() == 0 && self.description_depth.get() == 0;
         if isolated {
             self.local_temps.borrow_mut().clear(); // Open a fresh TLS context.

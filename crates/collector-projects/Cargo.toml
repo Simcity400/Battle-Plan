@@ -17,6 +17,7 @@ raid_intel_changes = ["naval_tree_changes"]
 raid_intel_verify = ["raid_intel_changes"]
 
 [dependencies]
+engine-scripts.workspace = true
 engine-allocation.workspace = true
 engine-characters.workspace = true
 engine-events.workspace = true

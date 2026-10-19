@@ -818,7 +818,7 @@ pub struct Held {
 }
 
 /// The most field groups a family digests separately ([`Changed::read_groups`]).
-pub const GROUPS: usize = 40;
+pub const GROUPS: usize = 110;
 
 /// FNV-1a over the fields of one owner's read that its hooked writers
 /// certify ([`Changed::read`]); stable within a process, never persisted.
@@ -919,17 +919,32 @@ impl Changed {
         owner: u32,
         groups: &[u64; GROUPS],
     ) -> Option<Option<usize>> {
+        self.read_groups_with(store, owner, groups, |held| {
+            held.and_then(|held| held.iter().zip(groups).position(|(a, b)| a != b))
+        })
+    }
+
+    /// Report every required difference against the previous groups before
+    /// replacing them. The callback runs only for a certified mismatch and
+    /// borrows the retained entry, without allocating another snapshot.
+    pub fn read_groups_with<R>(
+        &mut self,
+        store: &mut SliceFingerprints,
+        owner: u32,
+        groups: &[u64; GROUPS],
+        report: impl FnOnce(Option<&[u64; GROUPS]>) -> R,
+    ) -> Option<R> {
         let mut digest = Digest::new();
         for &group in groups {
             digest.u64(group);
         }
         let differs = self.read(store, owner, digest.finish());
         let held = store.held.groups.get(&owner);
-        let first = held.and_then(|held| held.iter().zip(groups).position(|(a, b)| a != b));
+        let detail = differs.then(|| report(held));
         if held.is_some() || engine_allocation::reserve_map(&mut store.held.groups, 1).is_ok() {
             store.held.groups.insert(owner, *groups);
         }
-        differs.then_some(first)
+        detail
     }
 
     /// A worker's read of `owner` did not complete: hold no digest, so its
@@ -1597,6 +1612,22 @@ mod tests {
         assert_eq!(changed.read_groups(&mut store, 2, &moved), None);
         // This hour's comparisons: both owners, owner 1 differing.
         assert_eq!((changed.verified, changed.mismatches), (2, 1));
+        // The detailed reporter sees the old entry before replacement, even
+        // when differences span both ends of the group array.
+        let mut latest = moved;
+        latest[0] += 1;
+        latest[GROUPS - 1] += 1;
+        assert_eq!(
+            crate::test_support::with_allocations_denied(|| {
+                changed.read_groups_with(&mut store, 1, &latest, |held| {
+                    let held = held.unwrap();
+                    assert_eq!(*held, moved);
+                    (held[0], held[GROUPS - 1])
+                })
+            }),
+            Some((moved[0], moved[GROUPS - 1]))
+        );
+        assert_eq!(changed.read_groups(&mut store, 1, &latest), None);
         // An unread owner holds no groups.
         changed.unread(&mut store, 1);
         assert!(!store.held.groups.contains_key(&1));

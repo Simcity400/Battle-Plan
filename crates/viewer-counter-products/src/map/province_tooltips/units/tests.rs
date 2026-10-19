@@ -19,6 +19,14 @@ fn unit(owner: u32, rank: u8, template_id: u32, intel: u16) -> Unit {
 fn content() -> Content {
     let subunits = synthetic_subunits();
     Content {
+        template_reveal: Ok(
+            viewer_foundation::map::visibility::template_reveal::Defines {
+                army_maximum: 100_000,
+                basic: 30_000,
+                standard: 70_000,
+                count: [25_000, 75_000, 150_000],
+            },
+        ),
         subunits,
         defines: CountDefines {
             denominator: 100_000,

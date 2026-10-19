@@ -26,8 +26,8 @@ impl Renderer<'_, '_, '_> {
             };
             let state = self
                 .evaluator()?
-                .scoped_state_id(state.value.scalar().unwrap_or_default(), scopes)?
-                as u32;
+                .scoped_state_id(state.value.scalar().unwrap_or_default(), scopes)
+                .map_err(|why| why.to_string())? as u32;
             if !states.iter().any(|row| row.id == state) {
                 return Ok(String::new());
             }

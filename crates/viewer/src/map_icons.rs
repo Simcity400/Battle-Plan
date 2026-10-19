@@ -30,6 +30,8 @@ pub struct MapIcons {
     pub raids: Arc<viewer_raids::map::raids::RaidAssets>,
     /// The Operatives map mode's intel icons' defines and content.
     pub intel: Arc<viewer_raids::map::intel_icons::IntelAssets>,
+    /// Occupation definitions and marker appearance, read once after content names settle.
+    pub occupation: Result<viewer_world::map::occupation_icons::Content, String>,
     /// The floating map text types and their fonts, from the recorded content stack.
     pub animated_text: Arc<viewer_world::map::animated_map_text::Assets>,
     /// Flags and portraits decoded on first draw, above [`DYNAMIC_BASE`].

@@ -17,7 +17,7 @@ struct Side {
 }
 
 impl Combat for Side {
-    fn country(&self) -> Result<u32, String> {
+    fn country(&self) -> Result<u32, crate::triggers::Failure> {
         Ok(0)
     }
 
@@ -47,7 +47,7 @@ impl Combat for Side {
         }
     }
 
-    fn category_share(&self, _: u64) -> Result<i64, String> {
+    fn category_share(&self, _: u64) -> Result<i64, crate::triggers::Failure> {
         Err("no category operand in fixture".into())
     }
 }

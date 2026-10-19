@@ -2436,3 +2436,87 @@ fn carried_rows_read_their_area_pointers_again_on_request() {
     carry_hour(&mut capture, &memory, TAKE, &|_| false, false);
     assert_eq!(capture.areas[4].controller, 0x18000);
 }
+
+/// The movement speed's province facts come from the authenticated province of
+/// the array slot with that id; the definition's land bit decides sea.
+#[test]
+fn movement_province_reads_state_controller_area_region_and_sea() {
+    const BASE: usize = 0x1000;
+    const ARRAY: usize = 0x2000;
+    const PROVINCE: usize = 0x3000;
+    const DEFINITION_AT: usize = 0x3800;
+    let mut bytes = vec![0_u8; 0x4000];
+    let put = |bytes: &mut [u8], at: usize, value: u64| {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    };
+    put(&mut bytes, ARRAY + 2 * 8, PROVINCE as u64);
+    put(&mut bytes, PROVINCE, (BASE + VTABLE_RVA) as u64);
+    bytes[PROVINCE + ID..PROVINCE + ID + 4].copy_from_slice(&2_u32.to_le_bytes());
+    put(&mut bytes, PROVINCE + STATE, 0x5100);
+    bytes[PROVINCE + CONTROLLER..PROVINCE + CONTROLLER + 4].copy_from_slice(&7_u32.to_le_bytes());
+    put(&mut bytes, PROVINCE + CONTROLLER_AREA, 0x5200);
+    put(&mut bytes, PROVINCE + STRATEGIC_REGION, 0x5300);
+    put(&mut bytes, PROVINCE + DEFINITION, DEFINITION_AT as u64);
+    bytes[DEFINITION_AT + crate::province_definition::TERRAIN_FLAGS] =
+        crate::province_definition::LAND_FLAG;
+    let provinces = Array {
+        data: ARRAY,
+        count: 3,
+    };
+    let read = |bytes: &[u8], id: u32| {
+        movement_province(&SliceMemory { base: 0, bytes }, BASE, provinces, id)
+    };
+    let land = MovementProvince {
+        state: Ok(0x5100),
+        controller: Ok(7),
+        controller_area: Ok(0x5200),
+        strategic_region: Ok(0x5300),
+        terrain_flags: Ok(crate::province_definition::LAND_FLAG),
+    };
+    assert_eq!(read(&bytes, 2), Ok(land));
+    bytes[DEFINITION_AT + crate::province_definition::TERRAIN_FLAGS] = 0;
+    assert_eq!(
+        read(&bytes, 2),
+        Ok(MovementProvince {
+            terrain_flags: Ok(0),
+            ..land
+        })
+    );
+    struct Fault<'a> {
+        bytes: &'a [u8],
+        at: usize,
+    }
+    impl crate::Memory for Fault<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            if at <= self.at && self.at < at.saturating_add(out.len()) {
+                return false;
+            }
+            SliceMemory {
+                base: 0,
+                bytes: self.bytes,
+            }
+            .copy(at, out)
+        }
+    }
+    for field in [STATE, CONTROLLER, CONTROLLER_AREA, DEFINITION] {
+        let facts = movement_province(
+            &Fault {
+                bytes: &bytes,
+                at: PROVINCE + field,
+            },
+            BASE,
+            provinces,
+            2,
+        )
+        .unwrap();
+        assert_eq!(facts.strategic_region, Ok(0x5300));
+    }
+    // An empty slot, or one past the array, refuses.
+    assert_eq!(read(&bytes, 1), Err("movement province identity mismatch"));
+    assert_eq!(
+        read(&bytes, 3),
+        Err("movement province outside the province array")
+    );
+    bytes[PROVINCE + ID] = 5;
+    assert_eq!(read(&bytes, 2), Err("movement province identity mismatch"));
+}

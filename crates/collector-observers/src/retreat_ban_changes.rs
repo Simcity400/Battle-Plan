@@ -319,7 +319,7 @@ mod tests {
             leader,
             ordinary,
             alternate: 0,
-            movement: [[None; 5]; 2],
+            movement: [[None; 6]; 2],
         }
     }
 

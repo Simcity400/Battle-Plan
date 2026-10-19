@@ -158,6 +158,33 @@ impl ProvinceClock {
             night_factor: night,
         }
     }
+
+    /// All native hourly factors under one held seasonal direction. Air
+    /// fuel forecasts use these stored vectors, independently of the clock's
+    /// last updated hour and of a mission's selected day/night period.
+    pub fn forecast(&self, direction: [i64; 3], [subtract, scale]: [i64; 2]) -> [i64; HOURS] {
+        self.vectors.map(|vector| {
+            let dot = direction[0].wrapping_mul(vector[0]) / SCALE;
+            let dot = dot.wrapping_add(direction[2].wrapping_mul(vector[2]) / SCALE);
+            let dot = dot.wrapping_add(direction[1].wrapping_mul(vector[1]) / SCALE);
+            dot.wrapping_sub(subtract)
+                .wrapping_mul(scale)
+                .wrapping_div(SCALE)
+                .clamp(0, SCALE)
+        })
+    }
+}
+
+pub fn forecast_feather(feather: i64) -> [i64; 2] {
+    let upper = feather.wrapping_mul(50_000) / SCALE;
+    let subtract = upper.wrapping_neg();
+    let width = upper.wrapping_sub(subtract);
+    let scale = if width == 0 {
+        REFUSED
+    } else {
+        (10_000_000_000_i128 / i128::from(width)) as i64
+    };
+    [subtract, scale]
 }
 
 /// The fixed5 share of a day at `hour`, guarded during initialization and updates.
@@ -188,15 +215,7 @@ impl HourOperands {
         let index = hour.wrapping_sub(EPOCH) % HOURS as i32;
         let index = usize::try_from(index)
             .map_err(|_| "day/night hour index negative: date before the native epoch")?;
-        let upper = defines.day_night_feather.wrapping_mul(50_000) / SCALE;
-        let subtract = upper.wrapping_neg();
-        let width = upper.wrapping_sub(subtract);
-        // A 128-bit signed division of 10^10 by the width.
-        let scale = if width == 0 {
-            REFUSED
-        } else {
-            (10_000_000_000_i128 / i128::from(width)) as i64
-        };
+        let [subtract, scale] = forecast_feather(defines.day_night_feather);
         Ok(Self {
             index,
             direction: seasonal_direction(hour),

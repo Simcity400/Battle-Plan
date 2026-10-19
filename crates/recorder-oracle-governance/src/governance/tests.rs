@@ -2,6 +2,84 @@ use super::*;
 
 mod research_identity;
 
+#[test]
+fn gap_research_grants_oracle_compares_counter_unused_uses_and_restrictions() {
+    use replay_data::rows::ResearchModifierRow as R;
+    let (mut frame, _, country) = fixture();
+    let pack = saved::parse(&installed_content_core::parser::parse(br"countries={AAA={technology={next_bonus_id=8 limited_use_bonus={id=7 name=mod_bonus uses=3 claim=1 bonus=0.25 category=mod_category}}}}").unwrap().items).unwrap();
+    let mut rows = vec![
+        R {
+            kind: R::GRANT_COUNTER,
+            raw: 8,
+            ..Default::default()
+        },
+        R {
+            kind: R::SPEED_GRANT,
+            source_id: 7,
+            name: b"mod_bonus".to_vec(),
+            raw: 25_000,
+            ..Default::default()
+        },
+        R {
+            kind: R::GRANT_USES,
+            source_id: 7,
+            raw: 3,
+            auxiliary: 1,
+            ..Default::default()
+        },
+        R {
+            kind: R::GRANT_CATEGORY,
+            source_id: 7,
+            raw: 42,
+            ..Default::default()
+        },
+    ];
+    for (ordinal, row) in rows.iter_mut().enumerate() {
+        row.country = country.id;
+        row.index = engine_research::research_modifiers::grants::INVENTORY_INDEX;
+        row.ordinal = ordinal as u32;
+    }
+    let links = BTreeMap::from([(country.id, &country)]);
+    let names = BTreeMap::from([
+        (42, b"mod_category".as_slice()),
+        (43, b"other_category".as_slice()),
+    ]);
+    for changed in [None, Some((0, 9)), Some((2, 2)), Some((3, 43))] {
+        let mut values = rows.clone();
+        if let Some((at, raw)) = changed {
+            values[at].raw = raw;
+        }
+        *frame.tables[TableId::ResearchModifiers.index()] =
+            TableView::Complete(TableRows::ResearchModifiers(values));
+        let mut report = refreshed_report();
+        compare_research(&frame, &pack, &links, &names, &mut report).unwrap();
+        assert_eq!(
+            report.differences.is_empty(),
+            changed.is_none(),
+            "{:?}",
+            report.differences
+        );
+    }
+    frame.hour = 1;
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![
+        replay_data::rows::SliceReadRow {
+            table: TableId::ResearchModifiers.index() as u32,
+            owner: country.id,
+            sample_hour: 0,
+        },
+    ]));
+    let mut report = refreshed_report();
+    report.read_hours = Some(BTreeMap::new());
+    compare_research(&frame, &pack, &links, &names, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .carried
+            .keys()
+            .any(|key| key.starts_with("ResearchModifiers"))
+    );
+}
+
 /// A report whose frame refreshed ResearchSlots, as a full-refresh hour does.
 fn refreshed_report() -> Report {
     let mut report = Report::default();
@@ -30,7 +108,7 @@ fn compare_sharing_fixture(
     compare_sharing(frame, pack, links, &tokens, report)
 }
 
-fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
+pub(super) fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
     let country = CountryRow {
         border_land_doctrine_level: replay_data::rows::Recorded::Value(None),
         id: 11,
@@ -404,6 +482,7 @@ fn tactic_unlocks_cover_the_canonical_census() {
                     3 => saved::DoctrineStatus {
                         country: Some(b"BBB".to_vec()),
                         enable_tactic: stray.clone(),
+                        ..Default::default()
                     },
                     _ => saved::DoctrineStatus::default(),
                 })
@@ -414,6 +493,7 @@ fn tactic_unlocks_cover_the_canonical_census() {
     let aaa = |ids: Vec<i32>| saved::DoctrineStatus {
         country: Some(b"AAA".to_vec()),
         enable_tactic: ids,
+        ..Default::default()
     };
     let mut compare = |rows: Vec<CountryTacticUnlockRow>, pack: &saved::Pack| {
         *frame.tables[TableId::CountryTacticUnlocks.index()] =

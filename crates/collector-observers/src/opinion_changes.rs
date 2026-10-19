@@ -505,6 +505,11 @@ impl Hooks {
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
         let hooks = if cfg!(feature = "opinion_changes") {
             unsafe { Self::install(memory, base) }.unwrap_or_else(|reason| {
+                crate::hook::installation::refused(
+                    crate::hook::installation::Kind::Construction,
+                    None,
+                    reason,
+                );
                 let _ = UNHOOKED.set(reason);
                 Vec::new()
             })
@@ -539,7 +544,7 @@ impl Hooks {
         ];
         let sites = || MUTATIONS.iter().chain(&RELATIONS);
         for site in sites() {
-            if engine_native::read::<[u8; 16]>(memory, base + site.rva) != Some(site.sentinel) {
+            if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
                 return Err("opinion hook sentinel differs");
             }
         }
@@ -557,6 +562,10 @@ impl Hooks {
     /// change of state starts a new epoch.
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         if !enabled {
+            crate::occupation_changes::forwarder(
+                crate::occupation_changes::Forwarder::Relations,
+                false,
+            );
             ENABLED.store(false, Ordering::SeqCst);
             crate::war_changes::forwarder(crate::war_changes::Forwarder::Opinions, false);
             crate::country_input_changes::forwarder(
@@ -587,6 +596,10 @@ impl Hooks {
         // ([`crate::country_input_changes`]).
         crate::country_input_changes::forwarder(
             crate::country_input_changes::Forwarder::Opinions,
+            enabled && !self.hooks.is_empty(),
+        );
+        crate::occupation_changes::forwarder(
+            crate::occupation_changes::Forwarder::Relations,
             enabled && !self.hooks.is_empty(),
         );
         Ok(true)
@@ -620,9 +633,12 @@ unsafe extern "system" fn recompute_opinion(status: usize) {
 }
 
 unsafe extern "system" fn reset(status: usize, first: usize, second: usize, value: usize) {
+    let _occupation = crate::occupation_changes::changed(status);
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::OpinionChanges);
     let mutation = Mutation::enter(1);
     let _wars = crate::war_changes::forwarded(crate::war_changes::Site::StatusReset);
+    let _participation =
+        crate::war_changes::participation_change(crate::war_changes::Site::StatusReset, status, 0);
     let _inputs = crate::country_input_changes::forwarded(
         crate::country_input_changes::Forward::RelationReset,
         status,
@@ -644,6 +660,11 @@ macro_rules! relation {
             let site = MUTATIONS.len() + $index;
             let mutation = Mutation::enter(site);
             let _wars = crate::war_changes::forwarded(crate::war_changes::Site::RelationSlot);
+            let _participation = crate::war_changes::participation_change(
+                crate::war_changes::Site::RelationSlot,
+                status,
+                0,
+            );
             let _inputs = crate::country_input_changes::forwarded(
                 crate::country_input_changes::Forward::RelationSlot,
                 status,
@@ -678,6 +699,8 @@ unsafe extern "system" fn load_token(status: usize, reader: usize, token: i32) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::OpinionChanges);
     let _mutation = Mutation::enter(2);
     let _wars = crate::war_changes::forwarded(crate::war_changes::Site::StatusLoad);
+    let _participation =
+        crate::war_changes::participation_change(crate::war_changes::Site::StatusLoad, status, 0);
     let original: unsafe extern "system" fn(usize, usize, i32) =
         unsafe { std::mem::transmute(original(2)) };
     timing.original(|| unsafe { original(status, reader, token) });
@@ -688,6 +711,11 @@ unsafe extern "system" fn construct(storage: usize, diplomacy: usize, target: us
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::OpinionChanges);
     let _mutation = Mutation::enter(3);
     let _wars = crate::war_changes::forwarded(crate::war_changes::Site::StatusConstruct);
+    let _participation = crate::war_changes::participation_change(
+        crate::war_changes::Site::StatusConstruct,
+        storage,
+        diplomacy,
+    );
     invalidate();
     let original: unsafe extern "system" fn(usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(original(3)) };

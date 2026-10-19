@@ -715,6 +715,23 @@ fn forced(hour: i32) -> bool {
     }
 }
 
+/// Forced fallback hours inherited by an independent test worker.
+#[cfg(any(test, feature = "test-support"))]
+pub fn forced_fallback_hours() -> Vec<i32> {
+    FORCED.with(|forced| forced.borrow().clone())
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_forced_fallback(hours: Vec<i32>) -> impl Drop {
+    struct Reset(Vec<i32>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            FORCED.with(|forced| *forced.borrow_mut() = std::mem::take(&mut self.0));
+        }
+    }
+    Reset(FORCED.with(|forced| forced.replace(hours)))
+}
+
 /// Run `run` with the fold on this thread observing the rest of a block hour
 /// by hour from each of `hours` (a block's first hour: after it).
 #[cfg(any(test, feature = "test-support"))]

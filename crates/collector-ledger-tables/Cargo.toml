@@ -27,6 +27,9 @@ collector-primitives.workspace = true
 collector-projection.workspace = true
 
 [dev-dependencies]
+engine-production.workspace = true
+engine-scripts.workspace = true
+replay.workspace = true
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true

@@ -2,6 +2,8 @@
 
 **What it shows:** The native war overview from one viewpoint, as expandable war lanes or country lanes with participation, capitulations and exact casualty counters.
 
+Participant hovers show the war-screen participation percentage and score, equipment damage, occupation credit, air damage, strategic bombing, ship/convoy damage, known/unknown casualty contributions and signed lend-lease credit. Requested-hour native snapshots load independently of timeline preparation and remain available after it completes. Missing inputs retain an explicit status. These values use directional participation accounting; the native representative-selection score is a different fact.
+
 **Prepared data it reads:** [`wars`](../../../../crates/dashboard-wars/src/products/wars.rs) supplies viewpoint-dependent groups from one branch-global prepared change stream; independent reached-hour reads supply exact casualties; its [product guide](../../../../crates/dashboard-wars/src/products/wars/README.md) explains native grouping/app continuity. [`country-groups`](../../../../crates/dashboard-base/src/products/country_groups.rs) supplies faction and country history.
 
 **Settings:** The widget's country is the viewpoint: the dashboard's country unless one is picked; Timeline/Country by country, country-view colours by war/side and Grow with playback; Campaign, Follow, Pin and Range.
@@ -26,3 +28,5 @@ independently read groups at a requested hour retain their own exact operands.
 
 A cold lane inventory does not hide independently observed current war groups.
 Those groups remain visible at their own requested hour while history is pending.
+
+An expandable War goals panel requests the viewpoint country's complete inventory and justifications at the displayed hour. It shares its data and presentation with the Diplomacy page's War goals widget.

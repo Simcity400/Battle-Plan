@@ -400,6 +400,98 @@ fn fixture() -> Vec<u8> {
 }
 
 #[test]
+fn design_state_preserves_ancestry_attribution_role_and_raw_flags() {
+    struct StaleReference<'a>(SliceMemory<'a>);
+    impl Memory for StaleReference<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == crate::creference_registry::LOW_ROOTS_RVA + 8 && output.len() == 8 {
+                output.fill(0);
+                true
+            } else {
+                self.0.copy(address, output)
+            }
+        }
+    }
+    let mut bytes = fixture();
+    bytes[PARENT..PARENT + 8].copy_from_slice(&0x1000_u64.to_le_bytes());
+    bytes[DESIGN_TEAM..DESIGN_TEAM + 8].copy_from_slice(&0xffff_ffff_0000_0001_u64.to_le_bytes());
+    bytes[ROLE_ICON_INDEX..ROLE_ICON_INDEX + 4].copy_from_slice(&i32::MAX.to_le_bytes());
+    bytes[PENDING_PARENT_VERSION..PENDING_PARENT_VERSION + 2]
+        .copy_from_slice(&(-17_i16).to_le_bytes());
+    bytes[IS_FRAME] = 0xff;
+    bytes[AUTO_UPGRADED] = 0x80;
+    bytes[MANPOWER..MANPOWER + 4].copy_from_slice(&i32::MIN.to_le_bytes());
+    let memory = StaleReference(SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    });
+    let state = read_design(&memory, 0, 0x1000).unwrap();
+    assert_eq!(state.parent, Some(source(&bytes).id));
+    assert_eq!(state.design_team, 0xffff_ffff_0000_0001);
+    assert!(!state.design_team_serialized);
+    assert_eq!(
+        (state.role_icon_index, state.pending_parent_version),
+        (i32::MAX, -17)
+    );
+    assert_eq!(
+        (state.is_frame, state.auto_upgraded, state.manpower),
+        (0xff, 0x80, i32::MIN)
+    );
+    bytes[PARENT..PARENT + 8].copy_from_slice(&0x1100_u64.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        read_design(&memory, 0, 0x1000).unwrap_err(),
+        "variant vtable or reference type mismatch"
+    );
+}
+
+#[test]
+fn design_build_resources_decode_amount_before_resource_id_and_ignore_padding() {
+    let mut bytes = fixture();
+    let payload = bytes.len();
+    bytes.resize(payload + 32, 0);
+    bytes[BUILD_RESOURCES..BUILD_RESOURCES + 8]
+        .copy_from_slice(&(0x1000_u64 + payload as u64).to_le_bytes());
+    for count in [BUILD_RESOURCES + 8, BUILD_RESOURCES + 12] {
+        bytes[count..count + 4].copy_from_slice(&2_u32.to_le_bytes());
+    }
+    for (ordinal, (resource, amount)) in [(5_000_u32, i64::MIN), (7, 123_457_i64)]
+        .into_iter()
+        .enumerate()
+    {
+        let at = payload + ordinal * 16;
+        bytes[at..at + 8].copy_from_slice(&amount.to_le_bytes());
+        bytes[at + 8..at + 12].copy_from_slice(&resource.to_le_bytes());
+        bytes[at + 12..at + 16].fill(0xff);
+    }
+    let state = read_design(
+        &SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        },
+        0,
+        0x1000,
+    )
+    .unwrap();
+    assert_eq!(
+        state.build_resources,
+        [
+            VariantStatEntry {
+                index: 5_000,
+                value: i64::MIN
+            },
+            VariantStatEntry {
+                index: 7,
+                value: 123_457
+            },
+        ]
+    );
+}
+
+#[test]
 fn native_null_equipment_archetypes_keep_their_stored_token() {
     let mut bytes = fixture();
     bytes.resize(0x1200, 0);
@@ -731,7 +823,7 @@ fn copied_inline_names_and_registry_identity_need_only_three_definition_guards()
         walk_stats(&memory, &variants, &mut vec![StatsRow::default(); 1]),
         Outcome::Rows { len: 1 }
     );
-    assert_eq!(memory.guards.get(), 1);
+    assert_eq!(memory.guards.get(), 2);
 }
 
 #[test]
@@ -771,7 +863,7 @@ fn variant_record_batches_preserve_order_and_do_not_hide_an_earlier_definition_e
         walk_stats(&memory, &variants, &mut stats),
         Outcome::Rows { len: COUNT }
     );
-    assert_eq!(memory.guards.get(), 2);
+    assert_eq!(memory.guards.get(), 2 + COUNT);
     let memory = CountedFields {
         blocked: Some(variants[32].pointer() + CLASSIFIER_FLAGS),
         ..memory
@@ -844,5 +936,194 @@ fn heap_copy_checks_terminator_in_same_guard_and_name_fault_does_not_poison_stat
     assert_eq!(
         walk_stats(&memory, &variants, &mut vec![StatsRow::default(); 1]),
         Outcome::Rows { len: 1 }
+    );
+}
+
+#[test]
+fn design_organisation_preserves_frozen_author_marker_bonus_order_and_faults() {
+    let mut bytes = fixture();
+    let author = (912_u64 << 32) | 79;
+    bytes[INDUSTRIAL_ORGANISATION..INDUSTRIAL_ORGANISATION + 8]
+        .copy_from_slice(&author.to_le_bytes());
+    bytes[ORGANISATION_TRAIT_COUNT..ORGANISATION_TRAIT_COUNT + 4]
+        .copy_from_slice(&(-7_i32).to_le_bytes());
+    let bonuses_at = bytes.len();
+    bytes.resize(bonuses_at + 48, 0);
+    bytes[ORGANISATION_BONUSES..ORGANISATION_BONUSES + 8]
+        .copy_from_slice(&(0x1000_u64 + bonuses_at as u64).to_le_bytes());
+    for offset in [8, 12] {
+        bytes[ORGANISATION_BONUSES + offset..ORGANISATION_BONUSES + offset + 4]
+            .copy_from_slice(&3_u32.to_le_bytes());
+    }
+    let expected = [(77_u32, i64::MIN), (12, i64::MAX), (77, -21)];
+    for (index, (key, value)) in expected.iter().enumerate() {
+        let at = bonuses_at + index * 16;
+        bytes[at..at + 4].copy_from_slice(&key.to_le_bytes());
+        bytes[at + 8..at + 16].copy_from_slice(&value.to_le_bytes());
+    }
+    let source = source(&bytes);
+    let mut rows = Vec::new();
+    assert_eq!(
+        walk_stats(
+            &SliceMemory {
+                base: 0x1000,
+                bytes: &bytes
+            },
+            &[source],
+            &mut rows
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].organisation.author, author);
+    assert_eq!(rows[0].organisation.trait_count, -7);
+    assert_eq!(
+        rows[0]
+            .organisation
+            .bonuses
+            .iter()
+            .map(|b| (b.key, b.value_raw))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    struct Quiet;
+    impl OrganisationCarry for Quiet {
+        fn fresh(
+            &mut self,
+            _: usize,
+            _: &RegistryRow,
+            _: &Organisation,
+        ) -> Result<bool, &'static str> {
+            Ok(false)
+        }
+    }
+    // The certified payload remains held even if every bonus byte is now unreadable.
+    bytes.truncate(bonuses_at);
+    assert_eq!(
+        walk_stats_carried(
+            &SliceMemory {
+                base: 0x1000,
+                bytes: &bytes
+            },
+            &[source],
+            &mut rows,
+            &mut Quiet
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].organisation.author, author);
+    assert!(matches!(
+        walk_stats(
+            &SliceMemory {
+                base: 0x1000,
+                bytes: &bytes
+            },
+            &[source],
+            &mut rows
+        ),
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn variant_certified_deep_state_is_not_read_and_mixed_batches_only_read_misses() {
+    use std::sync::Arc;
+    let one = fixture();
+    let mut bytes = one.clone();
+    bytes.extend_from_slice(&one);
+    bytes[one.len() + ID..one.len() + ID + 4].copy_from_slice(&12_u32.to_le_bytes());
+    let source_memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let variants = [
+        RegistryRow::read(&source_memory, 0, 0x1000).unwrap(),
+        RegistryRow::read(&source_memory, 0, 0x1000 + one.len()).unwrap(),
+    ];
+    let memory = CountedFields {
+        memory: source_memory,
+        guards: Cell::new(0),
+        blocked: Some(0x1000 + BONUS_SOURCES),
+    };
+    let state = Arc::new(VariantDesignState {
+        manpower: 4321,
+        ..Default::default()
+    });
+    let mut output = Vec::new();
+    let mut strings = Vec::new();
+    let outcome = walk_definitions_carried(
+        &memory,
+        0,
+        &variants,
+        &mut output,
+        &mut strings,
+        |_| Ok(Some(Arc::clone(&state))),
+        |state| Ok(Arc::new(state)),
+    );
+    assert_eq!(outcome.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(memory.guards.get(), 3);
+    assert!(output.iter().all(|row| Arc::ptr_eq(&row.design, &state)));
+    memory.guards.set(0);
+    let outcome = walk_definitions_carried(
+        &memory,
+        0,
+        &variants,
+        &mut output,
+        &mut strings,
+        |source| Ok((source.id == variants[0].id).then(|| Arc::clone(&state))),
+        |state| Ok(Arc::new(state)),
+    );
+    assert_eq!(outcome.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(memory.guards.get(), 4);
+    assert!(Arc::ptr_eq(&output[0].design, &state));
+    assert!(!Arc::ptr_eq(&output[1].design, &state));
+    assert_eq!(output[1].design.manpower, 0);
+    assert!(matches!(
+        walk_definitions(&memory, 0, &variants, &mut Vec::new(), &mut strings).outcome,
+        Outcome::Unavailable {
+            reason: "variant design fields unreadable"
+        }
+    ));
+}
+
+#[test]
+fn applied_sources_authenticate_plain_and_trait_layout_before_following_the_extension() {
+    for (table, trait_source) in [
+        (SPECIFIC_BONUS_VTABLE_RVA, false),
+        (TRAIT_BONUS_VTABLE_RVA, true),
+    ] {
+        let mut bytes = fixture();
+        bytes.resize(0x1800, 0);
+        bytes[BONUS_SOURCES..BONUS_SOURCES + 8].copy_from_slice(&0x1f00_u64.to_le_bytes());
+        bytes[BONUS_SOURCES + 8..BONUS_SOURCES + 12].copy_from_slice(&1_i32.to_le_bytes());
+        bytes[BONUS_SOURCES + 12..BONUS_SOURCES + 16].copy_from_slice(&1_i32.to_le_bytes());
+        bytes[0xf00..0xf08].copy_from_slice(&0x2000_u64.to_le_bytes());
+        bytes[0x1000..0x1008].copy_from_slice(&(table as u64).to_le_bytes());
+        let memory = CountedFields {
+            memory: SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            },
+            guards: Cell::new(0),
+            blocked: (!trait_source).then_some(0x2000 + BONUS_IDEA),
+        };
+        let state = design::read_design(&memory, 0, 0x1000).unwrap();
+        assert_eq!(state.bonus_sources.len(), 1);
+        assert!(state.bonus_sources[0].idea.is_none());
+        assert_eq!(
+            bonus_source_size(&memory, 0, 0x2000).unwrap(),
+            BONUS_IDEA + usize::from(trait_source) * 8
+        );
+    }
+    let bytes = [0; 8];
+    assert!(
+        bonus_source_size(
+            &SliceMemory {
+                base: 0x1000,
+                bytes: &bytes
+            },
+            0,
+            0x1000
+        )
+        .is_err()
     );
 }

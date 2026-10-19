@@ -289,9 +289,10 @@ fn an_hour_changing_only_unread_fields_reuses_without_reading_again() {
     assert!(whole);
     assert!(rereads >= 5, "{rereads} rereads");
     // Check mode reads every skipped input again, and none changed.
-    let missed = missed_dependences();
-    assert!(confirm(&mut inputs.clone(), &second, Some(&since)).0);
-    assert_eq!(missed_dependences(), missed);
+    let (confirmed, missed) =
+        expecting_missed(|| confirm(&mut inputs.clone(), &second, Some(&since)).0);
+    assert!(confirmed);
+    assert_eq!(missed, 0);
     let mut reused = inputs;
     assert_eq!(
         reusing(|| confirm(&mut reused, &second, Some(&since))),
@@ -452,6 +453,30 @@ fn an_owned_read_changes_only_with_its_countrys_rows_an_unlinked_row_or_the_link
         );
         (value, inputs) = (now, next);
     }
+}
+
+#[test]
+fn expected_miss_accounting_is_thread_local_and_nested() {
+    let mut recording = Recording::new();
+    let (_, frame) = recording.hour(100, BASE);
+    let key = Key::World(Query::Flag(1, 1, b"synthetic".to_vec()));
+    let (_, outer) = expecting_missed(|| {
+        // This completes inside the outer accounting window, but its miss
+        // belongs to the worker. A global before/after delta reports it here.
+        std::thread::scope(|threads| {
+            threads
+                .spawn(|| {
+                    let (_, worker) = expecting_missed(|| super::missed(&key, &frame));
+                    assert_eq!(worker, 1);
+                })
+                .join()
+                .unwrap();
+        });
+        let (_, inner) = expecting_missed(|| super::missed(&key, &frame));
+        assert_eq!(inner, 1);
+        super::missed(&key, &frame);
+    });
+    assert_eq!(outer, 2);
 }
 
 #[test]
@@ -1666,8 +1691,9 @@ fn other_changes() -> Vec<Change> {
 
 /// The queries content alone decides in the content-free world, which the
 /// content world below reads.
-const CONTENT_DECIDED: [&str; 6] = [
-    "StateResource(1, 900)",
+// StateResource resolves its controller before the unavailable content arm;
+// a missing CountryLinks join is now an observable part of that query.
+const CONTENT_DECIDED: [&str; 5] = [
     "StateResourceAmount(1, 900, Some(1))",
     "StateOrder(1)",
     "LeaderHasTrait(1, \"same\")",
@@ -1999,7 +2025,11 @@ fn character_frame(hour: Hour, required: i32, skill: i32) -> DecodedFrame {
 /// What a character scope's `tag`, `skill` and retirement read.
 fn character_reads(world: &World<'_>) -> String {
     let tables = world.character_tables();
-    let canonical = |raw: u32| world.slot(raw).ok_or_else(|| format!("{raw} unlinked"));
+    let canonical = |raw: u32| {
+        world
+            .slot(raw)
+            .ok_or_else(|| crate::triggers::Failure::from(format!("{raw} unlinked")))
+    };
     format!(
         "{:?}",
         (

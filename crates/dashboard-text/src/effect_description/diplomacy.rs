@@ -1,10 +1,9 @@
 use super::*;
 use replay_data::rows::tables;
 
-/// create_wargoal's owned-wargoal test reads a roster the
-/// recording does not hold.
+/// A reached inventory predicate requires both complete goal tables.
 pub(super) const CREATE_WARGOAL_UNRECORDED: &str =
-    "create_wargoal's owned-wargoal test reads OwnedWargoals, which is not recorded";
+    "create_wargoal requires recorded CountryWargoals and WargoalTargets";
 
 impl Renderer<'_, '_, '_> {
     pub(super) fn purchase_contract(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
@@ -42,6 +41,7 @@ impl Renderer<'_, '_, '_> {
                 })
                 .transpose()
                 .map(|country| country.flatten().unwrap_or(0))
+                .map_err(|why| why.to_string())
         };
         let seller_country = country("seller")?;
         let seller = self.context.text.country_marked_name(seller_country)?;
@@ -181,18 +181,128 @@ impl Renderer<'_, '_, '_> {
             .wargoals
             .or(cached.wargoals.as_ref())
             .ok_or_else(|| self.content_gap("Wargoal definitions"))?;
-        if database.find(goal.as_bytes())?.is_none() {
+        let Some(definition_name) = database.find(goal.as_bytes())? else {
             return Ok(String::new()); // No matching wargoal type.
-        }
+        };
         let source = self.current_country(scopes)?;
         if target == 0 || source == 0 {
             return Err("create_wargoal needs reserved country zero diplomacy/name inputs".into());
         }
-        // The game then walks the source's owned wargoals and drops the line
-        // when one already covers this type, target (or a direct subject of
-        // it) and claims. That roster is not recorded, so whether the line
-        // shows cannot be decided.
-        Err(CREATE_WARGOAL_UNRECORDED.into())
+        let world = self.context.world()?;
+        let frame = self.context.text.frame();
+        let goals = frame
+            .complete::<tables::CountryWargoals>()
+            .map_err(|_| CREATE_WARGOAL_UNRECORDED.to_string())?;
+        let targets = frame
+            .complete::<tables::WargoalTargets>()
+            .map_err(|_| CREATE_WARGOAL_UNRECORDED.to_string())?;
+        // Definition identity matters only if every other covering-goal
+        // predicate succeeds. Non-covering inventories remain decidable.
+        let ambiguous_definition = database
+            .names
+            .iter()
+            .filter(|name| {
+                installed_content_core::tokens::Token::c_str(name)
+                    == installed_content_core::tokens::Token::c_str(goal.as_bytes())
+            })
+            .count()
+            > 1;
+        let requested = field(fields, "generator")
+            .map(children)
+            .unwrap_or_default()
+            .iter()
+            .map(|state| scalar_operand(state).map(integer))
+            .collect::<Result<Vec<_>, _>>()?;
+        for member in targets
+            .iter()
+            .filter(|row| row.kind == 3 && world.recorded().slot(row.country) == Some(source))
+        {
+            if member.value == 0 {
+                return Err("create_wargoal unused goal reference is null".into());
+            }
+            let owned = goals
+                .iter()
+                .find(|row| row.country == member.country && row.handle == member.value)
+                .ok_or("create_wargoal unused goal object is not recorded")?;
+            let recipient = world
+                .recorded()
+                .slot(owned.recipient)
+                .ok_or("create_wargoal goal recipient is unresolved")?;
+            let matches_target = if recipient == target {
+                true
+            } else {
+                let target_row = frame
+                    .complete::<tables::CountryAppearance>()
+                    .map_err(|why| why.to_string())?
+                    .iter()
+                    .find(|row| world.recorded().slot(row.country) == Some(target))
+                    .ok_or("create_wargoal target subjects are not recorded")?;
+                let mut found = false;
+                for &raw in target_row.subjects.require("CountryAppearance.subjects")? {
+                    if world
+                        .recorded()
+                        .slot(raw as u32)
+                        .ok_or("create_wargoal target subject is unresolved")?
+                        == recipient
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                found
+            };
+            if !matches_target {
+                continue;
+            }
+            let spelling = world
+                .token(owned.goal_type)
+                .map_err(|why| why.to_string())?
+                .ok_or("create_wargoal goal type spelling is not recorded")?;
+            if installed_content_core::tokens::Token::c_str(spelling)
+                != installed_content_core::tokens::Token::c_str(goal.as_bytes())
+            {
+                continue;
+            }
+            let states = targets
+                .iter()
+                .filter(|r| r.country == owned.country && r.kind == 0 && r.goal == owned.ordinal)
+                .collect::<Vec<_>>();
+            let covers = if states.is_empty() || requested.is_empty() {
+                true
+            } else {
+                let recorded_states = frame
+                    .complete::<tables::States>()
+                    .map_err(|why| why.to_string())?;
+                requested.iter().all(|id| {
+                    let resolved =
+                        if *id > 0 && recorded_states.iter().any(|row| row.id == *id as u32) {
+                            *id as u64
+                        } else {
+                            0
+                        };
+                    states.iter().any(|row| row.value == resolved)
+                })
+            };
+            if covers {
+                if ambiguous_definition {
+                    return Err("create_wargoal war-goal definition occurrence is ambiguous".into());
+                }
+                return Ok(String::new());
+            }
+        }
+        let country = self.country_name(source, false)?;
+        let target = self.country_name(target, false)?;
+        let name = self.localised(definition_name, &[], scopes, false)?;
+        self.line(
+            b"EFFECT_CREATE_WARGOAL",
+            &[
+                ("COUNTRY", Argument::Text(&country)),
+                ("WARGOAL", Argument::Text(&name)),
+                ("TARGET", Argument::Text(&target)),
+            ],
+            scopes,
+            true,
+        )
     }
 
     pub(super) fn faction_influence(
@@ -205,7 +315,10 @@ impl Renderer<'_, '_, '_> {
         // name, then expansion in the copied scope + faction.
         let country = self.current_country(scopes)?;
         let faction = if country > 0 {
-            self.context.world()?.faction(country)?
+            self.context
+                .world()?
+                .faction(country)
+                .map_err(|why| why.to_string())?
         } else {
             None
         };
@@ -258,8 +371,8 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let world = self.context.world()?;
-        let source_faction = world.faction(source)?;
-        let target_faction = world.faction(target)?;
+        let source_faction = world.faction(source).map_err(|why| why.to_string())?;
+        let target_faction = world.faction(target).map_err(|why| why.to_string())?;
         let appearance = world
             .frame()
             .complete::<tables::CountryAppearance>()
@@ -281,7 +394,9 @@ impl Renderer<'_, '_, '_> {
                 .recorded()
                 .slot(appearance.overlord as u32)
                 .ok_or("CountryLinks lacks target overlord")?;
-            if source_faction.is_none() || world.faction(master)? != source_faction {
+            if source_faction.is_none()
+                || world.faction(master).map_err(|why| why.to_string())? != source_faction
+            {
                 let puppet = self.country_name(target, false)?;
                 let master = self.country_name(master, true)?;
                 body.push_str(&self.line(
@@ -316,7 +431,13 @@ impl Renderer<'_, '_, '_> {
         }
         let join = match source_faction {
             None => Some(None),
-            Some(faction) if world.recorded().faction_leader(source)? == Some(source) => {
+            Some(faction)
+                if world
+                    .recorded()
+                    .faction_leader(source)
+                    .map_err(|why| why.to_string())?
+                    == Some(source) =>
+            {
                 Some(Some(self.context.text.faction_name_by_id(faction)?))
             }
             Some(_) => None,
@@ -480,7 +601,10 @@ impl Renderer<'_, '_, '_> {
                     .map_err(|_| format!("{name} scope links are not UTF-8"))?;
                 let parsed =
                     installed_content_core::scope::parse(text, false, self.context.text.recorded());
-                let selected = self.evaluator()?.enter_scope(&parsed, scopes)?;
+                let selected = self
+                    .evaluator()?
+                    .enter_scope(&parsed, scopes)
+                    .map_err(|why| why.to_string())?;
                 match selected.map(|selected| (selected.this, selected)) {
                     Some((Scope::Country(country) | Scope::CountryLeader { country, .. }, _))
                         if country > 0 => Some(country),
@@ -550,8 +674,8 @@ impl Renderer<'_, '_, '_> {
             if let Some(operand) = field(children(item), name) {
                 result[index] = self
                     .evaluator()?
-                    .scoped_state_id(scalar_operand(operand)?, scopes)?
-                    as u32;
+                    .scoped_state_id(scalar_operand(operand)?, scopes)
+                    .map_err(|why| why.to_string())? as u32;
             }
         }
         Ok(result)
@@ -839,7 +963,7 @@ impl Renderer<'_, '_, '_> {
             _ => return Err("remove_exile_tag needs the carried character; this projected scope does not expose it".into()),
         };
         let tables = crate::character_scope::Tables::read(frame);
-        let positive = match tables.unit_leader(character)? {
+        let positive = match tables.unit_leader(character).map_err(|why| why.to_string())? {
             Some(crate::character_scope::UnitLeader::Direct(row)) => {
                 *row.exile_country.require("UnitLeaders.exile_country")? > 0
             }
@@ -1019,7 +1143,8 @@ impl Renderer<'_, '_, '_> {
         Ok(self
             .context
             .world()?
-            .faction(source)?
+            .faction(source)
+            .map_err(|why| why.to_string())?
             .map(|faction| (source, faction)))
     }
 
@@ -1029,7 +1154,12 @@ impl Renderer<'_, '_, '_> {
             return Ok(String::new());
         };
         let world = self.context.world()?;
-        if world.recorded().faction_leader(source)? != Some(source) {
+        if world
+            .recorded()
+            .faction_leader(source)
+            .map_err(|why| why.to_string())?
+            != Some(source)
+        {
             return Ok(String::new());
         }
         let faction = self.context.text.faction_name_by_id(faction)?;
@@ -1070,8 +1200,14 @@ impl Renderer<'_, '_, '_> {
         };
         let source = self.current_country(scopes)?;
         let world = self.context.world()?;
-        let faction = world.faction(source)?;
-        if faction.is_some() && world.recorded().faction_leader(source)? != Some(source) {
+        let faction = world.faction(source).map_err(|why| why.to_string())?;
+        if faction.is_some()
+            && world
+                .recorded()
+                .faction_leader(source)
+                .map_err(|why| why.to_string())?
+                != Some(source)
+        {
             return Ok(String::new());
         }
         let country = self.country_name(target, false)?;

@@ -1273,7 +1273,25 @@ fn navy_size_ends_a_country_where_it_leaves_and_starts_it_again_where_it_returns
                 [(100, 101), (104, 105)]
             );
         }
-        matches_native(&source, label);
+        // Query the coverage written by this preparation mode. The hourly
+        // reference has branch coverage, while the independent navy has its
+        // own coverage; outside this scope the default registry would ask
+        // the hourly reference for an independent family's absent page.
+        let compare = || {
+            assert!(
+                product_coverage(&source, None, 1, "navy-size", &flag)
+                    .unwrap()
+                    .expect("navy preparation publishes coverage")
+                    .complete,
+                "{label}: navy preparation covers the complete recording"
+            );
+            matches_native(&source, label);
+        };
+        if own {
+            NAVY.own(compare);
+        } else {
+            independent::with_test_hourly(compare);
+        }
         clear(source);
     }
     folds_every_block(NAVY, &replay, "navy-returning");
@@ -1452,25 +1470,12 @@ fn territory_readers_wait_for_territory_coverage_while_the_branch_is_ahead() {
             .map(|(product, params)| query(source, product, params))
             .collect()
     };
-    let expected: Vec<Vec<Value>> = independent::with_test_hourly(|| {
-        let source = fixture.source("territory-staggered-hourly");
-        measured(&source);
-        let expected = [inside, past].map(|hour| replies(&source, hour)).to_vec();
-        clear(source);
-        expected
-    });
-    for (hour, replies) in [inside, past].iter().zip(&expected) {
-        assert!(
-            replies.iter().all(|reply| !reply.is_null()),
-            "hourly preparation answers every request at {hour}"
-        );
-    }
-    let territory_page = |source: &Source, last_hour: i32, complete: bool| {
+    let coverage_page = |source: &Source, section: &str, last_hour: i32, complete: bool| {
         let (store, key) = super::super::super::files(source, None).unwrap();
         let mut writer = store.extend(&key).unwrap();
         json(
             &mut writer,
-            &independent::coverage_section("territory", 1),
+            section,
             &CoveragePage {
                 coverage: Coverage {
                     schema: SCHEMA,
@@ -1483,6 +1488,51 @@ fn territory_readers_wait_for_territory_coverage_while_the_branch_is_ahead() {
         )
         .unwrap();
         writer.commit().unwrap();
+    };
+    let expected: Vec<Vec<Value>> = {
+        let source = fixture.source("territory-staggered-hourly");
+        independent::with_test_hourly(|| measured(&source));
+        // Keep the complete identity supplier while moving the hourly
+        // reference's other coverage back. Faction totals require the whole
+        // identity history, which the independent setup has already prepared.
+        coverage_page(
+            &source,
+            &independent::coverage_section("identities", 1),
+            BASE + 31,
+            true,
+        );
+        let expected = independent::with_test_only(&["identities"], || {
+            // The first three requests read territory and its accepted prefix.
+            // Give their hourly reference that same prefix, keeping its pages
+            // ahead. Political power reads no territory pages, so its reference
+            // retains complete branch coverage, as the independent setup does.
+            coverage_page(&source, &coverage_section(1), inside, false);
+            let mut within: Vec<_> = requests(inside)
+                .iter()
+                .take(3)
+                .map(|(product, params)| query(&source, product, params))
+                .collect();
+            coverage_page(&source, &coverage_section(1), BASE + 31, true);
+            let (product, params) = requests(inside).into_iter().nth(3).unwrap();
+            within.push(query(&source, product, &params));
+            vec![within, replies(&source, past)]
+        });
+        clear(source);
+        expected
+    };
+    for (hour, replies) in [inside, past].iter().zip(&expected) {
+        assert!(
+            replies.iter().all(|reply| !reply.is_null()),
+            "hourly preparation answers every request at {hour}"
+        );
+    }
+    let territory_page = |source: &Source, last_hour, complete| {
+        coverage_page(
+            source,
+            &independent::coverage_section("territory", 1),
+            last_hour,
+            complete,
+        );
     };
     independent::with_test_only(&["groups", "identities", "territory"], || {
         let source = fixture.source("territory-staggered");
@@ -1516,7 +1566,6 @@ fn territory_readers_wait_for_territory_coverage_while_the_branch_is_ahead() {
             complete[index].as_object_mut().unwrap().remove("coverage");
             if index != 0 {
                 assert_eq!(reply["pending"], serde_json::json!([]));
-                reply.as_object_mut().unwrap().remove("pending");
             }
         }
         assert_eq!(

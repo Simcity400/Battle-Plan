@@ -5,3 +5,5 @@ Country stability capture: CountryStabilityInputs and CountryStabilityLines, rea
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-stability` and `cargo clippy -p collector-stability --all-targets -- -D warnings` for its synthetic checks.
+
+CountryStabilityInputs includes recruitment and exile numeric columns. Existing writer marks and daily owner slices supply their read hours; exile host participates in the certificate digest while daily drifting resource values do not.

@@ -28,3 +28,8 @@ button.active-card:hover { background: var(--hover); box-shadow: inset 0 0 0 1px
 .active-card-days > .live-dot { width: 5px; height: 5px; }
 .active-card-chevron { position: absolute; top: 8px; right: 7px; width: 13px; height: 13px; color: var(--muted); }
 button.active-card:hover .active-card-chevron { color: var(--text); }
+.research-grants { margin-top: 12px; font-size: .75rem; }
+.research-grants > summary { cursor: pointer; }
+.research-grants > ul { list-style: none; padding: 0; display: grid; gap: 8px; }
+.research-grants li { display: flex; flex-direction: column; gap: 3px; padding: 8px; border: 1px solid var(--line-soft); border-radius: var(--r-sm); }
+.research-grants li > small, .research-grants > small { color: var(--muted); }

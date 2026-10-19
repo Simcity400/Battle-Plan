@@ -1437,8 +1437,12 @@ fn raw_handles_signed_counts_alias_owner_and_nullable_region_survive() {
     assert_eq!(
         rows[0],
         Row {
+            acquired_manpower: None,
+            exile_country: None,
             id: u64::MAX,
             owner: 3,
+            owner_pointer: COUNTRY,
+            owner_slot: 1,
             pool_ordinal: 0,
             country_override: i32::MIN,
             air_base: 0xfeed_beef_0000_0041,
@@ -1446,6 +1450,7 @@ fn raw_handles_signed_counts_alias_owner_and_nullable_region_survive() {
             planes: i32::MIN,
             mission_mask: 0x8000_0800,
             mission_region: Some(u32::MAX),
+            region_pointer: REGION,
             base_range_raw: 0,
             ace: 0,
             mission_active: 1,
@@ -1453,10 +1458,14 @@ fn raw_handles_signed_counts_alias_owner_and_nullable_region_survive() {
             eligibility_counter: i32::MIN,
             eligibility_limit: i32::MAX,
             attached_orders_group: None,
+            attached_group_pointer: 0,
             name: None,
             pool_subunit: None,
             raid_reference: None,
             strategic_bombing_raw: None,
+            replacement_setting: None,
+            map_flags: None,
+            fuel_inputs: None,
         }
     );
     assert_eq!(rows[1].id, 69); // One zero handle word is not a null handle.

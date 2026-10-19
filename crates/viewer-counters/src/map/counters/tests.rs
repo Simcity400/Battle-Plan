@@ -357,6 +357,14 @@ fn a_kept_report_assigned_from_another_equals_its_clone() {
         .counter_flag_gaps
         .insert("known capture refusal".into(), 2);
     source.faction_ping_limits.undecided = Some("undecided".into());
+    source.air_grid_hits.insert(
+        0,
+        AirGridHover {
+            family: IconFamily::Bases,
+            members: Some(Arc::new(vec![7, 8])),
+            text: Arc::default(),
+        },
+    );
     let mut kept = CounterReport {
         naval_counters: 7,
         land_hovers: vec![source.land_hovers[0].clone(); 4],
@@ -452,6 +460,8 @@ pub(super) fn wings_frame(flags: TableView) -> (DecodedFrame, Vision) {
                 wings: vec![0xC1],
                 carrier: Default::default(),
                 transport_planes: Default::default(),
+                fuel_demand_raw: Default::default(),
+                fuel_allocated_raw: Default::default(),
             },
         ]));
     views[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![AirWingRow {
@@ -565,9 +575,8 @@ fn the_air_base_icon_follows_the_state_s_base_not_a_type_name() {
 /// counts whatever it covers. Before, no radar icon was drawn.
 #[test]
 fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
-    use replay_data::{
-        rows::CountryAppearanceRow, rows::FactionMemberRow, rows::RadarCoverageRow, rows::Recorded,
-        rows::StateRow,
+    use replay_data::rows::{
+        CountryAppearanceRow, FactionMemberRow, RadarCoverageRow, Recorded, StateRow,
     };
     let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
     // Raw countries 100 (the viewer), 101, 102 and 103 at slots 0 to 3.
@@ -584,6 +593,7 @@ fn radar_icons_follow_the_viewer_s_search_and_the_state_s_controller() {
         ordinal,
         state: Some(state),
         provinces: Vec::new(),
+        radius: None,
     };
     *frame.tables[TableId::RadarCoverage.index()] =
         TableView::Complete(TableRows::RadarCoverage(vec![
@@ -959,6 +969,8 @@ fn another_countrys_wings_take_the_flag_frame() {
         wings: vec![0xC2],
         carrier: Default::default(),
         transport_planes: Default::default(),
+        fuel_demand_raw: Default::default(),
+        fuel_allocated_raw: Default::default(),
     });
     let TableView::Complete(TableRows::AirWings(wings)) =
         &mut *frame.tables[TableId::AirWings.index()]
@@ -1050,6 +1062,8 @@ fn truncated_registrations_keep_surviving_rows_decided() {
         capacity_raw: 100_000,
         carrier: Default::default(),
         transport_planes: Default::default(),
+        fuel_demand_raw: Default::default(),
+        fuel_allocated_raw: Default::default(),
     });
     let rows = match std::mem::replace(
         &mut *frame.tables[TableId::AirBaseRegistrations.index()],
@@ -1307,6 +1321,7 @@ fn counter_assets_fixture(
     )
     .unwrap();
     let assets = CounterAssets {
+        air_sortie_defines: Err("unused in this fixture".into()),
         layouts,
         windows: NativeWindows::of(guis).unwrap(),
         gui: GuiResources::new(registry, b"english", [100, 100], decode),
@@ -1488,7 +1503,9 @@ pub(super) fn with_counter_inputs_fixture<R>(
     ));
     configure(&mut assets);
     let mut content = CounterContent {
+        recorded_labels: None,
         terrain: Default::default(),
+        wing_types: Ok(Arc::new(Default::default())),
         mission_content: Err("not needed".into()),
         port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
             &installed_content_core::defines::Defines::new().unwrap(),
@@ -1496,6 +1513,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         anchors: Arc::new(Default::default()),
         default_anchors: Arc::new(Default::default()),
         site_icons: Default::default(),
+        air_base_first_provinces: Default::default(),
         ports: Default::default(),
         building_icons: Default::default(),
         kinds: Arc::new(Default::default()),
@@ -1503,6 +1521,9 @@ pub(super) fn with_counter_inputs_fixture<R>(
         region_of: Default::default(),
         region_provinces: Default::default(),
         region_icons: Default::default(),
+        region_names: Default::default(),
+        volunteer_air_defines: Err("unused in fixture".into()),
+        ground_crew_defines: Err("unused in fixture".into()),
         missing_standstill: Vec::new(),
         map: MapSize::TEST,
         aggression: Arc::new(Vec::new()),
@@ -1535,6 +1556,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         windows: &assets.windows,
         fonts: &fonts,
         localisation: &localisation,
+        recorded_language: "english",
         map: &map,
         camera: Camera {
             center: [2.0, 2.0],
@@ -1554,6 +1576,9 @@ pub(super) fn with_counter_inputs_fixture<R>(
         settings: CounterSettings::default(),
         display: &CounterDisplay::default(),
         selected: &BTreeSet::new(),
+        selected_air: &[],
+        selected_air_bases: &[],
+        selected_fleets: &[],
         hovered: None,
         schedule: &schedule,
         visibility: Visibility::POLITICAL,
@@ -2837,7 +2862,6 @@ fn naval_context<'a>(
         forces: &[],
         mission_skips: Default::default(),
         forces_complete: true,
-        coarse: false,
     }
 }
 
@@ -4178,6 +4202,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 DEFAULT_PRIORITY_NAVAL_COMBAT = 532,
                 DEFAULT_PRIORITY_NAVAL_COMBAT_RESULTS = 19,
                 DEFAULT_PRIORITY_NAVAL_MISSION = 13,
+                DEFAULT_PRIORITY_AIR_MISSION = 14.8,
                 DEFAULT_PRIORITY_VICTORY_POINTS = 5,
                 DEFAULT_PRIORITY_CAPITAL = 6,
                 DEFAULT_PRIORITY_ROCKET_SITE = 7,
@@ -4187,6 +4212,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
                 DEFAULT_PRIORITY_ADJACENCY_RULE = 11,
                 OTHER_TABLES
                 HOME_BASE_MAP_ICON_SCALE_DEFAULT = 1.25,
+                HOME_BASE_MAP_ICON_SCALE_HIGHLIGHTED = 1.5,
             },
             NNavy = {
                 INTEL_LEVEL_LOW_HALF_RANGE_PERCENTAGE = 10,
@@ -4216,6 +4242,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     assert_eq!(default(PriorityIcon::UnitsStack), 10);
     assert_eq!(default(PriorityIcon::UnitsStackGroup), 11);
     assert_eq!(default(PriorityIcon::AirBase), -3);
+    assert_eq!(default(PriorityIcon::AirMission), 14);
     assert_eq!(
         (
             default(PriorityIcon::NavalHeadquarter),
@@ -4224,6 +4251,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
         (4, 5)
     );
     assert_eq!(read.naval_base_scale, 1.25);
+    assert_eq!(read.naval_base_highlighted_scale, 1.5);
     assert_eq!(default(PriorityIcon::NavalCombatResults), 19);
     assert_eq!(default(PriorityIcon::NavalCombat), 20);
     assert_eq!(
@@ -4245,7 +4273,12 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     assert_eq!(
         read.priorities
             .get(PriorityTable::Ideology, PriorityIcon::Capital),
-        (40 + 12 * 11 + 11) as i8
+        (40 + 12 * 11 + 12) as i8
+    );
+    assert_eq!(
+        read.priorities
+            .get(PriorityTable::StrategicAir, PriorityIcon::AirMission),
+        51
     );
     // The group icon's priority takes over from the province distance on.
     assert_eq!(read.stack_priority(89.9, PriorityTable::Default), 10);
@@ -4782,7 +4815,7 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
         position: None,
         strength: 0,
     };
-    let mut sea = context.flotilla(&[&unit], false, context.coarse);
+    let mut sea = context.flotilla(&[&unit], false, false);
     sea.status.pride = Some(true);
     assert!(sea.no_intel_type());
     assert_eq!(sea.shows_pride(), Some(true));
@@ -5238,6 +5271,22 @@ fn the_air_base_badge_prefers_recorded_wings_over_the_fallback_reading() {
         air_base_frame(&count(false, None, Some(true), 5), Some(false)),
         0
     );
+}
+
+#[test]
+fn selected_air_base_frames_override_foreign_permission_and_keep_the_stationed_badge() {
+    let mut count = AirBaseCount {
+        shown: true,
+        selected: true,
+        stationed: Some(false),
+        foreign: Some(true),
+        ..Default::default()
+    };
+    assert_eq!(air_base_frame(&count, Some(true)), 5);
+    count.stationed = Some(true);
+    assert_eq!(air_base_frame(&count, Some(true)), 6);
+    count.shown = false;
+    assert!(air_base_frame(&count, Some(true)) < 5);
 }
 
 #[test]

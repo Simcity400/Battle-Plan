@@ -130,3 +130,16 @@ fn scripted_modes_take_the_rules_of_a_mode_outside_the_political_group() {
     assert!(scripted.unit_counters && scripted.province_icons && scripted.label_text);
     assert!(scripted.raid_icons.is_none() && !scripted.fog_of_war && !scripted.faction_pins);
 }
+
+#[test]
+fn political_port_policy_is_independent_of_the_icon_priority_table() {
+    assert!(of(Stock::Default).political_mode);
+    for stock in Stock::ALL {
+        assert_eq!(
+            of(stock).political_mode,
+            stock == Stock::Default,
+            "{stock:?}"
+        );
+    }
+    assert!(!super::of(&MapMode::Scripted("synthetic".into())).political_mode);
+}

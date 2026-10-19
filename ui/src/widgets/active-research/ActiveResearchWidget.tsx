@@ -19,6 +19,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import ResearchExplanation from '../research/ResearchExplanation';
+import { ResearchWithDoctrines } from '../research/DoctrinePanel';
 import { researchNumber } from '../research/researchBreakdown';
 import { researchAt, researchFolderLooks } from '../research/researchData';
 import { researchJourney } from '../research/researchJourney';
@@ -28,6 +29,7 @@ import { historyTokens, useResearchReply } from '../research/useResearch';
 import { useTechnologyArtwork } from '../research/useTechnologyArtwork';
 import { activeSlots } from './activeResearchData';
 import { useActiveResearch } from './useActiveResearch';
+import ResearchGrants from './ResearchGrantInventory';
 import type { ActiveSlot } from './activeResearchData';
 import '../national-focus/nationalFocus.css';
 import '../research/research.css';
@@ -37,13 +39,16 @@ const NO_WARNINGS: string[] = [];
 
 /** One card per research slot open at the hour shown: what it researches, its
  * latest read progress, the game's estimate and idle slots' saved days. */
-export default function ActiveResearchWidget({ widget, runtime, active, onDiagnostics, headerSlot }: WidgetProps) {
+export default function ActiveResearchWidget(props: WidgetProps) {
+  return <ResearchWithDoctrines {...props} body={ActiveResearchBody} />;
+}
+function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot }: WidgetProps) {
   const parity = useRef<HTMLElement>(null);
   const menu = useContextMenu('Active research actions');
   const owner = useId();
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const live = widget.time.mode === 'follow';
-  const { track, tag, data: currentData, error, retry, historyPreparing, countdownPreparing } = useActiveResearch(widget, runtime, active);
+  const { track, tag, data: currentData, grants, error, retry, historyPreparing, countdownPreparing } = useActiveResearch(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window && Math.floor(window.lastHour);
   const history = useResearchReply(widget, runtime, active && !historyPreparing);
@@ -75,8 +80,6 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || !slots) return <ListSkeleton label="Loading research..." />;
-  if (!cards.length) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span>
-    <p>No research slots recorded at {researchDate(hour)}.</p></div>;
   const shownSlot = shown ? historySlots?.find(slot => slot.index === shown.slotIndex) : undefined;
   const shownEntry = shownSlot?.entries.find(entry => entry.outcome === 'active' && entry.token === shown!.token);
   const card = (item: ActiveSlot) => {
@@ -122,6 +125,8 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="active-research" aria-label="Active research" ref={parity}>
     {header}
     <div className="active-cards">{cards.map(card)}</div>
+    {!cards.length && <p>No research slots recorded at {researchDate(hour)}.</p>}
+    <ResearchGrants inventory={grants} />
     {historyPreparing && <p className="chart-line-key" role="status">Assignment dates and time breakdown are still being prepared.{countdownPreparing && ' The carried days-left estimate is still being prepared.'}</p>}
     <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">
       {breakdown.open && <>

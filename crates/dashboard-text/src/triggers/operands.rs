@@ -1,4 +1,5 @@
 //! How the triggers' value readers read an operand token.
+use crate::triggers::Failure;
 
 use installed_content_core::{
     fixed5::IntOperand, fixed5::decimal_fixed5, fixed5::decimal_i32, fixed5::int_operand,
@@ -102,13 +103,13 @@ pub fn scope_selector(item: &Item) -> Option<Selected<'_>> {
 /// so the expected value stays false and the trigger tests `no`;
 /// assignment only logs the failure. A selector is
 /// refused: what the trigger then tests is not reproduced.
-pub fn trigger_boolean(item: &Item) -> Result<bool, String> {
+pub fn trigger_boolean(item: &Item) -> Result<bool, Failure> {
     if let Some(selector) = scope_selector(item) {
         return Err(format!(
             "the operand {} is {}, which the trigger's reader takes instead of yes or no; what the trigger then tests is not reproduced",
             shown(&item.value),
             selector.describe()
-        ));
+        ).into());
     }
     // Boolean reading compares bytes; a failed read leaves `no`.
     Ok(item.value.scalar().and_then(read_bool).unwrap_or(false))
@@ -142,7 +143,7 @@ impl Evaluator<'_, '_> {
         quoted: bool,
         fixed: bool,
         scopes: Scopes,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, Failure> {
         let scoped = |value: i64| {
             if fixed {
                 value
@@ -179,7 +180,7 @@ impl Evaluator<'_, '_> {
         key: &str,
         default: i64,
         scopes: Scopes,
-    ) -> Result<i64, String> {
+    ) -> Result<i64, Failure> {
         let texts: Vec<&[u8]> = items
             .iter()
             .filter(|item| item.keyword_is(key))
@@ -189,14 +190,16 @@ impl Evaluator<'_, '_> {
         let Some(&text) = texts.last() else {
             return Ok(default);
         };
-        let within = |why: String| {
-            format!(
-                "{what} modifier {key} = {}: {why}",
-                String::from_utf8_lossy(text)
-            )
+        let within = |why: Failure| {
+            why.context(|why| {
+                format!(
+                    "{what} modifier {key} = {}: {why}",
+                    String::from_utf8_lossy(text)
+                )
+            })
         };
         if texts.len() > 1 && self.operand(text).map_err(within)?.literal.is_none() {
-            return Err(within(super::refused(format!(
+            return Err(within(crate::triggers::refusal::refused(format!(
                 "{key} is assigned {} times, and a later assignment into the one operand keeps fields an earlier one set, which is not reproduced",
                 texts.len()
             ))));

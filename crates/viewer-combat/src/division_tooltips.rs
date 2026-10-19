@@ -42,6 +42,9 @@ use {
     },
 };
 
+mod history;
+mod panel;
+
 // The maximum getter floors max HP to.001.
 fn combat_strength(strength: i64, maximum: i64, factor: i64) -> Option<i64> {
     Some(
@@ -356,6 +359,30 @@ fn division_summary(
         text.push_str(&builtin(icons, loc, COMBAT_TOOLTIP_SEPARATOR, &[])?);
     }
     Ok(text)
+}
+
+/// The division's experience level, combat bonus and next-level progress.
+fn division_experience_tooltip(
+    icons: &dyn TextIcons,
+    loc: &Localisation,
+    experience: installed_content_core::unit_leader::DivisionExperienceProgress,
+) -> Result<String, String> {
+    let level = builtin(icons, loc, &format!("UNIT_LEVEL_{}", experience.level), &[])?;
+    let combat = installed_content_localisation::localisation::format_scripted_variable(
+        experience.combat_bonus,
+        Some(b"+%0"),
+    );
+    builtin(
+        icons,
+        loc,
+        EXP_TOOLTIP_ARMY,
+        &[
+            ("NUMBER", Argument::Int32(experience.level.wrapping_add(1))),
+            ("LEVEL", Argument::Text(&level)),
+            ("COMBAT", Argument::Text(&combat)),
+            ("EXP", Argument::Fixed5(experience.next_level_fraction)),
+        ],
+    )
 }
 
 /// Naval invasion section. Show the attack and defence scales less one
@@ -1275,13 +1302,6 @@ pub(super) fn bind(
     // The commander icon's name, skill and traits.
     let leaders = rows::<tables::UnitLeaders>(frame).map_err(|error| error.to_string());
     let leader_traits = rows::<tables::UnitLeaderTraits>(frame).map_err(|error| error.to_string());
-    // Recorded daily with the template dictionary, so a rename shows from the
-    // table's next daily capture.
-    let template_names: BTreeMap<_, _> = rows::<tables::DivisionTemplates>(frame)?
-        .rows()
-        .iter()
-        .map(|row| (row.template, row))
-        .collect();
     // The landing's first-edge progress, rebuilt from the recorded route and
     // content as the hour's other movement consumers rebuild it.
     let etas = static_content
@@ -1476,50 +1496,8 @@ pub(super) fn bind(
                 }
             };
             set_hover(values, "org_bar", organisation, None);
-            // template display-name selection: explicit name, otherwise country-specific localisation.
-            let name = (|| {
-                let template = template_names.get(&row.context.template).ok_or_else(|| {
-                    format!(
-                        "template {} has no DivisionTemplates row",
-                        row.context.template
-                    )
-                })?;
-                if !template.name.is_empty() {
-                    return std::str::from_utf8(&template.name)
-                        .map(str::to_owned)
-                        .map_err(|_| "template name is not UTF-8".to_owned());
-                }
-                let key = template.name_key.require("DivisionTemplates.name_key")?;
-                if key.is_empty() {
-                    return Ok(String::new());
-                }
-                let key = std::str::from_utf8(key).map_err(|_| "template name_key is not UTF-8")?;
-                let template_icons =
-                    rows::<tables::DivisionTemplateIcons>(frame).map_err(|e| e.to_string())?;
-                let icon = template_icons
-                    .rows()
-                    .iter()
-                    .find(|icon| icon.template == template.template)
-                    .ok_or("template localisation country unavailable")?;
-                if icon.country <= 0 {
-                    return localise(loc, key, &[]);
-                }
-                let links = rows::<tables::CountryLinks>(frame).map_err(|e| e.to_string())?;
-                let slot = links
-                    .rows()
-                    .iter()
-                    .find(|link| link.id == icon.country as u32)
-                    .ok_or("template country link unavailable")?
-                    .canonical_slot;
-                let tag = countries
-                    .rows()
-                    .iter()
-                    .find(|country| country.canonical_slot == slot)
-                    .ok_or("template country unavailable")?;
-                let tag = std::str::from_utf8(&tag.tag)
-                    .map_err(|_| "template country tag is not UTF-8")?;
-                country_localised(loc, Ok(tag), key)
-            })();
+            let template_name = |handle| template_display_name(loc, frame, handle);
+            let name = template_name(row.context.template);
             let invasion =
                 naval_invasion(*unit, &movements, &all_divisions, &provinces, &kinds, &wars);
             let summary = match invasion {
@@ -1535,7 +1513,126 @@ pub(super) fn bind(
             }
             .and_then(|progress| division_summary(icons, loc, &name?, row, progress, defines));
             let summary = match summary {
-                Ok(text) => {
+                Ok(mut text) => {
+                    let transition = frame
+                        .complete::<tables::DivisionStatus>()
+                        .ok()
+                        .and_then(|rows| {
+                            rows.binary_search_by_key(unit, |r| r.division)
+                                .ok()
+                                .map(|at| &rows[at])
+                        })
+                        .ok_or_else(|| "division pending template status unavailable".to_owned())
+                        .and_then(|status| {
+                            status
+                                .pending_template
+                                .require("DivisionStatus.pending_template")
+                                .map_err(|reason| reason.to_string())
+                        })
+                        .and_then(|value| {
+                            value.ok_or_else(|| "division pending template unavailable".to_owned())
+                        })
+                        .and_then(|handle| {
+                            if handle == 0 {
+                                return Ok(None);
+                            }
+                            let old = template_name(handle)?;
+                            let new = template_name(row.context.template)?;
+                            builtin(
+                                icons,
+                                loc,
+                                "DIVISION_IN_TEMPLATE_TRANSFER",
+                                &[("OLD", Argument::Text(&old)), ("NEW", Argument::Text(&new))],
+                            )
+                            .map(Some)
+                        });
+                    match transition {
+                        Ok(Some(transition)) => {
+                            text.push('\n');
+                            text.push_str(&transition);
+                        }
+                        Ok(None) => {}
+                        Err(reason) => {
+                            *refused.entry(reason).or_default() += 1;
+                        }
+                    }
+                    let experience = frame
+                        .complete::<tables::DivisionStatus>()
+                        .ok()
+                        .and_then(|rows| {
+                            rows.binary_search_by_key(unit, |r| r.division)
+                                .ok()
+                                .map(|i| &rows[i])
+                        })
+                        .zip(
+                            frame
+                                .complete::<tables::DivisionLandInputs>()
+                                .ok()
+                                .and_then(|rows| {
+                                    rows.binary_search_by_key(unit, |r| r.division)
+                                        .ok()
+                                        .map(|i| &rows[i])
+                                }),
+                        )
+                        .and_then(|(status, inputs)| {
+                            status.normalized_experience(
+                                inputs
+                                    .manpower
+                                    .iter()
+                                    .fold(0_i32, |sum, entry| sum.wrapping_add(entry.amount)),
+                            )
+                        });
+                    let experience = experience
+                        .ok_or_else(|| "division experience unavailable".to_owned())
+                        .and_then(|experience| {
+                            let defines =
+                                defines.ok_or("division experience defines unavailable")?;
+                            let content = defines.experience.as_ref().ok_or_else(|| {
+                                defines
+                                    .experience_refusal
+                                    .clone()
+                                    .unwrap_or("division experience defines unavailable".into())
+                            })?;
+                            division_experience_tooltip(icons, loc, content.progress(experience))
+                        });
+                    match experience {
+                        Ok(experience) => {
+                            text.push('\n');
+                            text.push_str(&experience);
+                        }
+                        Err(reason) => {
+                            *refused.entry(reason).or_default() += 1;
+                        }
+                    }
+
+                    match panel::text(static_content, frame, row.division) {
+                        Ok((stats, reasons)) => {
+                            text.push('\n');
+                            text.push_str(&stats);
+                            for reason in reasons {
+                                *refused.entry(reason).or_default() += 1;
+                            }
+                        }
+                        Err(reason) => {
+                            *refused.entry(reason).or_default() += 1;
+                        }
+                    }
+                    match history::text(static_content, frame, *unit) {
+                        Ok((history, reasons)) => {
+                            if !history.is_empty() {
+                                text.push('\n');
+                                text.push_str(&history);
+                            }
+                            for reason in reasons {
+                                *refused.entry(reason).or_default() += 1;
+                            }
+                        }
+                        Err(reason) => {
+                            *refused
+                                .entry(format!("division history: {reason}"))
+                                .or_default() += 1;
+                        }
+                    }
                     unpierced += usize::from(defines.is_none());
                     hover_text(&text)
                 }
@@ -1762,7 +1859,203 @@ tooltip_keys! {
     STAT_ARMY_HARD_ATTACK = "STAT_ARMY_HARD_ATTACK",
     STAT_ARMY_BREAKTHROUGH = "STAT_ARMY_BREAKTHROUGH",
     STAT_ARMY_DEFENSE = "STAT_ARMY_DEFENSE",
+    EXP_TOOLTIP_ARMY = "EXP_TOOLTIP_ARMY",
 }
 
 #[cfg(test)]
 mod tests;
+
+/// The deployed division's experience, conversion, current stats and retained career.
+/// The host attaches this to the viewing country's single-division counter hover.
+pub fn division_panel(
+    content: &StaticContent,
+    frame: &DecodedFrame,
+    id: u64,
+) -> viewer_foundation::tooltip_text::Tooltip {
+    let mut out = viewer_foundation::tooltip_text::Tooltip::default();
+    for (name, result) in [
+        ("division stats", panel::text(content, frame, id)),
+        ("division career", history::text(content, frame, id)),
+    ] {
+        match result {
+            Ok((text, reasons)) => {
+                out.line(true, 2, name, Ok(text));
+                for reason in reasons {
+                    out.refuse(name, reason);
+                }
+            }
+            Err(reason) => out.refuse(name, reason),
+        }
+    }
+    let experience = (|| {
+        let status = frame
+            .complete::<tables::DivisionStatus>()
+            .map_err(|why| why.to_string())?;
+        let status = status
+            .binary_search_by_key(&id, |row| row.division)
+            .ok()
+            .map(|at| &status[at])
+            .ok_or("division status unavailable")?;
+        let inputs = frame
+            .complete::<tables::DivisionLandInputs>()
+            .map_err(|why| why.to_string())?;
+        let inputs = inputs
+            .binary_search_by_key(&id, |row| row.division)
+            .ok()
+            .map(|at| &inputs[at])
+            .ok_or("division manpower unavailable")?;
+        let xp = status
+            .normalized_experience(
+                inputs
+                    .manpower
+                    .iter()
+                    .fold(0_i32, |sum, entry| sum.wrapping_add(entry.amount)),
+            )
+            .ok_or("division experience unavailable")?;
+        let defines = content.assets.land_defines.as_ref().map_err(Clone::clone)?;
+        let experience = defines.experience.as_ref().ok_or_else(|| {
+            defines
+                .experience_refusal
+                .clone()
+                .unwrap_or("division experience defines unavailable".into())
+        })?;
+        division_experience_tooltip(
+            content.assets.as_ref(),
+            &content.localisation,
+            experience.progress(xp),
+        )
+    })();
+    out.line(true, 2, "division experience", experience);
+    let transition = (|| {
+        let statuses = frame
+            .complete::<tables::DivisionStatus>()
+            .map_err(|why| why.to_string())?;
+        let status = statuses
+            .binary_search_by_key(&id, |row| row.division)
+            .ok()
+            .map(|at| &statuses[at])
+            .ok_or("division status unavailable")?;
+        let old = status
+            .pending_template
+            .require("DivisionStatus.pending_template")?
+            .ok_or("division pending template unavailable")?;
+        if old == 0 {
+            return Ok(String::new());
+        }
+        let units = frame
+            .complete::<tables::Divisions>()
+            .map_err(|why| why.to_string())?;
+        let unit = units
+            .binary_search_by_key(&id, |row| row.id)
+            .ok()
+            .map(|at| &units[at])
+            .ok_or("division unavailable")?;
+        let name = |handle| template_display_name(&content.localisation, frame, handle);
+        builtin(
+            content.assets.as_ref(),
+            &content.localisation,
+            "DIVISION_IN_TEMPLATE_TRANSFER",
+            &[
+                ("OLD", Argument::Text(&name(old)?)),
+                ("NEW", Argument::Text(&name(unit.template)?)),
+            ],
+        )
+    })();
+    out.line(true, 2, "division conversion", transition);
+    out
+}
+
+fn template_display_name(
+    loc: &Localisation,
+    frame: &DecodedFrame,
+    handle: u64,
+) -> Result<String, String> {
+    let templates = rows::<tables::DivisionTemplates>(frame).map_err(|why| why.to_string())?;
+    let templates = templates.rows();
+    let countries = rows::<tables::Countries>(frame).map_err(|why| why.to_string())?;
+    let countries = countries.rows();
+    let template = templates
+        .iter()
+        .find(|template| template.template == handle)
+        .ok_or_else(|| format!("template {} has no DivisionTemplates row", handle))?;
+    if !template.name.is_empty() {
+        return std::str::from_utf8(&template.name)
+            .map(str::to_owned)
+            .map_err(|_| "template name is not UTF-8".to_owned());
+    }
+    let key = template.name_key.require("DivisionTemplates.name_key")?;
+    if key.is_empty() {
+        return Ok(String::new());
+    }
+    let key = std::str::from_utf8(key).map_err(|_| "template name_key is not UTF-8")?;
+    let template_icons = rows::<tables::DivisionTemplateIcons>(frame).map_err(|e| e.to_string())?;
+    let icon = template_icons
+        .rows()
+        .iter()
+        .find(|icon| icon.template == template.template)
+        .ok_or("template localisation country unavailable")?;
+    if icon.country <= 0 {
+        return localise(loc, key, &[]);
+    }
+    let links = rows::<tables::CountryLinks>(frame).map_err(|e| e.to_string())?;
+    let slot = links
+        .rows()
+        .iter()
+        .find(|link| link.id == icon.country as u32)
+        .ok_or("template country link unavailable")?
+        .canonical_slot;
+    let tag = countries
+        .iter()
+        .find(|country| country.canonical_slot == slot)
+        .ok_or("template country unavailable")?;
+    let tag = std::str::from_utf8(&tag.tag).map_err(|_| "template country tag is not UTF-8")?;
+    country_localised(loc, Ok(tag), key)
+}
+
+/// Holds the complete extended singleton hover while its content, hour and base hover agree.
+#[derive(Default)]
+pub struct DivisionPanelCache {
+    // Keep the identity witnesses and their completed tooltip in one optional cache entry.
+    #[allow(clippy::type_complexity)]
+    held: Option<(
+        std::sync::Arc<StaticContent>,
+        std::sync::Arc<DecodedFrame>,
+        std::sync::Arc<viewer_foundation::tooltip_text::Tooltip>,
+        u64,
+        std::sync::Arc<viewer_foundation::tooltip_text::Tooltip>,
+    )>,
+}
+impl DivisionPanelCache {
+    pub fn request(
+        &mut self,
+        content: &std::sync::Arc<StaticContent>,
+        frame: &std::sync::Arc<DecodedFrame>,
+        base: std::sync::Arc<viewer_foundation::tooltip_text::Tooltip>,
+        id: u64,
+    ) -> std::sync::Arc<viewer_foundation::tooltip_text::Tooltip> {
+        use std::sync::Arc;
+        if let Some((held_content, held_frame, held_base, held_id, text)) = &self.held
+            && Arc::ptr_eq(content, held_content)
+            && Arc::ptr_eq(frame, held_frame)
+            && Arc::ptr_eq(&base, held_base)
+            && id == *held_id
+        {
+            return Arc::clone(text);
+        }
+        let extra = division_panel(content, frame, id);
+        let mut text = (*base).clone();
+        text.line(true, 2, "division panel", Ok(extra.body));
+        for (reason, count) in extra.refused {
+            *text.refused.entry(reason).or_default() += count;
+        }
+        let text = Arc::new(text);
+        self.held = Some((
+            Arc::clone(content),
+            Arc::clone(frame),
+            base,
+            id,
+            Arc::clone(&text),
+        ));
+        text
+    }
+}

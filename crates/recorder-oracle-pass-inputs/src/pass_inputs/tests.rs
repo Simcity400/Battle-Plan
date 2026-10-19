@@ -280,6 +280,10 @@ fn hq_distance_oracle_compares_zero_positive_and_negative_save_omission() {
             &mut frame,
             TableRows::OrdersGroupCounterInputs(vec![
                 replay_data::rows::OrdersGroupCounterInputRow {
+                    template_context: Recorded::Value(Some(
+                        std::sync::Arc::new(Default::default()),
+                    )),
+                    hq_nearest_front: Recorded::Value(Some(-1)),
                     group,
                     withdrawing: 0,
                     hq_distance: Recorded::Value(Some(actual)),
@@ -307,6 +311,10 @@ fn hq_distance_oracle_compares_zero_positive_and_negative_save_omission() {
             &mut frame,
             TableRows::OrdersGroupCounterInputs(vec![
                 replay_data::rows::OrdersGroupCounterInputRow {
+                    template_context: Recorded::Value(Some(
+                        std::sync::Arc::new(Default::default()),
+                    )),
+                    hq_nearest_front: Recorded::Value(Some(-1)),
                     group,
                     withdrawing: 0xff,
                     hq_distance: distance,
@@ -322,6 +330,168 @@ fn hq_distance_oracle_compares_zero_positive_and_negative_save_omission() {
             "withdrawing remains independently compared"
         );
         assert!(report.limitations.contains_key(expected_reason));
+    }
+}
+
+#[test]
+fn template_hq_context_oracle_compares_target_deployment_pools_flags_and_refusals() {
+    use replay_data::rows::{
+        DivisionTemplateRow, HqDeployment, HqEquipment, HqRequirement, LexicalTokenRow,
+        TemplateHqContext,
+    };
+    let (mut frame, mut save) = base();
+    let group = (7 << 32) | 53;
+    let target = (19 << 32) | 52;
+    let variant = (29 << 32) | 70;
+    let text=br#"countries={GER={theatres={theatre={id={id=2 type=67}
+      orders_group={id={id=7 type=53} field_marshal_group=no motorization_level=0
+        target_template={id=19 type=52} deployed=yes deploy_queued=yes
+        hq_deploy_distributable={country=GER priority=9
+          hq_assembled_equipment={allow_zero_entries=no equipment={id={id=29 type=70} amount=1.23456}}
+          hq_requested_equipment={mod_hq_equipment=1.5}
+          hq_assembled_manpower=-7 hq_requested_manpower=19 hq_deploy_order=31 hq_requisitioned_from_army=yes
+        }
+      }
+    }}}}"#;
+    save.naval_history =
+        installed_content_save::naval_history::parse(&installed_content_core::parser::parse(text).unwrap().items)
+            .unwrap();
+    set(
+        &mut frame,
+        TableRows::OrdersGroups(vec![replay_data::rows::OrdersGroupRow {
+            handle: group,
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::DivisionTemplates(vec![DivisionTemplateRow {
+            template: target,
+            owner: 101,
+            ..Default::default()
+        }]),
+    );
+    set(
+        &mut frame,
+        TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 77,
+            literal: b"mod_hq_equipment".to_vec(),
+        }]),
+    );
+    let context = TemplateHqContext {
+        target,
+        deployed: 2,
+        queued: 3,
+        deployment: Some(HqDeployment {
+            country: 102,
+            priority: 9,
+            allow_zero: 0,
+            assembled_manpower: -7,
+            requested_manpower: 19,
+            order: 31,
+            requisitioned: 4,
+        }),
+        equipment: vec![
+            HqEquipment { variant, amount: 0 },
+            HqEquipment {
+                variant,
+                amount: 123456,
+            },
+        ],
+        required: vec![
+            HqRequirement {
+                token: 77,
+                amount: 0,
+            },
+            HqRequirement {
+                token: 77,
+                amount: 150000,
+            },
+        ],
+    };
+    let mut row = replay_data::rows::OrdersGroupCounterInputRow {
+        group,
+        template_context: Recorded::Value(Some(std::sync::Arc::new(context))),
+        hq_nearest_front: Recorded::Value(Some(-1)),
+        hq_distance: Recorded::Value(Some(-1)),
+        invasion_source_distance: Recorded::Value(Some(-1)),
+        ..Default::default()
+    };
+    set(
+        &mut frame,
+        TableRows::OrdersGroupCounterInputs(vec![row.clone()]),
+    );
+    let mut report = Report::default();
+    groups(&frame, &save, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    if let Recorded::Value(Some(context)) = &mut row.template_context {
+        std::sync::Arc::make_mut(context).equipment[1].amount += 1;
+    }
+    set(
+        &mut frame,
+        TableRows::OrdersGroupCounterInputs(vec![row.clone()]),
+    );
+    let mut report = Report::default();
+    groups(&frame, &save, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    row.template_context = Recorded::Value(None);
+    set(&mut frame, TableRows::OrdersGroupCounterInputs(vec![row]));
+    assert!(
+        groups(&frame, &save, &mut Report::default())
+            .unwrap_err()
+            .to_string()
+            .contains("context acquisition refused")
+    );
+}
+
+#[test]
+fn template_hq_nearest_front_oracle_compares_nonnegative_words_and_negative_omission() {
+    let (mut frame, mut save) = base();
+    let group = (7 << 32) | 53;
+    set(
+        &mut frame,
+        TableRows::OrdersGroups(vec![replay_data::rows::OrdersGroupRow {
+            handle: group,
+            ..Default::default()
+        }]),
+    );
+    for (actual, saved, differences) in [
+        (i32::MIN, None, 0),
+        (-1, None, 0),
+        (0, Some(0), 0),
+        (19, Some(19), 0),
+        (19, Some(20), 1),
+    ] {
+        let suffix = saved
+            .map(|value| format!("hq_nearest_front_province_id={value}"))
+            .unwrap_or_default();
+        let text = format!(
+            "countries={{GER={{theatres={{theatre={{id={{id=2 type=67}} orders_group={{id={{id=7 type=53}} field_marshal_group=no motorization_level=0 {suffix}}}}}}}}}}}"
+        );
+        save.naval_history = installed_content_save::naval_history::parse(
+            &installed_content_core::parser::parse(text.as_bytes())
+                .unwrap()
+                .items,
+        )
+        .unwrap();
+        set(
+            &mut frame,
+            TableRows::OrdersGroupCounterInputs(vec![
+                replay_data::rows::OrdersGroupCounterInputRow {
+                    template_context: Recorded::Value(Some(
+                        std::sync::Arc::new(Default::default()),
+                    )),
+                    group,
+                    hq_nearest_front: Recorded::Value(Some(actual)),
+                    hq_distance: Recorded::Value(Some(-1)),
+                    invasion_source_distance: Recorded::Value(Some(-1)),
+                    ..Default::default()
+                },
+            ]),
+        );
+        let mut report = Report::default();
+        groups(&frame, &save, &mut report).unwrap();
+        assert_eq!(report.differences.len(), differences);
     }
 }
 
@@ -362,6 +532,10 @@ fn invasion_source_distance_oracle_preserves_negative_omission_and_hq_comparison
             &mut frame,
             TableRows::OrdersGroupCounterInputs(vec![
                 replay_data::rows::OrdersGroupCounterInputRow {
+                    template_context: Recorded::Value(Some(
+                        std::sync::Arc::new(Default::default()),
+                    )),
+                    hq_nearest_front: Recorded::Value(Some(-1)),
                     group,
                     hq_distance: Recorded::Value(Some(31)),
                     invasion_source_distance: Recorded::Value(Some(actual)),
@@ -392,6 +566,10 @@ fn invasion_source_distance_oracle_preserves_negative_omission_and_hq_comparison
             &mut frame,
             TableRows::OrdersGroupCounterInputs(vec![
                 replay_data::rows::OrdersGroupCounterInputRow {
+                    template_context: Recorded::Value(Some(
+                        std::sync::Arc::new(Default::default()),
+                    )),
+                    hq_nearest_front: Recorded::Value(Some(-1)),
                     group,
                     hq_distance: Recorded::Value(Some(32)),
                     invasion_source_distance: distance,
@@ -531,6 +709,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
         TableRows::FleetCounterInputs(vec![FleetCounterInputRow {
             fleet,
             mission_region_count: 3,
+            mission_regions: (Some(std::sync::Arc::new(vec![206, 206, 207]))).into(),
             task_forces: vec![task],
             ..Default::default()
         }]),
@@ -613,6 +792,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
         }]),
     );
     save.counter_inputs = counter_inputs::Pack {
+        sent_expeditionaries: Default::default(),
         sent_volunteers: Default::default(),
         first_divisions: Default::default(),
         division_orders: Default::default(),
@@ -623,7 +803,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
             counter_inputs::Fleet {
                 owner: b"GER".to_vec(),
                 color: Some(vec![219, 219, 10]),
-                strategic_regions: Some(3),
+                strategic_regions: Some(vec![206, 207, 206]),
                 task_forces: vec![task],
             },
         )]
@@ -678,7 +858,13 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
     let mut report = Report::default();
     compare(&frame, &save, &mut report);
     // Owned and controlled state counts both differ without states.
-    assert_eq!(report.differences.len(), 8, "{:?}", report.differences);
+    assert_eq!(report.differences.len(), 9, "{:?}", report.differences);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains(".mission_regions"))
+    );
     // An omitted pride is exactly the zero reference.
     save.counter_inputs.prides.insert(b"GER".to_vec(), None);
     let mut report = Report::default();

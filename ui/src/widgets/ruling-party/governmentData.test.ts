@@ -75,6 +75,8 @@ test('registered ruling-party renderer requests causes conditionally, respects P
     '/dashboard/products.ts': `export const loadProduct = () => { throw new Error('SSR must not navigate'); };
     export const useProduct = (_client, request, active, validate) => {
       if (!request || !active) return { retry() {} }; globalThis.__governmentRequests.push(request);
+      if (request.product === 'country-people') return { data: validate({ ...request.params,
+        readHour: null, manpower: [], politics: [], states: [], exiles: [], warnings: [] }), retry() {} };
       if (request.product === 'politics-ledger' && globalThis.__governmentError) return { error: globalThis.__governmentError, retry() {} };
       const party = request.params.mode ? { coverage: { firstHour: 24, lastHour: 30, complete: true }, reply: globalThis.__governmentParty, summaries: [], marks: [], cursor: null, total: '0' } : globalThis.__governmentParty;
       return { data: validate(request.product === 'party-history' ? party : globalThis.__governmentLedger), retry() {} };
@@ -96,6 +98,7 @@ test('registered ruling-party renderer requests causes conditionally, respects P
         clock: { getHour: () => hour, getSnapshot: () => ({ hoursPerSecond: 1 }) } }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => renderToStaticMarkup(createElement(renderer.render, props));
     render();
+    assert.deepEqual(requests.find(request => request.product === 'country-people')?.params, { branchId: '1', tag: parties.tag, hour: 25 });
     assert.equal(requests.find(request => request.product === 'politics-ledger')?.params.view, 'governments');
     assert.ok(host.__governmentChart?.badges?.every(badge => !badge.label.includes('Coup')));
     hour = 26; assert.match(render(), /Native party name/);
@@ -105,6 +108,7 @@ test('registered ruling-party renderer requests causes conditionally, respects P
     assert.ok(!tooltip?.rows.some(row => row.label === 'Read'));
     assert.ok(tooltip?.rows.some(row => row.label === 'Some changes may be missing.'));
     props.widget.time = { mode: 'pin', windows: { track: { firstOffset: 1, lastOffset: 1 } } }; hour = 30; render();
+    assert.deepEqual(requests.filter(request => request.product === 'country-people').at(-1)?.params, { branchId: '1', tag: parties.tag, hour: 25 });
     assert.ok(host.__governmentChart?.badges?.every(badge => !badge.label.includes('Coup')));
     props.widget.time = { mode: 'follow' }; host.__governmentError = 'Synthetic government refusal';
     const refused = render(); assert.match(refused, /Couldn’t load government changes/); assert.match(refused, /Native party name/);

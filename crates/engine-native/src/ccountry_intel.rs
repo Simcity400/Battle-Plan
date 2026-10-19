@@ -71,7 +71,8 @@ pub fn native_rows(memory: &impl Memory, base: usize, game_state: usize) -> Opti
         };
         total = total.saturating_add(vector.count as usize);
     }
-    if let Ok((_, count)) = reserved_vector_at(memory, base, reserved, &mut None) {
+    if let Ok((_, count)) = reserved_vector_at(memory, base, reserved, &mut None, &mut |_, _, _| {})
+    {
         total = total.saturating_add(count as usize);
     }
     Some(total)
@@ -134,7 +135,14 @@ pub fn walk_buffer(
     scratch: &mut [u8],
 ) -> Outcome {
     match ccountry::Reader::new(memory, base, game_state) {
-        Ok(countries) => walk_in_reader(memory, base, &countries, output.suffix(0), scratch),
+        Ok(countries) => walk_in_reader(
+            memory,
+            base,
+            &countries,
+            output.suffix(0),
+            scratch,
+            &mut |_, _, _| {},
+        ),
         Err(reason) => Outcome::Unavailable { reason },
     }
 }
@@ -145,6 +153,7 @@ fn walk_in_reader(
     countries: &ccountry::Reader<'_, impl Memory>,
     mut output: crate::walk::Buffer<'_, country_intel_row::Row>,
     scratch: &mut [u8],
+    visit: &mut dyn FnMut(u32, usize, usize),
 ) -> Outcome {
     let result = (|| {
         let expected = base
@@ -173,6 +182,7 @@ fn walk_in_reader(
             if read::<u64>(memory, table) != Some(expected) {
                 return Err("country intel vtable mismatch");
             }
+            visit(country.id, table, country.pointer);
             let header = table
                 .checked_add(DATA)
                 .and_then(|address| read::<[u8; 16]>(memory, address))
@@ -267,8 +277,23 @@ pub fn walk_with_reserved_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    output: crate::walk::Buffer<'_, country_intel_row::Row>,
+    scratch: &mut [u8],
+) -> ReservedCapture {
+    walk_with_reserved_visit(memory, base, game_state, output, scratch, &mut |_, _, _| {})
+}
+
+/// Share already-authenticated source roots, including a native empty headline
+/// vector and the reserved root. The visitor owns its independent failure
+/// boundary and cannot turn an auxiliary failure into a headline failure.
+/// It runs only where the caller already schedules this census.
+pub fn walk_with_reserved_visit(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
     mut output: crate::walk::Buffer<'_, country_intel_row::Row>,
     scratch: &mut [u8],
+    visit: &mut dyn FnMut(u32, usize, usize),
 ) -> ReservedCapture {
     let countries = match ccountry::Reader::new(memory, base, game_state) {
         Ok(countries) => countries,
@@ -281,7 +306,7 @@ pub fn walk_with_reserved_buffer(
             };
         }
     };
-    let positive = walk_in_reader(memory, base, &countries, output.suffix(0), scratch);
+    let positive = walk_in_reader(memory, base, &countries, output.suffix(0), scratch, visit);
     let Outcome::Rows { len } = positive else {
         return ReservedCapture {
             outcome: positive,
@@ -295,7 +320,7 @@ pub fn walk_with_reserved_buffer(
     let mut required = 0;
     let vector_count = (|| {
         let (data, count) =
-            reserved_vector_at(memory, base, countries.reserved(), &mut known_count)?;
+            reserved_vector_at(memory, base, countries.reserved(), &mut known_count, visit)?;
         if count == 0 {
             return Ok(0);
         }
@@ -331,6 +356,7 @@ fn reserved_vector_at(
     base: usize,
     country: Result<ccountry::Country, &'static str>,
     known_count: &mut Option<u32>,
+    visit: &mut dyn FnMut(u32, usize, usize),
 ) -> Result<(usize, u32), &'static str> {
     let country = country?;
     let table = country
@@ -351,6 +377,7 @@ fn reserved_vector_at(
     if u32::from_le_bytes(identity[8..].try_into().unwrap()) != 0 {
         return Err("reserved country intel owner mismatch");
     }
+    visit(0, table, country.pointer);
     let header = table
         .checked_add(DATA)
         .and_then(|address| read::<[u8; 16]>(memory, address))
@@ -515,6 +542,26 @@ mod tests {
         let outcome = walk(&memory(bytes), BASE, GS, &mut output, &mut scratch);
         output.truncate(outcome.len());
         (outcome, output)
+    }
+
+    #[test]
+    fn intel_sources_roots_share_the_existing_census_even_for_empty_headline_vectors() {
+        let bytes = fixture();
+        let mut output = Vec::new();
+        let mut scratch = [0; 64];
+        let mut roots = Vec::new();
+        let result = walk_with_reserved_visit(
+            &memory(&bytes),
+            BASE,
+            GS,
+            crate::walk::Buffer::Growing(&mut output),
+            &mut scratch,
+            &mut |owner, pointer, _| roots.push((owner, pointer)),
+        );
+        assert_eq!(result.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(roots, [(1, TABLES[0]), (2, TABLES[1])]);
+        // No reserved object is fabricated from a missing reserved root.
+        assert!(result.vector_count.is_err());
     }
 
     #[test]
@@ -1250,7 +1297,8 @@ mod tests {
                     BASE,
                     &reader,
                     crate::walk::Buffer::Fixed(&mut rows),
-                    &mut scratch
+                    &mut scratch,
+                    &mut |_, _, _| {},
                 ),
                 Outcome::Unavailable { reason }
             );

@@ -14,6 +14,7 @@ doctest = false
 export-types = []
 
 [dependencies]
+installed-content-wargoals.workspace = true
 replay.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
@@ -21,6 +22,7 @@ engine-native.workspace = true
 installed-content-core.workspace = true
 installed-content-country-names.workspace = true
 installed-content-equipment-graphics.workspace = true
+installed-content-events.workspace = true
 installed-content-gfx.workspace = true
 installed-content-image.workspace = true
 installed-content-localisation.workspace = true

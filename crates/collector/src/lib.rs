@@ -29,6 +29,14 @@ mod acquisition_jobs;
 mod acquisition_states;
 mod acquisition_wars;
 mod advisor_changes;
+mod crew_store;
+mod faction_accounts;
+mod faction_advisors;
+mod faction_companion_changes;
+mod faction_companions;
+mod faction_goal_changes;
+mod faction_goals;
+mod faction_pools;
 pub(crate) use collector_observers::advisor_pool_changes;
 pub(crate) use collector_observers::air_base_carry_changes;
 mod air_base_changes;
@@ -70,6 +78,8 @@ mod foreign_unwind_probe;
 pub(crate) use collector_fuel_awards::fuel_awards;
 pub(crate) use collector_map_events as map_events;
 mod history;
+mod hook_failures;
+mod hook_inventory;
 pub(crate) use collector_air_histories::history_changes;
 pub(crate) use collector_hooks::hook;
 #[cfg(test)]
@@ -81,12 +91,19 @@ mod land_events;
 pub(crate) use collector_logistics::logistics_balance;
 pub(crate) use collector_model_inputs::local_subunit_changes;
 pub(crate) use collector_output::line_output;
+mod air_detection_changes;
+mod ground_crew_changes;
 mod map_capture;
 mod map_spool;
 mod mission_changes;
+mod naval_accidents;
+mod naval_map_changes;
+mod naval_mines;
 mod naval_result_sources;
+mod radar_changes;
 pub(crate) use collector_observers::naval_tree_changes;
 mod navy_ledger_changes;
+pub(crate) use collector_observers::market_changes;
 pub(crate) use collector_observers::nuclear_strikes;
 mod operation_outcomes;
 pub(crate) use collector_observers::opinion_changes;
@@ -119,6 +136,7 @@ pub(crate) use collector_certificates::sampled_verify;
 mod sampling;
 #[cfg(test)]
 mod sampling_feature_tests;
+mod scripted_maps;
 pub(crate) use collector_certificates::slicing;
 pub(crate) use collector_primitives::shared_lane;
 pub(crate) use collector_ship_models::ship_model_changes;
@@ -143,6 +161,7 @@ use collector_test_support as test_support;
 mod template_changes;
 pub(crate) use collector_memory::terminal;
 pub(crate) use collector_observers::territory_changes;
+pub(crate) use collector_production::production::design_changes;
 mod thread_cpu;
 pub(crate) use collector_observers::unit_leader_changes;
 pub(crate) use collector_observers::unit_leader_trait_changes;
@@ -192,3 +211,11 @@ unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, _: *mut c_void
     }
     1
 }
+
+mod division_panel_forwarder;
+pub(crate) use collector_war_overview::participation as war_participation;
+
+pub(crate) use collector_intel::{
+    network_auxiliary, propaganda_changes, source_changes as intel_source_changes,
+};
+pub(crate) use collector_naval_management::changes as naval_management_changes;

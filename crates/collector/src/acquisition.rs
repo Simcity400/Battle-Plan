@@ -12,7 +12,9 @@
 //! An acquire CAS from PUBLISHED to COLLECTING gives exactly one collector the
 //! complete cell. It moves that value once into `out`, then releases VACANT.
 //! A new submitter acquires VACANT under the mutex before reusing the storage.
-//! Parked cells are PENDING but metadata Parked: only locked unpark reads them.
+//! Parked cells are PENDING but metadata Parked: only locked unpark or
+//! rejection completion accesses them. Rejection initializes its completion
+//! directly in the existing heap cell and never admits or runs the job.
 //!
 //! Jobs own outputs and source leases. The sole hourly callback must collect
 //! every accepted ticket before the trampoline, including on unwind. A join
@@ -1241,6 +1243,60 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         self.shared.words[ticket.slot].store(word(ticket.generation, VACANT), Ordering::Release);
         state.parked -= 1;
         Some(request)
+    }
+
+    /// Complete a rejected request in its already allocated cell. `complete`
+    /// must not call back into this pool; None retains the job for another path.
+    /// In particular, no job-sized request or table-count array is constructed
+    /// on the rejection handler's stack.
+    #[inline(never)]
+    pub(crate) fn finish_parked_into(
+        &self,
+        ticket: Ticket,
+        out: &mut Option<Completion<J, R>>,
+        complete: impl FnOnce(&mut J) -> Option<Result<R, Failure>>,
+    ) -> bool {
+        assert!(out.is_none(), "parked completion output must be empty");
+        if ticket.pool != self.shared.id {
+            return false;
+        }
+        let mut state = self.shared.lock();
+        let Some(slot) = state.slots.get_mut(ticket.slot) else {
+            return false;
+        };
+        if slot.generation != ticket.generation
+            || slot.phase != Phase::Parked
+            || self.shared.words[ticket.slot].load(Ordering::Acquire)
+                != word(ticket.generation, PENDING)
+        {
+            return false;
+        }
+        let cell = self.shared.cells[ticket.slot].pointer();
+        // SAFETY: the matching parked cell has one initialized request, owned
+        // exclusively under the mutex. A panicking handler leaves it parked,
+        // so the batch's drain still owns and drops it exactly once.
+        let Some(report) = complete(unsafe { &mut (*cell).request }) else {
+            return false;
+        };
+        // SAFETY: initialize the other fields in the heap cell, then move its
+        // sole completion into empty output before releasing the cell. The
+        // promoted zero array is copied directly without a stack temporary.
+        unsafe {
+            std::ptr::addr_of_mut!((*cell).report).write(report);
+            std::ptr::copy_nonoverlapping(
+                &crate::read_accounting::ZERO,
+                std::ptr::addr_of_mut!((*cell).table_reads),
+                1,
+            );
+            std::ptr::addr_of_mut!((*cell).timeline).write(Timeline::default());
+            #[cfg(feature = "callback_profile")]
+            std::ptr::addr_of_mut!((*cell).profile).write(Profile::default());
+            std::ptr::write(out, Some(std::ptr::read(cell)));
+        }
+        slot.phase = Phase::Vacant;
+        self.shared.words[ticket.slot].store(word(ticket.generation, VACANT), Ordering::Release);
+        state.parked -= 1;
+        true
     }
 
     #[cfg(test)]
@@ -2875,6 +2931,64 @@ mod tests {
         assert_eq!(pool.unpark(ticket), None);
         assert_eq!(pool.finish(ticket).unwrap().report, Ok(5));
         assert_eq!(pool.unpark(parked), None);
+    }
+
+    #[test]
+    fn parked_rejection_completes_in_its_heap_cell_without_allocating_or_running() {
+        let pool = Pool::start(1, 1, |_: &mut Box<[u8; 4096]>| -> u8 {
+            panic!("rejected worker must never run")
+        })
+        .unwrap();
+        let owner = Box::new([7; 4096]);
+        let allocation = owner.as_ptr();
+        let ticket = pool.park(&mut Some(owner), true).unwrap();
+        let cell = pool.shared.cells[ticket.slot].pointer();
+        let mut out = None;
+        assert!(!pool.finish_parked_into(ticket, &mut out, |_| None));
+        assert!(out.is_none());
+        crate::test_support::with_allocations_denied(|| {
+            assert!(pool.finish_parked_into(ticket, &mut out, |request| {
+                // SAFETY: the handler exclusively borrows this parked cell.
+                assert_eq!(request as *mut _, unsafe {
+                    std::ptr::addr_of_mut!((*cell).request)
+                });
+                request[0] = 9;
+                Some(Ok(3))
+            }));
+        });
+        assert_eq!(pool.shared.lock().parked, 0);
+        assert_eq!(pool.calibration().worker_executed, 0);
+        assert_eq!(pool.calibration().uncollected, 0);
+        let completed = out.take().unwrap();
+        assert_eq!(completed.request.as_ptr(), allocation);
+        assert_eq!(completed.request[0], 9);
+        assert_eq!(completed.report, Ok(3));
+        assert_eq!(completed.table_reads, crate::read_accounting::ZERO);
+        assert!(!pool.finish_parked_into(ticket, &mut out, |_| panic!("stale ticket")));
+        assert!(pool.unpark(ticket).is_none());
+        let next = pool.park(&mut Some(Box::new([0; 4096])), true).unwrap();
+        assert_eq!(next.slot, ticket.slot);
+        assert!(!pool.finish_parked_into(ticket, &mut out, |_| panic!("reused ticket")));
+        assert!(pool.unpark(next).is_some());
+    }
+
+    #[test]
+    fn panicking_parked_rejection_keeps_the_job_owned_for_drain() {
+        let pool = Pool::start(1, 1, |request: &mut u8| *request).unwrap();
+        let ticket = pool.park(&mut Some(7), true).unwrap();
+        let mut out = None;
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                pool.finish_parked_into(ticket, &mut out, |request| {
+                    *request = 9;
+                    panic!("contained refusal panic")
+                })
+            }))
+            .is_err()
+        );
+        assert!(out.is_none());
+        assert_eq!(pool.unpark(ticket), Some(9));
+        assert_eq!(pool.unpark(ticket), None);
     }
 
     fn submit<J: Send + 'static, R: Copy + Send + 'static>(

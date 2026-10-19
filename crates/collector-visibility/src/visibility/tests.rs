@@ -112,6 +112,7 @@ fn appended_feature_failures_preserve_features_and_recover_through_the_codec() {
             &[SimulationFeatureRow {
                 dlc_mask: 0x1234_5678,
                 human_ai: 7,
+                state_array_len: replay_data::rows::Recorded::Value(None),
                 weather_suspend: replay_data::rows::Recorded::Value(flags),
                 instant_decisions: replay_data::rows::Recorded::Value(instant),
                 runtime_scalars: replay_data::rows::Recorded::Value(

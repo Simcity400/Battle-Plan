@@ -5,6 +5,31 @@ use replay_data::{
 };
 
 #[test]
+fn faction_goal_text_keeps_the_explicit_faction_and_selected_country_environment() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folder) = catalogue(SCRIPTED, "");
+    let mut frame = frame();
+    *frame.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(vec![FactionMemberRow {
+            faction: 5,
+            country: 100,
+            ordinal: 0,
+        }]));
+    let text = ScriptedText::new(
+        &frame,
+        &catalogue.localisation,
+        catalogue.scripted_content().unwrap(),
+        2,
+    );
+    assert_eq!(
+        text.expand_faction("[Faction.Leader.GetTag] / [ROOT.GetTag]", 5)
+            .as_deref(),
+        Ok("GER / SOV")
+    );
+}
+
+#[test]
 fn reserved_zero_naming_is_separate_from_positive_country_links() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -95,6 +120,109 @@ pub(super) fn catalogue_with(
 }
 
 const SCRIPTED: &str = "defined_text = { name = GetModText text = { localization_key = GER } }";
+
+#[test]
+fn scripted_map_state_hovers_use_controller_continent_occupied_country_and_cached_vp() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    use replay_data::rows::{LexicalTokenRow, ProvinceRow, StateResistanceRow, StateRow};
+    let (cat, _folder) = catalogue_with(
+        "",
+        concat!(
+            " mod_continent:0 \"Generic continent\"\n",
+            " GER_mod_continent:0 \"Controller continent\"\n",
+            " VICTORY_POINTS_2:0 \"First port\"\n",
+            " VICTORY_POINTS_1:0 \"Cached city\"\n",
+        ),
+        &[
+            (
+                "map/default.map",
+                "definitions = definition.csv provinces = provinces.bmp terrain = terrain.bmp rivers = rivers.bmp heightmap = heightmap.bmp tree_definition = trees.bmp",
+            ),
+            (
+                "map/definition.csv",
+                "0;0;0;0;land;false;mod_land;1\n1;1;0;0;land;false;mod_land;1\n2;2;0;0;land;false;mod_land;1\n",
+            ),
+            (
+                "common/defines/map.lua",
+                "NDefines.NBuildings = { MAX_BUILDING_LEVELS = 15 }",
+            ),
+            (
+                "history/states/mod.txt",
+                "state = { id = 64 name = MOD_STATE provinces = { 2 1 } }",
+            ),
+        ],
+    );
+    let content = cat.scripted_content().unwrap();
+    let mut f = complete_frame();
+    *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
+        id: 64,
+        owner: 200,
+        controller: 100,
+        continent: Some(998).into(),
+        best_vp_index: Some(1).into(),
+        ..Default::default()
+    }]));
+    *f.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
+        ProvinceRow {
+            id: 1,
+            state: 64,
+            controller: 100,
+            victory_points: 0,
+            ..Default::default()
+        },
+        ProvinceRow {
+            id: 2,
+            state: 64,
+            controller: 100,
+            victory_points: 50,
+            ..Default::default()
+        },
+    ]));
+    *f.tables[TableId::StateResistance.index()] =
+        TableView::Complete(TableRows::StateResistance(vec![StateResistanceRow {
+            state: 64,
+            country: 200,
+            ..Default::default()
+        }]));
+    f.tables[TableId::StateResistance.index()] = f.tables[TableId::StateResistance.index()]
+        .clone()
+        .with_sampled_at(Some(f.hour));
+    *f.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 998,
+            literal: b"mod_continent".to_vec(),
+        }]));
+    let scopes = EventScopes::new(vec![EventScope::of(EventObject::State(64))]);
+    let text = ScriptedText::new(&f, &cat.localisation, content, 1);
+    assert_eq!(
+        text.expand_in("[Root.GetContinent]", &scopes),
+        Ok("Controller continent".into())
+    );
+    assert_eq!(
+        text.expand_in("[Root.GetCapitalVictoryPointName]", &scopes),
+        Ok("Cached city".into())
+    );
+    assert_eq!(
+        text.expand_in("[Root.Occupied.GetTag]", &scopes),
+        Ok("SOV".into())
+    );
+    drop(text);
+    if let TableView::Complete(TableRows::States(rows)) = &mut *f.tables[TableId::States.index()] {
+        rows[0].best_vp_index = Some(-1).into();
+    }
+    assert_eq!(
+        ScriptedText::new(&f, &cat.localisation, content, 1)
+            .expand_in("[Root.GetCapitalVictoryPointName]", &scopes),
+        Ok("First port".into())
+    );
+    f.hour += 1;
+    assert!(
+        ScriptedText::new(&f, &cat.localisation, content, 1)
+            .expand_in("[Root.Occupied.GetTag]", &scopes)
+            .unwrap_err()
+            .contains("no current-hour read or writer certificate")
+    );
+}
 
 pub(super) fn complete_frame() -> DecodedFrame {
     let mut frame = frame();

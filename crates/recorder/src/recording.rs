@@ -1,4 +1,5 @@
 //! Passive process discovery, injection, detach and finalization.
+mod scripted_map_demand;
 use crate::{
     directories::{default_capture_directory, resolve_user_directory},
     replay_io,
@@ -813,6 +814,8 @@ pub(crate) fn capture(
     let done = Event::new(&done_name)?;
     let cancel_file = bin.join("collector.cancel");
     let expected_mounts = &content.expected_mounts;
+    let scripted_maps = scripted_map_demand::read(&content.layers, &content.language)
+        .map_err(|error| format!("scripted map capture demand: {error}"))?;
     create_failure_witness(&directory, session.id, session.process_start_time)?;
     let mut admission = Admission::new(&directory, target);
     if admit.is_some() {
@@ -823,7 +826,7 @@ pub(crate) fn capture(
             admission.admit_opening(campaign, load)?;
         }
     }
-    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":target,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors,"game_score":game_score,"operation_outcomes":operation_outcomes,"politics_capture":politics_capture});
+    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":target,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors,"game_score":game_score,"operation_outcomes":operation_outcomes,"politics_capture":politics_capture,"scripted_maps":scripted_maps});
     let sampler = match std::env::var("BATTLE_PLAN_WORKER_SAMPLER").or_else(|_| std::env::var("HOI4_WORKER_SAMPLER")) {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,

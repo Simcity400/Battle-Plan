@@ -3,6 +3,35 @@ use engine_native::ccountry::synthetic::{START, World};
 
 const MODULE: usize = 0x4000_0000;
 
+#[test]
+fn scripted_refresh_records_the_selected_declaration_after_the_effect_gates() {
+    struct Selection {
+        pointer: u64,
+        mode: i32,
+    }
+    impl Memory for Selection {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == MODULE + MAP_MODE_SINGLETON_RVA && output.len() == 8 {
+                output.copy_from_slice(&self.pointer.to_le_bytes());
+            } else if address == 0x1000 && output.len() == 4 {
+                output.copy_from_slice(&self.mode.to_le_bytes());
+            } else {
+                return false;
+            }
+            true
+        }
+    }
+    let mut memory = Selection {
+        pointer: 0x1000,
+        mode: FIRST_SCRIPTED_MAP_MODE + 9,
+    };
+    assert_eq!(scripted_map_mode(&memory, MODULE), Ok(9));
+    memory.mode = FIRST_SCRIPTED_MAP_MODE - 1;
+    assert!(scripted_map_mode(&memory, MODULE).is_err());
+    memory.pointer = 0;
+    assert!(scripted_map_mode(&memory, MODULE).is_err());
+}
+
 struct Map {
     world: World,
     provinces: Vec<usize>,

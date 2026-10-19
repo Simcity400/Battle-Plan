@@ -160,6 +160,7 @@ pub struct Character {
 pub struct Scientist {
     /// The writer emits `is_assigned` only when the assigned byte is nonzero.
     pub active: bool,
+    pub injury_days: Option<i32>,
     /// The scientist writer emits `traits` only when the trait count is
     /// nonzero, so omission proves an empty trait vector.
     pub traits: Option<Vec<Vec<u8>>>,
@@ -222,6 +223,8 @@ pub struct UnitLeader {
     pub traits: Vec<Vec<u8>>,
     /// Independent native order. Missing progress entries never invent zero.
     pub trait_experience: Vec<TraitExperience>,
+    /// Ordered runtime trait-XP-factor overrides, including repeats.
+    pub trait_factors: Vec<TraitExperience>,
     /// `traits_to_remove`: the writer saves the timed-trait vector in native
     /// order as each trait's token and signed remaining days,
     /// and omits the block for an empty vector.
@@ -368,6 +371,9 @@ fn scientist(items: &[Item]) -> io::Result<Scientist> {
         })
         .collect::<io::Result<Vec<_>>>()?;
     Ok(Scientist {
+        injury_days: field(items, b"is_scientist_injured")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
         active: field(items, b"is_assigned")?
             .map(boolean)
             .transpose()?
@@ -447,6 +453,23 @@ fn unit_leader(character: u64, category: i32, items: &[Item]) -> io::Result<Unit
         components,
         traits: list(items, b"traits")?,
         trait_experience,
+        trait_factors: field(items, b"trait_xp_factor")?
+            .map(|value| {
+                block(value)?
+                    .iter()
+                    .map(|entry| {
+                        Ok(TraitExperience {
+                            token: entry
+                                .key
+                                .clone()
+                                .ok_or_else(|| invalid("trait XP factor lacks its token"))?,
+                            experience: Decimal::parse(scalar(&entry.value)?)?,
+                        })
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default(),
         timed_traits,
         captured: bytes(items, b"captured")?.as_deref() == Some(b"yes"),
         government_in_exile_tag: bytes(items, b"government_in_exile_tag")?,

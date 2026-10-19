@@ -12,6 +12,7 @@ use collector_test_support as _;
 
 pub mod country_factories;
 pub mod country_tactic_unlocks;
+pub mod doctrines;
 pub mod faction_theatres;
 pub mod logistics;
 pub mod modifier_definitions;

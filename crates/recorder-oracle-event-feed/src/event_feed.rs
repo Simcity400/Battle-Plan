@@ -8,13 +8,19 @@ use replay_data::{
 use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use std::io;
 
-pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
+pub fn compare(
+    replay: &Replay,
+    frame: &DecodedFrame,
+    document: &installed_content_save::SaveDocument,
+    report: &mut Report,
+) -> io::Result<()> {
     report.limitation(
         "recording self-check only: the war-link observation records the second war link, the annex observation precedes annex on-actions and the provenance entries observe the operations that join and end wars, start peace conferences, release countries and change state owners. Text saves retain neither these calls, their causes nor the native actor/target instance words. Saved war and country state cannot certify action kind, sequence, exact hour, actor roles or complete capture; matched native observations and world/load, unwind and detach checks are required",
         "EventFeedHistory",
     );
     let selected = [TableId::EventFeedHistory];
     let mut check = Check::default();
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
     let mut blocks: Vec<_> = replay
         .index
         .iter()
@@ -44,13 +50,20 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
                     "valid consecutive event accounting",
                 );
             }
+            state.observe(row)?;
             report_coverage(row, decoded.hour, frame.hour, report);
         }
     }
-    Ok(())
+    super::script_events::compare(frame, document, &state, report)
 }
 
 fn report_coverage(row: &EventFeedHistoryRow, hour: i32, save_hour: i32, report: &mut Report) {
+    for family in row.refused_script_families() {
+        report.limitation(
+            "unobserved native writers refuse this family's interval coverage; sampled values do not prove unchanged carry or between-sample lifecycle completeness",
+            format!("EventFeedHistory hour {hour}: {family}"),
+        );
+    }
     if row.coverage == EventFeedCoverage::Complete {
         return;
     }
@@ -135,6 +148,9 @@ mod tests {
     fn event_feed_partial_history_is_coverage_and_save_hour_remains_incomplete() {
         let mut report = Report::default();
         let mut row = EventFeedHistoryRow {
+            script_refusals: 0,
+            script_tokens: Vec::new(),
+            script_scopes: Vec::new(),
             generation: 4,
             read_hour: 10,
             coverage: EventFeedCoverage::Unavailable,
@@ -159,8 +175,25 @@ mod tests {
     }
 
     #[test]
+    fn complete_transport_cannot_hide_named_script_family_refusals() {
+        let mut report = Report::default();
+        let row = EventFeedHistoryRow {
+            script_refusals: replay_data::event_feed_rows::DECISION_FAMILY_REFUSALS,
+            coverage: EventFeedCoverage::Complete,
+            counts: Some(EventFeedCounts::default()),
+            ..Default::default()
+        };
+        report_coverage(&row, 10, 10, &mut report);
+        assert_eq!(report.limitations.values().map(Vec::len).sum::<usize>(), 5);
+        assert!(report.failed_comparisons.is_empty());
+        assert!(report.differences.is_empty());
+    }
+    #[test]
     fn self_check_refuses_repeated_events_future_dates_count_resets_and_unobserved_hours() {
         let row = EventFeedHistoryRow {
+            script_refusals: 0,
+            script_tokens: Vec::new(),
+            script_scopes: Vec::new(),
             generation: 9,
             read_hour: 12,
             coverage: EventFeedCoverage::Complete,
@@ -172,6 +205,7 @@ mod tests {
             outstanding: 0,
             failure: None,
             events: vec![EventFeedEvent {
+                script: None,
                 sequence: 4,
                 generation: 9,
                 hour: 11,

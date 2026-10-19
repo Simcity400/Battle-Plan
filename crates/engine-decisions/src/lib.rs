@@ -15,4 +15,5 @@ pub mod cdecision_status;
 pub mod cevent;
 pub mod ctargeted_decision;
 pub mod ctimed_decision;
+pub mod decision_runtime;
 pub mod event_namespace;

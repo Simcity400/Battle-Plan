@@ -15,6 +15,19 @@ pub const ID: usize = 0x58;
 pub const OWNER: usize = 0xc8;
 /// Controlling country raw reference, u32, independent of owner and province controllers.
 pub const CONTROLLER: usize = 0xcc;
+
+/// A province's state as the land movement speed reads it: the state's id and
+/// raw controller. `state` is a nonnull state pointer a province holds.
+pub fn id_and_controller(memory: &impl Memory, state: usize) -> Result<(u32, u32), &'static str> {
+    let field = |offset: usize| {
+        state
+            .checked_add(offset)
+            .and_then(|address| read::<u32>(memory, address))
+            .ok_or("movement state field unreadable")
+    };
+    Ok((field(ID)?, field(CONTROLLER)?))
+}
+
 /// CState province-pointer CPdxArray.
 pub const PROVINCES: usize = 0x18;
 /// CState province-list signed i32 count.
@@ -34,6 +47,8 @@ pub const SECONDARY_DISPLAY_NAME: usize = 0xe8;
 pub const CLAIMS: usize = 0x98;
 /// CState core-country CPdxArray of u32 links.
 pub const CORES: usize = 0xb0;
+/// Cached controller-group count; the scripted layer tests exactly one.
+pub const CONTROLLER_GROUP_COUNT: usize = 0x1a4;
 /// CState strategic-location CPdxArray of 8-byte (location token, anchor
 /// province id) pairs in insertion order. The state effect appends one
 /// pair and refuses a token already listed; loading reads the list.
@@ -77,11 +92,15 @@ mod border_conflicts;
 pub const MANPOWER: usize = 0x838;
 /// Stored signed available manpower summed across pools and serialized.
 pub const MANPOWER_AVAILABLE: usize = MANPOWER + 0x10;
+/// Stored signed population locked outside the recruitable pool.
+pub const MANPOWER_LOCKED: usize = MANPOWER + 0x14;
 /// The state's population, signed i32, serialized as the manpower pool's
 /// `total`: the value the `state_population` triggers compare and the
 /// manpower map mode colours each state by (over its define
 /// `MAP_MODE_MANPOWER_RANGE_MAX`). Available manpower is a different value.
 pub const POPULATION: usize = MANPOWER + 0x18;
+/// Cached best victory-point index; negative selects the first province.
+pub const BEST_VP_INDEX: usize = 0x85c;
 /// Bytes from [`MANPOWER_AVAILABLE`] through [`POPULATION`], read as one span.
 const MANPOWER_SPAN: usize = POPULATION + 4 - MANPOWER_AVAILABLE;
 /// The state's category definition pointer: loading and the category effect
@@ -352,6 +371,18 @@ fn probe_country_modifiers(
             None => Ok(raw),
         }
     };
+    country_modifier_accumulator_with_canonical(memory, state, owner_raw, header, canonical)
+}
+
+/// Probe using an already copied state hash header and authenticated country
+/// links. Worker censuses can reuse their country mapping and state identity.
+pub fn country_modifier_accumulator_with_canonical(
+    memory: &impl Memory,
+    state: usize,
+    owner_raw: u32,
+    header: [u8; 17],
+    mut canonical: impl FnMut(u32) -> Result<u32, &'static str>,
+) -> Result<usize, &'static str> {
     let hash = canonical(owner_raw)?;
     let data = u64::from_le_bytes(header[..8].try_into().expect("eight bytes")) as usize;
     let mask = u32::from_le_bytes(header[12..16].try_into().expect("four bytes"));
@@ -379,9 +410,7 @@ fn probe_country_modifiers(
             break;
         }
         let raw = movement_field::<u32>(memory, bucket, 8)?;
-        if raw == owner_raw
-            || (raw != 0 && owner_raw != 0 && links.is_some() && canonical(raw)? == hash)
-        {
+        if raw == owner_raw || (raw != 0 && owner_raw != 0 && canonical(raw)? == hash) {
             selected = Some(bucket);
             break;
         }
@@ -580,8 +609,10 @@ pub struct Row {
     pub movement_infrastructure: i64,
     /// Stored available state manpower.
     pub manpower_available: i32,
+    pub manpower_locked: i32,
     /// Stored state population ([`POPULATION`]).
     pub population: i32,
+    pub best_vp_index: Option<i32>,
     /// The token of the state's category definition ([`CATEGORY`]); None is a
     /// failed independent capture.
     pub category: Option<u32>,
@@ -589,6 +620,8 @@ pub struct Row {
     /// [`SECONDARY_DISPLAY_NAME`] in the caller's name arena ([`read_names`]).
     pub custom_name: NameSpan,
     pub owner_name: NameSpan,
+    /// Cached controller-group count equals one; None is an independent refusal.
+    pub single_controller: Option<bool>,
     /// Retained state-template continent token, zero for the native null object; None is a failed
     /// independent capture, never a guessed content value.
     pub continent: Option<u32>,
@@ -731,6 +764,7 @@ fn walk_with_buffer(
             owner,
             controller,
             manpower_available: word(MANPOWER_AVAILABLE),
+            manpower_locked: word(MANPOWER_LOCKED),
             population: word(POPULATION),
             category: read::<u64>(memory, at(CATEGORY)?)
                 .filter(|&category| category != 0)
@@ -947,8 +981,22 @@ pub fn read_names_carried<'h>(
     game_state: usize,
     census: Outcome,
     rows: &mut [Row],
+    bytes: walk::Buffer<'_, u8>,
+    carried: impl FnMut(usize) -> Option<([&'h [u8]; 2], Option<bool>, Option<i32>)>,
+) -> NameWalk {
+    read_names_carried_scripted(memory, game_state, census, rows, bytes, carried, |_| {
+        (false, false)
+    })
+}
+
+pub fn read_names_carried_scripted<'h>(
+    memory: &impl Memory,
+    game_state: usize,
+    census: Outcome,
+    rows: &mut [Row],
     mut bytes: walk::Buffer<'_, u8>,
-    mut carried: impl FnMut(usize) -> Option<[&'h [u8]; 2]>,
+    mut carried: impl FnMut(usize) -> Option<([&'h [u8]; 2], Option<bool>, Option<i32>)>,
+    scripted: impl Fn(u32) -> (bool, bool),
 ) -> NameWalk {
     use crate::msvc_string::{Descriptor, STRIDE};
     const SPAN: usize = SECONDARY_DISPLAY_NAME - PRIMARY_DISPLAY_NAME + STRIDE;
@@ -970,7 +1018,9 @@ pub fn read_names_carried<'h>(
             .ok_or("state name root invalid")?;
         let mut kept = len;
         for (index, row) in rows.iter_mut().enumerate() {
-            if let Some([custom, owner]) = carried(index) {
+            if let Some(([custom, owner], single_controller, best_vp_index)) = carried(index) {
+                row.best_vp_index = best_vp_index;
+                row.single_controller = single_controller;
                 let wanted = custom
                     .len()
                     .checked_add(owner.len())
@@ -1037,6 +1087,22 @@ pub fn read_names_carried<'h>(
             };
             row.custom_name = span(&custom)?;
             row.owner_name = span(&owner)?;
+            let (victory_point, controllers) = scripted(row.id);
+            row.best_vp_index = if victory_point {
+                pointer
+                    .checked_add(BEST_VP_INDEX)
+                    .and_then(|at| read::<i32>(memory, at))
+            } else {
+                None
+            };
+            row.single_controller = if controllers {
+                pointer
+                    .checked_add(CONTROLLER_GROUP_COUNT)
+                    .and_then(|at| read::<i32>(memory, at))
+                    .map(|count| count == 1)
+            } else {
+                None
+            };
         }
         let omitted = u32::try_from(len - kept)
             .ok()
@@ -1337,12 +1403,7 @@ const MANPOWER_LAYOUT: RecordLayout<'static> = RecordLayout::new(
         RecordField {
             source_offset: MANPOWER_AVAILABLE,
             destination_offset: 12,
-            len: 4,
-        },
-        RecordField {
-            source_offset: POPULATION,
-            destination_offset: 16,
-            len: 4,
+            len: 12,
         },
         RecordField {
             source_offset: CATEGORY,
@@ -1359,6 +1420,7 @@ const MANPOWER_RECORD: usize = 32;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Manpower {
     pub available: i32,
+    pub locked: i32,
     pub population: i32,
     /// The category definition pointer ([`CATEGORY`]), for [`category_token`].
     pub category: u64,
@@ -1414,7 +1476,7 @@ pub fn read_manpower(
             RecordSources::Pointers(pointers),
             &MANPOWER_LAYOUT,
             &mut bytes[..count * MANPOWER_RECORD],
-        ) != count * 5
+        ) != count * 4
         {
             return Err("state manpower unreadable");
         }
@@ -1431,7 +1493,8 @@ pub fn read_manpower(
             }
             *output = Manpower {
                 available: i32::from_le_bytes(record[12..16].try_into().unwrap()),
-                population: i32::from_le_bytes(record[16..20].try_into().unwrap()),
+                locked: i32::from_le_bytes(record[16..20].try_into().unwrap()),
+                population: i32::from_le_bytes(record[20..24].try_into().unwrap()),
                 category: u64::from_le_bytes(record[24..32].try_into().unwrap()),
             };
         }

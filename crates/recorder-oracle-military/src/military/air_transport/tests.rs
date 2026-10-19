@@ -42,6 +42,42 @@ fn saved(pool_type: &[u8], raid: Option<u64>) -> save::air::Wing {
     }
 }
 
+#[test]
+fn native_saved_raid_instance_reaches_full_reference_comparison() {
+    let doc = installed_content_core::parser::parse(
+        b"strategic_air={MOD={air_wing_pool={definition=ModTransport \
+          air_wings={id={id=4294967295 type=69} experience=0 \
+          equipment={allow_zero_entries=no} \
+          raid_instance={id=4294967295 type=84}}}}}",
+    )
+    .unwrap();
+    let pack = save::air::parse(&doc.items).unwrap();
+    let mut report = Report::default();
+    raid(
+        &wing(),
+        &pack.wings[0],
+        Some(true),
+        "fixture wing",
+        &mut report,
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["AirWings.raid_reference"], 1);
+
+    let mut refused = wing();
+    refused.air_base = 17;
+    refused.raid_reference = None.into();
+    let mut report = Report::default();
+    raid(
+        &refused,
+        &pack.wings[0],
+        Some(true),
+        "fixture wing",
+        &mut report,
+    );
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("guarded read or registry/memo refusal"));
+}
+
 fn run(
     actual: AirWingRow,
     expected: save::air::Wing,
@@ -267,6 +303,15 @@ fn pool_fault_unknown_index_and_content_failure_do_not_erase_live_raid_differenc
     let report = run(actual, saved(b"ModTransport", Some(RAID)), Ok(&content));
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("pool_subunit"));
+    let mut missing_pool = wing();
+    missing_pool.air_base = 17;
+    missing_pool.pool_subunit = None.into();
+    missing_pool.raid_reference = None.into();
+    missing_pool.map_flags = Some(16).into();
+    let report = run(missing_pool, saved(b"ModTransport", None), Ok(&content));
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("pool_subunit"));
+    assert_eq!(report.compared_tables["AirWings.raid_reference"], 1);
     let mut unknown = wing();
     unknown.pool_subunit = Recorded::Value(Some(99));
     let report = run(
@@ -313,6 +358,39 @@ fn admitted_raid_capture_absence_fails_even_when_save_omits_the_link() {
         let report = run(actual, saved(b"ModTransport", expected), Ok(&content));
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("guarded read or registry/memo refusal"));
+    }
+}
+
+#[test]
+fn pool_backed_active_fighters_compare_certified_nonresolution_without_a_raw_packet() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let content = content();
+    for (flags, saved_raid, differences) in [
+        (Some(16), None, 0),
+        (Some(16), Some(RAID), 1),
+        (Some(48), Some(RAID), 1),
+        (Some(0), None, 1),
+    ] {
+        let mut actual = wing();
+        actual.air_base = 17;
+        actual.mission_mask = 1;
+        actual.pool_subunit = Some(2).into();
+        actual.map_flags = flags.into();
+        actual.raid_reference = None.into();
+        let report = run(actual, saved(b"Fighter", saved_raid), Ok(&content));
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
+        );
+        assert!(report.failed_comparisons.is_empty());
+        assert!(
+            !report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("outside that capture demand"))
+        );
     }
 }
 
