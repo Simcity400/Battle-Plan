@@ -633,3 +633,164 @@ fn cached_naval_operands_equal_fresh_joins_and_share_the_model_column() {
         fresh.cells(&[10], false).hull
     );
 }
+
+/// The semantic memo may skip the sort/fold, never the resource-bearing update generation.
+#[test]
+fn retained_port_plans_preserve_ordered_calls_across_thresholds_and_roster_occurrences() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let guis = native::Guis::new(vec![(
+        MAPICONS_GUI.into(),
+        native::read(
+            br#"guiTypes={
+        containerWindowType={name=unit_counter_navy size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}
+            iconType={name=mission_type spriteType=GFX_synthetic_actions}}
+        containerWindowType={name=naval_combat_mapicon}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg spriteType=GFX_synthetic_plate}
+            iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+    }"#,
+        ),
+    )]);
+    crate::map::counters::tests::with_counter_inputs_fixture(
+        guis,
+        |_| {},
+        |content| {
+            content.defines.coarse_distance = [100., 160.];
+            content.defines.groups.strategic_distance = 200.;
+        },
+        |mut inputs| {
+            use crate::map::counters::preparation::plan_probe;
+            inputs.settings.color_mode = CounterColorMode::Allegiance;
+            inputs.visibility.political_mode = false;
+            inputs.visibility.strategic_grouping = true;
+            let forces = [0, 1, 0].map(|mission| TaskForceRow {
+                id: 0,
+                mission,
+                ..Default::default()
+            });
+            let forces: Vec<_> = forces
+                .into_iter()
+                .enumerate()
+                .map(|(at, mut row)| {
+                    row.id = at as u64 + 1;
+                    row
+                })
+                .collect();
+            with_port_context(&forces, |context| {
+                context.ships = Arc::new(
+                    forces
+                        .iter()
+                        .map(|force| (force.id, (1, 100_000)))
+                        .collect(),
+                );
+                let countries = Arc::new(Countries {
+                    sides: [(0, Allegiance::Ours)].into(),
+                    ..Default::default()
+                });
+                let vision = Arc::new(Vision::default());
+                let tables = CounterTables {
+                    type_tints: context.type_tints,
+                    countries: &countries,
+                    icons: &Arc::new(TemplateIcons::default()),
+                    status: &Default::default(),
+                    movement: &Default::default(),
+                    actions: &Default::default(),
+                    vision: &vision,
+                    order: None,
+                    native: context.native,
+                    orders: &Default::default(),
+                    guns: &Default::default(),
+                    abilities: &Default::default(),
+                    task_forces: &Default::default(),
+                    hq_providers: &Default::default(),
+                    portraits: &Default::default(),
+                    icon_inputs: &Default::default(),
+                };
+                let frame = DecodedFrame {
+                    branch: 1,
+                    hour: 1,
+                    metrics: Default::default(),
+                    tables: TableId::ALL
+                        .map(|table| TableView::Complete(TableRows::empty(table)).into()),
+                };
+                let mut ports = PortTables {
+                    rosters: [(7, vec![(2, 0), (0, 1), (2, 2), (1, 3)])].into(),
+                    ..Default::default()
+                };
+                let mut memo = PortPlans::default();
+                let mut hits = 0;
+                let mut calls = 0;
+                for (step, height) in [50., 50., 159.999, 160., 160., 199.999, 200., 200., 50., 50.]
+                    .into_iter()
+                    .enumerate()
+                {
+                    inputs.camera.height = height;
+                    inputs.camera.center[0] += 0.125;
+                    if step == 4 {
+                        // Same set, different order; the repeated handle's occurrences stay distinct.
+                        ports.rosters.get_mut(&7).unwrap().rotate_left(1);
+                    }
+                    let mut a = CounterFrame::default();
+                    let mut b = CounterFrame::default();
+                    let fresh = port_items(
+                        &inputs,
+                        &frame,
+                        &|raw| Some(raw),
+                        &tables,
+                        context,
+                        &ports,
+                        None,
+                        &mut a,
+                    )
+                    .unwrap();
+                    let (cached, counts) = plan_probe::collect(|| {
+                        port_items(
+                            &inputs,
+                            &frame,
+                            &|raw| Some(raw),
+                            &tables,
+                            context,
+                            &ports,
+                            Some(&mut memo),
+                            &mut b,
+                        )
+                        .unwrap()
+                    });
+                    assert_eq!(fresh, cached, "step {step}");
+                    assert_eq!(
+                        format!("{fresh:?}"),
+                        format!("{cached:?}"),
+                        "step {step} signed-zero operands"
+                    );
+                    assert_eq!(a.report, b.report, "step {step}");
+                    assert_eq!(counts.semantic_plans, 1);
+                    if step == 0 || step == 4 {
+                        assert_eq!(counts.semantic_plan_hits, 0);
+                    }
+                    if step == 4 {
+                        assert_eq!(counts.ordered_group_members_equal, 0);
+                    }
+                    hits += counts.semantic_plan_hits;
+                    let updates = cached.get(&7).unwrap().as_ref().unwrap();
+                    for update in updates {
+                        assert!(
+                            update
+                                .selectable
+                                .as_ref()
+                                .is_some_and(|(_, members)| !members.is_empty())
+                        );
+                        calls += update.calls.len();
+                    }
+                }
+                assert!(hits > 0);
+                assert!(
+                    calls > 0,
+                    "must compare real setter streams, not only refused/empty plans"
+                );
+            });
+        },
+    );
+}

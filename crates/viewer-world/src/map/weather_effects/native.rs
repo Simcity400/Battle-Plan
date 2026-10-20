@@ -478,6 +478,194 @@ impl InstanceRing {
     }
 }
 
+/// Constants written by this packet, including physical discard padding. Keep the
+/// writer's initialized ranges at the binds, independently of these CPU zeros.
+struct DrawConstants {
+    scale: [f32; 4],
+    object: [u8; 96],
+}
+
+impl DrawConstants {
+    fn new(packet: &Packet) -> Self {
+        let mut object = [0; 96];
+        object[..64].copy_from_slice(bytemuck::bytes_of(&packet.world));
+        let atlas = [
+            0_f32,
+            0.,
+            packet.tiles[0] as f32,
+            packet.tiles[1] as f32,
+            packet.time,
+        ];
+        object[64..84].copy_from_slice(bytemuck::bytes_of(&atlas));
+        Self {
+            scale: [packet.scale[0], packet.scale[1], 0., 0.],
+            object,
+        }
+    }
+}
+
+fn same_packet_bindings(a: &DrawPacket, b: &DrawPacket) -> bool {
+    a.page == b.page
+        && bytemuck::bytes_of(&a.constants.world) == bytemuck::bytes_of(&b.constants.world)
+        && bytemuck::bytes_of(&a.constants.scale) == bytemuck::bytes_of(&b.constants.scale)
+        && a.constants.tiles == b.constants.tiles
+        && a.constants.time.to_bits() == b.constants.time.to_bits()
+}
+
+struct QuadUpload {
+    native: gpu::VertexLayout,
+    layout: gpu::VertexLayout,
+    vertices: gpu::Slice,
+    #[cfg(test)]
+    bytes: Vec<u8>,
+}
+
+struct ActorUpload {
+    native: Vec<gpu::VertexLayout>,
+    layouts: [gpu::VertexLayout; 2],
+    vertices: [gpu::Slice; 2],
+    #[cfg(test)]
+    bytes: [Vec<u8>; 2],
+}
+
+struct PacketUpload<'a> {
+    layouts: &'a [gpu::VertexLayout],
+    vertices: [gpu::Slice; 2],
+    #[cfg(test)]
+    bytes: [Vec<u8>; 2],
+}
+
+/// View-local GPU slices. An actor's ordinary records were all written by its one
+/// ring append before its first draw; never pack a future actor or publish its ranges.
+#[derive(Default)]
+struct OrdinaryUploads {
+    quads: Vec<QuadUpload>,
+    actors: Vec<ActorUpload>,
+    start: u64,
+    count: u64,
+}
+
+impl OrdinaryUploads {
+    fn begin(&mut self, start: u64, end: u64) {
+        self.actors.clear();
+        self.start = start;
+        self.count = (end - start) / 48;
+    }
+
+    fn packet<'a>(
+        &'a mut self,
+        arena: &gpu::Arena,
+        layouts: &[gpu::VertexLayout],
+        ring: &InstanceRing,
+        quad: &[u8],
+        offset: u64,
+        count: u32,
+    ) -> Option<PacketUpload<'a>> {
+        use shader_pipeline::vertices::{NativeBuffer, pack_native};
+        // Only declarations supplied by an ordinary particle program enter this path.
+        // Null techniques and inherited declarations keep their ordered native reads.
+        if layouts.len() != 2
+            || layouts[0].stride != 8
+            || layouts[0].step != wgpu::VertexStepMode::Vertex
+            || layouts[1].stride != 48
+            || layouts[1].step != wgpu::VertexStepMode::Instance
+        {
+            return None;
+        }
+        let actor_count = u32::try_from(self.count).ok()?;
+        let at = if let Some(at) = self.actors.iter().position(|p| p.native == layouts) {
+            at
+        } else {
+            let q = if let Some(at) = self.quads.iter().position(|p| p.native == layouts[0]) {
+                at
+            } else {
+                let known = 0..quad.len() as u64;
+                let buffers = BTreeMap::from([(
+                    0,
+                    Some(NativeBuffer {
+                        bytes: quad,
+                        size: quad.len() as u64,
+                        offset: 0,
+                        known: std::slice::from_ref(&known),
+                    }),
+                )]);
+                let mut packed = pack_native(&layouts[..1], &buffers, 4, 1).ok()?;
+                let bytes = packed.bytes.pop()?;
+                let vertices = arena.vertices(&bytes).ok()?;
+                self.quads.push(QuadUpload {
+                    native: layouts[0].clone(),
+                    layout: packed.layouts.pop()?,
+                    vertices,
+                    #[cfg(test)]
+                    bytes,
+                });
+                self.quads.len() - 1
+            };
+            let allocation = ring.allocation.lock().unwrap_or_else(|e| e.into_inner());
+            let buffers = BTreeMap::from([(
+                0,
+                Some(NativeBuffer {
+                    bytes: &allocation.bytes,
+                    size: allocation.size,
+                    offset: self.start,
+                    known: &allocation.known,
+                }),
+            )]);
+            let mut packed = pack_native(&layouts[1..], &buffers, 4, actor_count).ok()?;
+            let bytes = packed.bytes.pop()?;
+            let vertices = arena.vertices(&bytes).ok()?;
+            let quad = &self.quads[q];
+            self.actors.push(ActorUpload {
+                native: layouts.to_vec(),
+                layouts: [quad.layout.clone(), packed.layouts.pop()?],
+                vertices: [quad.vertices.clone(), vertices],
+                #[cfg(test)]
+                bytes: [quad.bytes.clone(), bytes],
+            });
+            self.actors.len() - 1
+        };
+        let upload = &self.actors[at];
+        let first = (offset - self.start) / 48;
+        let stride = upload.layouts[1].stride;
+        let byte_offset = first.checked_mul(stride)?;
+        let byte_length = u64::from(count).checked_mul(stride)?;
+        Some(PacketUpload {
+            layouts: &upload.layouts,
+            vertices: [
+                upload.vertices[0].clone(),
+                gpu::Slice {
+                    buffer: upload.vertices[1].buffer.clone(),
+                    offset: upload.vertices[1].offset + byte_offset,
+                    size: byte_length.max(4),
+                },
+            ],
+            #[cfg(test)]
+            bytes: [
+                upload.bytes[0].clone(),
+                upload.bytes[1][byte_offset as usize..(byte_offset + byte_length) as usize]
+                    .to_vec(),
+            ],
+        })
+    }
+}
+
+struct PreviousDraw {
+    packet: usize,
+    name: String,
+    trail: bool,
+    pass: shader_pipeline::stream::PassSubmission,
+}
+
+#[cfg(test)]
+struct DrawTrace {
+    prepared: bool,
+    reused: bool,
+    bytes: Vec<Vec<u8>>,
+    layouts: Vec<gpu::VertexLayout>,
+    bindings: gpu::Bindings,
+    retained: crate::map::shader_scene::State,
+}
+
 pub(super) struct Renderer {
     effect: Arc<Effect>,
     pages: Vec<wgpu::TextureView>,
@@ -488,6 +676,10 @@ pub(super) struct Renderer {
     max_particles: usize,
     /// Per technique name and trail flag; `None` is the missing technique.
     programs: BTreeMap<(String, bool), Option<Program>>,
+    #[cfg(test)]
+    trace: Option<Vec<DrawTrace>>,
+    #[cfg(test)]
+    reference: bool,
 }
 
 /// A selected technique's declaration and authored states.
@@ -520,6 +712,10 @@ impl Renderer {
             max_particles,
             retained: Default::default(),
             programs: BTreeMap::new(),
+            #[cfg(test)]
+            trace: None,
+            #[cfg(test)]
+            reference: false,
             quad: bytemuck::cast_slice(&particle_shader::QUAD).into(),
             indices: buffer(
                 "native particle indices",
@@ -541,6 +737,10 @@ impl Renderer {
         inputs: Inputs<'_>,
         packets: &[DrawPacket],
     ) -> io::Result<()> {
+        #[cfg(not(test))]
+        let reuse = true;
+        #[cfg(test)]
+        let reuse = !self.reference;
         self.retained.inherit(inputs.retained);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compiled particles"),
@@ -611,7 +811,8 @@ impl Renderer {
             }
         }
         let quad = &self.quad;
-        let mut previous: Option<(Arc<gpu::Pipeline>, gpu::Bindings)> = None;
+        let mut previous: Option<PreviousDraw> = None;
+        let mut uploads = OrdinaryUploads::default();
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
         for (index, packet) in ordered.iter().enumerate() {
             let key_actor = (packet.registration, packet.actor);
@@ -638,6 +839,9 @@ impl Renderer {
                         })
                         .flat_map(|p| &p.instances),
                 )?;
+                if reuse {
+                    uploads.begin(ordinary_offset, ring.cursor);
+                }
             }
             if packet.instances.is_empty() {
                 continue;
@@ -685,7 +889,15 @@ impl Renderer {
                     entry.insert(program)
                 }
             };
-            let buffers = packet.constants.buffers();
+            let constants = DrawConstants::new(&packet.constants);
+            let scale = bytemuck::bytes_of(&constants.scale);
+            let object = constants.object.as_slice();
+            #[cfg(test)]
+            let buffers = self.reference.then(|| packet.constants.buffers());
+            #[cfg(test)]
+            let object = buffers.as_ref().map_or(object, |buffers| {
+                buffers[&binding(3, Stage::Vertex)].as_slice()
+            });
             let stream = &mut self.retained.stream;
             match program {
                 Some(program) => {
@@ -703,14 +915,20 @@ impl Renderer {
                 stream.bind_partial_constants(
                     2,
                     stage,
-                    Some(&buffers[&binding(2, stage)]),
+                    Some({
+                        #[cfg(test)]
+                        let scale = buffers
+                            .as_ref()
+                            .map_or(scale, |buffers| buffers[&binding(2, stage)].as_slice());
+                        scale
+                    }),
                     std::slice::from_ref(&(0..8)),
                 );
             }
             stream.bind_partial_constants(
                 3,
                 Stage::Vertex,
-                Some(&buffers[&binding(3, Stage::Vertex)]),
+                Some(object),
                 std::slice::from_ref(&(0..84)),
             );
             stream.bind_texture(
@@ -721,6 +939,7 @@ impl Renderer {
                     .as_ref()
                     .and_then(|program| program.state.samplers.get(&binding(0, Stage::Pixel))),
             );
+            let packet_offset = ordinary_offset;
             if let Some(vertices) = &trail {
                 // Allocate maximum count times 56 bytes at stride 28, independently of this upload's size.
                 // Discard the allocation before writing its initialized prefix.
@@ -750,18 +969,71 @@ impl Renderer {
             } else {
                 u32::try_from(packet.instances.len()).map_err(io::Error::other)?
             };
-            let submission = self.retained.prepare(
+            let upload = if reuse && trail.is_none() {
+                program.as_ref().and_then(|program| {
+                    uploads.packet(
+                        arena,
+                        &program.layouts,
+                        &ring,
+                        quad,
+                        packet_offset,
+                        instances,
+                    )
+                })
+            } else {
+                None
+            };
+            let preceding = previous
+                .as_ref()
+                .filter(|last| {
+                    reuse
+                        && program.is_some()
+                        && last.name == name
+                        && last.trail == trail.is_some()
+                        && same_packet_bindings(packet, ordered[last.packet])
+                })
+                .map(|last| &last.pass);
+            let template = if trail.is_some() { &strip } else { &list };
+            let submission = self.retained.prepare_with(
                 arena,
-                &format!("particle {name}"),
-                if trail.is_some() { &strip } else { &list },
+                format_args!("particle {name}"),
+                template,
                 count,
                 instances,
+                upload
+                    .as_ref()
+                    .map(|p| shader_pipeline::stream::NativePrepared {
+                        layouts: p.layouts,
+                        vertices: &p.vertices,
+                    }),
+                preceding,
             )?;
+            #[cfg(test)]
+            if let Some(trace) = &mut self.trace {
+                let (layouts, bytes) = if let Some(upload) = &upload {
+                    (upload.layouts.to_vec(), upload.bytes.to_vec())
+                } else {
+                    let packed = self
+                        .retained
+                        .packed_bytes(count, instances)
+                        .expect("a prepared native draw can be packed again");
+                    (packed.layouts, packed.bytes)
+                };
+                let retained = self.retained.snapshot();
+                trace.push(DrawTrace {
+                    prepared: upload.is_some(),
+                    reused: preceding.is_some(),
+                    bytes,
+                    layouts,
+                    bindings: submission.pass.bindings.clone(),
+                    retained,
+                });
+            }
             let pipeline = &submission.pass.pipeline;
             let same = previous
                 .as_ref()
-                .filter(|(last, _)| Arc::ptr_eq(last, pipeline))
-                .map(|(_, bindings)| bindings);
+                .filter(|last| Arc::ptr_eq(&last.pass.pipeline, pipeline))
+                .map(|last| &last.pass.bindings);
             if same.is_none() {
                 pass.set_pipeline(&pipeline.pipeline);
                 pass.set_stencil_reference(submission.pass.stencil_reference.unwrap_or(0));
@@ -776,7 +1048,12 @@ impl Renderer {
             } else {
                 pass.draw_indexed(0..6, 0, 0..instances);
             }
-            previous = Some((submission.pass.pipeline, submission.pass.bindings));
+            previous = Some(PreviousDraw {
+                packet: index,
+                name,
+                trail: trail.is_some(),
+                pass: submission.pass,
+            });
         }
         //Keep the renderer's persistent device cache while publishing the
         //bindings/vertex allocations subsequent meshes and popups inherit.
@@ -1426,3 +1703,7 @@ mod tests {
         assert_eq!(submission_order(&packets, 10).len(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "native/draw_tests.rs"]
+mod draw_tests;

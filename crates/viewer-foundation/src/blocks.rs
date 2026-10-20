@@ -247,3 +247,101 @@ impl BlockReader {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay::spool::Record;
+    use replay_data::{
+        identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
+        rows::{CampaignRow, ClockRow, CountryRow, TableRows},
+    };
+    use replay_frame::{
+        branches::{BranchReason, BranchStart, Parentage},
+        frame::{DecodedFrame, FrameEncoder, Metrics, TableView},
+    };
+
+    fn replay() -> Arc<Replay> {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+        let mut records = vec![
+            Record::SessionStart(SessionStart {
+                id: 1,
+                process_id: 1,
+                process_start_time: 1,
+                qpc_frequency: 10_000_000,
+                sample_boundary: SampleBoundary::EndOfHour,
+                identity: Identity {
+                    game_version: "synthetic".into(),
+                    exe_hash: [1; 32],
+                    exe_size: 1,
+                    vanilla_hash: [2; 32],
+                    dlc: Vec::new(),
+                    mods: Vec::new(),
+                    coverage_policy: 1,
+                    language: "l_english".into(),
+                    recorder_version: "test".into(),
+                    collector_hash: [3; 32],
+                    verification: Verification::Verified {
+                        launcher: Roster::default(),
+                        memory: Roster::default(),
+                    },
+                },
+            }),
+            Record::BranchStart(BranchStart {
+                id: 1,
+                session: 1,
+                loaded_hour: None,
+                first_hour: 100,
+                parent: Parentage::Unknown,
+                reason: BranchReason::SessionStart,
+            }),
+        ];
+        let mut encoder = FrameEncoder::new();
+        for hour in [100, 101, 820, 821, 1540, 1541] {
+            let mut frame = DecodedFrame {
+                branch: 1,
+                hour,
+                metrics: Metrics::default(),
+                tables: std::array::from_fn(|_| {
+                    TableView::Unavailable {
+                        reason: "outside block fixture".into(),
+                    }
+                    .into()
+                }),
+            };
+            for rows in [
+                TableRows::Campaign(vec![CampaignRow {
+                    id: b"blocks".to_vec(),
+                }]),
+                TableRows::Clock(vec![ClockRow {
+                    hour,
+                    ..Default::default()
+                }]),
+                TableRows::Countries(vec![CountryRow {
+                    id: 1,
+                    canonical_slot: 1,
+                    political_power_raw: Some(i64::from(hour)),
+                    ..Default::default()
+                }]),
+            ] {
+                let index = rows.table().index();
+                frame.tables[index] = TableView::Complete(rows).into();
+            }
+            records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+        }
+        Arc::new(Replay::from_records(b"blocks".to_vec(), &[records]).unwrap())
+    }
+
+    #[test]
+    fn complete_reader_matches_recorded_payloads() {
+        let replay = replay();
+        let reader = BlockReader::new(Arc::clone(&replay), Arc::new(Dropper::new().unwrap()));
+        for (index, block) in replay.index.iter().enumerate() {
+            assert_eq!(
+                *reader.block(index).unwrap(),
+                replay.read_block(block).unwrap()
+            );
+        }
+    }
+}

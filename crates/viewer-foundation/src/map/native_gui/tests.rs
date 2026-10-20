@@ -3328,6 +3328,8 @@ fn a_grid_background_draws_under_its_items() {
 #[test]
 #[ignore = "requires the shader compiler and GPU"]
 fn compiled_gui_text_preserves_bgra_border_and_vertex_constants() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::map::native_shader::{self as shader, library};
     use std::sync::Arc;
     let source = br#"

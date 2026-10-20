@@ -157,9 +157,22 @@ impl Reader {
         hour: Hour,
         passed: impl FnMut(&DecodedFrame),
     ) -> io::Result<Option<Current>> {
+        if self.seek_native(branch, hour, passed)? {
+            self.current_at(branch, hour).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn seek_native(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        passed: impl FnMut(&DecodedFrame),
+    ) -> io::Result<bool> {
         self.reset_metrics();
         if !self.store.is_reusable(&self.key)? || !self.covers(branch, hour) {
-            return Ok(None);
+            return Ok(false);
         }
         let (before, reads) = self.find_before(branch, hour)?;
         self.checkpoint_reads = reads;
@@ -167,7 +180,8 @@ impl Reader {
             self.decoder = FrameDecoder::for_tables(&self.selected);
             self.cursor = None;
             self.requested = Some((branch, hour));
-            return self.gap(branch, hour).map(Some);
+            self.gap(branch, hour)?;
+            return Ok(true);
         };
         let file = self.page(branch, range)?;
         self.checkpoint_bytes = file.len();
@@ -178,9 +192,9 @@ impl Reader {
         self.validate_checkpoint(branch, &checkpoint)?;
         self.cursor = Some(checkpoint.position);
         self.decoder = FrameDecoder::resume_for_tables(&self.selected, checkpoint.frame)?;
-        let current = self.advance_to(branch, hour, passed, false)?;
+        self.advance_to(branch, hour, passed, false)?;
         self.requested = Some((branch, hour));
-        Ok(Some(current))
+        Ok(true)
     }
 
     /// Applies one hour in place for a step. A block load is retained so later
@@ -191,9 +205,26 @@ impl Reader {
         hour: Hour,
         passed: impl FnMut(&DecodedFrame),
     ) -> io::Result<Option<Current>> {
+        if self.advance_without_output(branch, hour, passed)? {
+            self.current_at(branch, hour).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Advances through a cancellation checkpoint without exporting an owned
+    /// endpoint snapshot. Visitors still receive the earlier applied hours,
+    /// and all source, campaign and gap validation is unchanged. `false` leaves
+    /// a target outside prepared coverage to the ordinary replay reader.
+    pub fn advance_without_output(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        passed: impl FnMut(&DecodedFrame),
+    ) -> io::Result<bool> {
         self.reset_metrics();
         if !self.store.is_reusable(&self.key)? || !self.covers(branch, hour) {
-            return Ok(None);
+            return Ok(false);
         }
         if self
             .decoder
@@ -204,11 +235,20 @@ impl Reader {
                     i64::from(hour) - i64::from(frame.hour) >= i64::from(self.progress.stride)
                 }))
         {
-            return self.seek_with(branch, hour, passed);
+            return self.seek_native(branch, hour, passed);
         }
-        let current = self.advance_to(branch, hour, passed, self.steps_to(branch, hour))?;
+        self.advance_to(branch, hour, passed, self.steps_to(branch, hour))?;
         self.requested = Some((branch, hour));
-        Ok(Some(current))
+        Ok(true)
+    }
+
+    fn current_at(&self, branch: BranchId, hour: Hour) -> io::Result<Current> {
+        match self.decoder.current() {
+            Some(frame) if frame.branch == branch && frame.hour == hour => {
+                Ok(Current::Frame(Arc::new(frame.clone())))
+            }
+            _ => self.gap(branch, hour),
+        }
     }
 
     fn reset_metrics(&mut self) {
@@ -238,17 +278,19 @@ impl Reader {
         hour: Hour,
         mut passed: impl FnMut(&DecodedFrame),
         preload: bool,
-    ) -> io::Result<Current> {
-        if let Some(frame) = self
+    ) -> io::Result<()> {
+        if self
             .decoder
             .current()
-            .filter(|f| f.branch == branch && f.hour == hour)
+            .is_some_and(|f| f.branch == branch && f.hour == hour)
         {
-            return Ok(Current::Frame(Arc::new(frame.clone())));
+            return Ok(());
         }
-        let missing = self.gap(branch, hour)?;
+        // Validate the gap metadata before exposing any visitor, even when the
+        // caller does not need an endpoint snapshot.
+        self.gap(branch, hour)?;
         let Some(mut cursor) = self.cursor else {
-            return Ok(missing);
+            return Ok(());
         };
         let progress = &self.progress.branches[&branch];
         let last_block = progress
@@ -374,13 +416,13 @@ impl Reader {
                         block: block.index,
                         next_frame: offset + 1,
                     });
-                    return Ok(Current::Frame(Arc::new(decoded.clone())));
+                    return Ok(());
                 }
                 passed(decoded);
             }
         }
         self.cursor = Some(cursor);
-        Ok(missing)
+        Ok(())
     }
 
     fn validate_checkpoint(&self, branch: BranchId, checkpoint: &Checkpoint) -> io::Result<()> {

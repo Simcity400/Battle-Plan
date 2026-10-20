@@ -8,6 +8,7 @@ use viewer_foundation::map::gui_resources::viewport;
 /// Their kind then selects separate children. Port mission items use their own
 /// update and draw paths; supply, capital count, carrier and pride decisions
 /// retain their distinct visibility and member-order rules.
+#[derive(Clone)]
 pub(super) struct Flotilla {
     pub(super) members: Arc<[u64]>,
     /// The item's first admitted task force, which identifies the
@@ -104,6 +105,7 @@ pub(super) enum NavalBars {
 }
 
 /// What the ship operands put on one naval counter.
+#[derive(Clone)]
 pub(super) struct NavalCells {
     /// Capital ships summed over every member regardless of visibility; `None`
     /// when a member's ship lacks the operands.
@@ -964,13 +966,17 @@ fn province_is_land(map: &MapData, movement: Option<&MovementContent>, province:
 /// distance. Only political mode and strategic-level grouping replace that comparator
 /// with allegiance boundaries; closer strategic views keep fleet/mission/selection splits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct PortGrouping {
+pub(super) struct PortGrouping {
     cleared: bool,
     coarse: bool,
     allegiance: bool,
 }
 
-fn port_grouping(defines: &CounterDefines, visibility: Visibility, height: f32) -> PortGrouping {
+pub(super) fn port_grouping(
+    defines: &CounterDefines,
+    visibility: Visibility,
+    height: f32,
+) -> PortGrouping {
     let political = visibility.political_mode;
     PortGrouping {
         cleared: political && defines.coarse(height, false),
@@ -1126,6 +1132,25 @@ pub(super) fn port_counters(
     cached: &PortTables,
     out: &mut CounterFrame,
 ) -> io::Result<()> {
+    port_counters_with(
+        inputs, frame, owner, tables, context, icons, cached, None, out,
+    )
+}
+
+/// Retains only pure, ordered port flotillas; resource requests and native call generation
+/// remain on the original path, in the original order, on every preparation.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn port_counters_with(
+    inputs: &CounterInputs<'_>,
+    frame: &DecodedFrame,
+    owner: &impl Fn(u32) -> Option<u32>,
+    tables: &CounterTables<'_>,
+    context: Option<&NavalContext<'_>>,
+    icons: &[NavalBaseIcon],
+    cached: &PortTables,
+    retained: Option<&mut PortPlans>,
+    out: &mut CounterFrame,
+) -> io::Result<()> {
     // The raids map mode clears naval base icons, and their port counters with them.
     if !inputs.visibility.province_icons || !inputs.shows(inputs.content.defines.naval_base_cutoff)
     {
@@ -1180,7 +1205,8 @@ pub(super) fn port_counters(
             Ok(None)
         }
         (Some(context), Some(_)) => {
-            let mut items = port_items(inputs, frame, owner, tables, context, cached, out)?;
+            let mut items =
+                port_items(inputs, frame, owner, tables, context, cached, retained, out)?;
             if inputs.camera.free().is_some() {
                 let at: BTreeMap<u32, [f32; 3]> = anchors.iter().copied().collect();
                 let defines = &inputs.content.defines;
@@ -1311,9 +1337,26 @@ fn unrecorded_port_forces(
         .collect()
 }
 
+/// A semantic memo contains neither native windows nor resolved atlas resources.
+#[derive(Default)]
+pub(super) struct PortPlans(BTreeMap<u32, PortPlan>);
+
+struct PortPlan {
+    grouping: PortGrouping,
+    roster: Vec<(usize, u32)>,
+    flotillas: Vec<Flotilla>,
+}
+
+impl PortPlans {
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 /// Each naval base province's port items this hour: their calls, in the order the code appends
 /// them, or why the province's roster is undecided (a task force dropped for an operand the hour
 /// lacks, or a roster the native sort refuses), each such task force listed by why.
+#[allow(clippy::too_many_arguments)]
 fn port_items(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
@@ -1321,6 +1364,7 @@ fn port_items(
     tables: &CounterTables<'_>,
     context: &NavalContext<'_>,
     cached: &PortTables,
+    mut retained: Option<&mut PortPlans>,
     out: &mut CounterFrame,
 ) -> io::Result<naval_windows::PortItems> {
     for (&reason, forces) in &cached.refused {
@@ -1351,33 +1395,72 @@ fn port_items(
         if ports.contains_key(&province) {
             continue;
         }
-        let mut units: Vec<_> = roster
-            .iter()
-            .filter_map(|&(index, ordinal)| {
-                context.unit(&context.forces[index], owner, ordinal, None)
-            })
-            .collect();
         let height = inputs
             .content
             .port(province)
             .map_or(inputs.camera.height, |anchor| inputs.icon_height(anchor));
         let grouping = port_grouping(&inputs.content.defines, inputs.visibility, height);
-        let keys =
-            match naval_regional::sort_own(&mut units, inputs.selected, context, grouping.coarse) {
+        let before = retained.as_ref().and_then(|memo| memo.0.get(&province));
+        let members_equal = before.is_some_and(|before| before.roster == *roster);
+        let hit = inputs.camera.free().is_none()
+            && members_equal
+            && before.is_some_and(|before| before.grouping == grouping);
+        #[cfg(test)]
+        if retained.is_some() {
+            super::preparation::plan_probe::record(|counts| {
+                counts.ordered_groups += 1;
+                counts.ordered_group_members_equal += u64::from(members_equal);
+                counts.semantic_plans += 1;
+                counts.semantic_plan_hits += u64::from(hit);
+            });
+        }
+        let flotillas = if hit {
+            before.unwrap().flotillas.clone()
+        } else {
+            let mut units: Vec<_> = roster
+                .iter()
+                .filter_map(|&(index, ordinal)| {
+                    context.unit(&context.forces[index], owner, ordinal, None)
+                })
+                .collect();
+            let keys = match naval_regional::sort_own(
+                &mut units,
+                inputs.selected,
+                context,
+                grouping.coarse,
+            ) {
                 Ok(keys) => keys,
                 Err(reason) => {
                     out.report
                         .refuse_task_forces(reason, units.iter().map(|unit| unit.force.id));
                     ports.insert(province, Err(port_undecided(reason)));
+                    if let Some(memo) = retained.as_deref_mut() {
+                        memo.0.remove(&province);
+                    }
                     continue;
                 }
             };
-        // Compare the first member with each next member, retaining native run order.
+            let flotillas: Vec<_> =
+                port_runs(grouping, &keys, |at| tables.countries.side(units[at].slot))
+                    .into_iter()
+                    .map(|run| {
+                        context.flotilla(&units[run].iter().collect::<Vec<_>>(), true, false)
+                    })
+                    .collect();
+            if let Some(memo) = retained.as_deref_mut() {
+                memo.0.insert(
+                    province,
+                    PortPlan {
+                        grouping,
+                        roster: roster.clone(),
+                        flotillas: flotillas.clone(),
+                    },
+                );
+            }
+            flotillas
+        };
         let mut items = Vec::new();
-        for run in port_runs(grouping, &keys, |at| tables.countries.side(units[at].slot)) {
-            let (start, next) = (run.start, run.end);
-            let flotilla =
-                context.flotilla(&units[start..next].iter().collect::<Vec<_>>(), true, false);
+        for flotilla in &flotillas {
             if flotilla.hidden {
                 out.report.no_intel_counters += 1;
             }
@@ -1405,7 +1488,7 @@ fn port_items(
                 &ctx,
                 navy,
                 &gui_windows::NavyState {
-                    flotilla: &flotilla,
+                    flotilla,
                     countries: tables.countries,
                 },
                 &mut out.report.navy_counter_gaps,

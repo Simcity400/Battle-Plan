@@ -146,6 +146,7 @@ pub const TEXTURE_BINDINGS: usize = 2 * super::SAMPLER_SLOTS as usize;
 const BUFFERS: usize = CONSTANT_BINDINGS;
 const TEXTURES: usize = TEXTURE_BINDINGS;
 
+#[derive(Clone)]
 pub struct Bindings {
     pipeline: wgpu::RenderPipeline,
     groups: [wgpu::BindGroup; 3],
@@ -153,6 +154,11 @@ pub struct Bindings {
     count: usize,
 }
 impl Bindings {
+    /// Same pipeline and texture/sampler groups, independent of uploaded constants.
+    pub fn same_resources(&self, other: &Self) -> bool {
+        self.pipeline == other.pipeline && self.groups[1..] == other.groups[1..]
+    }
+
     pub fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
         self.bind_after(pass, None);
     }

@@ -1104,7 +1104,7 @@ impl DecodeLane {
         let mut from = playback.walk_start(branch, hour);
         while let Some(at) = from.filter(|at| hour - at > DECODE_STEP) {
             let step = at + DECODE_STEP;
-            if playback.seek(branch, step).is_err() {
+            if playback.advance_without_output(branch, step).is_err() {
                 break;
             }
             from = Some(step);
@@ -1308,6 +1308,7 @@ impl Coordinator {
     }
 
     fn set_want(&mut self, epoch: u64, mut want: Want) {
+        let sought = self.epoch != epoch;
         if self
             .want
             .as_ref()
@@ -1356,7 +1357,11 @@ impl Coordinator {
                     .into_iter()
                     .map(|hour| (want.branch, hour))
                     .collect(),
-                want.behind.max(2),
+                if want.playing && !sought {
+                    0
+                } else {
+                    want.behind.max(2)
+                },
             );
         }
         self.want = Some(want);
@@ -1703,6 +1708,7 @@ impl Coordinator {
                     if let Ok(defines) = &view.trade_routes {
                         units.add_convoys(convoys, defines.convoys);
                     }
+                    units.stage_field(&view.unit_models);
                     Ok(Arc::new(Movers {
                         trains: view.train_plan(&movers_perspective)?,
                         aircraft: view.aircraft_plan(&movers_perspective)?,

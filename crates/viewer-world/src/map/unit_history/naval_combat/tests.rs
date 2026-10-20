@@ -1014,3 +1014,82 @@ fn cached_visits_probe_copied_timings_once_while_active_or_inactive_but_placing_
         );
     }
 }
+
+
+#[test]
+fn empty_province_shortcut_releases_combat_and_clears_adjacent_selection() {
+    let bounds = Arc::new(BTreeMap::from([
+        (1, [0.0, 0.0, 1.0, 1.0]),
+        (2, [2.0, 0.0, 3.0, 1.0]),
+        (3, [4.0, 0.0, 5.0, 1.0]),
+    ]));
+    let mut pair = [true, false].map(|fast| {
+        let mut history = unit_history::History {
+            empty_fast_path: Some(fast),
+            ..Default::default()
+        };
+        history.set(Vec::new(), Arc::clone(&bounds), false);
+        history
+    });
+    for number in 0..240u32 {
+        let mut sources = naval_sources(battle(COMBAT, 100 + number as i32 / 13));
+        sources.combats.roots.insert(2, geometry(20.0));
+        sources.combats.roots.insert(3, geometry(30.0));
+        let admitted = match number % 12 {
+            0..=3 => Some(1),
+            4..=7 => None,
+            _ => Some(2),
+        };
+        if let Some(province) = admitted {
+            sources.candidates[0].province = province;
+        } else {
+            sources.candidates.clear();
+        }
+        let mut output = Vec::new();
+        let mut remaining = Vec::new();
+        for history in &mut pair {
+            history.set_naval(sources.clone());
+            let mut budget = Budget::new((number % 11) as i32, false);
+            output.push(history.step_with(
+                number as f32 * 0.125,
+                unit_history::test_support::GATES,
+                [number % 17 < 13, true],
+                number % 7 < 4,
+                |_| true,
+                &mut budget,
+                |_, _| {},
+            ));
+            remaining.push(budget.remaining());
+        }
+        unit_history::empty_tests::assert_instances(&output[0], &output[1]);
+        unit_history::empty_tests::assert_history(&pair[0], &pair[1]);
+        assert_eq!(remaining[0], remaining[1]);
+        let a = &pair[0].combats;
+        let b = &pair[1].combats;
+        assert_eq!(a.provinces, b.provinces);
+        assert_eq!(a.entities.len(), b.entities.len());
+        assert_eq!(a.deaths.len(), b.deaths.len());
+        assert_eq!(a.effects.len(), b.effects.len());
+        for (id, entity) in &a.entities {
+            let other = &b.entities[id];
+            assert_eq!(entity.active, other.active);
+            assert_eq!(entity.stamp, other.stamp);
+            assert_eq!(entity.status, other.status);
+            assert_eq!(entity.template.root, other.template.root);
+            assert_eq!(entity.template.clock, other.template.clock);
+            assert_eq!(hull_identities(a, *id), hull_identities(b, *id));
+            for (hull, other) in entity.parts.iter().zip(&other.parts) {
+                if let (Some(hull), Some(other)) = (hull, other) {
+                    assert_eq!(hull.part, other.part);
+                    assert_eq!(hull.clock, other.clock);
+                }
+            }
+            if admitted.is_none() {
+                assert!(
+                    !entity.active,
+                    "empty provinces release their retained combat"
+                );
+            }
+        }
+    }
+}

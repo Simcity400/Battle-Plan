@@ -1134,7 +1134,7 @@ impl Scene {
         }
         self.unit_gates = Some(assets.gates);
         self.unit_history
-            .set(field.targets, assets.bounds.clone(), steady);
+            .set_prepared(field.targets, assets.bounds.clone(), steady);
         self.unit_history.set_naval(field.naval);
         self.unit_history.set_raids(field.raids);
         if let Some(pass) = &mut self.unit_models {
@@ -3113,17 +3113,16 @@ impl Scene {
                                     faults.after(failure_tests::Point::Models)?;
                                 }
                             }
-                            let buffers =
-                                ModelPass::encode_native(&model_draws, device, targets, admitted);
+                            let buffers = ModelPass::encode_native(
+                                &model_draws,
+                                device,
+                                targets,
+                                admitted,
+                                &mut encoder,
+                            );
                             Ok((model_draws, buffers))
                         })?;
-                if !buffers.is_empty() {
-                    command_buffers.push(encoder.finish());
-                    command_buffers.extend(buffers);
-                    encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("map"),
-                    });
-                }
+                command_buffers.extend(buffers);
                 for (model, draws) in model_draws {
                     model.recycle_native(draws);
                 }

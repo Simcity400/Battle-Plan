@@ -339,11 +339,10 @@ mod tests {
             "TAG_fallback_entity".into(),
         ]);
         // A previously refused bake is remembered by the real shared baker.
-        assets
-            .failed
-            .lock()
-            .unwrap()
-            .insert("TAG_fallback_-3_entity".into());
+        assets.bakes.lock().unwrap().insert(
+            "TAG_fallback_-3_entity".into(),
+            std::sync::Arc::new(std::sync::Mutex::new(true)),
+        );
         assets
             .library
             .write()

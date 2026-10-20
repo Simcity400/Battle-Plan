@@ -869,3 +869,155 @@ fn map_checkpoints_preserve_complete_sparse_mines_and_retained_incidents() {
         );
     }
 }
+
+fn playback_reader(
+    hours: &[Hour],
+    accepted: Hour,
+) -> (
+    crate::prepared::series::tests::Fixture,
+    Reader,
+    Arc<replay::container::Replay>,
+) {
+    use crate::test_fixtures::{CAMPAIGN, records, scale_frame};
+    use replay::container::Replay;
+    use replay_frame::frame::FrameDecoder;
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    let frames = hours
+        .iter()
+        .map(|&hour| {
+            let mut frame = scale_frame(1, hour, 2);
+            frame.metrics.table_ns[TableId::DivisionStatus.index()] = 1;
+            frame.tables[TableId::DivisionStatus.index()] = match hour {
+                103 => TableView::Unavailable {
+                    reason: "status census failed".into(),
+                },
+                104 => TableView::Truncated {
+                    rows: TableRows::DivisionStatus(vec![DivisionStatusRow {
+                        division: 1,
+                        maximum_hit_points: i64::from(hour),
+                        ..Default::default()
+                    }]),
+                    missing: 7,
+                },
+                _ => TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
+                    division: 1,
+                    maximum_hit_points: i64::from(hour),
+                    ..Default::default()
+                }])),
+            }
+            .into();
+            frame
+        })
+        .collect();
+    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap());
+    let fixture = crate::prepared::series::tests::Fixture::new();
+    let mut builder =
+        Builder::new(NonZeroU32::new(720).unwrap(), SELECTED, Progress::default()).unwrap();
+    builder.set_ranges(&replay);
+    let mut decoder = FrameDecoder::for_tables(SELECTED);
+    let mut writer = fixture.writer();
+    for (block, index) in replay.index.iter().enumerate() {
+        for (offset, frame) in replay
+            .read_block_selected(index, SELECTED)
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            if frame.hour > accepted {
+                break;
+            }
+            let decoded = decoder.advance(frame).unwrap();
+            builder
+                .accept(
+                    &mut writer,
+                    frame,
+                    decoded,
+                    Position {
+                        block,
+                        next_frame: offset + 1,
+                    },
+                )
+                .unwrap();
+        }
+    }
+    builder.save_gaps(&mut writer, &replay.gaps).unwrap();
+    writer.commit().unwrap();
+    let reader = Reader::new(
+        Store::local(
+            fixture
+                .directory
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap(),
+        )
+        .unwrap(),
+        fixture.key.clone(),
+        builder.progress().clone(),
+        Arc::clone(&replay),
+        SELECTED,
+    )
+    .unwrap();
+    (fixture, reader, replay)
+}
+
+fn expected_hour(replay: &replay::container::Replay, hour: Hour) -> Current {
+    match replay.seek_selected(1, hour, Some(SELECTED)).unwrap() {
+        replay::container::SeekResult::Frame(frame) => Current::Frame(frame.into()),
+        replay::container::SeekResult::Gap {
+            branch,
+            hour,
+            reason,
+        } => Current::Gap {
+            branch,
+            hour,
+            reason,
+        },
+    }
+}
+
+#[test]
+fn cancellation_endpoints_preserve_sparse_gap_seek_and_visitor_values_without_outputs() {
+    let hours = [100, 101, 103, 104, 105, 106, 107, 108, 109, 110];
+    let (_fixture, mut reader, replay) = playback_reader(&hours, 110);
+    let (_control_fixture, mut control, _) = playback_reader(&hours, 110);
+    let held = reader.seek(1, 100).unwrap().unwrap();
+    let held_expected = expected_hour(&replay, 100);
+    for hour in [100, 101, 102, 104, 107, 105, 109, 110] {
+        let mut expected_passed = Vec::new();
+        let expected = control
+            .advance(1, hour, |f| expected_passed.push(f.clone()))
+            .unwrap()
+            .unwrap();
+        let mut passed = Vec::new();
+        assert!(
+            reader
+                .advance_without_output(1, hour, |f| passed.push(f.clone()))
+                .unwrap()
+        );
+        assert_eq!(passed, expected_passed, "visitor at {hour}");
+        let actual = reader
+            .advance(1, hour, |_| panic!("already applied endpoint"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual, expected, "endpoint at {hour}");
+        assert_eq!(actual, expected_hour(&replay, hour));
+        if let (Current::Frame(actual), Current::Frame(expected)) = (&actual, &expected) {
+            for table in SELECTED {
+                assert_eq!(
+                    actual.tables[table.index()].sampled_at(),
+                    expected.tables[table.index()].sampled_at()
+                );
+            }
+        }
+        assert_eq!(held, held_expected, "exported earlier hours stay immutable");
+    }
+    assert!(
+        !reader
+            .advance_without_output(2, 100, |_| panic!("unknown branch visitor"))
+            .unwrap()
+    );
+}

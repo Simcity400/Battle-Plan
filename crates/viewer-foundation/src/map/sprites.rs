@@ -28,6 +28,7 @@ use super::{
 };
 
 mod fade;
+mod retained;
 
 /// One frame-animated sprite: a horizontal strip of equal-width frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -664,6 +665,9 @@ pub const NO_TEXTURE: usize = usize::MAX;
 
 /// The screen-space pipeline and the frame's vertices.
 pub struct SpritePass {
+    /// These submissions outlive a scene frame, so no other pass may reset their uploads.
+    uploads: Option<shader_pipeline::gpu::Arena>,
+    retained: Option<retained::Upload>,
     native: super::native_shader::stream::Stream,
     native_draws: Vec<super::native_shader::stream::Submission>,
     native_format: wgpu::TextureFormat,
@@ -863,6 +867,8 @@ impl SpritePass {
         )?;
         Ok(Self {
             native: Default::default(),
+            uploads: Some(shader_pipeline::gpu::Arena::new(device)),
+            retained: None,
             native_draws: Vec::new(),
             bakes: Vec::new(),
             bake_stream: Default::default(),
@@ -996,10 +1002,9 @@ impl SpritePass {
             .or_else(|| self.dynamic.get(&texture).map(|page| &page.texture.view))
     }
 
-    /// Turns one frame's quads into vertices, grouped by texture. Compiled GUI draws upload
-    /// their constants and vertices through `arena`, the frame's one
-    /// [`shader_pipeline::gpu::Arena`] the map passes share; the caller flushes it before
-    /// submitting the commands that draw them and resets it before the next frame.
+    /// Turns changed quads into vertices, grouped by texture. Compiled GUI draws keep their
+    /// own upload arena until the batch, viewport, scale or resident artwork changes. The
+    /// scene's frame `arena` receives the same refusal names, including on retained frames.
     ///
     /// `batch` is in interface pixels and `ui_scale` device pixels per
     /// interface pixel; see [`device_corners`] for the snapping and
@@ -1015,21 +1020,6 @@ impl SpritePass {
         size: [u32; 2],
         ui_scale: f32,
     ) {
-        self.runs.clear();
-        self.native_draws.clear();
-        // The fade pages' draws are this frame's alone.
-        self.fade_draws.clear();
-        for runs in &mut self.fade_runs {
-            runs.clear();
-        }
-        self.fade_pages = 0;
-        for bake in &mut self.bakes {
-            bake.used = false;
-        }
-        self.native_refusals.clear();
-        self.native.refused.clear();
-        self.native.invalidate_bindings();
-        self.count = 0;
         // The lazy textures this frame draws stay pinned in their LRU.
         self.lazy.mark_drawn(
             batch
@@ -1063,6 +1053,56 @@ impl SpritePass {
                 .filter(|texture| *texture >= DYNAMIC_BASE)
                 .collect::<BTreeSet<_>>(),
         );
+        let uploads = self
+            .uploads
+            .take()
+            .expect("sprite uploads belong to the pass");
+        let same = self
+            .retained
+            .as_ref()
+            .is_some_and(|retained| retained.matches(batch, size, ui_scale, self.synced));
+        if !same {
+            uploads.reset();
+            self.upload_changed(device, queue, &uploads, batch, size, ui_scale);
+            uploads.flush(queue);
+            match self.retained.as_mut() {
+                Some(retained) => retained.update(batch, size, ui_scale, self.synced),
+                None => {
+                    self.retained =
+                        Some(retained::Upload::new(batch, size, ui_scale, self.synced));
+                }
+            }
+        }
+        for reason in uploads.refusals() {
+            arena.refuse(&reason);
+        }
+        self.uploads = Some(uploads);
+    }
+
+    fn upload_changed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        arena: &shader_pipeline::gpu::Arena,
+        batch: &Batch,
+        size: [u32; 2],
+        ui_scale: f32,
+    ) {
+        self.runs.clear();
+        self.native_draws.clear();
+        // The fade pages' draws are this frame's alone.
+        self.fade_draws.clear();
+        for runs in &mut self.fade_runs {
+            runs.clear();
+        }
+        self.fade_pages = 0;
+        for bake in &mut self.bakes {
+            bake.used = false;
+        }
+        self.native_refusals.clear();
+        self.native.refused.clear();
+        self.native.invalidate_bindings();
+        self.count = 0;
         if batch.is_empty() || size[0] == 0 || size[1] == 0 {
             self.bakes.clear();
             self.fade.fit(device, &[]);
@@ -2222,6 +2262,10 @@ mod tests {
             arena.refusals(),
             ["GUI shader: a quad without a compiled effect".to_owned()].into()
         );
+        let next_frame = shader_pipeline::gpu::Arena::new(&device);
+        pass.upload(&device, &queue, &next_frame, &batch, [16, 16], 1.0);
+        assert_eq!(next_frame.refusals(), arena.refusals());
+        assert_eq!(pass.native_refusals.values().sum::<u64>(), 1);
     }
 
     #[test]

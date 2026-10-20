@@ -15,8 +15,9 @@ use viewer_foundation::map::{
     native_resources::Context,
 };
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct PreparedBases {
+    offers: Arc<Vec<Offer>>,
     placed: [Vec<Placed>; FAMILIES],
     pub(super) air_grids: BTreeMap<(usize, u32), Result<Vec<air_grid::PreparedItem>, String>>,
 }
@@ -69,6 +70,7 @@ impl View {
 /// radar icon's entry zero in every mode, and no define sets it.
 pub(super) const RADAR_PRIORITY: i8 = 0;
 
+#[derive(Clone)]
 struct Placed {
     id: u32,
     province: u32,
@@ -78,11 +80,21 @@ struct Placed {
     anchor: Option<IconAnchor>,
 }
 
+#[derive(Clone)]
 pub(super) struct State {
     pub frame: i32,
     pub enabled: bool,
     pub sprite: Option<String>,
     pub air: Option<bases::AirBaseCount>,
+}
+
+#[derive(Clone)]
+struct Offer {
+    family: Family,
+    id: u32,
+    province: u32,
+    world: [f32; 3],
+    state: State,
 }
 
 impl PreparedBases {
@@ -95,14 +107,26 @@ impl PreparedBases {
         anchor: [f32; 3],
         state: State,
     ) {
+        let offer = Offer {
+            family,
+            id,
+            province,
+            world: anchor,
+            state,
+        };
+        Self::project(&mut self.placed, inputs, &offer);
+        Arc::make_mut(&mut self.offers).push(offer);
+    }
+
+    fn project(placed: &mut [Vec<Placed>; FAMILIES], inputs: &CounterInputs<'_>, offer: &Offer) {
         let Some(projected) = inputs.camera.project_map_icon(
-            anchor,
+            offer.world,
             inputs.viewport,
             gui_resources_viewport(inputs.viewport, inputs.ui_scale),
         ) else {
             return;
         };
-        let cutoff = match family {
+        let cutoff = match offer.family {
             Family::AirBase
             | Family::RocketSite
             | Family::GunEmplacement
@@ -110,14 +134,27 @@ impl PreparedBases {
             Family::Radar => inputs.content.defines.radar_cutoff,
             Family::Headquarter | Family::Facility => inputs.content.defines.facility_cutoff,
         };
-        self.placed[family as usize].push(Placed {
-            id,
-            province,
+        placed[offer.family as usize].push(Placed {
+            id: offer.id,
+            province: offer.province,
             screen: projected.position,
             depth: projected.depth,
-            state,
-            anchor: inputs.icon_anchor(IconFamily::Bases, anchor, cutoff),
+            state: offer.state.clone(),
+            anchor: inputs.icon_anchor(IconFamily::Bases, offer.world, cutoff),
         });
+    }
+
+    /// Semantic offers survive a camera change; all projection and paint inputs are current.
+    pub(super) fn for_camera(&self, inputs: &CounterInputs<'_>) -> Self {
+        let mut result = Self {
+            offers: Arc::clone(&self.offers),
+            air_grids: self.air_grids.clone(),
+            placed: Default::default(),
+        };
+        for offer in self.offers.iter() {
+            Self::project(&mut result.placed, inputs, offer);
+        }
+        result
     }
 
     pub(super) fn draw(
@@ -1363,5 +1400,80 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn retained_base_offers_reproject_every_family_in_order_including_previously_hidden_anchors() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        use viewer_foundation::map::camera::{Free, Lens, Pose};
+        crate::map::counters::tests::with_counter_inputs_fixture(
+            crate::map::counters::tests::action_gui(false),
+            |_| {},
+            |_| {},
+            |mut inputs| {
+                let families = [
+                    Family::AirBase,
+                    Family::Headquarter,
+                    Family::Facility,
+                    Family::RocketSite,
+                    Family::GunEmplacement,
+                    Family::Radar,
+                    Family::StrategicLocation,
+                ];
+                let offer = |target: &mut PreparedBases, inputs: &CounterInputs<'_>| {
+                    for (at, family) in families.into_iter().enumerate() {
+                        for side in 0..2 {
+                            target.offer(
+                                inputs,
+                                family,
+                                (at * 2 + side) as u32,
+                                at as u32,
+                                [2., 9.5, if side == 0 { -20. } else { 20. }],
+                                State {
+                                    frame: at as i32,
+                                    enabled: side == 0,
+                                    sprite: Some(format!("synthetic_{at}")),
+                                    air: Some(bases::AirBaseCount {
+                                        capacity: 7,
+                                        ..Default::default()
+                                    }),
+                                },
+                            );
+                        }
+                    }
+                };
+                inputs.camera.pose = Pose::Free(Free::new(0., 0., Lens::MAP));
+                inputs.camera.height = 9.5;
+                let mut retained = PreparedBases::default();
+                offer(&mut retained, &inputs);
+                assert_eq!(retained.offers.len(), families.len() * 2);
+                assert!(retained.placed.iter().all(|placed| placed.len() == 1));
+                for (step, yaw) in [std::f32::consts::PI, 0., std::f32::consts::PI, 0.]
+                    .into_iter()
+                    .enumerate()
+                {
+                    inputs.camera.pose = Pose::Free(Free::new(yaw, 0., Lens::MAP));
+                    inputs.camera.center[0] += 0.125;
+                    inputs.ui_scale = if step % 2 == 0 { 1.25 } else { 1. };
+                    let cached = retained.for_camera(&inputs);
+                    let mut fresh = PreparedBases::default();
+                    offer(&mut fresh, &inputs);
+                    for (a, b) in cached.placed.iter().zip(&fresh.placed) {
+                        assert_eq!(a.len(), b.len());
+                        for (a, b) in a.iter().zip(b) {
+                            assert_eq!((a.id, a.province), (b.id, b.province));
+                            assert_eq!(a.screen.map(f32::to_bits), b.screen.map(f32::to_bits));
+                            assert_eq!(a.depth.to_bits(), b.depth.to_bits());
+                            assert_eq!(a.anchor, b.anchor);
+                            assert_eq!(
+                                (a.state.frame, a.state.enabled, &a.state.sprite, a.state.air),
+                                (b.state.frame, b.state.enabled, &b.state.sprite, b.state.air)
+                            );
+                        }
+                    }
+                    assert!(Arc::ptr_eq(&cached.offers, &retained.offers));
+                }
+            },
+        );
     }
 }

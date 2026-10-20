@@ -8,6 +8,7 @@
 //! sampling. Infrastructure and civilian-factory health select particle state separately from
 //! placement.
 
+#[cfg(test)]
 use std::collections::BTreeSet;
 use std::{collections::BTreeMap, io, sync::Arc};
 #[cfg(test)]
@@ -483,11 +484,23 @@ pub struct Presentation {
     destroyed: i64,
     damage: Damage,
     view: Option<(Camera, [u32; 2], bool)>,
-    actors: BTreeMap<u32, Actor>,
+    /// Houses share their owner province's admission box, but keep placement order.
+    groups: Arc<[CityGroup]>,
+    admitted: Vec<bool>,
+    active: Vec<usize>,
+    actors: Vec<Option<Actor>>,
+    damage_changed: bool,
+    placed: Option<Vec<(usize, ModelInstance)>>,
     last_time: Option<f32>,
 }
 
 #[derive(Clone)]
+struct CityGroup {
+    bounds: [f32; 4],
+    cities: Vec<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct Actor {
     start: f32,
     state: &'static str,
@@ -496,9 +509,41 @@ struct Actor {
 }
 
 impl Presentation {
+    fn new(cities: Vec<City>, damaged: i64, destroyed: i64) -> Self {
+        let mut groups = Vec::<CityGroup>::new();
+        let mut boxes = BTreeMap::new();
+        for (index, city) in cities.iter().enumerate() {
+            let group = *boxes
+                .entry(city.bounds.map(f32::to_bits))
+                .or_insert_with(|| {
+                    groups.push(CityGroup {
+                        bounds: city.bounds,
+                        cities: Vec::new(),
+                    });
+                    groups.len() - 1
+                });
+            groups[group].cities.push(index);
+        }
+        Self {
+            actors: vec![None; cities.len()],
+            admitted: vec![false; groups.len()],
+            groups: groups.into(),
+            active: Vec::new(),
+            cities: cities.into(),
+            damaged,
+            destroyed,
+            damage: Damage::default(),
+            damage_changed: true,
+            view: None,
+            placed: None,
+            last_time: None,
+        }
+    }
+
     pub fn set_damage(&mut self, damage: &Damage) {
         if self.damage != *damage {
             self.damage = damage.clone();
+            self.damage_changed = true;
         }
         self.view = None;
     }
@@ -508,7 +553,13 @@ impl Presentation {
     pub fn advance(&mut self, damage: &Damage) {
         if let (Some((camera, size, enabled)), Some(time)) = (self.view, self.last_time) {
             self.set_damage(damage);
+            // Crossed hours advance actor requests, not the renderer's retained stream.
+            let placed = self.placed.take();
             self.update(camera, size, enabled, time);
+            // If an ignored crossed-hour stream differs, the next changed view must
+            // still submit it. An unchanged view keeps the original early return.
+            self.damage_changed = self.placed != placed;
+            self.placed = placed;
         }
     }
 
@@ -540,39 +591,71 @@ impl Presentation {
         }
         self.last_time = Some(time);
         let view = (camera, size, enabled);
+        let first = self.view.is_none();
         if self.view == Some(view) {
             return None;
         }
-        self.view = Some(view);
-        let admission = Admission::new(camera, size);
-        let mut placed = Vec::new();
-        let mut active = BTreeSet::new();
-        for city in self
-            .cities
-            .iter()
-            .filter(|city| enabled && admission.admits(city.bounds))
-        {
-            let mut instance = city.instance;
-            active.insert(instance.animation_seed);
-            if let Some(state) = self.state(city.province) {
-                let actor = self
-                    .actors
-                    .entry(instance.animation_seed)
-                    .or_insert_with(|| Actor {
-                        start: time,
-                        state,
-                        visible: true,
-                        // Initialize the city-state cache to zero. A first healthy show preserves the entity default.
-                        requests: Arc::new(if state == "idle" {
-                            Vec::new()
-                        } else {
-                            vec![Request {
-                                time: 0.0,
+        let mut membership_changed = false;
+        if self.view != Some(view) {
+            let admission = Admission::new(camera, size);
+            for (group, admitted) in self.groups.iter().zip(&mut self.admitted) {
+                let shown = enabled && admission.admits(group.bounds);
+                if *admitted == shown {
+                    continue;
+                }
+                *admitted = shown;
+                membership_changed = true;
+                if !shown {
+                    // Retain the precreated actor's idle request across re-entry, even
+                    // when its authored default differs or damage is unavailable.
+                    for &index in &group.cities {
+                        if let Some(actor) = &mut self.actors[index] {
+                            Arc::make_mut(&mut actor.requests).push(Request {
+                                time: time - actor.start,
                                 phase_time: None,
-                                state: state.into(),
-                            }]
-                        }),
-                    });
+                                state: "idle".into(),
+                            });
+                            actor.state = "idle";
+                            actor.visible = false;
+                        }
+                    }
+                }
+            }
+        }
+        self.view = Some(view);
+        if !first && !membership_changed && !self.damage_changed {
+            return None;
+        }
+        self.damage_changed = false;
+        if membership_changed {
+            self.active.clear();
+            for (group, &admitted) in self.groups.iter().zip(&self.admitted) {
+                if admitted {
+                    self.active.extend_from_slice(&group.cities);
+                }
+            }
+            self.active.sort_unstable();
+        }
+        let mut placed = Vec::with_capacity(self.active.len());
+        for &index in &self.active {
+            let city = &self.cities[index];
+            let mut instance = city.instance;
+            if let Some(state) = self.state(city.province) {
+                let actor = self.actors[index].get_or_insert_with(|| Actor {
+                    start: time,
+                    state,
+                    visible: true,
+                    // A first healthy show preserves the entity default.
+                    requests: Arc::new(if state == "idle" {
+                        Vec::new()
+                    } else {
+                        vec![Request {
+                            time: 0.0,
+                            phase_time: None,
+                            state: state.into(),
+                        }]
+                    }),
+                });
                 if actor.state != state {
                     Arc::make_mut(&mut actor.requests).push(Request {
                         time: time - actor.start,
@@ -583,32 +666,26 @@ impl Presentation {
                 }
                 instance.animation = BUILDING_IDLE;
             }
+            if let Some(actor) = &mut self.actors[index] {
+                actor.visible = true;
+            }
             placed.push((city.mesh, instance));
         }
-        // Request idle, reset the city-state cache to zero and deactivate the precreated entity. Retain
-        // request history so re-entry preserves idle even when the authored default differs.
-        for (id, actor) in &mut self.actors {
-            let visible = active.contains(id);
-            if actor.visible && !visible {
-                Arc::make_mut(&mut actor.requests).push(Request {
-                    time: time - actor.start,
-                    phase_time: None,
-                    state: "idle".into(),
-                });
-                actor.state = "idle";
-            }
-            actor.visible = visible;
+        if self.placed.as_ref() == Some(&placed) {
+            return None;
         }
+        self.placed = Some(placed.clone());
         Some(placed)
     }
 
     pub fn clocks(&self, time: f32) -> BTreeMap<(usize, u32, u32), Clock> {
-        self.cities
+        self.active
             .iter()
-            .filter_map(|city| {
+            .filter_map(|&index| {
+                let city = &self.cities[index];
                 let instance = city.instance;
-                let actor = self.actors.get(&instance.animation_seed)?;
-                if !actor.visible || !self.damage.health.contains_key(&city.province) {
+                let actor = self.actors[index].as_ref()?;
+                if !self.damage.health.contains_key(&city.province) {
                     return None;
                 }
                 Some((
@@ -628,7 +705,11 @@ impl Presentation {
     }
 
     pub fn reset(&mut self) {
-        self.actors.clear();
+        self.actors.fill(None);
+        self.admitted.fill(false);
+        self.active.clear();
+        self.damage_changed = true;
+        self.placed = None;
         self.view = None;
         self.last_time = None;
     }
@@ -757,15 +838,11 @@ impl Sprawl {
             field: ModelField::build(&library, placed, SPRAWL_TILE),
             library,
             plan_summary: summary,
-            presentation: Presentation {
-                cities: cities.into(),
-                damaged: defines.fixed5("NGraphics", "CITY_DAMAGED_THRESHOLD")?,
-                destroyed: defines.fixed5("NGraphics", "CITY_DESTROYED_THRESHOLD")?,
-                damage: Damage::default(),
-                view: None,
-                actors: BTreeMap::new(),
-                last_time: None,
-            },
+            presentation: Presentation::new(
+                cities,
+                defines.fixed5("NGraphics", "CITY_DAMAGED_THRESHOLD")?,
+                defines.fixed5("NGraphics", "CITY_DESTROYED_THRESHOLD")?,
+            ),
         })
     }
 
@@ -789,15 +866,9 @@ mod tests {
     }
 
     fn presentation(damage: Damage) -> Presentation {
-        Presentation {
-            cities: Arc::default(),
-            damaged: 80_000,
-            destroyed: 30_000,
-            damage,
-            view: None,
-            actors: BTreeMap::new(),
-            last_time: None,
-        }
+        let mut presentation = Presentation::new(Vec::new(), 80_000, 30_000);
+        presentation.set_damage(&damage);
+        presentation
     }
 
     #[test]
@@ -1016,7 +1087,7 @@ mod tests {
             health: BTreeMap::from([(7, Some(20_000))]),
             refused: None,
         });
-        scene.cities = Arc::from([City {
+        let cities = vec![City {
             province: 7,
             bounds: [8.0, 8.0, 12.0, 12.0],
             mesh: 0,
@@ -1026,7 +1097,10 @@ mod tests {
                 animation: STOPPED,
                 ..Default::default()
             },
-        }]);
+        }];
+        let damage = scene.damage.clone();
+        scene = Presentation::new(cities, scene.damaged, scene.destroyed);
+        scene.set_damage(&damage);
         let mut player = Player::new(&rig);
         let mut events = Vec::new();
         let camera = Placement {
@@ -1041,7 +1115,7 @@ mod tests {
                     time: f32,
                     events: &mut Vec<super::super::entity_animation::Event>| {
             scene.update(camera, [1024, 768], true, time);
-            let actor = &scene.actors[&0];
+            let actor = &scene.actors[0].as_ref().unwrap();
             player.evaluate_clock(
                 &rig,
                 instance,
@@ -1076,7 +1150,7 @@ mod tests {
             Some("synthetic_smoke")
         );
         assert_eq!(
-            scene.actors[&0].requests.len(),
+            scene.actors[0].as_ref().unwrap().requests.len(),
             2,
             "an unchanged city does not request again"
         );
@@ -1123,10 +1197,10 @@ mod tests {
             health: BTreeMap::from([(7, Some(60_000))]),
             refused: None,
         });
-        assert_eq!(scene.actors[&0].requests.len(), 4);
+        assert_eq!(scene.actors[0].as_ref().unwrap().requests.len(), 4);
         assert_eq!(
-            scene.actors[&0].requests[2].time,
-            scene.actors[&0].requests[3].time
+            scene.actors[0].as_ref().unwrap().requests[2].time,
+            scene.actors[0].as_ref().unwrap().requests[3].time
         );
         scene.reset();
         scene.set_damage(&Damage {
@@ -1176,6 +1250,357 @@ mod tests {
         assert!(
             events.is_empty(),
             "re-entry retains the hidden entity's idle state"
+        );
+    }
+
+    // The ungrouped path is the frame-by-frame oracle, including its camera invalidation
+    // and whole-city clock walk. It deliberately does no retained-stream optimization.
+    #[derive(Clone)]
+    struct OriginalPresentation {
+        cities: Arc<[City]>,
+        damaged: i64,
+        destroyed: i64,
+        damage: Damage,
+        view: Option<(Camera, [u32; 2], bool)>,
+        actors: BTreeMap<u32, Actor>,
+        last_time: Option<f32>,
+    }
+
+    impl OriginalPresentation {
+        pub fn set_damage(&mut self, damage: &Damage) {
+            if self.damage != *damage {
+                self.damage = damage.clone();
+            }
+            self.view = None;
+        }
+
+        /// Preserve crossed hourly state requests at the last presentation time,
+        /// just as the individual-building history does for skipped hours.
+        pub fn advance(&mut self, damage: &Damage) {
+            if let (Some((camera, size, enabled)), Some(time)) = (self.view, self.last_time) {
+                self.set_damage(damage);
+                self.update(camera, size, enabled, time);
+            }
+        }
+
+        fn state(&self, province: u32) -> Option<&'static str> {
+            // Leave target zero when the province has no state,
+            // bypassing both thresholds (which a mod may set above full health).
+            let Some(&health) = self.damage.health.get(&province)?.as_ref() else {
+                return Some("idle");
+            };
+            // both thresholds are strict; damaged is tested first.
+            if health >= self.damaged {
+                Some("idle")
+            } else if health < self.destroyed {
+                Some("burning") // damaged is .
+            } else {
+                Some("damaged")
+            }
+        }
+
+        pub fn update(
+            &mut self,
+            camera: Camera,
+            size: [u32; 2],
+            enabled: bool,
+            time: f32,
+        ) -> Option<Vec<(usize, ModelInstance)>> {
+            if self.last_time.is_some_and(|last| time < last) {
+                self.reset();
+            }
+            self.last_time = Some(time);
+            let view = (camera, size, enabled);
+            if self.view == Some(view) {
+                return None;
+            }
+            self.view = Some(view);
+            let admission = Admission::new(camera, size);
+            let mut placed = Vec::new();
+            let mut active = BTreeSet::new();
+            for city in self
+                .cities
+                .iter()
+                .filter(|city| enabled && admission.admits(city.bounds))
+            {
+                let mut instance = city.instance;
+                active.insert(instance.animation_seed);
+                if let Some(state) = self.state(city.province) {
+                    let actor = self
+                        .actors
+                        .entry(instance.animation_seed)
+                        .or_insert_with(|| Actor {
+                            start: time,
+                            state,
+                            visible: true,
+                            // Initialize the city-state cache to zero. A first healthy show preserves the entity default.
+                            requests: Arc::new(if state == "idle" {
+                                Vec::new()
+                            } else {
+                                vec![Request {
+                                    time: 0.0,
+                                    phase_time: None,
+                                    state: state.into(),
+                                }]
+                            }),
+                        });
+                    if actor.state != state {
+                        Arc::make_mut(&mut actor.requests).push(Request {
+                            time: time - actor.start,
+                            phase_time: None,
+                            state: state.into(),
+                        });
+                        actor.state = state;
+                    }
+                    instance.animation = BUILDING_IDLE;
+                }
+                placed.push((city.mesh, instance));
+            }
+            // Request idle, reset the city-state cache to zero and deactivate the precreated entity. Retain
+            // request history so re-entry preserves idle even when the authored default differs.
+            for (id, actor) in &mut self.actors {
+                let visible = active.contains(id);
+                if actor.visible && !visible {
+                    Arc::make_mut(&mut actor.requests).push(Request {
+                        time: time - actor.start,
+                        phase_time: None,
+                        state: "idle".into(),
+                    });
+                    actor.state = "idle";
+                }
+                actor.visible = visible;
+            }
+            Some(placed)
+        }
+
+        pub fn clocks(&self, time: f32) -> BTreeMap<(usize, u32, u32), Clock> {
+            self.cities
+                .iter()
+                .filter_map(|city| {
+                    let instance = city.instance;
+                    let actor = self.actors.get(&instance.animation_seed)?;
+                    if !actor.visible || !self.damage.health.contains_key(&city.province) {
+                        return None;
+                    }
+                    Some((
+                        (
+                            city.mesh,
+                            instance.animation_seed,
+                            instance.animation_identity,
+                        ),
+                        Clock {
+                            time: time - actor.start,
+                            phase: None,
+                            requests: Arc::clone(&actor.requests),
+                        },
+                    ))
+                })
+                .collect()
+        }
+
+        pub fn reset(&mut self) {
+            self.actors.clear();
+            self.view = None;
+            self.last_time = None;
+        }
+    }
+
+    #[test]
+    fn grouped_city_frames_match_original_placements_requests_and_clocks() {
+        use viewer_foundation::map::camera::{Free, Lens, Pose};
+        let cities: Vec<_> = (0..1_440)
+            .map(|index| {
+                let owner = index * 7 % 60;
+                let x = (owner % 12) as f32 * 480.0;
+                let z = (owner / 12) as f32 * 430.0;
+                City {
+                    province: (index * 13 % 117) as u32,
+                    bounds: [x, z, x + 110.0, z + 85.0],
+                    mesh: index % 9,
+                    instance: ModelInstance {
+                        position: [x + (index % 13) as f32, 10.0, z + 3.0],
+                        animation_seed: (index * 17 + 3) as u32,
+                        animation_identity: (index % 5 + 1) as u32,
+                        animation: STOPPED,
+                        ..Default::default()
+                    },
+                }
+            })
+            .collect();
+        let mut grouped = Presentation::new(cities.clone(), 80_000, 30_000);
+        let mut original = OriginalPresentation {
+            cities: cities.into(),
+            damaged: grouped.damaged,
+            destroyed: grouped.destroyed,
+            damage: Damage::default(),
+            view: None,
+            actors: BTreeMap::new(),
+            last_time: None,
+        };
+        assert_eq!(grouped.groups.len(), 60);
+        let damage = |hour: u32| Damage {
+            health: (0..117)
+                .filter(|id| !(id + hour).is_multiple_of(11))
+                .map(|id| {
+                    let health = match (id + hour) % 7 {
+                        0 => None,
+                        1 => Some(29_999),
+                        2 => Some(30_000),
+                        3 => Some(79_999),
+                        4 => Some(80_000),
+                        _ => Some(100_000),
+                    };
+                    (id, health)
+                })
+                .collect(),
+            refused: hour.is_multiple_of(3).then(|| "synthetic incomplete damage".into()),
+        };
+        let mut grouped_placed = Vec::new();
+        let mut original_placed = Vec::new();
+        for frame in 0..900u32 {
+            if frame % 137 == 0 {
+                grouped.reset();
+                original.reset();
+            }
+            if frame % 19 == 0 {
+                let damage = damage(frame / 19);
+                grouped.set_damage(&damage);
+                original.set_damage(&damage);
+            }
+            if frame % 31 == 0 {
+                for offset in 0..3 {
+                    let damage = damage(frame / 19 + offset);
+                    grouped.advance(&damage);
+                    original.advance(&damage);
+                }
+                // Cover crossed hours both with and without a final install. An
+                // ignored stream must reach the renderer on the next changed view.
+                if frame % 62 == 0 {
+                    let damage = damage(frame / 19 + 4);
+                    grouped.set_damage(&damage);
+                    original.set_damage(&damage);
+                }
+            }
+            let movement = frame / 3;
+            let camera = Placement {
+                center: [
+                    (movement % 80) as f32 * 90.0 - 600.0,
+                    (movement % 15) as f32 * 150.0,
+                ],
+                height: if frame % 53 < 30 { 60.0 } else { 700.0 },
+                pose: if frame % 73 < 40 {
+                    Pose::Map
+                } else {
+                    Pose::Free(Free::new(
+                        (movement % 36) as f32 * 0.17,
+                        -0.12 - (movement % 6) as f32 * 0.1,
+                        Lens::MAP,
+                    ))
+                },
+            }
+            .on(MapSize::TEST, MapDefines::test());
+            let size = if frame % 41 < 25 {
+                [1024, 768]
+            } else {
+                [2560, 1440]
+            };
+            let enabled = frame % 47 < 37;
+            let time = (frame % 211) as f32 / 120.0;
+            if let Some(placed) = grouped.update(camera, size, enabled, time) {
+                grouped_placed = placed;
+            }
+            if let Some(placed) = original.update(camera, size, enabled, time) {
+                original_placed = placed;
+            }
+            assert_eq!(grouped_placed, original_placed, "frame {frame} placements");
+            assert_eq!(
+                grouped.clocks(time),
+                original.clocks(time),
+                "frame {frame} clocks"
+            );
+            let actors: BTreeMap<_, _> = grouped
+                .actors
+                .iter()
+                .enumerate()
+                .filter_map(|(index, actor)| {
+                    actor
+                        .as_ref()
+                        .map(|actor| (grouped.cities[index].instance.animation_seed, actor.clone()))
+                })
+                .collect();
+            assert_eq!(actors, original.actors, "frame {frame} actor state");
+            assert_eq!(grouped.last_time, original.last_time);
+            assert_eq!(grouped.view, original.view);
+            if frame % 71 == 0 {
+                grouped = grouped.clone();
+            }
+        }
+    }
+
+    #[test]
+    fn unchanged_city_membership_and_state_keep_the_renderer_stream() {
+        let mut scene = Presentation::new(
+            vec![City {
+                province: 7,
+                bounds: [8.0, 8.0, 12.0, 12.0],
+                mesh: 0,
+                instance: ModelInstance {
+                    animation: STOPPED,
+                    ..Default::default()
+                },
+            }],
+            80_000,
+            30_000,
+        );
+        let mut damage = Damage {
+            health: BTreeMap::from([(7, Some(100_000))]),
+            refused: None,
+        };
+        scene.set_damage(&damage);
+        let mut camera = Placement {
+            center: [10.0, 10.0],
+            height: 60.0,
+            pose: Default::default(),
+        }
+        .on(MapSize::TEST, MapDefines::test());
+        assert!(scene.update(camera, [1024, 768], true, 10.0).is_some());
+        camera.center[0] += 0.01;
+        assert!(scene.update(camera, [1024, 768], true, 10.1).is_none());
+        damage.health.insert(7, Some(20_000));
+        scene.set_damage(&damage);
+        assert!(scene.update(camera, [1024, 768], true, 10.2).is_none());
+        assert_eq!(
+            scene.actors[0].as_ref().unwrap().requests[0].state,
+            "burning"
+        );
+        damage.health.clear();
+        scene.set_damage(&damage);
+        assert_eq!(
+            scene.update(camera, [1024, 768], true, 10.3).unwrap()[0]
+                .1
+                .animation,
+            STOPPED
+        );
+        damage.health.insert(7, Some(60_000));
+        scene.advance(&damage);
+        // advance did not hand the new stream to the renderer. Like the original
+        // path, the same view does nothing, but a changed view submits that stream.
+        assert!(scene.update(camera, [1024, 768], true, 10.4).is_none());
+        camera.center[0] += 0.01;
+        assert_eq!(
+            scene.update(camera, [1024, 768], true, 10.5).unwrap()[0]
+                .1
+                .animation,
+            BUILDING_IDLE
+        );
+        damage.health.clear();
+        scene.advance(&damage);
+        scene.set_damage(&damage);
+        assert_eq!(
+            scene.update(camera, [1024, 768], true, 10.6).unwrap()[0]
+                .1
+                .animation,
+            STOPPED
         );
     }
 

@@ -110,6 +110,7 @@ use {
     crate::map::models::ModelLibrary, crate::map::models::hash_rotation,
     crate::map::unit_history::Field, crate::map::unit_history::Kind,
     crate::map::unit_history::NavalSources, crate::map::unit_history::Target,
+    crate::map::unit_history::Targets,
     installed_content_equipment_graphics::equipment_graphics::countries as model_countries,
     installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
     viewer_foundation::map::counter_move, viewer_foundation::map::perspective::Sight,
@@ -488,9 +489,11 @@ impl ModelReport {
 /// any country could reach held gigabytes of geometry and textures.
 pub struct UnitModelAssets {
     library: RwLock<ModelLibrary>,
-    /// Serialises bakes, and remembers entities that did not bake so they are
-    /// not tried again.
-    failed: Mutex<BTreeSet<String>>,
+    /// A staged field belongs to this library, whose mesh slots are append-only.
+    field_identity: Arc<()>,
+    /// Each name owns its bake, including an unsuccessful attempt. The map
+    /// lock only locates these slots; cold loads never hold it.
+    bakes: Mutex<BTreeMap<String, Arc<Mutex<bool>>>>,
     roster: Arc<mesh::Roster>,
     /// The content the library bakes from.
     layers: ResolvedLayers,
@@ -511,7 +514,7 @@ pub struct UnitModelAssets {
     disabled: Option<String>,
 }
 debug_fields!(UnitModelAssets(this) {
-    library, failed, roster, sub_units, gates, bounds, graphics, geography, camouflage, ships, disabled
+    library, bakes, roster, sub_units, gates, bounds, graphics, geography, camouflage, ships, disabled
 } {
     registered => viewer_foundation::debug_fields::sorted_set(&this.registered)
 });
@@ -649,7 +652,8 @@ impl UnitModelAssets {
     fn off(reason: String) -> Self {
         Self {
             library: RwLock::new(ModelLibrary::default()),
-            failed: Mutex::new(BTreeSet::new()),
+            field_identity: Arc::new(()),
+            bakes: Mutex::new(BTreeMap::new()),
             roster: Arc::new(mesh::Roster::default()),
             layers: ResolvedLayers::default(),
             sub_units: model_selection::Content::default(),
@@ -718,7 +722,8 @@ impl UnitModelAssets {
         warnings.extend(ship_warnings);
         Ok(Self {
             library: RwLock::new(ModelLibrary::empty(decode)),
-            failed: Mutex::new(BTreeSet::new()),
+            field_identity: Arc::new(()),
+            bakes: Mutex::new(BTreeMap::new()),
             sub_units,
             gates: Gates::read(defines)?,
             bounds: Arc::new(province_boxes(&ProvinceMap {
@@ -1060,14 +1065,10 @@ impl UnitModelAssets {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Bakes every registered name not in the library yet, in one parallel
-    /// batch appended to the library. A name that does not bake is remembered
-    /// and not tried again.
+    /// Bakes missing registered names in sorted batches. Warm names only read
+    /// the library; cold batches wait only for names they share. A failed
+    /// attempt is remembered just like a successful one.
     fn ensure(&self, names: &[String]) {
-        let mut failed = self
-            .failed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let missing: Vec<String> = {
             let library = self.library();
             names
@@ -1076,11 +1077,39 @@ impl UnitModelAssets {
                     library.slot(name).is_none()
                         && self.registered(name)
                         && self.refusal(name).is_none()
-                        && !failed.contains(name.as_str())
                 })
                 .cloned()
                 .collect::<BTreeSet<_>>()
                 .into_iter()
+                .collect()
+        };
+        if missing.is_empty() {
+            return;
+        }
+        let slots: Vec<_> = {
+            let mut bakes = self
+                .bakes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            missing
+                .iter()
+                .map(|name| Arc::clone(bakes.entry(name.clone()).or_default()))
+                .collect()
+        };
+        // Always claim names in the same order: overlapping batches can wait
+        // for one another without a cycle, while disjoint batches load freely.
+        let mut completed: Vec<_> = slots
+            .iter()
+            .map(|slot| slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+            .collect();
+        let missing: Vec<_> = {
+            let library = self.library();
+            missing
+                .into_iter()
+                .zip(&completed)
+                .filter_map(|(name, complete)| {
+                    (!**complete && library.slot(&name).is_none()).then_some(name)
+                })
                 .collect()
         };
         if missing.is_empty() {
@@ -1119,12 +1148,9 @@ impl UnitModelAssets {
         }
         // An entity a visual mod supplies that does not bake was baked from the recording
         // instead, named, by the library load itself (`ModelLibrary::load`).
-        let library = self.library();
-        failed.extend(
-            missing
-                .into_iter()
-                .filter(|name| library.slot(name).is_none()),
-        );
+        for complete in &mut completed {
+            **complete = true;
+        }
     }
 
     /// Why `name` is refused ([`entity_refusal`]), `None` when it is drawn: an entity the
@@ -1167,6 +1193,8 @@ impl UnitModelAssets {
     pub fn prepare(&self, inputs: PrepareInputs<'_>) -> io::Result<PreparedModels> {
         if let Some(reason) = &self.disabled {
             return Ok(PreparedModels {
+                staged_field: Mutex::new(None),
+                targets: None,
                 raid: Vec::new(),
                 convoys: None,
                 placed: Vec::new(),
@@ -1445,6 +1473,8 @@ impl UnitModelAssets {
             .map(|row| row.id)
             .collect();
         Ok(PreparedModels {
+            staged_field: Mutex::new(None),
+            targets: None,
             raid: Vec::new(),
             convoys: None,
             placed,
@@ -1928,6 +1958,10 @@ impl<'a> Selector<'a, '_> {
 
 /// Selector results and spline geometry for one recorded hour and perspective.
 pub struct PreparedModels {
+    /// One builder-materialized field, moved into the first view without a clone.
+    staged_field: Mutex<Option<StagedField>>,
+    /// Keep the immutable target index shared with installs and repeated fields.
+    targets: Option<Targets>,
     ships: NavalSources,
     /// The raid arrows' units ([`Self::add_raid_units`]). They are no unit
     /// slot's: each arrow creates its entity directly, so
@@ -1946,7 +1980,33 @@ pub struct PreparedModels {
     owned: BTreeSet<u32>,
     pub report: ModelReport,
 }
+struct StagedField {
+    assets: Arc<()>,
+    field: Field,
+}
+
 impl PreparedModels {
+    /// Materializes the upload field on the hour builder, after raids and convoys
+    /// have joined it. Later views or scene recreations rebuild the same field.
+    pub fn stage_field(&mut self, assets: &UnitModelAssets) {
+        let field = self.build_field(assets);
+        self.targets = Some(field.targets.clone());
+        *self
+            .staged_field
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner()) = Some(StagedField {
+            assets: Arc::clone(&assets.field_identity),
+            field,
+        });
+    }
+
+    fn clear_staged_field(&mut self) {
+        *self
+            .staged_field
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+    }
+
     pub fn owned(&self) -> &BTreeSet<u32> {
         &self.owned
     }
@@ -1958,6 +2018,7 @@ impl PreparedModels {
         assets: &UnitModelAssets,
         units: &[viewer_foundation::map::unit_pose::UnitPlacement],
     ) {
+        self.clear_staged_field();
         for unit in units {
             let Some(name) = &unit.entity else {
                 continue;
@@ -2015,6 +2076,7 @@ impl PreparedModels {
         lines: Vec<crate::map::trade_routes::ConvoyLine>,
         defines: crate::map::trade_routes::ConvoyDefines,
     ) {
+        self.clear_staged_field();
         self.convoys = (!lines.is_empty()).then_some((lines, defines, std::sync::Mutex::new(None)));
     }
 
@@ -2106,19 +2168,35 @@ impl PreparedModels {
     /// history admits them ([`crate::map::unit_history`]); and the raid units
     /// where the hour placed them, which bypass it.
     pub fn field(&self, assets: &UnitModelAssets) -> Field {
-        let targets: Vec<_> = self
-            .placed
-            .iter()
-            .map(|(target, position)| {
-                let mut target = *target;
-                if let Some((at, heading)) = position.motion.as_ref().map(|m| m.position_heading())
-                {
-                    target.instance.position = at;
-                    target.instance.rotation = heading + MESH_FORWARD_OFFSET;
-                }
-                target
-            })
-            .collect();
+        if let Some(staged) = self
+            .staged_field
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            && Arc::ptr_eq(&staged.assets, &assets.field_identity)
+        {
+            return staged.field;
+        }
+        self.build_field(assets)
+    }
+
+    fn build_field(&self, assets: &UnitModelAssets) -> Field {
+        let targets = self.targets.clone().unwrap_or_else(|| {
+            self.placed
+                .iter()
+                .map(|(target, position)| {
+                    let mut target = *target;
+                    if let Some((at, heading)) =
+                        position.motion.as_ref().map(|m| m.position_heading())
+                    {
+                        target.instance.position = at;
+                        target.instance.rotation = heading + MESH_FORWARD_OFFSET;
+                    }
+                    target
+                })
+                .collect::<Vec<_>>()
+                .into()
+        });
         let raids = self.raid_units(assets, None);
         // The raid meshes are uploaded with the hour's, so they are resident.
         let mut models: Vec<_> = targets.iter().map(|t| (t.mesh, t.instance)).collect();

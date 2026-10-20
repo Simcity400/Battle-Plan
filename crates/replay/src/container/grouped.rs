@@ -404,6 +404,7 @@ fn advance_shadow(
     plain: &[u8],
     shadow: &mut Shadow,
 ) -> io::Result<()> {
+    let _cpu = crate::cpu::scope("decode_shadow", None);
     let status = plain.first().copied().unwrap_or(UNAVAILABLE);
     match status {
         UNCHANGED => return Ok(()),
@@ -2413,6 +2414,7 @@ impl Directory {
     }
 
     fn inflate(compressed: &[u8], raw: usize) -> io::Result<Vec<u8>> {
+        let _cpu = crate::cpu::scope("inflate", None);
         if compressed.get(..4) != Some(&[0x28, 0xb5, 0x2f, 0xfd]) {
             return Err(invalid_static("grouped section is not a zstd frame"));
         }
@@ -3150,6 +3152,7 @@ fn keyframe_update(
     raw: &[u8],
     budget: &Budget,
 ) -> io::Result<KeyframeUpdate> {
+    let _cpu = crate::cpu::scope("decode_keyframe", None);
     let format = replay.format;
     let change = &HISTORY[table.index()];
     let fields = change.fields(table, format.version());
@@ -3160,6 +3163,7 @@ fn keyframe_update(
     let mut plain = Vec::new();
     let mut shadow = Shadow::new();
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
+        let _cpu = crate::cpu::scope("decode_wire", None);
         let mut input = Decoder::new(plain);
         let update = decode_update(table, change, format, keyframe, &mut input)?;
         input.finish()?;
@@ -3275,6 +3279,7 @@ fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<
         None => ColumnReader::empty(fields),
     };
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
+        let _cpu = crate::cpu::scope("decode_wire", None);
         let mut input = Decoder::new(plain);
         let update = decode_update(table, change, format, keyframe, &mut input)?;
         input.finish()?;
@@ -3472,6 +3477,7 @@ fn anchored_keyframe(
     let version = format.version();
     let change: &LastChange = &HISTORY[table.index()];
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
+        let _cpu = crate::cpu::scope("decode_wire", None);
         let mut input = Decoder::new(plain);
         let update = decode_update(table, change, format, keyframe, &mut input)?;
         input.finish()?;

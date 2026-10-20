@@ -116,8 +116,10 @@ use {
 mod air_grid;
 mod air_missions;
 mod base_windows;
+mod preparation;
 /// How many base icon families the counters draw, one pool view each.
 pub use base_windows::View as BaseView;
+pub use preparation::Preparation;
 mod air_volunteers;
 mod bases;
 pub mod combat_markers;
@@ -2654,6 +2656,8 @@ fn coarse(inputs: &CounterInputs<'_>) -> bool {
 /// every country's row.
 #[derive(Clone)]
 pub struct HourTables {
+    /// One immutable preparation, including its content and recorded inputs.
+    epoch: Arc<()>,
     links: BTreeMap<u32, u32>,
     vision: Arc<Vision>,
     countries: Arc<Countries>,
@@ -2955,6 +2959,7 @@ pub fn hour_tables(
         .collect();
     let type_tints = type_tint::Index::read(type_tints, frame, &links, vision.ours());
     let mut tables = HourTables {
+        epoch: Arc::new(()),
         divisions: BTreeMap::new(),
         ports: PortTables::default(),
         naval: NavalTables::read(frame, &vision)?,
@@ -3046,6 +3051,27 @@ pub fn prepare_cached(
     frame: &DecodedFrame,
     tables: &HourTables,
 ) -> io::Result<PreparedCounters> {
+    prepare_with(inputs, frame, tables, None)
+}
+
+/// The retained view memo contains pure values only, never native window history.
+pub fn prepare_retained(
+    inputs: &CounterInputs<'_>,
+    frame: &DecodedFrame,
+    tables: &HourTables,
+    resources: u64,
+    retained: &mut Preparation,
+) -> io::Result<PreparedCounters> {
+    retained.bind(inputs, tables, resources);
+    prepare_with(inputs, frame, tables, Some(retained))
+}
+
+fn prepare_with(
+    inputs: &CounterInputs<'_>,
+    frame: &DecodedFrame,
+    tables: &HourTables,
+    mut retained: Option<&mut Preparation>,
+) -> io::Result<PreparedCounters> {
     let mut out = CounterFrame::default();
     let owner = |raw: u32| tables.links.get(&raw).copied();
 
@@ -3076,7 +3102,10 @@ pub fn prepare_cached(
 
     faction_pings(inputs, &tables.pings, &mut out);
     let span = viewer_foundation::profiling::span("pc_bases");
-    bases(inputs, frame, tables, &mut out)?;
+    match retained.as_deref_mut() {
+        Some(retained) => retained.bases(inputs, frame, tables, &mut out)?,
+        None => bases(inputs, frame, tables, &mut out)?,
+    }
     drop(span);
     let span = viewer_foundation::profiling::span("pc_air");
     if inputs.visibility.priorities == PriorityTable::StrategicAir {
@@ -3116,6 +3145,9 @@ pub fn prepare_cached(
             naval,
             &geography,
             &friendly,
+            retained
+                .as_deref_mut()
+                .map(|retained| &mut retained.columns),
             &mut out,
         )?),
         None => None,
@@ -3143,16 +3175,29 @@ pub fn prepare_cached(
     }
     out.report.grouping_gaps = grouping_gaps.into_inner();
     let span = viewer_foundation::profiling::span("pc_ports");
-    port_counters(
-        inputs,
-        frame,
-        &owner,
-        &land,
-        naval,
-        &tables.base_icons.naval,
-        &tables.ports,
-        &mut out,
-    )?;
+    if let Some(retained) = retained {
+        retained.ports(
+            inputs,
+            frame,
+            &owner,
+            &land,
+            naval,
+            &tables.base_icons.naval,
+            &tables.ports,
+            &mut out,
+        )?;
+    } else {
+        port_counters(
+            inputs,
+            frame,
+            &owner,
+            &land,
+            naval,
+            &tables.base_icons.naval,
+            &tables.ports,
+            &mut out,
+        )?;
+    }
     drop(span);
     land_combats(inputs, &tables.land_combats, &mut out)?;
     // Combat and result passes use their own presentation flags and do not read the

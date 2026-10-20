@@ -5639,3 +5639,5 @@ fn the_navy_mode_draws_armies_at_its_opacity_and_railway_guns_whole() {
     assert_eq!(land::plate_opacity(&navy, true), 1.0);
     assert_eq!(land::plate_opacity(&Visibility::POLITICAL, false), 1.0);
 }
+
+mod retained;

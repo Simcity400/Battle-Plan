@@ -182,9 +182,9 @@ impl Workers {
 
     /// [`Self::run`], with `beside` run on one pool thread, never the
     /// calling one, if a pool thread takes a turn: it is given whether the
-    /// tasks are all done and should return soon once they are. It runs
-    /// only while tasks run, so it takes no time of its own and may not run
-    /// at all: what it does must not change what the tasks compute.
+    /// tasks are all done and should return soon once they are. It may not
+    /// run at all: what it does must not change what the tasks compute. Returns
+    /// once every task and any started job beside them has finished.
     pub fn run_beside(
         &self,
         count: usize,
@@ -217,8 +217,8 @@ impl Workers {
     }
 }
 
-/// One caller-side preparation scope and its idle helper turns. Call [`Self::run`] once,
-/// after preparation. Dropping the scope without running releases every waiting helper.
+/// One caller-side preparation scope and its idle helper turns. Call [`Self::run`] or
+/// [`Self::run_beside`] once, after preparation. Dropping the scope without running releases every waiting helper.
 pub struct Admitted {
     capacity: usize,
     gate: Arc<Admission>,
@@ -249,11 +249,23 @@ impl Admitted {
     /// `maximum`, the scope's capacity, and one plus the helpers already waiting. A busy
     /// pool runs one task in place. Returns the count; zero work runs no task.
     pub fn run(&self, maximum: usize, task: &(dyn Fn(usize, usize) + Sync)) -> usize {
+        self.run_beside(maximum, task, None)
+    }
+
+    /// [`Self::run`], with a job beside the tasks under [`Workers::run_beside`]'s
+    /// contract. Even an admitted helper may not take a turn before the caller finishes,
+    /// so callers must handle a job that did not run.
+    pub fn run_beside(
+        &self,
+        maximum: usize,
+        task: &(dyn Fn(usize, usize) + Sync),
+        beside: Option<&Beside<'_>>,
+    ) -> usize {
         let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
         assert!(state.open, "admitted batch already run");
         let count = maximum.min(self.capacity).min(state.waiting + 1);
         let task = |index| task(index, count);
-        let turns = Turns::new(count, &task, None);
+        let turns = Turns::new(count, &task, beside);
         state.open = false;
         state.turns = Some(Arc::clone(&turns));
         drop(state);
@@ -632,6 +644,71 @@ mod tests {
     }
 
     #[test]
+    fn admitted_beside_runs_on_a_helper_and_joins_before_returning() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let workers = super::Workers::new(threads(3));
+        let count = workers.threads();
+        let caller = std::thread::current().id();
+        let beside = AtomicUsize::new(0);
+        let barrier = std::sync::Barrier::new(count);
+        workers.with_admitted(count, |admitted| {
+            admitted.wait_for_helpers(count - 1);
+            assert_eq!(
+                admitted.run_beside(
+                    count,
+                    &|_, actual| {
+                        assert_eq!(actual, count);
+                        barrier.wait();
+                    },
+                    Some(&|_: &dyn Fn() -> bool| {
+                        assert_ne!(std::thread::current().id(), caller);
+                        beside.fetch_add(1, Ordering::Relaxed);
+                    }),
+                ),
+                count
+            );
+        });
+        assert_eq!(beside.into_inner(), usize::from(count > 1));
+        for maximum in [0, 1, 7] {
+            let seen = AtomicUsize::new(0);
+            super::Workers::default().with_admitted(maximum, |admitted| {
+                assert_eq!(
+                    admitted.run_beside(
+                        maximum,
+                        &|_, _| {
+                            seen.fetch_add(1, Ordering::Relaxed);
+                        },
+                        Some(&|_: &dyn Fn() -> bool| panic!("no admitted helper")),
+                    ),
+                    maximum.min(1)
+                );
+            });
+            assert_eq!(seen.into_inner(), maximum.min(1));
+        }
+        if count > 1 {
+            let entered = std::sync::Barrier::new(2);
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                workers.with_admitted(count, |admitted| {
+                    admitted.wait_for_helpers(count - 1);
+                    admitted.run_beside(
+                        count,
+                        &|index, _| {
+                            if index == 0 {
+                                entered.wait();
+                            }
+                        },
+                        Some(&|_: &dyn Fn() -> bool| {
+                            entered.wait();
+                            panic!("admitted beside");
+                        }),
+                    );
+                });
+            }));
+            assert!(caught.is_err());
+        }
+    }
+
+    #[test]
     fn accepted_jobs_that_start_after_admission_returns_do_not_call_the_borrowed_task() {
         #[derive(Default)]
         struct Queued(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
@@ -651,9 +728,11 @@ mod tests {
         let workers = super::Workers::new(pool.clone());
         let seen = Mutex::new(Vec::new());
         let count = workers.with_admitted(workers.threads(), |admitted| {
-            admitted.run(workers.threads(), &|index, _| {
-                seen.lock().unwrap().push(index)
-            })
+            admitted.run_beside(
+                workers.threads(),
+                &|index, _| seen.lock().unwrap().push(index),
+                Some(&|_: &dyn Fn() -> bool| panic!("late helper called beside")),
+            )
         });
         assert_eq!(count, 1);
         assert_eq!(seen.lock().unwrap().len(), count);

@@ -237,6 +237,7 @@ impl Default for History {
     }
 }
 
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct ArcState {
     province: u32,
     route: Vec<u32>,
@@ -331,6 +332,25 @@ impl ArcState {
 }
 
 impl History {
+    #[cfg(test)]
+    pub(super) fn assert_same_state(&self, other: &Self) {
+        assert_eq!(self.candidates, other.candidates);
+        assert_eq!(self.formations, other.formations);
+        assert_eq!(self.arcs, other.arcs);
+        assert_eq!(self.selected, other.selected);
+        assert_eq!(self.representatives, other.representatives);
+        assert_eq!(self.combat, other.combat);
+    }
+
+    pub(super) fn has_candidates(&self, province: u32) -> bool {
+        self.candidates.get(&province).is_some_and(|c| !c.is_empty())
+    }
+
+    /// An empty representative walk leaves the shared combat scratch clear.
+    pub(super) fn clear_combat_selection(&mut self) {
+        self.combat = None;
+    }
+
     /// Viewer selection is read on each frame, independent of hourly sources.
     pub(super) fn set_selection(&mut self, selected: &BTreeSet<Unit>) {
         if self.selected != *selected {
@@ -561,6 +581,21 @@ mod tests {
             .representatives(9206, frame(delta))
             .map(|f| f.identity)
             .collect()
+    }
+
+    #[test]
+    fn empty_representative_shortcut_keeps_the_full_walk_scratch() {
+        let make = || History {
+            representatives: [27; 0x26],
+            combat: Some((17, 29)),
+            ..Default::default()
+        };
+        let mut skipped = make();
+        let mut walked = make();
+        assert!(!skipped.has_candidates(42));
+        skipped.clear_combat_selection();
+        assert_eq!(walked.representatives(42, frame(0.25)).count(), 0);
+        skipped.assert_same_state(&walked);
     }
 
     #[test]

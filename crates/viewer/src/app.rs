@@ -117,6 +117,24 @@ fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
     }
 }
 
+/// Native animation redraws the retained overlay, without rebuilding its hour/camera inputs.
+#[cfg(test)]
+#[test]
+fn icon_animation_invalidates_only_the_drawn_overlay() {
+    let source = include_str!("app.rs");
+    let running = source
+        .split("\n            if self.counter_view.presentation.take_running() {")
+        .nth(1)
+        .unwrap()
+        .split("\n            }")
+        .next()
+        .unwrap();
+    assert!(running.contains("self.overlay_fraction = None;"));
+    assert!(!running.contains("self.overlay_at"));
+    // Every changing fraction still presents the native windows, including their clocks.
+    assert!(source.contains("\n            if self.overlay_fraction != Some(document.hour_fraction) {"));
+}
+
 #[cfg(test)]
 mod fly_render_tests;
 #[cfg(test)]
@@ -3949,12 +3967,16 @@ impl Viewer {
         self.fade = Some(fade);
         laps.lap("names_fade");
         let now = document.hour().map_err(|error| error.to_string())?;
+        let vision = now
+            .vision_from_overlay(
+                &perspective,
+                self.overlay_tables.as_ref().map(|(_, _, _, tables)| tables),
+            )
+            .map_err(|error| error.to_string())?;
         self.unit_selection.observe(
             document.playback.branch(),
             &perspective.country,
-            now.vision(&perspective)
-                .map_err(|error| error.to_string())?
-                .ours(),
+            vision.ours(),
             now.frame,
         );
         self.counter_view.selected = Arc::clone(self.unit_selection.units());
@@ -3962,9 +3984,7 @@ impl Viewer {
         self.air_selection.observe(
             document.playback.branch(),
             &perspective.country,
-            now.vision(&perspective)
-                .map_err(|error| error.to_string())?
-                .ours(),
+            vision.ours(),
             now.frame,
         );
         self.counter_view.air_selected = Arc::clone(self.air_selection.wings());
@@ -3973,9 +3993,7 @@ impl Viewer {
         self.fleet_selection.observe(
             document.playback.branch(),
             &perspective.country,
-            now.vision(&perspective)
-                .map_err(|error| error.to_string())?
-                .ours(),
+            vision.ours(),
             now.frame,
         );
         self.counter_view.fleets_selected = Arc::clone(self.fleet_selection.fleets());
@@ -4215,7 +4233,6 @@ impl Viewer {
                 scene.advance_provinces(camera, pixels);
             }
             if self.overlay_fraction != Some(document.hour_fraction) {
-                // Reuse the last fraction's batch and report during playback.
                 let prepared = self.prepared_overlay.as_mut().expect("prepared above");
                 prepared
                     .draw_into(
@@ -4235,10 +4252,10 @@ impl Viewer {
                 }
                 self.overlay_fraction = Some(document.hour_fraction);
             }
-            // A fading map-icon window is laid out on the next frame; native ticks every
-            // window each frame.
+            // Native windows keep ticking and drawing while active. Their clocks do not
+            // change the hour/camera preparation, including the settled counter positions.
             if self.counter_view.presentation.take_running() {
-                self.overlay_at = None;
+                self.overlay_fraction = None;
                 ui.ctx().request_repaint();
             }
             // A free eye shows the laid-out icons standing in the world; this frame's hits and

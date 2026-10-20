@@ -698,6 +698,8 @@ the frames preceding the checkpoint cursor. Selected table decoding uses half
 the available processors, at least one, with the existing below-normal worker
 priority. Consecutive steps mutate the native decoder in place. A step needing a
 source load reads the rest of that accepted block once; later steps retain it.
+Cancellation walks can apply native state without exporting an endpoint
+snapshot, while keeping passed-hour visitors and validation unchanged.
 Only one parsed source block remains between requests. Source admission precedes
 passed-hour callbacks, and reads never extend beyond accepted branch progress.
 No recording format, directory, index or setting is added.

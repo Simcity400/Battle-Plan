@@ -98,7 +98,7 @@ fn prepared(hour: Hour, health: i128, landmark: bool) -> PreparedBuildings {
         hour,
         shrink_distance: 180.0,
         popup_speed: 5.0,
-        slots: vec![PreparedSlot {
+        slots: Arc::from([PreparedSlot {
             id: 0,
             drawn_at_distance: Some(landmark),
             entity: Some(PreparedEntity {
@@ -123,7 +123,7 @@ fn prepared(hour: Hour, health: i128, landmark: bool) -> PreparedBuildings {
                     ..Default::default()
                 },
             }),
-        }],
+        }]),
         groups: Arc::from([group([0.0, 0.0, 2.0, 2.0], vec![0])]),
         city_damage: Default::default(),
     }
@@ -132,18 +132,18 @@ fn prepared(hour: Hour, health: i128, landmark: bool) -> PreparedBuildings {
 fn budget_buildings(provinces: &[(u32, usize)]) -> BuildingHistory {
     let mut input = prepared(10, 10_000_000, false);
     let template = input.slots[0].clone();
-    input.slots.clear();
+    let mut slots = Vec::new();
     let mut groups = Vec::new();
     for &(province, count) in provinces {
         let mut ids = Vec::new();
         for _ in 0..count {
             let mut slot = template.clone();
-            slot.id = input.slots.len() as u32;
+            slot.id = slots.len() as u32;
             let healthy = &mut slot.entity.as_mut().unwrap().healthy;
             healthy.mesh = 100 + slot.id as usize;
             healthy.definition = healthy.mesh;
             ids.push(slot.id);
-            input.slots.push(slot);
+            slots.push(slot);
         }
         groups.push(ProvinceSlots {
             province,
@@ -151,6 +151,7 @@ fn budget_buildings(provinces: &[(u32, usize)]) -> BuildingHistory {
             slots: ids,
         });
     }
+    input.slots = slots.into();
     input.groups = groups.into();
     let mut history = BuildingHistory::default();
     history.set(input, false);
@@ -351,18 +352,46 @@ fn buildings_precede_hulls_and_held_hulls_keep_the_growing_root() {
 }
 
 #[test]
+fn installed_building_snapshots_share_immutable_slots() {
+    let input = prepared(10, 10_000_000, false);
+    let mut history = BuildingHistory::default();
+    history.set(input.clone(), false);
+    assert!(Arc::ptr_eq(
+        &input.city_damage,
+        &history.prepared.as_ref().unwrap().city_damage
+    ));
+    assert!(Arc::ptr_eq(
+        &input.slots,
+        &history.prepared.as_ref().unwrap().slots
+    ));
+    let mut next = input.clone();
+    next.hour += 1;
+    Arc::make_mut(&mut next.slots)[0].entity = None;
+    assert!(input.slots[0].entity.is_some());
+    assert!(history.prepared.as_ref().unwrap().slots[0].entity.is_some());
+}
+
+#[test]
 fn skipped_hours_carry_selector_without_creating_outside_a_frame() {
     let mut buildings = budget_buildings(&[(10, 1)]);
     let mut units = budget_units(Vec::new(), false);
     mixed_frame(&mut units, &mut buildings, 1, 0.0);
     let mut skipped = buildings.prepared.clone().unwrap();
     skipped.hour += 1;
-    skipped.slots[0].entity.as_mut().unwrap().destroyed = true;
+    Arc::make_mut(&mut skipped.slots)[0]
+        .entity
+        .as_mut()
+        .unwrap()
+        .destroyed = true;
     buildings.advance(&skipped);
     assert!(buildings.collect(None, 0.0).is_empty());
     let mut current = skipped;
     current.hour += 1;
-    current.slots[0].entity.as_mut().unwrap().uncertain = true;
+    Arc::make_mut(&mut current.slots)[0]
+        .entity
+        .as_mut()
+        .unwrap()
+        .uncertain = true;
     buildings.set(current, true);
     assert!(mixed_frame(&mut units, &mut buildings, 0, 0.1).is_empty());
     assert_eq!(mixed_frame(&mut units, &mut buildings, 1, 0.2), [2]);
@@ -371,7 +400,7 @@ fn skipped_hours_carry_selector_without_creating_outside_a_frame() {
 #[test]
 fn authored_growth_exemption_still_spends_one_creation_slot() {
     let mut buildings = budget_buildings(&[(10, 2)]);
-    for slot in &mut buildings.prepared.as_mut().unwrap().slots {
+    for slot in Arc::make_mut(&mut buildings.prepared.as_mut().unwrap().slots) {
         slot.entity.as_mut().unwrap().disable_grow_animation = true;
     }
     let mut units = budget_units(Vec::new(), false);
@@ -395,7 +424,7 @@ fn damaged_pose_switch_does_not_consume_an_entity_creation() {
     let generation = buildings.slots[&0].generation;
     let mut next = buildings.prepared.clone().unwrap();
     next.hour += 1;
-    let entity = next.slots[0].entity.as_mut().unwrap();
+    let entity = Arc::make_mut(&mut next.slots)[0].entity.as_mut().unwrap();
     entity.healthy.mesh = 200; // Renderer-only posed copy of the same definition.
     entity.damaged = true;
     buildings.set(next, true);
@@ -412,7 +441,12 @@ fn selector_change_recreates_even_when_entity_definition_is_unchanged() {
     let generation = buildings.slots[&0].generation;
     let mut next = buildings.prepared.clone().unwrap();
     next.hour += 1;
-    next.slots[0].entity.as_mut().unwrap().healthy.variant = 1;
+    Arc::make_mut(&mut next.slots)[0]
+        .entity
+        .as_mut()
+        .unwrap()
+        .healthy
+        .variant = 1;
     buildings.set(next, true);
     assert!(mixed_frame(&mut units, &mut buildings, 0, 0.1).is_empty());
     assert_eq!(mixed_frame(&mut units, &mut buildings, 1, 0.2), [100]);
@@ -426,8 +460,18 @@ fn exhausted_building_replacement_is_empty_and_retries() {
     assert_eq!(mixed_frame(&mut units, &mut buildings, 1, 0.0), [100]);
     let mut next = buildings.prepared.clone().unwrap();
     next.hour += 1;
-    next.slots[0].entity.as_mut().unwrap().healthy.mesh = 200;
-    next.slots[0].entity.as_mut().unwrap().healthy.definition = 200;
+    Arc::make_mut(&mut next.slots)[0]
+        .entity
+        .as_mut()
+        .unwrap()
+        .healthy
+        .mesh = 200;
+    Arc::make_mut(&mut next.slots)[0]
+        .entity
+        .as_mut()
+        .unwrap()
+        .healthy
+        .definition = 200;
     buildings.set(next, true);
     assert!(mixed_frame(&mut units, &mut buildings, 0, 0.1).is_empty());
     assert_eq!(mixed_frame(&mut units, &mut buildings, 1, 0.2), [200]);
@@ -462,7 +506,7 @@ fn destruction_hysteresis_survives_hide_and_resets_on_seek() {
     history.set(prepared(10, 6_000_000, false), true);
     assert_eq!(at(&mut history, 50.0, 0.0)[0].0, 2);
     let mut hidden = prepared(11, 9_000_000, false);
-    hidden.slots[0].entity = None;
+    Arc::make_mut(&mut hidden.slots)[0].entity = None;
     assert!(!history.set(hidden, true));
     assert!(at(&mut history, 50.0, 1.0).is_empty());
     history.set(prepared(12, 7_000_000, false), true);
@@ -594,7 +638,7 @@ fn only_provinces_in_view_are_created_and_recreation_restarts_the_clock() {
     let mut other = input.slots[0].clone();
     other.id = 1;
     other.entity.as_mut().unwrap().instance.position = [2001.0, 0.0, 1001.0];
-    input.slots.push(other);
+    input.slots = input.slots.iter().cloned().chain([other]).collect();
     input.groups = Arc::from([
         group([0.0, 0.0, 2.0, 2.0], vec![0]),
         group([2000.0, 1000.0, 2002.0, 1002.0], vec![1]),
@@ -619,7 +663,12 @@ fn only_provinces_in_view_are_created_and_recreation_restarts_the_clock() {
 
     let mut history = BuildingHistory::default();
     let mut same_mesh = prepared(10, 0, false);
-    same_mesh.slots[0].entity.as_mut().unwrap().ruined.mesh = 1;
+    Arc::make_mut(&mut same_mesh.slots)[0]
+        .entity
+        .as_mut()
+        .unwrap()
+        .ruined
+        .mesh = 1;
     history.set(same_mesh, true);
     let before = at(&mut history, 50.0, 0.0)[0].1.animation_epoch;
     history.set(prepared(11, 10_000_000, false), true);
@@ -1374,8 +1423,12 @@ fn settled_groups_match_full_reapplication_through_camera_hour_and_budget_change
             for history in [&mut cached, &mut reference] {
                 let mut next = history.prepared.as_ref().unwrap().clone();
                 next.hour += 1;
-                next.slots[1].entity.as_mut().unwrap().damaged = true;
-                next.slots[3].entity = None;
+                Arc::make_mut(&mut next.slots)[1]
+                    .entity
+                    .as_mut()
+                    .unwrap()
+                    .damaged = true;
+                Arc::make_mut(&mut next.slots)[3].entity = None;
                 history.set(next, true);
             }
         }

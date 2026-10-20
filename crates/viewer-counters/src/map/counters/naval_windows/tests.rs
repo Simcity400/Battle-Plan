@@ -1326,6 +1326,25 @@ fn a_refused_update_makes_its_known_writes_and_waits_only_for_its_unknown_part()
     assert_eq!((why, supply), (None, None));
 }
 
+/// A partial-intel update keeps the authored supply glyph on a fresh pooled item,
+/// but keeps it hidden after a full-supply update of that same item.
+#[test]
+fn partial_intel_supply_retains_fresh_or_last_written_visibility() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use viewer_foundation::map::counter_inputs::NavalSupply;
+    let mut shipped = Synthetic::new();
+    let settings = CounterSettings::default();
+    let partial = supply_flotilla(NavalSupply::Retain, 50);
+    let (why, supply, _) = shipped.item(&partial, settings);
+    assert_eq!((why, supply), (None, Some(0)));
+    let full = supply_flotilla(NavalSupply::Write(100_000), 255);
+    let (why, supply, _) = shipped.item(&full, settings);
+    assert_eq!((why, supply), (None, None));
+    let (why, supply, _) = shipped.item(&partial, settings);
+    assert_eq!((why, supply), (None, None));
+}
+
 /// A hull the recording cannot decide (a member's `ShipCounterInputs` unrecorded)
 /// establishes none of the retaining returns. A port item or at-sea counter is
 /// withheld and counted under its cause ([`gui_windows::TYPE_SPRITE`]), while its

@@ -33,6 +33,7 @@ pub struct Playback {
     branch: BranchId,
     hour: Hour,
     current: Current,
+    materialized: bool,
     cache: Option<CachedBlock>,
     /// Reads blocks ahead of this playback and frees passed ones elsewhere;
     /// without one, blocks are read and freed on the calling thread.
@@ -69,6 +70,7 @@ impl Playback {
             branch,
             hour,
             current: gap(branch, hour, "hour has not been decoded".into()),
+            materialized: false,
             cache: None,
             reader: None,
             checkpoints: None,
@@ -188,6 +190,7 @@ impl Playback {
     pub fn present(&mut self, branch: BranchId, hour: Hour, current: Current) -> Current {
         self.branch = branch;
         self.hour = hour;
+        self.materialized = true;
         std::mem::replace(&mut self.current, current)
     }
 
@@ -271,20 +274,49 @@ impl Playback {
         &mut self,
         branch: BranchId,
         hour: Hour,
+        passed: impl FnMut(&DecodedFrame),
+    ) -> io::Result<()> {
+        self.seek_to(branch, hour, passed, true)?;
+        self.materialized = true;
+        Ok(())
+    }
+
+    /// Applies a cancellation walk's endpoint without keeping an owned output
+    /// alive across the next native update. Earlier passed hours stay borrowed.
+    pub fn advance_without_output(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
+        self.seek_to(branch, hour, |_| {}, false)?;
+        self.materialized = false;
+        Ok(())
+    }
+
+    fn seek_to(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
         mut passed: impl FnMut(&DecodedFrame),
+        materialize: bool,
     ) -> io::Result<()> {
         if !self.replay.branches.iter().any(|entry| entry.id == branch) {
             return Err(unknown_branch(branch));
         }
         self.refresh_checkpoints(branch, hour);
-        if self.checkpoints.is_some() && self.branch == branch && self.hour < hour {
+        let cached_output =
+            self.branch == branch && self.hour == hour && self.cache.is_some() && self.materialized;
+        if !cached_output || !materialize {
             // This decode lane's old output is no longer needed. Displayed
             // hours retained by other owners stay immutable; without one the
             // prepared decoder can apply deltas in its existing row storage.
             self.current = gap(branch, hour, "hour has not been decoded".into());
+            self.materialized = false;
         }
         if let Some(checkpoints) = &mut self.checkpoints {
-            let prepared = if self.branch == branch && self.hour < hour {
+            let prepared = if !materialize {
+                checkpoints
+                    .advance_without_output(branch, hour, &mut passed)
+                    .map(|handled| {
+                        handled.then(|| gap(branch, hour, "hour has not been decoded".into()))
+                    })
+            } else if self.branch == branch && self.hour < hour {
                 checkpoints.advance(branch, hour, &mut passed)
             } else {
                 checkpoints.seek_with(branch, hour, &mut passed)
@@ -306,7 +338,7 @@ impl Playback {
                 }
             }
         }
-        if self.branch == branch && self.hour == hour && self.cache.is_some() {
+        if cached_output && materialize {
             return Ok(());
         }
         self.branch = branch;
@@ -357,7 +389,7 @@ impl Playback {
         }
 
         let cache = self.cache.as_mut().expect("target block was cached");
-        if cache.applied_hour.is_some_and(|applied| hour <= applied)
+        if cache.applied_hour.is_some_and(|applied| hour < applied)
             || cache
                 .failure
                 .as_ref()
@@ -374,6 +406,16 @@ impl Playback {
         };
         if let Some((_, reason)) = &cache.failure {
             self.current = gap(branch, hour, reason.clone());
+            return Ok(());
+        }
+        if let Some(decoded) = cache
+            .decoder
+            .current()
+            .filter(|decoded| decoded.hour == hour)
+        {
+            if materialize {
+                self.current = Current::Frame(Arc::new(decoded.clone()));
+            }
             return Ok(());
         }
         while let Some(frame) = frames.get(cache.next).filter(|frame| frame.hour <= hour) {
@@ -403,7 +445,9 @@ impl Playback {
             if frame.hour == hour {
                 // The decoder shares every table this hour left unchanged, so
                 // the copy is one reference per table, not the rows.
-                self.current = Current::Frame(Arc::new(decoded.clone()));
+                if materialize {
+                    self.current = Current::Frame(Arc::new(decoded.clone()));
+                }
                 return Ok(());
             }
             passed(decoded);
@@ -1071,6 +1115,50 @@ pub(crate) mod tests {
         assert!(playback.frame().is_none());
         assert!(!playback.step().unwrap());
     }
+
+    #[test]
+    fn cancellation_walks_do_not_hold_endpoints_and_can_export_the_same_hour_afterwards() {
+        let replay = Arc::new(fixture());
+        let mut playback = Playback::unloaded(Arc::clone(&replay)).unwrap();
+        playback.advance_without_output(1, 104).unwrap();
+        assert!(!playback.materialized);
+        assert!(matches!(playback.current(), Current::Gap { .. }));
+        let before = playback
+            .cache
+            .as_ref()
+            .unwrap()
+            .decoder
+            .current()
+            .unwrap()
+            .complete::<tables::Provinces>()
+            .unwrap()
+            .as_ptr();
+        playback.advance_without_output(1, 105).unwrap();
+        let after = playback
+            .cache
+            .as_ref()
+            .unwrap()
+            .decoder
+            .current()
+            .unwrap()
+            .complete::<tables::Provinces>()
+            .unwrap()
+            .as_ptr();
+        assert_eq!(
+            before, after,
+            "the private row allocation survives the next native edit"
+        );
+        assert_seek_matches_shared(&mut playback, 1, 105);
+        let held = playback.current().clone();
+        for hour in [820, 102, 104, 100] {
+            playback.advance_without_output(1, hour).unwrap();
+            assert_seek_matches_shared(&mut playback, 1, hour);
+        }
+        let Current::Frame(held) = held else {
+            panic!("held frame")
+        };
+        assert_eq!(held.as_ref(), &source(1, 105));
+    }
 }
 
 #[cfg(test)]
@@ -1108,3 +1196,6 @@ mod damaged_recording_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod measurement;

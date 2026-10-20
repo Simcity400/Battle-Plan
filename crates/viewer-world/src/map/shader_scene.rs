@@ -179,56 +179,162 @@ impl State {
     pub fn prepare(
         &mut self,
         arena: &gpu::Arena,
-        label: &str,
+        label: impl std::fmt::Display,
         template: &gpu::Pass,
         vertices: u32,
         instances: u32,
     ) -> io::Result<stream::NativeSubmission> {
-        enum Locked<'a> {
-            Complete(&'a [u8], [Range<u64>; 1]),
-            Partial(MutexGuard<'a, Partial>),
-        }
-        let locked: Vec<_> = self
-            .vertices
-            .iter()
-            .map(|(slot, buffer)| {
-                let bytes = match &buffer.bytes {
-                    Bytes::Complete(bytes) => Locked::Complete(
-                        bytes,
-                        [Range {
-                            start: 0,
-                            end: bytes.len() as u64,
-                        }],
-                    ),
-                    Bytes::Partial(allocation) => Locked::Partial(
-                        allocation.lock().unwrap_or_else(|error| error.into_inner()),
-                    ),
-                };
-                (*slot, buffer.offset, bytes)
-            })
-            .collect();
-        let buffers = locked
-            .iter()
-            .map(|(slot, offset, bytes)| {
-                let buffer = match bytes {
-                    Locked::Complete(bytes, known) => NativeBuffer {
-                        bytes,
-                        size: bytes.len() as u64,
-                        offset: *offset,
-                        known,
-                    },
-                    Locked::Partial(allocation) => NativeBuffer {
-                        bytes: &allocation.bytes,
-                        size: allocation.size,
-                        offset: *offset,
-                        known: &allocation.known,
-                    },
-                };
-                (*slot, Some(buffer))
-            })
-            .collect();
-        self.stream
-            .prepare_native_pass(arena, label, template, &buffers, vertices, instances)
-            .map_err(io::Error::other)
+        self.prepare_with(arena, label, template, vertices, instances, None, None)
     }
+
+    /// Prepared geometry and a preceding pass are scoped to the caller's current view.
+    /// Native handles still bind and publish normally, even when uploads are reused.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with(
+        &mut self,
+        arena: &gpu::Arena,
+        label: impl std::fmt::Display,
+        template: &gpu::Pass,
+        vertices: u32,
+        instances: u32,
+        prepared: Option<stream::NativePrepared<'_>>,
+        previous: Option<&stream::PassSubmission>,
+    ) -> io::Result<stream::NativeSubmission> {
+        if prepared.is_some() {
+            return self
+                .stream
+                .prepare_native_pass_with(
+                    arena,
+                    label,
+                    template,
+                    &BTreeMap::new(),
+                    vertices,
+                    instances,
+                    prepared,
+                    previous,
+                )
+                .map_err(io::Error::other);
+        }
+        let stream = &mut self.stream;
+        with_buffers(&self.vertices, |buffers| {
+            stream
+                .prepare_native_pass_with(
+                    arena, label, template, buffers, vertices, instances, None, previous,
+                )
+                .map_err(io::Error::other)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn packed_bytes(
+        &self,
+        vertices: u32,
+        instances: u32,
+    ) -> io::Result<shader_pipeline::vertices::PackedBuffers> {
+        with_buffers(&self.vertices, |buffers| {
+            shader_pipeline::vertices::pack_native(
+                &self.stream.vertex_layouts()?,
+                buffers,
+                vertices,
+                instances,
+            )
+        })
+        .map_err(io::Error::other)
+    }
+
+    /// Freeze initialized ranges as well as bindings, before a later NO_OVERWRITE append.
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> Self {
+        let mut snapshot = Self::default();
+        snapshot.inherit(self);
+        for buffer in snapshot.vertices.values_mut() {
+            if let Bytes::Partial(allocation) = &buffer.bytes {
+                let copy = {
+                    let allocation = allocation.lock().unwrap_or_else(|e| e.into_inner());
+                    Partial {
+                        bytes: allocation.bytes.clone(),
+                        size: allocation.size,
+                        known: allocation.known.clone(),
+                    }
+                };
+                buffer.bytes = Bytes::Partial(Arc::new(Mutex::new(copy)));
+            }
+        }
+        snapshot
+    }
+
+    #[cfg(test)]
+    pub(crate) fn same_bindings(&self, other: &Self) -> bool {
+        self.stream.same_bindings(&other.stream)
+            && self.vertices.len() == other.vertices.len()
+            && self.vertices.iter().all(|(slot, a)| {
+                let Some(b) = other.vertices.get(slot) else {
+                    return false;
+                };
+                if a.offset != b.offset {
+                    return false;
+                }
+                match (&a.bytes, &b.bytes) {
+                    (Bytes::Complete(a), Bytes::Complete(b)) => a == b,
+                    (Bytes::Partial(a), Bytes::Partial(b)) => {
+                        if Arc::ptr_eq(a, b) {
+                            return true;
+                        }
+                        let a = a.lock().unwrap_or_else(|e| e.into_inner());
+                        let b = b.lock().unwrap_or_else(|e| e.into_inner());
+                        a.size == b.size && a.bytes == b.bytes && a.known == b.known
+                    }
+                    _ => false,
+                }
+            })
+    }
+}
+
+fn with_buffers<R>(
+    vertices: &BTreeMap<u32, Buffer>,
+    work: impl FnOnce(&BTreeMap<u32, Option<NativeBuffer<'_>>>) -> R,
+) -> R {
+    enum Locked<'a> {
+        Complete(&'a [u8], [Range<u64>; 1]),
+        Partial(MutexGuard<'a, Partial>),
+    }
+    let locked: Vec<_> = vertices
+        .iter()
+        .map(|(slot, buffer)| {
+            let bytes = match &buffer.bytes {
+                Bytes::Complete(bytes) => Locked::Complete(
+                    bytes,
+                    [Range {
+                        start: 0,
+                        end: bytes.len() as u64,
+                    }],
+                ),
+                Bytes::Partial(allocation) => {
+                    Locked::Partial(allocation.lock().unwrap_or_else(|error| error.into_inner()))
+                }
+            };
+            (*slot, buffer.offset, bytes)
+        })
+        .collect();
+    let buffers = locked
+        .iter()
+        .map(|(slot, offset, bytes)| {
+            let buffer = match bytes {
+                Locked::Complete(bytes, known) => NativeBuffer {
+                    bytes,
+                    size: bytes.len() as u64,
+                    offset: *offset,
+                    known,
+                },
+                Locked::Partial(allocation) => NativeBuffer {
+                    bytes: &allocation.bytes,
+                    size: allocation.size,
+                    offset: *offset,
+                    known: &allocation.known,
+                },
+            };
+            (*slot, Some(buffer))
+        })
+        .collect();
+    work(&buffers)
 }

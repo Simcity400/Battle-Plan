@@ -208,6 +208,8 @@ impl Views {
 pub struct Presentation {
     /// Map-icon window histories, touched by presentation, never by a prepared hour.
     pub(crate) windows: Mutex<Views>,
+    /// Camera-independent counter programs, separate from native lifecycle state.
+    pub(crate) counters: Mutex<viewer_counters::map::counters::Preparation>,
     /// The view's province schedule and dirty bits, which its scene advances each frame and its
     /// map icons read ([`crate::map::province_schedule`]).
     schedule: Shared,
@@ -220,8 +222,8 @@ impl Presentation {
     }
 
     /// Whether a map-icon window changed on its own at the last presented frame, cleared: a view
-    /// that shows frames lays its overlay out again on the next one while one does, as the game
-    /// ticks every window each frame.
+    /// draws its retained overlay again on the next one while one does, as the game ticks every
+    /// window each frame. The hour/camera preparation does not read those clocks.
     pub fn take_running(&self) -> bool {
         self.windows
             .lock()
@@ -305,21 +307,22 @@ pub(crate) fn join<A: Send, B: Send>(
     right: impl FnOnce() -> B + Send,
 ) -> (A, B) {
     if workers.threads() == 1 {
-        return (left(), right());
+        (left(), right())
+    } else {
+        let left = Mutex::new(Some(left));
+        let right = Mutex::new(Some(right));
+        let a = Mutex::new(None);
+        let b = Mutex::new(None);
+        workers.run(2, &|at| match at {
+            0 => *a.lock().unwrap() = Some(left.lock().unwrap().take().unwrap()()),
+            1 => *b.lock().unwrap() = Some(right.lock().unwrap().take().unwrap()()),
+            _ => unreachable!(),
+        });
+        (
+            a.into_inner().unwrap().unwrap(),
+            b.into_inner().unwrap().unwrap(),
+        )
     }
-    let left = Mutex::new(Some(left));
-    let right = Mutex::new(Some(right));
-    let a = Mutex::new(None);
-    let b = Mutex::new(None);
-    workers.run(2, &|at| match at {
-        0 => *a.lock().unwrap() = Some(left.lock().unwrap().take().unwrap()()),
-        1 => *b.lock().unwrap() = Some(right.lock().unwrap().take().unwrap()()),
-        _ => unreachable!(),
-    });
-    (
-        a.into_inner().unwrap().unwrap(),
-        b.into_inner().unwrap().unwrap(),
-    )
 }
 
 /// Stateful resource requests retain the preceding owner's allocation order, without

@@ -45,6 +45,8 @@ use {
 
 pub mod naval;
 pub mod naval_combat;
+#[cfg(test)]
+mod empty_tests;
 pub use naval::Sources as NavalSources;
 
 /// The model path an entity follows.
@@ -89,7 +91,7 @@ impl Target {
 #[derive(Clone, Default)]
 pub struct Field {
     pub models: ModelField,
-    pub targets: Vec<Target>,
+    pub targets: Targets,
     /// The raid arrows' units where the hour placed them ([`History::set_raids`]).
     pub raids: Vec<(usize, ModelInstance)>,
     pub naval: NavalSources,
@@ -98,7 +100,59 @@ pub struct Field {
 /// One slot's targets, by part.
 type Parts = BTreeMap<u32, Target>;
 
+/// Immutable hourly targets, grouped on the builder before a view installs them.
+/// Iteration retains placement order; duplicate slot parts still use the last target.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Targets(Arc<PreparedTargets>);
+
+#[derive(Debug, Default, PartialEq)]
+struct PreparedTargets {
+    placed: Vec<Target>,
+    provinces: BTreeMap<u32, ProvinceTargets>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct ProvinceTargets {
+    slots: BTreeMap<Slot, Parts>,
+    lands: Arc<[(u32, Slot)]>,
+}
+
+impl From<Vec<Target>> for Targets {
+    fn from(placed: Vec<Target>) -> Self {
+        let mut provinces = BTreeMap::<u32, ProvinceTargets>::new();
+        for &target in &placed {
+            provinces
+                .entry(target.province)
+                .or_default()
+                .slots
+                .entry(target.slot())
+                .or_default()
+                .insert(target.part, target);
+        }
+        for province in provinces.values_mut() {
+            let mut lands: Vec<_> = province
+                .slots
+                .iter()
+                .filter(|(slot, _)| slot.0 == Kind::Land)
+                .map(|(slot, parts)| (parts.first_key_value().unwrap().1.order, *slot))
+                .collect();
+            lands.sort_unstable();
+            province.lands = lands.into();
+        }
+        Self(Arc::new(PreparedTargets { placed, provinces }))
+    }
+}
+
+impl std::ops::Deref for Targets {
+    type Target = [Target];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.placed
+    }
+}
+
 /// One figure, or one hull attached under a formation's root.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct Part {
     target: Target,
     epoch: u32,
@@ -123,6 +177,7 @@ impl Part {
 
 /// A slot's entity. Its popup scale belongs to the slot, so the
 /// hulls of a formation share their root's.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct Entity {
     kind: Kind,
     scale: f32,
@@ -184,6 +239,7 @@ struct Frame {
 
 /// One province's unit graphics.
 #[derive(Default)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct Province {
     /// The land and ship show bits of its last update.
     shown: [bool; 2],
@@ -191,7 +247,7 @@ struct Province {
     arrows: bool,
     entities: BTreeMap<Slot, Entity>,
     /// Hourly land targets in visual-slot order, with identity ties.
-    lands: Vec<(u32, Slot)>,
+    lands: Arc<[(u32, Slot)]>,
     /// The round-robin cursor: the visual slot
     /// ([`Target::order`]) it last visited, not its successor, whichever
     /// representative holds it now. Recreating units does not reset it.
@@ -212,7 +268,8 @@ impl Province {
         frame: Frame,
         epoch: &mut u32,
         budget: &mut Budget,
-    ) -> Vec<(Slot, bool)> {
+        mut queue: impl FnMut(Slot, bool),
+    ) {
         let placed = |slot: &Slot| {
             targets.is_some_and(|targets| targets.contains_key(slot))
                 || formations
@@ -220,12 +277,12 @@ impl Province {
                     .any(|formation| *slot == (Kind::Ship, formation.identity))
         };
         let was = self.shown;
-        let mut queued = Vec::new();
+        let mut queued = 0;
         if frame.shown[Kind::Land as usize] {
             let lands = &self.lands;
             let start = lands.partition_point(|&(order, _)| order < self.land_cursor);
             for &(order, slot) in lands[start..].iter().chain(&lands[..start]) {
-                if queued.len() >= budget.remaining() {
+                if queued >= budget.remaining() {
                     break;
                 }
                 self.land_cursor = order;
@@ -235,7 +292,8 @@ impl Province {
                 // here means it has no entity, or on its hundredth visit.
                 if frame.steady || *visits > 99 || !self.entities.contains_key(&slot) {
                     *visits = 0;
-                    queued.push((slot, was[Kind::Land as usize]));
+                    queued += 1;
+                    queue(slot, was[Kind::Land as usize]);
                 }
             }
         }
@@ -344,7 +402,6 @@ impl Province {
             };
         }
         self.arrows = frame.arrows;
-        queued
     }
 
     fn finalize_shown(&mut self, frame: Frame, budget: &Budget) {
@@ -420,7 +477,7 @@ pub struct FrameModels {
 #[derive(Default)]
 pub struct History {
     /// The hour's targets by province and slot.
-    targets: BTreeMap<u32, BTreeMap<Slot, Parts>>,
+    targets: Targets,
     naval: naval::History,
     combats: naval_combat::History,
     provinces: BTreeMap<u32, Province>,
@@ -428,6 +485,8 @@ pub struct History {
     populated: BTreeSet<u32>,
     /// The shared schedule's reached updates in native province order.
     updates: Vec<(u32, Update)>,
+    /// Deferred land requests, retaining capacity between frames and province visits.
+    queued: Vec<(u32, Slot, bool)>,
     /// Admission operands in province order, refreshed only when the hour installs a roster.
     province_bounds: Vec<(u32, Option<[f32; 4]>)>,
     /// Province boxes for camera admission.
@@ -450,6 +509,9 @@ pub struct History {
     /// The raid units' incarnation: a load-equivalent reset recreates them
     /// too, so their animation starts again ([`History::reset`]).
     raid_epoch: u32,
+    /// Select the independent full-walk oracle without changing process environment.
+    #[cfg(test)]
+    empty_fast_path: Option<bool>,
 }
 
 impl History {
@@ -507,20 +569,39 @@ impl History {
     /// Recorded roster/route inputs; mutable animator and attachment state
     /// belongs to this viewer's frame history.
     pub fn set_naval(&mut self, sources: NavalSources) {
+        let mut changed = false;
         for candidate in &sources.candidates {
-            self.provinces.entry(candidate.province).or_default();
+            self.provinces.entry(candidate.province).or_insert_with(|| {
+                changed = true;
+                Province::default()
+            });
         }
         self.naval.install(sources);
-        self.prepare_province_bounds();
+        if changed {
+            self.prepare_province_bounds();
+        }
     }
-    /// Installs an hour's targets. Entities carry over; the next frame
-    /// admits, grows or retires them.
+    /// Groups and installs targets from a direct caller. Hour builders prepare
+    /// the shared index in advance and use [`Self::set_prepared`] instead.
     pub fn set(
         &mut self,
         targets: Vec<Target>,
         bounds: Arc<BTreeMap<u32, [f32; 4]>>,
         steady: bool,
     ) {
+        self.set_prepared(targets.into(), bounds, steady);
+    }
+
+    /// Installs an hour's prepared targets. Entities carry over; the next frame
+    /// admits, grows or retires them. Only provinces whose target lists occur in
+    /// either hour need a new land list; empty provinces keep their show bits.
+    pub fn set_prepared(
+        &mut self,
+        targets: Targets,
+        bounds: Arc<BTreeMap<u32, [f32; 4]>>,
+        steady: bool,
+    ) {
+        let mut changed = false;
         if !bounds.is_empty() && !Arc::ptr_eq(&self.bounds, &bounds) {
             // Native updates the show bits of empty provinces too: a stack
             // arriving in a province already shown starts at full scale.
@@ -528,31 +609,25 @@ impl History {
                 self.provinces.entry(id).or_default();
             }
             self.bounds = bounds;
+            changed = true;
         }
-        self.targets.clear();
-        for target in targets {
-            self.provinces.entry(target.province).or_default();
-            self.targets
-                .entry(target.province)
-                .or_default()
-                .entry(target.slot())
-                .or_default()
-                .insert(target.part, target);
+        for id in self.targets.0.provinces.keys() {
+            if !targets.0.provinces.contains_key(id) {
+                self.provinces.get_mut(id).unwrap().lands = Arc::default();
+            }
         }
-        for (&id, province) in &mut self.provinces {
-            province.lands.clear();
-            province.lands.extend(
-                self.targets
-                    .get(&id)
-                    .into_iter()
-                    .flatten()
-                    .filter(|(slot, _)| slot.0 == Kind::Land)
-                    .map(|(slot, parts)| (parts.first_key_value().unwrap().1.order, *slot)),
-            );
-            province.lands.sort_unstable();
+        for (&id, prepared) in &targets.0.provinces {
+            let province = self.provinces.entry(id).or_insert_with(|| {
+                changed = true;
+                Province::default()
+            });
+            province.lands = Arc::clone(&prepared.lands);
         }
+        self.targets = targets;
         self.steady = steady;
-        self.prepare_province_bounds();
+        if changed {
+            self.prepare_province_bounds();
+        }
     }
 
     /// The raid units to stand this frame: the hour's placement, or a
@@ -739,10 +814,13 @@ impl History {
         // The frame's update list, the one the map icons' owners read. Buildings consume
         // every group through each reached province, so omitted unit visits leave their
         // order and shared budget unchanged.
-        let mut queued = Vec::new();
+        self.queued.clear();
         self.updates.clear();
         self.updates.extend(schedule.updates());
         self.updates.sort_unstable_by_key(|&(id, _)| id);
+        let fast_empty = true;
+        #[cfg(test)]
+        let fast_empty = self.empty_fast_path.unwrap_or(fast_empty);
         for &(id, update) in &self.updates {
             let Some(province) = self.provinces.get_mut(&id) else {
                 continue;
@@ -751,18 +829,27 @@ impl History {
             match update {
                 Update::InView => {
                     let land_was_shown = province.shown[Kind::Land as usize];
-                    queued.extend(
-                        province
-                            .visit(
-                                self.targets.get(&id),
-                                self.naval.representatives(id, frame),
-                                frame,
-                                &mut self.epoch,
-                                budget,
-                            )
-                            .into_iter()
-                            .map(|(slot, shown)| (id, slot, shown)),
-                    );
+                    let targets = self.targets.0.provinces.get(&id).map(|p| &p.slots);
+                    if fast_empty
+                        && province.entities.is_empty()
+                        && targets.is_none_or(BTreeMap::is_empty)
+                        && !self.naval.has_candidates(id)
+                    {
+                        // No slot can queue, grow or retire. Empty provinces still
+                        // remember admission, and stale land visits lose membership.
+                        province.land_visits.clear();
+                        province.arrows = frame.arrows;
+                        self.naval.clear_combat_selection();
+                    } else {
+                        province.visit(
+                            targets,
+                            self.naval.representatives(id, frame),
+                            frame,
+                            &mut self.epoch,
+                            budget,
+                            |slot, shown| self.queued.push((id, slot, shown)),
+                        );
+                    }
                     self.combats.visit(
                         id,
                         self.naval.combat(id),
@@ -786,11 +873,11 @@ impl History {
             }
         }
         buildings(u32::MAX, budget);
-        for (id, slot, shown) in queued {
+        for (id, slot, shown) in self.queued.drain(..) {
             let province = self.provinces.get_mut(&id).unwrap();
             province.create_land(
                 slot,
-                &self.targets[&id][&slot],
+                &self.targets.0.provinces[&id].slots[&slot],
                 shown,
                 self.steady,
                 &mut self.epoch,
@@ -896,6 +983,321 @@ pub mod tests {
             &mut Budget::new(limit, h.steady),
             |_, _| {},
         )
+    }
+
+
+    impl Province {
+        // Original per-province allocation/collection is the queue-order oracle.
+        fn visit_collected<'a>(
+            &mut self,
+            targets: Option<&BTreeMap<Slot, Parts>>,
+            formations: impl Clone + Iterator<Item = &'a naval::Formation>,
+            frame: Frame,
+            epoch: &mut u32,
+            budget: &mut Budget,
+        ) -> Vec<(Slot, bool)> {
+            let placed = |slot: &Slot| {
+                targets.is_some_and(|targets| targets.contains_key(slot))
+                    || formations
+                        .clone()
+                        .any(|formation| *slot == (Kind::Ship, formation.identity))
+            };
+            let was = self.shown;
+            let mut queued = Vec::new();
+            if frame.shown[Kind::Land as usize] {
+                let lands = &self.lands;
+                let start = lands.partition_point(|&(order, _)| order < self.land_cursor);
+                for &(order, slot) in lands[start..].iter().chain(&lands[..start]) {
+                    if queued.len() >= budget.remaining() {
+                        break;
+                    }
+                    self.land_cursor = order;
+                    let visits = self.land_visits.entry(slot).or_default();
+                    *visits += 1;
+                    // A slot is queued when its representative changed, which
+                    // here means it has no entity, or on its hundredth visit.
+                    if frame.steady || *visits > 99 || !self.entities.contains_key(&slot) {
+                        *visits = 0;
+                        queued.push((slot, was[Kind::Land as usize]));
+                    }
+                }
+            }
+            self.land_visits.retain(|slot, _| placed(slot));
+            self.entities.retain(|slot, entity| {
+                let kind = slot.0 as usize;
+                if frame.steady {
+                    return frame.shown[kind] && placed(slot);
+                }
+                if !frame.shown[kind] {
+                    // The gate-loss loop precedes the inactive fade pass, so the first frame
+                    // out of range visits twice.
+                    return (!was[kind] || entity.shrink(frame.delta, frame.gates))
+                        && entity.shrink(frame.delta, frame.gates);
+                }
+                // A missing stack of a kind shown now and before is destroyed at
+                // once when popup growth is requested; otherwise it shrinks.
+                placed(slot) || (!was[kind] && entity.shrink(frame.delta, frame.gates))
+            });
+            for (&slot, parts) in targets.into_iter().flatten() {
+                let kind = slot.0 as usize;
+                if !frame.shown[kind] {
+                    continue;
+                }
+                if slot.0 == Kind::Land {
+                    if let Some(entity) = self.entities.get_mut(&slot) {
+                        for (&index, &target) in parts {
+                            if let Some(part) = entity.parts.get_mut(&index) {
+                                // Transform/state follow this frame; the definition waits
+                                // for the game's periodic selection or pointer change.
+                                let mesh = part.target.mesh;
+                                part.target = target;
+                                part.target.mesh = mesh;
+                            }
+                        }
+                        entity.shrinking = false;
+                        entity.scale = if frame.steady {
+                            1.0
+                        } else {
+                            (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                        };
+                    }
+                    continue;
+                }
+                // The game acquires a formation root outside the counter, full
+                // size where ships were already shown, and grows it even while
+                // all its hulls wait.
+                let entity = self.entities.entry(slot).or_insert_with(|| Entity {
+                    kind: slot.0,
+                    scale: if frame.steady || was[kind] { 1.0 } else { 0.0 },
+                    shrinking: false,
+                    parts: BTreeMap::new(),
+                });
+                // Hulls attach and detach under the root without touching its
+                // scale, slot 0 first.
+                entity.parts.retain(|part, _| parts.contains_key(part));
+                for (&index, &target) in parts {
+                    let replace = entity.parts.get(&index).is_none_or(|part| {
+                        part.target.mesh != target.mesh || part.target.occupant != target.occupant
+                    });
+                    if replace {
+                        // The game clears a stale support slot before attaching;
+                        // slot 0 attaches directly and keeps its old hull if held.
+                        if index != 0 {
+                            entity.parts.remove(&index);
+                        }
+                        if !budget.take() {
+                            continue;
+                        }
+                        entity
+                            .parts
+                            .insert(index, Part::new(target, epoch, frame.steady));
+                    } else if let Some(part) = entity.parts.get_mut(&index) {
+                        part.target = target;
+                    }
+                }
+                entity.shrinking = false;
+                entity.scale = if frame.steady {
+                    1.0
+                } else {
+                    (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                };
+            }
+            // The game walks native visual slots, not task-force handles. A land
+            // representative in the same slot admits no ordinary naval formation.
+            for formation in formations {
+                let entity = self
+                    .entities
+                    .entry((Kind::Ship, formation.identity))
+                    .or_insert_with(|| Entity {
+                        kind: Kind::Ship,
+                        scale: if frame.steady || was[Kind::Ship as usize] {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        shrinking: false,
+                        parts: BTreeMap::new(),
+                    });
+                formation.update(entity, frame, epoch, budget);
+                entity.shrinking = false;
+                entity.scale = if frame.steady {
+                    1.0
+                } else {
+                    (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
+                };
+            }
+            self.arrows = frame.arrows;
+            queued
+        }
+    }
+
+    #[test]
+    fn retained_land_queue_matches_collected_queue_frame_by_frame() {
+        let mut streamed: Vec<Province> = (0..32).map(|_| Province::default()).collect();
+        let mut collected: Vec<Province> = (0..32).map(|_| Province::default()).collect();
+        let mut streamed_epoch = 0;
+        let mut collected_epoch = 0;
+        let mut streamed_queue = Vec::new();
+        for number in 0..420u32 {
+            let hour = number / 11;
+            let targets = Targets::from(
+                (0..32u32)
+                    .flat_map(|province| {
+                        (0..7u64).filter_map(move |slot| {
+                            if (u64::from(province) + slot + u64::from(hour)) % 5 == 0 {
+                                return None;
+                            }
+                            Some(Target {
+                                identity: u64::from(province) * 100 + slot,
+                                order: ((slot + u64::from(hour)) % 4) as u32,
+                                kind: if slot < 5 { Kind::Land } else { Kind::Ship },
+                                mesh: (hour as usize + slot as usize) % 3,
+                                instance: ModelInstance {
+                                    scale: if slot == 1 { 0.3 } else { 1.0 },
+                                    position: [province as f32, 10.0, slot as f32],
+                                    animation_seed: province * 100 + slot as u32,
+                                    ..Default::default()
+                                },
+                                ..target(province, Kind::Land)
+                            })
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let frame = Frame {
+                delta: if number % 29 == 0 { 0.0 } else { 0.125 },
+                gates: GATES,
+                shown: [number % 37 < 25, number % 31 < 21],
+                arrows: number % 19 < 10,
+                steady: number % 43 == 0,
+            };
+            let mut streamed_budget = Budget::new((number % 9) as i32, frame.steady);
+            let mut collected_budget = Budget::new((number % 9) as i32, frame.steady);
+            streamed_queue.clear();
+            let mut collected_queue = Vec::new();
+            for id in 0..32u32 {
+                let prepared = targets.0.provinces.get(&id);
+                let lands =
+                    prepared.map_or_else(Arc::default, |prepared| Arc::clone(&prepared.lands));
+                streamed[id as usize].lands = Arc::clone(&lands);
+                collected[id as usize].lands = lands;
+                if (number + id) % 17 == 0 {
+                    streamed[id as usize].leave(frame.steady);
+                    collected[id as usize].leave(frame.steady);
+                    continue;
+                }
+                // Buildings charge the same shared allowance before this province.
+                if id % 3 == 0 {
+                    assert_eq!(streamed_budget.take(), collected_budget.take());
+                }
+                streamed[id as usize].visit(
+                    prepared.map(|prepared| &prepared.slots),
+                    std::iter::empty(),
+                    frame,
+                    &mut streamed_epoch,
+                    &mut streamed_budget,
+                    |slot, shown| streamed_queue.push((id, slot, shown)),
+                );
+                collected_queue.extend(
+                    collected[id as usize]
+                        .visit_collected(
+                            prepared.map(|prepared| &prepared.slots),
+                            std::iter::empty(),
+                            frame,
+                            &mut collected_epoch,
+                            &mut collected_budget,
+                        )
+                        .into_iter()
+                        .map(|(slot, shown)| (id, slot, shown)),
+                );
+                streamed[id as usize].finalize_shown(frame, &streamed_budget);
+                collected[id as usize].finalize_shown(frame, &collected_budget);
+            }
+            assert_eq!(streamed_queue, collected_queue, "frame {number} queue");
+            for &(id, slot, shown) in &streamed_queue {
+                streamed[id as usize].create_land(
+                    slot,
+                    &targets.0.provinces[&id].slots[&slot],
+                    shown,
+                    frame.steady,
+                    &mut streamed_epoch,
+                    &mut streamed_budget,
+                );
+            }
+            for (id, slot, shown) in collected_queue {
+                collected[id as usize].create_land(
+                    slot,
+                    &targets.0.provinces[&id].slots[&slot],
+                    shown,
+                    frame.steady,
+                    &mut collected_epoch,
+                    &mut collected_budget,
+                );
+            }
+            assert_eq!(streamed, collected, "frame {number} state");
+            assert_eq!(
+                streamed_epoch, collected_epoch,
+                "frame {number} incarnations"
+            );
+            assert_eq!(
+                streamed_budget.remaining(),
+                collected_budget.remaining(),
+                "frame {number} budget"
+            );
+            let placed = |provinces: &[Province]| {
+                provinces
+                    .iter()
+                    .flat_map(|province| province.entities.values().flat_map(Entity::placed))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                placed(&streamed),
+                placed(&collected),
+                "frame {number} instances"
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_targets_keep_last_parts_and_native_land_order() {
+        let first = Target {
+            identity: 8,
+            part: 1,
+            order: 20,
+            ..target(9, Kind::Land)
+        };
+        let lower_part = Target {
+            part: 0,
+            order: 40,
+            ..first
+        };
+        let tied = Target {
+            identity: 7,
+            order: 30,
+            ..lower_part
+        };
+        let replacement = Target {
+            order: 30,
+            mesh: 2,
+            ..lower_part
+        };
+        let ship = target(9, Kind::Ship);
+        let placed = vec![first, lower_part, tied, replacement, ship];
+        let targets = Targets::from(placed.clone());
+        assert_eq!(&*targets, &placed);
+        let province = &targets.0.provinces[&9];
+        assert_eq!(province.slots[&first.slot()][&0], replacement);
+        assert_eq!(province.slots[&first.slot()][&1], first);
+        assert_eq!(&*province.lands, &[(30, tied.slot()), (30, first.slot())]);
+        let mut h = History::default();
+        h.set_prepared(targets.clone(), Arc::default(), false);
+        assert!(Arc::ptr_eq(&h.targets.0, &targets.0));
+        assert!(Arc::ptr_eq(&h.provinces[&9].lands, &province.lands));
+        h.provinces.get_mut(&9).unwrap().shown = [true; 2];
+        h.set(vec![target(10, Kind::Land)], Arc::default(), false);
+        assert!(h.provinces[&9].lands.is_empty());
+        assert_eq!(h.provinces[&9].shown, [true; 2]);
+        assert_eq!(h.province_bounds, [(9, None), (10, None)]);
     }
 
     #[test]

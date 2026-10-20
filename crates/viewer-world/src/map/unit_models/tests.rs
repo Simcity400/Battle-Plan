@@ -26,7 +26,9 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
     };
     let (track, heights) = viewer_foundation::map::unit_pose::test_support::test_track();
     let hour = track.place(&heights, 0.0).unwrap();
-    let prepared = PreparedModels {
+    let mut prepared = PreparedModels {
+        staged_field: Mutex::new(None),
+        targets: None,
         placed: vec![(
             target(5, 1, Kind::Land),
             counter_move::Position {
@@ -79,7 +81,41 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
     };
     // The history's targets are the figure and the hull; the raid unit
     // is placed beside them, at the hour's start, and its mesh uploaded.
+    let unstaged = prepared.field(&assets);
+    prepared.stage_field(&assets);
+    let staged_instances = prepared
+        .staged_field
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .field
+        .models
+        .instances
+        .as_ptr();
     let field = prepared.field(&assets);
+    assert_eq!(
+        field.models.instances.as_ptr(),
+        staged_instances,
+        "first view takes ownership"
+    );
+    assert!(prepared.staged_field.lock().unwrap().is_none());
+    let repeated = prepared.field(&assets);
+    assert_eq!(field.models, unstaged.models);
+    assert_eq!(field.models, repeated.models);
+    assert_eq!(field.targets, repeated.targets);
+    assert_eq!(field.raids, repeated.raids);
+    assert_eq!(
+        field.naval.settled_targets(assets.gates),
+        repeated.naval.settled_targets(assets.gates)
+    );
+    assert_eq!(field.targets.as_ptr(), repeated.targets.as_ptr());
+    prepared.stage_field(&assets);
+    prepared.add_raid_units(&assets, &[]);
+    assert!(
+        prepared.staged_field.lock().unwrap().is_none(),
+        "adding raids clears staging"
+    );
     let seeds = |instances: &[ModelInstance]| {
         instances
             .iter()
@@ -128,6 +164,8 @@ fn convoys_sail_only_where_they_show_and_name_entities_that_do_not_bake() {
         ..UnitModelAssets::off(String::new())
     };
     let mut prepared = PreparedModels {
+        staged_field: Mutex::new(None),
+        targets: None,
         ships: NavalSources::default(),
         raid: Vec::new(),
         convoys: None,
@@ -167,6 +205,8 @@ fn convoys_sail_only_where_they_show_and_name_entities_that_do_not_bake() {
         &|_, _| 0.,
     ));
     let mut next = PreparedModels {
+        staged_field: Mutex::new(None),
+        targets: None,
         ships: NavalSources::default(),
         raid: Vec::new(),
         convoys: None,
@@ -232,6 +272,8 @@ fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
     let height = |_, _| 0.0;
     let make = || {
         let mut prepared = PreparedModels {
+            staged_field: Mutex::new(None),
+            targets: None,
             ships: NavalSources::default(),
             raid: Vec::new(),
             convoys: None,
@@ -240,6 +282,17 @@ fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
             report: ModelReport::default(),
         };
         prepared.add_convoys(lines.clone(), defines);
+        prepared.stage_field(&assets);
+        assert!(
+            prepared
+                .convoys
+                .as_ref()
+                .unwrap()
+                .2
+                .lock()
+                .unwrap()
+                .is_none()
+        );
         prepared
     };
     let fleet = || ConvoyFleet::new(&lines, &defines, &|| 7, &|_| Some(1.0), &height);
@@ -274,9 +327,12 @@ fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
     reused.reset_convoys();
     assert!(next.convoys.as_ref().unwrap().2.lock().unwrap().is_none());
     // Mesh upload must also leave a new fleet uninitialized.
-    let fresh = make();
+    let mut fresh = make();
     fresh.field(&assets);
     assert!(fresh.convoys.as_ref().unwrap().2.lock().unwrap().is_none());
+    fresh.stage_field(&assets);
+    fresh.add_convoys(Vec::new(), defines);
+    assert!(fresh.staged_field.lock().unwrap().is_none());
 }
 
 #[test]
@@ -1205,4 +1261,91 @@ fn an_entity_a_mods_unreadable_descriptor_leaves_undecided_is_drawn_from_the_rec
     assert!(presentation.refused().contains("model entity zeppelin"));
     assert!(!presentation.refused().contains("model entity plane"));
     let _ = std::fs::remove_dir_all(&root);
+}
+
+fn lazy_bake_assets(name: &str) -> (std::path::PathBuf, UnitModelAssets) {
+    use crate::map::models::tests::{MESHES_GFX, triangle_mesh, visual_stack};
+    let (root, layers) = visual_stack(
+        name,
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            (
+                "base/gfx/entities/planes.asset",
+                br#"entity = { name = first pdxmesh = body }
+                    entity = { name = second pdxmesh = body }
+                    entity = { name = missing pdxmesh = hull }"#,
+            ),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.0)),
+        ],
+    );
+    let mut assets = UnitModelAssets::off(String::new());
+    assets.roster = layers.descriptor_roster().unwrap();
+    assets.registered = assets.roster.descriptors.entities.keys().cloned().collect();
+    assets.layers = layers;
+    (root, assets)
+}
+
+#[test]
+fn warm_unit_bakes_do_not_lock_the_cold_registry_or_other_names() {
+    let (root, assets) = lazy_bake_assets("warm_bakes");
+    assets.ensure(&["first".into()]);
+    assert!(assets.library().slot("first").is_some());
+    // A warm lookup must finish even with the registry held by its caller.
+    {
+        let _registry = assets.bakes.lock().unwrap();
+        assets.ensure(&["first".into()]);
+    }
+    let cold = Arc::new(Mutex::new(false));
+    assets
+        .bakes
+        .lock()
+        .unwrap()
+        .insert("missing".into(), Arc::clone(&cold));
+    let _loading = cold.lock().unwrap();
+    // A different cold name can complete while that name is still loading.
+    assets.ensure(&["second".into(), "first".into()]);
+    assert!(assets.library().slot("second").is_some());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn overlapping_unit_bake_batches_load_each_name_once() {
+    let (root, assets) = lazy_bake_assets("overlapping_bakes");
+    let start = std::sync::Barrier::new(4);
+    std::thread::scope(|scope| {
+        for names in [
+            ["second", "first", "second"],
+            ["first", "second", "first"],
+            ["second", "second", "first"],
+            ["first", "first", "second"],
+        ] {
+            let (assets, start) = (&assets, &start);
+            scope.spawn(move || {
+                start.wait();
+                assets.ensure(&names.map(str::to_owned));
+            });
+        }
+    });
+    let library = assets.library();
+    assert_eq!(library.meshes.len(), 2);
+    assert_eq!(library.slot("first"), Some(0));
+    assert_eq!(library.slot("second"), Some(1));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unsuccessful_unit_bakes_are_not_retried() {
+    let (root, mut assets) = lazy_bake_assets("failed_bakes");
+    assets.ensure(&["missing".into()]);
+    assert!(assets.library().slot("missing").is_none());
+    assert!(*assets.bakes.lock().unwrap()["missing"].lock().unwrap());
+    // Even a new readable definition does not retry a remembered failure.
+    let readable = assets.roster.descriptors.entities["first"].clone();
+    Arc::make_mut(&mut assets.roster)
+        .descriptors
+        .entities
+        .insert("missing".into(), readable);
+    assets.ensure(&["missing".into()]);
+    assert!(assets.library().slot("missing").is_none());
+    std::fs::remove_dir_all(root).unwrap();
 }

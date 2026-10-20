@@ -115,7 +115,9 @@ nearest independent native checkpoint, then reads selected recording tables
 through the target hour and applies fewer than 720 recorded updates. Source
 parsing still begins at the source block's keyframe. An exact checkpoint needs
 no source payload. Steps advance the native decoder in place; a needed source
-load retains the rest of that accepted block for later steps. Only one parsed
+load retains the rest of that accepted block for later steps. Cancellation walks
+advance without exporting endpoint snapshots. Forward playback keeps no implicit
+decoded-behind window; paused seeks and steps retain two preceding hours. Only one parsed
 source block remains between requests. No hourly updates or packet seeds are
 stored in prepared data. Checkpoints retain availability, partial counts and
 supplying-read hours. The selection is the union of native map inputs and the

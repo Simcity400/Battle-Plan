@@ -194,10 +194,10 @@ pub struct PreparedBuildings {
     hour: replay_data::Hour,
     shrink_distance: f32,
     popup_speed: f32,
-    slots: Vec<PreparedSlot>,
+    slots: Arc<[PreparedSlot]>,
     /// The slots of each province, which the camera admits together.
     groups: Arc<[ProvinceSlots]>,
-    pub city_damage: super::sprawl::Damage,
+    pub city_damage: Arc<super::sprawl::Damage>,
 }
 
 /// One province's box and its slots' ids.
@@ -1353,9 +1353,9 @@ impl MapBuildingAssets {
                 hour: frame.hour,
                 shrink_distance: self.defines.shrink_distance,
                 popup_speed: self.defines.popup_speed,
-                slots,
+                slots: slots.into(),
                 groups: Arc::clone(&self.groups),
-                city_damage,
+                city_damage: Arc::new(city_damage),
             },
             summary,
         ))

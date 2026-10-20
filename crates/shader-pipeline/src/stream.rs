@@ -162,12 +162,49 @@ pub struct PassSubmission {
     pub scissor_enabled: Option<bool>,
 }
 
+/// Geometry already packed for the effective native declaration. The caller keeps the
+/// native binds unchanged and supplies only uploads whose bytes that draw could read.
+pub struct NativePrepared<'a> {
+    pub layouts: &'a [gpu::VertexLayout],
+    pub vertices: &'a [gpu::Slice],
+}
+
 pub struct NativeSubmission {
     pub pass: PassSubmission,
     pub vertices: Vec<gpu::Slice>,
 }
 
 impl Stream {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn same_bindings(&self, other: &Self) -> bool {
+        let program = match (&self.program, &other.program) {
+            (None, None) => true,
+            (Some((a, al)), Some((b, bl))) => {
+                a.effect.id == b.effect.id && a.index == b.index && al == bl
+            }
+            _ => false,
+        };
+        program
+            && self.vertex_strides == other.vertex_strides
+            && self.state.blend == other.state.blend
+            && self.state.write_mask == other.state.write_mask
+            && self
+                .state
+                .samplers
+                .iter()
+                .map(|(k, s)| (*k, gpu::sampler_key(s)))
+                .eq(other
+                    .state
+                    .samplers
+                    .iter()
+                    .map(|(k, s)| (*k, gpu::sampler_key(s))))
+            && self.depth_stencil == other.depth_stencil
+            && self.rasterizer.as_ref().map(raster_key) == other.rasterizer.as_ref().map(raster_key)
+            && self.constants == other.constants
+            && self.known_constants == other.known_constants
+            && self.textures == other.textures
+    }
+
     /// Start a scoped render-to-texture pass with the caller's retained bindings.
     /// Keep this stream's device cache; later changes do not alter the caller.
     pub fn inherit_bindings(&mut self, caller: &Self) {
@@ -504,7 +541,7 @@ impl Stream {
         template: &gpu::Pass,
     ) -> Result<PassSubmission, String> {
         let result = self
-            .prepare_pass_inner(arena, template, None)
+            .prepare_pass_inner(arena, template, None, None)
             .map(|(pass, _)| pass)
             .map_err(|reason| format!("native draw {label:?}: {reason}"));
         if let Err(reason) = &result {
@@ -535,7 +572,7 @@ impl Stream {
             };
             let declaration = *declaration;
             // Packed for the program drawn, the recorded one when the replacement fell back.
-            let (pass, drawn) = self.prepare_pass_inner(arena, template, None)?;
+            let (pass, drawn) = self.prepare_pass_inner(arena, template, None, None)?;
             let compiled = drawn.effect.compiled(drawn.index)?;
             let packed = Vertices {
                 declaration,
@@ -561,32 +598,72 @@ impl Stream {
     pub fn prepare_native_pass(
         &mut self,
         arena: &gpu::Arena,
-        label: &str,
+        label: impl std::fmt::Display,
         template: &gpu::Pass,
         buffers: &BTreeMap<u32, Option<super::vertices::NativeBuffer<'_>>>,
         vertices: u32,
         instances: u32,
     ) -> Result<NativeSubmission, String> {
-        let result = (|| {
-            let packed = super::vertices::pack_native(
-                &self.vertex_layouts()?,
-                buffers,
-                vertices,
-                instances,
-            )?;
-            let (pass, _) = self.prepare_pass_inner(arena, template, Some(packed.layouts))?;
-            let vertices = packed
-                .bytes
-                .iter()
-                .map(|bytes| arena.vertices(bytes))
-                .collect::<Result<_, _>>()?;
+        self.prepare_native_pass_with(
+            arena, label, template, buffers, vertices, instances, None, None,
+        )
+    }
+
+    /// The prepared geometry and previous bindings belong to this arena/view. A caller
+    /// supplying `previous` has compared every constant byte, initialized range, texture
+    /// and sampler since that successful draw. Resolve the pass even then: replacement
+    /// fallbacks and their refusals must still happen in native order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_native_pass_with(
+        &mut self,
+        arena: &gpu::Arena,
+        label: impl std::fmt::Display,
+        template: &gpu::Pass,
+        buffers: &BTreeMap<u32, Option<super::vertices::NativeBuffer<'_>>>,
+        vertices: u32,
+        instances: u32,
+        prepared: Option<NativePrepared<'_>>,
+        previous: Option<&PassSubmission>,
+    ) -> Result<NativeSubmission, String> {
+        let result: Result<NativeSubmission, String> = (|| {
+            let packed = if prepared.is_none() {
+                Some(super::vertices::pack_native(
+                    &self.vertex_layouts()?,
+                    buffers,
+                    vertices,
+                    instances,
+                )?)
+            } else {
+                None
+            };
+            let layouts = prepared
+                .as_ref()
+                .map(|p| p.layouts)
+                .or_else(|| packed.as_ref().map(|p| p.layouts.as_slice()));
+            let (pass, _) = self.prepare_pass_inner(arena, template, layouts, previous)?;
+            let vertices = if let Some(prepared) = prepared {
+                prepared.vertices.to_vec()
+            } else {
+                packed
+                    .as_ref()
+                    .expect("packed native vertices")
+                    .bytes
+                    .iter()
+                    .map(|bytes| arena.vertices(bytes))
+                    .collect::<Result<_, _>>()?
+            };
             Ok(NativeSubmission { pass, vertices })
-        })()
-        .map_err(|reason: String| format!("native draw {label:?}: {reason}"));
-        if let Err(reason) = &result {
-            self.refuse(arena, label, reason);
+        })();
+        match result {
+            Ok(submission) => Ok(submission),
+            Err(reason) => {
+                // Labels are diagnostic only. Do not allocate them for a successful draw.
+                let label = label.to_string();
+                let reason = format!("native draw {label:?}: {reason}");
+                self.refuse(arena, &label, &reason);
+                Err(reason)
+            }
         }
-        result
     }
 
     /// Counts a refused draw and records in the frame's arena what was refused, by identity:
@@ -608,10 +685,24 @@ impl Stream {
         &mut self,
         arena: &gpu::Arena,
         template: &gpu::Pass,
-        vertices: Option<Vec<gpu::VertexLayout>>,
+        vertices: Option<&[gpu::VertexLayout]>,
+        previous: Option<&PassSubmission>,
     ) -> Result<(PassSubmission, Selection), String> {
         let (pipeline, selection, stencil_reference, scissor_enabled) =
             self.resolve_pass(arena, template, vertices)?;
+        if let Some(previous) =
+            previous.filter(|previous| Arc::ptr_eq(&previous.pipeline, &pipeline))
+        {
+            return Ok((
+                PassSubmission {
+                    pipeline,
+                    bindings: previous.bindings.clone(),
+                    stencil_reference,
+                    scissor_enabled,
+                },
+                selection,
+            ));
+        }
         let compiled = selection.effect.compiled(selection.index)?;
         let kinds = || {
             compiled
@@ -650,10 +741,10 @@ impl Stream {
         &mut self,
         arena: &gpu::Arena,
         template: &gpu::Pass,
-        vertices: Option<Vec<gpu::VertexLayout>>,
+        vertices: Option<&[gpu::VertexLayout]>,
     ) -> Result<PipelineResolution, String> {
         if let Some(cached) = &self.last_pass
-            && cached.inputs.matches(self, template, vertices.as_deref())
+            && cached.inputs.matches(self, template, vertices)
         {
             return Ok((
                 cached.pipeline.clone(),
@@ -669,7 +760,7 @@ impl Stream {
         let mut selection = selection.clone();
         let (mut pass, stencil_reference, scissor_enabled) = self.pass_state(template);
         let layouts = |stream: &Self, selection: &Selection| match &vertices {
-            Some(vertices) => Ok(vertices.clone()),
+            Some(vertices) => Ok(vertices.to_vec()),
             None if packed => {
                 let compiled = selection.effect.compiled(selection.index)?;
                 let format = template
@@ -709,7 +800,7 @@ impl Stream {
             requested.effect.id == selection.effect.id && requested.index == selection.index
         }) {
             self.last_pass = Some(ResolvedPass {
-                inputs: PassInputs::new(self, template, vertices.as_deref()),
+                inputs: PassInputs::new(self, template, vertices),
                 pipeline: pipeline.clone(),
                 selection: selection.clone(),
                 stencil_reference,

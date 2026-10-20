@@ -40,9 +40,15 @@ pub fn render_images(
     let first_count = pass.native.cache.created;
     let bake_count = pass.bake_stream.cache.created;
     let bake_views: Vec<_> = pass.bakes.iter().map(|b| b.view.clone()).collect();
+    let retained_frame = pass.uploads.as_ref().unwrap().frame();
     arena.reset();
+    // The scene's next frame may overwrite all its own uploads. Retained GUI submissions
+    // must still bind their pass-owned bytes, not this deliberately different vertex stream.
+    arena.vertices(&[0xff; 4096]).unwrap();
+    arena.flush(queue);
     pass.upload(device, queue, &arena, batch, [16, 16], 1.);
     arena.flush(queue);
+    assert_eq!(pass.uploads.as_ref().unwrap().frame(), retained_frame);
     assert_eq!(
         first_count, pass.native.cache.created,
         "second frame reuses pipelines"

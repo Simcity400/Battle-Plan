@@ -468,49 +468,74 @@ impl DrawList {
         device: &wgpu::Device,
         targets: &Targets,
         admitted: &viewer_foundation::parallel::Admitted,
+        preceding: &mut wgpu::CommandEncoder,
     ) -> Vec<wgpu::CommandBuffer> {
         let total = lists.iter().map(|list| list.draws.len()).sum::<usize>();
         let count = total.min(admitted.capacity());
-        let outputs: Vec<_> = (0..count).map(|_| std::sync::Mutex::new(None)).collect();
-        let count = admitted.run(outputs.len(), &|index, count| {
-            let std::ops::Range { start, end } = draw_slice(total, count, index);
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("native model slice"),
-            });
-            {
-                let mut colour = targets.scene_attachment(wgpu::LoadOp::Load);
-                // No producer samples the resolved scene between these slices. Keep every
-                // multisample value, but resolve only after the last slice's draws.
-                if index + 1 < count {
-                    colour.resolve_target = None;
-                }
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("native model slice"),
-                    color_attachments: &[Some(colour)],
-                    depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
-                    ..Default::default()
-                });
-                let mut base = 0;
-                for list in lists {
-                    let next = base + list.draws.len();
-                    if base < end && next > start {
-                        list.record_slice(
-                            &mut pass,
-                            &list.draws
-                                [start.saturating_sub(base)..(end - base).min(list.draws.len())],
-                        );
-                    }
-                    base = next;
-                    if base >= end {
-                        break;
-                    }
-                }
+        if count == 0 {
+            admitted.run(0, &|_, _| {});
+            return Vec::new();
+        }
+        let preceding = std::sync::Mutex::new(Some(std::mem::replace(
+            preceding,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") }),
+        )));
+        // The first buffer stays before every slice, whichever encoder finishes first.
+        let outputs: Vec<_> = (0..=count).map(|_| std::sync::Mutex::new(None)).collect();
+        let finish = |_: &dyn Fn() -> bool| {
+            if let Some(encoder) = preceding.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                *outputs[0].lock().unwrap_or_else(|e| e.into_inner()) = Some(encoder.finish());
             }
-            *outputs[index].lock().unwrap_or_else(|e| e.into_inner()) = Some(encoder.finish());
-        });
+        };
+        let count = admitted.run_beside(
+            count,
+            &|index, count| {
+                let std::ops::Range { start, end } = draw_slice(total, count, index);
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("native model slice"),
+                });
+                {
+                    let mut colour = targets.scene_attachment(wgpu::LoadOp::Load);
+                    // No producer samples the resolved scene between these slices. Keep every
+                    // multisample value, but resolve only after the last slice's draws.
+                    if index + 1 < count {
+                        colour.resolve_target = None;
+                    }
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("native model slice"),
+                        color_attachments: &[Some(colour)],
+                        depth_stencil_attachment: Some(
+                            targets.depth_attachment(wgpu::LoadOp::Load),
+                        ),
+                        ..Default::default()
+                    });
+                    let mut base = 0;
+                    for list in lists {
+                        let next = base + list.draws.len();
+                        if base < end && next > start {
+                            list.record_slice(
+                                &mut pass,
+                                &list.draws[start.saturating_sub(base)
+                                    ..(end - base).min(list.draws.len())],
+                            );
+                        }
+                        base = next;
+                        if base >= end {
+                            break;
+                        }
+                    }
+                }
+                *outputs[index + 1].lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(encoder.finish());
+            },
+            Some(&finish),
+        );
+        // Busy builders, or helpers that did not take a turn before the caller finished,
+        // leave the preceding encoder here. No commands are submitted until Scene is done.
+        finish(&|| true);
         outputs
             .into_iter()
-            .take(count)
+            .take(count + 1)
             .map(|output| {
                 output
                     .into_inner()
@@ -863,12 +888,14 @@ impl ModelPass {
         device: &wgpu::Device,
         targets: &Targets,
         admitted: &viewer_foundation::parallel::Admitted,
+        preceding: &mut wgpu::CommandEncoder,
     ) -> Vec<wgpu::CommandBuffer> {
         DrawList::encode(
             &lists.iter().map(|(_, list)| list).collect::<Vec<_>>(),
             device,
             targets,
             admitted,
+            preceding,
         )
     }
 
@@ -1657,7 +1684,7 @@ mod tests {
                     });
             }
             arena.flush(&queue);
-            let render = |workers: Option<(&Workers, usize)>| {
+            let render = |workers: Option<(&Workers, usize)>, empty: bool| {
                 let targets = Targets::new(&device, [16, 16], [16, 16], samples);
                 let mut encoder = device.create_command_encoder(&Default::default());
                 {
@@ -1670,47 +1697,54 @@ mod tests {
                         ),
                         ..Default::default()
                     });
-                    if workers.is_none() {
+                    if workers.is_none() && !empty {
                         for list in &lists {
                             list.record(&mut pass);
                         }
                     }
                 }
-                // Like Scene, finish the slices before their preceding clear encoder, but
-                // submit that clear first. Initialization tracking must keep submission order.
+                // Like Scene, finish the preceding clear beside the slices when a helper
+                // takes it, but always submit it first. Busy builders finish it here instead.
                 let slices = workers.map(|(workers, helpers)| {
                     workers.with_admitted(workers.threads(), |admitted| {
                         admitted.wait_for_helpers(helpers);
-                        DrawList::encode(
-                            &lists.iter().collect::<Vec<_>>(),
-                            &device,
-                            &targets,
-                            admitted,
-                        )
+                        let lists = if empty {
+                            Vec::new()
+                        } else {
+                            lists.iter().collect()
+                        };
+                        DrawList::encode(&lists, &device, &targets, admitted, &mut encoder)
                     })
                 });
-                let mut commands = vec![encoder.finish()];
-                commands.extend(slices.into_iter().flatten());
+                let mut commands = slices.unwrap_or_default();
+                commands.push(encoder.finish());
                 queue.submit(commands);
                 read_texture(&device, &queue, targets.scene_texture(), 8).unwrap()
             };
-            let reference = render(None);
-            assert!(
-                reference
-                    .chunks_exact(8)
-                    .any(|pixel| pixel[..6].iter().any(|byte| *byte != 0))
-            );
-            assert_eq!(
-                render(Some((&Workers::default(), 0))),
-                reference,
-                "serial {samples}x MSAA"
-            );
-            assert_eq!(
-                render(Some((&workers, workers.threads() - 1))),
-                reference,
-                "borrowed {samples}x MSAA"
-            );
-            assert_eq!(render(Some((&busy, 0))), reference, "busy {samples}x MSAA");
+            for empty in [false, true] {
+                let reference = render(None, empty);
+                assert_eq!(
+                    reference
+                        .chunks_exact(8)
+                        .any(|pixel| pixel[..6].iter().any(|byte| *byte != 0)),
+                    !empty
+                );
+                assert_eq!(
+                    render(Some((&Workers::default(), 0)), empty),
+                    reference,
+                    "serial {samples}x MSAA empty={empty}"
+                );
+                assert_eq!(
+                    render(Some((&workers, workers.threads() - 1)), empty),
+                    reference,
+                    "borrowed {samples}x MSAA empty={empty}"
+                );
+                assert_eq!(
+                    render(Some((&busy, 0)), empty),
+                    reference,
+                    "busy {samples}x MSAA empty={empty}"
+                );
+            }
         }
     }
 

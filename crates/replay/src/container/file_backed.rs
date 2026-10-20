@@ -121,6 +121,7 @@ impl Replay {
     }
 
     pub(super) fn held_block_bytes(&self, index: &BlockIndex) -> io::Result<Vec<u8>> {
+        let _cpu = crate::cpu::scope("source_read", None);
         let mut bytes = engine_allocation::filled(to_usize(index.length)?, 0)?;
         self.read_at(index.offset, &mut bytes)?;
         Ok(bytes)
@@ -141,6 +142,7 @@ impl Replay {
         offset: usize,
         length: usize,
     ) -> io::Result<Cow<'_, [u8]>> {
+        let _cpu = crate::cpu::scope("source_read", None);
         let end = offset
             .checked_add(length)
             .filter(|end| *end as u64 <= index.length)

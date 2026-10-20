@@ -2850,6 +2850,7 @@ impl Document {
 #[derive(Clone)]
 pub(crate) struct OverlayTables {
     counters: counters::HourTables,
+    vision: PreparedVision,
     labels: labels::LabelTables,
     radar: Arc<viewer_world::map::radar_symbols::Field>,
     air: Arc<std::sync::Mutex<OverlayAir>>,
@@ -2862,6 +2863,46 @@ pub(crate) struct OverlayTables {
     intel: Arc<intel_icons::IntelIcons>,
     /// The branch, hour and canonical viewing country the tables are for.
     built_for: (replay_data::BranchId, replay_data::Hour, u32),
+}
+
+/// A prepared visibility value keeps every input alive, including immutable content. A
+/// reloaded document or a replaced table cannot reuse it merely by naming the same hour.
+#[derive(Clone)]
+struct PreparedVision {
+    key: VisionKey,
+    tables: TableKey,
+    fog: Arc<Result<viewer_foundation::map::visibility::FogContent, String>>,
+    value: Arc<perspective::Vision>,
+}
+
+impl PreparedVision {
+    fn new(
+        frame: &DecodedFrame,
+        choice: &perspective::Choice,
+        fog: &Arc<Result<viewer_foundation::map::visibility::FogContent, String>>,
+        value: Arc<perspective::Vision>,
+    ) -> Self {
+        Self {
+            key: (frame.branch, frame.hour, choice.clone()),
+            tables: TableKey::of(frame, perspective::VISION_TABLES),
+            fog: Arc::clone(fog),
+            value,
+        }
+    }
+
+    fn get(
+        &self,
+        frame: &DecodedFrame,
+        choice: &perspective::Choice,
+        fog: &Arc<Result<viewer_foundation::map::visibility::FogContent, String>>,
+    ) -> Option<&Arc<perspective::Vision>> {
+        (self.key.0 == frame.branch
+            && self.key.1 == frame.hour
+            && self.key.2 == *choice
+            && Arc::ptr_eq(&self.fog, fog)
+            && self.tables == TableKey::of(frame, perspective::VISION_TABLES))
+        .then_some(&self.value)
+    }
 }
 
 /// Selection is viewer-local, while camera changes reuse the same Air products.
@@ -2929,7 +2970,7 @@ impl OverlayTables {
     }
 
     pub(crate) fn vision(&self) -> &Arc<perspective::Vision> {
-        self.counters.vision()
+        &self.vision.value
     }
 
     /// Replaces the raid icons, with more offers evaluated for the same hour
@@ -3922,6 +3963,21 @@ impl<'a> Hour<'a> {
         Ok(vision)
     }
 
+    /// Prefer the installed hour's value to rebuilding a visibility memo entry that the
+    /// builders have already passed. Seed this Hour's cache for its later consumers too.
+    pub(crate) fn vision_from_overlay(
+        &self,
+        choice: &perspective::Choice,
+        tables: Option<&OverlayTables>,
+    ) -> io::Result<Arc<perspective::Vision>> {
+        if let Some(value) =
+            tables.and_then(|tables| tables.vision.get(self.frame, choice, &self.counters.fog))
+        {
+            *self.vision_cache.borrow_mut() = Some((choice.clone(), Arc::clone(value)));
+        }
+        self.vision(choice)
+    }
+
     /// The viewing country's tag at the hour on screen.
     pub fn viewing_tag(&self, vision: &perspective::Vision) -> io::Result<String> {
         let ours = vision.ours();
@@ -4095,6 +4151,12 @@ impl<'a> Hour<'a> {
         let engaged_covered =
             engaged.is_some_and(|index| index.shared.covers(self.frame.branch, self.frame.hour));
         Ok(OverlayTables {
+            vision: PreparedVision::new(
+                self.frame,
+                perspective,
+                &self.counters.fog,
+                Arc::clone(&vision),
+            ),
             engaged_covered,
             radar: Arc::new(viewer_world::map::radar_symbols::Field::read(
                 self.frame,
@@ -4209,7 +4271,8 @@ impl<'a> Hour<'a> {
             workers,
             || {
                 let _span = viewer_foundation::profiling::span("p_counters");
-                counters::prepare_cached(&counter_inputs, frame, &tables.counters)
+                let mut retained = view.presentation.counters.lock().unwrap_or_else(|p| p.into_inner());
+                counters::prepare_retained(&counter_inputs, frame, &tables.counters, lazy_version, &mut retained)
             },
             || {
                 let hour = Hour::new(content, frame, fraction);
@@ -4810,6 +4873,136 @@ fn audio_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_vision_reuses_exact_inputs_and_falls_back_for_each_changed_input() {
+        use replay_data::rows::{CountryLinkRow, CountryRow, TableRows};
+        use viewer_foundation::map::{
+            test_support::{test_frame, test_put},
+            visibility::{Defines, FogContent, Topology},
+        };
+        let mut frame = test_frame(17);
+        test_put(
+            &mut frame,
+            TableRows::Countries(
+                (1..=2)
+                    .map(|slot| CountryRow {
+                        id: 100 + slot,
+                        canonical_slot: slot,
+                        tag: format!("T{slot}").into_bytes(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        test_put(
+            &mut frame,
+            TableRows::CountryLinks(
+                (1..=2)
+                    .map(|slot| CountryLinkRow {
+                        id: 100 + slot,
+                        canonical_slot: slot,
+                    })
+                    .collect(),
+            ),
+        );
+        let choice = perspective::Choice {
+            fog: false,
+            ..Default::default()
+        };
+        let fog = Arc::new(Ok(FogContent {
+            topology: Topology::default(),
+            defines: Defines {
+                intel_maximums: [100_000; 4],
+                radar_effect: 1,
+                map_cutoffs: vec![0, 0],
+                air_icon_threshold: 100_000,
+                air_detail_thresholds: [100_000; 4],
+                air_plane_fuzzy_range: 100_000,
+                naval_detail_thresholds: [100_000; 5],
+            },
+        }));
+        let fresh = |frame: &DecodedFrame,
+                     choice: &perspective::Choice,
+                     fog: &Arc<Result<FogContent, String>>| {
+            cached_vision(
+                frame,
+                choice,
+                FogContent::loaded(fog),
+                &Keyed::new(perspective::VISION_TABLES, 1),
+            )
+            .unwrap()
+        };
+        let built = fresh(&frame, &choice, &fog);
+        let prepared = PreparedVision::new(&frame, &choice, &fog, Arc::clone(&built));
+        let fallback_count = std::cell::Cell::new(0);
+        let resolve = |frame: &DecodedFrame,
+                       choice: &perspective::Choice,
+                       fog: &Arc<Result<FogContent, String>>| {
+            prepared
+                .get(frame, choice, fog)
+                .cloned()
+                .unwrap_or_else(|| {
+                    fallback_count.set(fallback_count.get() + 1);
+                    fresh(frame, choice, fog)
+                })
+        };
+        let same = resolve(&frame, &choice, &fog);
+        assert!(Arc::ptr_eq(&same, &built));
+        assert_eq!(*same, *fresh(&frame, &choice, &fog));
+        assert_eq!(fallback_count.get(), 0);
+        let mismatch = |frame: &DecodedFrame,
+                        choice: &perspective::Choice,
+                        fog: &Arc<Result<FogContent, String>>| {
+            let before = fallback_count.get();
+            let actual = resolve(frame, choice, fog);
+            assert_eq!(*actual, *fresh(frame, choice, fog));
+            assert_eq!(fallback_count.get(), before + 1);
+            assert!(!Arc::ptr_eq(&actual, &built));
+        };
+        let mut other = frame.clone();
+        other.branch += 1;
+        mismatch(&other, &choice, &fog);
+        other = frame.clone();
+        other.hour += 1;
+        mismatch(&other, &choice, &fog);
+        mismatch(
+            &frame,
+            &perspective::Choice {
+                country: perspective::Country::Tag("T2".into()),
+                ..choice.clone()
+            },
+            &fog,
+        );
+        mismatch(
+            &frame,
+            &perspective::Choice {
+                fog: true,
+                ..choice.clone()
+            },
+            &fog,
+        );
+        for table in perspective::VISION_TABLES {
+            let mut other = frame.clone();
+            other.tables[table.index()] = (*other.tables[table.index()]).clone().into();
+            mismatch(&other, &choice, &fog);
+        }
+        // Equal content reloaded from another stack is a miss, as is either content family
+        // changing under an otherwise identical hour. The retained Arc forbids in-place writes.
+        mismatch(&frame, &choice, &Arc::new((*fog).clone()));
+        let mut topology = fog.as_ref().clone().unwrap();
+        topology.topology.land.insert(1);
+        mismatch(&frame, &choice, &Arc::new(Ok(topology)));
+        let mut defines = fog.as_ref().clone().unwrap();
+        defines.defines.air_icon_threshold += 1;
+        mismatch(&frame, &choice, &Arc::new(Ok(defines)));
+        mismatch(
+            &frame,
+            &choice,
+            &Arc::new(Err("synthetic content refusal".into())),
+        );
+        assert!(Arc::ptr_eq(&resolve(&frame, &choice, &fog), &built));
+    }
 
     #[test]
     fn overlay_air_reuses_camera_independent_products_for_the_exact_selection() {

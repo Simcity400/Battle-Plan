@@ -134,6 +134,7 @@ fn refuse_column(
     }
 }
 
+#[derive(Clone)]
 pub(super) struct StackStyle {
     pub(super) organisation: f32,
     pub(super) strength: f32,
@@ -634,6 +635,7 @@ impl PreparedLand {
 }
 
 /// One first-fit counter item after the geographic group's unit rebuild.
+#[derive(Clone)]
 pub(super) struct Stack {
     pub(super) selected: bool,
     pub(super) owner: u32,
@@ -693,6 +695,7 @@ pub(super) struct Stack {
 }
 
 /// What a railway-gun plate draws besides the land counter's shared children.
+#[derive(Clone)]
 pub(super) struct GunStack {
     /// The representative gun's stat definition name: the authored key names its type icon
     /// (`GFX_unit_<key>_icon_medium_white`, [`templates::type_icon`]) with no custom icon, as
@@ -1201,6 +1204,7 @@ pub(super) struct TemplateIcon {
 #[derive(Clone, Default)]
 pub(super) struct TemplateIcons {
     pub(super) by_template: BTreeMap<u64, TemplateIcon>,
+
     /// Compare the priority sub-unit key and narrowed custom index even when
     /// low intel later replaces the type icon with a question mark.
     pub(super) grouping: BTreeMap<u64, (Vec<u8>, i32, u8)>,
@@ -1783,6 +1787,7 @@ pub(super) fn land_counters<'a>(
     naval: &NavalContext<'a>,
     geography: &Geography,
     friendly: &impl Fn(u32, u32) -> bool,
+    mut retained: Option<&mut ColumnPlans>,
     out: &mut CounterFrame,
 ) -> io::Result<PreparedLand> {
     // Division sources follow the recorded province occupant order. Units absent
@@ -1872,13 +1877,17 @@ pub(super) fn land_counters<'a>(
         .collect();
     let groups = counter_groups::group(&icons, &levels, geography.extents, friendly);
     let mut drawn = Vec::new();
+    let mut styles = Vec::new();
     let mut flotillas = Vec::new();
     let mut items = Vec::new();
     let mut undecided = BTreeMap::new();
+    // Keep only programs used in this preparation; live data, not an arbitrary cache cap,
+    // bounds the memo. Camera admission and geographic grouping above always run afresh.
+    let mut previous = retained
+        .as_deref_mut()
+        .map(|memo| std::mem::take(&mut memo.previous))
+        .unwrap_or_default();
     for group in &groups {
-        let mut group_items = Vec::new();
-        // A selected unit splits from its group near enough to the camera, and a group far
-        // enough draws coarse.
         let height = inputs.icon_height(group.anchor);
         let rules = JoinRules {
             coarse: inputs
@@ -1888,90 +1897,85 @@ pub(super) fn land_counters<'a>(
             color_mode: inputs.settings.color_mode,
             nato: inputs.settings.nato,
         };
-        // Append each member source's units, in member order, to the group icon;
-        // The game then first-fits them into the column's plates, never across unit classes.
-        // Nothing sorts plates: an HQ provider's plate stands wherever its source's walk puts
-        // it.
-        let units = group
+        let units: Vec<_> = group
             .members
             .iter()
-            .flat_map(|source| admitted[*source].units.iter());
-        let fitted = first_fit(units, |rep, unit| match (rep, unit) {
-            (SourceUnit::Land(rep), SourceUnit::Land(unit)) => {
-                let kind = if rep.gun.is_some() {
-                    viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
-                } else {
-                    viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
-                };
-                if !inputs.selected_join(kind.unit(rep.id), kind.unit(unit.id), height) {
-                    return false;
-                }
-                land_join(unit, rep, land.icons, land.countries, rules, &mut undecided)
-            }
-            (SourceUnit::Naval(rep), SourceUnit::Naval(unit)) => {
-                if !inputs.selected_join(
-                    Unit::TaskForce(rep.force.id),
-                    Unit::TaskForce(unit.force.id),
-                    height,
-                ) {
-                    return false;
-                }
-                naval_can_join(rep, unit, rules, land.countries, naval)
-            }
-            _ => false,
-        });
-        for item in fitted {
-            if let SourceUnit::Naval(_) = item[0] {
-                let members: Vec<&NavalUnit<'_>> = item
+            .flat_map(|source| admitted[*source].units.iter())
+            .collect();
+        let program = if let Some(memo) = retained.as_deref_mut() {
+            let key = ColumnKey {
+                sources: group
+                    .members
                     .iter()
-                    .filter_map(|unit| match unit {
-                        SourceUnit::Naval(unit) => Some(unit),
-                        SourceUnit::Land(_) => None,
+                    .map(|&source| OrderedSource {
+                        province: icons[source].province,
+                        kind: source_kinds[source],
+                        members: admitted[source]
+                            .units
+                            .iter()
+                            .map(|unit| {
+                                let id = match unit {
+                                    SourceUnit::Land(unit) if unit.gun.is_some() => {
+                                        Unit::RailwayGun(unit.id)
+                                    }
+                                    SourceUnit::Land(unit) => Unit::Division(unit.id),
+                                    SourceUnit::Naval(unit) => Unit::TaskForce(unit.force.id),
+                                };
+                                (id, unit.ordinal())
+                            })
+                            .collect(),
                     })
-                    .collect();
-                group_items.push(Plate::Naval(flotillas.len()));
-                flotillas.push(naval.flotilla(&members, false, rules.coarse));
-                continue;
-            }
-            let item: Vec<&LandUnit<'_>> = item
-                .iter()
-                .filter_map(|unit| match unit {
-                    SourceUnit::Land(unit) => Some(unit),
-                    SourceUnit::Naval(_) => None,
-                })
-                .collect();
-            group_items.push(Plate::Land(drawn.len()));
-            let mut stack = land_stack(
-                &item,
-                land,
-                &undecided,
-                inputs.settings.nato,
-                &|name| inputs.assets.types.declares(name),
-                rules.coarse,
-            );
-            let kind = if stack.gun.is_some() {
-                viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
-            } else {
-                viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+                    .collect(),
+                coarse: rules.coarse,
+                split_selected: inputs.selected.len() as i32
+                    <= inputs.content.defines.split_selected_limit
+                    && height < inputs.content.defines.units_cutoff,
+                unknown_before: units
+                    .iter()
+                    .map(|unit| match unit {
+                        SourceUnit::Land(unit) => undecided.get(&unit.id).copied(),
+                        SourceUnit::Naval(_) => None,
+                    })
+                    .collect(),
             };
-            stack.selected = inputs.selected.contains(&kind.unit(stack.divisions[0]));
-            // The allegiance palette uses the type icon's relation.
-            stack.plate = counter_plate_color(
-                inputs.settings.color_mode,
-                &inputs.content.defines.tints,
-                land.countries,
-                type_tint::plate(stack.owner == land.vision.ours(), stack.type_tint),
-                stack.logical,
+            let leader = (
+                icons[group.members[0]].province,
+                source_kinds[group.members[0]],
             );
-            drawn.push(stack);
-        }
-        items.push(group_items);
+            let before = previous.remove(&leader);
+            #[cfg(test)]
+            let members_equal = before
+                .as_ref()
+                .is_some_and(|(before, _)| before.sources == key.sources);
+            // Per-anchor free-view operand dependencies are kept on the original path.
+            let hit = inputs.camera.free().is_none()
+                && before.as_ref().is_some_and(|(before, _)| *before == key);
+            #[cfg(test)]
+            super::preparation::plan_probe::record(|counts| {
+                counts.ordered_groups += 1;
+                counts.ordered_group_members_equal += u64::from(members_equal);
+                counts.semantic_plans += 1;
+                counts.semantic_plan_hits += u64::from(hit);
+            });
+            let program = if hit {
+                before.unwrap().1
+            } else {
+                column_program(inputs, &units, height, rules, land, naval, &mut undecided)
+            };
+            let result = program.append(&mut drawn, &mut styles, &mut flotillas, &mut undecided);
+            memo.previous.insert(leader, (key, program));
+            result
+        } else {
+            column_program(inputs, &units, height, rules, land, naval, &mut undecided).append(
+                &mut drawn,
+                &mut styles,
+                &mut flotillas,
+                &mut undecided,
+            )
+        };
+        items.push(program);
     }
 
-    let styles = drawn
-        .iter()
-        .map(|stack| stack_style(inputs, stack))
-        .collect();
     let hovered = items
         .iter()
         .zip(&groups)
@@ -2016,6 +2020,167 @@ pub(super) fn land_counters<'a>(
         vision: Arc::clone(land.vision),
         order: Vec::new(),
     })
+}
+
+/// A column's semantic program. It owns values only: no screen coordinates, native instances,
+/// atlas cells, packets or lifecycle clocks. Native requests and setters are still replayed by
+/// the ordinary draw owners on every frame.
+#[derive(Clone, Default)]
+struct ColumnProgram {
+    stacks: Vec<Stack>,
+    styles: Vec<StackStyle>,
+    flotillas: Vec<Flotilla>,
+    items: Vec<Plate>,
+    unknown: BTreeMap<u64, SharingUnknown>,
+}
+
+/// Source boundaries and occurrence order both matter, including repeated native handles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OrderedSource {
+    province: u32,
+    kind: u32,
+    members: Vec<(Unit, u32)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ColumnKey {
+    sources: Vec<OrderedSource>,
+    coarse: bool,
+    split_selected: bool,
+    // A unit can contribute to more than one geographic group. Earlier first-fit failures
+    // may therefore affect this group's materialized grouping_unknown, even on a cache hit.
+    unknown_before: Vec<Option<SharingUnknown>>,
+}
+
+#[derive(Default)]
+pub(super) struct ColumnPlans {
+    previous: BTreeMap<(u32, u32), (ColumnKey, ColumnProgram)>,
+}
+
+impl ColumnProgram {
+    fn append(
+        &self,
+        drawn: &mut Vec<Stack>,
+        styles: &mut Vec<StackStyle>,
+        flotillas: &mut Vec<Flotilla>,
+        undecided: &mut BTreeMap<u64, SharingUnknown>,
+    ) -> Vec<Plate> {
+        for (&id, &why) in &self.unknown {
+            undecided.entry(id).or_insert(why);
+        }
+        let (land_at, naval_at) = (drawn.len(), flotillas.len());
+        drawn.extend(self.stacks.iter().cloned());
+        styles.extend(self.styles.iter().cloned());
+        flotillas.extend(self.flotillas.iter().cloned());
+        self.items
+            .iter()
+            .map(|plate| match *plate {
+                Plate::Land(at) => Plate::Land(land_at + at),
+                Plate::Naval(at) => Plate::Naval(naval_at + at),
+            })
+            .collect()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn column_program(
+    inputs: &CounterInputs<'_>,
+    units: &[&SourceUnit<'_>],
+    height: f32,
+    rules: JoinRules,
+    land: &CounterTables<'_>,
+    naval: &NavalContext<'_>,
+    undecided: &mut BTreeMap<u64, SharingUnknown>,
+) -> ColumnProgram {
+    let mut drawn = Vec::new();
+    let mut flotillas = Vec::new();
+    let mut group_items = Vec::new();
+
+    let fitted = first_fit(units.iter().copied(), |rep, unit| match (rep, unit) {
+        (SourceUnit::Land(rep), SourceUnit::Land(unit)) => {
+            let kind = if rep.gun.is_some() {
+                viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
+            } else {
+                viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+            };
+            if !inputs.selected_join(kind.unit(rep.id), kind.unit(unit.id), height) {
+                return false;
+            }
+            land_join(unit, rep, land.icons, land.countries, rules, undecided)
+        }
+        (SourceUnit::Naval(rep), SourceUnit::Naval(unit)) => {
+            if !inputs.selected_join(
+                Unit::TaskForce(rep.force.id),
+                Unit::TaskForce(unit.force.id),
+                height,
+            ) {
+                return false;
+            }
+            naval_can_join(rep, unit, rules, land.countries, naval)
+        }
+        _ => false,
+    });
+    for item in fitted {
+        if let SourceUnit::Naval(_) = item[0] {
+            let members: Vec<&NavalUnit<'_>> = item
+                .iter()
+                .filter_map(|unit| match unit {
+                    SourceUnit::Naval(unit) => Some(unit),
+                    SourceUnit::Land(_) => None,
+                })
+                .collect();
+            group_items.push(Plate::Naval(flotillas.len()));
+            flotillas.push(naval.flotilla(&members, false, rules.coarse));
+            continue;
+        }
+        let item: Vec<&LandUnit<'_>> = item
+            .iter()
+            .filter_map(|unit| match unit {
+                SourceUnit::Land(unit) => Some(unit),
+                SourceUnit::Naval(_) => None,
+            })
+            .collect();
+        group_items.push(Plate::Land(drawn.len()));
+        let mut stack = land_stack(
+            &item,
+            land,
+            undecided,
+            inputs.settings.nato,
+            &|name| inputs.assets.types.declares(name),
+            rules.coarse,
+        );
+        let kind = if stack.gun.is_some() {
+            viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
+        } else {
+            viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+        };
+        stack.selected = inputs.selected.contains(&kind.unit(stack.divisions[0]));
+        // The allegiance palette uses the type icon's relation.
+        stack.plate = counter_plate_color(
+            inputs.settings.color_mode,
+            &inputs.content.defines.tints,
+            land.countries,
+            type_tint::plate(stack.owner == land.vision.ours(), stack.type_tint),
+            stack.logical,
+        );
+        drawn.push(stack);
+    }
+    ColumnProgram {
+        styles: drawn
+            .iter()
+            .map(|stack| stack_style(inputs, stack))
+            .collect(),
+        stacks: drawn,
+        flotillas,
+        items: group_items,
+        unknown: units
+            .iter()
+            .filter_map(|unit| match unit {
+                SourceUnit::Land(unit) => undecided.get(&unit.id).map(|&why| (unit.id, why)),
+                SourceUnit::Naval(_) => None,
+            })
+            .collect(),
+    }
 }
 
 /// Compare the priority sub-unit key and narrowed custom index even when

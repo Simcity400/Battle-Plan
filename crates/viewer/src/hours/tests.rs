@@ -873,3 +873,22 @@ fn skipped_colour_refreshes_carry_in_recorded_order_and_gaps_start_cold() {
         .is_err()
     );
 }
+
+#[test]
+fn forward_playback_retains_only_targets_not_cancellation_endpoints_or_behind_hours() {
+    let replay = long_replay(&(10..=710).collect::<Vec<_>>());
+    let lane = Arc::new(lane_over(&replay));
+    lane.want(vec![(1, 690)], 0);
+    let Current::Frame(actual) = frame_within(&lane, 1, 690) else {
+        panic!("target frame")
+    };
+    let replay::container::SeekResult::Frame(expected) = replay.seek(1, 690).unwrap() else {
+        panic!("expected frame")
+    };
+    assert_eq!(actual.as_ref(), expected.as_ref());
+    let state = DecodeLane::lock(&lane.shared);
+    assert_eq!(
+        state.frames.frames.keys().copied().collect::<Vec<_>>(),
+        [(1, 690)]
+    );
+}
