@@ -13,6 +13,8 @@ export const browserTests = [
   'ui/src/charts/shareDrawing.test.ts',
   'ui/src/charts/table/Table.dom.test.ts',
   'ui/src/components/CountryFlag.dom.test.ts',
+  'ui/src/components/GameWindow.dom.test.ts',
+  'ui/src/components/GameWindow.keyboard.dom.test.ts',
   'ui/src/components/Select.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
   'ui/src/widgets/politicsSizes.dom.test.ts',

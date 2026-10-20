@@ -1381,3 +1381,26 @@ fn every_shipped_gui_file_reads() {
     }
     assert!(read_any);
 }
+
+/// Files read at once name their unnamed elements exactly as files read in turn do, whatever
+/// the counter starts at.
+#[test]
+fn files_read_at_once_are_named_as_in_turn() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let files: Vec<Vec<u8>> = (0..40)
+        .map(|index| match index % 3 {
+            0 => format!("guiTypes = {{ containerWindowType = {{ name = \"w{index}\" iconType = {{ }} iconType = {{ name = \"i\" }} }} containerWindowType = {{ }} }}"),
+            1 => format!("guiTypes = {{ containerWindowType = {{ name = \"plain{index}\" }} }}"),
+            _ => "guiTypes = { containerWindowType = { buttonType = { } } }".to_owned(),
+        }.into_bytes())
+        .collect();
+    for start in [0, 7] {
+        let mut turn = super::Context { unnamed: start };
+        let in_turn: Vec<_> = files.iter().map(|file| turn.read(file)).collect();
+        let mut once = super::Context { unnamed: start };
+        assert_eq!(once.read_all(&files), in_turn);
+        assert_eq!(once.unnamed, turn.unnamed);
+        assert!(turn.unnamed > start + 20);
+    }
+}

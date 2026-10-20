@@ -1,0 +1,47 @@
+[package]
+name = "dashboard-game-window"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+replay.workspace = true
+installed-content-core.workspace = true
+installed-content-gfx.workspace = true
+installed-content-image.workspace = true
+installed-content-localisation.workspace = true
+installed-content-settings.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
+dashboard-base.workspace = true
+dashboard-core.workspace = true
+dashboard-text.workspace = true
+job-priority.workspace = true
+# The native GUI layout, text and resource loading the map viewer draws with. Only its CPU
+# layout and texture decoding are used here; nothing opens a device or a window.
+viewer-foundation = { path = "../viewer-foundation" }
+shader-pipeline = { path = "../shader-pipeline" }
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+ts-rs = "11.1"
+png.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_UI_HiDpi"] }
+
+[dev-dependencies]
+mimalloc.workspace = true
+engine-executable.workspace = true
+installed-content-core = { workspace = true, features = ["test-support"] }
+installed-content-gfx = { workspace = true, features = ["test-support"] }
+installed-content-image = { workspace = true, features = ["test-support"] }
+installed-content-localisation = { workspace = true, features = ["test-support"] }
+dashboard-base = { workspace = true, features = ["test-support"] }
+dashboard-text = { workspace = true, features = ["test-support"] }
+viewer-foundation = { path = "../viewer-foundation", features = ["test-support"] }

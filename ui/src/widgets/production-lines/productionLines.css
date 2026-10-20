@@ -27,6 +27,7 @@
 .production-organisation { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .production-organisation img, .production-organisation .art-fallback { flex: none; width: 22px; height: 22px; object-fit: contain; }
 .production-organisation small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.production-organisation-trigger { display: flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%; text-align: left; }
 .production-cell { display: flex; flex-direction: column; min-width: 0; }
 .production-number { font-variant-numeric: tabular-nums; }
 .production-lines .is-number { text-align: right; }

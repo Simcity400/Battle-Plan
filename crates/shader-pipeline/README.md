@@ -9,7 +9,7 @@ Its content dependency is `installed-content-core`; it does not depend on the `i
 | Module | Responsibility |
 |---|---|
 | [library.rs](src/library.rs) | Content-scoped effects, renderer globals and lazy technique/define variants. |
-| [artwork.rs](src/artwork.rs) | Isolated native sprite shader output for dashboard PNGs, with content-scoped sources and native register/texture binds. |
+| [artwork.rs](src/artwork.rs) | Isolated native sprite shader output for dashboard PNGs, with content-scoped sources and native register/texture binds; the stack's map size GUI effect globals carry (`map_size`). |
 | [lib.rs](src/lib.rs), [source.rs](src/source.rs) | Compiler discovery, compilation, reflection and stage/register contracts. |
 | [cache.rs](src/cache.rs) | Persistent compiled payloads and diagnostics; owns the compiler/translation ABI. |
 | [gpu.rs](src/gpu.rs), [gpu/arena.rs](src/gpu/arena.rs) | Device-local pipelines, state lowering, bindings and staged uploads. |

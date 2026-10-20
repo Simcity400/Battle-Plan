@@ -71,6 +71,12 @@ python tools/check-content-dependencies.py
 python tools/check-build-dependencies.py --impact engine-decisions
 ```
 
+The map viewer's native GUI code (`viewer-foundation`) reaches the dashboard only
+through `dashboard-game-window`: no other dashboard crate may depend on it, and
+the dashboard depends on it only through that crate, so editing the viewer
+rebuilds no other product. The dashboard uses that code's CPU layout, text and
+texture decoding only; it never opens a graphics device or a window there.
+
 The impact report includes possible normal-build rebuilds, including optional
 and target-specific edges. It excludes dev-only edges. Cargo can reuse more
 work when an edit leaves public metadata unchanged; the report is a structural

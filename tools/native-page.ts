@@ -1,0 +1,121 @@
+// A headless Edge page serving the repository through Vite, driven over the DevTools protocol
+// with native input: keys reach the page as a person's keys do, focus moves as the browser moves
+// it. A test loads its fixture module into the page and acts through it.
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve, sep } from 'node:path';
+import { setTimeout as pause } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
+import { createServer } from 'vite';
+import { browserStage, ownedEdgeProcesses, stopBrowser, stopOwnedProfile } from './canvas-page.ts';
+
+function cdp(endpoint: string, method: string, params: Record<string, unknown> = {}, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  return new Promise<any>((done, reject) => {
+    const socket = new WebSocket(endpoint);
+    const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); socket.close(); };
+    const abort = () => { cleanup(); reject(signal!.reason); };
+    const timeout = setTimeout(() => { cleanup(); reject(new Error(`${method} timed out`)); }, 30_000);
+    signal?.addEventListener('abort', abort, { once: true });
+    socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method, params })));
+    socket.addEventListener('message', event => {
+      const message = JSON.parse(String(event.data)); if (message.id !== 1) return;
+      cleanup();
+      if (message.error) reject(new Error(JSON.stringify(message.error))); else done(message.result);
+    });
+    socket.addEventListener('error', () => { cleanup(); reject(new Error(`${method} connection failed`)); });
+  });
+}
+
+const KEY_CODES = { Tab: 9, Enter: 13, Escape: 27, PageUp: 33, PageDown: 34, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
+export type NativeKey = keyof typeof KEY_CODES;
+
+export interface NativePage {
+  /** Evaluates an expression in the page, awaiting a promise it gives. */
+  evaluate<T = any>(expression: string): Promise<T>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  /** Presses and releases a key natively, with Shift when `shift`. */
+  press(key: NativeKey, shift?: boolean): Promise<void>;
+  /** The page's own DevTools endpoint, for a caller holding its own connection. */
+  page: string;
+  /** Runs `run` as one stage bounded by `timeout`, failing it if the browser exits. */
+  stage<T>(label: string, run: (signal: AbortSignal) => Promise<T>, timeout?: number): Promise<T>;
+}
+
+/** Runs `run` on a fresh page that has imported `fixture` (a path from the repository root),
+ * then closes the browser and its profile whatever happens. `run` bounds its own work in
+ * stages ([`NativePage.stage`]). */
+export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>): Promise<void> {
+  const edge = (process.env.BATTLE_PLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
+    .filter((directory): directory is string => Boolean(directory))
+    .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
+  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLE_PLAN_CANVAS_BROWSER to its executable');
+  const profile = await mkdtemp(resolve(tmpdir(), `${name}-`));
+  const route = `/${name}-page`;
+  const vite = await createServer({ configFile: false, root: fileURLToPath(new URL('../', import.meta.url)),
+    cacheDir: resolve(profile, 'vite'), optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime'], noDiscovery: true },
+    server: { host: '127.0.0.1', port: 0, watch: null, hmr: false, ws: false },
+    plugins: [{ name: `${name}-page`, configureServer(server) {
+      server.middlewares.use(route, (_request, response) => {
+        response.setHeader('Content-Type', 'text/html'); response.end(`<!doctype html><title>${name}</title>`);
+      });
+    } }] });
+  let browser: ReturnType<typeof spawn> | undefined, endpoint = '', browserPid: number | undefined;
+  try {
+    await vite.listen();
+    const address = vite.httpServer!.address(); assert.ok(address && typeof address !== 'string');
+    browser = spawn(edge, ['--headless', '--disable-gpu', '--no-first-run', '--edge-skip-compat-layer-relaunch',
+      '--remote-debugging-port=0', `--user-data-dir=${profile}`], { windowsHide: true });
+    browser.stdout?.resume(); browser.stderr?.resume();
+    endpoint = await browserStage(browser, `${name} Edge startup`, async signal => {
+      for (;;) {
+        signal.throwIfAborted();
+        try {
+          const [port, path] = (await readFile(resolve(profile, 'DevToolsActivePort'), { encoding: 'utf8', signal })).trim().split('\n');
+          if (port && path) return `ws://127.0.0.1:${port}/${path.replace(/^\//, '')}`;
+        } catch (error) { signal.throwIfAborted(); if (!['ENOENT', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
+        await pause(50, undefined, { signal });
+      }
+    });
+    const processes = await cdp(endpoint, 'SystemInfo.getProcessInfo');
+    browserPid = processes.processInfo.find((entry: { type: string }) => entry.type === 'browser')?.id;
+    assert.ok(browserPid && Number.isSafeInteger(browserPid));
+    const { targetId } = await cdp(endpoint, 'Target.createTarget', { url: 'about:blank' });
+    const targets = await fetch(`http://127.0.0.1:${new URL(endpoint).port}/json/list`).then(response => response.json()) as { id: string; webSocketDebuggerUrl: string }[];
+    const target = targets.find(target => target.id === targetId)!.webSocketDebuggerUrl;
+    const evaluate = async <T = any,>(expression: string): Promise<T> => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      const result = await cdp(target, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+      assert.equal(result.exceptionDetails, undefined, JSON.stringify(result.exceptionDetails));
+      return result.result.value as T;
+    };
+    await cdp(target, 'Page.navigate', { url: `http://127.0.0.1:${address.port}${route}` });
+    await browserStage(browser, `${name} page navigation`, async signal => {
+      while (await evaluate('location.pathname') !== route) await pause(50, undefined, { signal });
+    });
+    await evaluate(`import(${JSON.stringify(fixture)})`);
+    const press = async (key: NativeKey, shift = false) => {
+      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: KEY_CODES[key], modifiers: shift ? 8 : 0 });
+      await cdp(target, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 });
+    };
+    const owned = browser;
+    const stage = <T,>(label: string, work: (signal: AbortSignal) => Promise<T>, timeout?: number) => browserStage(owned, label, work, timeout);
+    await run({ evaluate, press, page: target, stage });
+  } finally {
+    try {
+      if (browser) await stopBrowser(browser, async (_budget, signal) => { if (endpoint) await cdp(endpoint, 'Browser.close', {}, signal); }, async budget => {
+        if (process.platform === 'win32') {
+          await stopOwnedProfile(profile, browser!.exitCode !== null || browser!.signalCode !== null ? undefined : browser!.pid, browserPid, ownedEdgeProcesses, budget); return;
+        }
+        assert.ok(browserPid, 'Only the browser identified by this owned CDP endpoint may be stopped'); process.kill(browserPid, 'SIGKILL');
+      }, 5_000, async (_budget, signal) => {
+        if (process.platform === 'win32') return (await ownedEdgeProcesses(profile, browser!.exitCode !== null || browser!.signalCode !== null ? undefined : browser!.pid, false, undefined, signal)).length === 0;
+        if (!browserPid) return browser!.exitCode !== null || browser!.signalCode !== null;
+        try { process.kill(browserPid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true; throw error; }
+      }, { profile });
+    } finally { await vite.close(); }
+    assert.ok(profile.startsWith(resolve(tmpdir()) + sep));
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}

@@ -21,6 +21,7 @@ It builds on [engine-executable](../engine-executable/README.md) (the executable
 ## Layout
 
 - `content`: recorded identities, hashes, ordered folder/archive mounts, lookup and shared derived caches.
+- `parallel`: independent work on the machine's threads, results in order. `ResolvedLayers::read_paths` reads many files at once, each exactly as `read_path` reads it alone: a stacked lookup probes every layer above the one that answers, and those probes dominate a bulk read. The `.gui` and `.gfx` registries read and parse their files this way; GUI files that generate element names are re-read from their place in the shared counter, so names match a read in turn.
 - `parser`, `crt`, `fixed5`, `fields`: byte-preserving trees, native script consumption, number conversion and named scalar refusals.
 - `key_names`, `combat_tactics`, `trigger_keys`, `effect_keys`, `modifiers`: load-point identity and shared dispatch.
 - Authored catalogues retain their database-specific order, duplicate identity and coverage refusals.

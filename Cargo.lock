@@ -2172,6 +2172,7 @@ dependencies = [
  "dashboard-equipment-stockpile",
  "dashboard-forces",
  "dashboard-game-score",
+ "dashboard-game-window",
  "dashboard-intelligence",
  "dashboard-land-battles",
  "dashboard-military-air-ledger",
@@ -2485,6 +2486,34 @@ dependencies = [
  "serde_json",
  "store",
  "ts-rs",
+]
+
+[[package]]
+name = "dashboard-game-window"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-gfx",
+ "installed-content-image",
+ "installed-content-localisation",
+ "installed-content-settings",
+ "job-priority",
+ "mimalloc",
+ "png 0.18.1",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "shader-pipeline",
+ "ts-rs",
+ "uuid",
+ "viewer-foundation",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

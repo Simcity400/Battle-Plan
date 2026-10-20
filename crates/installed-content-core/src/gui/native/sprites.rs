@@ -661,8 +661,15 @@ fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<(S
     let dynamic = DynamicTokens::read(layers)?;
     let recorded = layers.without_overlays();
     let mut files = Vec::new();
-    for bytes in order {
-        let mut file = read_sprites_with(&layers.read_path(&bytes)?, &dynamic);
+    // Each file is read and parsed on the machine's threads as it would be alone; the rest
+    // follows in load order, and the first file that fails to read fails the whole.
+    let read = crate::parallel::map(&order, |bytes| {
+        layers
+            .read_path(bytes)
+            .map(|text| read_sprites_with(&text, &dynamic))
+    });
+    for (bytes, file) in order.into_iter().zip(read) {
+        let mut file = file?;
         let path = String::from_utf8_lossy(&bytes).into_owned();
         // A visual mod's file whose declarations are refused is read as the recording's own
         // file of that path when that reads whole, named.

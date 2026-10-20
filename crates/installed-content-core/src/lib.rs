@@ -51,6 +51,7 @@ pub mod names;
 pub mod occupation_laws;
 pub mod occupation_modifiers;
 pub mod opinion_modifiers;
+pub mod parallel;
 pub mod parser;
 pub mod particles;
 pub mod pdxshader;

@@ -57,6 +57,7 @@ dashboard-resource-balance.workspace = true
 dashboard-unit-leaders.workspace = true
 dashboard-core.workspace = true
 dashboard-forces.workspace = true
+dashboard-game-window.workspace = true
 dashboard-intelligence.workspace = true
 dashboard-land-battles.workspace = true
 dashboard-naval.workspace = true

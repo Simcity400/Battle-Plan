@@ -149,22 +149,57 @@ impl KeyNames {
     }
 
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
-        let (ideologies, _) = crate::ideologies::read(layers)?;
-        let (resources, _) = resources::read(layers)?;
+        // The readers before buildings read nothing of each other: they run at once, each as
+        // this thread runs, and the first in this order that fails fails the read, as in turn.
+        use crate::parallel::{join, spawn};
+        let (
+            ideologies,
+            resources,
+            scripted,
+            scripted_effects,
+            countries,
+            aliases,
+            characters,
+            sub_units,
+            template_columns,
+        ) = std::thread::scope(|scope| {
+            let ideologies = spawn(scope, || crate::ideologies::read(layers));
+            let resources = spawn(scope, || resources::read(layers));
+            let scripted = spawn(scope, || crate::scripted_triggers::names(layers));
+            let effects = spawn(scope, || crate::scripted_effects::names(layers));
+            let countries = spawn(scope, || country_tags(layers));
+            let aliases = spawn(scope, || crate::tag_aliases::names(layers));
+            let characters = spawn(scope, || crate::characters::tokens(layers));
+            let sub_units = spawn(scope, || crate::unit_leader::sub_units(layers));
+            let columns = spawn(scope, || template_columns(layers));
+            (
+                join(ideologies),
+                join(resources),
+                join(scripted),
+                join(effects),
+                join(countries),
+                join(aliases),
+                join(characters),
+                join(sub_units),
+                join(columns),
+            )
+        });
+        let (ideologies, _) = ideologies?;
+        let (resources, _) = resources?;
         let mut names = Self {
-            scripted: crate::scripted_triggers::names(layers)?,
-            scripted_effects: crate::scripted_effects::names(layers)?,
+            scripted: scripted?,
+            scripted_effects: scripted_effects?,
             counts: CountTriggerNames::new(
                 &buildings::Buildings::default(),
                 &ideologies,
                 &resources,
             ),
-            countries: country_tags(layers)?,
-            aliases: crate::tag_aliases::names(layers)?,
-            characters: crate::characters::tokens(layers)?,
+            countries: countries?,
+            aliases: aliases?,
+            characters: characters?,
             province_buildings: BTreeMap::new(),
-            sub_units: Some(crate::unit_leader::sub_units(layers)?),
-            template_columns: Some(template_columns(layers)),
+            sub_units: Some(sub_units?),
+            template_columns: Some(template_columns),
             ..Self::default()
         };
         if layers.paths().any(buildings::is_building_file) {
@@ -394,6 +429,71 @@ mod tests {
                 current: &value,
             },
         )
+    }
+
+    /// The readers run at once give exactly what they give in turn, over the installation with
+    /// a mod layer that adds to several of them.
+    #[test]
+    fn names_read_at_once_equal_names_read_in_turn() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let game = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
+        let overlay =
+            std::env::temp_dir().join(format!("key_names_at_once_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&overlay);
+        for (path, text) in [
+            (
+                "common/scripted_triggers/zz_synthetic.txt",
+                "synthetic_trigger = { always = yes }",
+            ),
+            (
+                "common/scripted_effects/zz_synthetic.txt",
+                "synthetic_effect = { }",
+            ),
+            (
+                "common/country_tags/zz_synthetic.txt",
+                "QQX = \"countries/Synthetic.txt\"",
+            ),
+        ] {
+            let path = overlay.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let layers = ResolvedLayers::from_folders(&[
+            (game.as_path(), &[][..]),
+            (overlay.as_path(), &[][..]),
+        ])
+        .unwrap();
+        let names = KeyNames::read(&layers).unwrap();
+        let (ideologies, _) = crate::ideologies::read(&layers).unwrap();
+        let (resources, _) = resources::read(&layers).unwrap();
+        assert_eq!(
+            names.scripted,
+            crate::scripted_triggers::names(&layers).unwrap()
+        );
+        assert!(names.scripted.contains(b"synthetic_trigger".as_slice()));
+        assert_eq!(
+            names.scripted_effects,
+            crate::scripted_effects::names(&layers).unwrap()
+        );
+        assert_eq!(names.countries, country_tags(&layers).unwrap());
+        assert!(names.countries.contains(b"QQX".as_slice()));
+        assert_eq!(names.aliases, crate::tag_aliases::names(&layers).unwrap());
+        assert_eq!(
+            names.characters,
+            crate::characters::tokens(&layers).unwrap()
+        );
+        assert_eq!(
+            names.sub_units,
+            Some(crate::unit_leader::sub_units(&layers).unwrap())
+        );
+        assert_eq!(names.template_columns, Some(template_columns(&layers)));
+        let counts =
+            CountTriggerNames::new(&buildings::Buildings::default(), &ideologies, &resources);
+        assert_eq!(names.counts.resources, counts.resources);
+        assert_eq!(names.counts.ideologies, counts.ideologies);
+        assert_eq!(names.counts.ideology_types, counts.ideology_types);
+        let _ = std::fs::remove_dir_all(&overlay);
     }
 
     /// Dispatch checks `else`, the registry, scope text only with `{`, counts by token,

@@ -5,7 +5,7 @@ use crate::{
     mio_traits::{Bonus, is_production_stat},
     modifiers,
     parser::{
-        c_string,
+        Item, c_string,
         native::{self, Shape},
     },
 };
@@ -15,6 +15,14 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Policy {
     pub token: Vec<u8>,
     pub name: Vec<u8>,
+    /// The authored `icon` sprite name; empty when the policy names none.
+    pub icon: Vec<u8>,
+    /// The `visible` condition, evaluated for the organisation: a policy whose condition does
+    /// not hold is not shown. Empty when none is declared (always shown).
+    pub visible: Vec<Item>,
+    /// The `available` condition, evaluated for the organisation: a shown policy whose
+    /// condition does not hold cannot be chosen. Empty when none is declared (always available).
+    pub available: Vec<Item>,
     pub groups: Vec<(Vec<u8>, Vec<Bonus>)>,
     pub organisation_modifiers: modifiers::Modifiers,
 }
@@ -134,6 +142,17 @@ impl Catalog {
             for field in item.value.items().unwrap_or_default() {
                 if field.keyword_is("name") {
                     policy.name = field.value.read_string().unwrap_or_default().to_vec();
+                } else if field.keyword_is("icon") {
+                    policy.icon = field.value.read_string().unwrap_or_default().to_vec();
+                } else if field.keyword_is("visible") {
+                    // Repeated blocks are one conjunction.
+                    policy
+                        .visible
+                        .extend_from_slice(field.value.items().unwrap_or_default());
+                } else if field.keyword_is("available") {
+                    policy
+                        .available
+                        .extend_from_slice(field.value.items().unwrap_or_default());
                 } else if field.keyword_is("organization_modifier") {
                     policy
                         .organisation_modifiers
@@ -226,6 +245,7 @@ mod tests {
         ).unwrap();
         let row = catalog.policy(b"SYNTHETIC").unwrap();
         assert_eq!(row.name, b"NAME");
+        assert!(row.icon.is_empty() && row.visible.is_empty() && row.available.is_empty());
         assert_eq!(row.groups.len(), 2);
         let group = row.groups.iter().find(|(name, _)| name == b"z").unwrap();
         assert_eq!(
@@ -256,5 +276,26 @@ mod tests {
                 .iter()
                 .any(|why| why.contains("MIO policy bad") && why.contains("count: 1"))
         );
+        // The icon and the window conditions are retained, repeated blocks joined.
+        let mut catalog = Catalog::default();
+        catalog
+            .read_file(
+                b"gated={icon=GFX_gated visible={always=no} available={always=yes} visible={has_war=yes}}",
+                &KeyNames::default(),
+            )
+            .unwrap();
+        let gated = catalog.policy(b"gated").unwrap();
+        assert_eq!(gated.icon, b"GFX_gated");
+        let keys = |items: &[Item]| {
+            items
+                .iter()
+                .map(|item| c_string(item.key.as_deref().unwrap_or_default()).to_vec())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(&gated.visible),
+            [b"always".to_vec(), b"has_war".to_vec()]
+        );
+        assert_eq!(keys(&gated.available), [b"always".to_vec()]);
     }
 }

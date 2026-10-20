@@ -1755,6 +1755,14 @@ impl ResolvedLayers {
         Err(not_found(&relative))
     }
 
+    /// Every path read as [`Self::read_path`] reads it, each result in its path's place. The
+    /// reads are independent (each resolves, verifies and reports as it would alone), so they
+    /// run on the machine's threads: a stack's every lookup probes each layer above the one
+    /// that answers, and a bulk reader spends its time in those probes.
+    pub fn read_paths<P: AsRef<[u8]> + Sync>(&self, paths: &[P]) -> Vec<io::Result<Vec<u8>>> {
+        crate::parallel::map(paths, |path| self.read_path(path.as_ref()))
+    }
+
     /// Opt into ordinary uncovered reads and retain this handle at the reporting
     /// boundary. Layer clones and lazy readers contribute to the same live set.
     /// Explicit `read_uncovered` attempts also retain missing candidates.
@@ -2669,45 +2677,12 @@ impl HashCache {
     /// Probes every path on the machine's cores, returning each result in
     /// path order.
     fn probe_all(&self, paths: &[PathBuf]) -> Vec<io::Result<Probe>> {
-        let workers = std::thread::available_parallelism()
-            .map_or(1, |count| count.get())
-            .min(paths.len());
-        if workers <= 1 {
-            return paths.iter().map(|path| self.probe(path)).collect();
-        }
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let mut probes: Vec<Option<io::Result<Probe>>> = Vec::new();
-        probes.resize_with(paths.len(), || None);
-        std::thread::scope(|scope| {
-            let tasks: Vec<_> = (0..workers)
-                .map(|_| {
-                    let priority = job_priority::JobPriority::current();
-                    scope.spawn(|| {
-                        priority.enter(job_priority::Level::Normal);
-                        let mut done = Vec::new();
-                        loop {
-                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some(path) = paths.get(index) else {
-                                return done;
-                            };
-                            done.push((index, self.probe(path)));
-                        }
-                    })
-                })
-                .collect();
-            for task in tasks {
-                let done = task
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-                for (index, probe) in done {
-                    probes[index] = Some(probe);
-                }
-            }
-        });
-        probes
-            .into_iter()
-            .map(|probe| probe.expect("every path probed"))
-            .collect()
+        let priority = job_priority::JobPriority::current();
+        crate::parallel::map_entering(
+            paths,
+            || priority.clone().enter(job_priority::Level::Normal),
+            |path| self.probe(path),
+        )
     }
 
     /// Counts a probe and keeps a digest read now.

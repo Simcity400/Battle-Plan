@@ -484,6 +484,119 @@ export type DoctrineTrack = { ordinal: number, name: string, subDoctrine: string
 export type DoctrineFolder = { ordinal: number, name: string, grandDoctrine: string | null, benefits: string, authoredCost: string, milestones: Array<DoctrineReward>, completed: Array<string>, tracks: Array<DoctrineTrack>, };
 export type DoctrineInventory = { kind: string, ordinal: number, fields: Array<DoctrineFact>, };
 export type DoctrineReply = { branchId: string, hour: number, tag: string, folders: Array<DoctrineFolder>, inventory: Array<DoctrineInventory>, warnings: Array<string>, };
+export type GameWindowParams = { branchId: string, hour: number, window: GameWindowTarget, scroll?: Array<ListScroll>, };
+export type GameWindowTarget = { "kind": "mioPolicies", organisation: string, };
+export type ListScroll = { path: string, offset: number, };
+export type GameWindowReply = { warnings: Array<string>,
+/**
+ * The artwork session the scene's texture ids belong to (`game-window-artwork`).
+ */
+session: string,
+/**
+ * The window's title as plain text, for the app's own heading and accessibility.
+ */
+title?: string,
+/**
+ * The hour the bound state was read at, when it was sampled before the requested hour.
+ */
+readHour?: number,
+/**
+ * The drawn window; absent when it is refused.
+ */
+scene?: Scene,
+/**
+ * Why the window is not drawn, each reason counted.
+ */
+refused: Array<string>, slots: Array<WindowSlot>, };
+export type SlotState = "bound" | "unbound" | "refused";
+export type WindowSlot = { name: string, state: SlotState, detail?: string, };
+export type Scene = {
+/**
+ * The root template's name.
+ */
+name: string,
+/**
+ * The window's own size in interface pixels: what the browser fits, never re-flows.
+ */
+size: [number, number],
+/**
+ * The interface viewport the window was read and laid out in.
+ */
+viewport: [number, number],
+/**
+ * Every texture page a quad samples, by its id in the window's artwork session.
+ */
+textures: Array<SceneTexture>,
+/**
+ * Whole-pixel clips `x0, y0, x1, y1` in window pixels, which quads name by index.
+ */
+clips: Array<[number, number, number, number]>,
+/**
+ * Every quad, in draw order.
+ */
+quads: Array<SceneQuad>,
+/**
+ * Areas the pointer can rest on, in draw order, with what the app shows for them.
+ */
+hovers: Array<SceneHover>,
+/**
+ * Lists the pointer can scroll, by their element path.
+ */
+lists: Array<SceneList>,
+/**
+ * The effect techniques drawn as their texture times their colour, counted.
+ */
+effects: Array<string>,
+/**
+ * What the game draws nothing for in this window, or that is drawn incompletely, counted.
+ */
+notes: Array<string>, };
+export type SceneTexture = { id: number, width: number, height: number, };
+export type SceneQuad = { texture: number, corners: [[number, number], [number, number], [number, number], [number, number]], uv: [[number, number], [number, number], [number, number], [number, number]], color: [number, number, number, number],
+/**
+ * Index into [`Scene::clips`].
+ */
+clip?: number,
+/**
+ * A glyph of bitmap text: the page's alpha is the glyph's coverage.
+ */
+glyph?: boolean,
+/**
+ * Part of a row the app mutes, as it mutes table rows that cannot be acted on: the game
+ * marks such a row with its controls' disabled effect, which the browser does not run.
+ * Consecutive muted quads are muted together.
+ */
+muted?: boolean, };
+export type SceneHover = {
+/**
+ * `x, y, width, height` in window pixels.
+ */
+rect: [number, number, number, number], clip?: number,
+/**
+ * The list the area is a row of, by its path ([`SceneList::path`]): focusing it scrolls
+ * that list to it.
+ */
+list?: string, title: string, details: Array<string>, };
+export type SceneList = { path: string, rect: [number, number, number, number], offset: number, max: number,
+/**
+ * Whether it scrolls across, its rows side by side; otherwise down.
+ */
+horizontal: boolean,
+/**
+ * Window pixels per offset unit: the scale of the container holding the list's rows.
+ */
+scale: number, };
+export type GameWindowArtworkParams = {
+/**
+ * [`super::game_window::GameWindowReply::session`].
+ */
+session: string, textures: Array<number>, };
+export type WindowTextureImage = { id: number, width: number, height: number,
+/**
+ * A PNG data URL of the page's top level, straight alpha.
+ */
+image?: string, unavailable?: string, };
+export type GameWindowArtworkReply = { warnings: Array<string>, items: Array<WindowTextureImage>, };
 export type ArmyMeasure = "manpower" | "divisions" | "strength" | "battalions";
 export type ArmyAttribution = "owner" | "host";
 export type ArmySizeParams = { templateAt?: [string, number], branchId: string, tags: Array<string>, top: number | null, measure: ArmyMeasure, countFor: ArmyAttribution, byType: boolean,
@@ -4392,6 +4505,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;

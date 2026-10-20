@@ -123,9 +123,14 @@ pub fn render_batch(
 }
 
 fn globals(layers: &ResolvedLayers, decode: Decode) -> Result<Vec<String>, String> {
-    // Map shader constants use the provinces bitmap named by default.map.
+    Ok(library::globals(map_size(layers)?, decode))
+}
+
+/// The map size GUI effects' globals carry: map shader constants use the provinces bitmap
+/// `default.map` names, read once per stack.
+pub fn map_size(layers: &ResolvedLayers) -> Result<[u32; 2], String> {
     let inputs = layers.derived::<Inputs>();
-    let size = inputs
+    inputs
         .map_size
         .get_or_init(|| {
             let files =
@@ -135,8 +140,7 @@ fn globals(layers: &ResolvedLayers, decode: Decode) -> Result<Vec<String>, Strin
             installed_content_core::image::bmp::rgb_dimensions_prefix(&prefix, length)
                 .map_err(|e| e.to_string())
         })
-        .clone()?;
-    Ok(library::globals(size, decode))
+        .clone()
 }
 
 fn texture_key(image: &dds::Texture) -> [u8; 32] {

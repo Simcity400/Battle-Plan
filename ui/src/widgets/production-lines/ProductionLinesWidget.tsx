@@ -1,8 +1,9 @@
 import ArtFallback from '../../components/ArtFallback';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import type { CSSProperties } from 'react';
+import type { ComponentProps, CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
+import GameWindowPopover from '../../components/GameWindowPopover';
 import WidgetState from '../../components/WidgetState';
 import DrillHost, { FollowControl } from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill, pinnedBreakdown } from '../../charts/drill/drillState';
@@ -76,6 +77,8 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     return (window + 1) * data.detailHours <= track.branch.lastHour ? [window, window + 1] : [window];
   }, [data, track, shownHour, hovered]);
   const windows = useLineDetail(runtime, track, tag, wanted, active);
+  // What an open organisation window could not draw.
+  const [windowNotes, setWindowNotes] = useState<string[]>(NO_WARNINGS);
   const anchor = useRef<HTMLDivElement>(null);
   const [storedDrill, setDrill] = useState(CLOSED);
   const [lineKey, setLineKey] = useState<string | null>(null);
@@ -137,9 +140,10 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     for (const detail of windows.data.values()) for (const warning of detail.warnings) warnings.add(warning);
     for (const warning of breakdown.data?.warnings ?? []) warnings.add(warning);
     for (const run of breakdown.data?.runs ?? []) for (const warning of run.warnings) warnings.add(warning);
+    for (const note of windowNotes) warnings.add(note);
     onDiagnostics(warnings.size ? [...warnings] : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, windows.data, breakdown.data, onDiagnostics]);
+  }, [data, windows.data, breakdown.data, windowNotes, onDiagnostics]);
 
   if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its production lines." /></>;
   if (missingSavedDate) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
@@ -161,6 +165,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
     const failed = windows.errors.get(window);
     if (!detail) return failed ? <WidgetState kind="error" detail={failed} onRetry={windows.retry} /> : <WidgetState kind="loading" label="Loading production lines…" />;
     return <LiveTable data={data} detail={detail} hour={hour} order={options.order as LineOrder} more={options.columns === 'more'} owner={`production-lines:${widget.id}`}
+      windows={{ client: runtime.client, source: { sourceId: track.source.id, revision: track.source.revision }, branchId: track.branch.id, onDiagnostics: setWindowNotes }}
       active={active} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={jump} onBreakdown={openBreakdown} />;
   };
   const drillView = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
@@ -210,8 +215,10 @@ const fitted = (forms: TooltipForms, height: number, full = false) => full ? for
  * and ended ones fade out (the kit's `useRowMotion`). Rows are focusable: hover or
  * focus shows the line's tooltip, right-click or the context-menu key jumps to the
  * read shown (the kit's `useRowTooltips`). */
-function LiveTable({ data, detail, hour, order, more, owner, active, hoursPerSecond, onMenu, onBreakdown }: {
+function LiveTable({ data, detail, hour, order, more, owner, windows, active, hoursPerSecond, onMenu, onBreakdown }: {
   data: ProductionLinesReply; detail: ProductionLineDetailReply; hour: number; order: LineOrder; more: boolean; owner: string; active: boolean;
+  /** Where an organisation's policy window is read. */
+  windows: Pick<ComponentProps<typeof GameWindowPopover>, 'client' | 'source' | 'branchId' | 'onDiagnostics'>;
   hoursPerSecond: number; onMenu: (hour: number, x: number, y: number, key?: string) => void;
   onBreakdown: (key: string, part: 'efficiency' | 'output', hour: number) => void;
 }) {
@@ -292,9 +299,14 @@ function LiveTable({ data, detail, hour, order, more, owner, active, hoursPerSec
           <span className={`production-number is-number${output && outputTotal(output) != null ? '' : ' is-muted'}`}
             title={output && !output.wholeLife ? `Since ${dayLabel(output.sinceHour)}` : undefined}>{totalText(output)}</span>
           {more && <><span className="production-number is-number">{formatAmount(run.costRaw, data.decimals)}</span>
-            <span className="production-organisation">{orgArt ? <img src={orgArt} alt="" />
-              : run.mio !== '0' && <ArtFallback icon="factory" />}
-              <small>{organisationText(organisation, run)}</small></span></>}
+            <span className="production-organisation">{run.mio !== '0' && !leaving
+              ? <GameWindowPopover {...windows} hour={hour} target={{ kind: 'mioPolicies', organisation: run.mio }}
+                className="production-factor production-organisation-trigger" heading={organisationText(organisation, run)}
+                label={organisation?.name ? `Show ${organisation.name}’s policy window` : 'Show the organisation’s policy window'}>
+                {orgArt ? <img src={orgArt} alt="" /> : <ArtFallback icon="factory" />}<small>{organisationText(organisation, run)}</small>
+              </GameWindowPopover>
+              : <>{orgArt ? <img src={orgArt} alt="" /> : run.mio !== '0' && <ArtFallback icon="factory" />}
+                <small>{organisationText(organisation, run)}</small></>}</span></>}
         </div>;
       })}
     </div>

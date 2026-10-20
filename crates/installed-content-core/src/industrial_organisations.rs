@@ -266,22 +266,34 @@ pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {
         }
     }
     // Policies load after organisation templates.
+    database.policies = read_policies(layers, names, &mut database.notes)?;
+    Ok(database)
+}
+
+/// The policies alone, as [`read`] reads them after the organisations, each file's notes added
+/// to `notes` by path. Policies read nothing of the organisations.
+pub fn read_policies(
+    layers: &ResolvedLayers,
+    names: &KeyNames,
+    notes: &mut Vec<String>,
+) -> io::Result<policies::Catalog> {
+    let mut catalog = policies::Catalog::default();
     for path in crate::script_files::paths(
         layers,
         "common/military_industrial_organization/policies/",
         Some(".txt"),
     ) {
-        let before = database.policies.notes.len();
-        if let Err(why) = database.policies.read_file(&layers.read(&path)?, names) {
-            database.notes.push(format!("{path}: {why}"));
+        let before = catalog.notes.len();
+        if let Err(why) = catalog.read_file(&layers.read(&path)?, names) {
+            notes.push(format!("{path}: {why}"));
         }
-        database.notes.extend(
-            database.policies.notes[before..]
+        notes.extend(
+            catalog.notes[before..]
                 .iter()
                 .map(|why| format!("{path}: {why}")),
         );
     }
-    Ok(database)
+    Ok(catalog)
 }
 
 #[cfg(test)]

@@ -1642,6 +1642,9 @@ impl Inner {
             drop(admission);
             self.confirm_checked(source, confirmation);
         }
+        // What the source's first game window reads is read ahead at low priority, once the
+        // open has answered.
+        let ahead = result.as_ref().ok().map(Arc::clone).zip(self.content());
         let mut pending = self
             .pending
             .lock()
@@ -1692,6 +1695,9 @@ impl Inner {
         }
         drop(pending);
         self.signal.notify();
+        if let Some((source, content)) = ahead {
+            products::game_window::warm_in_background(&source, content);
+        }
     }
 }
 

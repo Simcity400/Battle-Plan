@@ -361,6 +361,14 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         research::Research::KEY | technology_artwork::TechnologyArtwork::KEY => {
             artwork_check(content, artwork::Kind::Technology, findings)
         }
+        game_window::GameWindow::KEY | game_window_artwork::GameWindowArtwork::KEY => {
+            let catalogue = content.catalogue()?;
+            let guis = catalogue.guis().map_err(|error| error.to_string())?;
+            for why in dashboard_game_window::mio::check(&content.resolved.layers, guis) {
+                findings.push(Finding::new(Kind::Refused, "MIO policy window", why));
+            }
+            Ok("The MIO policy window's templates, row controls and policy definitions checked; its rows, sprites, fonts and layout require a recorded organisation and the interface viewport.".into())
+        }
         doctrines::Doctrines::KEY => {
             let database = installed_content_core::doctrines::read(&content.resolved.layers).map_err(|error| error.to_string())?;
             let catalogue = content.catalogue()?;

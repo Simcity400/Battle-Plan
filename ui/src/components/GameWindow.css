@@ -1,0 +1,15 @@
+/* A game window drawn at its own interface size, zoomed whole into the space it has. */
+/* A window that does not fit at its smallest zoom scrolls; `margin: auto` centres it without making its start unreachable. */
+.game-window { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; }
+.game-window > .widget-state { flex: 1; align-self: stretch; }
+.game-window-scene { position: relative; flex: none; margin: auto; overflow: clip; }
+.game-window-layer, .game-window-clip, .game-window-origin, .game-window-quad, .game-window-hover { position: absolute; }
+.game-window-layer { inset: 0; pointer-events: none; }
+/* Clipped, never scrolled: focus reveals a row by its list's offset, not by scrolling a clip. */
+.game-window-clip { overflow: clip; }
+.game-window-origin { width: 0; height: 0; }
+.game-window-quad { left: 0; top: 0; }
+/* A muted run, as a table mutes a row it cannot act on; it is the window's origin. */
+.game-window-muted { position: absolute; left: 0; top: 0; width: 0; height: 0; filter: grayscale(1); opacity: var(--muted-row-opacity); }
+.game-window-hover { pointer-events: auto; }
+.game-window-hover:focus-visible, .game-window-scene:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }

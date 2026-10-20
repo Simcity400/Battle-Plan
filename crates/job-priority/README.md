@@ -33,8 +33,14 @@ spawning and calls `enter(level)` first. Covered spawn sites are:
   localisation reading (`installed-content-localisation`) and the dashboard's focus
   content preparation: scoped helpers (`Normal`).
 
+- `installed-content-core::parallel::map`: scoped content-file read and parse workers
+  (stacked `.gui` and `.gfx` reads), at their caller's job and priority (`Caller`).
+- `dashboard-game-window::products::game_window::warm_in_background`: the read-ahead
+  of a newly opened source's first game window, run as a job ahead of the user
+  (`JobPriority::run` with its flag set), so it and its helpers run one step lower.
+
 A helper that works synchronously for its caller (scripted localisation's
-large-stack thread) uses `Caller`, which copies the caller's job and exact
+large-stack thread, content-file reads) uses `Caller`, which copies the caller's job and exact
 priority. Outside a job, `enter` sets only the thread's own level. The job's flag
 is shared with its progress: a job the user joins starts its later threads at
 their usual levels.

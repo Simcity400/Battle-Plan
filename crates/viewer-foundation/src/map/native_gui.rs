@@ -917,7 +917,6 @@ pub struct Geometry {
     pub local: Rect,
 }
 
-#[cfg(any(test, feature = "test-support"))]
 impl Geometry {
     /// Where the turn lands a point of the unturned rectangle: with `y` down, a counter-clockwise
     /// turn takes `(dx, dy)` from the pivot to `(dx cos + dy sin, dy cos - dx sin)`.

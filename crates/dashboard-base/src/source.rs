@@ -324,16 +324,28 @@ impl Source {
             .content
             .lock()
             .map_err(|error| io::Error::other(error.to_string()))?;
-        if !cache.as_ref().is_some_and(|(old, _, _)| {
-            old.game_dir == options.game_dir
-                && old.user_dir == options.user_dir
-                && old.cache_dir == options.cache_dir
-        }) {
+        if !cache
+            .as_ref()
+            .is_some_and(|(old, _, _)| same_folders(old, options))
+        {
             let content = Arc::new(installed_content_core::resolve(&self.replay.identity, options)?);
             let reads = content.layers.report_uncovered_reads();
             *cache = Some((options.clone(), content, reads));
         }
         Ok(Arc::clone(&cache.as_ref().expect("content cached").1))
+    }
+
+    /// The content already resolved for these folders, without resolving it or replacing what
+    /// is bound: `None` when the source's content is bound to other folders or to none. Work
+    /// done ahead of a request uses it, so it never rebinds the content every reply reports
+    /// ([`Self::append_content_warnings`], [`Self::reads_uncovered`]).
+    pub fn bound_content(&self, options: &ResolveOptions) -> Option<Arc<ResolvedContent>> {
+        self.content
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .filter(|(old, _, _)| same_folders(old, options))
+            .map(|(_, content, _)| Arc::clone(content))
     }
 
     /// A product's own cache for this source, created on first use. Requests
@@ -445,6 +457,13 @@ impl Source {
                     .any(|block| block.branch == gap.branch && gap.first_hour <= block.last_hour)
             })
     }
+}
+
+/// Whether content resolved for `old` folders is the content of `options`.
+fn same_folders(old: &ResolveOptions, options: &ResolveOptions) -> bool {
+    old.game_dir == options.game_dir
+        && old.user_dir == options.user_dir
+        && old.cache_dir == options.cache_dir
 }
 
 /// Content resolved by a test rather than from the configured folders.

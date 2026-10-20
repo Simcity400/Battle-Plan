@@ -1,94 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { resolve, sep } from 'node:path';
-import { setTimeout as pause } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
-import { browserStage, ownedEdgeProcesses, stopBrowser, stopOwnedProfile } from '../../../tools/canvas-page.ts';
+import { withNativePage } from '../../../tools/native-page.ts';
 import type { fixture } from './VirtualList.dom.fixture';
 import type { TabCase, TabControls, TabMutation, TabShape, TabViewport } from './VirtualList.tab.fixture';
 
 type Snapshot = ReturnType<typeof fixture.snapshot>;
 
-function cdp(endpoint: string, method: string, params: Record<string, unknown> = {}, signal?: AbortSignal) {
-  signal?.throwIfAborted();
-  return new Promise<any>((done, reject) => {
-    const socket = new WebSocket(endpoint);
-    const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', abort); socket.close(); };
-    const abort = () => { cleanup(); reject(signal!.reason); };
-    const timeout = setTimeout(() => { cleanup(); reject(new Error(`${method} timed out`)); }, 30_000);
-    signal?.addEventListener('abort', abort, { once: true });
-    socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method, params })));
-    socket.addEventListener('message', event => {
-      const message = JSON.parse(String(event.data)); if (message.id !== 1) return;
-      cleanup();
-      if (message.error) reject(new Error(JSON.stringify(message.error))); else done(message.result);
-    });
-    socket.addEventListener('error', () => { cleanup(); reject(new Error(`${method} connection failed`)); });
-  });
-}
-
 test('mounted virtual histories preserve scrolling, expansion and native column traversal', async context => {
-  const edge = (process.env.BATTLE_PLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
-    .filter((directory): directory is string => Boolean(directory))
-    .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
-  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLE_PLAN_CANVAS_BROWSER to its executable');
-  const profile = await mkdtemp(resolve(tmpdir(), 'virtual-list-dom-'));
-  const vite = await createServer({ configFile: false, root: fileURLToPath(new URL('../../../', import.meta.url)),
-    cacheDir: resolve(profile, 'vite'), optimizeDeps: { include: ['react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime'], noDiscovery: true },
-    server: { host: '127.0.0.1', port: 0, watch: null, hmr: false, ws: false },
-    plugins: [{ name: 'virtual-history-page', configureServer(server) {
-      server.middlewares.use('/virtual-history-page', (_request, response) => {
-        response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><title>Synthetic histories</title>');
-      });
-    } }] });
-  let browser: ReturnType<typeof spawn> | undefined, endpoint = '', browserPid: number | undefined;
-  try {
-    await vite.listen();
-    const address = vite.httpServer!.address(); assert.ok(address && typeof address !== 'string');
-    browser = spawn(edge, ['--headless', '--disable-gpu', '--no-first-run', '--edge-skip-compat-layer-relaunch',
-      '--remote-debugging-port=0', `--user-data-dir=${profile}`], { windowsHide: true });
-    browser.stdout?.resume(); browser.stderr?.resume();
-    endpoint = await browserStage(browser, 'VirtualList Edge startup', async signal => {
-      for (;;) {
-        signal.throwIfAborted();
-        try {
-          const [port, path] = (await readFile(resolve(profile, 'DevToolsActivePort'), { encoding: 'utf8', signal })).trim().split('\n');
-          if (port && path) return `ws://127.0.0.1:${port}/${path.replace(/^\//, '')}`;
-        } catch (error) { signal.throwIfAborted(); if (!['ENOENT', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
-        await pause(50, undefined, { signal });
-      }
-    });
-    const processes = await cdp(endpoint, 'SystemInfo.getProcessInfo');
-    browserPid = processes.processInfo.find((entry: { type: string }) => entry.type === 'browser')?.id;
-    assert.ok(browserPid && Number.isSafeInteger(browserPid));
-    const { targetId } = await cdp(endpoint, 'Target.createTarget', { url: 'about:blank' });
-    const port = new URL(endpoint).port;
-    const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then(response => response.json()) as { id: string; webSocketDebuggerUrl: string }[];
-    const page = targets.find(target => target.id === targetId)!.webSocketDebuggerUrl;
-    const evaluate = async (expression: string) => {
-      const result = await cdp(page, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-      assert.equal(result.exceptionDetails, undefined, JSON.stringify(result.exceptionDetails));
-      return result.result.value;
-    };
-    await cdp(page, 'Page.navigate', { url: `http://127.0.0.1:${address.port}/virtual-history-page` });
-    await browserStage(browser, 'VirtualList page navigation', async signal => {
-      while (await evaluate('location.pathname') !== '/virtual-history-page') await pause(50, undefined, { signal });
-    });
-    await evaluate(`import('/ui/src/components/VirtualList.dom.fixture.tsx')`);
+  await withNativePage('virtual-list-dom', '/ui/src/components/VirtualList.dom.fixture.tsx', async native => {
+    const { evaluate, page } = native;
     const act = (expression: string) => evaluate(`window.virtualListFixture.${expression}`);
     const snapshot = () => act('snapshot()') as Promise<Snapshot>;
     const press = async (key: 'Tab' | 'Home' | 'End' | 'ArrowUp' | 'ArrowDown', shift = false) => {
-      const keyCode = { Tab: 9, Home: 36, End: 35, ArrowUp: 38, ArrowDown: 40 }[key];
-      await cdp(page, 'Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: keyCode, modifiers: shift ? 8 : 0 });
-      await cdp(page, 'Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, modifiers: shift ? 8 : 0 });
+      await native.press(key, shift);
       await act('settle()');
     };
-    if (!(process.env.BATTLE_PLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY)) await browserStage(browser, 'VirtualList DOM assertions', async () => {
+    if (!(process.env.BATTLE_PLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY)) await native.stage('VirtualList DOM assertions', async () => {
       await context.test('a parent and child mounted together bind scroll, row measurements and nested expansion', async () => {
         await act('mount()');
         const initial = await snapshot();
@@ -382,7 +309,7 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
       return order;
     };
     try {
-      await browserStage(browser, 'VirtualList native differential assertions', async () => {
+      await native.stage('VirtualList native differential assertions', async () => {
         await context.test('native differential static pointer clicks resume from the clicked Description in both directions', async () => {
           const divergences = [];
           for (const backwards of [false, true]) for (const external of [undefined, 'focus', 'pointer'] as const) {
@@ -658,20 +585,5 @@ test('mounted virtual histories preserve scrolling, expansion and native column 
         });
       }, fullSweep ? 900_000 : 180_000);
     } finally { socket.close(); }
-  } finally {
-    try {
-      if (browser) await stopBrowser(browser, async (_budget, signal) => { if (endpoint) await cdp(endpoint, 'Browser.close', {}, signal); }, async budget => {
-        if (process.platform === 'win32') {
-          await stopOwnedProfile(profile, browser!.exitCode !== null || browser!.signalCode !== null ? undefined : browser!.pid, browserPid, ownedEdgeProcesses, budget); return;
-        }
-        assert.ok(browserPid, 'Only the browser identified by this owned CDP endpoint may be stopped'); process.kill(browserPid, 'SIGKILL');
-      }, 5_000, async (_budget, signal) => {
-        if (process.platform === 'win32') return (await ownedEdgeProcesses(profile, browser!.exitCode !== null || browser!.signalCode !== null ? undefined : browser!.pid, false, undefined, signal)).length === 0;
-        if (!browserPid) return browser!.exitCode !== null || browser!.signalCode !== null;
-        try { process.kill(browserPid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true; throw error; }
-      }, { profile });
-    } finally { await vite.close(); }
-    assert.ok(profile.startsWith(resolve(tmpdir()) + sep));
-    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  }
+  });
 });

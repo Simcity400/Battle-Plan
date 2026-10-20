@@ -2060,6 +2060,36 @@ impl Context {
         self.unnamed = reader.unnamed;
         finish(reader, blocks)
     }
+
+    /// Reads `files` in order as [`Self::read`] reads each in turn, parsing them on the
+    /// machine's threads. A file's generated names continue the counter where the files before
+    /// it left it, and how far a file moves the counter does not depend on where it starts: so
+    /// every file is read from 0 at once, and a file that names elements is read again from its
+    /// place in the count, unless that place is 0.
+    pub fn read_all<B: AsRef<[u8]> + Sync>(&mut self, files: &[B]) -> Vec<Gui> {
+        let read_from = |bytes: &[u8], base: i32| {
+            let mut context = Context { unnamed: base };
+            let gui = context.read(bytes);
+            (gui, context.unnamed.wrapping_sub(base))
+        };
+        let first = crate::parallel::map(files, |bytes| read_from(bytes.as_ref(), 0));
+        let mut again = Vec::new();
+        let mut guis = Vec::with_capacity(first.len());
+        for (index, (gui, named)) in first.into_iter().enumerate() {
+            if named != 0 && self.unnamed != 0 {
+                again.push((index, self.unnamed));
+            }
+            self.unnamed = self.unnamed.wrapping_add(named);
+            guis.push(gui);
+        }
+        let reread = crate::parallel::map(&again, |&(index, base)| {
+            read_from(files[index].as_ref(), base).0
+        });
+        for ((index, _), gui) in again.into_iter().zip(reread) {
+            guis[index] = gui;
+        }
+        guis
+    }
 }
 
 /// Reads one `.gui` file as the first the game reads (the name counter at 0), with the post-load
@@ -2106,15 +2136,20 @@ fn read_layers_with(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::
             viewport,
         );
     }
-    let paths =
-        crate::defines::load_order_paths(b"interface/", b".gui", listed.iter().map(Vec::as_slice));
-    for path in paths {
-        // The main pass drops exactly this name.
-        if path == LOAD_SCREEN.as_bytes() {
-            continue;
-        }
-        let gui = context.read(&layers.read_path(&path)?);
-        files.push((label(&path), gui));
+    // The main pass drops exactly this name.
+    let paths: Vec<Vec<u8>> =
+        crate::defines::load_order_paths(b"interface/", b".gui", listed.iter().map(Vec::as_slice))
+            .into_iter()
+            .filter(|path| path != LOAD_SCREEN.as_bytes())
+            .collect();
+    // Read and parsed on the machine's threads, each file exactly as it would be read alone in
+    // its turn; the first that fails to read fails the whole, as in order.
+    let texts = layers
+        .read_paths(&paths)
+        .into_iter()
+        .collect::<io::Result<Vec<_>>>()?;
+    for (path, gui) in paths.iter().zip(context.read_all(&texts)) {
+        files.push((label(path), gui));
     }
     inherit::pass(
         &mut files.iter_mut().map(|(_, gui)| gui).collect::<Vec<_>>(),

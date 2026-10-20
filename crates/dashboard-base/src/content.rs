@@ -43,6 +43,16 @@ pub(crate) fn localisation_with_key(
     content: &ContentOptions,
     key: LocalisationKey,
 ) -> io::Result<Arc<Localisation>> {
+    localisation_in(source, content, key, || source.content(&content.options))
+}
+
+/// [`localisation_with_key`] reading, when it is not cached, the content `resolved` gives.
+pub(crate) fn localisation_in(
+    source: &Source,
+    content: &ContentOptions,
+    key: LocalisationKey,
+    resolved: impl FnOnce() -> io::Result<Arc<installed_content_core::content::ResolvedContent>>,
+) -> io::Result<Arc<Localisation>> {
     type Cached = Option<(LocalisationKey, Arc<Localisation>)>;
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -53,7 +63,7 @@ pub(crate) fn localisation_with_key(
     }
     let mut warnings = Vec::new();
     check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
-    let layers = source.content(&content.options)?;
+    let layers = resolved()?;
     let localisation = Arc::new(installed_content_localisation::localisation::read(
         &layers.layers,
         &key.2,

@@ -1,0 +1,7 @@
+/* The window at its own size, within the viewport; the space it has before it is known. */
+.game-window-popover .game-window {
+  display: flex; flex-direction: column;
+  width: min(var(--game-window-width, 360px), calc(100vw - 44px));
+  height: min(var(--game-window-height, 240px), calc(100dvh - 92px));
+}
+.game-window-popover-body:focus { outline: none; }
