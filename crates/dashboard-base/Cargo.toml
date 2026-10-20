@@ -75,3 +75,7 @@ png.workspace = true
 # Grouped-table decode counts, so tests can see which tables a read decodes.
 # Prepared files publish without disk flushes, which no test can observe.
 store = { path = "../store", features = ["test-support"] }
+
+# Parse production map readers for the prepared-table coverage guard only.
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"

@@ -671,9 +671,16 @@ views keep their coverage gate.
 ## Prepared map checkpoints
 
 [prepared_map.rs](src/prepared_map.rs) prepares the map's native inputs and shared
-authored-trigger tables, including the operative hovers' intel contributions,
-source entries, national network caches and propaganda history. Independent
-native checkpoints retain decoded rows,
+authored-trigger and effect-description tables, including mod-authored hover
+effects and their advisor, decision, occupation, operative and scientist scopes.
+The same selection supplies preparation and playback: fleet score rosters, ground
+crews, daily air rosters, railway-gun transport speeds, reserve modifier trees and
+owned war relations are retained alongside the other native map inputs. A dev-only
+[source census](src/prepared_map/tests/selection.rs) follows production modules in
+every viewer crate and the shared dashboard-text/replay-derive readers, including
+typed schemas, viewer table IDs, aliases and macro operands. It names a missing
+table and its source function; no consumer exemption or runtime tracking is used.
+Independent native checkpoints retain decoded rows,
 partial censuses, unavailable fields and supplying hours every 720 accepted
 updates. Each existing Store range uses zstd9 with a checksum. Hourly updates
 remain in the recording; no prepared update pages or packet seeds are written.
@@ -689,6 +696,13 @@ accepted source cursor. Appended preparation restores that native resume state
 with the same selection. `decode_resume` validates a shared page using its stored
 selection; a family restoring its own baseline checks its inputs and hour before
 using it, and reads its baseline from the recording when they are absent.
+
+The stored selection is part of the existing progress and checkpoint contract.
+Changing it changes no binary layout (`HOIMAP04` stays unchanged): the reader
+requires the exact selection, and the producer's metadata-prefix check stops
+reusing a prepared store with a different selection. Preparation replaces that
+store and rebuilds its products; playback uses ordinary recording reads until
+matching prepared coverage is available. No old-cache migration is needed.
 
 The shared [Reader](src/prepared_map/reader.rs) serves viewer playback and
 acceptance. It binary-searches checkpoint headers, restores the nearest native

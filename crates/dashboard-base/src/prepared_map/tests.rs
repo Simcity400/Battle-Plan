@@ -1021,3 +1021,6 @@ fn cancellation_endpoints_preserve_sparse_gap_seek_and_visitor_values_without_ou
             .unwrap()
     );
 }
+
+mod coverage;
+mod selection;

@@ -38,8 +38,9 @@ pub const CHECKPOINT_STRIDE: u32 = 720;
 const GAP_MAGIC: &[u8; 8] = b"HOIGAP01";
 const GAP_RECORD_BYTES: u64 = 24;
 
-/// Native map inputs plus the existing authored-trigger operand kit.
-/// Both the producer and the viewer use this one selection.
+/// Native map inputs and shared authored-trigger and hover-description operands.
+/// The producer and viewer share this selection; the source census in the tests
+/// checks the viewer and its shared recorded-input readers for missing tables.
 pub fn selected_tables() -> &'static [TableId] {
     static SELECTED: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
         const NATIVE: &[TableId] = &[
@@ -49,6 +50,8 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::AirBaseRegistrations,
             TableId::AirBases,
             TableId::AirCountryRelations,
+            TableId::AirDailyRoster,
+            TableId::AirGroundCrews,
             TableId::AirMissionInputs,
             TableId::AirNavalPatrolCombats,
             TableId::AirNavalPatrolHistories,
@@ -70,6 +73,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::CharacterPortraits,
             TableId::Clock,
             TableId::CountryCommandPower,
+            TableId::CountryGameScoreInputs,
             TableId::CountryIntel,
             TableId::CountryLocalSubunits,
             TableId::CountryStabilityInputs,
@@ -143,6 +147,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::NuclearStrikes,
             TableId::OrdersGroupCounterInputs,
             TableId::OrdersGroupMembers,
+            TableId::OwnerTransportSpeeds,
             TableId::OperativeMissions,
             TableId::Operations,
             TableId::Players,
@@ -168,6 +173,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::RailwayGunCounterInputs,
             TableId::RelationLinks,
             TableId::RelationTuples,
+            TableId::ReserveModifierTrees,
             TableId::SentVolunteers,
             TableId::ShipModels,
             TableId::Ships,
@@ -191,6 +197,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::VariantStats,
             TableId::VariantUpgrades,
             TableId::VolunteerHosts,
+            TableId::WarOwnedRelations,
             TableId::WeatherProvinces,
             TableId::WeatherRegions,
             TableId::WingEquipment,
@@ -216,6 +223,19 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::ResourceRights,
             TableId::StateTemporaryResources,
             TableId::TradeRoutes,
+            // Border-event and medal hovers describe authored effects through the
+            // shared renderer, including its country, operative and project scopes.
+            TableId::AvailableAdvisors,
+            TableId::CapturedOperativeReferences,
+            TableId::DecisionRandomItems,
+            TableId::Decisions,
+            TableId::OccupationSettings,
+            TableId::OperativeMemberships,
+            TableId::PowerBalanceRanges,
+            TableId::ProjectPrograms,
+            TableId::ScientistSkills,
+            TableId::Scientists,
+            TableId::TimedIdeas,
         ];
         TableId::ALL
             .into_iter()

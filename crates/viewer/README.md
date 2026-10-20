@@ -121,14 +121,22 @@ decoded-behind window; paused seeks and steps retain two preceding hours. Only o
 source block remains between requests. No hourly updates or packet seeds are
 stored in prepared data. Checkpoints retain availability, partial counts and
 supplying-read hours. The selection is the union of native map inputs and the
-shared authored-trigger operands, so mod-defined predicates keep their inputs.
-Other tables remain explicitly unavailable. Header/gap searches run on disk;
+shared authored-trigger and effect-description operands, so mod-defined
+predicates and hover effects keep their inputs. This includes fleet score rosters,
+ground crews, daily air rosters, railway-gun transport speeds, reserve modifier
+trees and owned war relations. A dev-only source census in dashboard-base checks
+all viewer crates and their shared recorded-input readers against this selection,
+reporting each missing table and source function. Other tables remain explicitly
+unavailable. Header/gap searches run on disk;
 source reads skip interleaved branches and stop at the accepted hour/block.
 Targets after accepted preparation use ordinary playback.
 Playback releases its previous local decoded output before advancing; externally
 retained displayed hours remain immutable. Hour builders install the results
 through the same displayed-hour and presentation path, retaining native routes,
-clocks and seek intent. Cleared or corrupt prepared data uses ordinary playback.
+clocks and seek intent. Cleared, corrupt or differently selected prepared data
+uses ordinary playback. The producer detects a changed map selection through its
+existing progress metadata and replaces/rebuilds the prepared store, rather than
+serving incomplete coverage. The checkpoint layout remains `HOIMAP04`.
 
 The ignored `map_checkpoints::tests::measurement::checkpoint_disk_seek_measurement`
 test measures growing prefixes in a release build. Set `BATTLE_PLAN_MAP_BENCH_REPLAY` to
