@@ -706,6 +706,196 @@ fn unsupported_delayed_owner_is_attempted_once_through_refusal_and_registry_reco
     assert_eq!(store.counts.rejected, 2);
 }
 
+fn delayed_timer(image: &mut WarImage, pointer: usize, remaining: i32) {
+    use engine_events::{cevent_scope, script_event_registry as registry};
+    image.q(pointer, BASE + registry::DELAYED_VTABLE_RVA);
+    image.q(pointer + registry::DELAYED_DEFINITION, 0x90000);
+    let scope = pointer + registry::DELAYED_SCOPE;
+    image.bytes(scope, &[0; cevent_scope::SIZE]);
+    image.q(scope, BASE + cevent_scope::VTABLE_RVA);
+    for offset in [cevent_scope::ROOT, cevent_scope::FROM, cevent_scope::PREV] {
+        image.q(scope + offset, scope);
+    }
+    image.d(pointer + registry::DELAYED_ORIGINATOR, 1);
+    image.d(pointer + registry::DELAYED_REMAINING, remaining as u32);
+}
+
+fn delayed_queue(image: &mut WarImage, timers: &[usize]) {
+    image.array(
+        TARGET + ccountry::DELAYED_EVENTS,
+        0xc0000,
+        timers.len() as u32,
+    );
+    for (ordinal, timer) in timers.iter().enumerate() {
+        image.q(0xc0000 + ordinal * 8, *timer);
+    }
+}
+
+/// What the native append callback records: the owner's newest entry.
+fn schedule_delayed(store: &mut Store, image: &WarImage, hour: i32) {
+    use engine_events::script_event_registry as registry;
+    let world = native::provenance::World::new(image, BASE).unwrap();
+    let owner = world.country_object(TARGET).unwrap();
+    let array = registry::delayed_array(image, TARGET).unwrap();
+    let row = registry::delayed_at(image, BASE, array, array.count - 1).unwrap();
+    store
+        .delayed_stored(&world, image, BASE, 7, hour, owner, row, false)
+        .unwrap();
+}
+
+fn delayed_labels(row: &EventFeedHistoryRow) -> Vec<(EventFeedScriptChange, Option<u32>)> {
+    row.events
+        .iter()
+        .filter_map(|event| event.script)
+        .filter_map(|script| Some((script.change?, script.instance)))
+        .filter(|(change, _)| {
+            matches!(
+                change,
+                EventFeedScriptChange::DelayedBaseline
+                    | EventFeedScriptChange::DelayedStored { .. }
+                    | EventFeedScriptChange::DelayedReady
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn delayed_labels_never_alias_across_an_overlap_and_the_owner_waits_for_its_census() {
+    use EventFeedScriptChange::{DelayedBaseline, DelayedReady, DelayedStored};
+    let owner = EventFeedCountry {
+        reference: 2,
+        id: 2,
+        instance: 55,
+    };
+    let census = ccountry::Country {
+        pointer: TARGET,
+        canonical_slot: 2,
+        id: 2,
+    };
+    let (first, second) = (0xd0000, 0xd1000);
+    let mut image = retained_registry_image(1);
+    delayed_timer(&mut image, first, 360);
+    delayed_timer(&mut image, second, 1);
+    let mut store = ready(8);
+    store.prepare_scripts(256, 16, 4).unwrap();
+    store.prepare_delayed(8).unwrap();
+    let mut snapshot = Snapshot::new(0);
+    let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+
+    // A timer is scheduled before the owner's first census.
+    delayed_queue(&mut image, &[first]);
+    schedule_delayed(&mut store, &image, 1);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 1), &image, BASE)
+        .unwrap();
+    let scheduled = snapshot.prepare_pack().unwrap();
+    assert_eq!(
+        delayed_labels(scheduled.row()),
+        [(DelayedStored { remaining: 360 }, Some(1))]
+    );
+    state.observe(scheduled.row()).unwrap();
+    assert!(state.pending().is_ok());
+    assert!(state.delayed(owner).is_err());
+    store.acknowledged(scheduled.publication());
+
+    // A declined observation, exactly as the owner takes it, refuses the
+    // next interval. The same world keeps its label sequence.
+    store.invalidate(crate::event_feed_observer::OBSERVATION_OVERLAP);
+    store.reject_many(crate::event_feed_observer::OBSERVATION_OVERLAP, 1);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 2), &NoReads, BASE)
+        .unwrap();
+    let refused = snapshot.prepare_pack().unwrap();
+    assert_eq!(refused.row().coverage, EventFeedCoverage::Unavailable);
+    state.observe(refused.row()).unwrap();
+
+    // Another timer is scheduled before the refusal's receipt...
+    image.d(GAME + cgame_state::CURRENT_HOUR, 3);
+    delayed_queue(&mut image, &[first, second]);
+    schedule_delayed(&mut store, &image, 3);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 3), &NoReads, BASE)
+        .unwrap();
+    let waiting = snapshot.prepare_pack().unwrap();
+    assert_eq!(waiting.row().coverage, EventFeedCoverage::Unavailable);
+    assert_eq!(
+        delayed_labels(waiting.row()),
+        [(DelayedStored { remaining: 1 }, Some(2))]
+    );
+    state.observe(waiting.row()).unwrap();
+    // No census reaches the owner before the refusal's receipt.
+    assert_eq!(
+        store.delayed_baseline(&image, BASE, 7, GAME, 3, census),
+        Err("delayed-event census world certificate differs")
+    );
+    store.acknowledged(refused.publication());
+    store.acknowledged(waiting.publication());
+
+    // The receipt admits the registry baseline in the Partial first interval
+    // after the loss; the owner still waits for its census.
+    image.d(GAME + cgame_state::CURRENT_HOUR, 4);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 4), &image, BASE)
+        .unwrap();
+    let reseeded = snapshot.prepare_pack().unwrap();
+    assert_eq!(reseeded.row().coverage, EventFeedCoverage::Partial);
+    state.observe(reseeded.row()).unwrap();
+    assert!(state.pending().is_ok());
+    store.acknowledged(reseeded.publication());
+
+    // One more timer, at the address the first timer had when the game freed
+    // it unobserved. It is a new timer with a new label, in a Complete
+    // interval that still has no owner baseline.
+    image.d(GAME + cgame_state::CURRENT_HOUR, 5);
+    delayed_timer(&mut image, first, 24);
+    delayed_queue(&mut image, &[second, first]);
+    schedule_delayed(&mut store, &image, 5);
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 5), &NoReads, BASE)
+        .unwrap();
+    let rescheduled = snapshot.prepare_pack().unwrap();
+    assert_eq!(rescheduled.row().coverage, EventFeedCoverage::Complete);
+    assert_eq!(
+        delayed_labels(rescheduled.row()),
+        [(DelayedStored { remaining: 24 }, Some(3))]
+    );
+    state.observe(rescheduled.row()).unwrap();
+    assert!(state.delayed(owner).is_err());
+    store.acknowledged(rescheduled.publication());
+
+    // The census's explicit baseline restores the exact ordered queue. The
+    // refused intervals revoked the second timer's certificate, so the
+    // baseline gives it a fresh label too.
+    store
+        .delayed_baseline(&image, BASE, 7, GAME, 5, census)
+        .unwrap();
+    store
+        .snapshot_with_registry(&mut snapshot, boundary(7, 6), &NoReads, BASE)
+        .unwrap();
+    let recovered = snapshot.prepare_pack().unwrap();
+    assert_eq!(recovered.row().coverage, EventFeedCoverage::Complete);
+    assert_eq!(
+        delayed_labels(recovered.row()),
+        [
+            (DelayedBaseline, None),
+            (DelayedStored { remaining: 1 }, Some(4)),
+            (DelayedStored { remaining: 24 }, Some(3)),
+            (DelayedReady, None),
+        ]
+    );
+    state.observe(recovered.row()).unwrap();
+    assert_eq!(
+        state
+            .delayed(owner)
+            .unwrap()
+            .iter()
+            .map(|timer| (timer.instance, timer.remaining))
+            .collect::<Vec<_>>(),
+        [(4, 1), (3, 24)]
+    );
+    assert_eq!(store.counts.rejected, 1);
+}
+
 fn acquire(store: &mut Store, hour: i32, actor: u32) -> Ticket {
     store
         .acquire(

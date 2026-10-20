@@ -987,6 +987,115 @@ fn retained_pending_due_after_end_fired_members_and_delayed_scopes_survive_resum
 }
 
 #[test]
+fn preparation_resume_keeps_a_lost_delayed_queue_retired_until_its_baseline() {
+    use replay_data::event_feed_rows::{
+        EventFeedEventIdentity, EventFeedScope, EventFeedScript, EventFeedScriptChange as C,
+    };
+    let delayed = |sequence: u64, hour: i32, change, timer: Option<(u32, u32)>| {
+        let mut value = event(sequence, EventFeedSource::ScriptState, hour);
+        value.script = Some(EventFeedScript {
+            change: Some(change),
+            native_event: timer.map(|(_, id)| EventFeedEventIdentity { kind: 7, id }),
+            instance: timer.map(|(instance, _)| instance),
+            token_len: if timer.is_some() { 3 } else { 0 },
+            scope_len: u32::from(timer.is_some()),
+            ..Default::default()
+        });
+        value
+    };
+    let hour = |read_hour: i32, events: Vec<EventFeedEvent>| {
+        let mut row = pack(events);
+        row.read_hour = read_hour;
+        row.script_tokens = b"mod".to_vec();
+        row.script_scopes = vec![EventFeedScope::default()];
+        row
+    };
+    let rows = [
+        hour(
+            120,
+            vec![
+                delayed(1, 120, C::DelayedBaseline, None),
+                delayed(2, 120, C::DelayedStored { remaining: 500 }, Some((17, 9))),
+                delayed(3, 120, C::DelayedReady, None),
+            ],
+        ),
+        // The loss is known on this row; its store meets no stale queue.
+        {
+            let mut row = hour(
+                121,
+                vec![delayed(
+                    4,
+                    121,
+                    C::DelayedStored { remaining: 1 },
+                    Some((17, 10)),
+                )],
+            );
+            row.coverage = EventFeedCoverage::Unavailable;
+            row.failure = Some(b"synthetic observation overlap".to_vec());
+            row
+        },
+        hour(
+            122,
+            vec![delayed(
+                5,
+                122,
+                C::DelayedStored { remaining: 2 },
+                Some((17, 11)),
+            )],
+        ),
+        hour(
+            123,
+            vec![
+                delayed(6, 123, C::DelayedBaseline, None),
+                delayed(7, 123, C::DelayedStored { remaining: 497 }, Some((18, 9))),
+                delayed(8, 123, C::DelayedReady, None),
+            ],
+        ),
+    ];
+    let append = |projection: &mut Projection, builder: &mut Builder, row| {
+        projection
+            .append_named(
+                builder,
+                row,
+                |_, _| Some("SYN".into()),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+    };
+    let mut projection = Projection::default();
+    let mut ignored = Builder::new(100, 130);
+    for row in &rows[..2] {
+        append(&mut projection, &mut ignored, row);
+    }
+    let mut resumed: Projection =
+        serde_json::from_slice(&serde_json::to_vec(&projection).unwrap()).unwrap();
+    let mut expected = Builder::new(100, 130);
+    let mut actual = Builder::new(100, 130);
+    for row in &rows[2..] {
+        append(&mut projection, &mut expected, row);
+        append(&mut resumed, &mut actual, row);
+    }
+    assert_eq!(
+        serde_json::to_value(&actual.feed.rows).unwrap(),
+        serde_json::to_value(&expected.feed.rows).unwrap()
+    );
+    assert_eq!(actual.feed.rows.len(), 2);
+    let notes = |row: usize| {
+        actual.feed.rows[row]
+            .cause
+            .as_ref()
+            .unwrap()
+            .notes
+            .join("\n")
+    };
+    // The uncertified store is still reported as an observation.
+    assert!(notes(0).contains("Observation 5 at 122: DelayedStored"));
+    assert!(notes(0).contains("SYN delayed timers unavailable"));
+    assert!(notes(1).contains("SYN: 1 delayed event timers."));
+    assert!(notes(1).contains("SYN delayed instance 18: mod [9 (type 7)]; remaining 497 hours"));
+}
+
+#[test]
 fn preparation_resume_preserves_an_open_native_timer_pass() {
     use replay_data::event_feed_rows::decisions::{Operation, TIMED};
     let mut stored = decision_boundary(2, Operation::Store, TIMED);

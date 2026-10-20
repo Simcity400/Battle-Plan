@@ -1,5 +1,7 @@
 //! Replay the native delayed-event vector and its traversal cursor. Visits
 //! derive signed decrements; queue edges preserve in-pass scheduling and swaps.
+//! Writer deltas extend only an open baseline or a certified queue; outside
+//! them the occurrence stays in the feed but carries no retained state.
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -24,12 +26,22 @@ impl Owner {
     pub fn rows(&self) -> Result<&[DelayedEvent], &'static str> {
         (self.ready && self.cursor.is_none()).then_some(self.timers.as_slice()).ok_or("country delayed-event timers lack a complete baseline, visit prefix or writer coverage")
     }
+    /// A writer loss retires the queue and any open baseline, so their stale
+    /// timers never take part in identity or removal checks. Only a new
+    /// baseline or empty certificate restores the owner.
     pub fn gap(&mut self) {
-        self.ready = false;
-        self.cursor = None;
+        *self = Self {
+            country: self.country,
+            ..Self::default()
+        };
     }
     pub fn partial(&mut self, hour: i32) {
-        self.ready &= self.baseline_hour == Some(hour);
+        if self.baseline_hour != Some(hour) {
+            self.gap();
+        }
+    }
+    fn tracking(&self) -> bool {
+        self.ready || self.building
     }
     fn refuse(&mut self) {
         self.ready = false;
@@ -70,15 +82,19 @@ impl Owner {
                 self.baseline_hour = Some(row.read_hour);
             }
             DelayedStored { remaining } => {
+                let instance = script
+                    .instance
+                    .ok_or_else(|| invalid("delayed-event compact identity absent"))?;
+                if !self.tracking() {
+                    return Ok(());
+                }
                 if script.token_unrecorded || script.scope_unrecorded || script.scope_len == 0 {
                     self.refuse();
                     return Ok(());
                 }
                 let start = script.scope_start as usize;
                 let scopes = &row.script_scopes[start..start + script.scope_len as usize];
-                let instance = script
-                    .instance
-                    .ok_or_else(|| invalid("delayed-event compact identity absent"))?;
+                // One queue never holds a label twice: removal finds by label.
                 if self.timers.iter().any(|timer| timer.instance == instance) {
                     return Err(invalid("duplicate delayed-event compact identity"));
                 }
@@ -122,6 +138,9 @@ impl Owner {
                 let id = script
                     .instance
                     .ok_or_else(|| invalid("delayed-event retirement identity absent"))?;
+                if !self.tracking() {
+                    return Ok(());
+                }
                 if let Some(index) = self.timers.iter().position(|timer| timer.instance == id) {
                     if iteration && self.ready {
                         let cursor = self.cursor.get_or_insert(0);

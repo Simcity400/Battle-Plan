@@ -20,7 +20,10 @@ struct Country {
 pub(super) struct Index {
     slots: Vec<Slot>,
     countries: Vec<Country>,
+    /// The world these labels belong to. An observation loss keeps it, so a
+    /// later timer of the same world never reuses an earlier timer's label.
     generation: Option<u64>,
+    invalidated: bool,
     revoked: bool,
     next: u64,
     live: usize,
@@ -37,8 +40,9 @@ impl Index {
     pub fn covers(&self, other: &Self) -> bool {
         self.slots.len() >= other.slots.len() && self.countries.len() >= other.countries.len()
     }
+    /// Every certificate retires at the next boundary; the labels do not.
     pub fn invalidate(&mut self) {
-        self.generation = None;
+        self.invalidated = true;
     }
     pub fn revoke_retained(&mut self) {
         // Callback-side revocation is constant work. The boundary worker
@@ -46,11 +50,10 @@ impl Index {
         self.revoked = true;
     }
     pub fn reset(&mut self, generation: u64) {
-        if self.generation != Some(generation) {
+        let world = self.generation != Some(generation);
+        if world || self.invalidated {
             self.slots.fill(Slot::default());
             self.countries.fill(Country::default());
-            self.generation = Some(generation);
-            self.next = 1;
             self.live = 0;
         } else if self.revoked {
             self.slots.fill(Slot::default());
@@ -61,6 +64,12 @@ impl Index {
             }
             self.live = 0;
         }
+        // Only a new world restarts its labels.
+        if world {
+            self.generation = Some(generation);
+            self.next = 1;
+        }
+        self.invalidated = false;
         self.revoked = false;
     }
     fn search(&self, pointer: usize) -> (Option<usize>, Option<usize>) {
@@ -114,6 +123,7 @@ impl Index {
         }
         spare.countries[..self.countries.len()].copy_from_slice(&self.countries);
         spare.generation = self.generation;
+        spare.invalidated = self.invalidated;
         spare.revoked = self.revoked;
         spare.next = self.next;
         spare.live = self.live;
@@ -441,5 +451,81 @@ mod tests {
         assert_eq!(index.remove(0x10000).unwrap().id, 5001);
         index.reset(8);
         assert_eq!(index.insert(0x10000, owner).unwrap(), 1);
+    }
+    #[test]
+    fn delayed_labels_outlive_a_same_world_loss_and_restart_only_for_a_new_world() {
+        let owner = CountryIdentity {
+            reference: 3,
+            id: 3,
+            instance: 0,
+        };
+        let mut index = Index::default();
+        index.prepare(4).unwrap();
+        index.reset(1);
+        let mut spare = Index::default();
+        spare.prepare(8).unwrap();
+        let certified = Country {
+            pointer: 0x10,
+            id: 1,
+            ready: true,
+        };
+        let attempted = Country {
+            pointer: 0x20,
+            id: 2,
+            ready: false,
+        };
+        crate::test_support::with_allocations_denied(|| {
+            assert_eq!(index.insert(0x1000, owner).unwrap(), 1);
+            index.countries[..2].copy_from_slice(&[certified, attempted]);
+            // An observation overlap retires every certificate. The prepared
+            // handoff before the next boundary must keep that distinction.
+            index.invalidate();
+            index.install(&mut spare);
+            index.reset(1);
+            assert_eq!(index.live, 0);
+            assert!(index.search(0x1000).0.is_none());
+            assert!(index.countries.iter().all(|country| country.pointer == 0));
+            // The game may free the first timer unobserved and reuse its
+            // address for another one: that timer must get a new label.
+            assert_eq!(index.insert(0x1000, owner).unwrap(), 2);
+            assert_eq!(index.insert(0x2000, owner).unwrap(), 3);
+            // A boundary without a loss carries the certificates.
+            index.reset(1);
+            assert_eq!(index.insert(0x1000, owner).unwrap(), 2);
+            // A revocation retires timers and certified owners, keeps failed
+            // owner attempts, and keeps the labels too.
+            index.countries[..2].copy_from_slice(&[certified, attempted]);
+            index.revoke_retained();
+            index.reset(1);
+            assert_eq!(index.countries[0].pointer, 0);
+            assert_eq!(index.countries[1].pointer, attempted.pointer);
+            assert_eq!(index.insert(0x2000, owner).unwrap(), 4);
+            index.reset(2);
+            assert_eq!(index.live, 0);
+            assert!(index.countries.iter().all(|country| country.pointer == 0));
+            assert_eq!(index.insert(0x2000, owner).unwrap(), 1);
+        });
+    }
+    #[test]
+    fn delayed_label_exhaustion_stays_checked_across_a_same_world_loss() {
+        let owner = CountryIdentity {
+            reference: 1,
+            id: 1,
+            instance: 4,
+        };
+        let mut index = Index::default();
+        index.prepare(4).unwrap();
+        index.reset(7);
+        index.next = u64::from(u32::MAX);
+        crate::test_support::with_allocations_denied(|| {
+            assert_eq!(index.insert(0x1000, owner).unwrap(), u32::MAX);
+            let exhausted = Err("delayed-event compact identity exhausted");
+            assert_eq!(index.insert(0x2000, owner), exhausted);
+            index.invalidate();
+            index.reset(7);
+            assert_eq!(index.insert(0x2000, owner), exhausted);
+            index.reset(8);
+            assert_eq!(index.insert(0x2000, owner).unwrap(), 1);
+        });
     }
 }

@@ -109,6 +109,13 @@ impl ScriptEventState {
                 owner.gap();
             }
         }
+        // A loss known on this row already makes the retained queues stale;
+        // its deltas must not meet them before the row's own baselines.
+        if row.coverage != EventFeedCoverage::Complete || row.failure.is_some() {
+            for owner in self.delayed.values_mut() {
+                owner.gap();
+            }
+        }
         let mut pending_baseline = false;
         let mut fired_baseline = false;
         for event in &row.events {
@@ -793,6 +800,267 @@ mod tests {
         assert!(
             state.delayed(owner).is_err(),
             "an unclosed native pass cannot certify the boundary"
+        );
+    }
+    const DELAYED_OWNER: EventFeedCountry = EventFeedCountry {
+        reference: 6,
+        id: 5,
+        instance: 7,
+    };
+    type Change = (EventFeedScriptChange, Option<u32>, Option<u32>);
+    fn lost(mut row: EventFeedHistoryRow, coverage: EventFeedCoverage) -> EventFeedHistoryRow {
+        row.coverage = coverage;
+        if coverage == EventFeedCoverage::Unavailable {
+            row.failure = Some(b"synthetic observation overlap".to_vec());
+        }
+        row
+    }
+    fn advance(count: u32, finished: bool) -> Change {
+        (DelayedAdvance { count, finished }, None, None)
+    }
+    fn retire(instance: u32, iteration: bool, visited: bool) -> Change {
+        (DelayedRemoved { iteration, visited }, Some(instance), None)
+    }
+    fn store(remaining: i32, instance: u32, definition: u32) -> Change {
+        (
+            DelayedStored { remaining },
+            Some(instance),
+            Some(definition),
+        )
+    }
+    /// Every row also passes through the value codec, the table field codec
+    /// and a table patch against its predecessor; all four reductions keep
+    /// the same state and readiness.
+    #[derive(Default)]
+    struct Reductions([ScriptEventState; 4], Option<EventFeedHistoryRow>);
+    impl Reductions {
+        fn observe(&mut self, row: &EventFeedHistoryRow) -> io::Result<()> {
+            use crate::rows::RowCodec;
+            let mut value = Vec::new();
+            row.encode(&mut value)?;
+            let mut fields = Vec::new();
+            row.encode_fields(&mut fields)?;
+            let patch = row
+                .delta(self.1.as_ref())?
+                .ok_or_else(|| invalid("synthetic rows always differ"))?;
+            let rows = [
+                row.clone(),
+                EventFeedHistoryRow::decode(&mut Decoder::new(&value))?,
+                EventFeedHistoryRow::decode_fields(0, &mut Decoder::new(&fields))?,
+                EventFeedHistoryRow::apply_delta(&patch, self.1.take())?,
+            ];
+            for (state, row) in self.0.iter_mut().zip(&rows) {
+                state.observe(row)?;
+            }
+            let expected = format!("{:?}", self.0[0]);
+            for state in &self.0[1..] {
+                assert_eq!(format!("{state:?}"), expected);
+            }
+            self.1 = Some(row.clone());
+            Ok(())
+        }
+        fn timers(&self) -> Result<Vec<(u32, u32, i32)>, &'static str> {
+            self.0[0].delayed(DELAYED_OWNER).map(|timers| {
+                timers
+                    .iter()
+                    .map(|timer| {
+                        (
+                            timer.instance,
+                            timer.definition.native_event.id,
+                            timer.remaining,
+                        )
+                    })
+                    .collect()
+            })
+        }
+    }
+    #[test]
+    fn delayed_writer_deltas_without_a_baseline_keep_their_owner_unavailable() {
+        let mut state = Reductions::default();
+        // Partial startup: a store, then an orphan pass and retirements,
+        // before the owner's first census.
+        state
+            .observe(&lost(
+                row(1, 0, &[store(360, 1, 31)]),
+                EventFeedCoverage::Partial,
+            ))
+            .unwrap();
+        assert!(state.timers().is_err());
+        state
+            .observe(&row(
+                2,
+                1,
+                &[advance(2, false), retire(1, true, true), advance(0, true)],
+            ))
+            .unwrap();
+        state
+            .observe(&row(3, 4, &[retire(4, false, false)]))
+            .unwrap();
+        assert!(state.timers().is_err());
+        // A loss between rows, then a different timer under a reused label
+        // in a Complete interval: no uncertified timer is kept to collide.
+        state.observe(&row(5, 5, &[store(1, 1, 20)])).unwrap();
+        // The same on a row that itself records the loss.
+        state
+            .observe(&lost(
+                row(6, 6, &[store(5, 1, 21)]),
+                EventFeedCoverage::Unavailable,
+            ))
+            .unwrap();
+        // Complete transport alone restores nothing.
+        for hour in 7..9 {
+            state.observe(&row(hour, 7 + hour as u64, &[])).unwrap();
+            assert!(state.timers().is_err());
+        }
+        // A native queue reset opens a baseline; a loss interrupts it, so its
+        // timers must not meet later stores either.
+        state
+            .observe(&row(
+                9,
+                20,
+                &[(DelayedBaseline, None, None), store(9, 2, 22)],
+            ))
+            .unwrap();
+        assert!(state.timers().is_err());
+        state
+            .observe(&lost(
+                row(10, 22, &[store(8, 2, 23)]),
+                EventFeedCoverage::Unavailable,
+            ))
+            .unwrap();
+        state.observe(&row(11, 23, &[store(8, 2, 23)])).unwrap();
+        assert!(state.timers().is_err());
+        // The explicit census baseline restores exact ordered state.
+        state
+            .observe(&row(
+                12,
+                24,
+                &[
+                    (DelayedBaseline, None, None),
+                    store(330, 3, 31),
+                    store(8, 2, 23),
+                    (DelayedReady, None, None),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(state.timers().unwrap(), [(3, 31, 330), (2, 23, 8)]);
+        state.observe(&row(13, 28, &[advance(2, true)])).unwrap();
+        assert_eq!(state.timers().unwrap(), [(3, 31, 329), (2, 23, 7)]);
+    }
+    #[test]
+    fn delayed_loss_on_the_current_row_retires_a_certified_queue_before_its_deltas() {
+        let mut state = Reductions::default();
+        let baseline = |hour, first| {
+            row(
+                hour,
+                first,
+                &[
+                    (DelayedBaseline, None, None),
+                    store(10, 1, 40),
+                    (DelayedReady, None, None),
+                ],
+            )
+        };
+        state.observe(&baseline(1, 0)).unwrap();
+        assert_eq!(state.timers().unwrap(), [(1, 40, 10)]);
+        // A loss-qualified row neither certifies its deltas nor checks them
+        // against the queue it has already made stale.
+        for (hour, coverage) in [
+            (2, EventFeedCoverage::Partial),
+            (3, EventFeedCoverage::Unavailable),
+        ] {
+            state
+                .observe(&lost(
+                    row(
+                        hour,
+                        hour as u64 * 10,
+                        &[store(3, 1, 41), retire(1, true, false)],
+                    ),
+                    coverage,
+                ))
+                .unwrap();
+            assert!(state.timers().is_err());
+        }
+        state.observe(&baseline(4, 40)).unwrap();
+        let mut failed = lost(row(5, 50, &[store(3, 1, 41)]), EventFeedCoverage::Partial);
+        failed.failure = Some(b"synthetic writer refusal".to_vec());
+        state.observe(&failed).unwrap();
+        assert!(state.timers().is_err());
+        // A baseline inside an Unavailable interval cannot certify it.
+        state
+            .observe(&lost(baseline(6, 60), EventFeedCoverage::Unavailable))
+            .unwrap();
+        assert!(state.timers().is_err());
+        // A Partial interval's own baseline does, as before.
+        state
+            .observe(&lost(baseline(7, 70), EventFeedCoverage::Partial))
+            .unwrap();
+        assert_eq!(state.timers().unwrap(), [(1, 40, 10)]);
+        state
+            .observe(&lost(row(8, 80, &[]), EventFeedCoverage::Unavailable))
+            .unwrap();
+        // So does an empty certificate, after which writer deltas apply.
+        state
+            .observe(&row(9, 90, &[(DelayedEmpty, None, None), store(2, 1, 42)]))
+            .unwrap();
+        assert_eq!(state.timers().unwrap(), [(1, 42, 2)]);
+    }
+    #[test]
+    fn delayed_certified_queue_keeps_equal_definitions_and_refuses_a_repeated_label() {
+        let mut state = Reductions::default();
+        let mut baseline = row(
+            1,
+            0,
+            &[
+                (DelayedBaseline, None, None),
+                store(i32::MIN, 1, 90),
+                store(1, 2, 90),
+                store(7, 3, 90),
+                (DelayedReady, None, None),
+            ],
+        );
+        baseline.script_scopes = (0..3)
+            .map(|n| EventFeedScope {
+                random: [n, n + 10],
+                ..Default::default()
+            })
+            .collect();
+        for (n, event) in baseline.events[1..4].iter_mut().enumerate() {
+            event.script.as_mut().unwrap().scope_start = n as u32;
+        }
+        state.observe(&baseline).unwrap();
+        // The middle timer fires: the swapped tail is revisited in the same
+        // pass, and the first timer's countdown wraps.
+        state
+            .observe(&row(
+                2,
+                5,
+                &[advance(2, false), retire(2, true, true), advance(1, true)],
+            ))
+            .unwrap();
+        assert_eq!(state.timers().unwrap(), [(1, 90, i32::MAX), (3, 90, 6)]);
+        let scopes = state.0[0]
+            .delayed(DELAYED_OWNER)
+            .unwrap()
+            .iter()
+            .map(|timer| timer.scopes[0].random)
+            .collect::<Vec<_>>();
+        assert_eq!(scopes, [[0, 10], [2, 12]]);
+        // Within one certified queue a repeated label stays corrupt, whether
+        // it reaches a carried queue or one baseline.
+        assert!(state.0[0].observe(&row(3, 8, &[store(4, 3, 90)])).is_err());
+        assert!(
+            ScriptEventState::default()
+                .observe(&row(
+                    1,
+                    0,
+                    &[
+                        (DelayedBaseline, None, None),
+                        store(4, 1, 90),
+                        store(5, 1, 91),
+                    ],
+                ))
+                .is_err()
         );
     }
     #[test]

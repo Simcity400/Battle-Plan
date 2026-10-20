@@ -353,7 +353,8 @@ impl Owner {
     }
 }
 
-const OBSERVATION_OVERLAP: &str = "Event feed observation overlapped another acquisition";
+pub(crate) const OBSERVATION_OVERLAP: &str =
+    "Event feed observation overlapped another acquisition";
 
 fn fault(code: u32) {
     // Static pointer-free, allocation-free sink. Even an unacquired escape
