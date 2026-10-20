@@ -29,7 +29,7 @@ test('pages reorder by drag or Alt+arrow keys, not from the page menu', async ()
     const { default: Nav } = await vite.ssrLoadModule('/ui/src/shell/AnalyticsNav.tsx');
     let pages: PageEntry[] = ['a', 'b', 'c'].map(id => ({ id: `page-${id}`, label: id }));
     const render = () => Nav({ pages, page: 'page-b', active: true, disabled: false, onChoose() {}, onDelete() {},
-      onPages: (next: PageEntry[]) => { pages = next; }, iconMenu: { colour: () => '', items: () => [] } });
+      onPages: (next: PageEntry[]) => { pages = next; }, iconMenu: { colour: () => '', icon: () => undefined, items: () => [] } });
     const openMenu = (id: string) => {
       const row = elements(render()).find(node => node.type === 'button' && node.props.children?.some?.((child: any) => child?.props?.children === id))!;
       assert.ok(row, `page ${id} remains rendered`);

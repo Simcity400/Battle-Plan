@@ -53,7 +53,9 @@ for (const scenario of ['peek', 'storage'] as const) test(scenario === 'peek'
     '/shell/useNativeViewer.ts': `export const useDesktopState = () => ({ state: { ready: true, running: true, viewer: { path: 'synthetic' } }, error: null });
       export const useMapSurface = (...args) => globalThis.__shellFixture.mapSurface(...args);`,
     '/shell/appearance/useAppearance.ts': 'export const useAppearance = () => ({ settings: { backdrop: { kind: "none" }, workspaceBackdrop: { kind: "same" } } });',
-    '/shell/appearance/SidebarIconMenu.tsx': 'export const useSidebarIconMenu = () => ({ menu: null });',
+    '/shell/appearance/SidebarIconMenu.tsx': 'export const useSidebarIconMenu = () => ({ menu: null, icon: () => undefined });',
+    '/shell/appearance/WidgetIconMenu.tsx': `export const useWidgetIconMenu = () => ({ icons: null, menu: null });
+      export const WidgetIconsContext = { Provider: ({ children }) => children };`,
     '/shell/appearance/Backdrop.tsx': 'export default () => null;',
     '/shell/Settings.tsx': `export default function Settings() {} export function SettingsNav() {}
       export const settingsSections = [{ id: 'folders', label: 'Folders' }];`,

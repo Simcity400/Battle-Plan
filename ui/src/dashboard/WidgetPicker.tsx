@@ -1,7 +1,9 @@
 import { Popover, PopoverBody, usePopover } from '../components/Popover';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Icon } from '../components/Icons';
+import { StyledIcon } from '../shell/appearance/StyledIcon';
+import { WidgetIconsContext } from '../shell/appearance/WidgetIconMenu';
 import { widgetDefinitions } from './definitions';
 import type { WidgetDefinition, WidgetPresets, WidgetRuntime } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
@@ -41,11 +43,12 @@ function Card({ entry, placed, selected, onSelect, ...shared }: Shared & { entry
   const { definition } = entry;
   const reason = useUnavailable(definition, shared);
   const [added, markAdded] = useAdded();
+  const icon = useContext(WidgetIconsContext).style(definition.kind);
   const add = () => { shared.onAdd(definition.kind, initialOf(entry)); markAdded(); };
   return <div role="listitem" className="widget-card" data-selected={selected || undefined} data-variant={entry.variant || undefined} style={groupColour(entry.group)}>
     <button type="button" className="widget-card-main" aria-pressed={selected} data-tooltip={entry.title} onClick={onSelect}
       onDoubleClick={() => { if (!shared.disabled && reason === null) add(); }}>
-      <span className="widget-card-icon" aria-hidden="true"><Icon name={definition.icon} /></span>
+      <span className="widget-card-icon" aria-hidden="true"><StyledIcon icon={icon.icon} fallback={definition.icon} colour={icon.colour} /></span>
       {/* The description lives in the details pane; a card says only what it adds: why it is unavailable, or how many the page has. */}
       <span className="widget-card-text"><strong>{entry.title}</strong>
         {reason ? <small>{reason}</small> : placed > 0 && <small className="widget-card-placed">{placed > 1 ? `On page ×${placed}` : 'On page'}</small>}</span>

@@ -1,0 +1,22 @@
+/* An uploaded icon fills the box its glyph would, whole and in its own colours. */
+.icon-image { display: block; flex: none; width: 16px; height: 16px; object-fit: contain; }
+.sidebar-row > .icon-image, .sidebar-utility .icon-image { width: 20px; height: 20px; }
+.dash-widget-icon .icon-image { width: 15px; height: 15px; }
+.widget-card-icon .icon-image { width: 19px; height: 19px; }
+.widget-preview.is-empty > .icon-image { width: 28px; height: 28px; }
+
+.icon-style-picker { width: 280px; }
+.icon-style-picker.is-icons { width: 316px; }
+.icon-style-hex { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+.icon-style-search { width: 100%; }
+.icon-style-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; max-height: 232px; margin-top: 8px; overflow-y: auto; }
+.icon-style-grid button { display: grid; place-items: center; aspect-ratio: 1; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--muted); }
+.icon-style-grid button:hover { background: var(--hover); }
+.icon-style-grid button[aria-pressed='true'] { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.icon-style-grid svg { width: 18px; height: 18px; }
+.icon-style-empty { grid-column: 1 / -1; margin: 8px 0; color: var(--muted); font-size: 0.75rem; text-align: center; }
+.icon-style-upload { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.icon-style-upload > .icon-image { width: 28px; height: 28px; }
+.icon-style-upload > .button { flex: 1; }
+.icon-style-picker > .dash-inline-warning { margin-top: 8px; padding: 0; }
+.size-stepper .icon-image { width: 14px; height: 14px; }

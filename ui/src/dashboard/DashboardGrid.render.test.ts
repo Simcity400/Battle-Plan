@@ -6,30 +6,33 @@ import { createServer } from 'vite';
 import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
 import type { WidgetRuntime } from './definitions';
 
+const replacements: Record<string, string> = {
+  '/dashboard/widgets.tsx': 'export const WidgetBody = () => null;',
+  '/dashboard/WidgetSettingsMenu.tsx': 'export default props => { globalThis.__frameReset = props.onReset; return null; };',
+  '/dashboard/definitions.ts': `export const widgetDefinition = kind => ({ icon: 'grid', data: kind !== 'decoration', version: 1, title: 'Synthetic',
+    history: true, countrySelection: false, timeModes: ['follow', 'campaign'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] } });`,
+  '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({ campaigns: {} });',
+  '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: { factions: [{ id: '42', name: null,
+    nameReason: 'Synthetic native naming refusal', names: [{ firstHour: 0, lastHour: 100, name: null, reason: 'Synthetic native naming refusal' }] }] } });`,
+  '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+};
+const frameServer = () => createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+  server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'frame-render', enforce: 'pre',
+    resolveId: id => id === 'react-grid-layout' ? '\0frame-grid' : undefined,
+    load: id => id === '\0frame-grid' ? `export const useContainerWidth = () => ({ width: 1200, mounted: true });
+      export const Responsive = ({ children }) => children;` : undefined,
+    transform(_source, id) { return Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1]; },
+  }] });
+const syntheticTracks = () => ['one', 'two'].map(roleId => ({ id: `track-${roleId}`, roleId, label: roleId,
+  branch: { id: 'branch', firstHour: 0, lastHour: 100 },
+  source: { path: `${roleId}.battleplan`, metadata: { countries: [], branches: [] } } })) as unknown as BoundTrack[];
+
 test('frame subtitles identify only campaigns different from the sidebar and warnings use the resolved campaign', async () => {
-  const replacements: Record<string, string> = {
-    '/dashboard/widgets.tsx': 'export const WidgetBody = () => null;',
-    '/dashboard/WidgetSettingsMenu.tsx': 'export default props => { globalThis.__frameReset = props.onReset; return null; };',
-    '/dashboard/definitions.ts': `export const widgetDefinition = kind => ({ icon: 'grid', data: kind !== 'decoration', version: 1, title: 'Synthetic',
-      history: true, countrySelection: false, timeModes: ['follow', 'campaign'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] } });`,
-    '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({ campaigns: {} });',
-    '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: { factions: [{ id: '42', name: null,
-      nameReason: 'Synthetic native naming refusal', names: [{ firstHour: 0, lastHour: 100, name: null, reason: 'Synthetic native naming refusal' }] }] } });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
-  };
-  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
-    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'frame-render', enforce: 'pre',
-      resolveId: id => id === 'react-grid-layout' ? '\0frame-grid' : undefined,
-      load: id => id === '\0frame-grid' ? `export const useContainerWidth = () => ({ width: 1200, mounted: true });
-        export const Responsive = ({ children }) => children;` : undefined,
-      transform(_source, id) { return Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1]; },
-    }] });
+  const vite = await frameServer();
   try {
     const { default: Grid } = await vite.ssrLoadModule('/ui/src/dashboard/DashboardGrid.tsx') as typeof import('./DashboardGrid');
     const { saveRecordingNames, setRecordingName } = await vite.ssrLoadModule('/ui/src/dashboard/recordingNames.ts') as typeof import('./recordingNames.ts');
-    const tracks = ['one', 'two'].map(roleId => ({ id: `track-${roleId}`, roleId, label: roleId,
-      branch: { id: 'branch', firstHour: 0, lastHour: 100 },
-      source: { path: `${roleId}.battleplan`, metadata: { countries: [], branches: [] } } })) as unknown as BoundTrack[];
+    const tracks = syntheticTracks();
     const runtime = { tracks, campaignTracks: tracks, defaultRoleId: 'one', maps: {}, client: {}, clock: { getHour: () => 0 } } as unknown as WidgetRuntime;
     const widget: WidgetSpec = { id: 'test', kind: 'synthetic', configVersion: 1, title: 'Synthetic', campaign: 'default',
       trackIds: ['track-one', 'stale-track'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: [] } };
@@ -118,4 +121,45 @@ test('frame subtitles identify only campaigns different from the sidebar and war
     assert.match(faction, /Unnamed faction/);
     assert.doesNotMatch(faction, /Synthetic native naming refusal|data-tooltip=/);
   } finally { await vite.close(); delete (globalThis as { __frameReset?: unknown }).__frameReset; }
+});
+
+test('a widget header draws its kind\'s own icon and colour, and an image in its own colours', async () => {
+  const vite = await frameServer();
+  try {
+    const { default: Grid } = await vite.ssrLoadModule('/ui/src/dashboard/DashboardGrid.tsx') as typeof import('./DashboardGrid');
+    const { default: Preview } = await vite.ssrLoadModule('/ui/src/dashboard/WidgetPreview.tsx') as typeof import('./WidgetPreview');
+    const { WidgetIconsContext } = await vite.ssrLoadModule('/ui/src/shell/appearance/WidgetIconMenu.tsx') as typeof import('../shell/appearance/WidgetIconMenu');
+    const { Icon } = await vite.ssrLoadModule('/ui/src/components/Icons.tsx') as typeof import('../components/Icons');
+    const tracks = syntheticTracks();
+    const runtime = { tracks, campaignTracks: tracks, defaultRoleId: 'one', maps: {}, client: {}, clock: { getHour: () => 0 } } as unknown as WidgetRuntime;
+    const widget = (id: string, kind: string): WidgetSpec => ({ id, kind, configVersion: 1, title: 'Synthetic', campaign: 'default',
+      trackIds: ['track-one'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: [] } });
+    const template = { tracks, widgets: [widget('first', 'navy-size'), widget('second', 'navy-size'), widget('third', 'aces')], layouts: {} } as unknown as DashboardTemplate;
+    const styles: Record<string, { icon?: string; colour?: string }> = { 'navy-size': { icon: 'anchor', colour: '#ff0000' } };
+    const icons = { style: (kind: string) => styles[kind] ?? {}, openMenu() {}, edit() {}, reset() {} } as never;
+    const grid = (provided = true) => {
+      const element = createElement(Grid, { template, runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} });
+      return renderToStaticMarkup(provided ? createElement(WidgetIconsContext.Provider, { value: icons }, element) : element);
+    };
+    const glyph = (name: 'anchor' | 'grid') => renderToStaticMarkup(createElement(Icon, { name }));
+    const header = (markup: string, id: string) => markup.match(new RegExp(`<span class="dash-widget-icon"[^>]*data-widget-icon="${id}"[^>]*>(.*?)</span>`))?.[0] ?? '';
+
+    for (const id of ['first', 'second']) {
+      assert.match(header(grid(), id), /style="color:#ff0000"/, 'every copy of the kind takes its colour');
+      assert.ok(header(grid(), id).includes(glyph('anchor')), 'every copy of the kind draws its icon');
+    }
+    assert.doesNotMatch(header(grid(), 'third'), /style=/, 'another kind keeps the muted default');
+    assert.ok(header(grid(), 'third').includes(glyph('grid')));
+    assert.ok(header(grid(false), 'first').includes(glyph('grid')), 'without the app, headers draw their defaults');
+
+    styles['navy-size'] = { icon: 'data:image/png;base64,iVBORw0KGgo=' };
+    assert.match(header(grid(), 'first'), /<img class="icon-image" src="data:image\/png;base64,iVBORw0KGgo=" alt="" aria-hidden="true" draggable="false"\/>/);
+    assert.doesNotMatch(header(grid(), 'first'), /<svg/);
+
+    styles['navy-size'] = { icon: 'anchor', colour: '#00ff00' };
+    const definition = { kind: 'navy-size', icon: 'grid', title: 'Navy size', defaultSize: { w: 4, h: 8 } } as never;
+    const preview = renderToStaticMarkup(createElement(WidgetIconsContext.Provider, { value: icons },
+      createElement(Preview, { definition, runtime: { ...runtime, tracks: [], campaignTracks: [] } as WidgetRuntime })));
+    assert.ok(preview.includes(renderToStaticMarkup(createElement(Icon, { name: 'anchor', style: { color: '#00ff00' } }))), 'the catalogue preview draws the kind\'s icon');
+  } finally { await vite.close(); }
 });

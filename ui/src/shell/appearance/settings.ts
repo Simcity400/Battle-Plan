@@ -2,8 +2,10 @@
 // interface feel, typography and backdrop. Background images live in
 // IndexedDB (backdrops.ts); only their IDs are stored here.
 import { normalizeColor } from './color.ts';
+import { isWidgetKind, parseIconStyles } from './iconStyle.ts';
+import type { WidgetIconStyles } from './iconStyle.ts';
 import { isSidebarIconId } from './sidebarIcons.ts';
-import type { SidebarIconColours } from './sidebarIcons.ts';
+import type { SidebarIconStyles } from './sidebarIcons.ts';
 import { BUILT_IN_THEMES, DEFAULT_THEME_ID, completeColors, findTheme, themeColors, themeRoles } from './themes.ts';
 import type { ThemeColors, ThemeDefinition, ThemeMode } from './themes.ts';
 import { MAX_THEME_NAME } from './themeFile.ts';
@@ -48,7 +50,10 @@ export interface AppearanceSettings {
   /** The main view's own backdrop; 'same' shows the sidebar and top bar's through it. */
   workspaceBackdrop: Backdrop<BackdropKind | 'same'>;
   charts: { motion: ChartMotion; countryColours: CountryColours };
-  sidebarIcons: SidebarIconColours;
+  /** Own icons and colours for sidebar items. */
+  sidebarIcons: SidebarIconStyles;
+  /** Own header icons and colours for widget kinds, shared by every copy of a kind. */
+  widgetIcons: WidgetIconStyles;
 }
 
 export const DEFAULT_APPEARANCE: AppearanceSettings = {
@@ -59,6 +64,7 @@ export const DEFAULT_APPEARANCE: AppearanceSettings = {
   workspaceBackdrop: { kind: 'same', imageId: null, dim: 55, blur: 0 },
   charts: { motion: 'smooth', countryColours: 'raw' },
   sidebarIcons: {},
+  widgetIcons: {},
 };
 
 export const CONTRAST_STEP = 5;
@@ -109,15 +115,12 @@ export function parseAppearance(input: unknown): AppearanceSettings {
   const choose = (mode: ThemeMode) => id(themes[mode]) && findTheme(themes[mode] as string, custom) ? themes[mode] as string : DEFAULT_THEME_ID;
   const fonts = object(input.fonts) ? input.fonts : {};
   const charts = object(input.charts) ? input.charts : {};
-  const sidebarIcons = object(input.sidebarIcons) ? input.sidebarIcons : {};
   const defaults = DEFAULT_APPEARANCE;
   const glass = number(input.glass, LIMITS.glass, defaults.glass);
   return {
     version: 2,
-    sidebarIcons: Object.fromEntries(Object.entries(sidebarIcons).flatMap(([id, value]) => {
-      const colour = isSidebarIconId(id) ? normalizeColor(value) : null;
-      return colour ? [[id, colour]] : [];
-    })),
+    sidebarIcons: parseIconStyles(input.sidebarIcons, isSidebarIconId),
+    widgetIcons: parseIconStyles(input.widgetIcons, isWidgetKind),
     scheme: input.scheme === 'system' || input.scheme === 'light' || input.scheme === 'dark' ? input.scheme : defaults.scheme,
     themes: { dark: choose('dark'), light: choose('light') },
     custom,

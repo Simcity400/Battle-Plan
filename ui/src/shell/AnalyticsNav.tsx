@@ -6,12 +6,13 @@ import type { PageEntry, PageId } from '../dashboard/pages';
 import { newId } from './ids.ts';
 import type { useSidebarIconMenu } from './appearance/SidebarIconMenu';
 import { isSidebarIconId } from './appearance/sidebarIcons';
+import { StyledIcon } from './appearance/StyledIcon';
 
 /** Analytics in the sidebar: its pages, added with +, renamed or deleted from a right-click
  * menu (or the context-menu key; F2 renames) and reordered by dragging, or Alt+Up / Alt+Down. */
 export default function AnalyticsNav({ pages, page, active, disabled, onChoose, onPages, onDelete, iconMenu }: {
   pages: PageEntry[]; page: PageId; active: boolean; disabled: boolean;
-  iconMenu: Pick<ReturnType<typeof useSidebarIconMenu>, 'colour' | 'items'>;
+  iconMenu: Pick<ReturnType<typeof useSidebarIconMenu>, 'colour' | 'icon' | 'items'>;
   onChoose: (id: PageId) => void; onPages: (pages: PageEntry[]) => void; onDelete: (id: PageId) => void;
 }) {
   const [open, setOpen] = useState(true);
@@ -39,7 +40,7 @@ export default function AnalyticsNav({ pages, page, active, disabled, onChoose, 
   return <>
     <div className="sidebar-group">
       <button id="tab-analytics" type="button" className="sidebar-row sidebar-group-row" data-sidebar-icon="analytics" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-        <Icon name="chart-bars" style={{ color: iconMenu.colour('analytics') }} /><span>Analytics</span><Icon name="chevron-down" className="sidebar-group-chevron" /></button>
+        <StyledIcon icon={iconMenu.icon('analytics')} fallback="chart-bars" colour={iconMenu.colour('analytics')} /><span>Analytics</span><Icon name="chevron-down" className="sidebar-group-chevron" /></button>
       <button type="button" className="icon-button small sidebar-group-add" aria-label="Add a page" data-tooltip="Add a page" disabled={disabled} onClick={add}><Icon name="plus" /></button>
     </div>
     {open && <div className="sidebar-page-list">{pages.map((entry, index) => renaming === entry.id
@@ -78,7 +79,8 @@ export default function AnalyticsNav({ pages, page, active, disabled, onChoose, 
           setDrag(null);
         }}
         onDragEnd={() => setDrag(null)}>
-        <Icon name={pageIcon(entry.id)} style={{ color: isSidebarIconId(entry.id) ? iconMenu.colour(entry.id) : undefined }} /><span>{entry.label}</span></button>)}</div>}
+        <StyledIcon icon={isSidebarIconId(entry.id) ? iconMenu.icon(entry.id) : undefined} fallback={pageIcon(entry.id)}
+          colour={isSidebarIconId(entry.id) ? iconMenu.colour(entry.id) : undefined} /><span>{entry.label}</span></button>)}</div>}
     {contextMenu.menu}
   </>;
 }

@@ -28,7 +28,7 @@ function useMedia(store: ReturnType<typeof mediaStore>): boolean {
 export function applyAppearance(root: HTMLElement, settings: AppearanceSettings, resolved: ResolvedAppearance, themed: ThemeColors = resolved.colors, mode: ThemeMode = resolved.mode): void {
   const colors = contrastColors(themed, settings.contrast);
   for (const role of themeRoles) root.style.setProperty(cssVariable(role), colors[role]);
-  for (const id of sidebarIconIds) root.style.setProperty(`--sidebar-icon-${id}`, settings.sidebarIcons[id] ?? SIDEBAR_ICONS[id][mode]);
+  for (const id of sidebarIconIds) root.style.setProperty(`--sidebar-icon-${id}`, settings.sidebarIcons[id]?.colour ?? SIDEBAR_ICONS[id][mode]);
   root.style.setProperty('--glass', `${settings.glass}%`);
   root.style.setProperty('--glass-blur', settings.glass >= 100 ? '0px' : `${Math.round(12 + (100 - settings.glass) * 0.2)}px`);
   // The sidebar and top bar were 0.8 × glass + 20 opaque and blurred as the glass was:

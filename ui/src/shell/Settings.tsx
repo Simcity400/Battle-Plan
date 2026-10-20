@@ -17,6 +17,9 @@ import type { ThemeDraft } from './appearance/ThemeEditor';
 import { BUILT_IN_THEMES } from './appearance/themes';
 import { uniqueThemeName } from './appearance/themeFile';
 import type { Appearance } from './appearance/useAppearance';
+import { StyledIcon } from './appearance/StyledIcon';
+import { isSidebarIconId } from './appearance/sidebarIcons';
+import type { SidebarIconStyles } from './appearance/sidebarIcons';
 import type { BranchChoice } from '../dashboard/Dashboard';
 import './settings.css';
 
@@ -79,14 +82,16 @@ function findTarget(root: HTMLElement, target: SettingsTarget): HTMLElement | nu
 }
 
 /** The sidebar while Settings is open: back, search, then the sections. */
-export function SettingsNav({ section, onBack, onSection, onTarget, disabled }: {
-  section: SettingsSection; onBack: () => void; onSection: (section: SettingsSection) => void; onTarget: (target: SettingsTarget) => void; disabled?: boolean;
+export function SettingsNav({ section, icons, onBack, onSection, onTarget, disabled }: {
+  section: SettingsSection; icons: SidebarIconStyles; onBack: () => void; onSection: (section: SettingsSection) => void; onTarget: (target: SettingsTarget) => void; disabled?: boolean;
 }) {
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   const results = useMemo(() => search(query), [query]);
   const searching = query.trim().length > 0;
+  const sectionIcon = (id: SettingsSection) => <StyledIcon icon={isSidebarIconId(id) ? icons[id]?.icon : undefined}
+    fallback={settingsSections.find(item => item.id === id)!.icon} colour={`var(--sidebar-icon-${id})`} />;
   useEffect(() => setActive(index => Math.min(index, Math.max(results.length - 1, 0))), [results.length]);
   useEffect(() => {
     const focus = (event: globalThis.KeyboardEvent) => {
@@ -124,13 +129,13 @@ export function SettingsNav({ section, onBack, onSection, onTarget, disabled }: 
     {searching ? <div className="sidebar-menu" id="settings-search-results" role="listbox" aria-label="Settings search results">
       {results.map((item, index) => <button key={`${item.section}:${item.title}`} id={`settings-result-${index}`} type="button" role="option" tabIndex={-1}
         aria-selected={index === active} className="sidebar-row sidebar-result" data-sidebar-icon={item.section} onMouseMove={() => setActive(index)} onClick={() => choose(item)}>
-        <Icon name={settingsSections.find(section => section.id === item.section)!.icon} style={{ color: `var(--sidebar-icon-${item.section})` }} />
+        {sectionIcon(item.section)}
         <span><strong>{item.title}</strong><small>{settingsSections.find(section => section.id === item.section)!.label}</small></span>
       </button>)}
       {!results.length && <p className="sidebar-empty" role="status">No settings found</p>}
     </div> : <nav className="sidebar-menu" aria-label="Settings sections">
       {settingsSections.map(item => <button key={item.id} type="button" className="sidebar-row" data-sidebar-icon={item.id} aria-current={section === item.id ? 'page' : undefined}
-        onClick={() => onSection(item.id)}><Icon name={item.icon} style={{ color: `var(--sidebar-icon-${item.id})` }} /><span>{item.label}</span></button>)}
+        onClick={() => onSection(item.id)}>{sectionIcon(item.id)}<span>{item.label}</span></button>)}
     </nav>}
   </>;
 }

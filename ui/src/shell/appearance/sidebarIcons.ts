@@ -1,3 +1,5 @@
+import type { IconStyles } from './iconStyle.ts';
+
 export const SIDEBAR_ICONS = {
   analytics: { label: 'Analytics', dark: '#a78bfa', light: '#7c3aed' },
   map: { label: 'Campaign map', dark: '#34d399', light: '#047857' },
@@ -22,6 +24,6 @@ export type SidebarIconId = keyof typeof SIDEBAR_ICONS | `page-${string}`;
 
 export const isSidebarIconId = (id: string): id is SidebarIconId => Object.hasOwn(SIDEBAR_ICONS, id) || /^page-[a-zA-Z0-9_-]{1,60}$/.test(id);
 export const defaultSidebarIcon = (id: SidebarIconId) => SIDEBAR_ICONS[id as keyof typeof SIDEBAR_ICONS] ?? SIDEBAR_ICONS.overview;
-export type SidebarIconColours = Partial<Record<SidebarIconId, string>>;
+export type SidebarIconStyles = IconStyles<SidebarIconId>;
 
 export const sidebarIconIds = Object.keys(SIDEBAR_ICONS) as (keyof typeof SIDEBAR_ICONS)[];

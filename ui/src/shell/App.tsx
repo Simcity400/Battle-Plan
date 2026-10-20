@@ -24,6 +24,8 @@ import { settingsSections } from './settingsMetadata';
 import type { SettingsSection, SettingsTarget } from './settingsMetadata';
 import { useAppearance } from './appearance/useAppearance';
 import { useSidebarIconMenu } from './appearance/SidebarIconMenu';
+import { StyledIcon } from './appearance/StyledIcon';
+import { useWidgetIconMenu, WidgetIconsContext } from './appearance/WidgetIconMenu';
 import Backdrop from './appearance/Backdrop';
 import './shell.css';
 import { useReplayLibrary } from '../dashboard/replayLibrary';
@@ -155,6 +157,7 @@ function MapState({ icon = 'map', eyebrow, title, children, busy = false, alert 
 export default function App() {
   const appearance = useAppearance();
   const iconMenu = useSidebarIconMenu(appearance);
+  const widgetIconMenu = useWidgetIconMenu(appearance);
   const sidebar = useSidebarState();
   // A manual popover gives sidebar peek the same native-window occlusion events as menus.
   const peekOverlay = useRef<HTMLDivElement>(null);
@@ -339,18 +342,18 @@ export default function App() {
         </div>
         <div className="sidebar-body">
         {tab === 'settings'
-          ? <Suspense fallback={null}><SettingsNav section={settingsSection} onBack={() => void changeTab(lastView.current)} onSection={section => openSettings(section)}
+          ? <Suspense fallback={null}><SettingsNav section={settingsSection} icons={appearance.settings.sidebarIcons} onBack={() => void changeTab(lastView.current)} onSection={section => openSettings(section)}
             onTarget={target => openSettings(target.section, target)} disabled={switching} /></Suspense>
           : <nav className="sidebar-menu" aria-label="Views">
             <AnalyticsNav pages={pages} page={page} active={tab === 'analytics'} disabled={switching} onPages={changePages} onDelete={deletePage} iconMenu={iconMenu}
               onChoose={id => { choosePage(id); void changeTab('analytics'); }} />
             <button id="tab-map" type="button" className="sidebar-row" data-sidebar-icon="map" aria-current={tab === 'map' ? 'page' : undefined}
-              disabled={switching} onClick={() => void changeTab('map')}><Icon name="map" style={{ color: 'var(--sidebar-icon-map)' }} /><span>Campaign map</span></button>
+              disabled={switching} onClick={() => void changeTab('map')}><StyledIcon icon={iconMenu.icon('map')} fallback="map" colour="var(--sidebar-icon-map)" /><span>Campaign map</span></button>
           </nav>}
         <div className="sidebar-campaign-host" ref={setCampaignHost} hidden={tab === 'settings'} />
         <div className="sidebar-footer">
           {tab !== 'settings' && <button id="tab-settings" type="button" className="icon-button sidebar-utility" data-sidebar-icon="settings" disabled={switching} aria-label="Settings" data-tooltip="Settings"
-            onClick={() => void changeTab('settings')}><Icon name="settings" style={{ color: 'var(--sidebar-icon-settings)' }} /></button>}
+            onClick={() => void changeTab('settings')}><StyledIcon icon={iconMenu.icon('settings')} fallback="settings" colour="var(--sidebar-icon-settings)" /></button>}
           <UpdateButton />
         </div>
         </div>
@@ -359,6 +362,7 @@ export default function App() {
           onPointerDown={sidebar.startResize} onDoubleClick={sidebar.resetWidth} onKeyDown={sidebar.resizeByKey} />}
       </aside>
       {iconMenu.menu}
+      {widgetIconMenu.menu}
       <header className="shell-header">
         <div className="shell-campaign-controls" ref={setPlaybackHost} hidden={tab === 'settings'} />
         {tab === 'settings' && <nav className="shell-location" aria-label="Location"><span>Settings</span><Icon name="chevron-right" /><strong aria-current="page">{sectionLabel}</strong></nav>}
@@ -410,7 +414,7 @@ export default function App() {
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
           <Suspense fallback={<div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>}>
-            <Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={setActionError} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} />
+            <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={setActionError} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
           </Suspense>
         </section>
       </main>

@@ -1,10 +1,12 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Responsive, useContainerWidth } from 'react-grid-layout';
 import type { Layout, ResponsiveLayouts } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import 'react-resizable/css/styles.css';
 import { Icon } from '../components/Icons';
+import { StyledIcon } from '../shell/appearance/StyledIcon';
+import { WidgetIconsContext } from '../shell/appearance/WidgetIconMenu';
 import WidgetState from '../components/WidgetState';
 import type { MapOptions } from '../shell/api';
 import { createWidget, GRID_COLUMNS, widgetAtDefault } from './model';
@@ -124,6 +126,8 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   // The native picker's fog click flips this widget's switch, as its control does.
   useEffect(() => runtime.maps.onFog(widget.id, () => setMapOptions(flipFog)), [runtime.maps, widget.id]);
   const definition = widgetDefinition(widget.kind);
+  const icons = useContext(WidgetIconsContext);
+  const icon = icons.style(widget.kind);
   const optionDraft = useRef(new OptionDraft(widget.options));
   optionDraft.current.sync(widget.options);
   // An option set from inside the widget saves at once, as the settings panel does.
@@ -150,7 +154,12 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   return <article ref={element} className={`dash-widget kind-${widget.kind}`} aria-label={widget.title}>
     <header className="dash-widget-header">
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
-      <span className="dash-widget-icon" aria-hidden="true"><Icon name={definition?.icon ?? 'grid'} /></span>
+      <span className="dash-widget-icon" aria-hidden="true" data-widget-icon={widget.id} style={icon.colour ? { color: icon.colour } : undefined}
+        onContextMenu={event => {
+          if (!definition) return;
+          event.preventDefault();
+          icons.openMenu(widget.kind, event.currentTarget, definition.title, event.clientX, event.clientY);
+        }}><StyledIcon icon={icon.icon} fallback={definition?.icon ?? 'grid'} /></span>
       <div className="dash-widget-title"><h2>{widget.title}<span className="dash-widget-summary" ref={slots.header} /></h2>
         {source && <span className="dash-widget-subtitle">{recordingDisplayName(source.path, names)}</span>}</div>
       {definition?.data !== false && definition?.countrySelection !== false && <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={onApply}>

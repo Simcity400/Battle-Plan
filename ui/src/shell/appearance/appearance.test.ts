@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { contrast, normalizeColor, oklchToRgb, parseColor, parseColorAlpha, rgbToOklch, toHex } from './color.ts';
 import { BUILT_IN_THEMES, contrastColors, contrastWarnings, cssVariable, deriveColors, themeRoles } from './themes.ts';
 import { parseJsonc, parseThemeText, serializeTheme, uniqueThemeName } from './themeFile.ts';
+import { ICON_IMAGE_SIZE, fitIconImage, latestIconImage } from './iconImage.ts';
+import { iconStyleOf, withIconStyle } from './iconStyle.ts';
 import { APPEARANCE_KEY, DEFAULT_APPEARANCE, LIMITS, loadAppearance, migrateLegacy, parseAppearance, resolveAppearance, saveAppearance } from './settings.ts';
 
 const hex = /^#[0-9a-f]{6}$/;
@@ -167,17 +169,55 @@ test('contrast defaults to 100%, rounds within 50–100%, and clamps older boost
   assert.equal(parseAppearance({ contrast: '120' }).contrast, 100);
 });
 
-test('sidebar icon colours restore independently and reject unknown or invalid entries', () => {
-  const parsed = parseAppearance({ sidebarIcons: { analytics: '#ABC', map: 'rgb(10 20 30)', settings: 'invalid', folders: '#ffcc00', 'page-custom': '#f80', missing: '#123456' } });
-  assert.deepEqual(parsed.sidebarIcons, { analytics: '#aabbcc', map: '#0a141e', folders: '#ffcc00', 'page-custom': '#ff8800' });
+test('sidebar icon styles restore independently and reject unknown ids, icons and colours', () => {
+  const image = 'data:image/png;base64,iVBORw0KGgo=';
+  const parsed = parseAppearance({ sidebarIcons: {
+    analytics: { colour: '#ABC' }, map: { colour: 'rgb(10 20 30)', icon: 'globe' }, settings: { colour: 'invalid' }, folders: { icon: image },
+    'page-custom': { colour: '#f80', icon: 'no-such-icon' }, diagnostics: { icon: 'data:text/html;base64,PHA+' }, appearance: '#ffcc00', missing: { colour: '#123456' },
+  } });
+  assert.deepEqual(parsed.sidebarIcons, { analytics: { colour: '#aabbcc' }, map: { colour: '#0a141e', icon: 'globe' }, folders: { icon: image }, 'page-custom': { colour: '#ff8800' } });
   assert.deepEqual(parseAppearance({}).sidebarIcons, {});
-  assert.deepEqual(parseAppearance({ sidebarIcons: ['#ff0000'] }).sidebarIcons, {});
+  assert.deepEqual(parseAppearance({ sidebarIcons: [{ colour: '#ff0000' }] }).sidebarIcons, {});
   const storage = memoryStorage();
   assert.equal(saveAppearance(parsed, storage), null);
   assert.deepEqual(loadAppearance(storage).settings.sidebarIcons, parsed.sidebarIcons);
   parsed.sidebarIcons = {};
   saveAppearance(parsed, storage);
   assert.equal(loadAppearance(storage).settings.sidebarIcons.analytics, undefined);
+});
+
+test('widget icon styles belong to widget kinds and keep only readable parts', () => {
+  const image = 'data:image/png;base64,iVBORw0KGgo=';
+  const parsed = parseAppearance({ widgetIcons: {
+    'navy-size': { icon: 'anchor', colour: '#3B82F6' }, 'not-installed': { icon: image }, aces: { icon: 'data:image/svg+xml;base64,PHN2Zz4=', colour: 'red' },
+    'bad kind': { icon: 'globe' }, constructor: { icon: 'globe' }, factories: { icon: 'javascript:alert(1)' }, research: 'flask',
+  } });
+  // Kinds are not checked against the installed widgets: a kind's saved data is kept, as layouts keep it.
+  assert.deepEqual(parsed.widgetIcons, { 'navy-size': { icon: 'anchor', colour: '#3b82f6' }, 'not-installed': { icon: image } });
+  assert.deepEqual(DEFAULT_APPEARANCE.widgetIcons, {});
+  assert.deepEqual(parseAppearance({ widgetIcons: null }).widgetIcons, {});
+  assert.deepEqual(iconStyleOf<string>(parsed.widgetIcons, 'constructor'), {}, 'a kind never reads the prototype');
+  const storage = memoryStorage();
+  saveAppearance(parsed, storage);
+  assert.deepEqual(loadAppearance(storage).settings.widgetIcons, parsed.widgetIcons);
+});
+
+test('changing one part of an icon style keeps the other, and a style with neither part is removed', () => {
+  const styles = withIconStyle({}, 'navy-size', { icon: 'anchor' });
+  assert.deepEqual(styles, { 'navy-size': { icon: 'anchor' } });
+  const coloured = withIconStyle(styles, 'navy-size', { colour: '#ff0000' });
+  assert.deepEqual(coloured, { 'navy-size': { icon: 'anchor', colour: '#ff0000' } });
+  assert.deepEqual(withIconStyle(coloured, 'navy-size', { icon: null }), { 'navy-size': { colour: '#ff0000' } });
+  assert.deepEqual(withIconStyle(withIconStyle(coloured, 'navy-size', { icon: null }), 'navy-size', { colour: null }), {});
+  assert.deepEqual(styles, { 'navy-size': { icon: 'anchor' } }, 'the previous styles are left as they were');
+});
+
+test('an uploaded picture is drawn whole and centred in the square icon', () => {
+  assert.equal(ICON_IMAGE_SIZE, 64);
+  assert.deepEqual(fitIconImage(200, 100), { x: 0, y: 16, width: 64, height: 32 });
+  assert.deepEqual(fitIconImage(30, 120), { x: 24, y: 0, width: 16, height: 64 });
+  assert.deepEqual(fitIconImage(16, 16), { x: 0, y: 0, width: 64, height: 64 });
+  assert.deepEqual(fitIconImage(0, 0), { x: 0, y: 0, width: 64, height: 64 }, 'an SVG without its own size fills the square');
 });
 
 test('the first appearance format migrates presets to the default and keeps customised palettes', () => {
@@ -277,4 +317,37 @@ test('the main view has its own backdrop, or shows the sidebar and top bar’s t
     assert.match(layer, /app-backdrop-image/);
     assert.doesNotMatch(renderToStaticMarkup(createElement(Backdrop, { image: null, backdrop: { ...DEFAULT_APPEARANCE.backdrop, kind: 'ambient' } })), /app-backdrop-image/);
   } finally { await vite.close(); }
+});
+
+test('of overlapping uploads and choices for an icon, only the newest lands, whichever finishes first', async () => {
+  const image = (n: number) => `data:image/png;base64,${'A'.repeat(n * 4)}` as const;
+  const file = {} as File;
+  /** A decode the test finishes by hand, in any order. */
+  function decodes() {
+    const pending: ((value: ReturnType<typeof image> | null) => void)[] = [];
+    return { rasterise: () => new Promise<ReturnType<typeof image> | null>(resolve => { pending.push(resolve); }), finish: (i: number, value: ReturnType<typeof image> | null) => pending[i](value) };
+  }
+  // The earlier upload finishes first: it is dropped, the later one lands.
+  let choices = new Map<string, number>(), d = decodes();
+  const first = latestIconImage('map', file, choices, d.rasterise), second = latestIconImage('map', file, choices, d.rasterise);
+  d.finish(0, image(1)); d.finish(1, image(2));
+  assert.equal(await first, null);
+  assert.deepEqual(await second, { image: image(2) });
+  // The later upload finishes first: it lands, and the earlier one finishing afterwards is still dropped.
+  choices = new Map(); d = decodes();
+  const early = latestIconImage('map', file, choices, d.rasterise), late = latestIconImage('map', file, choices, d.rasterise);
+  d.finish(1, image(2)); d.finish(0, image(1));
+  assert.deepEqual(await late, { image: image(2) });
+  assert.equal(await early, null);
+  // A glyph or reset chosen meanwhile (the menu counts it in the same map) also wins; another icon's choice does not count.
+  choices = new Map(); d = decodes();
+  const beaten = latestIconImage('map', file, choices, d.rasterise);
+  choices.set('map', (choices.get('map') ?? 0) + 1);
+  d.finish(0, image(1));
+  assert.equal(await beaten, null);
+  d = decodes();
+  const kept = latestIconImage('map', file, choices, d.rasterise);
+  choices.set('folders', 1);
+  d.finish(0, null);
+  assert.deepEqual(await kept, { image: null }, 'an unreadable file still reports its refusal when nothing newer came');
 });

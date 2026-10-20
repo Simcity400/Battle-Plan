@@ -49,7 +49,7 @@ export default function MapControls({ source, client, metadata, branchId, onBran
     finally { setBusy(false); }
   };
   return <>
-    <button ref={trigger} type="button" className={compact ? "icon-button map-controls-trigger is-compact" : "icon-button map-controls-trigger"} popoverTarget={id}
+    <button ref={trigger} type="button" className={compact ? "icon-button map-controls-trigger is-compact" : "icon-button map-controls-trigger"} data-widget-settings={compact || undefined} popoverTarget={id}
       aria-label="Map settings" data-tooltip="Map settings" aria-haspopup="dialog" aria-expanded={open}><Icon name="settings" /></button>
     <Popover menu={menu} id={id} className="map-controls-menu" aria-label="Map settings">
       <PopoverHeading title="Map settings" menu={menu} onDelete={onRemove} onReset={onReset} />

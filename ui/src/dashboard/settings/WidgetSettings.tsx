@@ -1,7 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { SettingLabel } from './SettingLabel';
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import { Icon } from '../../components/Icons';
+import { IMAGE_COLOURS } from '../../shell/appearance/IconStyleMenu';
+import { isIconImage } from '../../shell/appearance/iconStyle';
+import { StyledIcon } from '../../shell/appearance/StyledIcon';
+import { WidgetIconsContext, settingsButtonOf } from '../../shell/appearance/WidgetIconMenu';
 import CampaignPicker from '../CampaignPicker';
 import { resolveWidgetCampaign } from '../campaigns';
 import { widgetDefinition } from '../definitions';
@@ -73,6 +77,7 @@ function SettingsBody({ widget, template, runtime, onChange, choices }: {
   };
   return <div className="widget-settings-content">
     <TitleField widget={widget} onChange={save} />
+    {definition && <HeaderIcon widget={widget} definition={definition} />}
     {settingsSections(definition, values, widget.countries, widget.time.mode).map(section => <section key={section} className="settings-section" aria-label={SECTION_TITLES[section]}>
       <h3>{SECTION_TITLES[section]}</h3>{body(section)}
     </section>)}
@@ -90,6 +95,28 @@ function TitleField({ widget, onChange }: { widget: WidgetSpec; onChange: (widge
   };
   return <label className="field"><span>Title</span><input value={title} onChange={event => setTitle(event.currentTarget.value)}
     onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>;
+}
+
+/** The header icon every widget of this kind shares. Its pickers open beside the widget's
+ * own header icon, as they do from a right-click on it. */
+function HeaderIcon({ widget, definition }: { widget: WidgetSpec; definition: WidgetDefinition }) {
+  const icons = useContext(WidgetIconsContext);
+  const style = icons.style(widget.kind);
+  const image = isIconImage(style.icon);
+  const edit = (part: 'icon' | 'colour') => (event: MouseEvent<HTMLButtonElement>) => {
+    const header = document.querySelector<HTMLElement>(`[data-widget-icon="${CSS.escape(widget.id)}"]`);
+    // Opening the picker closes the settings menu and unmounts this row, so focus returns to the widget's settings button.
+    icons.edit(widget.kind, header ?? event.currentTarget, definition.title, part, header && settingsButtonOf(header));
+  };
+  return <div className="setting-row"><SettingLabel label="Icon" hint={`Shared by every ${definition.title} widget`} />
+    <div className="size-stepper" role="group" aria-label="Header icon">
+      <button type="button" className="icon-button small" aria-label="Change icon" data-tooltip="Change icon" onClick={edit('icon')}>
+        <StyledIcon icon={style.icon} fallback={definition.icon} colour={style.colour} /></button>
+      <button type="button" className="icon-button small" aria-label="Change icon colour" data-tooltip={image ? IMAGE_COLOURS : 'Change icon colour'} disabled={image}
+        onClick={edit('colour')}><Icon name="palette" /></button>
+      {(style.icon || style.colour) && <button type="button" className="icon-button small" aria-label="Reset icon" data-tooltip="Reset to default"
+        onClick={() => icons.reset(widget.kind)}><Icon name="refresh" /></button>}
+    </div></div>;
 }
 
 /** Zooms everything inside the widget together; charts redraw at the new size. */
