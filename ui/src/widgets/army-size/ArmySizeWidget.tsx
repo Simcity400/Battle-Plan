@@ -21,7 +21,8 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import DatedCountryChip, { ChooseCountryChip } from '../../dashboard/DatedCountryChip';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { isMember, MEMBERSHIP_PREPARING, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -239,6 +240,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
       value: at?.values[index] == null ? '—' : formatArmyPart(at, index) })) };
   }, [model, mixTag, bands, mixMembership, moment, parts]);
 
+  const none = noMembersAt(widget.countries, resolved, groupReply.data, moment, lastHour);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its army sizes." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -251,12 +253,16 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     if (metadata.data && !metadata.data.measures.includes(measure)) {
       return <WidgetState kind="unavailable" message="Not in this recording" />;
     }
+    // A group with no member found yet asks for nothing, so no reply will come.
+    if (none) return <NoMembersState reason={none.reason} icon="shield" />;
     if (!data || !model || (grouped && !groupReply.data)) return <WidgetState kind="loading" label="Loading army sizes…" />;
     if (pending && view === 'race' && !numbers?.available) {
       return <WidgetState kind="loading" label="Loading army data…" />;
     }
     if (!metadata.data?.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
-    if (!model.tags.length && view === 'race') return <WidgetState kind="unavailable" message="No known army sizes for these countries." />;
+    // A group's members at hours still being prepared are not known yet: no series is not proof of none.
+    if (!model.tags.length && view === 'race') return resolved.known(track.branch.firstHour, track.branch.lastHour)
+      ? <WidgetState kind="unavailable" message="No known army sizes for these countries." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     return undefined;
   })();
 
@@ -287,7 +293,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   if (pinned) return <>{neutralHeader}<div ref={drillAnchor} className="army-size-drill parts-race-drill">{state ?? choice}</div></>;
   const main = <CountryRaceView runtime={runtime} track={track} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open} pickOwner={pickOwner} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={entries} lines={lines} badges={badges} parts={parts} mix={mix} segmentAt={segmentAt} countryTags={shownTags}
-    label="Army size" empty={`No known army sizes on ${dayLabel(moment)}.`} formatValue={formatArmyValue}
+    label="Army size" empty={resolved.known(moment) ? `No known army sizes on ${dayLabel(moment)}.` : MEMBERSHIP_PREPARING} formatValue={formatArmyValue}
     onViewChange={view === 'race' ? undefined : onViewChange}
     lineSummaries={prepared.summaries.size ? prepared.summaries : undefined} onSummaryView={view === 'lines' ? prepared.onSummaryView : undefined}
     exactLineTags={dense ? prepared.exactLineTags : undefined} onReachHour={dense ? setReachedHour : undefined}
@@ -296,8 +302,9 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
       ? <WidgetState kind="loading" label="Loading army data…" />
       : view === 'race' ? undefined : view === 'mix' && model && !parts.length && mixTag && countryValueAt(model, mixTag, moment)?.total === 0
         ? <WidgetState kind="empty" icon="shield" message={`0 battalions recorded on ${dayLabel(moment)}.`} />
-        : !lines.length && view === 'lines'
-          ? <WidgetState kind="empty" icon="shield" message="No known army sizes in this view." />
+        : !lines.length && view === 'lines' ? resolved.known(extent[0], extent[1])
+          ? <WidgetState kind="empty" icon="shield" message="No known army sizes in this view." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
+          : view === 'mix' && !mixTag && !resolved.known(moment) ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
           : view === 'mix' && !bands?.some(runs => runs.length)
             ? <WidgetState kind="empty" icon="shield" message="No battalion mix recorded in this view." /> : undefined}
     labels={{ race: `Army size, ${title}, ${dayLabel(moment)}`, lines: `Army size over time, ${title}`,

@@ -11,6 +11,7 @@ import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
+import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { usePlaybackSpeed } from '../../dashboard/playback';
@@ -111,7 +112,7 @@ export default function GeneralsWidget(props: WidgetProps) {
   const countsSort = ['won', 'lost', 'unresolved', 'fought', 'winRate'].includes(sort.column);
   const main = preparing && countsSort ? <WidgetState kind="loading" label="This range is still being prepared." /> : selection.countries === undefined ? <WidgetState kind="unavailable" message="Country group membership was not recorded at this hour." />
     : !rows.length && !observed?.leaders ? <WidgetState kind="unavailable" message="Leaders weren’t recorded at this time." />
-    : !rows.length ? <WidgetState kind="empty" message="No leaders for these countries at this time." />
+    : !rows.length ? selection.known ? <WidgetState kind="empty" message="No leaders for these countries at this time." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
     : <div className="leader-table">{preparing && <p className="chart-line-key" role="status">Battle counts and earlier leaders are still being prepared.</p>}<Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Generals leaderboard" rows={rows} columns={columns} rowKey={rowKey} rowHeight={48} rank
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip} onVisibleRows={setVisible}

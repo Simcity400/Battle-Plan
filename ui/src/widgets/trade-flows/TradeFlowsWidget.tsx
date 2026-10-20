@@ -28,7 +28,8 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { worldFilter } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, noMembersAt, worldFilter } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -241,7 +242,10 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   // could not attribute leave the hour known only in part, which is said too.
   const unrecorded = data ? unrecordedMessage(data.known, measure, from, moment) : null;
   const message = !data ? null : unrecorded
-    ?? momentReason ?? (diagram.links.length ? null : scope?.kind === 'countries' && scope.identityNote ? scope.identityNote : emptyMessage(data, measure, from, moment, groupUnobserved));
+    ?? momentReason ?? (diagram.links.length ? null
+      // Members at hours still being prepared are not known yet: no trade is not proof of none.
+      : !atMoment.known || resolved && !resolved.known(measure === 'current' ? moment : from, moment) ? MEMBERSHIP_PREPARING
+        : scope?.kind === 'countries' && scope.identityNote ? scope.identityNote : emptyMessage(data, measure, from, moment, groupUnobserved));
   // Totals and averages cover recorded hours only: unrecorded deals, and hours a group
   // counted at each hour has no recorded membership, are said, never counted as none.
   const groupHours = groupUnobserved ? knownHours(groupUnobserved, from, moment) : 0;
@@ -386,6 +390,10 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const selectionReason = selectionMessage(resolved, atMoment, measure, from, moment, groupUnobserved);
   if (selectionReason && !pinnedView && !drill.breakdown) return <WidgetState kind="empty" message={selectionReason} />;
   if (error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  // A group with no member found yet asks for nothing, so no reply will come: the moment shown
+  // says why. Totals over time can't say so from one moment, and wait for the whole branch.
+  const none = measure === 'current' && resolved ? noMembersAt(widget.countries, resolved, groups.data, moment, lastHour) : null;
+  if (none && !pinnedView && !drill.breakdown) return <>{pinnedHeader}<NoMembersState reason={none.reason} icon="flows" /></>;
   if (!data || !trade || (widget.countries.kind === 'group' && !groups.data)) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading trade…" /></>;
   if (!data.reads.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Trade was not recorded." /></>;
   if (resourceIds && !resourceIds.size) return <>{pinnedHeader}<WidgetState kind="empty" message="None of the chosen resources is in this campaign. Choose others in the widget settings." /></>;

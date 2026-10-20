@@ -27,7 +27,7 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryFactsAt } from '../../dashboard/countryNamesAt';
 import { STYLES } from '../../dashboard/useCountriesAt';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { worldFilter, worldRequestTags } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, worldFilter, worldRequestTags } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
@@ -260,7 +260,8 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
       : filter.reason ? <WidgetState kind="empty" message={filter.reason} />
         : !data.observed.some(span => span.firstHour <= through && through <= span.lastHour)
           ? <WidgetState kind="unavailable" message="Casualty pairs were not recorded at this moment." />
-          : !snapshot.flows.length ? <WidgetState kind="empty" message="No recorded country pairs at this moment." /> : <>
+          : !snapshot.flows.length ? grouped && !filter.known ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
+            : <WidgetState kind="empty" message="No recorded country pairs at this moment." /> : <>
     <ChordChart label="Casualties between countries" caption="Ribbon colour = the country dealing casualties"
       frame={{ data: null }} frameAt={frameAt}
       hoursPerSecond={speed} active={active && (!open || options.drill === 'popout') && !pinned} onError={setChartError}

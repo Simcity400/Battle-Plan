@@ -6,6 +6,8 @@ import { Segmented } from '../../components/Segmented';
 import ArtFallback from '../../components/ArtFallback';
 import CountryComparisons from '../../dashboard/CountryComparisons';
 import WidgetState from '../../components/WidgetState';
+import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { usNumber } from '../../charts/numberFormat';
@@ -171,6 +173,9 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
         }
       } };
   };
+  // Once every hour is read, the whole branch says it: no selected country was recorded.
+  const noneAt = view === 'live' && widget.countries.kind === 'group' && !tags.length && groups.data && track
+    && !resolved.match.known(track.branch.firstHour, track.branch.lastHour) ? worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, at, track?.branch.lastHour ?? at) : null;
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its special projects." />;
   else if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -180,7 +185,14 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;
   else if (view === 'live' && membershipUnknown) body = <WidgetState kind="unavailable" message="This group’s members were not recorded at this moment." />;
   else if (view === 'history' && !tags.length && historyMembershipUnknown) body = <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />;
+  // Live, a group with no member found yet while it is still being prepared asks for nothing: the moment shown says why once read.
+  else if (noneAt?.reason) body = <NoMembersState reason={noneAt.reason} />;
+  // Countries ever chosen are known only once every hour has been read: none found yet is not proof of none.
+  else if ((!resolved.ready || !tags.length) && !resolved.match.known(track.branch.firstHour, track.branch.lastHour)) body = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
+  // No chosen country at the moment asks for nothing: none, or still being prepared.
+  else if (view === 'live' && !requestedTags.length) body = resolved.match.known(at) ? <WidgetState kind="empty" message="No selected countries were recorded at this moment." />
+    : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   else if (!data) body = <WidgetState kind="loading" label="Loading special projects…" />;
   else if (data.some(reply => !reply.details && currentProjectReply(reply)?.unavailable?.includes('still being prepared'))) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (data.every(reply => !reply.details && reply.unavailable && (!currentProjectReply(reply) || currentProjectReply(reply)!.unavailable))) body = <WidgetState kind="unavailable" message={PROJECTS_UNRECORDED} />;
@@ -197,7 +209,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
     else body = <CurrentList reply={reply} at={at} item={item(reply)} />;
   } else if (!pending?.length && !lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown
     ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />
-    : <WidgetState kind="empty" message="No special projects yet." />;
+    : !resolved.match.known(from, at) ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
+      : <WidgetState kind="empty" message="No special projects yet." />;
   else body = <><Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Special project history" extent={extent} playhead={playhead} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} active={active} revision={lanes}
     barHeight={18} pending={pending}
     hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}

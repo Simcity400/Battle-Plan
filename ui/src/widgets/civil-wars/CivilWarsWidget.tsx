@@ -20,7 +20,7 @@ import { useCountryLooks } from '../../dashboard/countryLooks';
 import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { worldFilter } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -170,6 +170,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
     if (narrowing && filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
     if (!lanes.length) {
       if (data.lastHour === null || pendingAt(prefix, at)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+      if (narrowing && !filter.known) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
       const message = view.reached && narrowing && !view.total ? 'No civil wars for these countries.'
         : view.total ? 'No ongoing civil wars.'
           : playhead != null ? 'No civil wars yet.' : widget.time.mode === 'range' ? 'No civil wars in this range.' : 'No civil wars in this campaign.';

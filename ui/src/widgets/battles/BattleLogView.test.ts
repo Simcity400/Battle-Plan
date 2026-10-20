@@ -7,6 +7,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import type { BattleViewAdapter } from './BattleLogView';
 import { battleOptions } from './battleOptions.ts';
 import { sortKey } from '../../charts/table/options.ts';
+import { BRANCH, humansBy, mountModule, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 
 test('background battle loading has one Updating status; dynamic and explicit sorts remain distinct', async () => {
   const windows = [{ firstHour: 100, lastHour: 150 }, { firstHour: 151, lastHour: 200 }];
@@ -172,4 +173,36 @@ test('an adapter view gets the rows, an empty list, and names still loading told
     props.widget.options = { view: 'biggest', measure: 'losses' };
     assert.equal(render()?.measure, 'size');
   } finally { await vite.close(); delete host.__battleView; }
+});
+
+test('a battle log over hours whose group membership is still being prepared is loading, not no matching battles', async () => {
+  const state = { groups: pendingGroups() };
+  const host = globalThis as typeof globalThis & { __battlePending?: typeof state }; host.__battlePending = state;
+  const { module, close } = await mountModule<typeof import('./BattleLogView')>('/ui/src/widgets/battles/BattleLogView.tsx', {
+    '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.product.endsWith('-manifest')
+      ? { windows: [{ firstHour: ${BRANCH.firstHour}, lastHour: ${BRANCH.lastHour} }], available: true, unavailable: null, contentWarnings: [] } : undefined, retry() {} });`,
+    '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, { observed: [[${BRANCH.firstHour}, ${BRANCH.lastHour}]], warnings: [], contentWarnings: [] }]]), errors: new Map(), retry() {} });`,
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__battlePending.groups, retry() {} });',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',
+  });
+  try {
+    const props = { widget: { id: 'battles', trackIds: ['main'], countries: humansBy('hour'), time: { mode: 'follow' }, options: {} },
+      runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1' }, branch: BRANCH }],
+        clock: { getHour: () => BRANCH.lastHour, getSpeed: () => 0, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
+      adapter: { definition: { title: 'Battles', icon: 'target', options: battleOptions([{ value: 'losses', label: 'Losses' }]) }, product: 'battles',
+        validateManifest: (data: unknown) => data, validateWindow: (data: unknown) => data, validateRanking: (data: unknown) => data,
+        // The one battle is GER's at hour 190: a human player there only if membership says so.
+        rows: (_data: unknown, _hour: number, matches: (tag: string, hour: number) => boolean) => matches('GER', 190)
+          ? [{ id: 'battle', provinceId: 1, windowIndex: 0, place: { hour: 190, name: 'Synthetic location' } }] : [],
+        rankedRows: () => [], labels: {}, measures: [{ label: 'losses' }] },
+    } as unknown as WidgetProps & { adapter: BattleViewAdapter<never, never, never> };
+    const render = () => renderToStaticMarkup(createElement(module.default<never, never, never>, props));
+    const pending = render();
+    assert.match(pending, /aria-label="This range is still being prepared\."/);
+    assert.doesNotMatch(pending, /No recorded battles match/);
+    // The final reply proves GER was no human player at 190.
+    state.groups = pendingGroups({ final: true });
+    assert.match(render(), /No recorded battles match these settings\./);
+  } finally { await close(); delete host.__battlePending; }
 });

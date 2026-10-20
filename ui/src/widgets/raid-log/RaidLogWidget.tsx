@@ -14,7 +14,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -105,6 +105,6 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
       columns={COLUMNS} renderRow={renderRow} onVisible={setVisible}
       describe={row => { const named = labels(row); return raidDescription(data, row.item, named.raider.name, named.victim.name); }}
       tooltip={row => { const named = labels(row); return [raidTooltip(data, row.item, named.raider.name, named.victim.name)]; }}
-      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty="No recorded raids match these settings." />
+      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty={match.known(from ?? track.branch.firstHour, hour!) ? "No recorded raids match these settings." : MEMBERSHIP_PREPARING} />
   </div>;
 }

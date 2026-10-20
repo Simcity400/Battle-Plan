@@ -21,7 +21,7 @@ import { countryCapitulationBadges, countryCapitulationRows } from '../../dashbo
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import DatedCountryChip, { ChooseCountryChip } from '../../dashboard/DatedCountryChip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveCountries } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, resolveCountries } from '../../dashboard/groups';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -182,6 +182,8 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
     if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading supply health…" />;
     if (!data.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
+    // A group's members at hours still being prepared are not known yet: no country is not proof of none.
+    if (!series.length && !countries.known(extent[0], extent[1])) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     return undefined;
   })();
   const state = problem ?? (track ? <>
@@ -195,7 +197,8 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
           return <section className="supply-health-country-chart" tabIndex={0}
             aria-label={labels.labelAt(labelHour)(country.tag).name} onKeyDown={event => { if (event.target !== event.currentTarget) event.stopPropagation(); }}>
             {series.length > 1 && <p className="supply-health-country">{labels.labelAt(labelHour)(country.tag).name}</p>}
-            {!country.drawing.length ? <WidgetState kind="unavailable" message="Supply was not recorded for this period." />
+            {!country.drawing.length ? countries.known(extent[0], extent[1]) ? <WidgetState kind="unavailable" message="Supply was not recorded for this period." />
+              : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
               : country.drawing.every(run => totalDivisions(run) === 0) ? <WidgetState kind="empty" message="No divisions in this period." />
               : <StackedShareChart label={`Supply health · ${labels.labelAt(labelHour)(country.tag).name}`}
                 onSummaryView={incoming.onSummaryView} onNavigateHour={incoming.onNavigateHour} keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision}

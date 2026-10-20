@@ -134,9 +134,9 @@ test('when a tag passes to another country, the diagram fades one holder out and
 });
 
 test('with no tag to ask for, unknown membership, an empty group and preparation read differently', () => {
-  assert.deepEqual(withoutRequest({ settled: true, hourly: true, membershipUnobserved: true }), { kind: 'unavailable', message: 'This group’s membership was not recorded at this date.' });
-  assert.deepEqual(withoutRequest({ settled: true, hourly: true, membershipUnobserved: false }), { kind: 'empty', message: 'This group has no members at this date.' });
-  assert.deepEqual(withoutRequest({ settled: false, hourly: true, membershipUnobserved: false }), { kind: 'loading', message: 'This range is still being prepared.' });
-  assert.equal(withoutRequest({ settled: true, hourly: false, membershipUnobserved: false }).message, 'The countries chosen are not in this campaign.');
+  assert.deepEqual(withoutRequest({ known: true, hourly: true, membershipUnobserved: true }), { kind: 'unavailable', message: 'This group’s membership was not recorded at this date.' });
+  assert.deepEqual(withoutRequest({ known: true, hourly: true, membershipUnobserved: false }), { kind: 'empty', message: 'This group has no members at this date.' });
+  assert.deepEqual(withoutRequest({ known: false, hourly: true, membershipUnobserved: false }), { kind: 'loading', message: 'This range is still being prepared.' });
+  assert.equal(withoutRequest({ known: true, hourly: false, membershipUnobserved: false }).message, 'The countries chosen are not in this campaign.');
   assert.equal(emptyMessage('land', { aidUnobserved: false, membershipUnobserved: false, membershipPending: true, unknown: 0 }), 'This range is still being prepared.');
 });

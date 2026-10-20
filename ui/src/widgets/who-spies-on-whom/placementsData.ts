@@ -94,17 +94,18 @@ export function rankedCountries(totals: ReadonlyMap<string, bigint>): string[] {
 
 /** All means every placement. A chosen country/group narrows either
  * endpoint; human membership is only an explicit view choice, never capture. */
-export function selectPlacements(placements: readonly PlacementAt[], selection: CountrySelection, groups: CountryGroupReply | undefined, hour: number, end: number, selectedTag?: string | null): { placements: PlacementAt[]; reason: string | null } {
+export function selectPlacements(placements: readonly PlacementAt[], selection: CountrySelection, groups: CountryGroupReply | undefined, hour: number, end: number, selectedTag?: string | null): { placements: PlacementAt[]; reason: string | null; known: boolean } {
   if (selection.kind === 'group' && selection.group.type === 'top') {
     const tags = new Set(rankedCountries(placementTotals(placements)).slice(0, selection.group.count));
-    return { placements: placements.filter(n => tags.has(n.owner) || tags.has(n.target)), reason: null };
+    return { placements: placements.filter(n => tags.has(n.owner) || tags.has(n.target)), reason: null, known: true };
   }
   const fallback = selectedTag ? [selectedTag] : [];
   const match = countryMatch(selection, fallback, groups, end);
-  if (!match.ready) return { placements: [], reason: 'Loading countries…' };
+  if (!match.ready) return { placements: [], reason: 'Loading countries…', known: false };
   const filter = worldFilter(selection, fallback, groups, hour, end);
-  if (filter.reason) return { placements: [], reason: filter.reason };
-  return { placements: placements.filter(n => match.matches(n.owner, hour) || match.matches(n.target, hour)), reason: null };
+  if (filter.reason) return { placements: [], reason: filter.reason, known: true };
+  // Countries at an hour still being prepared are not known yet: no placement is not proof of none.
+  return { placements: placements.filter(n => match.matches(n.owner, hour) || match.matches(n.target, hour)), reason: null, known: match.known(hour) };
 }
 
 export interface PlacementChord extends FoldedChord {

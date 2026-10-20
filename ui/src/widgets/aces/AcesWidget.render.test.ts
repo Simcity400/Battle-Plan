@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
+import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { AirAcesManifestReply } from '../../generated/dashboard';
 import type { TableProps } from '../../charts/table/Table';
 import type { AceRow, AirAcesWindowReply } from './acesData';
+import { BRANCH, humansBy, mountModule, PENDING_HOUR, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 
 test('ace portrait slots use a helmet and refresh failures retain Retry without artwork reasons', async () => {
   const interval = { firstHour: 100, lastHour: 147 };
@@ -70,4 +72,39 @@ test('ace portrait slots use a helmet and refresh failures retain Retry without 
     assert.match(failed, /Couldn’t load aces\./); assert.match(failed, /Retry/);
     assert.doesNotMatch(failed, /Synthetic native refusal/);
   } finally { await vite.close(); delete globals.__acePresentation; }
+});
+
+test('aces read at an hour whose group membership is still being prepared are loading, not none matching', async () => {
+  const interval = { firstHour: 0, lastHour: 200 };
+  const detail: AirAcesWindowReply = { branchId: BRANCH.id, window: 0, ...interval, warnings: [], texts: ['Synthetic ace'],
+    aces: [{ id: 'ace', firstSeen: 0, runs: [{ ...interval, tag: 'ENG', name: 0, callsign: null, wing: null, wingName: null, aircraft: [], alive: true, death: null }] }] };
+  const manifest: AirAcesManifestReply = { branchId: BRANCH.id, ...interval, available: true, unavailable: null,
+    observed: [interval], readHours: [PENDING_HOUR], warnings: [], windows: [interval], aces: [{ id: 'ace', firstSeen: 0 }], variants: {} };
+  const state = { groups: pendingGroups() };
+  const host = globalThis as typeof globalThis & { __acesPending?: typeof state }; host.__acesPending = state;
+  const display = `{ manifest: ${JSON.stringify(manifest)}, roster: ${JSON.stringify(detail)}, readHour: ${PENDING_HOUR}, preparing: [] }`;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/aces/AcesWidget.tsx', {
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: ${display}, retry() {} });`,
+    '/dashboard/productWindows.ts': `export const useWindowDisplay = () => ({ data: ${display}, hour: ${PENDING_HOUR} });`,
+    '/charts/table/useTableHour.ts': `export const useTableHour = () => ${PENDING_HOUR};`,
+    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__acesPending.groups, retry() {} });',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsAt = () => new Map();',
+    '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
+    '/charts/table/Table.tsx': 'export default () => null;',
+  });
+  try {
+    const props = { widget: { id: 'aces', kind: 'aces', trackIds: ['main'], countries: humansBy('hour'), time: { mode: 'follow' } },
+      runtime: { client: {}, clock: { getHour: () => PENDING_HOUR }, tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1' }, branch: BRANCH }] },
+      active: true, onDiagnostics() {} } as unknown as WidgetProps;
+    const render = () => renderToStaticMarkup(createElement(module.default, props));
+    const pending = render();
+    assert.match(pending, /aria-label="This range is still being prepared\."/);
+    assert.doesNotMatch(pending, /No aces match/);
+    // The final reply proves no human player at that hour flies the ace.
+    state.groups = pendingGroups({ final: true });
+    assert.match(render(), /No aces match these settings\./);
+  } finally { delete host.__acesPending; await close(); }
 });

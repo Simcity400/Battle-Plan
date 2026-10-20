@@ -12,7 +12,8 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
@@ -111,6 +112,13 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   if (grouped && groups.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
   if (registryResult.data && !shown.length) return <WidgetState kind="unavailable" message="The selected columns are not in this recording. Choose columns in settings." />;
+  // A group with no member found yet asks for nothing: what the hour was, once it is read.
+  const none = noMembersAt(widget.countries, resolved, groups.data, hour, track.branch.lastHour);
+  if (registryResult.data && none) return <NoMembersState reason={none.reason} />;
+  // A group with no member at the hour asks for nothing: no countries once its members there are
+  // known, and still being prepared until then, never loading for a reply that never comes.
+  if (registryResult.data && (!grouped || groups.data) && selection && resolved.top == null && !selection.tags.length) return resolved.known(hour)
+    ? <WidgetState kind="unavailable" message="No countries available for this selection." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!registryResult.data || !data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading scoreboard…" />;
   if (!rows.length && preparedPrefix(result.index)?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!rows.length) return <WidgetState kind="unavailable" message="No countries available for this selection." />;

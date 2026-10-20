@@ -83,7 +83,7 @@ test('Scoreboard follows playback and uses the registry defaults with top ten', 
 });
 
 test('registry owns labels and only requested measures plus the ranking measure are asked for', () => {
-  const resolved = { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, top: 10 };
+  const resolved = { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, known: () => true, top: 10 };
   assert.deepEqual(scoreboardRequest('branch', resolved, [power], 'factories', 'descending'), {
     branchId: 'branch', columns: ['politicalPower', 'factories'], tags: [], top: { count: 10, sort: 'factories', descending: true },
   });
@@ -191,10 +191,10 @@ test('five thousand countries sort, re-rank, and retain missing countries withou
   assert.equal(all.at(-1)?.tag, 'opaque-4900');
   const missing = sortRows(all, () => null, 'descending', row => row.key, row => row.tag);
   assert.equal(missing[0].tag, 'opaque-0000');
-  const request = scoreboardRequest('branch', { tags: model.tags, membership: null, unobserved: [], dropped: 0, reason: null }, [factories], 'factories', 'descending');
+  const request = scoreboardRequest('branch', { tags: model.tags, membership: null, unobserved: [], dropped: 0, reason: null, known: () => true }, [factories], 'factories', 'descending');
   assert.deepEqual(request.tags, model.tags);
   assert.equal(request.top, null);
-  const topRequest = scoreboardRequest('branch', { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, top: 5000 }, [factories], 'factories', 'descending');
+  const topRequest = scoreboardRequest('branch', { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, known: () => true, top: 5000 }, [factories], 'factories', 'descending');
   assert.equal(topRequest.top?.count, 5000);
 });
 

@@ -14,7 +14,8 @@ import { flagReadSpec } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import { countryAliasesAt } from '../../dashboard/countryIdentity';
-import { rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { groupsKnownAt, MEMBERSHIP_PREPARING, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions } from '../../dashboard/options';
@@ -62,6 +63,9 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     return gameScoreRows(model, candidates, hour, ranking, resolved.top).map(row => ({ ...row,
       stretch: prepared.data?.stretches[row.tag] ?? row.stretch }));
   }, [model, grouped, groups.data, widget.countries.kind, resolved, hour, ranking, prepared.data]);
+  // The countries at an hour still being prepared are not known yet: a chosen tag's holder
+  // there, or a group's member, is read with that hour.
+  const known = resolved.known(hour) && (widget.countries.kind === 'all' || resolved.top != null || groupsKnownAt(groups.data, hour));
   const raceRows = view === 'race' ? rows : NO_ROWS;
   const [visible, setVisible] = useState<readonly ScoreRow[]>(NO_ROWS);
   const onVisible = useCallback((rows: readonly ScoreRow[]) => setVisible(rows), []);
@@ -105,14 +109,17 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
     if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading game scores…" />;
     if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
-    if (!rows.length) return <WidgetState kind="unavailable" message="No country data at this time." />;
+    // A group with no member found yet has no row: the hour says why once it is read.
+    const none = noMembersAt(widget.countries, resolved, groups.data, hour, track.branch.lastHour);
+    if (none) return <NoMembersState reason={none.reason} icon="grid" />;
+    if (!rows.length) return known ? <WidgetState kind="unavailable" message="No country data at this time." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     return undefined;
   })();
   if (view === 'race') return <div ref={parityRoot} style={{ display: 'contents' }}><CountryRaceView runtime={runtime} track={track} active={active} state={state} options={options} view="race"
     extent={[track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 1]} playhead={hour} moment={hour} slots={entries.length}
     ranked={entries} lines={[]} parts={parts} raceLegendParts={split ? parts : []} partsLabel="Score parts" entityLooks={entityLooks}
     presentation={{ exact: false, held: false, countryLooks: false, tooltipKeep: SCORE_PARTS.length }}
-    label="Game score" empty="Total scores unavailable at this time."
+    label="Game score" empty={known ? 'Total scores unavailable at this time.' : MEMBERSHIP_PREPARING}
     formatValue={formatAxisValue}
     tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row && data ? gameScoreTooltips(data, row) : null; }} /></div>;
   if (state) return <div ref={parityRoot} style={{ display: 'contents' }}>{state}</div>;

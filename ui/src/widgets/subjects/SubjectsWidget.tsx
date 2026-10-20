@@ -19,7 +19,7 @@ import { mix } from '../../shell/appearance/color';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { worldFilter } from '../../dashboard/groups';
+import { groupsKnownAt, MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -120,6 +120,8 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
   if (!data.runs.length && prefix?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!data.runs.length) return <WidgetState kind="empty" message={data.warnings.length ? 'Subject relations are unavailable.' : 'No subjects recorded.'} />;
+  // Countries and group members at hours still being prepared are not known yet: no lane is not proof of none.
+  if (!lanes.length && (!filter.known || !groupsKnownAt(groups.data, at))) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!views.length || !lanes.length && views[0].identityGaps.some(span => span.firstHour <= at)) return <WidgetState kind="unavailable" message="Countries in these relations could not be identified." />;
   if (!lanes.length) return <WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been an overlord or a subject yet.' : 'No subjects yet.'} />;
 

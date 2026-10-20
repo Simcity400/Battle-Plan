@@ -13,7 +13,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { worldFilter } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
@@ -53,7 +53,7 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
   const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'agency-comparison', params: runtime.client.preparedQuery
     ? { selection: params, firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) } : params } : null;
   const { data, error, retry } = useProduct<AgencyComparisonReply>(runtime.client, request, active, validateAgencyComparisonReply, track?.source);
-  const filter = useMemo(() => top !== null ? { tags: null, reason: null }
+  const filter = useMemo(() => top !== null ? { tags: null, reason: null, known: true }
     : worldFilter(widget.countries, fallback, groups.data, hour, track?.branch.lastHour ?? hour),
   [top, widget.countries, fallback, groups.data, hour, track?.branch.lastHour]);
   const rows = useMemo(() => data && (!needsGroups || groups.data) && !filter.reason ? agencyRows(data, hour, filter.tags) : NO_ROWS,
@@ -100,6 +100,7 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
   if (!data.available) return <WidgetState kind="unavailable" message={preparedPrefix(data) && !preparedPrefix(data)?.coverage?.complete
     ? 'Agency values were not recorded at this time.' : 'Intelligence agencies are not in this recording.'} />;
   if (!runAt(data.observed, hour)) return <WidgetState kind="unavailable" message="Agency values were not recorded at this time." />;
+  if (!rows.length && !filter.known) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!rows.length) return <WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." />;
   return <div ref={root} className="agency-comparison">
     <Table key={`${track.source.id}:${track.branch.id}`} label="Intelligence agencies" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}

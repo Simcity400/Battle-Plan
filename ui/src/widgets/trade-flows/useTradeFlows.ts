@@ -56,7 +56,8 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
   const hour = Math.floor(widget.time.mode === 'follow' || widget.time.mode === 'pin' ? window?.lastHour ?? last : last);
   const marketFilter = marketView ? worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, selectionHour, lastHour) : null;
   const marketTags = marketFilter?.tags ? [...marketFilter.tags].sort() : [];
-  const marketReason = marketFilter?.reason ?? (marketView && !all && groups.data && !marketTags.length ? 'Selected countries are unavailable at this time.' : null);
+  // Countries at an hour still being prepared are not known yet, never unavailable.
+  const marketReason = marketFilter?.reason ?? (marketView && !all && groups.data && marketFilter?.known && !marketTags.length ? 'Selected countries are unavailable at this time.' : null);
   const marketReady = track && marketView && !marketReason && (all || !!groups.data && marketTags.length > 0)
     && selectionHour >= track.branch.firstHour && selectionHour <= track.branch.lastHour;
   const market = useProduct<MarketLendLeaseReply>(runtime.client, marketReady ? marketRequest(track, selectionHour, marketTags) : null,

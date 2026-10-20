@@ -10,7 +10,7 @@ What each chosen country sends (or, with the Direction switch, receives) through
 
 ## Notable behaviour
 
-- A group whose membership was not recorded at the hour shown says so, and a group with no members then says it has none; neither reads as "none" for its countries.
+- A group whose membership was not recorded at the hour shown says so, and a group with no members then says it has none; neither reads as "none" for its countries. Membership still being prepared shows that, never either.
 - Delivered and lost are the agreement's retained totals, which the game may reset on an amendment; they are not a lifetime shipment ledger. An item not in a pool is an em dash, a recorded zero is 0.
 - No delivery efficiency is shown: the game keeps no numeric lend-lease efficiency. The tooltip's share lost is lost over delivered plus lost of the retained totals.
 - Agreements match a country by each side's tag at the read, so a reused tag never joins an unrelated holder. Columns hide as the widget narrows (Since and Last delivery first, then Lost); their values move into the row tooltip.

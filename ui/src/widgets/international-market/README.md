@@ -10,7 +10,7 @@ A moment view (Follow or Pin, no Live) of the international market, switched by 
 
 ## Notable behaviour
 
-- A group whose membership was not recorded at the hour shown says so, and a group with no members then says it has none; neither reads as "none" for its countries.
+- A group whose membership was not recorded at the hour shown says so, and a group with no members then says it has none; neither reads as "none" for its countries. Membership still being prepared shows that, never either.
 - A request and an accepted contract stay apart. A table that was not recorded at the hour says so ("Market inventory was not recorded.", "Contract terms unavailable."); unknown amounts are em dashes.
 - No delivery or payment progress meter is drawn: the recording proves no denominator for one, so the exact recorded counts are shown instead. A request's posting date is not shown, since first being read is not when it was posted.
 - An asking price level the seller did not set is an em dash. Columns hide as the widget narrows (deliveries, convoys, collected, then price); their values stay in the row tooltip.

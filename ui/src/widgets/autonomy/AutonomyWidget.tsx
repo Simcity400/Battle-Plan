@@ -19,7 +19,7 @@ import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { contentTitleHint } from '../../dashboard/contentTitles';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupRuns, groupUnobserved, worldFilter } from '../../dashboard/groups';
+import { groupRuns, groupUnobserved, MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -235,6 +235,8 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   // Tables missing at every hour: not recorded, never "no subjects".
   if (!data.recorded.length) return <WidgetState kind="unavailable" message="Subjects’ autonomy was not recorded." />;
   if (!lanesData.length) {
+    // Countries chosen at hours still being prepared are not known yet: no lane is not proof of none.
+    if (!(hourlyGroup ? selection.known : filter.known)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     if (missingNativeSubjects) return <WidgetState kind="unavailable" message="Subject data is unavailable for these countries." />;
     if (missingNativeOverlords) return <WidgetState kind="unavailable" message="Subject data is unavailable for these countries." />;
     // Unknown membership that cut a lane away is said, never read as "no subjects".

@@ -3,6 +3,7 @@ import { narrowTableOf } from '../charts/table/options.ts';
 import { ChipSet } from '../components/ChipSet';
 import ArtFallback from '../components/ArtFallback';
 import WidgetState from '../components/WidgetState';
+import { MEMBERSHIP_PREPARING } from './groups';
 import Table, { CountryCell } from '../charts/table/Table';
 import type { TableColumn } from '../charts/table/Table';
 import { useTableHour } from '../charts/table/useTableHour';
@@ -45,7 +46,7 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
   const digits = powerDecimals(options);
   const unit = currency === 'Political' ? 'PP' : 'CP';
   const noun = currency === 'Political' ? 'political power' : 'command power';
-  const { track, tags, data, error, retry, ready, reason, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active);
+  const { track, tags, data, error, retry, ready, reason, known, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
@@ -150,7 +151,9 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!ready) return <WidgetState kind="loading" label="Loading group membership…" />;
   if (reason) return <WidgetState kind="empty" message="Selected country unavailable at this time." />;
-  if (!tags.length) return <WidgetState kind="empty" message="Choose a country to see its spending." />;
+  // A group's members at hours still being prepared are not known yet: no country, or nothing spent, is not proof of none.
+  const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!tags.length) return known(track.branch.firstHour, track.branch.lastHour) ? <WidgetState kind="empty" message="Choose a country to see its spending." /> : preparing;
   if (!data) return <WidgetState kind="loading" label={`Loading ${noun} spending…`} />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (data.every(reply => !reply.spendingCoverage.length)) return <WidgetState kind="unavailable" message={`${noun[0].toUpperCase()}${noun.slice(1)} spending wasn’t recorded.`} />;
@@ -176,6 +179,7 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
         rows={rows} columns={columns} rowKey={rowKey} sort={spendingSort(widget.options)} setOption={setOption}
         cellBars={options.cellBars !== false} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
         tooltip={tooltip} menu={row => [jumpItem(runtime, track.id, row.hour)]} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />
-    </div> : <p className="politics-spending-empty">{chosen.length ? 'Nothing spent in these categories in this period.' : `No ${noun} spent in this period.`}</p>}
+    </div> : !known(from ?? track.branch.firstHour, hour) ? preparing
+      : <p className="politics-spending-empty">{chosen.length ? 'Nothing spent in these categories in this period.' : `No ${noun} spent in this period.`}</p>}
   </div>;
 }

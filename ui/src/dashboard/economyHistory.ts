@@ -3,7 +3,7 @@
 // prepared prefix every reply carries. Playback looks values up locally.
 import type { CountryGroupReply, EconomyRun, HolderTag, StockVariantName } from '../generated/dashboard';
 import type { CountrySelection } from './model';
-import { groupMembers, groupRuns, groupUnobserved } from './groups.ts';
+import { groupMembers, groupRuns, groupUnobserved, membersKnown } from './groups.ts';
 import { object, opaqueTag } from './validation.ts';
 import { pendingAt, preparedPrefix } from './preparedPrefix.ts';
 
@@ -130,12 +130,13 @@ export const variantDecimal = (hex: string): string => BigInt(`0x${hex}`).toStri
 /** Why a group's rows at `hour` say nothing about its countries: its membership
  * was not recorded then ('unavailable'), or it had no members ('empty', proven).
  * Null for other selections, a group still loading, or one with members, whose
- * rows (or their absence) stand on the countries' own evidence. */
+ * rows (or their absence) stand on the countries' own evidence, and while the members
+ * counted are still being prepared, when neither is proven yet. */
 export function groupReasonAt(selection: CountrySelection, groups: CountryGroupReply | undefined, hour: number,
   lastHour: number): { kind: 'empty' | 'unavailable'; message: string } | null {
   if (selection.kind !== 'group' || selection.group.type === 'top' || !groups) return null;
   const runs = groupRuns(groups, selection.group);
-  if (!runs) return null;
+  if (!runs || !membersKnown(selection, groups, lastHour)(hour)) return null;
   const members = groupMembers(runs, selection.membership, hour, lastHour, Infinity, groupUnobserved(groups, selection.group));
   if (!members) return { kind: 'unavailable', message: 'This group’s membership was not recorded at this date.' };
   if (members.length) return null;

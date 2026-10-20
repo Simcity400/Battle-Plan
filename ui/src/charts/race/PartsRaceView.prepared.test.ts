@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createElement } from 'react';
+import type { ReactElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { NativePartsRaceReply } from './partsRaceDrill';
+import type { WidgetProps } from '../../dashboard/definitions';
+import type { CountrySelection } from '../../dashboard/model';
+import { BRANCH, humansBy, mountModule, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 
 test('prepared force pages align part keys and preserve unknown parts and all 5000 countries', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -73,4 +79,49 @@ test('the shared prepared race hook accepts nuclear native page merging without 
     assert.equal(joined.series[0].runs[0].startsSegment, true); assert.equal(joined.series[0].runs[0].lastHour, 3);
     assert.deepEqual(nukesGeometry(joined), joined);
   } finally { await vite.close(); }
+});
+
+test('a parts race whose group membership is still being prepared is loading, not a group without members or a date without values', async () => {
+  const reply: NativePartsRaceReply = { branchId: BRANCH.id, warnings: [], parts: [{ key: 'mod type', name: 'Mod type', unresolved: false }],
+    series: [{ tag: 'GER', identities: [{ firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour, slot: 1, countryId: 101 }], membership: null,
+      segments: [{ firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour }],
+      runs: [{ firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour, startsSegment: true, total: 5, values: [5], referenceTotal: null }] }] };
+  const state = { groups: pendingGroups(), reply, views: [] as { empty: string }[] };
+  const host = globalThis as typeof globalThis & { __partsPending?: typeof state }; host.__partsPending = state;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/air-force-size/AirForceSizeWidget.tsx', {
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__partsPending.groups, retry() {} });',
+    '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request?.product === 'air-force-size' ? globalThis.__partsPending.reply : undefined, retry() {} });`,
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 });',
+    '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456"], muted: "#777777", text: "#ffffff", surface: "#000000" }); export const useViewportHeight = () => 1000;',
+    '/charts/race/CountryRaceView.tsx': `import { createElement } from 'react';
+      export default props => { globalThis.__partsPending.views.push(props); return props.state ?? createElement('p', { className: 'race-empty' }, props.empty); };`,
+  });
+  try {
+    const props = (countries: CountrySelection, hour?: number) => ({ widget: { id: 'air', kind: 'air-force-size', trackIds: ['main'], countries,
+      time: { mode: hour === undefined ? 'campaign' : 'follow' }, options: {} },
+      runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { countries: [] } }, branch: BRANCH }],
+        client: {}, clock: { getHour: () => hour ?? BRANCH.lastHour, getSnapshot: () => ({ hoursPerSecond: 0, playing: false }) } }, active: true, onDiagnostics() {} }) as unknown as WidgetProps;
+    const render = (countries: CountrySelection, hour?: number) => renderToStaticMarkup(createElement(module.default, props(countries, hour)));
+    // At the end: the last hour is still being prepared, so its members are not known yet.
+    const end = render(humansBy('end'));
+    assert.match(end, /aria-label="This range is still being prepared\."/);
+    assert.doesNotMatch(end, /This group has no members in this campaign/);
+    // At each hour: the race's moment, the last hour, is still being prepared.
+    const hourly = render(humansBy('hour'));
+    assert.match(hourly, /This range is still being prepared\./);
+    assert.doesNotMatch(hourly, /No air forces recorded on/);
+    // The final reply proves GER is no human player at the last hour.
+    state.groups = pendingGroups({ final: true });
+    assert.match(render(humansBy('end')), /This group has no members in this campaign\./);
+    assert.match(render(humansBy('hour')), /No air forces recorded on /);
+    // No member found yet, with the human players' membership not recorded at 140-150: 145 is known to be
+    // unrecorded, 100 known to have no member, and 170 still being prepared.
+    state.groups = { ...pendingGroups({ humans: [] }), unobserved: { humans: [{ firstHour: 140, lastHour: 150 }], factions: [], wars: [] } };
+    assert.match(render(humansBy('hour'), 145), /Group membership is unavailable at this time\./);
+    assert.match(render(humansBy('hour'), 100), /This group has no members at this moment\./);
+    const later = render(humansBy('hour'), 170);
+    assert.match(later, /aria-label="This range is still being prepared\."/);
+    assert.doesNotMatch(later, /unavailable|no members/);
+  } finally { await close(); delete host.__partsPending; }
 });

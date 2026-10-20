@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
+import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { ConstructionLogManifestReply, ConstructionLogReply, ConstructionProject } from '../../generated/dashboard';
 import { mergeWindows } from './constructionData.ts';
+import { BRANCH, humansBy, mountModule, PENDING_HOUR, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 
 const interval = { firstHour: 100, lastHour: 120 };
 const project = (patch: Partial<ConstructionProject>): ConstructionProject => ({ id: 'building', kind: 'building', tag: 'mod country', building: 0, repair: false,
@@ -40,7 +42,7 @@ async function renderer(groupsStub = false) {
     '/dashboard/useStateNamesAt.ts': 'export const useStateNamesAt = () => (_hour, state) => ({state, name: "Synthetic location"});',
     '/charts/log/LogList.tsx': `import {createElement} from 'react'; export default props => createElement('div', {},
       props.rows.map(row => createElement('div', {key: row.key, 'data-row': row.item.project.id}, props.renderRow(row))));`,
-    ...groupsStub ? { '/dashboard/groups.ts': 'export const countryMatch = () => ({ready: true, matches: () => true, reason: null});' } : {},
+    ...groupsStub ? { '/dashboard/groups.ts': 'export const MEMBERSHIP_PREPARING = "This range is still being prepared."; export const countryMatch = () => ({ready: true, matches: () => true, known: () => true, reason: null});' } : {},
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'construction-art', enforce: 'pre',
@@ -113,4 +115,38 @@ test('one country is named by the header, so its rows leave the country out', as
     assert.match(rowOf(markup, 'building'), /class="construction-place"><span class="construction-ellipsis">Synthetic location</);
     assert.doesNotMatch(render({ countries: { kind: 'tags', tags: ['mod country', 'other country'] } }), /is-one-country/);
   } finally { await close(); }
+});
+
+test('a log whose group membership is still being prepared over its hours is loading, not no construction by the group', async () => {
+  const span = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
+  const manifest: ConstructionLogManifestReply = { costScale: 100000, windows: [span], recorded: true, repairIcon: null, warnings: [],
+    types: [{ id: 1, token: 'mod building', name: 'Synthetic building', icon: null }] };
+  // A project first read at an hour still being prepared, by a country that is not a human player once read.
+  const reply: ConstructionLogReply = { window: 0, interval: span, outputReads: [], outputUnavailable: [], warnings: [], outputs: [],
+    projects: [project({ tag: 'ENG', createdHour: PENDING_HOUR, firstRead: PENDING_HOUR, runs: [{ firstHour: PENDING_HOUR, lastHour: BRANCH.lastHour, factories: 5, remaining: 1, repairLevels: 0 }] })] };
+  const state = { manifest, log: mergeWindows(manifest, new Map([[0, reply]]), 0), groups: pendingGroups() };
+  const host = globalThis as typeof globalThis & { __constructionPending?: typeof state }; host.__constructionPending = state;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/construction-log/ConstructionLogWidget.tsx', {
+    '/widgets/construction-log/useConstructionLog.ts': `export const useConstructionLog = () => ({ manifest: globalThis.__constructionPending.manifest,
+      log: globalThis.__constructionPending.log, hour: ${BRANCH.lastHour}, retry() {}, onDrawn() {} });`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__constructionPending.groups, retry() {} });',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });',
+    '/dashboard/useStateNamesAt.ts': 'export const useStateNamesAt = () => (_hour, state) => ({ state, name: "Synthetic location" });',
+    '/charts/log/LogList.tsx': `import { createElement } from 'react'; export default props => createElement('div', {}, props.rows.length
+      ? props.rows.map(row => createElement('div', { key: row.key, 'data-row': row.item.project.id })) : props.empty);`,
+  });
+  try {
+    const props = { active: true, onDiagnostics() {},
+      widget: { kind: 'construction-log', trackIds: ['main'], countries: humansBy('hour'), options: {}, time: { mode: 'campaign' } },
+      runtime: { client: {}, clock: { getHour: () => BRANCH.lastHour }, tracks: [{ id: 'main', source: { id: 'source', revision: '1' }, branch: BRANCH, axisOffset: 0 }] },
+    } as unknown as WidgetProps;
+    const render = () => renderToStaticMarkup(createElement(module.default, props));
+    const pending = render();
+    assert.match(pending, /This range is still being prepared\./);
+    assert.doesNotMatch(pending, /No construction/);
+    // The final reply proves no human player built anything.
+    state.groups = pendingGroups({ final: true });
+    assert.match(render(), /No construction by these countries yet\./);
+  } finally { delete host.__constructionPending; await close(); }
 });

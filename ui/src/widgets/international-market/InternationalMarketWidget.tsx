@@ -18,7 +18,7 @@ import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { groupReasonAt, preparedAt } from '../../dashboard/economyHistory';
 import { EquipmentCell, EQUIPMENT_UNNAMED, useVariantArt } from '../../dashboard/EquipmentCell';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import MarketDrill from '../../dashboard/MarketDrill';
 import { knownAt, MARKET_HISTORY, validateMarketHistory } from '../../dashboard/marketHistory';
 import { resolveWindow } from '../../dashboard/model';
@@ -151,7 +151,9 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   </>, headerSlot);
   if (!ready) return <>{header}<WidgetState kind="loading" label="Loading the market…" /></>;
   if (!preparedAt(data!, hour)) return <>{header}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  // A group whose membership at this hour is unrecorded or empty says so, never "none".
+  // A group whose membership at this hour is unrecorded or empty says so, never "none";
+  // membership still being prepared is neither.
+  if (!match.known(hour) && !(view === 'inventory' ? offers : contracts).length) return <>{header}<WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /></>;
   const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
   if (groupReason) return <>{header}<WidgetState kind={groupReason.kind} message={groupReason.message} /></>;
   const common = { sort, setOption: (key: string, value: Parameters<NonNullable<WidgetProps['setOption']>>[1]) => setOption?.(key === 'tableSort' ? `sort-${view}` : key, value),

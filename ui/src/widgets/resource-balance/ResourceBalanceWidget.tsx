@@ -218,6 +218,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   </>;
   const detail = saved && !savedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
     : selectedCountry && actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
+    : selectedCountry && actor.preparing ? <WidgetState kind="loading" label={actor.reason!} />
     : selectedCountry && actor.reason ? <WidgetState kind="unavailable" message="Country unavailable at this time." />
     : picked && detailData ? <ResourceBreakdown data={detailData} resource={picked} hour={drillAt} tokens={tokens}
     extent={extent} playhead={drill.breakdown !== null && drill.follow ? actualHour : playhead} playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}

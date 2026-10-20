@@ -16,7 +16,8 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, resolveCountries } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING, noMembersAt, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
@@ -144,6 +145,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
     return () => onDiagnostics(EMPTY_WARNINGS);
   }, [data, onDiagnostics]);
 
+  const none = noMembersAt(widget.countries, resolved, groups.data, hour, track?.branch.lastHour ?? hour);
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its operatives." />;
   else if (!window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -153,10 +155,13 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
   else if (membershipUnknown) body = <WidgetState kind="unavailable" message="This group's members were not recorded at this moment." />;
+  // A group with no member found yet asks for nothing, so no reply will come.
+  else if (none) body = <NoMembersState reason={none.reason} />;
   else if (!data || !view) body = <WidgetState kind="loading" label="Loading operatives roster…" />;
   else if (preparing && !rows.length) body = <WidgetState kind="loading" label="This roster is still being prepared." />;
   else if (!rows.length && runAt(data.agencyAbsent, hour)) body = <WidgetState kind="unavailable" message="Intelligence agencies unavailable." />;
   else if (!rows.length && view.unknown.length) body = <WidgetState kind="unavailable" message="Operatives weren’t recorded at this time." />;
+  else if (!rows.length && !match.known(hour)) body = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   else if (!rows.length) body = <WidgetState kind="empty" message="No operatives in the selected roster." />;
   else body = <Table label="Operatives roster" rows={rows} columns={columns} rowKey={rowKey}
       sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}

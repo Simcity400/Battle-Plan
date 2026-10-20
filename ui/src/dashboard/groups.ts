@@ -144,17 +144,47 @@ export function groupsPendingAt(groups: CountryGroupReply | undefined, hour: num
   return pending.some(span => span.firstHour <= hour && hour <= span.lastHour);
 }
 
-/** Whether a groups reply has read `hour`: always for a final reply, else only inside the
- * coverage its prefix reads through. A gap recorded there is a real gap. */
-export function groupsKnownAt(groups: CountryGroupReply | undefined, hour: number): boolean {
+/** Whether a groups reply has read every hour `firstHour..lastHour` (one hour when
+ * `lastHour` is left out): always for a final reply, else only inside the coverage its
+ * prefix reads through. A gap recorded there is a real gap. */
+export function groupsKnownAt(groups: CountryGroupReply | undefined, firstHour: number, lastHour = firstHour): boolean {
   if (groupsSettled(groups)) return true;
-  const coverage = preparedPrefix(groups)?.coverage;
-  return !!coverage && coverage.firstHour <= hour && hour <= coverage.lastHour && !groupsPendingAt(groups, hour);
+  const prefix = preparedPrefix(groups);
+  return !!prefix && prefix.coverage.firstHour <= firstHour && lastHour <= prefix.coverage.lastHour
+    && !prefix.pending.some(span => span.firstHour <= lastHour && firstHour <= span.lastHour);
+}
+
+/** Whether a country choice's membership is known at every hour `firstHour..lastHour`
+ * (one hour when `lastHour` is left out), so a country it leaves out there is proven
+ * not to be chosen. False while those hours, or what the choice counts beyond them (the
+ * branch end, or the whole branch), are still being prepared: an absence or empty state
+ * waits for it. A recorded gap is known: it is unrecorded, not pending. */
+export type MembershipKnown = (firstHour: number, lastHour?: number) => boolean;
+
+/** Shown in place of an absence or empty state while `MembershipKnown` is false. */
+export const MEMBERSHIP_PREPARING = 'This range is still being prepared.';
+
+const ALWAYS: MembershipKnown = () => true;
+const NEVER: MembershipKnown = () => false;
+
+/** Whether what a choice counts beyond the hours it is applied at has been read: the
+ * members at the branch end, or for any other choice the whole branch, since a holder of
+ * a chosen tag, a member ever, or a group not founded yet may first appear later. A group
+ * counted at each hour needs only those hours. */
+function choiceSettled(selection: CountrySelection, groups: CountryGroupReply | undefined, lastHour: number): boolean {
+  if (selection.kind === 'all') return true;
+  if (selection.kind !== 'group') return groupsSettled(groups);
+  if (!groups) return false;
+  if (selection.membership === 'ever' || !groupRuns(groups, selection.group)) return groupsSettled(groups);
+  return selection.membership === 'hour' || groupsKnownAt(groups, lastHour);
 }
 
 export interface WorldFilter {
   tags: ReadonlySet<string> | null;
   reason: string | null;
+  /** Whether the countries are known at the hour asked (`MembershipKnown`). While not,
+   * `reason` is null and the countries are those read so far: an empty set is loading. */
+  known: boolean;
   /** Native identity keys resolved at the hours membership counts. */
   countryIds?: ReadonlySet<string> | null;
 }
@@ -172,24 +202,23 @@ function identitiesFor(groups: CountryGroupReply | undefined, index: CountryIden
  * the counted dates; manual picks include all holders ever carrying their tags. */
 export function worldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
-  const filter = settledWorldFilter(selection, fallback, groups, hour, lastHour, index);
-  if (!filter.reason || filter.reason === CHOOSE) return filter;
-  // While the groups are still being prepared, a reason holds only for the hour it is about
-  // once that hour has been read: membership at each hour or at the end is decided at its
-  // own hour (a gap recorded there stays a gap, an hour still pending is loading); anything
-  // about the whole branch (chosen countries, ever) waits for the final reply.
-  const counted = selection.kind === 'group' && selection.membership !== 'ever' ? selection.membership === 'hour' ? hour : lastHour : null;
-  return counted === null ? groupsSettled(groups) ? filter : { ...filter, reason: null }
-    : groupsKnownAt(groups, counted) ? filter : { ...filter, reason: null };
+  const identities = identitiesFor(groups, index);
+  const filter = settledWorldFilter(selection, fallback, groups, hour, lastHour, identities);
+  if (selection.kind === 'all' || filter.reason === CHOOSE) return { ...filter, known: true };
+  // While the groups are still being prepared, a reason holds only once what it is about has
+  // been read: the hour shown, and the end or the whole branch when the choice counts them
+  // (a gap recorded there stays a gap, an hour still pending is loading).
+  const known = !!identities && choiceSettled(selection, groups, lastHour) && groupsKnownAt(groups, hour);
+  return known ? { ...filter, known } : { ...filter, reason: null, known };
 }
 
 const CHOOSE = 'Choose a country in the widget settings.';
+const UNAVAILABLE = 'This group is unavailable in this campaign.';
 
 function settledWorldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
+  hour: number, lastHour: number, identities: CountryIdentityIndex | null): Omit<WorldFilter, 'known'> {
   if (selection.kind === 'all') return { tags: null, reason: null };
-  const identities = identitiesFor(groups, index);
-  const empty = (reason: string | null): WorldFilter => ({ tags: new Set(), countryIds: new Set(), reason });
+  const empty = (reason: string | null) => ({ tags: new Set<string>(), countryIds: new Set<string>(), reason });
   if (selection.kind !== 'group') {
     const tags = selection.kind === 'tags' ? selection.tags : fallback;
     if (!tags.length) return empty(CHOOSE);
@@ -200,7 +229,7 @@ function settledWorldFilter(selection: CountrySelection, fallback: readonly stri
   }
   if (!groups || !identities) return empty(null);
   const runs = groupRuns(groups, selection.group);
-  if (!runs) return empty('This group is unavailable in this campaign.');
+  if (!runs) return empty(UNAVAILABLE);
   const members = groupMembers(runs, selection.membership, hour, lastHour, Infinity, groupUnobserved(groups, selection.group));
   if (!members) return empty(unrecorded(selection.membership));
   const at = selection.membership === 'hour' ? hour : lastHour;
@@ -218,36 +247,43 @@ function settledWorldFilter(selection: CountrySelection, fallback: readonly stri
  * `worldFilter` counts them at the branch end or ever. `ready` is false while the
  * group history loads; a row whose group membership at its hour was not recorded
  * does not pass. Manual picks include all native holders of their literal tags;
- * rows resolve at their own hours. Null means identity history is still loading. */
-export interface CountryMatch { ready: boolean; matches: (tag: string, hour: number) => boolean; reason: string | null }
+ * rows resolve at their own hours. Null means identity history is still loading.
+ * A row at an hour `known` leaves out is unknown, not a nonmember: a caller checks it
+ * over the hours it shows before it says that no row matches. */
+export interface CountryMatch { ready: boolean; matches: (tag: string, hour: number) => boolean; known: MembershipKnown; reason: string | null }
 
 export function countryMatch(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
   index?: CountryIdentityIndex | null): CountryMatch {
-  if (selection.kind === 'all') return { ready: true, matches: () => true, reason: null };
+  if (selection.kind === 'all') return { ready: true, matches: () => true, known: ALWAYS, reason: null };
   const identities = identitiesFor(groups, index);
-  if (!identities) return { ready: false, matches: () => false, reason: null };
-  if (selection.kind === 'group' && !groups) return { ready: false, matches: () => false, reason: null };
+  const loading: CountryMatch = { ready: false, matches: () => false, known: NEVER, reason: null };
+  if (!identities || selection.kind === 'group' && !groups) return loading;
+  // Each row resolves its country at its own hour, so those hours must have been read too.
+  const settled = choiceSettled(selection, groups, lastHour);
+  const known: MembershipKnown = settled ? (first, last = first) => groupsKnownAt(groups, first, last) : NEVER;
   if (selection.kind === 'group' && selection.membership === 'hour') {
     const runs = groupRuns(groups!, selection.group);
-    if (!runs) return { ready: true, matches: () => false, reason: 'This group is unavailable in this campaign.' };
+    // A group the reply does not name yet may still be founded in hours being prepared.
+    if (!runs) return settled ? { ready: true, matches: () => false, known: ALWAYS, reason: UNAVAILABLE } : loading;
     const unobserved = groupUnobserved(groups!, selection.group);
     const byTag = new Map<string, MembershipRun[]>();
     for (const run of runs) {
       const history = byTag.get(run.tag);
       if (history) history.push(run); else byTag.set(run.tag, [run]);
     }
-    // Hours not recorded, or still being prepared, have no known members.
+    // Hours not recorded, or still being prepared, have no known members. Hours answered
+    // from a keyframe match as sampled, though not `known` until read exactly.
     const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour) || groupsPendingAt(groups, hour);
     return { ready: true, matches: (tag, hour) => identities.keyAt(tag, hour) !== null && !hidden(hour)
-      && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), reason: null };
+      && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), known, reason: null };
   }
   const { countryIds, reason } = worldFilter(selection, fallback, groups, lastHour, lastHour, identities);
   // A partial groups reply that names none of the choice yet is still loading it.
-  const ready = !!countryIds?.size || reason !== null || groupsSettled(groups);
+  const ready = !!countryIds?.size || reason !== null || settled;
   return { ready, matches: (tag, hour) => {
     const key = identities.keyAt(tag, hour);
     return key !== null && countryIds?.has(key) === true;
-  }, reason };
+  }, known: reason === null ? known : ALWAYS, reason };
 }
 
 export interface ResolvedCountries {
@@ -258,8 +294,12 @@ export interface ResolvedCountries {
   unobserved: HourSpan[];
   /** Countries left out beyond the widget's limit. */
   dropped: number;
-  /** Why no countries are shown, if none are. */
+  /** Why no countries are shown, if none are. Null while membership is not known. */
   reason: string | null;
+  /** Whether the countries are known at the hours asked: the tags counted at the branch
+   * end or ever, and for a group counted at each hour its members at those hours
+   * (`rankedCandidates`). Chosen tags and top N need no group history. */
+  known: MembershipKnown;
   /** For a top-N group: N, at most the widget's limit. The widget ranks every
    * country itself at each hour (`rankedCandidates`), so `tags` is empty. */
   top?: number;
@@ -284,30 +324,59 @@ export function rankedCandidates(resolved: ResolvedCountries, hour: number, all:
   return resolved.tags.filter(tag => isMember(resolved.membership!.get(tag), hour));
 }
 
+/** Whether a choice's members, by tag, are known at the hours asked (`MembershipKnown`):
+ * chosen tags and top N need no group history; a group counted at each hour is known at
+ * the hours read, one counted at the end once its last hour is, and one counted ever, or
+ * not named yet, once the whole branch is. */
+export function membersKnown(selection: CountrySelection, groups: CountryGroupReply | undefined, lastHour: number): MembershipKnown {
+  if (selection.kind !== 'group' || selection.group.type === 'top') return ALWAYS;
+  if (!groups) return NEVER;
+  const runs = groupRuns(groups, selection.group);
+  if (selection.membership === 'hour' && runs) return (first, last = first) => groupsKnownAt(groups, first, last);
+  return (selection.membership === 'end' && runs ? groupsKnownAt(groups, lastHour) : groupsSettled(groups)) ? ALWAYS : NEVER;
+}
+
 /** The countries a multi-country widget draws: chosen tags, or a group's members
  * under its rule, at most `max` (the widget's own limit). */
 export function resolveCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number, max: number, factionTotals = false): ResolvedCountries {
-  if (selection.kind === 'factions') return { tags: [], membership: null, unobserved: [], dropped: 0, reason: 'This widget does not show faction totals.' };
+  const none = { tags: [], membership: null, unobserved: [], dropped: 0, known: ALWAYS };
+  if (selection.kind === 'factions') return { ...none, reason: 'This widget does not show faction totals.' };
   if (factionTotals && selection.kind === 'group' && selection.aggregate && selection.group.type === 'faction') {
-    return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, factionId: selection.group.id };
+    return { ...none, reason: null, factionId: selection.group.id };
   }
   if (selection.kind !== 'group') {
     const tags = selection.kind === 'tags' ? selection.tags : fallback;
-    return { tags: tags.slice(0, max), membership: null, unobserved: [], dropped: Math.max(0, tags.length - max), reason: tags.length ? null : 'Choose a country in the widget settings.' };
+    return { ...none, tags: tags.slice(0, max), dropped: Math.max(0, tags.length - max), reason: tags.length ? null : CHOOSE };
   }
   // Top N needs no group history: the widget ranks by its own value.
-  if (selection.group.type === 'top') return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, top: Math.max(1, Math.min(max, selection.group.count)) };
-  if (!groups) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null };
+  if (selection.group.type === 'top') return { ...none, reason: null, top: Math.max(1, Math.min(max, selection.group.count)) };
+  const known = membersKnown(selection, groups, lastHour);
+  if (!groups) return { ...none, reason: null, known };
   const runs = groupRuns(groups, selection.group);
-  if (!runs) return { tags: [], membership: null, unobserved: [], dropped: 0, reason: 'This group is unavailable in this campaign.' };
+  // Members at the end are decided at the branch's last hour; members ever, the union of
+  // hourly members these tags are, and a group not named yet only by the whole branch.
+  const proven = selection.membership === 'end' && runs ? groupsKnownAt(groups, lastHour) : groupsSettled(groups);
+  if (!runs) return { ...none, reason: proven ? UNAVAILABLE : null, known };
   const unobserved = groupUnobserved(groups, selection.group);
   const members = groupMembers(runs, selection.membership === 'end' ? 'end' : 'ever', lastHour, lastHour, Infinity, unobserved);
   // Unknown is not empty: the membership counted was not recorded.
-  if (!members) return { tags: [], membership: null, unobserved, dropped: 0, reason: unrecorded(selection.membership === 'end' ? 'end' : 'ever') };
+  if (!members) return { ...none, unobserved, reason: proven ? unrecorded(selection.membership === 'end' ? 'end' : 'ever') : null, known };
   const tags = members.slice(0, max);
   const membership = selection.membership === 'hour' ? new Map(tags.map(tag => [tag, [] as MembershipRun[]])) : null;
   if (membership) for (const run of runs) membership.get(run.tag)?.push(run);
-  return { tags, membership, unobserved, dropped: Math.max(0, members.length - max), reason: members.length ? null : 'This group has no members in this campaign.' };
+  return { tags, membership, unobserved, dropped: Math.max(0, members.length - max), known,
+    reason: members.length || !proven ? null : 'This group has no members in this campaign.' };
+}
+
+/** For a widget that asks its product only for a group's members found so far: when it has
+ * none to ask for, so no reply will come, why nothing shows at `hour`. Null when there are
+ * members to ask for, the choice is not such a group, or `resolved` already says why; else
+ * `{ reason }`: the dated reason once `hour` has been read (a recorded gap, or no member
+ * then), and null while it is still being prepared. */
+export function noMembersAt(selection: CountrySelection, resolved: ResolvedCountries, groups: CountryGroupReply | undefined,
+  hour: number, lastHour: number): { reason: string | null } | null {
+  if (selection.kind !== 'group' || resolved.top != null || resolved.factionId != null || resolved.tags.length || resolved.reason || !groups) return null;
+  return { reason: worldFilter(selection, [], groups, hour, lastHour).reason };
 }
 
 /** Drawing projection only: keep the original resolved tags as backend roots. */

@@ -20,7 +20,7 @@ import { formatDateTime } from './calendar';
 import { useCountryLooks } from './countryLooks';
 import { selectedTags } from './countrySelection';
 import type { WidgetProps } from './definitions';
-import { resolveCountries } from './groups';
+import { MEMBERSHIP_PREPARING, resolveCountries } from './groups';
 import { groupNumbers } from './groupsReply';
 import { createWidget, resolveWindow } from './model';
 import { NumericReply } from './numericReply';
@@ -188,7 +188,8 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
     dispatchAir({ type: 'open', breakdown: JSON.stringify([airActor.tag, airActor.identity]), hour: airAt, playing: true, playhead: liveHour });
   };
   const airMainState = selected.reason && !(options.view === 'lines' && lines.length) ? <WidgetState kind="unavailable" message={selected.reason} />
-    : !rows.length && !(options.view === 'lines' && lines.length) ? <WidgetState kind="unavailable" message="Country details unavailable at this time." /> : undefined;
+    : !rows.length && !(options.view === 'lines' && lines.length) ? <WidgetState kind="unavailable" message="Country details unavailable at this time." />
+      : !selected.known && !selected.rows.length && !(options.view === 'lines' && lines.length) ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /> : undefined;
   const content = air ? <CountryRaceView runtime={runtime} track={track} active={active && (!airOpen || options.drill === 'popout')} options={options} view={options.view === 'lines' ? 'lines' : 'race'}
     extent={raceExtent} playhead={widget.time.mode === 'follow' || widget.time.mode === 'pin' ? hour : null}
     moment={hour} slots={selected.rows.length} ranked={ranked}
@@ -197,7 +198,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
     state={airMainState} onPick={openAir} pickOwner={airPickOwner} selectedHour={airOpen ? airAt : undefined} resetKey={airKey}
     lineTooltip={(at, hovered, labelAt, country) => index ? [militaryAirLineTooltip(index, from, Math.floor(at), hovered, labelAt, country)] : []}
     tooltip={(tag, at, name) => { const row = index && militaryAirAt(index, from, at).find(row => row.tag === tag); return row ? [tooltip(row, name)] : null; }} />
-    : !items.length ? <WidgetState kind="unavailable" message="No selected country was recorded at this moment." />
+    : !items.length ? selected.known ? <WidgetState kind="unavailable" message="No selected country was recorded at this moment." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
       : <ButterflyChart label={title} items={items} active={active && (!drill || options.drill === 'popout')} hoursPerSecond={hoursPerSecond}
         leftLabel={'◀ ' + leftLabel} rightLabel={rightLabel + ' ▶'} ratioLabel="Ratio" showValues={options.values !== false} showRatio={options.ratio !== false}
         tooltip={item => ({ ...tooltip(item.row, item.label), countryFlag: item.countryFlag })} onSelect={(item, side) => open(item.row, side === 'right')}

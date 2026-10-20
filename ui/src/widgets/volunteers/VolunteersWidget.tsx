@@ -23,7 +23,7 @@ import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { lookHour } from '../../dashboard/countryLooks';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch, countryMatchFilter, groupsPendingAt, groupsSettled } from '../../dashboard/groups';
+import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
@@ -136,7 +136,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   if (!all && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (match.reason) return <WidgetState kind="empty" message={match.reason} />;
   if (!all && groups.data && !tags?.length) {
-    const state = withoutRequest({ settled: groupsSettled(groups.data), hourly: widget.countries.kind === 'group' && widget.countries.membership === 'hour',
+    const state = withoutRequest({ known: match.known(at), hourly: widget.countries.kind === 'group' && widget.countries.membership === 'hour',
       membershipUnobserved: chosen.unobserved.some(span => span.firstHour <= at && at <= span.lastHour) });
     return state.kind === 'loading' ? <WidgetState kind="loading" label={state.message} /> : <WidgetState kind={state.kind} message={state.message} />;
   }
@@ -146,7 +146,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   if (!current.links.length && pendingAt(preparedPrefix(reply.data), at)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   const covers = (span: { firstHour: number; lastHour: number }) => span.firstHour <= at && at <= span.lastHour;
   const message = current.links.length ? null : emptyMessage(kind, { aidUnobserved: reply.data.unobserved.some(covers),
-    membershipUnobserved: chosen.unobserved.some(covers), membershipPending: !all && groupsPendingAt(groups.data, at), unknown: current.unknown });
+    membershipUnobserved: chosen.unobserved.some(covers), membershipPending: !match.known(at), unknown: current.unknown });
   // A new kind, or a stretch of the recording after a gap, jumps rather than glides; a tag
   // passing to another country is another node, so it never glides either.
   const main = <FlowDiagram label={`${kind === 'land' ? 'Volunteers' : 'Expeditionary forces'}: senders to hosts`} nodes={nodes} links={links}

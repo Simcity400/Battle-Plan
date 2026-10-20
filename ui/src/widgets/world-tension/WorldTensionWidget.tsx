@@ -26,7 +26,7 @@ import { useCountryLooks } from '../../dashboard/countryLooks';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupRuns, worldFilter } from '../../dashboard/groups';
+import { groupRuns, MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
 import { Lineage } from '../../dashboard/identity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -336,6 +336,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
       <PreparedKey approximate={data.summaries.world?.approximate} pending={data.pending} />
       {data.preparing?.length ? <p className="chart-line-key">Contributor history and events are still being prepared.</p> : null}
+      {!filter.known && !keys.length ? <p className="chart-line-key" role="status">{MEMBERSHIP_PREPARING}</p> : null}
     </div>
     {options.list !== false && <aside className="world-tension-list" aria-label={`World tension on ${dayLabel(head)}`}>
       <button type="button" className="world-tension-total" onClick={() => open(head)}><span>World tension</span><b>{total}</b></button>

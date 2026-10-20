@@ -11,6 +11,7 @@ import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar';
+import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
@@ -89,7 +90,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
   else if (state.error) main = <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
   else if (!data) main = <WidgetState kind="loading" label="Loading divisions…" />;
   else if (data.missing) main = <WidgetState kind="unavailable" message="Divisions weren’t recorded at this time." />;
-  else if (!rows.length) main = <WidgetState kind="empty" message="No divisions at this date." />;
+  else if (!rows.length) main = selection.known ? <WidgetState kind="empty" message="No divisions at this date." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   else main = <Table label="Most decorated divisions" rows={rows} columns={columns} rowKey={rowKey} rank rowHeight={40}
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip}

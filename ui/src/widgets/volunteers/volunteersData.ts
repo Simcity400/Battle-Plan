@@ -55,13 +55,14 @@ export const requestTags = (all: boolean, aliases: readonly { tag: string }[] | 
 const PREPARING = 'This range is still being prepared.';
 
 /** What the widget shows when the countries chosen name no tag to request, so nothing is
- * read (never every link): groups still being prepared are loading; a group counted at
+ * read (never every link): membership not yet known at the hour shown (`MembershipKnown`) is
+ * loading; a group counted at
  * each hour whose membership was not recorded at the hour shown is unavailable there,
  * and one recorded with no members is an empty group; a choice of countries none of
  * whose holders the campaign has is not in it. */
-export function withoutRequest(state: { settled: boolean; hourly: boolean; membershipUnobserved: boolean }):
+export function withoutRequest(state: { known: boolean; hourly: boolean; membershipUnobserved: boolean }):
   { kind: 'loading' | 'unavailable' | 'empty'; message: string } {
-  if (!state.settled) return { kind: 'loading', message: PREPARING };
+  if (!state.known) return { kind: 'loading', message: PREPARING };
   if (state.hourly) return state.membershipUnobserved ? { kind: 'unavailable', message: 'This group’s membership was not recorded at this date.' }
     : { kind: 'empty', message: 'This group has no members at this date.' };
   return { kind: 'empty', message: 'The countries chosen are not in this campaign.' };

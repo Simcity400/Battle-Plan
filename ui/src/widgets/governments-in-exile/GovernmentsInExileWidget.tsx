@@ -15,7 +15,7 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -143,7 +143,8 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   else if (!data || !match.ready) body = <WidgetState kind="loading" label="Loading governments in exile…" />;
   else if (!prepared) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (!read) body = <WidgetState kind="unavailable" message="Exiles were not recorded at this date." />;
-  else if (!rows.length) body = <WidgetState kind="empty" icon="flag" message="No governments in exile at this date." />;
+  else if (!rows.length) body = match.known(hour) ? <WidgetState kind="empty" icon="flag" message="No governments in exile at this date." />
+    : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   else body = <Table key={`${track.source.id}:${track.branch.id}`} label="Governments in exile" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
     sort={sort} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}

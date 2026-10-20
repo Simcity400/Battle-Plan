@@ -5,7 +5,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { resolveWindow } from '../../dashboard/model';
 import { selectedTags } from '../../dashboard/countrySelection';
-import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
+import { countryMatch, countryMatchFilter, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { formatDateTime } from '../../dashboard/calendar';
 import type { CombatLogReply as Reply, LogDetailTable } from '../../generated/dashboard';
@@ -50,7 +50,8 @@ export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!match.ready) return <WidgetState kind="loading" label="Loading selected countries" />;
   if (!state.data) return state.error ? <WidgetState kind="error" what="retained Combat Log" detail={state.error} /> : <WidgetState kind="loading" label="Loading retained Combat Log" />;
-  return <CombatLogTables data={state.data} view={view} />;
+  // Membership at an hour still being prepared is not known: entries left out there may yet belong.
+  return <>{!match.known(hour!) && <p className="chart-line-key" role="status">{MEMBERSHIP_PREPARING}</p>}<CombatLogTables data={state.data} view={view} /></>;
 }
 function Missing({ source }: { source: string | null }) {
   return source ? <p role="status">Unavailable - {source}</p> : null;

@@ -215,6 +215,6 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
       tooltip={row => operationTooltip(data, row, tag => labels(row, tag),
         description?.reference === row.item.operation.end?.outcome?.descriptionRef ? description?.text : undefined)}
       menu={row => operationJumpHours(row.item, shownHour ?? hour, row.hour).map(at => jumpItem(runtime, track.id, at))}
-      empty={pendingAt(preparedPrefix(history.data.get(browseIndex)), shownHour ?? hour) ? "This range is still being prepared." : unread ? "Operations unavailable at this time." : "No espionage operations match these countries and settings by this moment."} onVisible={onVisible} />
+      empty={pendingAt(preparedPrefix(history.data.get(browseIndex)), shownHour ?? hour) ? "This range is still being prepared." : unread ? "Operations unavailable at this time." : !match.known(from ?? track.branch.firstHour, shownHour ?? hour) ? "This range is still being prepared." : "No espionage operations match these countries and settings by this moment."} onVisible={onVisible} />
   </div>;
 }

@@ -13,7 +13,7 @@ import { CountryFlagUrl } from '../../components/CountryFlag';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { ideaTargetTags } from '../../dashboard/ideaTooltip';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -125,7 +125,7 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
       }}
       describe={row => eventDescription(row.item, tag => labels(row)(tag).name, stateName)}
       tooltip={row => eventTooltip(row.item, tag => labels(row)(tag).name, stateName)}
-      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty="No recorded events match these settings." />
+      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty={match.known(from ?? track.branch.firstHour, hour!) ? "No recorded events match these settings." : MEMBERSHIP_PREPARING} />
     {feed.errors.size > 0 && <div className="event-feed-load">Some events couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;
 }

@@ -22,7 +22,8 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatchFilter, isMember, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { countryMatchFilter, isMember, MEMBERSHIP_PREPARING, noMembersAt, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -200,11 +201,16 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
     onPick={drillTag ? hour => dispatchDrill(pinned ? { type: 'open', breakdown: drillTag, hour, playing: false, playhead: null }
       : { type: 'pick', hour }) : undefined} />;
   if (pinned) return <>{header}<div className="parts-race-drill">{breakdown}</div></>;
+  const none = noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
   const overviewState = error ? <WidgetState kind="error" detail={error} onRetry={retry} />
     : groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
       : resolved.reason ? <WidgetState kind="empty" icon="target" message={resolved.reason} />
+        // A group with no member found yet asks for nothing, so no reply will come.
+        : none ? <NoMembersState reason={none.reason} icon="target" />
         : !model || !data || (needsGroups && !groups.data) ? <WidgetState kind="loading" label="Loading nuclear arsenal…" />
-          : !model.tags.length && resolved.top == null ? <WidgetState kind="unavailable" message="No nuclear stockpiles were recorded for these countries." /> : undefined;
+          // A group's members at hours still being prepared are not known yet: no series is not proof of none.
+          : !model.tags.length && resolved.top == null ? resolved.known(track.branch.firstHour, track.branch.lastHour)
+            ? <WidgetState kind="unavailable" message="No nuclear stockpiles were recorded for these countries." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /> : undefined;
   const main = <CountryRaceView runtime={runtime} track={track} active={active && (drill.breakdown == null || options.drill === 'popout')}
     options={options} view={view} extent={extent} playhead={playhead} onPick={open} pickOwner={pickOwner}
     lineSummaries={product.summaries} onSummaryView={product.onSummaryView}
@@ -212,7 +218,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
     moment={moment} slots={slots} ranked={ranked} lines={lines} parts={model?.parts} mix={mix && {...mix,approximate:product.summaries.get(mix.tag)?.approximate}} segmentAt={segmentAt} state={overviewState}
     presentation={{ exact: false, held: false }}
     label="Nuclear stockpile" empty={resolved.top != null && readAt(data?.emptyReadHours ?? [], moment) === moment
-      ? 'No nuclear weapons yet.' : 'No nuclear stockpile was recorded at this time.'} formatValue={formatNukes}
+      ? 'No nuclear weapons yet.' : counted.known(moment) ? 'No nuclear stockpile was recorded at this time.' : MEMBERSHIP_PREPARING} formatValue={formatNukes}
     tooltip={(tag, hour, name, colours) => {
       if (!model) return null;
       const membership = model.series.get(tag)?.membership;

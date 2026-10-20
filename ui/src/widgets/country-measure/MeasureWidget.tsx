@@ -32,7 +32,7 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { countryLineColours, uncolouredWarning } from '../../dashboard/countryLineColours';
 import { useCountryLineStyles } from '../../dashboard/useCountryLineStyles';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { clipRuns, isMember, membershipChanges, resolveCountries } from '../../dashboard/groups';
+import { clipRuns, isMember, MEMBERSHIP_PREPARING, membershipChanges, resolveCountries } from '../../dashboard/groups';
 import { pinTime, resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { powerDecimals } from '../../dashboard/powerDecimals';
@@ -405,17 +405,21 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
+  // A group's members at hours still being prepared are not known yet: none is not proof of none.
+  const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  const branchKnown = resolved.known(track.branch.firstHour, track.branch.lastHour);
   if (pinnedMode) return <div className="country-measure">
     {countryHeader}
     {drillAt !== null && <p className="chart-line-key">{dayLabel(Math.floor(drillAt))} {!pinnedFollowing && <button type="button" className="button small"
       onClick={() => setLocalHour(null)}>Follow playback</button>}</p>}
-    {singleTag ? drillView(pinnedMode, drillAt, hour => setLocalHour(Math.floor(hour))) : <WidgetState kind="empty" message="Choose one country to see income and causes." />}
+    {singleTag ? drillView(pinnedMode, drillAt, hour => setLocalHour(Math.floor(hour))) : branchKnown ? <WidgetState kind="empty" message="Choose one country to see income and causes." /> : preparing}
     {ledger.error && drillDetail && <button type="button" onClick={ledger.retry}>Retry income and causes</button>}
     {menu.menu}
   </div>;
   if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || (widget.countries.kind === 'group' && !groupData)) return <WidgetState kind="loading" label={`Loading ${config.noun}…`} />;
-  if (!prepared.enabled && series.every(item => !item.runs.length)) return <WidgetState kind="unavailable" message={`No ${config.noun} was recorded for these countries.`} />;
+  if (!prepared.enabled && series.every(item => !item.runs.length)) return branchKnown
+    ? <WidgetState kind="unavailable" message={`No ${config.noun} was recorded for these countries.`} /> : preparing;
 
   const decimals = data.decimals;
   const hoursPerPixel = (frameWidth: number, span: number) => span / Math.max(1, frameWidth);

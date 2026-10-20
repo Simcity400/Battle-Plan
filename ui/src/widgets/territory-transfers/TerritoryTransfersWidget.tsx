@@ -12,7 +12,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveOptions } from '../../dashboard/options';
 import type { OptionValue } from '../../dashboard/options';
 import { peaceDealAt } from '../../dashboard/peaceDealsData';
@@ -175,8 +175,10 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     {conference && <p className="transfer-note">{transferConferenceLabel(conference)}</p>}
     {gapHint && <p className="transfer-note has-hint" data-tooltip={gapHint}>Some transfers may be missing.</p>}
   </>;
-  const empty = <WidgetState kind="empty" message={transferEmptyMessage(filtered)} />;
   const first = Math.max(track.branch.firstHour, rangeFrom);
+  // A side at an hour whose group membership is still being prepared is unknown, not outside the choice.
+  const empty = filtered && !match.known(first, moment) ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
+    : <WidgetState kind="empty" message={transferEmptyMessage(filtered)} />;
   const last = widget.time.mode === 'range' ? moment : track.branch.lastHour;
   const drillBody = <TransferDrill rows={drillRows} focus={focus} named={pinned} outside={drillAt < first || drillAt > last}
     {...tables} sort={pinned ? transferSort : TRANSFER_SORT} setOption={pinned ? transferSetOption : undefined}

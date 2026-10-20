@@ -18,7 +18,7 @@ Follow/pin, countries/groups and the shared table options: Sort by (Days left as
 - Days left is the next election's hour less the shown hour, counting a part day as a day. The Term meter is the share of the term passed, drawn only when the interval, next date and term start are all recorded at the hour; otherwise the meter is empty. A next date that is not recorded shows an em dash, sorts last and reads "Not recorded" on hover.
 - The election interval is on hover. The schedule is read every hour, so its values are current at the playback date and the hover carries no separate read date.
 - The menu offers Jump to the next election when that date lies inside the recording. There is no row click.
-- An hour past the prepared history shows that it is still being prepared, never an empty table.
+- An hour past the prepared history, or whose group membership is still being prepared, shows that it is still being prepared, never an empty table.
 
 ## Files
 

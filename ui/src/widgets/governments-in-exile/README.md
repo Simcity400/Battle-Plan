@@ -19,7 +19,7 @@ Follow/pin, countries/groups and the shared table options: Sort by (Manpower des
 - Fields and wording follow the exile cards in [country people](../country-people/README.md): Host, Legitimacy, Exile manpower, Exile manpower cap, Deployed air crews, Army leaders recruited. Values are exact and in the shared number format. A value that is not recorded shows an em dash, sorts last and reads "Not recorded" on hover; zero is a recorded value. A host without a tag at the hour reads "Not recorded" in its cell, sorts last and is counted in diagnostics.
 - Air crews show an em dash while the hour detail loads; hover says "Not recorded" only when the detail says so.
 - Hover adds "Exile resources last read <date>" when the supplying read is older than the shown hour. Legitimacy has no threshold colour.
-- An hour past the prepared history shows that it is still being prepared, never an empty table; an hour the exiles were not read says so.
+- An hour past the prepared history, or whose group membership is still being prepared, shows that it is still being prepared, never an empty table; an hour the exiles were not read says so.
 
 ## Files
 

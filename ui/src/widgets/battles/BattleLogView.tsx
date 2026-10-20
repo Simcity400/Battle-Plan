@@ -13,7 +13,7 @@ import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetMeta, WidgetProps, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
-import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
+import { countryMatch, countryMatchFilter, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
@@ -213,8 +213,12 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   </div>;
   // An adapter's own view draws its empty list, keeping its header controls.
   if (!shown.length && !(adapter.view && censusHour !== null) && prefix?.pending.length && censusHour === null) return <>{coverageNote}<WidgetState kind="loading" label="This range is still being prepared." /></>;
-  if (!shown.length && !(adapter.view && censusHour !== null)) return <div ref={parityEmptyRoot} className="battle-widget">{coverageNote}{navigation}<WidgetState kind={censusHour === null ? 'unavailable' : 'empty'}
-    message={censusHour === null ? 'Not in this recording' : `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`} /></div>;
+  // Battles are matched at their own hours: one whose countries' membership is still being prepared is not known to
+  // be left out. An adapter's own view gets the same empty text.
+  const membershipKnown = match.known(first, (view === 'log' ? shownHour : hour) ?? first);
+  if (!shown.length && !(adapter.view && censusHour !== null)) return <div ref={parityEmptyRoot} className="battle-widget">{coverageNote}{navigation}{censusHour !== null && !membershipKnown
+    ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /> : <WidgetState kind={censusHour === null ? 'unavailable' : 'empty'}
+    message={censusHour === null ? 'Not in this recording' : `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`} />}</div>;
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const summary = adapter.summary?.(shown, ranking.data, measure, view);
   const rankedMeasure = ranking.data?.effectiveMeasure ?? measure;
@@ -229,7 +233,7 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
       const props: BattleLogProps<Row> = { rows: named, label: adapter.definition.title, labels: adapter.labels, country, live: live && shownHour === hour, view,
         log: logSettings(options), measures: adapter.measures, sort: sort.column === 'measure' ? { ...sort, column: rankedMeasure } : sort,
         setOption, cellBars: options.cellBars === true, rankMarkers: options.rankMarkers === true, narrow: narrowTableOf(options), hoursPerSecond,
-        menu: row => [jumpItem(runtime, track.id, battleJumpHour(row))], empty: `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`,
+        menu: row => [jumpItem(runtime, track.id, battleJumpHour(row))], empty: membershipKnown ? `No recorded ${adapter.definition.title.toLowerCase()} match these settings.` : MEMBERSHIP_PREPARING,
         note: adapter.note, formatLoss: adapter.formatLoss, compactSides: adapter.compactSides, resultMeasure: adapter.resultMeasure,
         description: adapter.description, tooltipRows: adapter.tooltipRows, onVisibleRows, placePending,
         ...(import.meta.env.MODE === 'parity' ? { paritySemantic } : {}) };

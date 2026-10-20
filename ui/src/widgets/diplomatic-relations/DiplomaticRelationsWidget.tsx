@@ -21,7 +21,8 @@ import { nameReadText, useHolderLooks } from '../../dashboard/holderLooks';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { factionNameAt } from '../../dashboard/factionChoice';
-import { resolveCountries } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, noMembersAt, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions, setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
@@ -130,6 +131,11 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   if (options.show === PAIR.id) return savedPair
     ? <PairHistory runtime={runtime} track={track} pair={savedPair} hour={hour} active={active} />
     : <WidgetState kind="empty" message="Choose a pair: click a cell in a Diplomatic relations matrix and pin it." />;
+  // A group with no member found yet says what the hour was once read, not that too few were chosen.
+  const none = resolved && noMembersAt(widget.countries, resolved, groups.data, hour, track.branch.lastHour);
+  if (none) return <NoMembersState reason={none.reason} icon="handshake" />;
+  // A group's members at an hour still being prepared are not known yet: too few is not proof.
+  if (tags.length < 2 && resolved && !resolved.known(hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (tags.length < 2) return <WidgetState kind="empty" icon="handshake" message="Choose at least two countries." />;
   if (opinions.error) return <WidgetState kind="error" detail={opinions.error} onRetry={opinions.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading opinions…" />;

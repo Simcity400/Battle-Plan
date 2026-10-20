@@ -19,7 +19,7 @@ import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { groupReasonAt, preparedAt } from '../../dashboard/economyHistory';
 import { EquipmentCell, useVariantArt } from '../../dashboard/EquipmentCell';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import MarketDrill from '../../dashboard/MarketDrill';
 import { knownAt, MARKET_HISTORY, validateMarketHistory } from '../../dashboard/marketHistory';
 import { resolveWindow } from '../../dashboard/model';
@@ -138,7 +138,9 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!data || !match.ready) return <WidgetState kind="loading" label="Loading lend-lease…" />;
   if (!preparedAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  // A group whose membership at this hour is unrecorded or empty says so, never "none".
+  // A group whose membership at this hour is unrecorded or empty says so, never "none";
+  // membership still being prepared at the hours the agreements are matched is neither.
+  if (!rows.length && !match.known(track.branch.firstHour, hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
   if (groupReason) return <WidgetState kind={groupReason.kind} message={groupReason.message} />;
   const subject = fallback.length === 1 ? name(fallback[0], hour) : 'These countries';

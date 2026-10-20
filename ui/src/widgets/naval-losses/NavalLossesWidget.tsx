@@ -16,7 +16,8 @@ import { useChartTokens } from '../../charts/useChartTokens';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatchFilter, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { countryMatchFilter, MEMBERSHIP_PREPARING, noMembersAt, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { countryDrillSpans, countryDrillTagAt, countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions, setToken } from '../../dashboard/options';
@@ -82,6 +83,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   },[model,view,lineTags,kind,extent[0],extent[1],counted.membership,prepared.dense,prepared.summaries]);
   const segmentAt = useCallback((tag: string, hour: number) => navalSegmentAt(model, tag, hour), [model]);
   const countryLookHour = useCallback((tag: string | null, hour: number) => navalLookHour(model, tag, hour, kind), [model, kind]);
+  const none = noMembersAt(widget.countries, resolved, groups.data, wantedMoment, track?.branch.lastHour ?? 0);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its naval losses." />;
     if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
@@ -89,6 +91,8 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     if (resolved.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
     if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    // A group with no member found yet has nothing to show: the moment asked says why once it is read.
+    if (none) return <NoMembersState reason={none.reason} icon="shield" />;
     if (!data || !model || (grouped && !groups.data)) return <WidgetState kind="loading" label="This range is still being prepared." />;
     if (pendingReplyAt(prepared.manifest, wantedMoment)) return <WidgetState kind="loading" label="This range is still being prepared." />;
     if (!data.available) return <WidgetState kind="unavailable" message="Naval losses were not recorded at this time." />;
@@ -229,11 +233,11 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     parts={NAVAL_PARTS} raceLegendParts={kind === 'both' ? NAVAL_PARTS : []} partsLabel="Naval losses"
     labels={{ race: `${label}, ${dayLabel(moment)}`, lines: `${label} over time`, actions: 'Naval loss actions' }}
     onPick={kind === 'both' ? open : undefined} pickOwner={pickOwner} resetKey={scopeKey}
-    label={label} empty="Naval losses unknown at this time." formatValue={formatNavalCount}
+    label={label} empty={counted.known(moment) ? 'Naval losses unknown at this time.' : MEMBERSHIP_PREPARING} formatValue={formatNavalCount}
     countryTags={view === 'race' ? ranked.map(entry => entry.tag) : lineTags} countryLookHour={countryLookHour}
     beforeChart={data && <p className="chart-line-key">{navalPeriodLabel(data, period)}</p>}
     presentation={{ exact: false, held: false, lineColourHours: 'labels', linePadding: CHART_LAYOUT.countryEndLabels, raceEmptyState: false, resetTimeView: true }}
-    lineEmpty={{ icon: 'shield', message: 'No known naval counts for these countries in this time range.' }}
+    lineEmpty={{ icon: 'shield', message: counted.known(extent[0], extent[1]) ? 'No known naval counts for these countries in this time range.' : MEMBERSHIP_PREPARING }}
     tooltip={(tag, hour, name) => model ? [navalTooltip(model, tag, hour, name, kind, attribution)] : null}
     lineTooltip={(hour, tags, labelAt, country) => model ? [navalLineTooltip(model, hour, tags, labelAt, country, kind, attribution)] : []} />;
 
@@ -312,7 +316,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
       }} />}
       <DrillParts parts={parts} format={formatNavalCount} positiveBars signedShares total={run?.ships != null && run?.convoys != null ? run.ships + run.convoys : 0}
         totalRow={{ label: 'Total', value: run?.ships != null && run?.convoys != null ? formatNavalCount(run.ships + run.convoys) : 'Unknown' }} /></div>}
-    mixEmpty={{ icon: 'shield', message: 'No country with known naval losses at this time.', unavailable: name => `Naval losses unknown for ${name}.` }}
+    mixEmpty={{ icon: 'shield', message: counted.known(selectedHour) ? 'No country with known naval losses at this time.' : MEMBERSHIP_PREPARING, unavailable: name => `Naval losses unknown for ${name}.` }}
     pickOwner={detailOwner} resetKey={scopeKey} onPick={drillTag ? hour => {
       if (!mounted.current || !pickRef.current.detailAllowed || pickRef.current.detail !== detailOwner) return;
       hour = Math.floor(hour);

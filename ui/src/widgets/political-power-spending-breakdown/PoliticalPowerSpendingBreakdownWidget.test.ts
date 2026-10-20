@@ -25,13 +25,13 @@ test('registered spending breakdown draws everything recorded, names unrecorded 
       {readHour: 0, sinceHour: 0, throughHour: 24, political: true, command: true, reason: null},
       {readHour: 30, sinceHour: 25, throughHour: 26, political: false, command: true, reason: 'Synthetic stream gap'},
     ]};
-  const state = {data: [data] as PoliticsLedgerReply[] | undefined, clock: 11, subscribed: false,
+  const state = {data: [data] as PoliticsLedgerReply[] | undefined, clock: 11, subscribed: false, known: true,
     chart: undefined as SunburstProps | undefined, namedAt: [] as number[]};
   const host = globalThis as typeof globalThis & {__spendingBreakdown?: typeof state};
   host.__spendingBreakdown = state;
   const replacements: Record<string, string> = {
     '/dashboard/usePoliticsSpending.ts': `export const usePoliticsSpending = (_widget, runtime) => ({track: runtime.tracks[0], tags: ['synthetic actor'],
-      data: globalThis.__spendingBreakdown.data, ready: true, groupWarnings: [], retry() {}});
+      data: globalThis.__spendingBreakdown.data, ready: true, known: () => globalThis.__spendingBreakdown.known, groupWarnings: [], retry() {}});
       export const useSpendingIdeaTooltips = () => ({infos: new Map(globalThis.__spendingBreakdown.data[0].ideaTooltips.ideas.map(info => [info.token, info])),
         art: new Map(), sources: {formats: new Map(), text: () => null, countryName: tag => tag, nameAt: (tag, hour) => {
           globalThis.__spendingBreakdown.namedAt.push(hour); return 'Dated ' + tag + ' at ' + hour; }}});`,
@@ -55,6 +55,12 @@ test('registered spending breakdown draws everything recorded, names unrecorded 
       clock: {getHour: () => state.clock, getSnapshot: () => ({hoursPerSecond: 24})}}, active: true, onDiagnostics() {}} as unknown as WidgetProps;
     const render = () => {state.chart = undefined; return renderToStaticMarkup(createElement(Widget, props));};
     assert.match(render(), /No political power spent in this period\./);
+    // Countries chosen at hours still being prepared are not known: nothing spent is not proven then.
+    state.known = false;
+    const preparing = render();
+    assert.match(preparing, /aria-label="This range is still being prepared\."/);
+    assert.doesNotMatch(preparing, /No political power spent/);
+    state.known = true;
     assert.equal(state.chart, undefined, 'a native action is unavailable until its supplying read');
     state.clock = 12; render();
     assert.equal(state.subscribed, true);

@@ -24,7 +24,7 @@ import { countryLineColours } from '../../dashboard/countryLineColours';
 import { countryCapitulationBadges, countryCapitulationRows } from '../../dashboard/countryCapitulations';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { membershipChanges, resolveCountries } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, membershipChanges, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
@@ -211,7 +211,9 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading experience…" />;
-  if (!countries.some(country => country.recorded)) return <WidgetState kind="unavailable" message="Not in this recording" />;
+  // A group's members at hours still being prepared are not known yet: none recorded is not proof of none.
+  if (!countries.some(country => country.recorded)) return resolved.known(track.branch.firstHour, track.branch.lastHour)
+    ? <WidgetState kind="unavailable" message="Not in this recording" /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!branches.length) return <WidgetState kind="empty" message="Turn on an experience branch in the widget settings." />;
   if (measure === 'gain' && (prepared.enabled ? !prepared.gainKnown : !countries.some(country => country.reads.some(read => read.gain !== null))))
     return <WidgetState kind="unavailable" message="Daily gain needs a full day of data." />;

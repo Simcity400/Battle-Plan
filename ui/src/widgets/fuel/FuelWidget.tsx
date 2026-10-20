@@ -22,7 +22,7 @@ import { countryDrillTagAt } from '../../dashboard/countryIdentity';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { isMember } from '../../dashboard/groups';
+import { isMember, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -179,7 +179,10 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
         : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="Choose another time in widget settings." />
           : pending || !data ? <WidgetState kind="loading" label="Loading fuel…" />
             : !data.some(reply => reply.reads.length) && !prepared.states?.states.some(state=>state.recorded)
-              && !prepared.summaries?.series.some(line=>line.summary.buckets.some(bucket=>bucket!==null)) ? <WidgetState kind="unavailable" message="No fuel was recorded for the chosen countries." /> : undefined;
+              && !prepared.summaries?.series.some(line=>line.summary.buckets.some(bucket=>bucket!==null))
+              // A group's members at hours still being prepared are not known yet: none recorded is not proof of none.
+              ? countries.known(track.branch.firstHour, track.branch.lastHour) ? <WidgetState kind="unavailable" message="No fuel was recorded for the chosen countries." />
+                : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /> : undefined;
   const open = (hour: number, tag?: string, choices?: readonly string[]) => {
     if (!active || pickRef.current.main !== pickOwner || !pickRef.current.active || saved || state || !track) return;
     hour = Math.floor(hour);

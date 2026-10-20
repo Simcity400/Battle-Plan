@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'vite';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { createElement } from 'react';
 import type { ReactElement } from 'react';
+import { BRANCH, humansBy, mountModule, PENDING_HOUR, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 import type { CombatLogReply, CountryGroupReply, CombatLogParams } from '../../generated/dashboard';
 import type { CountrySelection, WidgetSpec } from '../../dashboard/model';
 import type { WidgetRuntime } from '../../dashboard/definitions';
@@ -94,4 +96,27 @@ test('complete retained sections and expandable detail tables survive independen
     assert.match(render('equipment'), /Retained equipment months/);
     assert.equal(f.component.fixed5('-9223372036854775808'), '-92233720368547.75808');
   } finally { await f.close(); }
+});
+
+test('a retained Combat Log at an hour whose group membership is still being prepared says so', async () => {
+  const state = { groups: pendingGroups(), reply: { ...reply(), hour: PENDING_HOUR } };
+  const globals = globalThis as typeof globalThis & { __combatLogPending?: typeof state }; globals.__combatLogPending = state;
+  const { module, close } = await mountModule<typeof import('./CombatLogDetails')>('/ui/src/widgets/land-battles/CombatLogDetails.tsx', {
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__combatLogPending.reply });',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__combatLogPending.groups });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+  });
+  try {
+    const runtime = { tracks: [{ id: 'main', axisOffset: 0, selectedTag: 'GER', branch: BRANCH, source: { id: 'source', revision: '1', metadata: { countries: [] } } }],
+      client: {}, clock: { getHour: () => PENDING_HOUR } } as unknown as WidgetRuntime;
+    const widget: WidgetSpec = { id: 'test', kind: 'land-battles', title: '', configVersion: 1, trackIds: ['main'], countries: humansBy('hour'), time: { mode: 'follow' } };
+    const render = () => renderToStaticMarkup(createElement(module.CombatLogSnapshot, { widget, runtime, active: true, view: 'battles',
+      mapOptions: { country: null, fog: true }, headerSlot: null, onDiagnostics() {} } as never));
+    const pending = render();
+    assert.match(pending, /role="status">This range is still being prepared\.</);
+    assert.match(pending, /Retained Combat Log/, 'entries already read stay shown');
+    // The final reply has read the hour: the entries shown are all there are.
+    state.groups = pendingGroups({ final: true });
+    assert.doesNotMatch(render(), /This range is still being prepared/);
+  } finally { await close(); delete globals.__combatLogPending; }
 });

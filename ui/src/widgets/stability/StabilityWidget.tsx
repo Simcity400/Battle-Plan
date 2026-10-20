@@ -33,7 +33,7 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useFocusText } from '../national-focus/useFocusArtwork';
 import { FAILED_FACT } from '../../dashboard/countryFacts';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { isMember, resolveCountries } from '../../dashboard/groups';
+import { isMember, MEMBERSHIP_PREPARING, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -387,9 +387,12 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
+  // A group's members at hours still being prepared are not known yet: none is not proof of none.
+  const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  const branchKnown = resolved.known(track.branch.firstHour, track.branch.lastHour);
   // A pinned breakdown is the widget itself: the main chart's settings do not apply.
   if (pinnedMeasure) {
-    const body = !singleTag ? <WidgetState kind="empty" message="Choose one country to see what makes up its values." />
+    const body = !singleTag ? branchKnown ? <WidgetState kind="empty" message="Choose one country to see what makes up its values." /> : preparing
       : (hasSavedCountry && !savedCountry) || (groupData && (!selectedCountry || !actorSpans))
         ? <WidgetState kind="unavailable" message={actorReason!} />
         : groups.error && !groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
@@ -414,7 +417,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || (widget.countries.kind === 'group' && !groupData)) return <WidgetState kind="loading" label="Loading stability and war support…" />;
   if (!shown.length) return <WidgetState kind="empty" message="Both lines are switched off in the settings." />;
-  if (!prepared.enabled && series.every(item => shown.every(measure => !item.lines[measure.key].length))) return <WidgetState kind="unavailable" message="Stability and war support are unavailable for these countries." />;
+  if (!prepared.enabled && series.every(item => shown.every(measure => !item.lines[measure.key].length))) return branchKnown
+    ? <WidgetState kind="unavailable" message="Stability and war support are unavailable for these countries." /> : preparing;
 
   const decimals = data.decimals;
   // Zoom fits the values drawn in view (both bounds, as the view moves); the fixed scale is 0-100%.

@@ -10,7 +10,7 @@ A moment view (Follow or Pin) of the production licences standing at the date sh
 
 ## Notable behaviour
 
-- A group whose membership was not recorded at the hour shown says so, and a group with no members then says it has none; neither reads as "none" for its countries.
+- A group whose membership was not recorded at the hour shown says so, and a group with no members then says it has none; neither reads as "none" for its countries. Membership still being prepared shows that, never either.
 - A licence grants designs; it does not prove anything was built. The record's opaque operand is not shown as a fee.
 - A record's position is not a persistent identity, and a licence that stops being read only bounds its end; no end date is invented.
 - Zero factories lent is a real licence; factories not recorded show an em dash.

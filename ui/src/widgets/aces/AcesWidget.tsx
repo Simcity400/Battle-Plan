@@ -17,7 +17,7 @@ import type { FactSpec } from '../../dashboard/countryFacts';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { drawableIcon } from '../../dashboard/artwork';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
@@ -109,6 +109,8 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   if (!data.available) return <WidgetState kind="unavailable" message={preparing ? "Aces were not recorded at this time." : "Aces: Not in this recording."} />;
   if (!recorded) return <WidgetState kind="unavailable" message="Aces were not recorded at this time." />;
   if (!display) return <WidgetState kind="loading" label="Loading aces..." />;
+  // Aces are matched at the hour read: a country whose membership there is still being prepared is not known to be left out.
+  if (!rows.length && read !== null && !match.known(read)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!rows.length) return <WidgetState kind="empty" icon="star" message="No aces match these settings." />;
   return <div ref={root} className="aces-widget">{preparing && <p className="chart-line-key" role="status">Ace and death dates are still being prepared. Current roster sorted by name.</p>}{(pending || loaded.error) && <div className="aces-loading" role="status">{loaded.error ? 'Couldn’t load aces.' : 'Updating…'}{loaded.error && <button onClick={loaded.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
     rowHeight={50} cellBars={false} rankMarkers={false} density="comfortable" narrow={narrowTableOf(options)}

@@ -21,6 +21,7 @@ import { useCountryLooks } from '../../dashboard/countryLooks';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { groupReasonAt, preparedAt } from '../../dashboard/economyHistory';
+import { MEMBERSHIP_PREPARING, membersKnown } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
@@ -104,6 +105,8 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
       <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption?.('measure', value)} />
     </div>
     {!items.length ? (() => {
+      // A group's members at an hour still being prepared are not known yet: no row is not proof of none.
+      if (!membersKnown(widget.countries, groups.data, track.branch.lastHour)(hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
       const empty = emptyBalance(data, measure, hour, widget.countries, fallback, groups.data, track.branch.lastHour);
       return empty === 'zero' ? <WidgetState kind="empty" icon="chart-bars" message="No lend-lease yet." />
         : empty === 'unrecorded' ? <WidgetState kind="unavailable" message="Lend-lease histories were not recorded at this date." />

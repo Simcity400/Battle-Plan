@@ -12,7 +12,8 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { partsRaceAt, partsRaceLineRuns, partsRaceMixBands, partsRaceModel, partsRacePartName, partsRaceEntries, partsRaceSegmentAt,
   partsRaceTooltips, formatPartsRaceValue, hasPartsRaceValues, rankPartsRace } from '../../dashboard/partsRace';
-import { countryMatchFilter, isMember, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { countryMatchFilter, isMember, MEMBERSHIP_PREPARING, projectResolvedCountries, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { NumericReply } from '../../dashboard/numericReply';
 import type { CountryGroupReply } from '../../generated/dashboard';
@@ -224,6 +225,7 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     return { tag: mixTag, bands, compactStack: true, approximate: prepared.approximate.get(mixTag), parts: parts.map((part, index) => ({ ...part,
       value: at?.values[index] == null ? 'Not known' : formatValue(at.values[index]!) })) };
   }, [model, mixTag, bands, mixMembership, moment, parts, formatValue, prepared.approximate]);
+  const none = noMembersAt(widget.countries, resolved, groupReply.data, moment, lastHour);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon={config.icon} message={`Load a campaign to see its ${config.subject}.`} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable"
@@ -231,8 +233,12 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
     if (grouped && groupReply.error) return <WidgetState kind="error" what="country groups" detail={groupReply.error} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={config.icon} message={resolved.reason} />;
+    // A group with no member found yet asks for nothing, so no reply will come.
+    if (none) return <NoMembersState reason={none.reason} icon={config.icon} />;
     if (!data || !model || (grouped && !groupReply.data)) return <WidgetState kind="loading" label={`Loading ${config.subject}…`} />;
-    if (!available) return <WidgetState kind="unavailable" message={`${config.subject} were not recorded for these countries.`} />;
+    // A group's members at hours still being prepared are not known yet: no value is not proof of none.
+    if (!available) return drawing.known(track.branch.firstHour, track.branch.lastHour)
+      ? <WidgetState kind="unavailable" message={`${config.subject} were not recorded for these countries.`} /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     if (!pinned && view === 'mix' && mixTag && !parts.length && model.series.get(mixTag)?.series.runs.some(run =>
       run.total === 0 && run.lastHour >= extent[0] && run.firstHour <= extent[1])) {
       return <WidgetState kind="empty" icon={config.icon} message={config.zeroMix(options)} />;
@@ -273,15 +279,15 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     lineSummaries: new Map(lineTags.flatMap(tag => prepared.summaries.has(tag) ? [[tag, prepared.summaries.get(tag)!] as const] : [])),
     onSummaryView: prepared.onSummaryView, onReachHour: prepared.onReachHour, exactLineTags: prepared.exactLineTags,
     navigation: prepared.navigation,
-    empty: `No ${config.subject} recorded on ${dayLabel(moment)}.`, formatValue, formatTick: config.formatTick?.(options),
+    empty: drawing.known(moment) ? `No ${config.subject} recorded on ${dayLabel(moment)}.` : MEMBERSHIP_PREPARING, formatValue, formatTick: config.formatTick?.(options),
     partsLabel, raceLegendParts: split ? parts : [],
     labels: { race: `${config.title}, ${measure}, ${dayLabel(moment)}`, lines: `${config.title} over time, ${measure}`,
       mix: name => `${config.title} of ${name}, ${partsLabel.toLowerCase()}`, actions: `${config.title} actions` },
     presentation: { exact: false, held: false, lineColourHours: 'labels',
       tooltipKeep: 1, linePadding: CHART_LAYOUT.countryEndLabels, strongMixName: true, windowedLegend: true, mixKeyHours: 'starts',
       raceEmptyState: false, resetTimeView: true },
-    lineEmpty: { icon: config.icon, message: 'No countries to draw. Choose countries in the widget settings.' },
-    mixEmpty: { icon: config.icon, message: widget.countries.kind === 'group'
+    lineEmpty: { icon: config.icon, message: drawing.known(extent[0], extent[1]) ? 'No countries to draw. Choose countries in the widget settings.' : MEMBERSHIP_PREPARING },
+    mixEmpty: { icon: config.icon, message: !drawing.known(moment) ? MEMBERSHIP_PREPARING : widget.countries.kind === 'group'
       ? `No country of this group was recorded on ${dayLabel(moment)}.` : 'Choose a country in the widget settings.',
       unavailable: name => `Breakdown unavailable for ${name}.` },
     tooltip: (tag, hour, name, colours) => {

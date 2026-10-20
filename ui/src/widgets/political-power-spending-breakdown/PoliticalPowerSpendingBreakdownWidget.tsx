@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import Sunburst from '../../charts/sunburst/Sunburst';
 import type { SunburstProps, SunburstText } from '../../charts/sunburst/Sunburst';
 import { sliceTooltip } from '../../charts/sunburst/layout';
@@ -39,7 +40,7 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const digits = powerDecimals(options);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact) => formatPower(exact ?? BigInt(Math.round(value)), digits),
     unit: 'PP', valueLabel: 'Spent', countLabel: 'Payments' }), [digits]);
-  const { track, tags, data, finalData, error, retry, ready, reason, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active, true);
+  const { track, tags, data, finalData, error, retry, ready, reason, known, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active, true);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
@@ -77,7 +78,9 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!ready) return <WidgetState kind="loading" label="Loading spending…" />;
   if (reason) return <WidgetState kind="empty" message={reason} />;
-  if (!tags.length) return <WidgetState kind="empty" message="Choose a country to see its political power spending." />;
+  // A group's members at hours still being prepared are not known yet: no country, or nothing spent, is not proof of none.
+  if (!tags.length) return known(track.branch.firstHour, track.branch.lastHour)
+    ? <WidgetState kind="empty" message="Choose a country to see its political power spending." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!data) return <WidgetState kind="loading" label="Loading political power spending…" />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (through != null && through < track.branch.firstHour) return <WidgetState kind="loading" label="This range is still being prepared." />;
@@ -85,6 +88,7 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   if (through != null && from != null && from > through) return <WidgetState kind="loading" label="This range is still being prepared." />;
   const notes = [through != null && through < hour ? `Spent through ${dayLabel(through)}; the rest is still being prepared.` : null,
     gainNote(gain, digits), spendingGapNote(gaps), ...spendingCostNotes(spendingSummary(spends))].filter(Boolean);
+  if (!items.some(item => item.present) && !known(from ?? track.branch.firstHour, end ?? hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!items.some(item => item.present)) {
     return <div ref={parityRoot} style={{ height: '100%' }}><WidgetState kind="empty" icon="sunburst" message="No political power spent in this period." detail={notes.length ? notes.join(' ') : undefined} /></div>;
   }

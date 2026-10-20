@@ -12,7 +12,7 @@ import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -121,7 +121,7 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
     <LogList key={feed.identity} pages={feed.pages} label="Decisions" density={log.density} months={log.months} preparedCoverage={feed.prefix?.coverage}
       animate={log.animate && live} playhead={live ? hour : null} onVisible={setVisible} onWantedPages={feed.onWantedPages}
       renderRow={renderRow} describe={row => decisionDescription(row.item, name(row))} tooltip={row => decisionTooltip(row.item, name(row))}
-      menu={row => decisionJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty="No recorded decisions match these settings." />
+      menu={row => decisionJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty={match.known(from ?? track.branch.firstHour, hour!) ? "No recorded decisions match these settings." : MEMBERSHIP_PREPARING} />
     {feed.errors.size > 0 && <div className="event-feed-load">Some decisions couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;
 }

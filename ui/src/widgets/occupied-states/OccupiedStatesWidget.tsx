@@ -16,7 +16,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { worldFilter } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -126,6 +126,8 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
   if (pendingReplyAt(display?.data, shown)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!view?.observation) return <WidgetState kind="unavailable" message="Occupied states weren’t recorded at this time." />;
+  // Countries at an hour still being prepared are not known yet, nor matched: no row is not proof of none.
+  if (!rows.length && !filter.known) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!rows.length && view.selectionUnknown) return <WidgetState kind="unavailable" message="Occupied states unavailable for these countries." />;
   if (!rows.length) return <WidgetState kind={view.observation.complete ? 'empty' : 'unavailable'} message={view.observation.complete ? 'No occupied states match these countries at this moment.' : 'Some occupied states are missing.'} />;
   return <div className="occupied-states" ref={parityRoot}>

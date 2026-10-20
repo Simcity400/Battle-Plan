@@ -12,7 +12,7 @@ import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -124,7 +124,7 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
       preparedCoverage={feed.prefix?.coverage} rowHeight={cardHeight}
       animate={log.animate && live} playhead={live ? hour : null} onVisible={setVisible} onWantedPages={feed.onWantedPages}
       renderRow={renderRow} describe={row => choiceDescription(row.item, name(row))} tooltip={row => choiceTooltip(row.item, name(row))}
-      menu={row => choiceJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty="No recorded events match these settings." />
+      menu={row => choiceJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty={!kinds.length || match.known(from ?? track.branch.firstHour, hour!) ? "No recorded events match these settings." : MEMBERSHIP_PREPARING} />
     {feed.errors.size > 0 && <div className="event-feed-load">Some events couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;
 }

@@ -185,22 +185,23 @@ export function ledgerPinnedIdentity(value: unknown, campaign: string, branch: s
 }
 
 export function ledgerCountries(rows: readonly LedgerRow[], selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number, metric: 'dealt' | 'taken' | 'total' = 'total', countries: readonly MilitaryAirCountry[] = []): { rows: LedgerRow[]; reason: string | null } {
+  hour: number, lastHour: number, metric: 'dealt' | 'taken' | 'total' = 'total', countries: readonly MilitaryAirCountry[] = []): { rows: LedgerRow[]; reason: string | null; known: boolean } {
   const ranked = [...rows].sort((a, b) => {
     const av = metric === 'total' ? a.dealt + a.taken : a[metric], bv = metric === 'total' ? b.dealt + b.taken : b[metric];
     return av === bv ? compareTags(a.tag, b.tag) : av > bv ? -1 : 1;
   });
-  if (selection.kind === 'group' && selection.group.type === 'top') return { rows: ranked.filter(row => row.series.country.membership === null || runAt(row.series.country.membership, hour)).slice(0, selection.group.count), reason: null };
+  if (selection.kind === 'group' && selection.group.type === 'top') return { rows: ranked.filter(row => row.series.country.membership === null || runAt(row.series.country.membership, hour)).slice(0, selection.group.count), reason: null, known: true };
   const chosen = selection.kind === 'tags' ? selection.tags : selection.kind === 'selected' ? fallback : null;
   if (chosen) {
-    if (!chosen.length) return { rows: [], reason: 'Choose a country in the widget settings.' };
+    if (!chosen.length) return { rows: [], reason: 'Choose a country in the widget settings.', known: true };
     const roots = new Set(chosen);
     const identities = new Set(countries.filter(country => roots.has(country.tag)).map(country => country.identity));
     return { rows: ranked.filter(row => identities.has(row.identity)),
-      reason: identities.size ? null : 'Selected countries are unavailable in this campaign.' };
+      reason: identities.size ? null : 'Selected countries are unavailable in this campaign.', known: true };
   }
+  // A group's members at an hour still being prepared are not known: no row is not proof of none.
   const filter = worldFilter(selection, fallback, groups, hour, lastHour);
-  return { rows: ranked.filter(row => filter.tags === null || filter.tags.has(row.tag)), reason: filter.reason };
+  return { rows: ranked.filter(row => filter.tags === null || filter.tags.has(row.tag)), reason: filter.reason, known: filter.known };
 }
 
 export const ledgerShare = (raw: bigint, total: bigint) => total === 0n ? '—' : `${formatFixed(raw * 1000n / total, 1, 1)}%`;

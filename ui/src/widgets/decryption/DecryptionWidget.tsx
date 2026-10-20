@@ -16,7 +16,7 @@ import { useRowTooltips } from '../../charts/useRowTooltips';
 import { useViewportHeight } from '../../charts/useChartTokens';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -96,7 +96,8 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
   return <div ref={root} className="decryption" key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}>
     {rows.some(row => fieldPreparing(row.run, 'started')) && <p className="chart-line-key">Attempt histories, starts and breaks are still being prepared.</p>}
     <WindowedRows items={items} rowHeight={52} padding={8} label="Decryption races" className="decryption-race"
-      onVisibleRows={setVisibleRows} empty={<WidgetState kind="empty" message={widget.countries.kind === 'all' ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.'} />}>
+      onVisibleRows={setVisibleRows} empty={selection.known(hour) ? <WidgetState kind="empty" message={widget.countries.kind === 'all' ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.'} />
+        : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />}>
       {row => <RaceCell row={row.item} labels={countries.pair(row.item)} active={active && row.phase !== 'leaving'} leaving={row.phase === 'leaving'}
         rowProps={row.phase === 'leaving' ? undefined : tips.rowProps(row.key)} descriptionId={tips.descriptionId(row.key)}
         content={row.phase === 'leaving' ? null : content(row.key)} />}

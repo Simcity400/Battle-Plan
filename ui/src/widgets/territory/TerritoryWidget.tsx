@@ -17,7 +17,8 @@ import { useFactionColours } from '../../dashboard/FactionColours';
 import { factionNameReasonAt, factionLines, factionMembershipNote, factionNameAt, factionTotalsModel, factionTotalsRequest } from '../../dashboard/factionTotals';
 import { territoryMeasureLabel } from '../../dashboard/territoryMeasure';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupLabel, groupShareReason, resolveCountries, topCountries } from '../../dashboard/groups';
+import { groupLabel, groupShareReason, MEMBERSHIP_PREPARING, noMembersAt, resolveCountries, topCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -172,11 +173,18 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   if (view === 'share' && countryProduct.error && !(factions && data)) return <WidgetState kind="error" detail={countryProduct.error} onRetry={countryProduct.retry} />;
   if ((grouped || factions) && groupReply.error && !(factions && groupData)) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
   if (!factions && resolved.reason) return <WidgetState kind="empty" icon="map" message={resolved.reason} />;
+  // A group with no member found yet asks for no country totals, so no reply will come; the
+  // share view reads world totals and says so itself.
+  const none = factions || view === 'share' ? null : noMembersAt(widget.countries, resolved, groupReply.data, moment, lastHour);
+  if (none) return <NoMembersState reason={none.reason} icon="map" />;
   if (options.measure && !MEASURES.some(item => item.value === options.measure)) return <WidgetState kind="unavailable" message={'This territory measure is unavailable. Choose another in settings.'} />;
   if (!sourceData || (factions ? !factionModel : !model) || ((grouped || factions) && !groupData) || (view === 'share' && !data)) return <WidgetState kind="loading" label="Loading territory…" />;
   const unavailable = factions ? factionData?.unavailableReason : measure === 'area' ? data?.areaReason : null;
   if (unavailable) return <WidgetState kind="unavailable" message={measure === 'area' ? 'Map area is unavailable.' : 'Territory is unavailable.'} />;
-  if (!lines.length && view !== 'share' && view!=='lines') return <WidgetState kind="unavailable" message="Territory totals are unavailable for this selection." />;
+  // A group's members at hours still being prepared are not known yet: no total is not proof of none.
+  const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!lines.length && view !== 'share' && view!=='lines') return factions || resolved.known(extent[0], extent[1])
+    ? <WidgetState kind="unavailable" message="Territory totals are unavailable for this selection." /> : preparing;
   if (factions && factionLooks.loading && !shareFactionColours.size) return <WidgetState kind="loading" label="Loading faction colours…" />;
   if (factions && !lines.every(line => shareFactionColours.has(line.tag))) return <WidgetState kind="unavailable" message={factionColourError ? 'Couldn’t load faction colours.' : 'Faction colours are unavailable.'} />;
   const measureName = MEASURES.find(item => item.value === measure)!.label;
@@ -186,6 +194,7 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   if (view === 'share') {
     const groupReason = factions && widget.countries.kind === 'group' ? factionData?.series.find(series => series.id === factionParams?.factionId)?.unavailableReason
       : grouped && widget.countries.kind === 'group' ? groupShareReason(resolved, widget.countries.membership, moment) : null;
+    if (!factions && !groupReason && !resolved.known(moment)) return preparing;
     const shareColours = new Map(shareTags.map(tag => {
       const colour = looks.color(tag);
       return [tag, colour ? toHex({ r: colour[0], g: colour[1], b: colour[2] }) : null] as const;
@@ -214,7 +223,7 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
     badges={badges}
     lineSummaries={prepared.lineSummaries.size ? prepared.lineSummaries : undefined} onSummaryView={prepared.onSummaryView} onReachHour={prepared.onHoverHour}
     navigation={prepared} pickOwner={prepared.owner}
-    label="Territory" empty={`Not recorded on ${dayLabel(moment)}.`} formatValue={formatTerritory}
+    label="Territory" empty={factions || resolved.known(moment) ? `Not recorded on ${dayLabel(moment)}.` : MEMBERSHIP_PREPARING} formatValue={formatTerritory}
     labels={{ race: `Territory, ${countName}, ${dayLabel(moment)}`, lines: `Territory over time, ${countName}`, actions: 'Territory actions' }}
     presentation={{ ...TERRITORY_PRESENTATION, countryLooks: !aggregate, linePadding: CHART_LAYOUT.countryEndLabels }}
     tooltipTags={aggregate ? () => [] : undefined}

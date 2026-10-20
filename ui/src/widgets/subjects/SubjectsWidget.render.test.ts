@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
+import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { TimelineProps } from '../../charts/timeline/Timeline';
 import type { LegendItem } from '../../charts/Legend';
 import type { CountryGroupReply, SubjectReply } from '../../generated/dashboard';
+import { BRANCH, humansBy, mountModule, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 
 test('subject legends keep missing and folded level names without raw tokens or cadence notes', async () => {
   const levels = ['opaque-unnamed', 'mod-level-a', 'mod-level-b'].map((token, index) => ({ token, name: index ? `Mod level ${index}` : null, ordered: true }));
@@ -95,4 +97,36 @@ test('a reply answered from its prepared prefix marks sampled hours approximate 
     const later = chart.tooltip!(subject, null, 9, true)!;
     assert.equal(later.rows.find(row => row.label === 'Level')?.value, 'Still being prepared');
   } finally { delete host.__subjectLegend; await vite.close(); }
+});
+
+test('a group counted at an hour still being prepared is loading, not a choice with no subjects', async () => {
+  const data: SubjectReply = { branchId: BRANCH.id, levels: [{ token: 'mod-level', name: 'Mod level', ordered: true }], warnings: [], unobserved: [],
+    runs: [{ overlord: 'ENG', subject: 'S', startHour: 0, firstHour: 0, lastHour: 200, steps: [{ firstHour: 0, lastHour: 200, level: 'mod-level' }] }] };
+  const state = { data, groups: pendingGroups({ tags: ['GER', 'ENG', 'S'] }) };
+  const host = globalThis as typeof globalThis & { __subjectPending?: typeof state }; host.__subjectPending = state;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/subjects/SubjectsWidget.tsx', {
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__subjectPending.data });',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__subjectPending.groups });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/useCountriesAt.ts': 'export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',
+    '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }) });',
+    '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456"], text: "#ffffff", surface: "#000000" }); export const useViewportHeight = () => 1000;',
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null });',
+    '/charts/timeline/Timeline.tsx': 'export default () => null;',
+  });
+  try {
+    const props = { widget: { id: 'subjects', kind: 'subjects', trackIds: ['main'], countries: humansBy('hour'), time: { mode: 'campaign' }, options: {} },
+      runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { countries: [] } }, branch: BRANCH }],
+        client: {}, clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ hoursPerSecond: 0 }) } }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
+    const render = () => renderToStaticMarkup(createElement(module.default, props));
+    // The branch end is still being prepared: its human players are not known yet.
+    const pending = render();
+    assert.match(pending, /aria-label="This range is still being prepared\."/);
+    assert.doesNotMatch(pending, /None of the chosen countries/);
+    // The final reply proves there is no human player at the end, and that GER, one throughout, never was in a relation.
+    state.groups = pendingGroups({ final: true, tags: ['GER', 'ENG', 'S'] });
+    assert.match(render(), /This group has no members at this moment\./);
+    state.groups = pendingGroups({ final: true, tags: ['GER', 'ENG', 'S'], humans: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] });
+    assert.match(render(), /None of the chosen countries has been an overlord or a subject yet\./);
+  } finally { delete host.__subjectPending; await close(); }
 });

@@ -11,7 +11,8 @@ import type { Span } from '../../charts/series';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { isMember, MEMBERSHIP_PREPARING, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -106,14 +107,19 @@ export default function FactoriesWidget(props: WidgetProps) {
     }) };
   }, [model, mixTag, bands, groups, mode, mixMembership, moment, chosenParts]);
 
+  const none = noMembersAt(widget.countries, resolved, numericGroups, moment, lastHour);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see its factories." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
     if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="factory" message={resolved.reason} />;
+    // A group with no member found yet asks for nothing, so no reply will come.
+    if (none) return <NoMembersState reason={none.reason} icon="factory" />;
     if (!shownReply || !model || (grouped && !numericGroups)) return <WidgetState kind="loading" label="Loading factories…" />;
-    if (!model.tags.length) return <WidgetState kind="unavailable" message="No factories were recorded for these countries." />;
+    // A group's members at hours still being prepared are not known yet: no series is not proof of none.
+    if (!model.tags.length) return resolved.known(track.branch.firstHour, track.branch.lastHour)
+      ? <WidgetState kind="unavailable" message="No factories were recorded for these countries." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     return undefined;
   })();
 
@@ -133,7 +139,7 @@ export default function FactoriesWidget(props: WidgetProps) {
     warnings={warnings} state={state} resetKey={JSON.stringify([track?.source.id, track?.branch.id, mode, chosen, widget.countries])}
     main={(onPick, visible) => <CountryRaceView runtime={runtime} track={track} state={state} active={active && visible} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={entries} lines={lines} parts={parts} mix={mix && {...mix,approximate:prepared.summaries.get(mix.tag)?.approximate}} segmentAt={segmentAt} countryTags={shownTags}
-    label="Factories" empty={`No factories recorded on ${dayLabel(moment)}.`} formatValue={formatCount}
+    label="Factories" empty={resolved.known(moment) ? `No factories recorded on ${dayLabel(moment)}.` : MEMBERSHIP_PREPARING} formatValue={formatCount}
     labels={{ race: `Factories, ${countName}, ${dayLabel(moment)}`, lines: `Factories over time, ${countName}`,
       mix: name => `Factories of ${name} by type, ${countName}`, actions: 'Factory actions' }}
     raceLegendParts={split && groups.length > 1 ? chosenParts : []} partsLabel="Factory types"
@@ -142,8 +148,8 @@ export default function FactoriesWidget(props: WidgetProps) {
       mixKeyHours: 'starts', raceEmptyState: false, resetTimeView: true }}
     lineSummaries={prepared.summaries} onSummaryView={prepared.onSummaryView}
     onReachHour={prepared.onReachHour} navigation={prepared.navigation} exactLineTags={prepared.exactLineTags}
-    pickOwner={pickOwner} lineEmpty={{ icon: 'factory', message: 'No countries to draw. Choose countries in the widget settings.' }}
-    mixEmpty={{ icon: 'factory', message: widget.countries.kind === 'group'
+    pickOwner={pickOwner} lineEmpty={{ icon: 'factory', message: resolved.known(extent[0], extent[1]) ? 'No countries to draw. Choose countries in the widget settings.' : MEMBERSHIP_PREPARING }}
+    mixEmpty={{ icon: 'factory', message: !resolved.known(moment) ? MEMBERSHIP_PREPARING : widget.countries.kind === 'group'
       ? `No country of this group was recorded on ${dayLabel(moment)}.` : 'Choose a country in the widget settings.',
       unavailable: name => `No factories were recorded for ${name}.` }}
     tooltip={(tag, hour, name, colours) => {

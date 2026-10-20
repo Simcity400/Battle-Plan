@@ -6,7 +6,8 @@ import type { RaceView } from '../../charts/race/options';
 import { formatAxisPercent } from '../../charts/valueAxis';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatchFilter, isMember, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { countryMatchFilter, isMember, MEMBERSHIP_PREPARING, noMembersAt, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { countryDrillTagAt, countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -88,11 +89,14 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, groups.data, onDiagnostics]);
+  const none = all ? null : noMembersAt(widget.countries, resolved, groups.data, moment, track?.branch.lastHour ?? 0);
   const state = !track ? <WidgetState kind="empty" icon="globe" message="Load a campaign to see occupation trends." />
     : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />
     : error ? <WidgetState kind="error" detail={error} onRetry={retry} />
     : grouped && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
     : requested.reason ? <WidgetState kind="empty" icon="globe" message={requested.reason} />
+    // A group with no member found yet asks for nothing, so no reply will come.
+    : none ? <NoMembersState reason={none.reason} icon="globe" />
     : !model || (grouped && !groups.data) ? <WidgetState kind="loading" label="Loading occupation trends…" /> : null;
   const chooserOwner = useMemo(() => ({ scope: mixScope, key: chooserKey, model, active, available: !state }),
     [mixScope, chooserKey, model, active, !state]);
@@ -108,9 +112,9 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     onReachHour={prepared.onReachHour} navigation={prepared.navigation} runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={ranked} lines={lines} mix={mix} segmentAt={segmentAt} tooltipTags={relatedTags} state={state}
     presentation={{ exact: false, held: false }}
-    label={`Average ${measureName(rank).toLowerCase()}`} empty="No occupied-state data at this time."
-    lineEmpty={{ icon: 'globe', message: 'No occupied-state data for these countries.' }}
-    mixEmpty={{ icon: 'globe', message: 'Choose an occupier.', unavailable: () => 'No occupied-state data at this time.' }}
+    label={`Average ${measureName(rank).toLowerCase()}`} empty={counted.known(moment) ? 'No occupied-state data at this time.' : MEMBERSHIP_PREPARING}
+    lineEmpty={{ icon: 'globe', message: counted.known(extent[0], extent[1]) ? 'No occupied-state data for these countries.' : MEMBERSHIP_PREPARING }}
+    mixEmpty={{ icon: 'globe', message: counted.known(moment) ? 'Choose an occupier.' : MEMBERSHIP_PREPARING, unavailable: () => 'No occupied-state data at this time.' }}
     countryTags={view === 'mix' ? [...new Set(mix?.lines.map(line => line.tag) ?? [])] : undefined}
     beforeChart={<>{data?.preparing?.length ? <p className="chart-line-key">Country identity history is still being prepared.</p> : null}{mixChooser}{view === 'mix' && mix && !mix.available ? <p className="chart-line-key">Country unavailable at this time.</p> : null}
       {shown === 'both' && view !== 'race' ? <p className="chart-line-key"><i aria-hidden="true" />Solid: resistance · <i className="is-dashed" aria-hidden="true" />dashed: compliance</p> : null}</>}

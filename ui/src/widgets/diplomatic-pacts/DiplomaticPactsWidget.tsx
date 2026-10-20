@@ -18,7 +18,7 @@ import { useViewportHeight } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveCountries } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
@@ -161,6 +161,9 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, headerS
   if ((view === 'pacts' ? !pactRows.length : !proposalRows.length) && pendingAt(preparedPrefix(reply.data), at))
     return <>{header}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   const log = logSettings(options);
+  // The countries a group chooses are its members over the whole branch: none matching is not
+  // proof of none while some of it is still being prepared.
+  const known = !resolved || resolved.known(track.branch.firstHour, track.branch.lastHour);
   return <div className="diplomatic-pacts">{header}
     {pending && <p className="chart-line-key" role="status">Some of this campaign is still being prepared.</p>}
     {view === 'pacts'
@@ -171,7 +174,7 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, headerS
         onVisibleRows={rows => report(rows.flatMap(pact => [pact.first, pact.second].flatMap(tag => tag ? [{ last: pact.lastSeen, tag }] : [])))}
         menu={pact => [{ ...jumpItem(runtime, track.id, pactSince(pact)), label: `Jump to since ${dayLabel(pactSince(pact))}` },
           ...(stateOf(pact).state === 'gone' ? [{ ...jumpItem(runtime, track.id, untilHour(stateOf(pact), pact)), label: `Jump to until ${dayLabel(untilHour(stateOf(pact), pact))}` }] : [])]} />
-        : <WidgetState kind="empty" icon="link" message="No pacts match these settings." />
+        : known ? <WidgetState kind="empty" icon="link" message="No pacts match these settings." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
       : <LogList key={JSON.stringify([track.source.id, track.branch.id])} rows={proposalRows} label="Diplomatic proposals" layout="card" density={log.density} months={log.months}
         animate={live && log.animate} rowHeight={(row, density) => (density === 'compact' ? 64 : 76) + (row.item.originalSender !== row.item.sender || row.item.originalRecipient !== row.item.recipient ? 20 : 0)}
         renderRow={renderCard} tooltip={proposalTip}
@@ -180,6 +183,6 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, headerS
           ...(row.item.goneBy != null && row.item.goneBy <= at ? [{ ...jumpItem(runtime, track.id, row.item.goneBy), label: `Jump to gone ${dayLabel(row.item.goneBy)}` }] : [])]}
         onVisible={rows => report(rows.flatMap(row => [row.item.sender, row.item.recipient, row.item.owner, row.item.originalSender, row.item.originalRecipient]
           .flatMap(tag => tag ? [{ last: row.item.lastSeen, tag }] : [])))}
-        empty={options.waiting === true ? 'No proposals waiting.' : 'No proposals yet.'} />}
+        empty={!known ? MEMBERSHIP_PREPARING : options.waiting === true ? 'No proposals waiting.' : 'No proposals yet.'} />}
   </div>;
 }

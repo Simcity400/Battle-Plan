@@ -15,7 +15,7 @@ import { NumericReply } from '../../dashboard/numericReply';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { BoundTrack } from '../../dashboard/model';
-import { resolveCountries } from '../../dashboard/groups';
+import { groupsKnownAt, MEMBERSHIP_PREPARING, resolveCountries } from '../../dashboard/groups';
 import type { CountryGroupReply, ResourceBalanceReply } from '../../generated/dashboard';
 import { resourceName, resourceNumbers, validateResourceBalanceReply } from './balanceData';
 import { resourceCountryData, resourceCountrySpans } from './resourceDrill';
@@ -141,10 +141,13 @@ export function useResourceCountry(selection: ResourceCountrySelection | null, r
     return spans && selection && base ? resourceCountryData(points.data?.length === base.length
       ? base.map((reply, index) => mergePreparedResource(reply, points.data![index])) : base, spans, selection.tag) : undefined;
   }, [product.data, numbers, points.data, spans, selection]);
+  // An identity at its original hour, or the group's members, still being prepared are not known yet: not unknown.
+  const preparing = !!history && !spans && !!selection && !!track && (!groupsKnownAt(history, track.branch.firstHour + selection.originOffset)
+    || !!members && !members.known(track.branch.firstHour, track.branch.lastHour));
   const reason = catalogue.error ?? product.error ?? members?.reason ?? (!history ? 'Loading the selected country identity…'
-    : !spans ? 'The selected country identity is unknown or conflicting at its original choice.'
+    : !spans ? preparing ? MEMBERSHIP_PREPARING : 'The selected country identity is unknown or conflicting at its original choice.'
       : !data ? 'Loading the selected resource history…' : null);
-  return { data, numbers, spans, reason, error: catalogue.error ?? product.error ?? points.error,
+  return { data, numbers, spans, reason, preparing, error: catalogue.error ?? product.error ?? points.error,
     retry: () => { catalogue.retry(); product.retry(); points.retry(); } };
 }
 

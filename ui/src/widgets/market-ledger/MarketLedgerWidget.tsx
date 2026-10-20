@@ -15,6 +15,7 @@ import { logSettings } from '../../charts/log/logOptions';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
+import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { WidgetProps } from '../../dashboard/definitions';
 import MarketDrill from '../../dashboard/MarketDrill';
@@ -46,7 +47,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const fallback = useMemo(() => widget.countries.kind === 'selected' ? selectedTags(widget.countries, track) : [], [widget.countries, track]);
   const chosen = useMemo(() => track ? ledgerCountries(widget.countries, fallback, groups.data, track.branch.firstHour ?? 0, track.branch.lastHour)
-    : { countries: null, reason: null }, [widget.countries, fallback, groups.data, track]);
+    : { countries: null, reason: null, known: () => false }, [widget.countries, fallback, groups.data, track]);
   const enabled = (key: KindKey) => options[key] !== false;
   const kinds = shownKinds(enabled);
   const ledger = useMarketLedger(runtime, track, active, hour, chosen.countries, kinds);
@@ -112,7 +113,8 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
         ] }];
       }}
       menu={row => [{ label: 'Show contract', run: () => open(row.item, row.hour) }, jumpItem(runtime, track.id, row.hour)]}
-      empty={ledger.data ? LEDGER_EMPTY[ledgerEmpty(ledger.data, track.branch.firstHour ?? 0, hour)] : LEDGER_EMPTY.none} />
+      // Occurrences whose parties' membership is still being prepared are not listed yet: none is not proof of none.
+      empty={!chosen.known(track.branch.firstHour ?? 0, hour) ? MEMBERSHIP_PREPARING : ledger.data ? LEDGER_EMPTY[ledgerEmpty(ledger.data, track.branch.firstHour ?? 0, hour)] : LEDGER_EMPTY.none} />
     {ledger.errors.size > 0 && <div className="event-feed-load">Some occurrences couldn’t load. <button type="button" onClick={ledger.retry}>Retry</button></div>}
   </div>;
   return <div ref={anchor} className="market-ledger-host">

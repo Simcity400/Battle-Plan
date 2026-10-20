@@ -34,3 +34,18 @@ test('an hour past the prepared prefix, or inside a pending span, is not prepare
   assert.equal(preparedAt(reply, 45), false);
   assert.equal(preparedAt({ ...reply, lastHour: null }, 10), false);
 });
+
+test('a group still being prepared at the hour its members are counted has no reason yet; a read hour and a final reply keep theirs', () => {
+  const empty = { firstHour: 0, lastHour: 160 };
+  const prefix = { ...groups([{ tag: 'AAA', firstHour: 0, lastHour: 100 }]), coverage: { ...empty, complete: false },
+    pending: [{ firstHour: 161, lastHour: 200 }] } as CountryGroupReply;
+  // AAA left at 100: no member at 150 (read) is proven, at 170 (pending) it is not.
+  assert.equal(groupReasonAt(faction('hour'), prefix, 150, 200)?.message, 'This group has no members at this date.');
+  assert.equal(groupReasonAt(faction('hour'), prefix, 170, 200), null);
+  // The end and the whole branch wait for the hours they count.
+  assert.equal(groupReasonAt(faction('end'), prefix, 150, 200), null);
+  assert.equal(groupReasonAt(faction('ever'), { ...prefix, factions: [{ id: 'g', members: [], incomplete: [] }] } as unknown as CountryGroupReply, 150, 200), null);
+  const final = groups([{ tag: 'AAA', firstHour: 0, lastHour: 100 }]);
+  assert.equal(groupReasonAt(faction('hour'), final, 170, 200)?.message, 'This group has no members at this date.');
+  assert.equal(groupReasonAt(faction('end'), final, 150, 200)?.message, 'This group has no members at the end of this campaign.');
+});

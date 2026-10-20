@@ -15,7 +15,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import { stateNameRequests } from '../../dashboard/construction';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions, toggleContentSet } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -146,7 +146,9 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   };
   const menu = (row: LogRow<ProjectAt>) => jumpHours(row.item, hour).map(at => jumpItem(runtime, track.id, at));
   // Older rows may still be on their way while earlier windows load.
-  const empty = !logComplete(log, from) ? 'Loading earlier construction…' : chosen.length || projects !== 'all' || queue || from != null
+  // Projects are matched at their first reads: one whose country's membership is still being prepared is not known to be left out.
+  const empty = !logComplete(log, from) ? 'Loading earlier construction…' : !match.known(from ?? track.branch.firstHour, hour) ? MEMBERSHIP_PREPARING
+    : chosen.length || projects !== 'all' || queue || from != null
     ? 'No construction matches these settings yet.' : widget.countries.kind === 'all' ? 'No construction yet.'
       : oneCountry ? 'No construction by this country yet.' : 'No construction by these countries yet.';
   return <div className={`log-widget construction-log${oneCountry ? ' is-one-country' : ''}`}>

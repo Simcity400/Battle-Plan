@@ -12,7 +12,7 @@ import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -173,6 +173,6 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
       columns={COLUMNS} renderRow={renderRow} anchorRows onVisible={onVisible}
       describe={row => { const named = labels(row.item); return shipDescription(row.item.page, row.item, named.victim.name, named.attacker.name, titleByRow.get(row.key)); }}
       tooltip={row => { const named = labels(row.item); return [shipTooltip(row.item.page, row.item, named.victim.name, named.attacker.name, titleByRow.get(row.key), titles.error)]; }}
-      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty="No ships sunk recorded for these settings." />
+      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty={match.known(from ?? track.branch.firstHour, shownHour ?? hour) ? "No ships sunk recorded for these settings." : MEMBERSHIP_PREPARING} />
   </div>;
 }

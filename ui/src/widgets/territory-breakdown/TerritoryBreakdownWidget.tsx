@@ -10,7 +10,7 @@ import { usNumber } from '../../charts/numberFormat';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useFactionColours } from '../../dashboard/FactionColours';
-import { worldFilter } from '../../dashboard/groups';
+import { MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -103,6 +103,7 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   if (options.growth === 'fill' && endFilter.reason) return <WidgetState kind="unavailable" message={endFilter.reason} />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
   if (measure === 'area' && product.data.areaReason) return <WidgetState kind="unavailable" message="Map area is unavailable." />;
+  if (!filter.known && !shape.items.some(item => item.present)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   return <div ref={parityRoot}><Sunburst key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Territory breakdown" items={shape.items}
     root={{ id: 'territory', label: widget.countries.kind === 'all' ? 'World territory' : 'Selected territory' }} authoritativeTotal={whole}
     stretch={stretch} unavailableReason={whole?.unknownValue ? 'Territory not recorded at this hour.' : undefined}

@@ -19,7 +19,7 @@ import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { UNNAMED_FACTION } from '../../dashboard/factionNames';
 import { useFactionColours } from '../../dashboard/FactionColours';
-import { worldFilter } from '../../dashboard/groups';
+import { groupsKnownAt, groupsSettled, MEMBERSHIP_PREPARING, worldFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -101,7 +101,11 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading factions…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
+  // Factions, and the countries chosen, at hours still being prepared are not known yet: none is not proof of none.
+  const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!data.factions.length && !groupsSettled(data)) return preparing;
   if (!data.factions.length) return <WidgetState kind="empty" message={data.warnings.length ? 'Faction data unavailable.' : 'No factions recorded.'} />;
+  if (!lanes.length && (!filter.known || !groupsKnownAt(data, at))) return preparing;
   if (!lanes.length) return <WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been in a faction yet.' : 'No factions yet.'} />;
 
   // The legend names each visible faction; leader details belong to the timeline.

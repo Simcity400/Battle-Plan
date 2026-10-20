@@ -13,7 +13,8 @@ import { CHART_LAYOUT } from '../../charts/tokens';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { isMember, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { isMember, MEMBERSHIP_PREPARING, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -187,6 +188,7 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
   </div>;
 
   const warnings = useMemo(() => [...(data?.warnings ?? []), ...(groupReply.data?.warnings ?? [])], [data, groupReply.data]);
+  const none = noMembersAt(widget.countries, resolved, numericGroups, wantedMoment, lastHour);
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see the equipment it produced." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -195,12 +197,18 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     if (defaults.error && !mostType) return <WidgetState kind="error" detail={defaults.error} onRetry={defaults.retry} />;
     if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="layers" message={resolved.reason} />;
-    if (pickingDefault && defaultReply && !mostType) return <WidgetState kind="unavailable" message="No production data for these countries." />;
+    // A group with no member found yet asks for nothing, so no reply will come.
+    if (none) return <NoMembersState reason={none.reason} icon="layers" />;
+    // A group's members at hours still being prepared are not known yet: no data is not proof of none.
+    const branchKnown = resolved.known(track.branch.firstHour, track.branch.lastHour);
+    if (pickingDefault && defaultReply && !mostType) return branchKnown ? <WidgetState kind="unavailable" message="No production data for these countries." />
+      : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     if (pickingDefault && prefixDefault.data && !mostType) return <WidgetState kind="loading" label="Most delivered type is still being prepared." />;
     // A group's members are not known until its history arrives; nothing is shown as empty meanwhile.
     if (!shownReply || !model || (grouped && !numericGroups)) return <WidgetState kind="loading" label="Loading equipment produced…" />;
     if (!shownReply.reads.length && !preparedView) return <WidgetState kind="unavailable" message="Production data is not in this recording." />;
-    if (!produced && !model.tags.length) return <WidgetState kind="unavailable" message={producedWindowUnavailable(measure)} />;
+    if (!produced && !model.tags.length) return branchKnown ? <WidgetState kind="unavailable" message={producedWindowUnavailable(measure)} />
+      : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     return null;
   })();
   // `name` names the country as recorded at the hour the tooltip is about.
@@ -212,7 +220,7 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
   };
   const nothingYet = produced && model && emptyRace(model, moment) === 'nothing'
     ? measure === 'total' ? `No production by ${dayLabel(moment)}.` : measure === 'day' ? `No production on ${dayLabel(moment)}.` : 'No production in the previous month.'
-    : producedWindowUnavailable(measure);
+    : resolved.known(moment) ? producedWindowUnavailable(measure) : MEMBERSHIP_PREPARING;
 
   // The breakdown asks for the country's every model, in the count shown; its chart
   // stacks the selected type's models, or every type in IC until one is chosen.
@@ -252,7 +260,7 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
         lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), what, value => formatProduced(value, decimals))]}
         labels={{ race: `${equipment}: ${caption}`, lines: `${equipment}: ${caption}`, actions: 'Equipment produced actions' }}
         presentation={{ exact: false, held: false, raceEmptyState: false, linePadding: CHART_LAYOUT.countryEndLabels, resetTimeView: true }}
-        pickOwner={pickOwner} lineEmpty={{ icon: 'layers', message: 'No countries to draw. Choose countries in the widget settings.' }}
+        pickOwner={pickOwner} lineEmpty={{ icon: 'layers', message: resolved.known(extent[0], extent[1]) ? 'No countries to draw. Choose countries in the widget settings.' : MEMBERSHIP_PREPARING }}
         resetKey={`${track?.source.id ?? ''}:${track?.branch.id ?? ''}:${measure}:${count}:${shownTypes.join(' ')}`} onPick={onPick} />
     </div>} />;
 }

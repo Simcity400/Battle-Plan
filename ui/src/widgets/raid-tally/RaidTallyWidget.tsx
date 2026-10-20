@@ -5,7 +5,8 @@ import WidgetState from '../../components/WidgetState';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatchFilter, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { countryMatchFilter, MEMBERSHIP_PREPARING, noMembersAt, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import NoMembersState from '../../dashboard/NoMembersState';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -67,14 +68,20 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   if (data.available !== true) return <WidgetState kind="unavailable" message={data.available === false ? 'No raid types available.' : 'Raid totals unavailable.'} />;
   if (resolved.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (resolved.top == null && !data.series.some(item => item.runs.length)) return <WidgetState kind="unavailable" message="No raid counts were recorded for these countries." />;
+  // A group with no member found yet has no count to show: the moment says why once it is read.
+  const none = noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
+  if (none) return <NoMembersState reason={none.reason} icon="target" />;
+  // A group's members at hours still being prepared are not known yet: no count is not proof of none.
+  if (resolved.top == null && !data.series.some(item => item.runs.length)) return resolved.known(track.branch.firstHour, track.branch.lastHour)
+    ? <WidgetState kind="unavailable" message="No raid counts were recorded for these countries." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   return <div ref={root} style={{ display: 'contents' }}><CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead} moment={moment}
     slots={resolved.top ?? Math.max(1, counted.tags.length)} ranked={ranked} lines={lines} segmentAt={segmentAt} label={tallyLabel(metric)}
     presentation={{ exact: false, held: false }}
     beforeChart={metric === 'both' ? view === 'lines'
       ? <p className="chart-line-key"><i aria-hidden="true" />Solid: launched · <i className="is-dashed" aria-hidden="true" />dashed: succeeded</p>
       : <p className="chart-line-key">Outer: launched · inner: succeeded.</p> : null}
-    empty={resolved.top != null && readAt(data.readHours, moment) === moment ? `No raids ${metric === 'both' ? 'launched or succeeded' : metric} yet.` : 'No raid counts recorded at this time.'}
+    empty={resolved.top != null && readAt(data.readHours, moment) === moment ? `No raids ${metric === 'both' ? 'launched or succeeded' : metric} yet.`
+      : counted.known(moment) ? 'No raid counts recorded at this time.' : MEMBERSHIP_PREPARING}
     formatValue={tallyValue}
     tooltip={(tag, hour, name) => [tallyTooltip(data, tag, hour, name)]}
     lineTooltip={(hour, tags, labelAt, country) => [tallyLineTooltip(series, hour, tags, labelAt, country, metric)]} /></div>;

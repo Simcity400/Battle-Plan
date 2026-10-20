@@ -14,7 +14,7 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
@@ -106,6 +106,7 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   if (!data || !match.ready) return <WidgetState kind="loading" label="Loading elections…" />;
   if (!prepared) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!read) return <WidgetState kind="unavailable" message="Election schedules were not recorded at this date." />;
+  if (!rows.length && !match.known(hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!rows.length) return <WidgetState kind="empty" icon="ballot" message="No country holds elections at this date." />;
   return <div className="next-elections">
     <Table key={`${track.source.id}:${track.branch.id}`} label="Next elections" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}

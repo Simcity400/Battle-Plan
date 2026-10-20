@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createElement } from 'react';
+import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { TimelineProps } from '../../charts/timeline/Timeline';
 import type { ChartTokens } from '../../charts/tokens';
 import { validatePreparedAutonomy } from './preparedAutonomy.ts';
+import { BRANCH, humansBy, mountModule, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 
 test('autonomy marks bootstrap bands and empty sampled or pending results before numeric geometry arrives', async () => {
   const span = { firstHour: 100, lastHour: 105 };
@@ -95,4 +97,40 @@ test('autonomy marks bootstrap bands and empty sampled or pending results before
     delete host.__autonomyGeometryReady;
     await vite.close();
   }
+});
+
+test('a group counted at hours still being prepared is loading, not countries with no subjects', async () => {
+  const span = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
+  // ENG is a subject throughout; GER, the human player, never is.
+  const data = validatePreparedAutonomy({ branchId: BRANCH.id, scoreScale: 100000, levels: [{ id: 'mod-level', name: 'Mod level', defined: true }],
+    subjects: [], summaries: {}, exactHours: [BRANCH.lastHour], recorded: [span], unidentified: [], warnings: [], approximate: [],
+    bands: [{ tag: 'ENG', runs: [{ ...span, startsSegment: true, level: 0, overlord: null, lowest: true, highest: true }] }],
+    identities: ['GER', 'ENG'].map((tag, index) => ({ tag, identities: [{ ...span, slot: index + 1, countryId: index + 101 }] })),
+    coverage: { ...span, complete: true } });
+  const state = { data, groups: pendingGroups() };
+  const host = globalThis as typeof globalThis & { __autonomyPending?: typeof state }; host.__autonomyPending = state;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/autonomy/AutonomyWidget.tsx', {
+    '/dashboard/preparedSeries.ts': 'export const usePreparedWindow = () => ({ data: globalThis.__autonomyPending.data, geometryReady: true, retry() {}, onSummaryView() {}, navigate() {} });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__autonomyPending.groups, retry() {} });',
+    '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag() {}, revision: 0 });',
+    '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',
+    '/dashboard/parityRows.ts': 'export const useParityRows = () => {};',
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ surface: "#000000", text: "#ffffff", accent: "#ff0000", lineWidth: { series: 2 } });',
+    '/charts/timeline/Timeline.tsx': 'export default () => null;',
+  });
+  try {
+    const props = { widget: { id: 'autonomy', kind: 'autonomy', trackIds: ['main'], countries: humansBy('hour'), time: { mode: 'campaign' }, options: {} },
+      runtime: { client: {}, tracks: [{ id: 'main', axisOffset: 0, branch: BRANCH, source: { id: 'source', revision: '1', metadata: { countries: [] } } }],
+        clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ hoursPerSecond: 0 }) } }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
+    const render = () => renderToStaticMarkup(createElement(module.default, props));
+    // The human players ever, and so each hour's, are not known while hours are still being prepared.
+    const pending = render();
+    assert.match(pending, /aria-label="This range is still being prepared\."/);
+    assert.doesNotMatch(pending, /No subjects found/);
+    // Read, GER is the only human player and never a subject.
+    state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] });
+    assert.match(render(), /No subjects found for these countries\./);
+  } finally { delete host.__autonomyPending; await close(); }
 });

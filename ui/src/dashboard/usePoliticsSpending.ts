@@ -51,7 +51,7 @@ export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, 
   const ledger = useProducts<PoliticsLedgerReply>(runtime.client, requests, active, validatePowerBalance);
   return { track, tags, ...ledger, data: ledger.data?.slice(0, tags.length),
     finalData: ledger.data?.slice(hours.length > 1 ? tags.length : 0, hours.length > 1 ? tags.length * 2 : tags.length),
-    prepared, selection, ready: match.ready, reason: resolved.reason ?? match.reason,
+    prepared, selection, ready: match.ready, reason: resolved.reason ?? match.reason, known: match.known,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
     error: ledger.error ?? groups.error,
     retry: () => { ledger.retry(); groups.retry(); } };

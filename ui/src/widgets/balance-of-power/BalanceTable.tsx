@@ -19,7 +19,7 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { countryMatch } from '../../dashboard/groups';
+import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
@@ -155,7 +155,8 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   else if (!data || !match.ready) body = <WidgetState kind="loading" label="Loading the balance of power…" />;
   else if (!prepared) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (!view) body = <WidgetState kind="unavailable" message="The balance of power was not recorded at this date." />;
-  else if (!rows.length) body = <WidgetState kind="empty" icon="sliders" message="No balance of power is active at this date." />;
+  else if (!rows.length) body = match.known(hour) ? <WidgetState kind="empty" icon="sliders" message="No balance of power is active at this date." />
+    : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   else body = <Table key={`${track.source.id}:${track.branch.id}`} label="Balances of power" rows={rows} columns={columns} rowKey={rowKey}
     sort={sort} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}

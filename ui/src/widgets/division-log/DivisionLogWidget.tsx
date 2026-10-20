@@ -194,6 +194,6 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
       columns="var(--space-6) minmax(0, 1fr) auto" renderRow={renderRow} anchorRows onVisible={onVisible}
       describe={({ item: row }) => { const named = labels(row); return `${named.country.name}: ${divisionName(row)}, ${divisionStatus(row)}, ${row.templateName ?? 'template not recorded'}, ${named.place}, ${named.killer.name}.`; }}
       tooltip={({ item: row }) => { const named = labels(row); return [divisionTooltip(row, named.country, named.killer, named.place)]; }}
-      menu={({ item: row }) => [jumpItem(runtime, track.id, row.readHour)]} empty={pendingAt(preparedPrefix(history.data.get(browseIndex)), shownHour ?? first) ? "This range is still being prepared." : "No recorded division events match these settings."} />
+      menu={({ item: row }) => [jumpItem(runtime, track.id, row.readHour)]} empty={pendingAt(preparedPrefix(history.data.get(browseIndex)), shownHour ?? first) || !match.known(first, shownHour ?? first) ? "This range is still being prepared." : "No recorded division events match these settings."} />
   </div>;
 }

@@ -4,6 +4,7 @@ import WidgetState from '../components/WidgetState';
 import { CountryFlagUrl } from '../components/CountryFlag';
 import { useCountryLabelsAt } from './countryFlagsAt';
 import { useComparisonCountries } from './comparisonCountries';
+import { MEMBERSHIP_PREPARING } from './groups';
 import type { WidgetProps } from './definitions';
 import { resolveWindow } from './model';
 import { usePlaybackHour } from './playback';
@@ -59,6 +60,8 @@ export default function CountryComparisons({ component: Component, ...props }: W
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (pending) return <WidgetState kind="loading" label="Loading countries…" />;
   if (countries.reason) return <WidgetState kind="empty" message={countries.reason} />;
+  // A group's members at hours still being prepared are not known yet: no country is not proof of none.
+  if (!countries.tags.length && track && !countries.known(track.branch.firstHour, track.branch.lastHour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   return <div ref={body} className="country-comparisons" data-multiple={multiple || undefined}
     onScroll={event => setView({ left: event.currentTarget.scrollLeft, width: event.currentTarget.clientWidth })}>
     {first > 0 && <div aria-hidden="true" style={{ flex: `0 0 ${first * panelWidth}px` }} />}

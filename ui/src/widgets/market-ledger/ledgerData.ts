@@ -1,6 +1,7 @@
 import type { CountryGroupReply, LedgerMember, MarketLedgerReply, MarketLedgerRow } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
-import { countryMatchFilter, groupMembers, groupRuns, groupUnobserved } from '../../dashboard/groups.ts';
+import { countryMatchFilter, groupMembers, groupRuns, groupUnobserved, membersKnown } from '../../dashboard/groups.ts';
+import type { MembershipKnown } from '../../dashboard/groups';
 import { withoutHours } from '../../charts/timeline/runState.ts';
 import type { LogRow } from '../../charts/log/logData';
 import { object } from '../../dashboard/validation.ts';
@@ -40,25 +41,32 @@ export interface LedgerCountries {
 /** The widget's country choice as the ledger asks for it. A group resolves to its
  * members' dated memberships (aliases included, unrecorded hours left out) and is
  * never asked as every country: null while the group history loads, a reason when
- * it names nobody. */
+ * it names nobody. `known` says whether the members are known at the hours asked
+ * (`MembershipKnown`): no reason holds, and no listed occurrence is all there is,
+ * until the membership it is about has been read. */
 export function ledgerCountries(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  firstHour: number, lastHour: number): { countries: LedgerCountries | null; reason: string | null } {
-  if (selection.kind === 'all') return { countries: { tags: [], members: [], unobserved: false }, reason: null };
+  firstHour: number, lastHour: number): { countries: LedgerCountries | null; reason: string | null; known: MembershipKnown } {
+  const always = () => true;
+  if (selection.kind === 'all') return { countries: { tags: [], members: [], unobserved: false }, reason: null, known: always };
   if (selection.kind !== 'group') {
     const tags = [...selection.kind === 'tags' ? selection.tags : fallback].sort();
-    return tags.length ? { countries: { tags, members: [], unobserved: false }, reason: null }
-      : { countries: null, reason: 'Choose a country in the widget settings.' };
+    return tags.length ? { countries: { tags, members: [], unobserved: false }, reason: null, known: always }
+      : { countries: null, reason: 'Choose a country in the widget settings.', known: always };
   }
-  if (selection.group.type === 'top') return { countries: null, reason: 'This list doesn’t rank countries. Choose countries or another group in the widget settings.' };
-  if (!groups) return { countries: null, reason: null };
+  if (selection.group.type === 'top') return { countries: null, reason: 'This list doesn’t rank countries. Choose countries or another group in the widget settings.', known: always };
+  const known = membersKnown(selection, groups, lastHour);
+  if (!groups) return { countries: null, reason: null, known };
   const runs = groupRuns(groups, selection.group);
-  if (!runs) return { countries: null, reason: 'This group is unavailable in this campaign.' };
-  if (!Array.isArray(groups.countryIdentities)) return { countries: null, reason: 'Country identities are unavailable in this campaign.' };
+  // A group the prepared prefix does not name yet may still be founded later.
+  if (!runs) return { countries: null, reason: known(firstHour) ? 'This group is unavailable in this campaign.' : null, known };
+  if (!Array.isArray(groups.countryIdentities)) return { countries: null, reason: 'Country identities are unavailable in this campaign.', known };
   const filter = countryMatchFilter(selection, fallback, groups, lastHour, undefined, firstHour);
   const sorted = [...filter.membership ?? []].sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
   const unobserved = [...filter.unobserved].sort((a, b) => a.firstHour - b.firstHour);
-  const known = unobserved.length ? withoutHours(sorted, unobserved) : sorted;
-  const members = known.map(run => ({ tag: run.tag, firstHour: run.firstHour, lastHour: run.lastHour }));
+  const recorded = unobserved.length ? withoutHours(sorted, unobserved) : sorted;
+  const members = recorded.map(run => ({ tag: run.tag, firstHour: run.firstHour, lastHour: run.lastHour }));
+  // No member yet while membership is still being prepared is loading, not proof of none.
+  if (!members.length && !known(firstHour, lastHour)) return { countries: null, reason: null, known };
   if (!members.length) {
     // Proven empty only where the roster was recorded where it counts: every hour for
     // a dated or ever-member group, the branch's end for an end-member one.
@@ -66,9 +74,9 @@ export function ledgerCountries(selection: CountrySelection, fallback: readonly 
     const counted = groupMembers(runs, selection.membership === 'end' ? 'end' : 'ever', lastHour, lastHour, Infinity, roster);
     const unknown = counted === null || (selection.membership !== 'end' && roster.length > 0) || sorted.length > 0;
     return { countries: null, reason: unknown ? 'This group’s membership was not recorded.'
-      : selection.membership === 'end' ? 'This group has no members at the end of this campaign.' : 'This group has no members in this campaign.' };
+      : selection.membership === 'end' ? 'This group has no members at the end of this campaign.' : 'This group has no members in this campaign.', known };
   }
-  return { countries: { tags: [], members, unobserved: unobserved.length > 0 }, reason: null };
+  return { countries: { tags: [], members, unobserved: unobserved.length > 0 }, reason: null, known };
 }
 
 /** One occurrence with its parties' tags and equipment name at its hour. */

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply } from '../generated/dashboard';
 import type { CountrySelection } from './model';
-import { aggregateGroupRuns, resolveCountries, projectResolvedCountries, rankedCandidates, countrySelectionMode, countrySelectionModes, countryMatch, countryMatchFilter, groupLabel, groupMembers, groupRuns, groupsKnownAt, groupsPendingAt, groupsSettled, groupUnobserved, membershipChanges, worldFilter, worldRequestTags } from './groups.ts';
+import { aggregateGroupRuns, resolveCountries, projectResolvedCountries, rankedCandidates, countrySelectionMode, countrySelectionModes, countryMatch, countryMatchFilter, groupLabel, groupMembers, groupRuns, groupsKnownAt, groupsPendingAt, groupsSettled, groupUnobserved, membersKnown, membershipChanges, worldFilter, worldRequestTags } from './groups.ts';
 import type { ResolvedCountries } from './groups';
 import { createWidget } from './model.ts';
 import { parseTemplate } from './storage.ts';
@@ -151,13 +151,13 @@ test('a widget about the whole world shows all countries by default, narrowed by
   assert.deepEqual(createWidget('political-power', 'main').countries, { kind: 'selected' });
   const filter = (selection: Parameters<typeof worldFilter>[0], fallback: string[] = [], reply: CountryGroupReply | undefined = REPLY, hour = 150) =>
     worldFilter(selection, fallback, reply, hour, 200);
-  assert.deepEqual(filter({ kind: 'all' }, ['GER']), { tags: null, reason: null });
+  assert.deepEqual(filter({ kind: 'all' }, ['GER']), { tags: null, reason: null, known: true });
   assert.deepEqual([...filter({ kind: 'selected' }, ['GER']).tags!], ['GER']);
   assert.deepEqual([...filter({ kind: 'tags', tags: ['D01', 'MY TAG'] }, ['GER']).tags!], ['D01', 'MY TAG']);
   assert.match(filter({ kind: 'selected' }).reason!, /Choose a country/);
   assert.match(filter({ kind: 'group', group: { type: 'faction', id: '9' }, membership: 'hour', aggregate: false }).reason!, /unavailable in this campaign/);
   // While the groups load, nothing is shown rather than everything.
-  assert.deepEqual(worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], undefined, 150, 200), { tags: new Set(), countryIds: new Set(), reason: null });
+  assert.deepEqual(worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], undefined, 150, 200), { tags: new Set(), countryIds: new Set(), reason: null, known: false });
 });
 
 test('a whole-world widget narrowed to a group honours its membership setting', () => {
@@ -182,7 +182,7 @@ test('a whole-world widget narrowed to a group honours its membership setting', 
 });
 
 const range = { firstHour: 100, lastHour: 107 };
-const members = (): ResolvedCountries => ({ tags: ['realm A', 'realm B'], membership: new Map([
+const members = (): ResolvedCountries => ({ known: () => true, tags: ['realm A', 'realm B'], membership: new Map([
   ['realm A', [{ tag: 'realm A', firstHour: 100, lastHour: 107 }]],
   ['realm B', [{ tag: 'realm B', firstHour: 102, lastHour: 105 }]],
 ]), unobserved: [{ firstHour: 104, lastHour: 104 }], dropped: 0, reason: null });
@@ -361,7 +361,7 @@ test('manual selection includes every reused literal holder while smart groups r
 });
 
 test('native drawing projection preserves ranking/errors and merges additional unknown coverage without changing roots', () => {
-  const resolved: ResolvedCountries = { tags: ['literal root'], membership: null, dropped: 2, reason: null,
+  const resolved: ResolvedCountries = { tags: ['literal root'], membership: null, dropped: 2, reason: null, known: () => true,
     unobserved: [{ firstHour: 2, lastHour: 3 }] };
   const filter = { tags: null, membership: [{ tag: 'dated alias', firstHour: 4, lastHour: 5 }],
     unobserved: [{ firstHour: 2, lastHour: 3 }, { firstHour: 7, lastHour: 8 }] };
@@ -431,4 +431,70 @@ test('a groups reply read through part of the branch keeps a recorded gap a gap 
   assert.equal(worldFilter(humans('ever'), [], { ...mixed, humans: [] }, 50, 200).reason, null, 'ever waits for the whole branch');
   assert.equal(worldFilter({ kind: 'tags', tags: ['XXX'] }, [], mixed, 50, 200).reason, null, 'a pick not yet seen may still appear later');
   assert.equal(worldFilter({ kind: 'tags', tags: ['XXX'] }, [], REPLY, 50, 200).reason, 'Selected countries are unavailable in this campaign.');
+});
+
+test('membership still being prepared is dated: pending hours are unknown, never nonmembers, and a final reply proves absence', () => {
+  // Read through 160, keyframes answer 161-170 approximately, 171-200 still pending.
+  const partial = { ...REPLY, coverage: { firstHour: 0, lastHour: 160, complete: false }, approximate: [{ firstHour: 161, lastHour: 170 }],
+    pending: [{ firstHour: 171, lastHour: 200 }] } as CountryGroupReply;
+  assert.deepEqual([groupsKnownAt(partial, 100, 160), groupsKnownAt(partial, 100, 161), groupsKnownAt(partial, 165), groupsKnownAt(partial, 180), groupsKnownAt(REPLY, 0, 200)],
+    [true, false, false, false, true], 'a range is known only inside the exact coverage');
+  const humans = (membership: 'hour' | 'end' | 'ever') => ({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false } as const);
+  const hourly = countryMatch(humans('hour'), [], partial, 200);
+  assert.deepEqual([hourly.known(150), hourly.known(100, 165), hourly.known(180)], [true, false, false]);
+  // A keyframe still matches as sampled; only pending hours have no members.
+  assert.deepEqual([hourly.matches('GER', 165), hourly.matches('GER', 180)], [true, false]);
+  assert.equal(countryMatch(humans('hour'), [], REPLY, 200).known(0, 200), true);
+  // Chosen tags, the end and ever need the hours beyond the rows' own.
+  for (const selection of [{ kind: 'tags', tags: ['GER'] }, humans('end'), humans('ever')] as CountrySelection[]) {
+    assert.equal(countryMatch(selection, [], partial, 200).known(150), false, JSON.stringify(selection));
+    assert.equal(countryMatch(selection, [], REPLY, 200).known(150), true, JSON.stringify(selection));
+  }
+  assert.equal(countryMatch({ kind: 'all' }, [], partial, 200).known(180), true);
+  assert.equal(countryMatch({ kind: 'selected' }, [], partial, 200).known(180), true, 'an empty choice is a choice to make, not loading');
+  // A recorded gap is known: it says not recorded, it does not load.
+  const gap = { ...REPLY, unobserved: { ...REPLY.unobserved, humans: [{ firstHour: 140, lastHour: 150 }] } };
+  assert.deepEqual([countryMatch(humans('hour'), [], gap, 200).known(145), countryMatch(humans('hour'), [], gap, 200).matches('GER', 145)], [true, false]);
+  assert.deepEqual([worldFilter(humans('hour'), [], partial, 150, 200).known, worldFilter(humans('hour'), [], partial, 180, 200).known,
+    worldFilter(humans('end'), [], partial, 150, 200).known, worldFilter(humans('hour'), [], REPLY, 180, 200).known], [true, false, false, true]);
+});
+
+test('a group the prepared prefix does not name yet is loading, not unavailable', () => {
+  // Faction 9 may still be founded in the hours being prepared.
+  const partial = { ...REPLY, coverage: { firstHour: 0, lastHour: 160, complete: false }, pending: [{ firstHour: 161, lastHour: 200 }] } as CountryGroupReply;
+  const later = (membership: 'hour' | 'end' | 'ever') => ({ kind: 'group', group: { type: 'faction', id: '9' }, membership, aggregate: false } as const);
+  for (const membership of ['hour', 'end', 'ever'] as const) {
+    const match = countryMatch(later(membership), [], partial, 200);
+    assert.deepEqual([match.ready, match.reason, match.known(150)], [false, null, false], membership);
+    assert.deepEqual([worldFilter(later(membership), [], partial, 150, 200).reason, worldFilter(later(membership), [], partial, 150, 200).known], [null, false], membership);
+    const resolved = resolveCountries(later(membership), [], partial, 200, 10);
+    assert.deepEqual([resolved.reason, resolved.known(150)], [null, false], membership);
+    // The final reply proves it was never recorded.
+    assert.equal(countryMatch(later(membership), [], REPLY, 200).reason, 'This group is unavailable in this campaign.', membership);
+    assert.equal(worldFilter(later(membership), [], REPLY, 150, 200).reason, 'This group is unavailable in this campaign.', membership);
+    assert.equal(resolveCountries(later(membership), [], REPLY, 200, 10).reason, 'This group is unavailable in this campaign.', membership);
+  }
+});
+
+test('resolved countries are prefix-aware: no reason holds until the membership counted is read', () => {
+  const partial = { ...REPLY, humans: [], coverage: { firstHour: 0, lastHour: 160, complete: false }, pending: [{ firstHour: 161, lastHour: 200 }] } as CountryGroupReply;
+  const humans = (membership: 'hour' | 'end' | 'ever') => ({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false } as const);
+  // At the end, with the last hour still pending: no members yet is not an empty group.
+  const end = resolveCountries(humans('end'), [], partial, 200, 10);
+  assert.deepEqual([end.tags, end.reason, end.known(150)], [[], null, false]);
+  assert.equal(resolveCountries(humans('end'), [], { ...REPLY, humans: [] }, 200, 10).reason, 'This group has no members in this campaign.');
+  // Each hour: the union is the whole branch's, but each hour read is known on its own.
+  const hourly = resolveCountries(humans('hour'), [], partial, 200, 10);
+  assert.deepEqual([hourly.reason, hourly.known(150), hourly.known(150, 170), rankedCandidates(hourly, 150, [])], [null, true, false, []]);
+  assert.equal(resolveCountries(humans('ever'), [], partial, 200, 10).reason, null);
+  // A recorded gap at the end, read, is still unrecorded rather than loading.
+  const gap = { ...REPLY, humans: [], unobserved: { ...REPLY.unobserved, humans: [{ firstHour: 150, lastHour: 160 }] },
+    coverage: { firstHour: 0, lastHour: 160, complete: false }, pending: [{ firstHour: 161, lastHour: 200 }] } as CountryGroupReply;
+  assert.equal(resolveCountries(humans('end'), [], gap, 160, 10).reason, 'Group membership is unavailable at this time.');
+  // Chosen tags and top N need no group history; a group without its reply yet is not known.
+  assert.equal(resolveCountries({ kind: 'tags', tags: ['GER'] }, [], partial, 200, 10).known(180), true);
+  assert.equal(resolveCountries({ kind: 'group', group: { type: 'top', count: 3 }, membership: 'hour', aggregate: false }, [], undefined, 200, 10).known(180), true);
+  assert.equal(resolveCountries(humans('hour'), [], undefined, 200, 10).known(0), false);
+  assert.deepEqual([membersKnown(humans('end'), partial, 160)(0), membersKnown(humans('end'), partial, 200)(0), membersKnown(humans('ever'), REPLY, 200)(0)],
+    [true, false, true]);
 });

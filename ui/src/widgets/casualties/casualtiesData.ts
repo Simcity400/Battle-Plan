@@ -8,6 +8,7 @@ import type { TooltipContent } from '../../charts/tooltip';
 import { groupMembers, groupRuns, groupUnobserved, resolveCountries } from '../../dashboard/groups.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { CountrySelection } from '../../dashboard/model';
+import type { ResolvedCountries } from '../../dashboard/groups';
 import type { CountryRaceEntry } from '../../charts/race/countryRace';
 const RAW = /^-?\d{1,39}$/;
 const hour = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= -2147483648 && (value as number) <= 2147483647;
@@ -174,14 +175,15 @@ export function casualtiesAt(index: CasualtyIndex, hour: number, includeUnknown:
   return gapRows ? [...gapRows.values()].map(value => value.row) : rows;
 }
 
-/** Unknown losses are display-only, so changing that option needs no new reply. */
+/** Unknown losses are display-only, so changing that option needs no new reply. `resolved`
+ * is the countries chosen (null for every country), with why none are and when they are known. */
 export function casualtyRequest(branchId: string, selection: CountrySelection, fallback: string | null,
-  groups: CountryGroupReply | undefined, lastHour: number) {
-  if (selection.kind === 'all') return { params: { branchId, tags: [], top: null } as CasualtyParams, reason: null };
+  groups: CountryGroupReply | undefined, lastHour: number): { params: CasualtyParams; resolved: ResolvedCountries | null } {
+  if (selection.kind === 'all') return { params: { branchId, tags: [], top: null }, resolved: null };
   const resolved = resolveCountries(selection, fallback ? [fallback] : [], groups, lastHour, Number.MAX_SAFE_INTEGER);
   const top = resolved.top ?? null;
   const params: CasualtyParams = { branchId, tags: resolved.tags, top: top == null ? null : { count: top } };
-  return { params, reason: resolved.reason };
+  return { params, resolved };
 }
 
 /** Manual picks are projected by native holder in the reply. Smart groups still

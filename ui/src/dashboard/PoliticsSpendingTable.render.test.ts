@@ -8,6 +8,7 @@ import type { TableProps } from '../charts/table/Table';
 import type { WidgetProps } from './definitions';
 import type { SpendingTableRow } from './politicsSpending';
 import type { PoliticsLedgerReply } from '../generated/dashboard';
+import { BRANCH, humansBy, mountModule, pendingGroups } from './pendingGroups.fixture.ts';
 
 const DAY = 24;
 const start = 43_800_000 + DAY * 365 * 1944;
@@ -38,7 +39,7 @@ for (const currency of ['Political', 'Command'] as const) test(`${currency} spen
   host.__spendingTable = state;
   const replacements: Record<string, string> = {
     '/dashboard/usePoliticsSpending.ts': `export const usePoliticsSpending = (_widget, runtime) => ({track: runtime.tracks[0], tags: globalThis.__spendingTable.tags,
-      data: [${JSON.stringify(data)}], ready: true, groupWarnings: [], selection: {matches: () => true, membership: null, unobserved: []}});
+      data: [${JSON.stringify(data)}], ready: true, known: () => true, groupWarnings: [], selection: {matches: () => true, membership: null, unobserved: []}});
       export const useSpendingChoices = () => ({}); export const useSpendingIdeaTooltips = () => undefined;`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({labelAt: hour => tag => ({name: 'Dated ' + tag + ' at ' + hour, known: true})});`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__spendingTable.clock;',
@@ -93,4 +94,32 @@ for (const currency of ['Political', 'Command'] as const) test(`${currency} spen
     const precise = state.table!.rows.find(row => row.month !== null && row.days === 9)!;
     assert.equal(renderToStaticMarkup(createElement('span', null, state.table!.columns.find(column => column.key === 'amount')!.render!(precise))), '<span>−9.00009</span>', 'the Decimals setting raises the digits');
   } finally { await vite.close(); delete host.__spendingTable; }
+});
+
+for (const kind of ['political-power-spending', 'political-power-spending-breakdown'] as const) test(`${kind} with an hourly group whose members are still being prepared is loading, not a choice to make`, async () => {
+  const state = { groups: pendingGroups({ humans: [] }) };
+  const host = globalThis as typeof globalThis & { __spendingPending?: typeof state }; host.__spendingPending = state;
+  const { module, close } = await mountModule<{ default: { render: ComponentType<WidgetProps> } }>(`/ui/src/widgets/${kind}/index.ts`, {
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__spendingPending.groups, retry() {} });',
+    '/dashboard/products.ts': 'export const useProducts = () => ({ data: undefined, retry() {} }); export const useProduct = () => ({ data: undefined, retry() {} });',
+    '/dashboard/useIdeaTooltips.ts': 'export const useIdeaTooltips = () => undefined;',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
+    '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/playback.ts': `export const usePlaybackSpeed = () => 0; export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], muted: '#888888' }); export const useViewportHeight = () => 800;`,
+  });
+  try {
+    const props = { widget: { id: 'spending', kind, configVersion: 1, trackIds: ['track'], countries: humansBy('hour'), time: { mode: 'follow' }, options: {} },
+      runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { countries: [], branches: [] } }, branch: { ...BRANCH, gaps: [] } }],
+        clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ hoursPerSecond: 0 }) } },
+      active: true, onDiagnostics() {}, setOptions() {}, setOption() {} } as unknown as WidgetProps;
+    const render = () => renderToStaticMarkup(createElement(module.default.render, props));
+    // No human player has been read yet, and hours after the prefix are still being prepared.
+    const pending = render();
+    assert.match(pending, /aria-label="This range is still being prepared\."/);
+    assert.doesNotMatch(pending, /Choose a country|This group has no members in this campaign|Selected country unavailable/);
+    // The final reply proves the group never had a member.
+    state.groups = pendingGroups({ final: true, humans: [] });
+    assert.match(render(), kind === 'political-power-spending' ? /Selected country unavailable at this time\./ : /This group has no members in this campaign\./);
+  } finally { await close(); delete host.__spendingPending; }
 });
