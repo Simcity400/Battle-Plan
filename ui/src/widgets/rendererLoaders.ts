@@ -3,6 +3,12 @@ import type { WidgetRenderer } from '../dashboard/definitions.ts';
 import { widgetMetas } from './definitions.ts';
 export const rendererLoaders = {
   'war-goals': () => import('./war-goals'),
+  'next-elections': () => import('./next-elections'),
+  'balance-of-power': () => import('./balance-of-power'),
+  'governments-in-exile': () => import('./governments-in-exile'),
+  'civil-wars': () => import('./civil-wars'),
+  'event-choices': () => import('./event-choices'),
+  'decisions': () => import('./decisions'),
   'map': () => import('./map'),
   'national-focus': () => import('./national-focus'),
   'research': () => import('./research'),

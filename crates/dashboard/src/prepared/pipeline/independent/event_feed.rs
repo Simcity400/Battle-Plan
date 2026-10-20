@@ -47,7 +47,8 @@ use std::{any::Any, fmt, io, sync::atomic::AtomicBool};
 
 /// The tables the feed and its identity history read: the history's own
 /// (`country_history::prepared::TABLES`), the relations and slice reads of
-/// the diplomacy observer, the event packs and the nuclear strikes.
+/// the diplomacy observer, the event packs, the nuclear strikes, and the
+/// power mutations and their capture coverage proving decision charges.
 const TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
@@ -58,6 +59,8 @@ const TABLES: &[TableId] = &[
     TableId::SliceReads,
     TableId::EventFeedHistory,
     TableId::NuclearStrikes,
+    TableId::CountryPowerChanges,
+    TableId::PoliticsCaptureCoverage,
 ];
 
 static FAMILY: prepass::Family = prepass::Family {
@@ -313,8 +316,9 @@ impl Own for Feed {
 
     /// Its query waits for the families whose pages it reads too
     /// (`independent::JOINT`).
+    /// The event-choice and decision lists read the feed's own facts alone.
     fn gates(&self) -> &'static [&'static str] {
-        &[]
+        &["event-choices", "decisions"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {

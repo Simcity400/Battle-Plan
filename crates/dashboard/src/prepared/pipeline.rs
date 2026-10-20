@@ -175,6 +175,7 @@ pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section>
         ("idea-history", "Ideas and advisors"),
         ("event-feed", "Event feed"),
         ("party-history", "Parties and leaders"),
+        ("politics-state", "Elections, exiles and balances of power"),
         ("unit-leaders", "Generals and admirals"),
         ("country-stability", "Stability and war support"),
         ("country-experience", "Experience"),
@@ -435,13 +436,19 @@ const FAMILIES: &[Family] = &[
         name: "event_feed",
         sections: &["event-feed"],
         dependents: &[],
-        queries: &["event-feed"],
+        queries: &["event-feed", "event-choices", "decisions", "civil-wars"],
     },
     Family {
         name: "parties",
         sections: &["party-history"],
         dependents: &[],
         queries: &["party-history"],
+    },
+    Family {
+        name: "politics_state",
+        sections: &["politics-state"],
+        dependents: &[],
+        queries: &["politics-state-history", "civil-wars"],
     },
     Family {
         name: "leaders",

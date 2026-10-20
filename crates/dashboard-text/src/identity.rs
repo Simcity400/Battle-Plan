@@ -2,6 +2,8 @@
 //! tokens and templates of recorded characters, and the tag, look and civil-war
 //! state a country's ideas and advisors are named for.
 
+use std::collections::HashMap;
+
 /// A recorded character's script token: its name_token_id resolved through
 /// LexicalTokens. The row's token field is the saved name, not the script
 /// token. None when the id is negative or not in the dictionary.
@@ -75,62 +77,226 @@ pub fn built_template(
 /// Whether the country has a civil war at the frame's hour, as used by idea
 /// naming and has_civil_war: a country in its own CountryCivilWars list has a
 /// positive CountryCounterInputs.owned_state_count, or an existing enemy
-/// holds it in its own civil-war list. Each loop only asks whether one holds;
-/// the enemy's list is searched by canonical slot using a lower bound over
-/// the sorted list, then equality. `Err` names the input the hour lacks.
+/// holds it in its own civil-war list ([`CivilWars::holds`]). `Err` names
+/// the input the hour lacks.
 pub fn civil_war(frame: &replay_frame::frame::DecodedFrame, slot: u32) -> Result<bool, String> {
-    use replay_data::rows::tables;
-    let hour = frame.hour;
-    let countries = frame
-        .complete::<tables::Countries>()
-        .map_err(|error| error.to_string())?;
-    let links = frame
-        .complete::<tables::CountryLinks>()
-        .map_err(|error| error.to_string())?;
-    let lists = frame
-        .complete::<tables::CountryCivilWars>()
-        .map_err(|error| error.to_string())?;
-    let counters = frame
-        .complete::<tables::CountryCounterInputs>()
-        .map_err(|error| error.to_string())?;
-    let raw_of = |slot: u32| {
-        countries
-            .iter()
-            .find(|country| country.canonical_slot == slot)
-            .map(|country| country.id)
-            .ok_or_else(|| format!("country slot {slot} has no Countries row at hour {hour}"))
-    };
-    let exists = |slot: u32| -> Result<bool, String> {
-        let raw = raw_of(slot)?;
-        counters
-            .iter()
-            .find(|row| row.country == raw)
-            .map(|row| row.owned_state_count > 0)
-            .ok_or_else(|| {
-                format!(
-                    "the owned state count (CountryCounterInputs.owned_state_count) of country {raw} is not recorded at hour {hour}"
-                )
-            })
-    };
-    // The country's own civil-war list, its raw owner as recorded.
-    let own = raw_of(slot)?;
-    for row in lists.iter().filter(|row| row.country == own) {
-        if exists(linked(links, row.target, "CountryCivilWars", hour)?)? {
-            return Ok(true);
+    CivilWars::new(frame)?.holds(slot)
+}
+
+/// What [`civil_war`] reads of an hour, for every country: an hour changing
+/// none of it since the hour before leaves every country's answer as it was.
+pub fn civil_war_reads() -> Vec<crate::triggers::inputs::TableRead> {
+    use crate::triggers::inputs::TableRead;
+    use replay_data::rows::TableId;
+    vec![
+        TableRead::fields(TableId::Countries, &["canonical_slot"]),
+        TableRead::fields(TableId::CountryLinks, &["canonical_slot"]),
+        TableRead::fields(TableId::CountryCivilWars, &["target"]),
+        TableRead::fields(TableId::CountryCounterInputs, &["owned_state_count"]),
+        TableRead::fields(TableId::CountryWars, &["enemies_read", "enemies"]),
+        TableRead::fields(TableId::WarRelations, &["start_hour", "end_hour"]).ending(),
+    ]
+}
+
+/// The civil-war predicate's inputs at one hour, indexed once, so asking it
+/// of every country costs each country only its own rows. Answers, and the
+/// reason an answer is refused, are those of scanning the tables in stored
+/// order: a reference that does not resolve is reported only where that
+/// scan reaches it.
+pub struct CivilWars<'a> {
+    hour: i32,
+    links: &'a [replay_data::rows::CountryLinkRow],
+    /// Each canonical slot's first Countries row id.
+    raw: HashMap<u32, u32>,
+    /// Each raw country's first owned state count.
+    owned: HashMap<u32, i32>,
+    /// Each raw country's civil-war targets, in stored order.
+    lists: HashMap<u32, Vec<u32>>,
+    wars: Result<Enemies<'a>, String>,
+    relations: Result<Relations, String>,
+}
+
+/// The CountryWars rows that read their enemy vector: each slot's first by
+/// stored position, and the first whose country does not resolve.
+struct Enemies<'a> {
+    rows: &'a [replay_data::rows::CountryWarRow],
+    by_slot: HashMap<u32, usize>,
+    unlinked: Option<(usize, u32)>,
+}
+
+/// The other country of each ongoing war relation, by slot in stored order,
+/// and the first raw country of one that does not resolve.
+struct Relations {
+    by_slot: HashMap<u32, Vec<u32>>,
+    unlinked: Option<u32>,
+}
+
+impl<'a> CivilWars<'a> {
+    pub fn new(frame: &'a replay_frame::frame::DecodedFrame) -> Result<Self, String> {
+        use replay_data::rows::tables;
+        let hour = frame.hour;
+        let text = |error: std::io::Error| error.to_string();
+        let countries = frame.complete::<tables::Countries>().map_err(text)?;
+        let links = frame.complete::<tables::CountryLinks>().map_err(text)?;
+        let lists = frame.complete::<tables::CountryCivilWars>().map_err(text)?;
+        let counters = frame
+            .complete::<tables::CountryCounterInputs>()
+            .map_err(text)?;
+        // Resolved without refusing: a refusal is reported only where a scan reaches it.
+        let slot_of = |raw: u32| {
+            links
+                .binary_search_by_key(&raw, |link| link.id)
+                .ok()
+                .map(|index| links[index].canonical_slot)
+        };
+        let mut raw = HashMap::new();
+        for country in countries {
+            raw.entry(country.canonical_slot).or_insert(country.id);
         }
+        let mut owned = HashMap::new();
+        for row in counters {
+            owned.entry(row.country).or_insert(row.owned_state_count);
+        }
+        let mut targets = HashMap::<u32, Vec<u32>>::new();
+        for row in lists {
+            targets.entry(row.country).or_default().push(row.target);
+        }
+        let wars = frame
+            .complete::<tables::CountryWars>()
+            .map_err(text)
+            .map(|rows| {
+                let mut wars = Enemies {
+                    rows,
+                    by_slot: HashMap::new(),
+                    unlinked: None,
+                };
+                for (index, row) in rows.iter().enumerate() {
+                    if row.enemies_read == 0 {
+                        continue;
+                    }
+                    match slot_of(row.country) {
+                        Some(slot) => {
+                            wars.by_slot.entry(slot).or_insert(index);
+                        }
+                        None => {
+                            wars.unlinked.get_or_insert((index, row.country));
+                        }
+                    }
+                }
+                wars
+            });
+        let relations = frame
+            .complete::<tables::WarRelations>()
+            .map_err(text)
+            .map(|rows| {
+                let mut relations = Relations {
+                    by_slot: HashMap::new(),
+                    unlinked: None,
+                };
+                for row in rows
+                    .iter()
+                    .filter(|row| crate::triggers::ongoing(row.start_hour, row.end_hour, hour))
+                {
+                    match (slot_of(row.first_country), slot_of(row.second_country)) {
+                        (Some(first), Some(second)) => {
+                            relations.by_slot.entry(first).or_default().push(second);
+                            if second != first {
+                                relations.by_slot.entry(second).or_default().push(first);
+                            }
+                        }
+                        (None, _) => {
+                            relations.unlinked.get_or_insert(row.first_country);
+                        }
+                        (Some(_), None) => {
+                            relations.unlinked.get_or_insert(row.second_country);
+                        }
+                    }
+                }
+                relations
+            });
+        Ok(Self {
+            hour,
+            links,
+            raw,
+            owned,
+            lists: targets,
+            wars,
+            relations,
+        })
     }
-    for enemy in enemies(frame, links, slot)? {
-        if !exists(enemy)? {
-            continue;
-        }
-        let raw = raw_of(enemy)?;
-        for row in lists.iter().filter(|row| row.country == raw) {
-            if linked(links, row.target, "CountryCivilWars", hour)? == slot {
+
+    /// Whether `slot` has a civil war: a country its own list names exists,
+    /// or an existing enemy lists it. Each list is searched only until one
+    /// holds.
+    pub fn holds(&self, slot: u32) -> Result<bool, String> {
+        for &target in self.targets(self.raw_of(slot)?) {
+            if self.exists(self.linked(target, "CountryCivilWars")?)? {
                 return Ok(true);
             }
         }
+        for enemy in self.enemies(slot)? {
+            if !self.exists(enemy)? {
+                continue;
+            }
+            for &target in self.targets(self.raw_of(enemy)?) {
+                if self.linked(target, "CountryCivilWars")? == slot {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
-    Ok(false)
+
+    fn raw_of(&self, slot: u32) -> Result<u32, String> {
+        self.raw.get(&slot).copied().ok_or_else(|| {
+            format!("country slot {slot} has no Countries row at hour {}", self.hour)
+        })
+    }
+
+    fn exists(&self, slot: u32) -> Result<bool, String> {
+        let raw = self.raw_of(slot)?;
+        self.owned.get(&raw).map(|&count| count > 0).ok_or_else(|| {
+            format!(
+                "the owned state count (CountryCounterInputs.owned_state_count) of country {raw} is not recorded at hour {}",
+                self.hour
+            )
+        })
+    }
+
+    fn targets(&self, raw: u32) -> &[u32] {
+        self.lists.get(&raw).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    fn linked(&self, raw: u32, table: &str) -> Result<u32, String> {
+        linked(self.links, raw, table, self.hour)
+    }
+
+    /// The country's enemy vector: its CountryWars row's where read, else the
+    /// other country of each ongoing war relation. War-relation updates keep
+    /// that vector synchronized.
+    fn enemies(&self, slot: u32) -> Result<Vec<u32>, String> {
+        let wars = self.wars.as_ref().map_err(Clone::clone)?;
+        let found = wars.by_slot.get(&slot).copied();
+        // A row before it whose country does not resolve stops the scan there.
+        if let Some((_, raw)) = wars
+            .unlinked
+            .filter(|&(at, _)| found.is_none_or(|found| at < found))
+        {
+            self.linked(raw, "CountryWars")?;
+        }
+        if let Some(index) = found {
+            return wars.rows[index]
+                .enemies
+                .iter()
+                .map(|&raw| self.linked(raw, "CountryWars"))
+                .collect();
+        }
+        let relations = self.relations.as_ref().map_err(Clone::clone)?;
+        if let Some(raw) = relations.unlinked {
+            self.linked(raw, "WarRelations")?;
+        }
+        Ok(relations.by_slot.get(&slot).cloned().unwrap_or_default())
+    }
 }
 
 /// A raw country reference's canonical slot, or why the hour cannot say.
@@ -143,47 +309,6 @@ fn linked(
     crate::metadata::link_slot(links, raw).ok_or_else(|| {
         format!("{table} names country {raw}, which CountryLinks does not hold at hour {hour}")
     })
-}
-
-/// A country's enemy vector as a set: CountryWars where recorded, else
-/// the other country of each ongoing war relation. War-relation updates
-/// keep that vector synchronized.
-fn enemies(
-    frame: &replay_frame::frame::DecodedFrame,
-    links: &[replay_data::rows::CountryLinkRow],
-    slot: u32,
-) -> Result<Vec<u32>, String> {
-    use replay_data::rows::tables;
-    let hour = frame.hour;
-    let wars = frame
-        .complete::<tables::CountryWars>()
-        .map_err(|error| error.to_string())?;
-    for row in wars {
-        if row.enemies_read != 0 && linked(links, row.country, "CountryWars", hour)? == slot {
-            return row
-                .enemies
-                .iter()
-                .map(|&raw| linked(links, raw, "CountryWars", hour))
-                .collect();
-        }
-    }
-    let relations = frame
-        .complete::<tables::WarRelations>()
-        .map_err(|error| error.to_string())?;
-    let mut out = Vec::new();
-    for row in relations
-        .iter()
-        .filter(|row| crate::triggers::ongoing(row.start_hour, row.end_hour, hour))
-    {
-        let first = linked(links, row.first_country, "WarRelations", hour)?;
-        let second = linked(links, row.second_country, "WarRelations", hour)?;
-        if first == slot {
-            out.push(second);
-        } else if second == slot {
-            out.push(first);
-        }
-    }
-    Ok(out)
 }
 
 /// A country as idea naming needs it at one hour, owned for the scans that

@@ -400,7 +400,7 @@ struct Groups;
 static GROUPS: Groups = Groups;
 
 /// Every family prepared on its own, in registry order.
-static REGISTRY: [&dyn Own; 37] = [
+static REGISTRY: [&dyn Own; 38] = [
     &GROUPS,
     &IDENTITIES,
     &WARS,
@@ -436,6 +436,7 @@ static REGISTRY: [&dyn Own; 37] = [
     &sampled::EQUIPMENT_LOSSES,
     &sampled::SUPPLY,
     &sampled::PARTIES,
+    &sampled::POLITICS,
     &sampled::TRADE,
     &sampled::TERRITORY,
 ];
@@ -1037,6 +1038,8 @@ const JOINT: &[(&str, &[&str])] = &[
         <crate::products::faction_totals::FactionTotals as crate::products::Product>::KEY,
         &["groups", "identities", "territory"],
     ),
+    // Civil-war lists with the feed's annexations as outcome evidence.
+    ("civil-wars", &["politics_state", "event_feed"]),
     // The feed's own facts and the changes it merges with them.
     (
         "event-feed",

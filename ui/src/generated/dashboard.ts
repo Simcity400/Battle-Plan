@@ -2046,6 +2046,155 @@ ideologies: Array<IdeologyInfo>,
  * to one is a gap, not a change.
  */
 unobserved: Array<HourSpan>, warnings: Array<string>, };
+export type PoliticsStateParams = { branchId: string, hour: number, view: PoliticsView, };
+export type PoliticsView = "exiles" | "balances";
+export type BalanceSide = { token: string, name: string | null, };
+export type BalanceRange = { token: string, name: string | null,
+/**
+ * Fixed5 bounds; null where the recorded content does not establish them.
+ */
+min: string | null, max: string | null, };
+export type BalanceMember = { tag: string | null, daily: string | null, weekly: string | null, };
+export type BalanceSource = { token: string, name: string | null, daily: string, weekly: string, };
+export type BalanceRecord = { ordinal: number, token: string, name: string | null,
+/**
+ * The stored fixed5 value as a decimal string, from -100000 to 100000.
+ */
+value: string, left: BalanceSide, right: BalanceSide,
+/**
+ * The side it is moving toward, when the record names one.
+ */
+trending: BalanceSide | null, range: BalanceRange | null,
+/**
+ * Every authored range in authored order; empty when content refuses.
+ */
+ranges: Array<BalanceRange>, members: Array<BalanceMember>,
+/**
+ * The drift's sources; null when they cannot be derived.
+ */
+sources: Array<BalanceSource> | null, };
+export type CurrentBalance = { tag: string, record: number, };
+export type PoliticsUnavailable = { label: string, reason: string, count: number, };
+export type PoliticsStateReply = { branchId: string, hour: number, view: PoliticsView, exiles: Array<PeopleExile>, balances: Array<BalanceRecord>,
+/**
+ * Null when the membership cannot say which record each country shows.
+ */
+current: Array<CurrentBalance> | null, unavailable: Array<PoliticsUnavailable>, warnings: Array<string>, };
+export type PoliticsHistoryParams = { branchId: string, mode: PoliticsHistoryMode,
+/**
+ * The country, for [`PoliticsHistoryMode::Country`].
+ */
+tag?: string,
+/**
+ * The window [`PoliticsHistoryMode::Exiles`] answers, both ends included.
+ */
+firstHour?: number, lastHour?: number, };
+export type PoliticsHistoryMode = "country" | "elections" | "exiles" | "balances";
+export type PoliticsRun = { firstHour: number, lastHour: number, value: string, };
+export type HolderTag = { hour: number, tag: string, };
+export type ElectionHistory = { tags: Array<HolderTag>,
+/**
+ * "1" when the game holds elections, "0" when it does not.
+ */
+held: Array<PoliticsRun>,
+/**
+ * Signed months.
+ */
+interval: Array<PoliticsRun>,
+/**
+ * The next election's hour.
+ */
+next: Array<PoliticsRun>,
+/**
+ * The term's start: the stored last election's hour, where it is a date.
+ */
+last: Array<PoliticsRun>, };
+export type ExileHistory = { tags: Array<HolderTag>,
+/**
+ * The host's holder id.
+ */
+host: Array<PoliticsRun>,
+/**
+ * Fixed5 legitimacy.
+ */
+legitimacy: Array<PoliticsRun>, manpower: Array<PoliticsRun>, cap: Array<PoliticsRun>, leaders: Array<PoliticsRun>,
+/**
+ * The hour the exile's resources were last read.
+ */
+read: Array<PoliticsRun>, };
+export type BalanceHistory = { token: string, name: string | null, left: BalanceSide | null, right: BalanceSide | null,
+/**
+ * The authored ranges in authored order; empty when content refuses.
+ */
+ranges: Array<BalanceRange>, values: Array<PoliticsRun>,
+/**
+ * The record's stored position: holders sharing it at an hour share that
+ * record. Not an identity across hours.
+ */
+record: Array<PoliticsRun>, range: Array<PoliticsRun>, trending: Array<PoliticsRun>, };
+export type HolderBalances = { holder: string, tags: Array<HolderTag>, balances: Array<BalanceHistory>,
+/**
+ * The balance the game shows the holder, by identity token.
+ */
+shown: Array<PoliticsRun>, };
+export type PoliticsHistoryReply = { branchId: string, mode: PoliticsHistoryMode,
+/**
+ * Through the last prepared hour; later hours are still being prepared.
+ */
+lastHour: number | null, tag: string | null,
+/**
+ * The hours the mode's part was read; others are unknown.
+ */
+known: Array<HourSpan>, elections: Array<ElectionHistory>,
+/**
+ * Content tokens to their in-game names, where they resolve.
+ */
+names: { [key in string]?: string },
+/**
+ * Every government in exile over the branch.
+ */
+exileHistory: Array<ExileHistory>,
+/**
+ * Each holder id's tags, for the holders runs name.
+ */
+holders: { [key in string]?: Array<HolderTag> },
+/**
+ * Every holder's balances over the branch; for a country, every holder
+ * that held its tag, whole.
+ */
+holderBalances: Array<HolderBalances>, warnings: Array<string>, };
+export type CivilWarsParams = { branchId: string, };
+export type SideExitKind = "annexedBySide" | "annexedBySideOtherwise" | "annexedByOther";
+export type SideExit = { kind: SideExitKind, hour: number, readHour: number,
+/**
+ * The annexer's tag at the annexation.
+ */
+by: string | null, };
+export type CivilWarSide = {
+/**
+ * The holder's tags from each hour it was read with them.
+ */
+tags: Array<HolderTag>, firstHour: number, lastHour: number,
+/**
+ * The side it broke from, by index.
+ */
+parent: number | null,
+/**
+ * Whether the holder was read before the outbreak.
+ */
+existedBefore: boolean, exit: SideExit | null, };
+export type CivilWarOutcome = { winner: number, hour: number, readHour: number, };
+export type CivilWar = { id: string, firstHour: number, lastHour: number,
+/**
+ * The hours the game's civil-war predicate held for a side, within the
+ * listings: the war is ongoing while it holds.
+ */
+atWar: Array<HourSpan>, sides: Array<CivilWarSide>, outcome: CivilWarOutcome | null, };
+export type CivilWarsReply = { branchId: string, lastHour: number | null,
+/**
+ * The hours the civil-war lists were read; others are unknown.
+ */
+known: Array<HourSpan>, wars: Array<CivilWar>, warnings: Array<string>, };
 export type PoliticsLedgerParams = { branchId: string, tag: string, view?: LedgerView, };
 export type LedgerView = "raw" | "spending" | "balance" | "governments";
 export type LedgerItem = { action: string, token: number | null, key: Array<number>, slotKey: Array<number>, character: number | null, objectKind: string, objectReference: string | null, targetCountry: number | null, targetState: number | null, targetRegion: number | null, originKind: string, originToken: number | null, originKey: Array<number>, };
@@ -3164,11 +3313,53 @@ export type EventFeedItem = { token: string | null, name: string | null, icon: s
 /**
  * The same content effects the Ideas widget supplies to its shared tooltip.
  */
-idea: IdeaInfo | null, };
+idea: IdeaInfo | null,
+/**
+ * A scripted event's authored options in the game's order; absent for
+ * other kinds and when the event's content does not resolve.
+ */
+options?: Array<EventFeedOption>, };
+export type EventFeedOption = { ordinal: number, name: string | null, };
 export type EventFeedWindow = { firstHour: number, lastHour: number, count: number, categoryCounts: EventFeedCounts, };
 export type EventFeedCounts = { warsPeace: number, diplomacy: number, politics: number, milestones: number, };
 export type EventFeedUnavailable = { kind: string, label: string, reason: string, count: number | null, };
 export type EventFeedReply = { branchId: string, firstHour: number, lastHour: number, windows: Array<EventFeedWindow>, rows: Array<EventFeedRow>, items: Array<EventFeedItem>, modifiers: Array<ModifierFormat>, texts: Array<LocalisedText>, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
+export type ScriptPageParams = { branchId: string, firstHour: number | null, lastHour: number, cursor: string | null, pageSize: number,
+/**
+ * The opening kinds shown; every kind when empty.
+ */
+kinds: Array<EventFeedKind>, };
+export type ScriptCurrency = "politicalPower" | "commandPower";
+export type ScriptCost = { currency: ScriptCurrency,
+/**
+ * The exact fixed5 balance change as a decimal string; negative when spent.
+ */
+amount: string, };
+export type ScriptEdge = { row: EventFeedRow,
+/**
+ * The executed option's signed native ordinal.
+ */
+option: number | null,
+/**
+ * The writer's lifecycle result, where its boundary supplies one.
+ */
+lifecycle: number | null,
+/**
+ * The writer's duration result in days.
+ */
+days: number | null,
+/**
+ * The power the execution was proven to charge; null when not proven.
+ */
+costs: Array<ScriptCost> | null, };
+export type ScriptOccurrence = { id: string,
+/**
+ * Whether the first edge opened the card; false for a continuing fact
+ * whose opening was not recorded or joined.
+ */
+opened: boolean, edges: Array<ScriptEdge>, };
+export type ScriptOccurrenceReply = { branchId: string, firstHour: number, lastHour: number, occurrences: Array<ScriptOccurrence>, items: Array<EventFeedItem>, unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
+export type ScriptOccurrencePage = { reply: ScriptOccurrenceReply, nextCursor: string | null, };
 export type TensionRead = {
 /**
  * The hour it was read, where its values start.
@@ -4201,6 +4392,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;

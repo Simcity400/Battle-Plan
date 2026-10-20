@@ -301,7 +301,9 @@ pub fn election_date(last: i32, interval: i32) -> i32 {
     hour.wrapping_add(shifted.wrapping_sub(days).wrapping_mul(24))
 }
 
-fn next_election_date(row: &replay_data::rows::PoliticsRow) -> Option<i32> {
+/// The next scheduled election: the independent cache for exceptional
+/// initializers, otherwise the native calendar step from the last election.
+pub fn next_election_date(row: &replay_data::rows::PoliticsRow) -> Option<i32> {
     if engine_native::cpolitical_status::needs_election_cache(row.last_election) {
         scalar(&row.next_election_cache)
     } else {
@@ -337,11 +339,6 @@ pub fn read(
                 && canonical(first).is_some_and(|slot| canonical(second) == Some(slot)))
     };
     let same = |raw: u32| equal(raw, country.id);
-    let tag_for = |raw: u32| {
-        canonical(raw)
-            .and_then(|slot| countries.iter().find(|row| row.canonical_slot == slot))
-            .and_then(|row| String::from_utf8(row.tag.clone()).ok())
-    };
     let mut reply = PeopleReply {
         branch_id: p.branch_id.clone(),
         tag: p.tag.clone(),
@@ -685,47 +682,8 @@ pub fn read(
             .warnings
             .push("1 refused exile status: country host unavailable".into());
     }
-    let mut exile_refusals = [0_u32; 5];
-    if let Ok(rows) = frame.complete::<tables::CountryStabilityInputs>() {
-        for row in rows {
-            if scalar(&row.exile_host).is_none() {
-                exile_refusals[0] += 1;
-            }
-            if let Some(host) = scalar(&row.exile_host).filter(|host| *host > 0)
-                && (same(row.country) || same(host as u32))
-            {
-                for (index, available) in [
-                    scalar(&row.exile_legitimacy).is_some(),
-                    scalar(&row.exile_manpower).is_some(),
-                    scalar(&row.exile_manpower_cap).is_some(),
-                    scalar(&row.exile_leaders).is_some(),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    if !available {
-                        exile_refusals[index + 1] += 1;
-                    }
-                }
-                reply.exiles.push(PeopleExile {
-                    tag: tag_for(row.country).unwrap_or_else(|| format!("Country {}", row.country)),
-                    host: tag_for(host as u32),
-                    legitimacy: scalar(&row.exile_legitimacy).map(|value| value.to_string()),
-                    manpower: scalar(&row.exile_manpower),
-                    cap: scalar(&row.exile_manpower_cap),
-                    leaders: scalar(&row.exile_leaders),
-                    deployed_air: exile_air(row.country),
-                    read_hour: reads.and_then(|reads| {
-                        replay_data::sliced::read_hour(
-                            reads,
-                            TableId::CountryStabilityInputs,
-                            row.country,
-                        )
-                    }),
-                });
-            }
-        }
-    }
+    let (exiles, exile_refusals) = exiles(frame, |raw, host| same(raw) || same(host));
+    reply.exiles = exiles;
     for (count, field) in exile_refusals.into_iter().zip([
         "host roster",
         "legitimacy",
@@ -748,6 +706,87 @@ pub fn read(
         reply.warnings.push(format!("{missing_air} refused exile deployed air crews: wing attribution or manpower unavailable"));
     }
     Ok(reply)
+}
+
+/// Every government in exile the hour's sliced reads show, as the exile cards
+/// show them: a positive recorded host is an exile, a nonpositive one is not,
+/// and an unrecorded host stays unknown (counted first in the refusals).
+/// `include` chooses rows by the raw exile and raw host references. The
+/// refusals count, in order: unrecorded hosts, then the included exiles'
+/// missing legitimacy, manpower, manpower cap and leader resources.
+pub fn exiles(
+    frame: &DecodedFrame,
+    include: impl Fn(u32, u32) -> bool,
+) -> (Vec<PeopleExile>, [u32; 5]) {
+    let mut refusals = [0_u32; 5];
+    let mut rows_out = Vec::new();
+    let (Ok(countries), Ok(links), Ok(rows)) = (
+        frame.complete::<tables::Countries>(),
+        frame.complete::<tables::CountryLinks>(),
+        frame.complete::<tables::CountryStabilityInputs>(),
+    ) else {
+        return (rows_out, refusals);
+    };
+    let canonical = |raw: u32| {
+        links
+            .iter()
+            .find(|link| link.id == raw)
+            .map(|link| link.canonical_slot)
+    };
+    let equal = |first: u32, second: u32| {
+        first == second
+            || (first != 0
+                && second != 0
+                && canonical(first).is_some_and(|slot| canonical(second) == Some(slot)))
+    };
+    let tag_for = |raw: u32| {
+        canonical(raw)
+            .and_then(|slot| countries.iter().find(|row| row.canonical_slot == slot))
+            .and_then(|row| String::from_utf8(row.tag.clone()).ok())
+    };
+    let air_wings = frame.complete::<tables::AirWings>().ok();
+    let reads = frame.complete::<tables::SliceReads>().ok();
+    for row in rows {
+        if scalar(&row.exile_host).is_none() {
+            refusals[0] += 1;
+        }
+        if let Some(host) = scalar(&row.exile_host).filter(|host| *host > 0)
+            && include(row.country, host as u32)
+        {
+            for (index, available) in [
+                scalar(&row.exile_legitimacy).is_some(),
+                scalar(&row.exile_manpower).is_some(),
+                scalar(&row.exile_manpower_cap).is_some(),
+                scalar(&row.exile_leaders).is_some(),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if !available {
+                    refusals[index + 1] += 1;
+                }
+            }
+            rows_out.push(PeopleExile {
+                tag: tag_for(row.country).unwrap_or_else(|| format!("Country {}", row.country)),
+                host: tag_for(host as u32),
+                legitimacy: scalar(&row.exile_legitimacy).map(|value| value.to_string()),
+                manpower: scalar(&row.exile_manpower),
+                cap: scalar(&row.exile_manpower_cap),
+                leaders: scalar(&row.exile_leaders),
+                deployed_air: air_wings.and_then(|wings| {
+                    exile_air_manpower(wings, |raw| equal(raw, row.country))
+                }),
+                read_hour: reads.and_then(|reads| {
+                    replay_data::sliced::read_hour(
+                        reads,
+                        TableId::CountryStabilityInputs,
+                        row.country,
+                    )
+                }),
+            });
+        }
+    }
+    (rows_out, refusals)
 }
 
 fn ordinary_air_manpower(

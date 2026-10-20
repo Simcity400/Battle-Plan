@@ -17,7 +17,7 @@ Nothing here names a product or a source. The [dashboard](../dashboard/README.md
 | [modifier_text.rs](src/modifier_text.rs), [faction_names.rs](src/faction_names.rs), [unit_names.rs](src/unit_names.rs) | Shared modifier formatting and native stored/generated names. |
 | [party_names.rs](src/party_names.rs) | The ruling party naming ladder shared by party histories and scripted text. |
 | [idea_names.rs](src/idea_names.rs) | Country-specific idea names: an idea's selected localisation key or its generated advisor name. |
-| [identity.rs](src/identity.rs) | Character and country identity operands names are chosen by: script tokens, templates, tags, looks and civil-war state. |
+| [identity.rs](src/identity.rs) | Character and country identity operands names are chosen by: script tokens, templates, tags, looks and civil-war state (the predicate's inputs indexed once an hour for every country, with the fields it reads). |
 | [variant_names.rs](src/variant_names.rs) | Equipment variant names as the game writes them, and the operands that order variants. |
 | [air_wing_names.rs](src/air_wing_names.rs) | Retained air wing names and the authenticated active-raid projection older prefixes use. |
 | [flag_choices.rs](src/flag_choices.rs) | Flag asset candidates per recorded country at one hour, shared by the flag product and map tooltips. |

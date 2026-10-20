@@ -64,6 +64,7 @@ pub use dashboard_stability::products::{country_stability, stability_parts};
 pub use dashboard_subjects::products::{autonomy, subjects};
 pub use dashboard_unit_leaders::products::unit_leaders;
 pub use dashboard_wars::products::{war_casualties, wargoals, wars};
+pub use dashboard_politics::products::politics_state;
 pub use dashboard_world_tension::products::world_tension;
 
 use std::sync::atomic::AtomicBool;
@@ -257,6 +258,9 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_experience::CountryExperience>(),
     register::<idea_history::IdeaHistory>(),
     register_prepared::<party_history::PartyHistory>(),
+    register::<politics_state::PoliticsState>(),
+    register_prepared::<politics_state::history::PoliticsStateHistory>(),
+    register_prepared::<politics_state::civil_wars::CivilWars>(),
     register_prepared::<politics_ledger::PoliticsLedger>(),
     register_prepared::<peace_deals::PeaceDeals>(),
     register_prepared::<resource_balance::ResourceBalance>(),
@@ -274,6 +278,8 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<special_projects::SpecialProjects>(),
     register_prepared::<subjects::Subjects>(),
     register_prepared::<event_feed::EventFeed>(),
+    register_prepared::<event_feed::prepared::script::EventChoices>(),
+    register_prepared::<event_feed::prepared::script::Decisions>(),
     register_prepared::<world_tension::WorldTension>(),
     register_prepared::<autonomy::Autonomy>(),
     register_prepared::<construction_log::ConstructionLog>(),

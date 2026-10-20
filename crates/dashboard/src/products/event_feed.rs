@@ -37,7 +37,7 @@ mod native;
 mod script_effects;
 
 mod nuclear;
-pub(crate) mod prepared;
+pub mod prepared;
 
 pub struct EventFeed;
 
@@ -104,7 +104,58 @@ pub enum EventFeedKind {
     ScriptStateObserved,
 }
 impl EventFeedKind {
-    fn category(self) -> EventFeedCategory {
+    /// Every kind, in declaration order: a kind's prepared stream key is its
+    /// position, with the high bit for facts read after their native hour.
+    pub(crate) const ALL: [Self; 40] = {
+        use EventFeedKind::*;
+        [
+            WarStarted,
+            WarDeclared,
+            WarJoined,
+            CivilWarWarTransferred,
+            Annexed,
+            WarEnded,
+            Released,
+            StateTransferred,
+            PeaceConferenceStarted,
+            Peace,
+            Capitulated,
+            CeasedToExist,
+            FactionJoined,
+            FactionLeft,
+            BecameSubject,
+            GuaranteeGranted,
+            RulingPartyChanged,
+            LawChanged,
+            AdvisorHired,
+            FocusCompleted,
+            ProjectFinished,
+            NukesIncreased,
+            NuclearStrike,
+            ScriptEventFired,
+            NewsEventFired,
+            EventOptionSelected,
+            DecisionSelected,
+            DecisionRemoved,
+            DecisionCancelled,
+            DecisionTimedOut,
+            DecisionActivated,
+            DecisionCompleted,
+            DecisionReenabled,
+            DecisionRemovalEffect,
+            DecisionCancellationEffect,
+            DecisionCompletionEffect,
+            DecisionTimeoutEffect,
+            DecisionDurationChanged,
+            DecisionRosterRebuilt,
+            ScriptStateObserved,
+        ]
+    };
+    /// The kind a prepared fact stream key holds.
+    pub(crate) fn from_key(key: u64) -> Option<Self> {
+        Self::ALL.get(usize::try_from(key & !(1 << 63)).ok()?).copied()
+    }
+    pub(crate) fn category(self) -> EventFeedCategory {
         use EventFeedKind::*;
         match self {
             WarStarted
@@ -230,6 +281,66 @@ pub struct EventFeedItem {
     pub description: Option<String>,
     /// The same content effects the Ideas widget supplies to its shared tooltip.
     pub idea: Option<idea_history::IdeaInfo>,
+    /// A scripted event's authored options in the game's order; absent for
+    /// other kinds and when the event's content does not resolve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub options: Option<Vec<EventFeedOption>>,
+}
+
+/// One authored event option: its native ordinal and in-game name, null
+/// when the name does not resolve.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedOption {
+    pub ordinal: u32,
+    pub name: Option<String>,
+}
+
+/// A native occurrence's typed operands, kept beside its row so the
+/// event-choice and decision adapters never parse the row's notes. `opener`
+/// is the prepared fact (key, ordinal) this occurrence continues: a choice's
+/// dispatch, or a decision's selection or activation.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct Occurrence {
+    pub generation: u64,
+    pub sequence: u64,
+    /// Native event kind and id.
+    pub event: Option<(u32, u32)>,
+    pub instance: Option<u32>,
+    pub option: Option<i32>,
+    pub lifecycle: Option<i32>,
+    pub days: Option<i32>,
+    /// Actor and target native id and instance words.
+    pub actor: (u32, u32),
+    pub target: (u32, u32),
+    pub country_target: Option<u32>,
+    pub numeric_target: Option<i32>,
+    pub token: Option<String>,
+    /// The native route and enclosing operation, as their recorded bytes.
+    pub route: Option<u8>,
+    pub within: Option<u8>,
+    #[serde(default)]
+    pub opener: Option<(u64, u64)>,
+    /// The power this execution was proven to charge ([`prepared::charges`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub costs: Option<Vec<ScriptCost>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ScriptCurrency {
+    PoliticalPower,
+    CommandPower,
+}
+
+/// One currency a decision execution was proven to charge.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptCost {
+    pub currency: ScriptCurrency,
+    /// The exact fixed5 balance change as a decimal string; negative when spent.
+    pub amount: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -350,6 +461,9 @@ struct Builder {
     /// is not repeated ([`peace_fallback`]).
     war_ends: BTreeSet<(i32, String, String)>,
     script_inputs: BTreeMap<String, script_effects::Inputs>,
+    /// Typed occurrence operands by row id, taken with the row's fact.
+    #[serde(default)]
+    occurrences: BTreeMap<String, Occurrence>,
     #[serde(with = "crate::prepared_production::map_pairs")]
     item_keys: BTreeMap<(Option<String>, Option<String>), Vec<u32>>,
     #[serde(with = "crate::prepared_production::map_pairs")]
@@ -411,6 +525,7 @@ impl Builder {
         Self {
             war_ends: BTreeSet::new(),
             script_inputs: BTreeMap::new(),
+            occurrences: BTreeMap::new(),
             feed: Feed {
                 first,
                 last,
@@ -618,6 +733,7 @@ fn plain_item(
         icon,
         description,
         idea: None,
+        options: None,
     }
 }
 
@@ -765,8 +881,15 @@ fn script_presentation(
         );
     }
     let mut options = Vec::new();
+    let mut authored = Vec::new();
     for (ordinal, name) in event.option_names.iter().enumerate() {
-        let name = match localise(name) {
+        let resolved = localise(name);
+        authored.push(EventFeedOption {
+            ordinal: u32::try_from(ordinal)
+                .map_err(|_| io::Error::other("Too many authored event options"))?,
+            name: resolved.as_ref().ok().cloned(),
+        });
+        let name = match resolved {
             Ok(name) => name,
             Err(reason) => {
                 builder.unavailable(
@@ -787,6 +910,7 @@ fn script_presentation(
             builder.unavailable("scriptEventOptionAdmission","Offered event option",format!("Event {token} option {ordinal}: original_recipient_only requires exact presentation ownership"),Some(1));
         }
     }
+    item.options = Some(authored);
     if !options.is_empty() {
         let body = item.description.get_or_insert_default();
         if !body.is_empty() {
@@ -1821,6 +1945,7 @@ impl Product for EventFeed {
             EventFeedCause::decl(),
             EventFeedStrike::decl(),
             EventFeedItem::decl(),
+            EventFeedOption::decl(),
             EventFeedWindow::decl(),
             EventFeedCounts::decl(),
             EventFeedUnavailable::decl(),

@@ -297,8 +297,39 @@ impl Projection {
             } else {
                 None
             };
+            let id = format!("native:{}:{}", event.generation, event.sequence);
+            let routes = match event.cause {
+                Recorded::Value(cause) => (Some(cause.route as u8), Some(cause.within as u8)),
+                Recorded::NotRecorded => (None, None),
+            };
+            builder.occurrences.insert(
+                id.clone(),
+                super::Occurrence {
+                    generation: event.generation,
+                    sequence: event.sequence,
+                    event: event
+                        .script
+                        .and_then(|script| script.native_event)
+                        .map(|identity| (identity.kind, identity.id)),
+                    instance: event.script.and_then(|script| script.instance),
+                    option: event.script.and_then(|script| script.option),
+                    lifecycle: event.script.and_then(|script| script.lifecycle),
+                    days: event.script.and_then(|script| script.days),
+                    actor: (event.actor.id, event.actor.instance),
+                    target: (event.target.id, event.target.instance),
+                    country_target: event.script.and_then(|script| script.country_target),
+                    numeric_target: event.script.and_then(|script| script.numeric_target),
+                    token: item
+                        .and_then(|index| builder.feed.items.get(index as usize))
+                        .and_then(|item| item.token.clone()),
+                    route: routes.0,
+                    within: routes.1,
+                    opener: None,
+                    costs: None,
+                },
+            );
             builder.feed.rows.push(EventFeedRow {
-                id: format!("native:{}:{}", event.generation, event.sequence),
+                id,
                 hour: event.hour,
                 read_hour: pack.read_hour,
                 name_hour: event.hour,

@@ -2179,6 +2179,7 @@ dependencies = [
  "dashboard-occupation",
  "dashboard-party-history",
  "dashboard-peace-deals",
+ "dashboard-politics",
  "dashboard-politics-ledger",
  "dashboard-raids",
  "dashboard-resource-balance",
@@ -2644,6 +2645,28 @@ dependencies = [
  "store",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "dashboard-politics"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine-executable",
+ "engine-native",
+ "engine-power-balance",
+ "installed-content-core",
+ "mimalloc",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
 ]
 
 [[package]]

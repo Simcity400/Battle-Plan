@@ -13,6 +13,7 @@ test('every widget view a setting switches to is also its own catalogue card', (
     'political-power': ['Political power: Daily income and costs', 'Political power: Spending that day'],
     'command-power': ['Command power: Daily income and costs', 'Command power: Spending that day'],
     stability: ['Stability & War support: Stability parts', 'Stability & War support: War support parts'],
+    'balance-of-power': ['Balance of power: Weekly change'],
     'resource-balance': ['Resources over time'],
     'equipment-stockpile': ['Stockpile over time'],
     fuel: ['Fuel: Fuel gained', 'Fuel: Fuel burned', 'Fuel: Individual current consumption'],

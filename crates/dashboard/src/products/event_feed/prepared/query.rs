@@ -76,6 +76,14 @@ const FAMILIES: [&str; 7] = [
     country_nukes::prepared::INCREASES,
     completion_stream::FAMILY,
 ];
+/// The feed facts' catalogue: diagnostics, observed tables, late references
+/// and each opener's continuing facts.
+pub(in crate::products::event_feed) type FactsCatalogue = (
+    Builder,
+    BTreeSet<String>,
+    LateIndex,
+    super::Edges,
+);
 /// Whether any country's focus was observed, the completions and countries
 /// without an event date by reason, and the late references.
 type FocusMetadata = (bool, BTreeMap<String, u64>, LateIndex);
@@ -85,7 +93,7 @@ struct Metadata {
     ideas: idea_history::ChangeMetadata,
     definitions: Option<BTreeMap<String, replay_data::rows::ModifierDefinitionRow>>,
     focus: FocusMetadata,
-    facts: (Builder, BTreeSet<String>, LateIndex),
+    facts: FactsCatalogue,
     nukes: country_nukes::prepared::IncreaseCatalogue,
     projects: completion_stream::Metadata,
 }
@@ -283,14 +291,12 @@ fn keys(source: usize, categories: &BTreeSet<EventFeedCategory>) -> Vec<u64> {
             .iter()
             .copied()
             .filter(|key| key & (1 << 63) == 0)
+            // Each fact stream filters by its own kind's category.
             .map(|key| {
                 (
                     key,
-                    if key == EventFeedKind::GuaranteeGranted as u64 {
-                        EventFeedCategory::Diplomacy
-                    } else {
-                        EventFeedCategory::WarsPeace
-                    },
+                    EventFeedKind::from_key(key)
+                        .map_or(EventFeedCategory::WarsPeace, EventFeedKind::category),
                 )
             })
             .collect(),

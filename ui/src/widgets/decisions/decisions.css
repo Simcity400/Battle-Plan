@@ -1,0 +1,18 @@
+/* Construction log's rows (constructionLog.css): the cost takes the value column,
+   wide enough for both currencies, and the art column goes with Game artwork off. */
+.construction-log.decisions-log .log-row { grid-template-columns: 58px 24px minmax(0, 1.5fr) minmax(0, 1fr) 10.5em 6.5em; }
+.construction-log.decisions-log.is-one-country .log-row { grid-template-columns: 58px 24px minmax(0, 1fr) 10.5em 6.5em; }
+.construction-log.decisions-log.is-no-art .log-row { grid-template-columns: 58px minmax(0, 1.5fr) minmax(0, 1fr) 10.5em 6.5em; }
+.construction-log.decisions-log.is-no-art.is-one-country .log-row { grid-template-columns: 58px minmax(0, 1fr) 10.5em 6.5em; }
+.construction-log.decisions-log .log-value { display: block; overflow: hidden; text-overflow: ellipsis; }
+.construction-log.decisions-log .construction-name.is-muted { color: var(--muted); font-weight: 400; }
+
+@container (min-width: 900px) {
+  .construction-log.decisions-log .log-row { grid-template-columns: 58px 24px minmax(0, 22em) minmax(0, 1fr) 10.5em 6.5em; }
+  .construction-log.decisions-log.is-no-art .log-row { grid-template-columns: 58px minmax(0, 22em) minmax(0, 1fr) 10.5em 6.5em; }
+}
+
+@container (max-width: 519px) {
+  .construction-log.decisions-log .log-row, .construction-log.decisions-log.is-one-country .log-row { grid-template-columns: 58px 24px minmax(0, 1fr) auto 5em; }
+  .construction-log.decisions-log.is-no-art .log-row, .construction-log.decisions-log.is-no-art.is-one-country .log-row { grid-template-columns: 58px minmax(0, 1fr) auto 5em; }
+}

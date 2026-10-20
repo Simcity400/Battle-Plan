@@ -66,7 +66,7 @@ use crate::{
     },
     prepared_stability::StabilityAccumulator,
     products::{
-        air_force, country_history::HistoryScan, equipment_losses, navy,
+        air_force, country_history::HistoryScan, equipment_losses, navy, politics_state,
         parts_race_prepared::Family as _, party_history, supply_health, territory, trade_flows,
     },
 };
@@ -702,6 +702,58 @@ impl Sampled for party_history::prepared::Prepared {
     }
 }
 
+// --- Political state -------------------------------------------------------
+
+/// Election schedules, governments in exile and balance-of-power membership.
+impl Sampled for politics_state::history::Prepared {
+    fn family() -> &'static prepass::Family {
+        &POLITICS_FAMILY
+    }
+
+    const TIMING: &'static str = "independent.politics_state";
+    const GATES: &'static [&'static str] = &[politics_state::history::QUERY];
+    #[cfg(test)]
+    const OBSERVED: &'static str = "politics_state.observed";
+
+    /// The politics rows, sliced exile inputs and their reads, the balance
+    /// records and members, and the country identities naming them.
+    fn tables() -> &'static [TableId] {
+        static TABLES: LazyLock<Vec<TableId>> =
+            LazyLock::new(|| union(&[politics_state::history::TABLES]));
+        &TABLES
+    }
+
+    fn new(_: &Block<'_>) -> Self {
+        Self::default()
+    }
+
+    fn observe(
+        &mut self,
+        frame: &DecodedFrame,
+        _: &Block<'_>,
+        changes: &FrameChanges,
+        _: &AtomicBool,
+        _: &mut Timings,
+    ) -> io::Result<()> {
+        self.observe_changes(frame, changes)
+    }
+
+    fn bytes(&self) -> usize {
+        Self::bytes(self)
+    }
+
+    fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        _: FormatVersion,
+        branch: u64,
+        cancelled: &AtomicBool,
+        _: &mut Timings,
+    ) -> io::Result<()> {
+        Self::flush(self, writer, branch, cancelled)
+    }
+}
+
 // --- Trade flows -----------------------------------------------------------
 
 /// Trade flows and the naming of their resources, which hourly preparation
@@ -1219,6 +1271,7 @@ family!(STABILITY_FAMILY, "stability");
 family!(LOSSES_FAMILY, "equipment_losses");
 family!(SUPPLY_FAMILY, "supply");
 family!(PARTIES_FAMILY, "parties");
+family!(POLITICS_FAMILY, "politics_state");
 family!(TRADE_FAMILY, "trade");
 family!(TERRITORY_FAMILY, "territory");
 
@@ -1263,6 +1316,9 @@ pub(in crate::prepared::pipeline) static SUPPLY: Entry<supply_health::prepared::
     Entry(PhantomData);
 /// Parties and leaders.
 pub(in crate::prepared::pipeline) static PARTIES: Entry<party_history::prepared::Prepared> =
+    Entry(PhantomData);
+/// Election schedules, exiles and balances of power.
+pub(in crate::prepared::pipeline) static POLITICS: Entry<politics_state::history::Prepared> =
     Entry(PhantomData);
 /// Trade flows.
 pub(in crate::prepared::pipeline) static TRADE: Entry<Trade> = Entry(PhantomData);

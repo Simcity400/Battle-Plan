@@ -15,6 +15,7 @@ export const browserTests = [
   'ui/src/components/CountryFlag.dom.test.ts',
   'ui/src/components/Select.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
+  'ui/src/widgets/politicsSizes.dom.test.ts',
   tabFullTest,
 ];
 const toolTests = ['tools/canvas-page.test.ts', 'tools/test-ui.test.mjs'];

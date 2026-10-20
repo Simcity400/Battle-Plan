@@ -496,6 +496,21 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             );
             Ok("Loss cause interface keys, cause names, equipment/design base names and Combat Log retention checked through equipment-losses preparation; recorded designs, loss records and writer coverage determine totals and active selections.".into())
         }
+        politics_state::civil_wars::CivilWars::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "civil-war rival lists and annexations need recorded CountryCivilWars rows and the native event history; unavailable offline"));
+            Ok("No content dependency: sides are named by their dated country identities, which the shared country checks cover.".into())
+        }
+        politics_state::PoliticsState::KEY | politics_state::history::PoliticsStateHistory::KEY => {
+            let balances = installed_content_core::power_balance::read_descriptions(&content.resolved.layers)
+                .map_err(|why| why.to_string())?;
+            for note in &balances.notes {
+                findings.push(Finding::new(Kind::Warning, "balance of power content", note.clone()));
+            }
+            findings.push(Finding::new(Kind::Offline, key,
+                "election schedules, governments in exile, balance membership, values, active ranges and drift-source rosters require recorded Politics, CountryStabilityInputs, PowerBalances, PowerBalanceMembers and PowerBalanceModifierBreakdowns rows; unavailable offline"));
+            Ok("Balance-of-power definitions, sides and authored ranges read through the recorded content stack, which the names localise plainly; drift sources resolve their static modifiers through the same stack.".into())
+        }
         world_tension::WorldTension::KEY => {
             Ok("No content dependency: tension, country contributions and already-built threat text come from recorded WorldTension, ThreatCountryAggregates and ThreatSources rows, with Countries/CountryLinks naming the countries; display_text only strips their presentation controls.".into())
         }
@@ -794,6 +809,15 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
                 "nuclear topbar GUI artwork and client visibility are outside the reused topic checks and have not been evaluated offline",
             ));
             Ok("Static content diagnostics are reported separately by the existing focus, party, idea, project, subject, country-name and flag checks; the feed reuses their topic helpers without another content inventory. Feed transitions, row-hour presentation and the nuclear indicator remain offline coverage limits.".into())
+        }
+        event_feed::prepared::script::EventChoices::KEY
+        | event_feed::prepared::script::Decisions::KEY => {
+            findings.push(Finding::new(
+                Kind::Offline,
+                key,
+                "dispatches, chosen options and decision lifecycles, with their joins, need the recorded native event history; unavailable offline",
+            ));
+            Ok("Event titles, pictures and authored options, and decision names, icons and effect descriptions, resolve per occurrence through the event feed's own content lookups over the recorded stack; there is no occurrence-independent inventory to check offline.".into())
         }
         _ => Err("No content preparation check is registered for this product.".into()),
     }

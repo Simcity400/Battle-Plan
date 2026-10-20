@@ -73,9 +73,224 @@ pub(crate) struct Fact {
     pub nuke_type: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<script_effects::Inputs>,
+    /// A native occurrence's typed operands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<Occurrence>,
+}
+
+/// A prepared fact's address: its stream key and ordinal.
+pub(crate) type FactRef = (u64, u64);
+
+/// What a continuing occurrence is matched by. A choice continues the
+/// dispatch of the same world, native event, instance and receiving country
+/// (the dispatch's target, the choosing command's actor);
+/// a decision edge continues the open selection or activation of the same
+/// world, country, decision and target. Nothing else joins them.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum Opening {
+    Event {
+        generation: u64,
+        event: (u32, u32),
+        instance: u32,
+        country: (u32, u32),
+    },
+    Decision {
+        generation: u64,
+        country: (u32, u32),
+        token: String,
+        target: Option<u32>,
+        numeric: Option<i32>,
+    },
+}
+
+/// Each opener's continuing facts, in stream order.
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Edges(
+    #[serde(with = "crate::prepared_production::map_pairs")] pub BTreeMap<FactRef, Vec<FactRef>>,
+);
+
+/// Opened occurrences and the edges continuing them.
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Links {
+    #[serde(with = "crate::prepared_production::map_pairs")]
+    open: BTreeMap<Opening, FactRef>,
+    /// Each opener's continuing facts, in stream order.
+    pub edges: Edges,
+    generation: Option<u64>,
+}
+
+impl Links {
+    /// Joins `occurrence`, about to be published at `at`, to the occurrence it
+    /// continues, and opens it for later edges. A new world closes every
+    /// opening of the old one.
+    fn link(&mut self, kind: EventFeedKind, occurrence: &mut Occurrence, at: FactRef) {
+        use EventFeedKind::*;
+        if self.generation != Some(occurrence.generation) {
+            self.open.clear();
+            self.generation = Some(occurrence.generation);
+        }
+        // A dispatch names its receiving country as its target; the option
+        // command names the country choosing as its actor.
+        let receiver = match kind {
+            ScriptEventFired | NewsEventFired => occurrence.target,
+            _ => occurrence.actor,
+        };
+        let event = occurrence
+            .event
+            .zip(occurrence.instance)
+            .map(|(event, instance)| Opening::Event {
+                generation: occurrence.generation,
+                event,
+                instance,
+                country: receiver,
+            });
+        let decision = occurrence.token.clone().map(|token| Opening::Decision {
+            generation: occurrence.generation,
+            country: occurrence.actor,
+            token,
+            target: occurrence.country_target,
+            numeric: occurrence.numeric_target,
+        });
+        match kind {
+            ScriptEventFired | NewsEventFired => {
+                if let Some(opening) = event {
+                    self.open.insert(opening, at);
+                }
+            }
+            EventOptionSelected => {
+                // A negative ordinal is the event's immediate effects, run on
+                // dispatch: it joins the occurrence but leaves it open for the choice.
+                let immediate = occurrence.option.is_some_and(|ordinal| ordinal < 0);
+                let opener = event.and_then(|opening| match immediate {
+                    true => self.open.get(&opening).copied(),
+                    false => self.open.remove(&opening),
+                });
+                if let Some(opener) = opener {
+                    occurrence.opener = Some(opener);
+                    self.edges.0.entry(opener).or_default().push(at);
+                }
+            }
+            DecisionSelected => {
+                if let Some(opening) = decision {
+                    self.open.insert(opening, at);
+                }
+            }
+            DecisionActivated
+            | DecisionDurationChanged
+            | DecisionRemovalEffect
+            | DecisionCancellationEffect
+            | DecisionCompletionEffect
+            | DecisionTimeoutEffect
+            | DecisionCompleted
+            | DecisionCancelled
+            | DecisionTimedOut
+            | DecisionRemoved => {
+                let Some(opening) = decision else {
+                    return;
+                };
+                match self.open.get(&opening).copied() {
+                    Some(opener) => {
+                        occurrence.opener = Some(opener);
+                        self.edges.0.entry(opener).or_default().push(at);
+                        if matches!(
+                            kind,
+                            DecisionCompleted | DecisionCancelled | DecisionTimedOut | DecisionRemoved
+                        ) {
+                            self.open.remove(&opening);
+                        }
+                    }
+                    // An activation with no open selection starts its own
+                    // episode: a mission, or a selection before the recording.
+                    None if kind == DecisionActivated => {
+                        self.open.insert(opening, at);
+                    }
+                    None => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// What attributes a power mutation to a decision execution: its native
+/// hour, the country's id and instance, the decision's token and whether it
+/// is the timeout's charge rather than the selection's.
+type ChargeKey = (i32, (u32, u32), String, bool);
+
+fn charge_key(row: &EventFeedRow, occurrence: &Occurrence) -> Option<ChargeKey> {
+    let timeout = match row.kind {
+        EventFeedKind::DecisionSelected => false,
+        EventFeedKind::DecisionTimeoutEffect => true,
+        _ => return None,
+    };
+    Some((row.hour, occurrence.actor, occurrence.token.clone()?, timeout))
+}
+
+/// The power charges the hour's recorded mutations prove for each decision
+/// execution: mutations the writer attributed to a decision's execution or
+/// timeout, for a country whose political and command power were both
+/// captured over the mutation's hour, summed per currency as realized.
+/// Anything else proves nothing, so its execution keeps no cost; a currency
+/// with no attributed change is not listed.
+pub(crate) fn charges(frame: &DecodedFrame) -> BTreeMap<ChargeKey, Vec<ScriptCost>> {
+    use replay_data::rows::{PoliticsCaptureCoverageRow, PowerAction, PowerCause, PowerCurrency};
+    let (Ok(changes), Ok(coverage)) = (
+        frame.complete::<tables::CountryPowerChanges>(),
+        frame.complete::<tables::PoliticsCaptureCoverage>(),
+    ) else {
+        return BTreeMap::new();
+    };
+    let streams = PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::CP;
+    let mut sums = BTreeMap::<ChargeKey, BTreeMap<ScriptCurrency, i128>>::new();
+    for row in changes {
+        let timeout = match (row.cause, row.identity.action) {
+            (PowerCause::Decision | PowerCause::TargetedDecision, PowerAction::Execute) => false,
+            (PowerCause::DecisionTimeout, PowerAction::Timeout) => true,
+            _ => continue,
+        };
+        let covered = coverage.iter().any(|cover| {
+            cover.country == row.country
+                && cover.instance == row.instance
+                && cover.since_hour <= row.hour
+                && row.hour <= cover.through_hour
+                && cover.streams & streams == streams
+        });
+        let token = std::str::from_utf8(installed_content_core::parser::c_string(&row.identity.item_key));
+        let Ok(token) = token else {
+            continue;
+        };
+        if !covered || token.is_empty() {
+            continue;
+        }
+        let currency = match row.currency {
+            PowerCurrency::Political => ScriptCurrency::PoliticalPower,
+            PowerCurrency::Command => ScriptCurrency::CommandPower,
+        };
+        *sums
+            .entry((row.hour, (row.country, row.instance), token.to_owned(), timeout))
+            .or_default()
+            .entry(currency)
+            .or_default() += row.realized_delta_raw();
+    }
+    sums.into_iter()
+        .map(|(key, currencies)| {
+            (
+                key,
+                currencies
+                    .into_iter()
+                    .filter(|(_, amount)| *amount != 0)
+                    .map(|(currency, amount)| ScriptCost {
+                        currency,
+                        amount: amount.to_string(),
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 pub(crate) mod query;
+pub mod script;
 pub(crate) use query::query;
 
 #[cfg(test)]
@@ -170,6 +385,8 @@ pub(crate) struct Observer {
     late: crate::prepared::series::LateIndex,
     diagnostics: Builder,
     observed: BTreeSet<String>,
+    #[serde(default)]
+    links: Links,
 }
 impl Default for Observer {
     fn default() -> Self {
@@ -180,6 +397,7 @@ impl Default for Observer {
             late: Default::default(),
             diagnostics: Builder::new(0, 0),
             observed: BTreeSet::new(),
+            links: Links::default(),
         }
     }
 }
@@ -224,14 +442,67 @@ impl Observer {
             );
         }
         self.diagnostics.feed.rows.sort_by(row_order);
-        for row in self.diagnostics.feed.rows.drain(..) {
-            let key = (row.kind as u64) | (u64::from(row.read_hour > row.hour) << 63);
-            let ordinal = self.events.state(key).map_or(0, |state| state.events);
+        let mut charges = charges(frame);
+        // An execution shares its charge key with no other of this read, or
+        // the charge stays unattributed.
+        let mut executions = BTreeMap::<ChargeKey, u32>::new();
+        for row in &self.diagnostics.feed.rows {
+            if let Some(key) = self
+                .diagnostics
+                .occurrences
+                .get(&row.id)
+                .and_then(|occurrence| charge_key(row, occurrence))
+            {
+                *executions.entry(key).or_default() += 1;
+            }
+        }
+        // Facts publish in row order; their joins follow the native order,
+        // so an edge continues the occurrence open when it ran.
+        let rows: Vec<EventFeedRow> = self.diagnostics.feed.rows.drain(..).collect();
+        let mut next = BTreeMap::<u64, u64>::new();
+        let at: Vec<FactRef> = rows
+            .iter()
+            .map(|row| {
+                let key = (row.kind as u64) | (u64::from(row.read_hour > row.hour) << 63);
+                let ordinal = next
+                    .entry(key)
+                    .or_insert_with(|| self.events.state(key).map_or(0, |state| state.events));
+                let at = (key, *ordinal);
+                *ordinal += 1;
+                at
+            })
+            .collect();
+        let mut occurrences: Vec<Option<Occurrence>> = rows
+            .iter()
+            .map(|row| self.diagnostics.occurrences.remove(&row.id))
+            .collect();
+        let mut native: Vec<usize> = (0..rows.len())
+            .filter(|&index| occurrences[index].is_some())
+            .collect();
+        native.sort_by_key(|&index| {
+            occurrences[index]
+                .as_ref()
+                .map(|occurrence| (occurrence.generation, occurrence.sequence))
+        });
+        for index in native {
+            let row = &rows[index];
+            let Some(occurrence) = occurrences[index].as_mut() else {
+                continue;
+            };
+            if let Some(charge) = charge_key(row, occurrence)
+                && executions.get(&charge) == Some(&1)
+            {
+                occurrence.costs = charges.remove(&charge);
+            }
+            self.links.link(row.kind, occurrence, at[index]);
+        }
+        for ((row, occurrence), (key, ordinal)) in rows.into_iter().zip(occurrences).zip(at) {
             self.late.insert(row.hour, row.read_hour, key, ordinal);
             self.events.event(
                 key,
                 row.read_hour,
                 &Fact {
+                    occurrence,
                     script: self
                         .diagnostics
                         .script_inputs
@@ -286,6 +557,7 @@ impl Observer {
                     row,
                     nuke_type: None,
                     script: None,
+                    occurrence: None,
                 },
             )?;
         }
@@ -310,6 +582,7 @@ impl Observer {
                     row,
                     nuke_type: Some(strike.nuke_type),
                     script: None,
+                    occurrence: None,
                 });
             }
         }
@@ -340,7 +613,7 @@ impl Observer {
             "event-feed-facts",
             branch,
             &BTreeMap::new(),
-            &(&self.diagnostics, &self.observed, &self.late),
+            &(&self.diagnostics, &self.observed, &self.late, &self.links.edges),
         )
     }
 }

@@ -20,6 +20,10 @@ export const PAGES = [
     ['command-power', 0, 36, 6, 10], ['command-power-spending', 6, 36, 6, 10],
     ['national-spirits', 0, 46, 4, 8], ['spirit-history', 4, 46, 8, 8],
     ['idea-timeline', 0, 54, 12, 9],
+    ['balance-of-power', 0, 63, 8, 12], ['next-elections', 8, 63, 4, 12],
+    ['event-choices', 0, 75, 12, 12],
+    ['decisions', 0, 87, 7, 12], ['governments-in-exile', 7, 87, 5, 12],
+    ['civil-wars', 0, 99, 12, 10],
   ] },
   { id: 'diplomacy', label: 'Diplomacy', icon: 'handshake', panels: [
     ['factions', 0, 0, 6, 10], ['subjects', 6, 0, 6, 10],

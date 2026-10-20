@@ -36,6 +36,7 @@ All countries by default, or manual/groups; campaign/follow/pin/range, category 
 | [EventFeedWidget.tsx](EventFeedWidget.tsx), [useEventFeed.ts](useEventFeed.ts) | Virtual log, cursor demand and source ownership. |
 | [eventFeedData.ts](eventFeedData.ts) | Validation, filtering, read cutoffs and row wording; adjacent tests. |
 | [definition.ts](definition.ts), [index.ts](index.ts), [eventFeed.css](eventFeed.css) | Categories, shared options, registration and layout. |
+| [scriptOccurrences.ts](scriptOccurrences.ts), [useScriptOccurrences.ts](useScriptOccurrences.ts) | The occurrence pages [Event choices](../event-choices/README.md) and [Decisions](../decisions/README.md) read: validation, playback cuts, recording breaks and the feed's paging. |
 
 Scripted event fires, news, selected options, decisions and missions have distinct Politics rows. Repeated native instances keep distinct occurrence IDs and exact hours. Tooltips retain chosen ordinals, captured bound scope operands and available lifecycle results. Static titles, bodies, pictures and authored option labels resolve through recorded content; unavailable dynamic inputs appear in diagnostics.
 

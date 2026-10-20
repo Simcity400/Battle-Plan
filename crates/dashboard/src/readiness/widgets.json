@@ -484,6 +484,45 @@
       "requests": [
         {"product": "event-feed", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$last", "categories": ["warsPeace", "diplomacy", "politics", "milestones"], "cursor": null, "pageSize": 256}}
       ]
+    },
+    {
+      "kind": "event-choices",
+      "requests": [
+        {"product": "event-choices", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$last", "cursor": null, "pageSize": 256, "kinds": ["scriptEventFired", "newsEventFired"]}}
+      ]
+    },
+    {
+      "kind": "decisions",
+      "requests": [
+        {"product": "decisions", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$last", "cursor": null, "pageSize": 256, "kinds": []}}
+      ]
+    },
+    {
+      "kind": "next-elections",
+      "requests": [
+        {"product": "politics-state-history", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "mode": "elections"}}
+      ]
+    },
+    {
+      "kind": "governments-in-exile",
+      "requests": [
+        {"product": "politics-state-history", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "mode": "exiles"}}
+      ],
+      "auxiliary": [
+        {"product": "politics-state", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$last", "view": "exiles"}}
+      ]
+    },
+    {
+      "kind": "balance-of-power",
+      "requests": [
+        {"product": "politics-state-history", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "mode": "country", "tag": "$tag"}}
+      ]
+    },
+    {
+      "kind": "civil-wars",
+      "requests": [
+        {"product": "civil-wars", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}}
+      ]
     }
   ]
 }

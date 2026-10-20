@@ -70,6 +70,14 @@ impl Database {
             .get(&parser::c_string(id).to_ascii_lowercase())
     }
 
+    /// A balance's authored ranges in authored order, as the stack resolved
+    /// them; None for a balance the content does not declare.
+    pub fn ranges(&self, balance: &[u8]) -> Option<&[Range]> {
+        self.balances
+            .get(&parser::c_string(balance).to_ascii_lowercase())
+            .map(Vec::as_slice)
+    }
+
     pub fn from_parsed(entries: impl IntoIterator<Item = (Definition, Vec<Range>)>) -> Self {
         let mut database = Self::default();
         for (definition, ranges) in entries {

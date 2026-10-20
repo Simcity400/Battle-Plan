@@ -221,7 +221,7 @@ export function eventDescription(at: FeedEvent, name: (tag: string) => string, s
 }
 
 /** Missing captures and unsupported forms have one explicit presentation adapter. */
-export function notRecorded(reply: EventFeedReply): string[] {
+export function notRecorded(reply: Pick<EventFeedReply, 'unavailable'>): string[] {
   return reply.unavailable.map(item => `${item.label}: Not recorded — ${item.reason}${item.count === null ? '' : ` (${item.count.toLocaleString()} counted)`}`);
 }
 

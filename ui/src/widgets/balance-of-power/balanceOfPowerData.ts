@@ -1,0 +1,435 @@
+// Balance of power: validation of the prepared history and the hour detail,
+// and every local lookup the widget draws from them. Every name, range, bound
+// and side comes from the reply (the recording's content stack); nothing here
+// knows a balance, range or side of its own.
+import type { BalanceHistory, BalanceRange, BalanceRecord, BalanceSide, HolderBalances, HourSpan, PoliticsHistoryReply, PoliticsRun, PoliticsStateReply } from '../../generated/dashboard';
+import type { DrillPart } from '../../charts/drill/parts';
+import type { Run, Span } from '../../charts/series';
+import { runAt } from '../../charts/series.ts';
+import type { SortValue } from '../../charts/table/logic';
+import { dayLabel } from '../../charts/draw.ts';
+import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import { WEEKLY_BREAKDOWN } from './definition.ts';
+import { inSpans } from '../../charts/timeline/layout.ts';
+import { runState, startUnseen } from '../../charts/timeline/runState.ts';
+import { formatFixed, formatSigned } from '../../charts/valueAxis.ts';
+import { object, opaqueTag } from '../../dashboard/validation.ts';
+import { fixed5Text, integerText, isHolderTags, isPoliticsRuns, preparedThroughHour, readAt, tagAt, validatePoliticsHistory, valueAt } from '../../dashboard/politicsHistory.ts';
+import { preparedPending } from '../../dashboard/preparedPrefix.ts';
+
+/** Balance values, bounds and contributions are native fixed5 decimals. */
+export const BALANCE_SCALE = 5;
+const UNIT = 100_000;
+
+export const BALANCE_UNAVAILABLE = 'Balance name unavailable';
+export const RANGE_UNAVAILABLE = 'Range name unavailable';
+export const SIDE_UNAVAILABLE = 'Side name unavailable';
+export const SOURCE_UNAVAILABLE = 'Modifier name unavailable';
+export const COUNTRY_UNAVAILABLE = 'Country unavailable';
+/** The part of the weekly change no derived source explains (the drills' shared wording). */
+
+/** One holder's (or the country's) balances and the one the game shows it. */
+export type BalanceSubject = Pick<HolderBalances, 'balances' | 'shown'>;
+export type BalanceNames = PoliticsHistoryReply['names'];
+
+// ---------------------------------------------------------------- validation
+
+const token = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
+const nullableText = (value: unknown) => value === null || typeof value === 'string';
+const isSide = (value: unknown): value is BalanceSide => object(value) && typeof value.token === 'string' && nullableText(value.name);
+const bound = (value: unknown) => value === null || typeof value === 'string' && fixed5Text(value);
+/** Bounds are null where the recorded content does not establish them. */
+const isRange = (value: unknown): value is BalanceRange => object(value) && typeof value.token === 'string' && nullableText(value.name)
+  && bound(value.min) && bound(value.max);
+const isNames = (value: unknown) => object(value) && Object.values(value).every(name => typeof name === 'string');
+const tokenRun = (value: string) => value.length > 0;
+
+/** One balance identity's history: its authored presentation and its value, range and trending runs. */
+export function isBalanceHistory(value: unknown): value is BalanceHistory {
+  return object(value) && token(value.token) && nullableText(value.name)
+    && (value.left === null || isSide(value.left)) && (value.right === null || isSide(value.right))
+    && Array.isArray(value.ranges) && value.ranges.every(isRange)
+    && isPoliticsRuns(value.values, fixed5Text) && isPoliticsRuns(value.record, integerText)
+    && isPoliticsRuns(value.range, tokenRun) && isPoliticsRuns(value.trending, tokenRun);
+}
+const isBalances = (value: unknown) => Array.isArray(value) && value.every(isBalanceHistory)
+  && new Set(value.map(balance => (balance as BalanceHistory).token)).size === value.length;
+
+const isHolders = (reply: Record<string, unknown>) => isNames(reply.names) && Array.isArray(reply.holderBalances)
+  && reply.holderBalances.every(entry => object(entry) && token(entry.holder) && isHolderTags(entry.tags)
+    && isBalances(entry.balances) && isPoliticsRuns(entry.shown, tokenRun));
+
+/** The `country` history: every holder that held the country's tag, each whole. */
+export function validateCountryBalances(value: unknown): PoliticsHistoryReply {
+  return validatePoliticsHistory(value, 'country', isHolders);
+}
+
+/** The `balances` history: every holder's tags, balances and shown balance. */
+export function validateHolderBalances(value: unknown): PoliticsHistoryReply {
+  return validatePoliticsHistory(value, 'balances', isHolders);
+}
+
+/** The holder a country view follows at `at`: the one holding `tag` then, else the
+ * one that held it last before, else the first to hold it. Its whole history comes
+ * with it, through renames; another holder that reuses the tag is never joined. */
+export function countryHolder(reply: Pick<PoliticsHistoryReply, 'holderBalances'>, tag: string, at: number): HolderBalances | null {
+  const held = reply.holderBalances;
+  const now = held.find(holder => tagAt(holder.tags, at) === tag);
+  if (now) return now;
+  let before: { holder: HolderBalances; hour: number } | null = null;
+  for (const holder of held) for (const entry of holder.tags)
+    if (entry.tag === tag && entry.hour <= at && (!before || entry.hour > before.hour)) before = { holder, hour: entry.hour };
+  return before?.holder ?? held.find(holder => holder.tags.some(entry => entry.tag === tag)) ?? null;
+}
+
+const nullableFixed5 = (value: unknown) => value === null || typeof value === 'string' && fixed5Text(value);
+const isRecord = (value: unknown): value is BalanceRecord => object(value) && typeof value.ordinal === 'number' && Number.isSafeInteger(value.ordinal)
+  && token(value.token) && nullableText(value.name) && typeof value.value === 'string' && fixed5Text(value.value)
+  && isSide(value.left) && isSide(value.right) && (value.trending === null || isSide(value.trending))
+  && (value.range === null || isRange(value.range)) && Array.isArray(value.ranges) && value.ranges.every(isRange)
+  && Array.isArray(value.members) && value.members.every(member => object(member) && (member.tag === null || opaqueTag(member.tag))
+    && nullableFixed5(member.daily) && nullableFixed5(member.weekly))
+  && (value.sources === null || Array.isArray(value.sources) && value.sources.every(source => object(source) && typeof source.token === 'string'
+    && nullableText(source.name) && typeof source.daily === 'string' && fixed5Text(source.daily) && typeof source.weekly === 'string' && fixed5Text(source.weekly)));
+
+/** The hour detail: every stored record at `hour` with members and drift sources. */
+export function validateBalanceDetails(value: unknown, hour: number): PoliticsStateReply {
+  if (!object(value) || typeof value.branchId !== 'string' || value.hour !== hour || value.view !== 'balances'
+    || !Array.isArray(value.balances) || !value.balances.every(isRecord)
+    || !(value.current === null || Array.isArray(value.current) && value.current.every(entry => object(entry) && opaqueTag(entry.tag)
+      && typeof entry.record === 'number' && Number.isSafeInteger(entry.record)))
+    || !Array.isArray(value.unavailable) || !value.unavailable.every(entry => object(entry) && typeof entry.label === 'string'
+      && typeof entry.reason === 'string' && typeof entry.count === 'number' && Number.isSafeInteger(entry.count))
+    || !Array.isArray(value.warnings) || value.warnings.some(warning => typeof warning !== 'string'))
+    throw new Error('The balance of power details reply is malformed.');
+  return value as unknown as PoliticsStateReply;
+}
+
+// ---------------------------------------------------------------- names and numbers
+
+export const balanceName = (balance: Pick<BalanceHistory, 'token' | 'name'>, names: BalanceNames): string | null =>
+  balance.name ?? names[balance.token] ?? null;
+export function rangeName(balance: Pick<BalanceHistory, 'ranges'>, range: string, names: BalanceNames): string | null {
+  return names[range] ?? balance.ranges.find(item => item.token === range)?.name ?? null;
+}
+export function sideName(balance: Pick<BalanceHistory, 'left' | 'right'>, side: string, names: BalanceNames): string | null {
+  return names[side] ?? [balance.left, balance.right].find(item => item?.token === side)?.name ?? null;
+}
+
+/** The header's value: two decimals, as the brief's "−0.34". */
+export const valueText = (raw: string | bigint) => formatFixed(raw, BALANCE_SCALE, 2);
+/** A value exactly, signed. */
+export const exactValue = (raw: string | bigint) => formatSigned(raw, BALANCE_SCALE, BALANCE_SCALE);
+/** A contribution exactly, signed. */
+export const changeText = (raw: string | bigint) => formatSigned(raw, BALANCE_SCALE, BALANCE_SCALE);
+export const plotValue = (raw: string | bigint) => Number(typeof raw === 'bigint' ? raw : BigInt(raw)) / UNIT;
+const magnitude = (raw: string) => { const value = BigInt(raw); return value < 0n ? -value : value; };
+
+/** The value axis: the authored ranges' bounds as gridlines, and a scale holding
+ * every range (and the stored value's full span). */
+export function balanceAxis(balance: Pick<BalanceHistory, 'ranges'> | null): { min: number; max: number; ticks: number[] | undefined } {
+  const bounds = [...new Set((balance?.ranges ?? []).flatMap(range => [range.min, range.max]).filter((bound): bound is string => bound !== null))]
+    .map(plotValue).sort((a, b) => a - b);
+  return { min: Math.min(-1, bounds[0] ?? -1), max: Math.max(1, bounds.at(-1) ?? 1), ticks: bounds.length ? bounds : undefined };
+}
+
+// ---------------------------------------------------------------- one country
+
+export interface BalanceAt { value: string | null; range: string | null; trending: string | null }
+export function balanceAt(balance: BalanceHistory, hour: number): BalanceAt {
+  return { value: valueAt(balance.values, hour), range: valueAt(balance.range, hour), trending: valueAt(balance.trending, hour) };
+}
+
+/** The runs of hours the balance held a value, joined where they touch; a gap separates them. */
+export function lifetimeSpans(balance: Pick<BalanceHistory, 'values'>, limit = Number.POSITIVE_INFINITY): Span[] {
+  const spans: Span[] = [];
+  for (const run of balance.values) {
+    if (run.firstHour > limit) break;
+    const lastHour = Math.min(run.lastHour, limit);
+    const last = spans.at(-1);
+    if (last && last.lastHour + 1 === run.firstHour) last.lastHour = lastHour;
+    else spans.push({ firstHour: run.firstHour, lastHour });
+  }
+  return spans;
+}
+
+/** The balances shown by `limit` (Live cuts later ones), in the order they began. */
+export function visibleBalances(subject: BalanceSubject, limit: number): BalanceHistory[] {
+  return subject.balances.filter(balance => balance.values.length && balance.values[0].firstHour <= limit)
+    .map((balance, index) => ({ balance, index }))
+    .sort((a, b) => a.balance.values[0].firstHour - b.balance.values[0].firstHour || a.index - b.index)
+    .map(item => item.balance);
+}
+
+export interface BalanceChoice {
+  balance: BalanceHistory | null;
+  /** The game's own choice (no saved Balance, or a saved one this country never had). */
+  automatic: boolean;
+  /** A saved Balance this country does not have by `limit`. */
+  missing: string | null;
+}
+
+/** The balance a one-country view shows at `at`: the saved one, else the one the game
+ * shows; when the game shows none at `at`, the latest it showed before, else the first
+ * it shows by `limit`, else the first the country belonged to. */
+export function chooseBalance(subject: BalanceSubject, saved: string, at: number, limit: number): BalanceChoice {
+  const visible = visibleBalances(subject, limit);
+  const byToken = new Map(visible.map(balance => [balance.token, balance]));
+  if (saved && byToken.has(saved)) return { balance: byToken.get(saved)!, automatic: false, missing: null };
+  const missing = saved ? saved : null;
+  const shown = (run: PoliticsRun | null | undefined) => run && byToken.has(run.value) ? byToken.get(run.value)! : null;
+  const here = at <= limit ? shown(runAt(subject.shown, at)) : null;
+  const before = here ?? shown([...subject.shown].reverse().find(run => run.firstHour <= Math.min(at, limit)));
+  const after = before ?? shown(subject.shown.find(run => run.firstHour <= limit));
+  return { balance: after ?? visible[0] ?? null, automatic: true, missing };
+}
+
+/** What the header line says of the balance at `at`. */
+export type BalanceStatus =
+  | { kind: 'active'; value: string; range: string | null; trending: string | null }
+  | { kind: 'starts'; hour: number }
+  | { kind: 'ended'; hour: number; by: boolean; range: string | null }
+  | { kind: 'last-recorded'; hour: number; range: string | null; preparing: boolean }
+  | { kind: 'unknown' };
+
+/** The balance's state at `at`, honest about gaps: hours not recorded (`unknown`) or
+ * still being prepared (`pending`) never end it, and a value is never carried across them. */
+export function balanceStatusAt(balance: BalanceHistory, at: number, limit: number, unknown: readonly Span[], pending: (hour: number) => boolean): BalanceStatus {
+  const now = balanceAt(balance, at);
+  if (now.value !== null && at <= limit) return { kind: 'active', value: now.value, range: now.range, trending: now.trending };
+  const spans = lifetimeSpans(balance, limit);
+  const state = runState(spans, at, unknown);
+  switch (state.kind) {
+    case 'held':
+    case 'none': {
+      const next = spans.find(span => span.firstHour > at);
+      return next ? { kind: 'starts', hour: next.firstHour } : { kind: 'unknown' };
+    }
+    case 'ended': {
+      const last = state.lastSeen ?? state.at - 1;
+      return { kind: 'ended', hour: state.at, by: state.lastSeen != null, range: valueAt(balance.range, last) };
+    }
+    case 'unknown': return { kind: 'last-recorded', hour: state.lastSeen, range: valueAt(balance.range, state.lastSeen), preparing: pending(state.lastSeen + 1) };
+  }
+}
+
+/** The header's muted line: "<range> · −0.34 · toward <side>", or where the balance
+ * stands in its lifetime when it holds no value at the hour. */
+export function statusText(status: BalanceStatus, balance: BalanceHistory, names: BalanceNames): string {
+  const range = (token: string | null) => token === null ? null : rangeName(balance, token, names) ?? RANGE_UNAVAILABLE;
+  const inRange = (token: string | null) => token === null ? '' : ` in ${range(token)}`;
+  switch (status.kind) {
+    case 'active': return [range(status.range), valueText(status.value),
+      status.trending === null ? null : `toward ${sideName(balance, status.trending, names) ?? SIDE_UNAVAILABLE}`].filter(Boolean).join(' · ');
+    case 'starts': return `Starts ${dayLabel(status.hour)}`;
+    case 'ended': return `${status.by ? 'Ended by' : 'Ended'} ${dayLabel(status.hour)}${inRange(status.range)}`;
+    case 'last-recorded': return status.preparing ? `Held through ${dayLabel(status.hour)}${inRange(status.range)}; later still being prepared`
+      : `Last recorded ${dayLabel(status.hour)}${inRange(status.range)}`;
+    case 'unknown': return 'Not recorded at this date';
+  }
+}
+
+/** Why a one-country view has no balance to show: the hour is still being prepared, the
+ * balances were not read at it, or none is held by `limit` (`recorded`: some hours by then
+ * were not read, so the absence is only the recording's). */
+export type BalanceAbsence = { kind: 'preparing' } | { kind: 'unread' } | { kind: 'none'; recorded: boolean };
+export function balanceAbsence(known: readonly HourSpan[], at: number, limit: number, unknown: readonly Span[], pending: readonly Span[]): BalanceAbsence {
+  if (inSpans(pending, at)) return { kind: 'preparing' };
+  if (!readAt(known, at)) return { kind: 'unread' };
+  return { kind: 'none', recorded: unknown.some(span => span.firstHour <= limit) };
+}
+
+/** The line: each recorded value, with gaps left open. */
+export function plotRuns(balance: Pick<BalanceHistory, 'values'> | null): Run[] {
+  return balance ? balance.values.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value: plotValue(run.value) })) : [];
+}
+
+export interface BalanceLane { token: string; name: string | null; spans: Span[]; cut: boolean }
+
+/** One lane per balance the country had by `limit`, each its lifetime, cut at `limit`. */
+export function balanceLanes(subject: BalanceSubject, names: BalanceNames, limit: number): BalanceLane[] {
+  return visibleBalances(subject, limit).map(balance => {
+    const spans = lifetimeSpans(balance, limit);
+    return { token: balance.token, name: balanceName(balance, names), spans, cut: (spans.at(-1)?.lastHour ?? limit) < (balance.values.at(-1)?.lastHour ?? limit) };
+  });
+}
+
+/** The hours still being prepared: those the reply names, and any past its last prepared hour. */
+export function pendingSpans(pending: readonly Span[], lastHour: number | null, branch: Span): Span[] {
+  const spans = pending.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour }));
+  const from = Math.max(branch.firstHour, lastHour === null ? branch.firstHour : lastHour + 1);
+  if (from <= branch.lastHour && !spans.some(span => span.firstHour <= from && from <= span.lastHour)) spans.push({ firstHour: from, lastHour: branch.lastHour });
+  return spans.sort((a, b) => a.firstHour - b.firstHour);
+}
+
+/** "Pin as widget": the same widget showing the weekly change of this balance, at the
+ * picked day or following playback. */
+export function pinBalanceDrill(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, hour: number, follow: boolean, token: string): WidgetSpec {
+  const pinned = pinnedBreakdown(source, WEEKLY_BREAKDOWN, track.id);
+  const offset = Math.floor(hour) - track.branch.firstHour;
+  return { ...pinned, options: { ...pinned.options, balance: token },
+    time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } };
+}
+
+// ---------------------------------------------------------------- all countries
+
+export interface BalanceMemberRef { holder: string; tag: string }
+export interface BalanceRow {
+  key: string;
+  token: string;
+  name: string | null;
+  value: string;
+  range: string | null;
+  trending: string | null;
+  /** The countries listing this record at the hour, in holder order. */
+  members: BalanceMemberRef[];
+  /** The first member's history of this balance (shared records hold one value). */
+  balance: BalanceHistory;
+  /** The first hour of the member's current lifetime span. */
+  since: number;
+}
+export interface BalanceRowsView { rows: BalanceRow[]; untagged: number }
+
+/** Every balance record active at `hour`: holders the same stored record listed at
+ * that read share its row (equal values never join records); a record is kept when
+ * any member matches. Null where the balances were not read at `hour`: no row there
+ * says nothing of what was active. */
+export function balanceRowsAt(reply: Pick<PoliticsHistoryReply, 'holderBalances' | 'names' | 'known'>, hour: number,
+  matches: (tag: string, hour: number) => boolean): BalanceRowsView | null {
+  if (!readAt(reply.known, hour)) return null;
+  const rows = new Map<string, BalanceRow>();
+  const kept = new Set<string>();
+  let untagged = 0;
+  for (const holder of reply.holderBalances) {
+    let tag: string | null | undefined;
+    for (const balance of holder.balances) {
+      const run = runAt(balance.values, hour);
+      if (!run) continue;
+      tag ??= tagAt(holder.tags, hour);
+      if (tag === null) { untagged++; break; }
+      const range = valueAt(balance.range, hour), trending = valueAt(balance.trending, hour);
+      // A record's stored position names it within one read only; without it the
+      // holder's record is its own row.
+      const record = valueAt(balance.record, hour);
+      const group = JSON.stringify(record === null ? [balance.token, null, holder.holder] : [balance.token, record]);
+      let row = rows.get(group);
+      if (!row) {
+        const since = lifetimeSpans(balance, hour).at(-1)?.firstHour ?? run.firstHour;
+        row = { key: JSON.stringify([balance.token, holder.holder]), token: balance.token, name: balanceName(balance, reply.names), value: run.value,
+          range, trending, members: [], balance, since };
+        rows.set(group, row);
+      }
+      row.members.push({ holder: holder.holder, tag });
+      if (matches(tag, hour)) kept.add(group);
+    }
+  }
+  return { rows: [...rows].flatMap(([group, row]) => kept.has(group) ? [row] : []), untagged };
+}
+
+/** Sort operands: Value sorts by strength of lean (its magnitude), exactly. */
+export const ROW_VALUES = {
+  value: (row: BalanceRow): SortValue => magnitude(row.value),
+};
+
+/** The holder whose history a row opens: the first member the selection matches, else the first. */
+export function rowHolder(row: BalanceRow, hour: number, matches: (tag: string, hour: number) => boolean): BalanceMemberRef {
+  return row.members.find(member => matches(member.tag, hour)) ?? row.members[0];
+}
+
+/** Whether the row's span began at an unknown time (the branch start, or after a gap). */
+export const rowStartUnseen = (row: Pick<BalanceRow, 'since'>, branchFirstHour: number, unknown: readonly Span[]) => startUnseen(row.since, branchFirstHour, unknown);
+
+// ---------------------------------------------------------------- hour detail
+
+/** The stored record behind a country's balance at the detail's hour: the game's own
+ * current record when it is this balance, else the first record of this balance in
+ * stored order listing the country. Null `token` asks for the game's own. */
+export function recordFor(reply: Pick<PoliticsStateReply, 'balances' | 'current'>, token: string | null, tag: string): BalanceRecord | null {
+  const current = reply.current?.find(entry => entry.tag === tag);
+  const own = current ? reply.balances.find(record => record.ordinal === current.record) ?? null : null;
+  if (own && (token === null || own.token === token)) return own;
+  if (token === null) return null;
+  return reply.balances.find(record => record.token === token && record.members.some(member => member.tag === tag)) ?? null;
+}
+
+/** The hour detail's refusal label when the balance tables were not read at its hour. */
+export const BALANCES_NOT_READ = 'balances of power';
+
+/** What a weekly change shows at the detail's hour: not recorded (the balance tables
+ * were not read then, so no record says nothing), still being prepared (the history
+ * does not yet cover `at`, where the country's holder is chosen, and the detail's hour,
+ * where it is named: a cold or partial history could miss a holder or a rename), the
+ * holder's record, or none active. `token` null asks for the record the game shows. */
+export type WeeklyState = { kind: 'unread' } | { kind: 'preparing' } | { kind: 'record'; record: BalanceRecord } | { kind: 'none' };
+export function weeklyState(history: Pick<PoliticsHistoryReply, 'holderBalances' | 'lastHour'>, tag: string, at: number,
+  detail: Pick<PoliticsStateReply, 'balances' | 'current' | 'hour' | 'unavailable'>, token: string | null): WeeklyState {
+  if (detail.unavailable.some(entry => entry.label === BALANCES_NOT_READ)) return { kind: 'unread' };
+  if (!preparedThroughHour(history, at) || !preparedThroughHour(history, detail.hour)) return { kind: 'preparing' };
+  const holder = countryHolder(history, tag, at);
+  // No holder of the tag yet, while later hours are still being prepared: a later
+  // rename to the tag could still establish one.
+  if (!holder && preparedPending(history).length) return { kind: 'preparing' };
+  const record = holder ? holderRecord(detail, holder, token) : null;
+  return record ? { kind: 'record', record } : { kind: 'none' };
+}
+
+/** The followed holder's record at the detail's hour, found by the tag the holder held
+ * then, never by the tag chosen: before a rename it held another, and another holder
+ * may hold the chosen one. */
+export function holderRecord(reply: Pick<PoliticsStateReply, 'balances' | 'current' | 'hour'>, holder: Pick<HolderBalances, 'tags'>,
+  token: string | null): BalanceRecord | null {
+  const tag = tagAt(holder.tags, reply.hour);
+  return tag === null ? null : recordFor(reply, token, tag);
+}
+
+export interface DriftParts {
+  /** The weekly change's derived sources; null when they cannot be derived. */
+  sources: DrillPart[] | null;
+  /** The sources' weekly total; null when any source or the list is unknown. Never reconciled with `weekly`. */
+  sourced: bigint | null;
+  members: DrillPart[];
+  /** The members' recorded weekly contributions added up; null when any is not recorded. */
+  weekly: bigint | null;
+}
+
+type MemberLabel = { name: string; flag?: string; flagReason?: string; flagPending?: boolean };
+const sum = (values: readonly (string | null)[]): bigint | null => values.some(value => value === null) ? null : values.reduce((total, value) => total + BigInt(value!), 0n);
+
+/** Signed parts of the record's weekly change, each exact; members are their own group. */
+export function driftParts(record: BalanceRecord, member: (tag: string) => MemberLabel): DriftParts {
+  const sources = record.sources?.map((source, index): DrillPart => {
+    const raw = BigInt(source.weekly);
+    return { id: `source:${index}`, label: source.name ?? SOURCE_UNAVAILABLE, value: plotValue(raw), raw, text: changeText(raw) };
+  }) ?? null;
+  const members = record.members.map((entry, index): DrillPart => {
+    const label = entry.tag === null ? { name: COUNTRY_UNAVAILABLE } : member(entry.tag);
+    const raw = entry.weekly === null ? null : BigInt(entry.weekly);
+    return { id: `member:${index}`, label: label.name, value: raw === null ? null : plotValue(raw), raw, text: raw === null ? 'Not recorded' : changeText(raw),
+      shareText: entry.daily === null ? 'Daily not recorded' : `${changeText(entry.daily)} daily`,
+      ...(entry.tag === null ? {} : { countryFlag: { flag: label.flag, flagReason: label.flagReason, flagPending: label.flagPending } }) };
+  });
+  const weekly = record.members.length ? sum(record.members.map(entry => entry.weekly)) : null;
+  const sourced = record.sources ? sum(record.sources.map(source => source.weekly)) : null;
+  return { sources, sourced, members, weekly };
+}
+
+// ---------------------------------------------------------------- diagnostics
+
+/** Names the reply could not resolve, counted by kind, for the balances in view. */
+export function nameWarnings(balances: readonly BalanceHistory[], names: BalanceNames, hourRanges: readonly string[] = []): string[] {
+  const missingBalances = balances.filter(balance => balanceName(balance, names) === null).length;
+  const rangeTokens = new Set<string>();
+  for (const balance of balances) for (const run of balance.range) if (rangeName(balance, run.value, names) === null) rangeTokens.add(`${balance.token}\u0000${run.value}`);
+  for (const range of hourRanges) rangeTokens.add(range);
+  return [
+    ...missingBalances ? [`${missingBalances} balance name${missingBalances === 1 ? '' : 's'} unavailable`] : [],
+    ...rangeTokens.size ? [`${rangeTokens.size} range name${rangeTokens.size === 1 ? '' : 's'} unavailable`] : [],
+  ];
+}
+
+/** The hour detail's own refusals, named and counted. */
+export function detailWarnings(reply: Pick<PoliticsStateReply, 'unavailable' | 'warnings' | 'balances'>, record: BalanceRecord | null): string[] {
+  return [...reply.warnings, ...reply.unavailable.map(entry => `${entry.count} ${entry.label} unavailable: ${entry.reason}`),
+    ...record && record.sources === null ? ['1 balance drift source list unavailable'] : []];
+}

@@ -312,6 +312,66 @@ fn query_data(
             )?
         }
 
+        "civil-wars" => {
+            use crate::products::politics_state::civil_wars::{self, CivilWarsParams};
+            let params: CivilWarsParams = serde_json::from_value(request.params.clone())?;
+            let branch = branch(source, &params.branch_id)?;
+            // The rival lists and the feed's annexations, through the hours
+            // both have prepared.
+            let prefix = super::prefix::read_or_empty(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                cancelled,
+            )?;
+            let through = (prefix.coverage.last_hour >= prefix.coverage.first_hour)
+                .then(|| prefix.through(None).unwrap_or(i32::MAX));
+            let annexations = match through {
+                Some(through) => crate::products::event_feed::prepared::script::annexations(
+                    &store, &key, branch, through, cancelled,
+                )?,
+                None => Vec::new(),
+            };
+            let mut data = serde_json::to_value(civil_wars::query(
+                &store,
+                &key,
+                &params,
+                through,
+                &annexations,
+                cancelled,
+            )?)?;
+            prefix.mark(&mut data)?;
+            data
+        }
+        "politics-state-history" => {
+            use crate::products::politics_state::history::{self, PoliticsHistoryParams};
+            let params: PoliticsHistoryParams = serde_json::from_value(request.params.clone())?;
+            let branch = branch(source, &params.branch_id)?;
+            // Whole-branch histories through the prepared prefix; the hours
+            // after it are pending, never an empty state.
+            let prefix = super::prefix::read_or_empty(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                cancelled,
+            )?;
+            let through = (prefix.coverage.last_hour >= prefix.coverage.first_hour)
+                .then(|| prefix.through(None).unwrap_or(i32::MAX));
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
+            };
+            let catalogue = history::presentation_catalogue(source, &params, &context);
+            let mut data = serde_json::to_value(history::query(
+                &store, &key, &params, through, catalogue, cancelled,
+            )?)?;
+            prefix.mark(&mut data)?;
+            data
+        }
+
         "scoreboard" => crate::products::scoreboard::prepared::query(
             source,
             request.params.clone(),
@@ -655,6 +715,71 @@ fn query_data(
             }
             params.last_hour = live;
             let mut data = serde_json::to_value(crate::products::event_feed::prepared::query(
+                source,
+                params,
+                &crate::products::LoadContext {
+                    content: content.cloned(),
+                },
+                &store,
+                &key,
+                cancelled,
+            )?)?;
+            super::prefix::Prefix {
+                pending: super::prefix::pending(source, branch, live, Some(requested)),
+                coverage: prefix.coverage,
+            }
+            .mark(&mut data)?;
+            data
+        }
+        product @ ("event-choices" | "decisions") => {
+            use crate::products::event_feed::prepared::script::{
+                self, Adapter, ScriptPageParams, cursor_live,
+            };
+            let adapter = if product == "decisions" {
+                Adapter::Decisions
+            } else {
+                Adapter::EventChoices
+            };
+            let mut params: ScriptPageParams = serde_json::from_value(request.params.clone())?;
+            let branch = branch(source, &params.branch_id)?;
+            let requested = params.last_hour;
+            // As the feed: pages answer backwards from the facts' prepared
+            // prefix, and a continuation keeps its first page's live hour.
+            let prefix = super::prefix::read_or_empty(
+                source,
+                content,
+                &request.product,
+                branch,
+                Some(requested),
+                cancelled,
+            )?;
+            if prefix.coverage.last_hour < prefix.coverage.first_hour
+                || params
+                    .first_hour
+                    .is_some_and(|first| first > prefix.coverage.last_hour)
+            {
+                let mut prefix = prefix;
+                if let Some(first) = params.first_hour {
+                    prefix.pending.retain_mut(|span| {
+                        span.first_hour = span.first_hour.max(first);
+                        span.first_hour <= span.last_hour
+                    });
+                }
+                let first = params.first_hour.unwrap_or(prefix.coverage.first_hour);
+                let mut data =
+                    serde_json::to_value(script::empty(&params, first, requested))?;
+                prefix.mark(&mut data)?;
+                return Ok(data);
+            }
+            let mut live = prefix.through(Some(requested)).unwrap_or(requested);
+            if let Some(kept) = params.cursor.as_deref().and_then(cursor_live)
+                && kept < live
+            {
+                live = kept;
+            }
+            params.last_hour = live;
+            let mut data = serde_json::to_value(script::query(
+                adapter,
                 source,
                 params,
                 &crate::products::LoadContext {

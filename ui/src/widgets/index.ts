@@ -5,6 +5,12 @@ import { lazyWidget } from './lazyWidget';
 import { useIdeaTimelinePresets } from './idea-timeline/ideaTimelinePresets';
 const renderers = {
   'war-goals': lazyWidget('war-goals', ['render']),
+  'next-elections': lazyWidget('next-elections', ['render']),
+  'balance-of-power': lazyWidget('balance-of-power', ['render']),
+  'governments-in-exile': lazyWidget('governments-in-exile', ['render']),
+  'civil-wars': lazyWidget('civil-wars', ['render']),
+  'event-choices': lazyWidget('event-choices', ['render']),
+  'decisions': lazyWidget('decisions', ['render']),
   'map': lazyWidget('map', ['render', 'headerControls']),
   'national-focus': lazyWidget('national-focus', ['render']),
   'research': lazyWidget('research', ['render']),

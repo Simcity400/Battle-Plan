@@ -32,7 +32,7 @@ prepared files; existing open range readers retain their bytes.
 | [dashboard-text](../dashboard-text/README.md) | The text interpreter, name rules, content catalogue and recording metadata helpers, re-exported here at their old paths. |
 | [dashboard-base](../dashboard-base/README.md) | Sources, content, the catalogue loader, the prepared store's shared pages, series, charts, group sums and measures, ranking, the product contract and the shared products including country history, re-exported here at their old paths. |
 | [dashboard-core](../dashboard-core/README.md) | Host/viewer protocol, data transport, recording metadata, host configuration, map settings and whole-branch block scans, re-exported here at their old paths. |
-| Product crates | One crate per heavy product or product family, above dashboard-base, re-exported here at `products::<name>`: [dashboard-air-aces](../dashboard-air-aces/README.md), [dashboard-air-superiority](../dashboard-air-superiority/README.md), [dashboard-construction](../dashboard-construction/README.md), [dashboard-country-fuel](../dashboard-country-fuel/README.md), [dashboard-country-nukes](../dashboard-country-nukes/README.md), [dashboard-equipment-losses](../dashboard-equipment-losses/README.md), [dashboard-equipment-stockpile](../dashboard-equipment-stockpile/README.md), [dashboard-forces](../dashboard-forces/README.md), [dashboard-game-score](../dashboard-game-score/README.md), [dashboard-intelligence](../dashboard-intelligence/README.md), [dashboard-land-battles](../dashboard-land-battles/README.md), [dashboard-military-air-ledger](../dashboard-military-air-ledger/README.md), [dashboard-naval](../dashboard-naval/README.md), [dashboard-occupation](../dashboard-occupation/README.md), [dashboard-party-history](../dashboard-party-history/README.md), [dashboard-peace-deals](../dashboard-peace-deals/README.md), [dashboard-politics-ledger](../dashboard-politics-ledger/README.md), [dashboard-raids](../dashboard-raids/README.md), [dashboard-resource-balance](../dashboard-resource-balance/README.md), [dashboard-special-projects](../dashboard-special-projects/README.md), [dashboard-stability](../dashboard-stability/README.md), [dashboard-subjects](../dashboard-subjects/README.md), [dashboard-unit-leaders](../dashboard-unit-leaders/README.md), [dashboard-wars](../dashboard-wars/README.md), [dashboard-world-tension](../dashboard-world-tension/README.md). |
+| Product crates | One crate per heavy product or product family, above dashboard-base, re-exported here at `products::<name>`: [dashboard-air-aces](../dashboard-air-aces/README.md), [dashboard-air-superiority](../dashboard-air-superiority/README.md), [dashboard-construction](../dashboard-construction/README.md), [dashboard-country-fuel](../dashboard-country-fuel/README.md), [dashboard-country-nukes](../dashboard-country-nukes/README.md), [dashboard-equipment-losses](../dashboard-equipment-losses/README.md), [dashboard-equipment-stockpile](../dashboard-equipment-stockpile/README.md), [dashboard-forces](../dashboard-forces/README.md), [dashboard-game-score](../dashboard-game-score/README.md), [dashboard-intelligence](../dashboard-intelligence/README.md), [dashboard-land-battles](../dashboard-land-battles/README.md), [dashboard-military-air-ledger](../dashboard-military-air-ledger/README.md), [dashboard-naval](../dashboard-naval/README.md), [dashboard-occupation](../dashboard-occupation/README.md), [dashboard-party-history](../dashboard-party-history/README.md), [dashboard-peace-deals](../dashboard-peace-deals/README.md), [dashboard-politics](../dashboard-politics/README.md), [dashboard-politics-ledger](../dashboard-politics-ledger/README.md), [dashboard-raids](../dashboard-raids/README.md), [dashboard-resource-balance](../dashboard-resource-balance/README.md), [dashboard-special-projects](../dashboard-special-projects/README.md), [dashboard-stability](../dashboard-stability/README.md), [dashboard-subjects](../dashboard-subjects/README.md), [dashboard-unit-leaders](../dashboard-unit-leaders/README.md), [dashboard-wars](../dashboard-wars/README.md), [dashboard-world-tension](../dashboard-world-tension/README.md). |
 | [prepared_focus.rs](src/prepared_focus.rs) | The focus order prepared on its own (block facts and their fold), focus queries and focus art evaluated at the hour asked (`prepared_focus/`). |
 | [products/](src/products/mod.rs) | Product registry and shared domain helpers; each product's behaviour lives beside its code or in its widget README. |
 | [content_check.rs](src/content_check.rs) | Offline preparation and diagnostics for every registered product. |
@@ -1586,6 +1586,25 @@ packs and strikes as read), and the family's thread observes every hour in
 order. Its continuation is `event_feed-continuation-<branch>`. The query waits
 for the coverage of every family whose pages it reads (the feed's facts, the
 groups, subjects, ideas, focus, stockpile and special-project changes).
+
+The `event-choices` and `decisions` queries
+([event_feed/prepared/script.rs](src/products/event_feed/prepared/script.rs))
+read the feed's own facts alone and gate on that family only. Each native
+fact keeps its typed operands beside its row, and the observer joins
+continuing facts to their opener as it publishes, in native order within a
+read. A choice continues the dispatch of the same world, native event,
+instance and receiving country (the dispatch's target, the choosing command's
+actor). A decision edge continues the open selection or activation of the
+same world, country, decision and target. A fact it cannot join is its own
+card. A decision execution keeps the power its writer attributed to it: the
+mutation must match the execution's hour, country id and instance, token and
+action, the country's political and command power capture must cover the hour,
+and no other execution of the read may share the key. Otherwise the charge
+stays unproven. The family therefore also keeps the hour's power mutations
+and capture coverage. Pages step back through the merged stream of the
+selected kinds by their supplying read, bound to the Live read hour.
+`civil-wars` joins the `politics_state` family's rival lists with the feed's
+annexations ([dashboard-politics](../dashboard-politics/README.md)).
 
 The feed query merges these source ranges directly into backward native-date
 pages. Requests read their accepted Live prefix and remain pending beyond it.

@@ -668,6 +668,7 @@ fn prepared_feed_pages_reach_late_facts_past_their_read_and_keep_live_cutoffs() 
                     row,
                     nuke_type: None,
                     script: None,
+                    occurrence: None,
                 },
             )
             .unwrap();
@@ -1379,4 +1380,404 @@ fn prepared_feed_ordinary_project_after_5000_late_rows_reads_only_its_raw_page()
         "one end lookup and one raw page; neither the late prefix nor its older lookahead tie is read"
     );
     assert!(crate::blocks::SCANNED_BLOCKS.with_borrow(Vec::is_empty));
+}
+
+/// A quiet hour whose pack holds `events`, with their tokens, the power
+/// mutations and the capture coverage of that hour.
+fn script_frame(
+    hour: i32,
+    events: Vec<EventFeedEvent>,
+    tokens: &[u8],
+    power: Vec<CountryPowerChangeRow>,
+) -> DecodedFrame {
+    let mut frame = quiet_frame(hour, 3);
+    if let TableView::Complete(TableRows::EventFeedHistory(rows)) =
+        &mut *frame.tables[TableId::EventFeedHistory.index()]
+    {
+        let acquired = events.len() as u64;
+        rows[0].events = events;
+        rows[0].script_tokens = tokens.to_vec();
+        rows[0].counts = Some(NativeCounts {
+            acquired,
+            settled: acquired,
+            ..Default::default()
+        });
+    }
+    let coverage = (0..3)
+        .map(|index| PoliticsCaptureCoverageRow {
+            country: actor(index).id,
+            instance: actor(index).instance,
+            since_hour: 0,
+            through_hour: hour,
+            streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
+            ..Default::default()
+        })
+        .collect();
+    for rows in [
+        TableRows::CountryPowerChanges(power),
+        TableRows::PoliticsCaptureCoverage(coverage),
+    ] {
+        let table = rows.table();
+        *frame.tables[table.index()] = TableView::Complete(rows);
+        frame.metrics.table_ns[table.index()] = 1;
+    }
+    frame
+}
+
+/// A scripted occurrence at `hour` whose token is `tokens[start..start + len]`.
+#[allow(clippy::too_many_arguments)]
+fn scripted(
+    sequence: u64,
+    source: EventFeedSource,
+    hour: i32,
+    (from, to): (u32, u32),
+    event: Option<(u32, u32)>,
+    instance: Option<u32>,
+    token: (u32, u32),
+) -> EventFeedEvent {
+    EventFeedEvent {
+        script: Some(replay_data::event_feed_rows::EventFeedScript {
+            token_start: token.0,
+            token_len: token.1,
+            native_event: event.map(|(kind, id)| {
+                replay_data::event_feed_rows::EventFeedEventIdentity { kind, id }
+            }),
+            instance,
+            ..Default::default()
+        }),
+        sequence,
+        generation: 9,
+        hour,
+        source,
+        actor: actor(from),
+        target: actor(to),
+        cause: Recorded::Value(replay_data::event_feed_rows::EventFeedCause::default()),
+    }
+}
+
+fn script_page(
+    adapter: script::Adapter,
+    source: &Source,
+    fixture: &Fixture,
+    live: i32,
+    kinds: BTreeSet<EventFeedKind>,
+) -> script::ScriptOccurrencePage {
+    script::query(
+        adapter,
+        source,
+        script::ScriptPageParams {
+            branch_id: "1".into(),
+            first_hour: None,
+            last_hour: live,
+            cursor: None,
+            page_size: 64,
+            kinds,
+        },
+        &LoadContext { content: None },
+        &fixture.store,
+        &fixture.key,
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+    .unwrap()
+}
+
+fn kinds_of(occurrence: &script::ScriptOccurrence) -> Vec<EventFeedKind> {
+    occurrence.edges.iter().map(|edge| edge.row.kind).collect()
+}
+
+#[test]
+fn event_choice_and_decision_pages_join_their_own_occurrences_and_prove_charges() {
+    // "mod.evt" 0..7, "mod.news" 7..15, "mod_decision" 15..27.
+    let tokens = b"mod.evtmod.newsmod_decision";
+    let event = (Some((1, 9)), (0, 7));
+    let charge = |hour: i32, after: i64| CountryPowerChangeRow {
+        country: actor(0).id,
+        instance: actor(0).instance,
+        sequence: hour as u64,
+        hour,
+        currency: PowerCurrency::Political,
+        balance_before_raw: 10_000_000,
+        balance_after_raw: after,
+        cause: PowerCause::Decision,
+        identity: PowerIdentity {
+            action: PowerAction::Execute,
+            item_key: b"mod_decision".to_vec(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let frames = vec![
+        script_frame(100, Vec::new(), b"", Vec::new()),
+        script_frame(
+            101,
+            vec![
+                // Sent by the first country to the second.
+                scripted(1, EventFeedSource::ScriptEvent, 101, (0, 1), event.0, Some(7), event.1),
+                // The same event again: its own occurrence.
+                scripted(2, EventFeedSource::ScriptEvent, 101, (0, 1), event.0, Some(8), event.1),
+                scripted(3, EventFeedSource::NewsEvent, 101, (0, 2), Some((1, 10)), Some(4), (7, 8)),
+            ],
+            tokens,
+            Vec::new(),
+        ),
+        script_frame(
+            102,
+            vec![
+                // The receiving country chooses; a choice of an unrecorded
+                // dispatch stands alone.
+                EventFeedEvent {
+                    script: Some(replay_data::event_feed_rows::EventFeedScript {
+                        option: Some(1),
+                        ..scripted(4, EventFeedSource::EventOption, 102, (1, 1), event.0, Some(7), event.1)
+                            .script
+                            .unwrap()
+                    }),
+                    ..scripted(4, EventFeedSource::EventOption, 102, (1, 1), event.0, Some(7), event.1)
+                },
+                EventFeedEvent {
+                    script: Some(replay_data::event_feed_rows::EventFeedScript {
+                        option: Some(0),
+                        ..scripted(5, EventFeedSource::EventOption, 102, (2, 2), Some((1, 77)), Some(99), event.1)
+                            .script
+                            .unwrap()
+                    }),
+                    ..scripted(5, EventFeedSource::EventOption, 102, (2, 2), Some((1, 77)), Some(99), event.1)
+                },
+            ],
+            tokens,
+            Vec::new(),
+        ),
+        script_frame(
+            103,
+            vec![scripted(6, EventFeedSource::DecisionSelected, 103, (0, 0), None, None, (15, 12))],
+            tokens,
+            vec![charge(103, 5_000_000)],
+        ),
+        script_frame(
+            104,
+            vec![
+                scripted(7, EventFeedSource::DecisionCompleted, 104, (0, 0), None, None, (15, 12)),
+                // Two selections of one decision in one read share a charge
+                // key, so neither is attributed.
+                scripted(8, EventFeedSource::DecisionSelected, 104, (0, 0), None, None, (15, 12)),
+                scripted(9, EventFeedSource::DecisionSelected, 104, (0, 0), None, None, (15, 12)),
+            ],
+            tokens,
+            vec![charge(104, 9_000_000)],
+        ),
+    ];
+    let source = super::super::tests::opened(frames.clone());
+    let flag = AtomicBool::new(false);
+    let mut fixture = Fixture::new();
+    let mut state = Sources::new(&source);
+    for frame in &frames {
+        state.observe(frame, &source, &flag).unwrap();
+    }
+    state.publish(&mut fixture, &source, false, &flag);
+
+    let page = script_page(script::Adapter::EventChoices, &source, &fixture, 104, BTreeSet::new());
+    let cards = &page.reply.occurrences;
+    assert_eq!(cards.len(), 4, "{cards:#?}");
+    let chosen = cards
+        .iter()
+        .find(|card| card.edges[0].row.id == "native:9:1")
+        .unwrap();
+    assert!(chosen.opened);
+    assert_eq!(
+        kinds_of(chosen),
+        [EventFeedKind::ScriptEventFired, EventFeedKind::EventOptionSelected]
+    );
+    assert_eq!(chosen.edges[1].option, Some(1));
+    let repeated = cards
+        .iter()
+        .find(|card| card.edges[0].row.id == "native:9:2")
+        .unwrap();
+    assert_eq!(kinds_of(repeated), [EventFeedKind::ScriptEventFired]);
+    let alone = cards
+        .iter()
+        .find(|card| card.edges[0].row.id == "native:9:5")
+        .unwrap();
+    assert!(!alone.opened);
+    // Newest first.
+    assert_eq!(cards[0].edges[0].row.hour, 102);
+
+    // Before the choice's read the card holds its dispatch alone.
+    let early = script_page(script::Adapter::EventChoices, &source, &fixture, 101, BTreeSet::new());
+    assert!(early.reply.occurrences.iter().all(|card| card.edges.len() == 1));
+    assert_eq!(early.reply.occurrences.len(), 3);
+    // News alone.
+    let news = script_page(
+        script::Adapter::EventChoices,
+        &source,
+        &fixture,
+        104,
+        BTreeSet::from([EventFeedKind::NewsEventFired]),
+    );
+    assert_eq!(
+        news.reply
+            .occurrences
+            .iter()
+            .filter(|card| card.opened)
+            .map(|card| card.edges[0].row.id.as_str())
+            .collect::<Vec<_>>(),
+        ["native:9:3"]
+    );
+
+    let page = script_page(script::Adapter::Decisions, &source, &fixture, 104, BTreeSet::new());
+    let decisions = &page.reply.occurrences;
+    let first = decisions
+        .iter()
+        .find(|card| card.edges[0].row.id == "native:9:6")
+        .unwrap();
+    assert_eq!(
+        kinds_of(first),
+        [EventFeedKind::DecisionSelected, EventFeedKind::DecisionCompleted]
+    );
+    assert_eq!(
+        first.edges[0].costs,
+        Some(vec![ScriptCost {
+            currency: ScriptCurrency::PoliticalPower,
+            amount: "-5000000".into(),
+        }])
+    );
+    for id in ["native:9:8", "native:9:9"] {
+        let ambiguous = decisions
+            .iter()
+            .find(|card| card.edges[0].row.id == id)
+            .unwrap();
+        assert_eq!(ambiguous.edges[0].costs, None);
+    }
+    // An opening kind of the other list is refused.
+    assert!(
+        script::query(
+            script::Adapter::Decisions,
+            &source,
+            script::ScriptPageParams {
+                branch_id: "1".into(),
+                first_hour: None,
+                last_hour: 104,
+                cursor: None,
+                page_size: 4,
+                kinds: BTreeSet::from([EventFeedKind::NewsEventFired]),
+            },
+            &LoadContext { content: None },
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn immediate_effects_join_their_dispatch_without_taking_its_choice() {
+    let tokens = b"mod.evt";
+    let event = (Some((1, 9)), (0, 7));
+    let option = |sequence: u64, hour: i32, ordinal: i32| {
+        let row = scripted(sequence, EventFeedSource::EventOption, hour, (1, 1), event.0, Some(7), event.1);
+        EventFeedEvent {
+            script: Some(replay_data::event_feed_rows::EventFeedScript {
+                option: Some(ordinal),
+                ..row.script.clone().unwrap()
+            }),
+            ..row
+        }
+    };
+    let frames = vec![
+        script_frame(100, Vec::new(), b"", Vec::new()),
+        script_frame(
+            101,
+            vec![
+                scripted(1, EventFeedSource::ScriptEvent, 101, (0, 1), event.0, Some(7), event.1),
+                option(2, 101, -1),
+            ],
+            tokens,
+            Vec::new(),
+        ),
+        script_frame(102, vec![option(3, 102, 1)], tokens, Vec::new()),
+    ];
+    let source = super::super::tests::opened(frames.clone());
+    let flag = AtomicBool::new(false);
+    let mut fixture = Fixture::new();
+    let mut state = Sources::new(&source);
+    for frame in &frames {
+        state.observe(frame, &source, &flag).unwrap();
+    }
+    state.publish(&mut fixture, &source, false, &flag);
+
+    let page = script_page(script::Adapter::EventChoices, &source, &fixture, 102, BTreeSet::new());
+    let cards = &page.reply.occurrences;
+    assert_eq!(cards.len(), 1, "{cards:#?}");
+    assert_eq!(
+        kinds_of(&cards[0]),
+        [
+            EventFeedKind::ScriptEventFired,
+            EventFeedKind::EventOptionSelected,
+            EventFeedKind::EventOptionSelected
+        ]
+    );
+    assert_eq!(
+        cards[0].edges.iter().map(|edge| edge.option).collect::<Vec<_>>(),
+        [None, Some(-1), Some(1)]
+    );
+}
+
+#[test]
+fn occurrence_pages_follow_dates_across_pages_with_late_facts_bound_to_the_live_read() {
+    let tokens = b"mod.evt";
+    let event = (Some((1, 9)), (0, 7));
+    let fired = |sequence: u64, native: i32, instance: u32| {
+        scripted(sequence, EventFeedSource::ScriptEvent, native, (0, 1), event.0, Some(instance), event.1)
+    };
+    let frames = vec![
+        script_frame(100, Vec::new(), b"", Vec::new()),
+        script_frame(101, vec![fired(1, 101, 1)], tokens, Vec::new()),
+        // Read at 102: one dated 102, and one dated 100 that arrived late.
+        script_frame(102, vec![fired(2, 102, 2), fired(3, 100, 3)], tokens, Vec::new()),
+    ];
+    let source = super::super::tests::opened(frames.clone());
+    let flag = AtomicBool::new(false);
+    let mut fixture = Fixture::new();
+    let mut state = Sources::new(&source);
+    for frame in &frames {
+        state.observe(frame, &source, &flag).unwrap();
+    }
+    state.publish(&mut fixture, &source, false, &flag);
+    let page = |live: i32, cursor: Option<String>| {
+        script::query(
+            script::Adapter::EventChoices,
+            &source,
+            script::ScriptPageParams {
+                branch_id: "1".into(),
+                first_hour: None,
+                last_hour: live,
+                cursor,
+                page_size: 1,
+                kinds: BTreeSet::new(),
+            },
+            &LoadContext { content: None },
+            &fixture.store,
+            &fixture.key,
+            &flag,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    // One card per page, newest date first, the late one last.
+    let mut hours = Vec::new();
+    let mut cursor = None;
+    loop {
+        let next = page(102, cursor);
+        hours.extend(next.reply.occurrences.iter().map(|card| card.edges[0].row.hour));
+        match next.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(hours, [102, 101, 100]);
+    // Before its read, the late fact is not shown at all.
+    let early = page(101, None);
+    assert_eq!(early.reply.occurrences.len(), 1);
+    assert_eq!(early.reply.occurrences[0].edges[0].row.hour, 101);
 }
