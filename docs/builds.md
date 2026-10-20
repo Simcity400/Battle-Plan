@@ -13,8 +13,8 @@ and performance evidence.
 No test is behind a feature: every test compiles in every build, and all but the
 `#[ignore]`d ones run. Those are benchmarks or need hardware or inputs a run may not have
 (a GPU, the shader compiler, a release build); run those by hand when you change
-what they measure. Run the tests for what you changed, then the whole suite
-before merging:
+what they measure. Run the tests for what you changed; the workspace lints and the
+whole suite are there when a change reaches across crates:
 
 ```powershell
 cargo nextest run -p replay-frame
