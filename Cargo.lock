@@ -2169,6 +2169,7 @@ dependencies = [
  "dashboard-core",
  "dashboard-country-fuel",
  "dashboard-country-nukes",
+ "dashboard-economy",
  "dashboard-equipment-losses",
  "dashboard-equipment-stockpile",
  "dashboard-forces",
@@ -2421,6 +2422,29 @@ dependencies = [
  "serde_json",
  "store",
  "ts-rs",
+]
+
+[[package]]
+name = "dashboard-economy"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-country-fuel",
+ "dashboard-text",
+ "engine-resources",
+ "installed-content-core",
+ "installed-content-localisation",
+ "installed-content-regions",
+ "mimalloc",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
 ]
 
 [[package]]

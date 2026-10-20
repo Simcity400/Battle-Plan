@@ -9,7 +9,8 @@ export type PreparedSeriesKind = 'series-state' | 'series-summary' | 'series-nex
 
 const PREPARED_PRODUCTS = ['land-battles', 'land-battles-manifest', 'land-battles-ranking', 'land-battle-course',
   'naval-battles', 'naval-battles-manifest', 'naval-battles-ranking', 'naval-battle-details',
-  'division-log', 'division-log-manifest', 'division-log-totals', 'ships-sunk', 'ships-sunk-manifest', 'ships-sunk-battle-titles', 'naval-losses', 'special-projects', 'event-feed', 'event-choices', 'decisions'] as const;
+  'division-log', 'division-log-manifest', 'division-log-totals', 'ships-sunk', 'ships-sunk-manifest', 'ships-sunk-battle-titles', 'naval-losses', 'special-projects', 'event-feed',
+  'fuel-branches', 'market-history', 'market-ledger', 'lend-lease-balance', 'production-catalogue', 'convoy-health', 'event-choices', 'decisions'] as const;
 export type PreparedProduct = typeof PREPARED_PRODUCTS[number];
 export const isPreparedProduct = (product: string): product is PreparedProduct => (PREPARED_PRODUCTS as readonly string[]).includes(product);
 

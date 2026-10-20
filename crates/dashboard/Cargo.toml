@@ -41,6 +41,7 @@ dashboard-equipment-stockpile.workspace = true
 dashboard-military-air-ledger.workspace = true
 dashboard-stability.workspace = true
 dashboard-world-tension.workspace = true
+dashboard-economy.workspace = true
 dashboard-politics.workspace = true
 dashboard-country-nukes.workspace = true
 dashboard-subjects.workspace = true
@@ -113,6 +114,7 @@ dashboard-equipment-losses = { workspace = true, features = ["test-support"] }
 dashboard-military-air-ledger = { workspace = true, features = ["test-support"] }
 dashboard-stability = { workspace = true, features = ["test-support"] }
 dashboard-world-tension = { workspace = true, features = ["test-support"] }
+dashboard-economy = { workspace = true, features = ["test-support"] }
 dashboard-politics = { workspace = true, features = ["test-support"] }
 dashboard-country-nukes = { workspace = true, features = ["test-support"] }
 dashboard-subjects = { workspace = true, features = ["test-support"] }

@@ -797,6 +797,36 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
                 "regional scores, faction/war-side assignment, theatres and historical anchors require recorded inputs; unavailable offline"));
             Ok("Authored strategic-region names checked; country/faction naming and regional observations need a recording.".into())
         }
+        crate::products::fuel_branches::FuelBranches::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "consumer requests, receipts and priorities need recorded CountryFuelConsumers rows; unavailable offline"));
+            Ok("Consumer labels are the fuel panel's own localisation keys, resolved through the recorded content stack as the fuel product resolves them.".into())
+        }
+        crate::products::market::MarketHistory::KEY | crate::products::market::MarketLedger::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "listed inventory, contract terms, purchase progress, lend-lease agreements and market occurrences need recorded market rows; unavailable offline"));
+            Ok("Equipment names come from the shared variant catalogue at each recorded naming read; there is no recording-independent market inventory to check offline.".into())
+        }
+        crate::products::lend_lease_balance::LendLeaseBalance::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "cumulative lend-lease histories need recorded WarLendLeaseHistories rows; unavailable offline"));
+            Ok("No content dependency: countries are named by their dated identities, which the shared country checks cover.".into())
+        }
+        crate::products::production_catalogue::ProductionCatalogue::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "licence records, organisation rosters and state, and saved designs need recorded production rows; unavailable offline"));
+            Ok("Organisation names and icons use the production lines' organisation selectors, design names the shared variant catalogue and equipment types the recorded stack's equipment database; the production-lines check covers their authored inventory.".into())
+        }
+        crate::products::convoy_health::ConvoyHealth::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "regional convoy efficiency, resource deals and lend-lease convoy clients need recorded rows; unavailable offline"));
+            let regions = installed_content_regions::regions::read(&content.resolved.layers)
+                .map_err(|why| why.to_string())?;
+            for note in &regions.notes {
+                findings.push(Finding::new(Kind::Warning, "strategic regions", note.clone()));
+            }
+            Ok("Sea region names read the recorded stack's strategic regions; resource names use the shared resource naming.".into())
+        }
         politics_ledger::PoliticsLedger::KEY => {
             findings.push(Finding::new(Kind::Offline, key,
                 "spend category/item inventory and captured native descriptions, scopes, costs and names require recorded political-power streams; unavailable offline"));

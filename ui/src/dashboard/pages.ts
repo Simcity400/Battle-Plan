@@ -39,6 +39,12 @@ export const PAGES = [
     ['resource-balance', 0, 31, 6, 11], ['trade-flows', 6, 31, 6, 11],
     ['fuel', 0, 42, 4, 10], ['construction-spending', 4, 42, 8, 10],
     ['construction-log', 0, 52, 12, 10],
+    ['fuel-branches', 0, 62, 6, 8], ['lend-lease-balance', 6, 62, 6, 10],
+    ['lend-lease-agreements', 0, 72, 6, 10], ['market-ledger', 6, 72, 6, 10],
+    ['international-market', 0, 82, 12, 10],
+    ['production-licences', 0, 92, 6, 10], ['industrial-organisations', 6, 92, 6, 10],
+    ['equipment-designs', 0, 102, 6, 10],
+    ['convoy-health', 0, 112, 12, 8],
   ] },
   { id: 'research', label: 'Research', icon: 'flask', panels: [
     ['active-research', 0, 0, 7, 9], ['research', 0, 9, 7, 13],

@@ -2635,6 +2635,347 @@ export type LedgerRecurringSpend = { spend: LedgerSpend, firstHour: number, last
 export type LedgerGain = { currency: string, gainedRaw: string, lostRaw: string, complete: boolean, };
 export type LedgerMonthDays = { currency: string, category: string, month: number | null, days: number, };
 export type LedgerPartSummary = { id: string, label: string, summary: ChartSummary, };
+export type EconomyRun = [number, number, string];
+export type FuelBranchesParams = { branchId: string,
+/**
+ * The countries; every country when empty.
+ */
+tags: Array<string>, };
+export type FuelBranchesReply = { branchId: string,
+/**
+ * Through the last prepared hour; later hours are still being prepared.
+ */
+lastHour: number | null,
+/**
+ * Each native consumer index's label from the recorded content; null
+ * where content does not name it.
+ */
+consumerNames: Array<string | null>,
+/**
+ * Fixed-point denominator of the amounts.
+ */
+scale: number,
+/**
+ * Hours the consumer table was read complete ("1").
+ */
+known: Array<EconomyRun>, countries: Array<FuelBranchCountry>, warnings: Array<string>, };
+export type FuelBranchCountry = { holder: string, tags: Array<HolderTag>,
+/**
+ * The supplying read's hour.
+ */
+read: Array<EconomyRun>, branches: Array<FuelBranch>, };
+export type FuelBranch = {
+/**
+ * Its native consumer index.
+ */
+index: number,
+/**
+ * Fixed5 fuel requested at each read.
+ */
+requested: Array<EconomyRun>,
+/**
+ * Fixed5 fuel received at each read.
+ */
+received: Array<EconomyRun>, priority: Array<EconomyRun>, };
+export type MarketView = "contracts" | "requests" | "inventory" | "agreements";
+export type MarketHistoryParams = { branchId: string, view: MarketView,
+/**
+ * Rows these countries take part in; every row when empty.
+ */
+tags: Array<string>, };
+export type MarketHistoryReply = { branchId: string, view: MarketView, lastHour: number | null,
+/**
+ * Hours the view's tables were recorded complete (value "1").
+ */
+known: Array<EconomyRun>, contracts: Array<ContractHistory>, offers: Array<OfferHistory>, agreements: Array<AgreementHistory>,
+/**
+ * Each holder named by a row, with its tag runs.
+ */
+holders: { [key in string]?: Array<HolderTag> },
+/**
+ * Each variant named by a row, with its names at each read.
+ */
+variants: { [key in string]?: Array<StockVariantName> }, warnings: Array<string>, };
+export type MarketPoolItem = {
+/**
+ * The pool's native position within its owner.
+ */
+pool: number, ordinal: number,
+/**
+ * Hexadecimal variant handle.
+ */
+variant: string, amounts: Array<EconomyRun>, };
+export type ContractHistory = { seller: string, id: string,
+/**
+ * The buyer's holder.
+ */
+buyer: Array<EconomyRun>, speed: Array<EconomyRun>,
+/**
+ * Pool 0 equipment, pool 1 agreed prices (CIC).
+ */
+items: Array<MarketPoolItem>,
+/**
+ * Asking price levels by variant (pool 2).
+ */
+levels: Array<MarketPoolItem>,
+/**
+ * The daily purchase contract with the same handle and parties:
+ * convoys assigned, convoys total, collected CIC, completed deliveries.
+ */
+purchase: Array<Array<EconomyRun>>, };
+export type OfferHistory = { seller: string, inventory: Array<MarketPoolItem>, levels: Array<MarketPoolItem>, };
+export type AgreementHistory = { giver: string, id: string, receiver: Array<EconomyRun>, revision: Array<EconomyRun>, since: Array<EconomyRun>, last: Array<EconomyRun>,
+/**
+ * Pools 0 monthly, 1 production share, 2 once, 3 delivered, 4 lost.
+ */
+items: Array<MarketPoolItem>,
+/**
+ * Daily, share, sent, lost, last delivery.
+ */
+fuel: Array<Array<EconomyRun>>, };
+export type MarketLedgerParams = { branchId: string,
+/**
+ * Occurrences these countries sell or buy in, at any hour; every one when
+ * both this and `members` are empty.
+ */
+tags: Array<string>,
+/**
+ * Occurrences a group's members sell or buy in while members: each tag
+ * over its own hours.
+ */
+members?: Array<LedgerMember>,
+/**
+ * The kinds shown; [`LEDGER_KINDS`] by default.
+ */
+kinds: Array<number>,
+/**
+ * The last hour shown.
+ */
+lastHour: number,
+/**
+ * The cursor of the next older page, from the reply's `next`; the
+ * newest page when absent.
+ */
+before?: string, pageSize: number, };
+export type LedgerMember = { tag: string, firstHour: number, lastHour: number, };
+export type MarketLedgerReply = { branchId: string,
+/**
+ * Through the last prepared hour.
+ */
+lastHour: number | null,
+/**
+ * Newest first.
+ */
+rows: Array<MarketLedgerRow>,
+/**
+ * Occurrences selected through the last hour, where counted exactly
+ * (every country, from the streams' lengths); null for chosen countries,
+ * whose pages continue by `next` alone.
+ */
+total: string | null,
+/**
+ * The `before` of the next older page; null on the oldest page.
+ */
+next: string | null,
+/**
+ * Hours the market's occurrences were read, as "1" runs: an empty
+ * ledger is only "no trades" inside them.
+ */
+known: Array<EconomyRun>, holders: { [key in string]?: Array<HolderTag> }, variants: { [key in string]?: Array<StockVariantName> }, warnings: Array<string>, };
+export type MarketLedgerRow = { id: string, occurrence: string, hour: number, kind: number, mode: number,
+/**
+ * The contract's native handle, hexadecimal.
+ */
+contract: string,
+/**
+ * The seller's and buyer's holders; null where the identity is unknown.
+ */
+seller: string | null, buyer: string | null,
+/**
+ * The variant, hexadecimal; "0" where none.
+ */
+variant: string,
+/**
+ * The exact amount; null where the recording names it unavailable.
+ */
+amountRaw: string | null, totalRaw: string,
+/**
+ * The refusal of an unavailable amount.
+ */
+reason: string | null, };
+export type LendLeaseBalanceParams = { branchId: string,
+/**
+ * One holder's partners; every country's totals when absent.
+ */
+holder?: string, };
+export type LendLeaseBalanceReply = { branchId: string, lastHour: number | null,
+/**
+ * Fixed-point denominator of every amount.
+ */
+scale: number,
+/**
+ * Hours the histories were read complete ("1"): outside them nothing is
+ * known, and a country absent while they were read is outside the war
+ * rosters the game records histories for, so unknown too.
+ */
+known: Array<EconomyRun>,
+/**
+ * Each country's totals over its own records, or, for one holder, its
+ * record of each partner.
+ */
+histories: Array<LendLeaseHistory>, holder: string | null, warnings: Array<string>, };
+export type LendLeaseHistory = { holder: string, tags: Array<HolderTag>, values: Array<Array<EconomyRun>>, };
+export type CatalogueView = "licences" | "organisations" | "designs";
+export type ProductionCatalogueParams = { branchId: string, view: CatalogueView,
+/**
+ * Licences these countries grant or hold, or the organisations and
+ * designs of these countries; every country when empty.
+ */
+tags: Array<string>, };
+export type ProductionCatalogueReply = { branchId: string, view: CatalogueView, lastHour: number | null,
+/**
+ * Hours the view's roster was read complete ("1"): outside them the
+ * view is unknown, never an empty roster.
+ */
+known: Array<EconomyRun>, licences: Array<LicenceHistory>, organisations: Array<OrganisationHistory>, designs: Array<DesignHistory>,
+/**
+ * The first hour the designs were read whole: designs read then
+ * predate it.
+ */
+designsFrom: number | null, holders: { [key in string]?: Array<HolderTag> },
+/**
+ * Licensed variants' names at each read.
+ */
+variants: { [key in string]?: Array<StockVariantName> },
+/**
+ * Policy runs' texts: token spellings and stored names.
+ */
+texts: Array<string>,
+/**
+ * Each organisation icon's picture; null where it cannot be read.
+ */
+icons: { [key in string]?: string | null }, warnings: Array<string>, };
+export type LicenceHistory = {
+/**
+ * The licensee's holder.
+ */
+licensee: string,
+/**
+ * The record's roster position: not a persistent identity.
+ */
+ordinal: number,
+/**
+ * The licensor's holder.
+ */
+licensor: Array<EconomyRun>,
+/**
+ * Civilian factories lent and required.
+ */
+lent: Array<EconomyRun>, required: Array<EconomyRun>,
+/**
+ * The native start date's hour.
+ */
+start: Array<EconomyRun>,
+/**
+ * Each licensed variant, in recorded order, as a hexadecimal handle.
+ */
+variants: Array<Array<EconomyRun>>, };
+export type OrganisationHistory = {
+/**
+ * The full organisation reference, as a decimal u64.
+ */
+id: string, holder: Array<EconomyRun>, size: Array<EconomyRun>,
+/**
+ * Fixed5.
+ */
+funds: Array<EconomyRun>, points: Array<EconomyRun>, unlocked: Array<EconomyRun>,
+/**
+ * The selected policy's token and the country's stored name of it.
+ */
+policy: Array<EconomyRun>, policyName: Array<EconomyRun>,
+/**
+ * "1" while a policy is selected whose token is not spelled.
+ */
+policyUnresolved: Array<EconomyRun>, cooldown: Array<EconomyRun>,
+/**
+ * Its name at each naming read; null where content cannot name it.
+ */
+names: Array<OrganisationLabel>, };
+export type OrganisationLabel = { firstHour: number, token: string, name: string | null,
+/**
+ * The icon's sprite name, where the content declares one.
+ */
+icon: string | null, };
+export type DesignHistory = {
+/**
+ * Hexadecimal variant handle.
+ */
+id: string, creator: Array<EconomyRun>, obsolete: Array<EconomyRun>,
+/**
+ * The equipment type's script key, its archetype's and the archetype's
+ * in-game name, from the latest naming read.
+ */
+token: string, archetype: string | null, archetypeName: string | null, names: Array<StockVariantName>, };
+export type ConvoyView = "regions" | "trade";
+export type ConvoyHealthParams = { branchId: string, view: ConvoyView,
+/**
+ * The one country shown.
+ */
+tag: string, };
+export type ConvoyHealthReply = { branchId: string, view: ConvoyView, tag: string, lastHour: number | null,
+/**
+ * Fixed-point denominator of every efficiency.
+ */
+scale: number,
+/**
+ * Hours each table was read complete ("1"): regional efficiency,
+ * resource deals and convoy clients.
+ */
+known: Array<Array<EconomyRun>>, regions: Array<RegionEfficiency>, deals: Array<DealEfficiency>, leases: Array<LeaseConvoy>, resources: Array<ConvoyResource>, holders: { [key in string]?: Array<HolderTag> }, warnings: Array<string>, };
+export type RegionEfficiency = { region: number,
+/**
+ * The region's in-game name; null where content does not name it.
+ */
+name: string | null,
+/**
+ * Fixed5 efficiency at each read.
+ */
+efficiency: Array<EconomyRun>, };
+export type DealEfficiency = {
+/**
+ * The exchange's native handle, hexadecimal.
+ */
+id: string, exporter: Array<EconomyRun>,
+/**
+ * The resource's native index.
+ */
+resource: Array<EconomyRun>,
+/**
+ * The fixed5 efficiency product.
+ */
+efficiency: Array<EconomyRun>,
+/**
+ * Its two fixed5 factors.
+ */
+factors: Array<Array<EconomyRun>>,
+/**
+ * Convoys assigned and required.
+ */
+convoys: Array<Array<EconomyRun>>, };
+export type LeaseConvoy = {
+/**
+ * The client's native handle.
+ */
+handle: string, giver: Array<EconomyRun>,
+/**
+ * "1" while its route draws as bad.
+ */
+bad: Array<EconomyRun>,
+/**
+ * Convoys assigned and required.
+ */
+convoys: Array<Array<EconomyRun>>, };
+export type ConvoyResource = { id: number, token: string, name: string | null, };
 export type PeaceDealsParams = { branchId: string, };
 export type PeaceDealsReply = { branchId: string, derived: boolean,
 /**
@@ -4776,6 +5117,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
 /** Products served separately from whole-branch history reads. */
 export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;

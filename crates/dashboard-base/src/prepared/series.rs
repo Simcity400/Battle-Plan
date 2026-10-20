@@ -2274,6 +2274,15 @@ impl Cached {
                 .sum::<usize>()
     }
 }
+thread_local! {
+    static DECODED_EVENT_ROWS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+/// Event rows this thread has decoded from stored blobs so far. A read decodes
+/// a key's whole blob in each batch it touches, so families that bound a
+/// query's work by the rows it decodes compare this before and after.
+pub fn decoded_event_rows() -> u64 {
+    DECODED_EVENT_ROWS.with(std::cell::Cell::get)
+}
 #[cfg(test)]
 thread_local! {
     static BLOB_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -2284,6 +2293,7 @@ thread_local! {
 fn decode(raw: &[u8], dir: Directory, cancelled: &AtomicBool) -> io::Result<Cached> {
     #[cfg(test)]
     BLOB_DECODES.set(BLOB_DECODES.get() + 1);
+    DECODED_EVENT_ROWS.with(|rows| rows.set(rows.get().saturating_add(dir.event_rows)));
     let mut bytes = raw;
     let mut cached = Cached {
         runs: Vec::new(),

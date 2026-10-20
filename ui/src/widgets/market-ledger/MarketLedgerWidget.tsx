@@ -1,0 +1,127 @@
+import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import WidgetState from '../../components/WidgetState';
+import { ChipSet } from '../../components/ChipSet';
+import { CountryFlagUrl } from '../../components/CountryFlag';
+import { Icon } from '../../components/Icons';
+import DrillHost from '../../charts/drill/DrillHost';
+import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { dayLabel } from '../../charts/draw';
+import { jumpItem } from '../../charts/jump';
+import LogList from '../../charts/log/LogList';
+import type { LogRow } from '../../charts/log/logData';
+import { logCountryRequests } from '../../charts/log/logData';
+import { logSettings } from '../../charts/log/logOptions';
+import { useChartTokens } from '../../charts/useChartTokens';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import { selectedTags } from '../../dashboard/countrySelection';
+import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import type { WidgetProps } from '../../dashboard/definitions';
+import MarketDrill from '../../dashboard/MarketDrill';
+import { resolveWindow } from '../../dashboard/model';
+import { resolveOptions } from '../../dashboard/options';
+import { usePlaybackHour } from '../../dashboard/playback';
+import { useDiagnostics } from '../../dashboard/useDiagnostics';
+import { DETAILS, OPTIONS } from './definition';
+import { KINDS, LEDGER_EMPTY, ledgerCountries, ledgerEmpty, ledgerFigure, ledgerIcon, ledgerTitle, shownKinds } from './ledgerData';
+import type { KindKey, LedgerItem } from './ledgerData';
+import { useMarketLedger } from './useMarketLedger';
+import '../event-feed/eventFeed.css';
+import './marketLedger.css';
+
+const COLUMNS = 'calc(var(--space-6) + var(--space-2) + var(--space-1)) minmax(0, 1fr) auto';
+const PALETTE: Record<number, number> = { 10: 0, 11: 2, 12: 5, 20: 1, 21: 3, 34: 1 };
+
+/** Every market occurrence of the chosen countries' deals, newest first: contracts
+ * made and removed, requests posted, deliveries and payments. A row opens the contract. */
+export default function MarketLedgerWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const tokens = useChartTokens();
+  const options = resolveOptions(OPTIONS, widget.options);
+  const log = logSettings(options);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const hour = window ? Math.floor(window.lastHour) : null;
+  const needsGroups = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
+  const groups = useCountryGroups(runtime, track, active && needsGroups);
+  const fallback = useMemo(() => widget.countries.kind === 'selected' ? selectedTags(widget.countries, track) : [], [widget.countries, track]);
+  const chosen = useMemo(() => track ? ledgerCountries(widget.countries, fallback, groups.data, track.branch.firstHour ?? 0, track.branch.lastHour)
+    : { countries: null, reason: null }, [widget.countries, fallback, groups.data, track]);
+  const enabled = (key: KindKey) => options[key] !== false;
+  const kinds = shownKinds(enabled);
+  const ledger = useMarketLedger(runtime, track, active, hour, chosen.countries, kinds);
+  const warnings = useMemo(() => chosen.countries?.unobserved
+    ? [...ledger.warnings, 'Group membership was not recorded at some hours; occurrences then are not listed.'] : ledger.warnings,
+  [chosen.countries?.unobserved, ledger.warnings]);
+  useDiagnostics(onDiagnostics, warnings);
+  const [visible, setVisible] = useState<readonly LogRow<LedgerItem>[]>([]);
+  const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.hour, tags: [row.item.seller, row.item.buyer] })), [visible]);
+  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
+  const name = useCallback((row: LogRow<LedgerItem>) => (tag: string | null) => tag === null ? 'Country name unavailable' : labelAt(row.hour)(tag).name, [labelAt]);
+  const anchor = useRef<HTMLDivElement>(null);
+  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const [picked, setPicked] = useState<LedgerItem | null>(null);
+  const describe = (row: LogRow<LedgerItem>) => {
+    const named = name(row);
+    const figure = ledgerFigure(row.item);
+    return [dayLabel(row.hour), ledgerTitle(row.item, named), `${named(row.item.seller)} → ${named(row.item.buyer)}`,
+      row.item.equipment, figure?.text].filter(Boolean).join(' · ');
+  };
+  const open = (item: LedgerItem, at: number) => {
+    setPicked(item);
+    dispatch({ type: 'open', breakdown: DETAILS.id, hour: at, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
+  };
+  const drillAt = drillHour(drill, hour) ?? hour ?? 0;
+  const chips = KINDS.map(kind => ({ value: kind.key, label: kind.label }));
+
+  if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see market activity." />;
+  if (hour === null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (needsGroups && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  if (chosen.reason) return <WidgetState kind="unavailable" message={chosen.reason} />;
+  if (ledger.error) return <WidgetState kind="error" detail={ledger.error} onRetry={ledger.retry} />;
+  if (kinds.length && (!chosen.countries || !ledger.data)) return <WidgetState kind="loading" label="Loading market activity…" />;
+  const main = <div className="log-widget market-ledger">
+    {log.chips && <div className="log-chips"><ChipSet label="Market occurrences" chips={chips}
+      selected={KINDS.filter(kind => enabled(kind.key)).map(kind => kind.key)} max={KINDS.length} onToggle={key => setOption?.(key, !enabled(key as KindKey))} /></div>}
+    <LogList key={ledger.identity} pages={ledger.pages} label="Market ledger" density={log.density} months={log.months}
+      preparedCoverage={ledger.prefix?.coverage} animate={log.animate && widget.time.mode === 'follow'} playhead={widget.time.mode === 'follow' ? hour : null}
+      columns={COLUMNS} onVisible={setVisible} onWantedPages={ledger.onWantedPages}
+      renderRow={row => {
+        const named = name(row);
+        const figure = ledgerFigure(row.item);
+        const seller = labelAt(row.hour)(row.item.seller ?? '');
+        return <>
+          <span className="log-art" aria-hidden="true"><span className="event-feed-icon" style={{ '--event-colour': tokens.categories[PALETTE[row.item.row.kind] ?? 0] } as CSSProperties}>
+            <Icon name={ledgerIcon(row.item.row.kind)} /></span></span>
+          <span className="log-text market-ledger-text" onClick={() => open(row.item, row.hour)}><b>{ledgerTitle(row.item, named)}</b>
+            <small>{row.item.seller && <CountryFlagUrl className="log-flag" url={seller.flag} reason={seller.flagReason} pending={seller.flagPending} />}
+              {named(row.item.seller)} → {named(row.item.buyer)}{row.item.equipment ? ` · ${row.item.equipment}` : ''}</small></span>
+          {figure ? <span className={`market-ledger-figure${figure.negative ? ' is-negative' : ''}`} onClick={() => open(row.item, row.hour)}>{figure.text}</span> : <span />}
+        </>;
+      }}
+      describe={describe}
+      tooltip={row => {
+        const named = name(row);
+        const figure = ledgerFigure(row.item);
+        return [{ title: ledgerTitle(row.item, named), subtitle: dayLabel(row.hour), rows: [
+          { label: 'Seller', value: named(row.item.seller) }, { label: 'Buyer', value: named(row.item.buyer) },
+          ...row.item.equipment ? [{ label: 'Equipment', value: row.item.equipment }] : [],
+          ...figure ? [{ label: 'Amount', value: figure.text }] : [],
+          ...row.item.row.reason ? [{ label: row.item.row.reason, tone: 'muted' as const }] : [],
+          { label: 'Contract', value: row.item.row.contract, tone: 'muted' as const },
+        ] }];
+      }}
+      menu={row => [{ label: 'Show contract', run: () => open(row.item, row.hour) }, jumpItem(runtime, track.id, row.hour)]}
+      empty={ledger.data ? LEDGER_EMPTY[ledgerEmpty(ledger.data, track.branch.firstHour ?? 0, hour)] : LEDGER_EMPTY.none} />
+    {ledger.errors.size > 0 && <div className="event-feed-load">Some occurrences couldn’t load. <button type="button" onClick={ledger.retry}>Retry</button></div>}
+  </div>;
+  return <div ref={anchor} className="market-ledger-host">
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
+      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country name unavailable') : DETAILS.label} day={dayLabel(drillAt)}
+      following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
+      main={main}>
+      {picked && <MarketDrill runtime={runtime} track={track} hour={drill.follow ? hour : drillAt} active={active}
+        tags={[picked.seller, picked.buyer].filter((tag): tag is string => tag !== null)} selected={`contract:false:${picked.row.contract}`} />}
+    </DrillHost>
+  </div>;
+}

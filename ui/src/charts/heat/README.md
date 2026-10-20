@@ -12,7 +12,7 @@ Keep rows/parts immutable. Identical part arrays can coalesce adjacent drawing r
 
 ## Interaction and scale
 
-The shared surface owns label ellipsis, top time axis, zoom/pan, resets, playback cursor and tooltip ownership. `afterPlayhead` shows the whole campaign with the cursor. Left/right and Home/End step reads; up/down select rows. Pointer snapping and keys share `heatNavigation`. The tooltip receives row, period (null when absent) and hour; the context menu receives the dated target for [jumpItem](../jump.ts).
+The shared surface owns label ellipsis, top time axis, zoom/pan, resets, playback cursor and tooltip ownership. `afterPlayhead` shows the whole campaign with the cursor. Left/right and Home/End step reads; up/down select rows. Pointer snapping and keys share `heatNavigation`. The tooltip receives row, period (null when absent) and hour; the context menu receives the dated target for [jumpItem](../jump.ts). With `onPick`, a click on the plot (never a drag) or Enter/Space on the keyboard row picks that row and period through the shared time-chart pick, under `pickOwner`.
 
 Rows scroll at readable heights. A logical spacer keeps the full inventory; the canvas, cell runs and labels cover only the viewport plus a small row margin. Dates stay at the top, and keyboard navigation scrolls every logical row into view. The optional HTML legend windows independently.
 

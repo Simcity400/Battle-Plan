@@ -400,7 +400,7 @@ struct Groups;
 static GROUPS: Groups = Groups;
 
 /// Every family prepared on its own, in registry order.
-static REGISTRY: [&dyn Own; 38] = [
+static REGISTRY: [&dyn Own; 43] = [
     &GROUPS,
     &IDENTITIES,
     &WARS,
@@ -436,6 +436,11 @@ static REGISTRY: [&dyn Own; 38] = [
     &sampled::EQUIPMENT_LOSSES,
     &sampled::SUPPLY,
     &sampled::PARTIES,
+    &sampled::FUEL_BRANCHES,
+    &sampled::MARKET,
+    &sampled::LEND_LEASE_BALANCE,
+    &sampled::PRODUCTION_CATALOGUE,
+    &sampled::CONVOYS,
     &sampled::POLITICS,
     &sampled::TRADE,
     &sampled::TERRITORY,

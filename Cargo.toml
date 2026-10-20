@@ -151,6 +151,7 @@ dashboard-wars = { path = "crates/dashboard-wars" }
 dashboard-country-fuel = { path = "crates/dashboard-country-fuel" }
 dashboard-special-projects = { path = "crates/dashboard-special-projects" }
 dashboard-politics-ledger = { path = "crates/dashboard-politics-ledger" }
+dashboard-economy = { path = "crates/dashboard-economy" }
 dashboard-raids = { path = "crates/dashboard-raids" }
 dashboard-resource-balance = { path = "crates/dashboard-resource-balance" }
 dashboard-unit-leaders = { path = "crates/dashboard-unit-leaders" }

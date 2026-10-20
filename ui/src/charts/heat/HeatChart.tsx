@@ -34,6 +34,11 @@ export interface HeatChartProps {
   pending?: readonly Span[];
   tooltip: (row: HeatRow, period: HeatPeriod | null, hour: number) => TooltipContent | null;
   onContextMenu?: (hour: number, x: number, y: number) => void;
+  /** A click on the plot, or Enter/Space on the keyboard row, picks that row at that
+   * period, such as to open its breakdown. Without it the plot picks nothing. */
+  onPick?: (row: HeatRow, period: HeatPeriod | null, hour: number) => void;
+  /** Stable source/selection token for picks; a change cancels a pending one. */
+  pickOwner?: unknown;
 }
 
 /** Content-neutral heat strip on the kit's time surface. Labels, axes, zoom,
@@ -169,7 +174,13 @@ export default function HeatChart(props: HeatChartProps) {
         <div className="heat-chart-plot" style={{ height: window.plotHeight }}><TimeChart label={props.label} extent={props.extent} playhead={props.playhead} playback="cursor" afterPlayhead={props.afterPlayhead}
           branchStart={props.branchStart} hoursPerSecond={props.hoursPerSecond} axes={{ xFrom: null, xTo: null, yMin: 0, yMax: Math.max(1, visible.length), log: false }}
           padding={{ top, bottom }} rows={rows} layers={layers} overlay={overlay} {...navigation}
-          active={props.active} revision={props.revision} onContextMenu={props.onContextMenu} /></div>
+          active={props.active} revision={props.revision} onContextMenu={props.onContextMenu}
+          pickOwner={props.pickOwner} onPick={props.onPick ? hour => {
+            // The row under the pointer, or the keyboard's row, as the tooltip reads it.
+            const row = props.rows[keyboard.current ? selected.current : heatRowAt(pointerY.current, window, top, props.rows.length)];
+            const column = periodAt(props.periods, hour);
+            if (row) props.onPick!(row, column == null ? null : props.periods[column], hour);
+          } : undefined} /></div>
       </div>
     </div>
   </div><Legend label={`${props.label} legend`} items={legend} always windowed />

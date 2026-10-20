@@ -321,6 +321,12 @@ pub fn bad_efficiency_threshold(memory: &impl Memory, base: usize) -> Result<i64
         .ok_or("bad-efficiency threshold unreadable")
 }
 
+/// A client's or exchange's efficiency: the product of its two fixed5
+/// factors, widened and truncated toward zero, as the game compares it.
+pub fn efficiency_product(a: i64, b: i64) -> i128 {
+    i128::from(a) * i128::from(b) / ONE
+}
+
 /// Whether the client's line is the bad colour: its efficiency product below `threshold`.
 pub fn client_bad(
     memory: &impl Memory,
@@ -329,7 +335,7 @@ pub fn client_bad(
 ) -> Result<bool, &'static str> {
     let factors = pair_i64(memory, at(client, CLIENT_EFFICIENCY_A)?)
         .ok_or("convoy client efficiency unreadable")?;
-    Ok(i128::from(factors[0]) * i128::from(factors[1]) / ONE < i128::from(threshold))
+    Ok(efficiency_product(factors[0], factors[1]) < i128::from(threshold))
 }
 
 /// The client's assigned and required convoys.

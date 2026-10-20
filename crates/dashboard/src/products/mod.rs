@@ -71,6 +71,9 @@ pub use dashboard_unit_leaders::products::unit_leaders;
 pub use dashboard_wars::products::{war_casualties, wargoals, wars};
 pub use dashboard_politics::products::politics_state;
 pub use dashboard_world_tension::products::world_tension;
+pub use dashboard_economy::products::{
+    convoy_health, fuel_branches, lend_lease_balance, market, production_catalogue,
+};
 
 use std::sync::atomic::AtomicBool;
 
@@ -275,6 +278,12 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<politics_state::history::PoliticsStateHistory>(),
     register_prepared::<politics_state::civil_wars::CivilWars>(),
     register_prepared::<politics_ledger::PoliticsLedger>(),
+    register_prepared::<fuel_branches::FuelBranches>(),
+    register_prepared::<market::MarketHistory>(),
+    register_prepared::<market::MarketLedger>(),
+    register_prepared::<lend_lease_balance::LendLeaseBalance>(),
+    register_prepared::<production_catalogue::ProductionCatalogue>(),
+    register_prepared::<convoy_health::ConvoyHealth>(),
     register_prepared::<peace_deals::PeaceDeals>(),
     register_prepared::<resource_balance::ResourceBalance>(),
     register_prepared::<decryption::Decryption>(),

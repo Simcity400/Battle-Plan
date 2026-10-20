@@ -76,3 +76,17 @@ test('a 5,000-row plot only builds runs and labels for its viewport and margin',
   assert.equal(cellsReached, chart.rows!.labels.length);
   assert.equal(drawn.length, cellsReached);
 });
+
+test('a pick names the row under the pointer and its period, and no pick is offered without a handler', () => {
+  const periods = [{ firstHour: 0, lastHour: 23, readHour: 23 }, { firstHour: 24, lastHour: 47, readHour: 47 }];
+  const rows = ['North', 'South'].map(label => ({ id: label, label, cells: periods.map(() => ({ parts: [] })) }));
+  const base = { label: 'Picks', periods, rows, extent: [0, 47] as [number, number], branchStart: 0, playhead: null, look: 'margin' as const,
+    active: true, revision: 1, tooltip: () => null };
+  renderToStaticMarkup(createElement(HeatChart, base));
+  assert.equal(capture.heatChartProps!.onPick, undefined);
+  const picked: [string, number | null, number][] = [];
+  renderToStaticMarkup(createElement(HeatChart, { ...base, onPick: (row, period, hour) => picked.push([row.id, period?.firstHour ?? null, hour]) }));
+  // Before any pointer or key the first row is under the plot's top edge.
+  capture.heatChartProps!.onPick!(30);
+  assert.deepEqual(picked, [['North', 24, 30]]);
+});

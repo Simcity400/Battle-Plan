@@ -1388,22 +1388,7 @@ fn reply(
             None
         }
     };
-    let consumer_names = ["TOPBAR_ARMY", "TOPBAR_AIR", "TOPBAR_NAVY"].map(|key| {
-        let name = catalogue.as_ref().and_then(|catalogue| {
-            catalogue
-                .localisation
-                .get(key)
-                .is_some()
-                .then(|| catalogue.localised(key, dashboard_text::catalogue::View::Plain))
-                .flatten()
-        });
-        if name.is_none() {
-            warnings.push(format!(
-                "Fuel consumer label {key} is absent or refused by the recorded content"
-            ));
-        }
-        name
-    });
+    let consumer_names = consumer_names(catalogue.as_deref(), &mut warnings);
     let localisation = catalogue
         .as_ref()
         .map(|catalogue| catalogue.localisation.as_ref());
@@ -1441,6 +1426,31 @@ fn reply(
         detail_hours: detail::DETAIL_HOURS,
         reads: scanned.reads.iter().map(FuelRead::from).collect(),
         warnings,
+    })
+}
+
+/// The fuel panel's labels of the country's three fuel consumers, in their
+/// native order, through the recorded content. A label the content lacks or
+/// refuses is None, with a warning naming its key.
+pub fn consumer_names(
+    catalogue: Option<&dashboard_base::catalogue::Catalogue>,
+    warnings: &mut Vec<String>,
+) -> [Option<String>; 3] {
+    ["TOPBAR_ARMY", "TOPBAR_AIR", "TOPBAR_NAVY"].map(|key| {
+        let name = catalogue.and_then(|catalogue| {
+            catalogue
+                .localisation
+                .get(key)
+                .is_some()
+                .then(|| catalogue.localised(key, dashboard_text::catalogue::View::Plain))
+                .flatten()
+        });
+        if name.is_none() {
+            warnings.push(format!(
+                "Fuel consumer label {key} is absent or refused by the recorded content"
+            ));
+        }
+        name
     })
 }
 

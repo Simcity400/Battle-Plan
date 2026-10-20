@@ -528,6 +528,60 @@
       ]
     },
     {
+      "kind": "fuel-branches",
+      "requests": [
+        {"product": "fuel-branches", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": "$tags"}}
+      ]
+    },
+    {
+      "kind": "lend-lease-balance",
+      "requests": [
+        {"product": "lend-lease-balance", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}}
+      ]
+    },
+    {
+      "kind": "lend-lease-agreements",
+      "requests": [
+        {"product": "market-history", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "agreements", "tags": "$tags"}}
+      ]
+    },
+    {
+      "kind": "international-market",
+      "requests": [
+        {"product": "market-history", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "contracts", "tags": []}}
+      ]
+    },
+    {
+      "kind": "market-ledger",
+      "requests": [
+        {"product": "market-ledger", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": "$tags", "kinds": [10, 11, 12, 20, 21, 34], "lastHour": "$last", "pageSize": 256}}
+      ]
+    },
+    {
+      "kind": "production-licences",
+      "requests": [
+        {"product": "production-catalogue", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "licences", "tags": []}}
+      ]
+    },
+    {
+      "kind": "industrial-organisations",
+      "requests": [
+        {"product": "production-catalogue", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "organisations", "tags": "$tags"}}
+      ]
+    },
+    {
+      "kind": "equipment-designs",
+      "requests": [
+        {"product": "production-catalogue", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "designs", "tags": "$tags"}}
+      ]
+    },
+    {
+      "kind": "convoy-health",
+      "requests": [
+        {"product": "convoy-health", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "regions", "tag": "$tag"}}
+      ]
+    },
+    {
       "kind": "event-choices",
       "requests": [
         {"product": "event-choices", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": null, "lastHour": "$last", "cursor": null, "pageSize": 256, "kinds": ["scriptEventFired", "newsEventFired"]}}

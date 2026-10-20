@@ -124,6 +124,12 @@ fn cache_product(product: &str) -> Option<&'static str> {
         "military-air-ledger" => "queries:military-air-ledger",
         "special-projects" => "queries:special-projects",
         "resource-balance" => "queries:resource-balance",
+        "fuel-branches" => "queries:fuel-branches",
+        "market-history" => "queries:market-history",
+        "market-ledger" => "queries:market-ledger",
+        "lend-lease-balance" => "queries:lend-lease-balance",
+        "production-catalogue" => "queries:production-catalogue",
+        "convoy-health" => "queries:convoy-health",
         _ => return None,
     })
 }
@@ -266,6 +272,139 @@ fn casualty_reads_through(params: &Value, prefix: &super::prefix::Prefix) -> Val
     params
 }
 
+/// The economy families' whole-branch histories and ledger pages, through
+/// their gate's prepared prefix; the hours after it are pending, never empty.
+fn economy(
+    source: &Source,
+    request: &ProductRequest,
+    product: &str,
+    content: Option<&ContentOptions>,
+    store: &store::Store,
+    key: &store::SourceKey,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::{
+        convoy_health, fuel_branches, lend_lease_balance, market, production_catalogue,
+    };
+    use dashboard_base::products::equipment::{self, Texts};
+    let branch_id = request
+        .params
+        .get("branchId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| crate::invalid("Missing economy branch"))?;
+    let branch = branch(source, branch_id)?;
+    let requested = (product == "market-ledger")
+        .then(|| request.params.get("lastHour").and_then(Value::as_i64))
+        .flatten()
+        .and_then(|hour| i32::try_from(hour).ok());
+    let prefix =
+        super::prefix::read_or_empty(source, content, product, branch, requested, cancelled)?;
+    let through = (prefix.coverage.last_hour >= prefix.coverage.first_hour)
+        .then(|| prefix.through(requested).unwrap_or(i32::MAX));
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    let mut warnings = Vec::new();
+    let catalogue = |warnings: &mut Vec<String>| match context
+        .content()
+        .and_then(|options| dashboard_base::catalogue::catalogue(source, options))
+    {
+        Ok(catalogue) => Some(catalogue),
+        Err(error) => {
+            warnings.push(format!("Names unavailable: {error}"));
+            None
+        }
+    };
+    let mut data = match product {
+        "fuel-branches" => {
+            let params: fuel_branches::FuelBranchesParams =
+                serde_json::from_value(request.params.clone())?;
+            let labels = fuel_branches::labels(source, &context, &mut warnings);
+            serde_json::to_value(fuel_branches::query(
+                store, key, &params, through, labels, warnings, cancelled,
+            )?)?
+        }
+        "market-history" => {
+            let params: market::MarketHistoryParams = serde_json::from_value(request.params.clone())?;
+            let catalogue = catalogue(&mut warnings);
+            let texts = catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts);
+            serde_json::to_value(market::history(
+                store, key, &params, through, texts, warnings, cancelled,
+            )?)?
+        }
+        "market-ledger" => {
+            let params: market::MarketLedgerParams = serde_json::from_value(request.params.clone())?;
+            let catalogue = catalogue(&mut warnings);
+            let texts = catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts);
+            serde_json::to_value(market::ledger(
+                store, key, &params, through, texts, warnings, cancelled,
+            )?)?
+        }
+        "lend-lease-balance" => {
+            let params: lend_lease_balance::LendLeaseBalanceParams =
+                serde_json::from_value(request.params.clone())?;
+            serde_json::to_value(lend_lease_balance::query(
+                store, key, &params, through, cancelled,
+            )?)?
+        }
+        "production-catalogue" => {
+            let params: production_catalogue::ProductionCatalogueParams =
+                serde_json::from_value(request.params.clone())?;
+            let catalogue = catalogue(&mut warnings);
+            let units = catalogue.as_ref().and_then(|catalogue| {
+                equipment::units(source, catalogue)
+                    .map_err(|error| warnings.push(format!("Equipment types unavailable: {error}")))
+                    .ok()
+            });
+            let sprite = |name: &str| {
+                catalogue.as_ref().is_some_and(|catalogue| {
+                    catalogue.sprites.contains(name) || catalogue.sprites.refusal(name).is_some()
+                })
+            };
+            let image = |name: &str| match &catalogue {
+                Some(catalogue) => dashboard_base::products::equipment_icon::image(
+                    catalogue,
+                    &dashboard_base::products::equipment_icon::Icon::Sprite(name.to_owned()),
+                    48,
+                )
+                .map_err(|error| error.to_string()),
+                None => Err("content is unavailable".to_owned()),
+            };
+            let naming = production_catalogue::Naming {
+                texts: catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts),
+                units: units.as_deref(),
+                sprite: &sprite,
+                image: &image,
+            };
+            serde_json::to_value(production_catalogue::query(
+                store, key, &params, through, &naming, warnings, cancelled,
+            )?)?
+        }
+        "convoy-health" => {
+            let params: convoy_health::ConvoyHealthParams =
+                serde_json::from_value(request.params.clone())?;
+            let regions = convoy_health::region_names(source, &context, &mut warnings);
+            let naming = dashboard_base::products::resources::ResourceNaming::of(source, &context);
+            let resources = |list: &[(u32, String)]| match naming.infos(list, cancelled) {
+                Ok((infos, notes)) => (
+                    infos
+                        .into_iter()
+                        .filter_map(|info| Some((info.id, info.name?)))
+                        .collect(),
+                    notes,
+                ),
+                Err(error) => (Default::default(), vec![format!("Resource names unavailable: {error}")]),
+            };
+            serde_json::to_value(convoy_health::query(
+                store, key, &params, through, &regions, &resources, warnings, cancelled,
+            )?)?
+        }
+        _ => unreachable!("only economy products reach this helper"),
+    };
+    prefix.mark(&mut data)?;
+    Ok(data)
+}
+
 fn query_data(
     source: &Source,
     request: &ProductRequest,
@@ -311,6 +450,13 @@ fn query_data(
                 cancelled,
             )?
         }
+
+        product @ ("fuel-branches"
+        | "market-history"
+        | "market-ledger"
+        | "lend-lease-balance"
+        | "production-catalogue"
+        | "convoy-health") => economy(source, request, product, content, &store, &key, cancelled)?,
 
         "civil-wars" => {
             use crate::products::politics_state::civil_wars::{self, CivilWarsParams};

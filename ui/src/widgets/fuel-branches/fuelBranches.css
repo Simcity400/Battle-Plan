@@ -1,0 +1,14 @@
+/* Resource balance's bar rows, one per branch: the received part, then the unmet part in the deficit colour. */
+.fuel-branches { container-type: inline-size; }
+.fuel-branch-track { gap: 1px !important; }
+.fuel-branch-unmet { font-size: var(--type-xs); color: var(--muted); }
+.fuel-branches .resource-bars b { font-weight: 600; white-space: nowrap; }
+.fuel-branches-time { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0; }
+.fuel-branches-time > .legend { padding: 0 var(--space-3); }
+.fuel-branches-chart { flex: 1; min-height: 0; }
+/* Narrow: the received amount alone (both stay in the tooltip), and "unmet" alone. */
+@container (max-width: 420px) {
+  .fuel-branch-requested, .fuel-branch-unmet span { display: none; }
+}
+.fuel-branches-host { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.fuel-branches .resource-bars > li { cursor: pointer; }

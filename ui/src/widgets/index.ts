@@ -3,6 +3,8 @@ import type { WidgetRenderer } from '../dashboard/definitions';
 import { widgetMetas } from './definitions';
 import { lazyWidget } from './lazyWidget';
 import { useIdeaTimelinePresets } from './idea-timeline/ideaTimelinePresets';
+// Game windows a widget can open (Industrial organisations' policy chooser).
+import '../components/gameWindowRegistry';
 const renderers = {
   'war-goals': lazyWidget('war-goals', ['render']),
   'next-elections': lazyWidget('next-elections', ['render']),
@@ -49,6 +51,15 @@ const renderers = {
   'faction-strength': lazyWidget('faction-strength', ['render']),
   'subjects': lazyWidget('subjects', ['render']),
   'trade-flows': lazyWidget('trade-flows', ['render', 'countryChip']),
+  'fuel-branches': lazyWidget('fuel-branches', ['render']),
+  'lend-lease-balance': lazyWidget('lend-lease-balance', ['render']),
+  'lend-lease-agreements': lazyWidget('lend-lease-agreements', ['render']),
+  'international-market': lazyWidget('international-market', ['render']),
+  'market-ledger': lazyWidget('market-ledger', ['render']),
+  'production-licences': lazyWidget('production-licences', ['render']),
+  'industrial-organisations': lazyWidget('industrial-organisations', ['render']),
+  'equipment-designs': lazyWidget('equipment-designs', ['render']),
+  'convoy-health': lazyWidget('convoy-health', ['render']),
   'peace-deals': lazyWidget('peace-deals', ['render']),
   'territory-transfers': lazyWidget('territory-transfers', ['render']),
   'wars': lazyWidget('wars', ['render']),

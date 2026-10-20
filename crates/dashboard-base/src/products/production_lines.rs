@@ -1964,7 +1964,7 @@ fn carry_lines(
     }
 }
 
-fn raw_organisation(
+pub fn raw_organisation(
     row: &IndustrialOrganisationRow,
     hour: i32,
     tags: &Tags,
@@ -1985,7 +1985,7 @@ fn raw_organisation(
 /// Native constructor and save-writer sentinel for no selected policy.
 const UNSELECTED_POLICY: u32 = 0x4c17;
 
-fn organisation_state(
+pub fn organisation_state(
     row: &IndustrialOrganisationDetailsRow,
     read_hour: Option<i32>,
     lexical: &[LexicalTokenRow],

@@ -89,6 +89,12 @@ Idea extracts also reuse reductions when the block reader reports no change
 to that table's projected fields, keys or availability, even when another
 field rebuilt the source rows.
 
+A read decodes a key's whole blob in each batch it touches; batches are not
+split within a key. `series::decoded_event_rows` reports the event rows this
+thread has decoded, so a family that bounds a query by the rows it decodes
+(splitting a long event history across keys, as the market ledger does) can
+assert it.
+
 Each batch reuses the compression of byte-identical per-key payloads within
 that batch. Keys keep separate directories, offsets and payload copies, so
 the batch bytes and saved continuation are unchanged by reuse. The temporary

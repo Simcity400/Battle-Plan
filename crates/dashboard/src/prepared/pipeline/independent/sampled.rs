@@ -66,7 +66,8 @@ use crate::{
     },
     prepared_stability::StabilityAccumulator,
     products::{
-        air_force, country_history::HistoryScan, equipment_losses, navy, politics_state,
+        air_force, convoy_health, country_history::HistoryScan, equipment_losses, fuel_branches,
+        lend_lease_balance, market, navy, politics_state, production_catalogue,
         parts_race_prepared::Family as _, party_history, supply_health, territory, trade_flows,
     },
 };
@@ -702,6 +703,108 @@ impl Sampled for party_history::prepared::Prepared {
     }
 }
 
+// --- Economy ---------------------------------------------------------------
+
+/// The `Sampled` impl of an economy family: each observes every accepted hour
+/// and rebuilds only where its watched tables changed or after a gap.
+macro_rules! economy_family {
+    ($type:ty, $family:ident, $timing:literal, $gates:expr, $observed:literal, $tables:expr,
+     |$state:ident, $frame:ident, $block:ident, $changes:ident| $observe:expr) => {
+        impl Sampled for $type {
+            fn family() -> &'static prepass::Family {
+                &$family
+            }
+
+            const TIMING: &'static str = $timing;
+            const GATES: &'static [&'static str] = $gates;
+            #[cfg(test)]
+            const OBSERVED: &'static str = $observed;
+
+            fn tables() -> &'static [TableId] {
+                static TABLES: LazyLock<Vec<TableId>> = LazyLock::new(|| union(&[$tables]));
+                &TABLES
+            }
+
+            fn new(_: &Block<'_>) -> Self {
+                Self::default()
+            }
+
+            fn observe(
+                &mut self,
+                $frame: &DecodedFrame,
+                $block: &Block<'_>,
+                $changes: &FrameChanges,
+                _: &AtomicBool,
+                _: &mut Timings,
+            ) -> io::Result<()> {
+                let $state = self;
+                $observe
+            }
+
+            fn bytes(&self) -> usize {
+                Self::bytes(self)
+            }
+
+            fn flush(
+                &mut self,
+                writer: &mut store::Writer,
+                _: FormatVersion,
+                branch: u64,
+                cancelled: &AtomicBool,
+                _: &mut Timings,
+            ) -> io::Result<()> {
+                Self::flush(self, writer, branch, cancelled)
+            }
+        }
+    };
+}
+
+economy_family!(
+    fuel_branches::Prepared,
+    FUEL_BRANCHES_FAMILY,
+    "independent.fuel_branches",
+    &[fuel_branches::QUERY],
+    "fuel_branches.observed",
+    fuel_branches::TABLES,
+    |state, frame, _block, changes| state.observe_changes(frame, changes)
+);
+economy_family!(
+    market::Prepared,
+    MARKET_FAMILY,
+    "independent.market",
+    &[market::HISTORY, market::LEDGER],
+    "market.observed",
+    market::tables(),
+    |state, frame, block, changes| state.observe_changes(block.replay.format, frame, changes)
+);
+economy_family!(
+    lend_lease_balance::Prepared,
+    LEND_LEASE_BALANCE_FAMILY,
+    "independent.lend_lease_balance",
+    &[lend_lease_balance::QUERY],
+    "lend_lease_balance.observed",
+    lend_lease_balance::TABLES,
+    |state, frame, _block, changes| state.observe_changes(frame, changes)
+);
+economy_family!(
+    production_catalogue::Prepared,
+    PRODUCTION_CATALOGUE_FAMILY,
+    "independent.production_catalogue",
+    &[production_catalogue::QUERY],
+    "production_catalogue.observed",
+    production_catalogue::tables(),
+    |state, frame, block, changes| state.observe_changes(block.replay.format, frame, changes)
+);
+economy_family!(
+    convoy_health::Prepared,
+    CONVOYS_FAMILY,
+    "independent.convoys",
+    &[convoy_health::QUERY],
+    "convoys.observed",
+    convoy_health::TABLES,
+    |state, frame, _block, changes| state.observe_changes(frame, changes)
+);
+
 // --- Political state -------------------------------------------------------
 
 /// Election schedules, governments in exile and balance-of-power membership.
@@ -1271,6 +1374,11 @@ family!(STABILITY_FAMILY, "stability");
 family!(LOSSES_FAMILY, "equipment_losses");
 family!(SUPPLY_FAMILY, "supply");
 family!(PARTIES_FAMILY, "parties");
+family!(FUEL_BRANCHES_FAMILY, "fuel_branches");
+family!(MARKET_FAMILY, "market");
+family!(LEND_LEASE_BALANCE_FAMILY, "lend_lease_balance");
+family!(PRODUCTION_CATALOGUE_FAMILY, "production_catalogue");
+family!(CONVOYS_FAMILY, "convoys");
 family!(POLITICS_FAMILY, "politics_state");
 family!(TRADE_FAMILY, "trade");
 family!(TERRITORY_FAMILY, "territory");
@@ -1316,6 +1424,21 @@ pub(in crate::prepared::pipeline) static SUPPLY: Entry<supply_health::prepared::
     Entry(PhantomData);
 /// Parties and leaders.
 pub(in crate::prepared::pipeline) static PARTIES: Entry<party_history::prepared::Prepared> =
+    Entry(PhantomData);
+/// Fuel by military branch.
+pub(in crate::prepared::pipeline) static FUEL_BRANCHES: Entry<fuel_branches::Prepared> =
+    Entry(PhantomData);
+/// The international market and lend-lease.
+pub(in crate::prepared::pipeline) static MARKET: Entry<market::Prepared> = Entry(PhantomData);
+/// Lend-lease balances.
+pub(in crate::prepared::pipeline) static LEND_LEASE_BALANCE: Entry<lend_lease_balance::Prepared> =
+    Entry(PhantomData);
+/// Licences, industrial organisations and designs.
+pub(in crate::prepared::pipeline) static PRODUCTION_CATALOGUE: Entry<
+    production_catalogue::Prepared,
+> = Entry(PhantomData);
+/// Convoy and trade efficiency.
+pub(in crate::prepared::pipeline) static CONVOYS: Entry<convoy_health::Prepared> =
     Entry(PhantomData);
 /// Election schedules, exiles and balances of power.
 pub(in crate::prepared::pipeline) static POLITICS: Entry<politics_state::history::Prepared> =
