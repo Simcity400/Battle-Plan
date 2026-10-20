@@ -39,6 +39,7 @@ test('every widget view a setting switches to is also its own catalogue card', (
     'casualties-between': ['Casualties between countries: Casualty pairs'],
     'casualties-breakdown': ['Casualties breakdown: Recorded losses'],
     'army-size': ['Army size over time', 'Army composition', 'Army breakdown'],
+    'division-equipment': ['Division equipment by template'],
     'supply-health': ['Supply health: Supply classification'],
     'land-battles': ['Biggest land battles'],
     'naval-battles': ['Biggest naval battles'],

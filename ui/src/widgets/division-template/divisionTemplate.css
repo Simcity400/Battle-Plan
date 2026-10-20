@@ -1,0 +1,6 @@
+.division-template { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.division-template .chart-table { flex: 1; }
+.division-template-name { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; min-width: 0; vertical-align: middle; }
+.division-template-name > img, .division-template-name > .art-fallback { width: var(--space-6); height: calc(var(--table-row-height) - var(--space-2)); flex: none; object-fit: contain; }
+.division-template-name > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.division-template-missing { color: var(--muted); }

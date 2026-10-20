@@ -76,7 +76,7 @@ mod spill;
 pub mod sprites;
 mod windows;
 
-pub use windows::{kept_container_window, window_button_sprite, window_texts};
+pub use windows::{kept_container_window, window_button_sprite, window_button_tooltip, window_texts};
 
 use crate::parser::native::Token;
 pub use reader::{

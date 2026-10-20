@@ -1033,6 +1033,28 @@ fn legacy_names(source: &Source, cat: &Arc<Catalogue>) -> CachedLegacyNames {
         })
         .clone()
 }
+/// A division template's artwork as the division log draws it: its custom
+/// icon, else its priority sub-unit's, as a PNG data URL kept per content binding.
+pub fn template_icon(
+    source: &Source,
+    cat: &Arc<Catalogue>,
+    row: &replay_data::rows::DivisionTemplateIconRow,
+) -> Result<String, String> {
+    icon(source, cat, row.priority_unit, row.custom_icon, &row.priority_unit_name)
+}
+
+/// The content stack's division name groups, read once per content binding,
+/// and the notes their read made.
+pub fn division_name_groups(
+    source: &Source,
+    cat: &Arc<Catalogue>,
+) -> (
+    Result<Arc<installed_content_division_names::division_names::Database>, String>,
+    Vec<String>,
+) {
+    legacy_names(source, cat)
+}
+
 fn icon_key(
     priority_unit: u32,
     custom: i32,

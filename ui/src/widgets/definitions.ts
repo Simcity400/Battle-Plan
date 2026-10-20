@@ -31,6 +31,12 @@ import { definition as experience } from './experience/definition.ts';
 import { definition as eventFeed } from './event-feed/definition.ts';
 import { definition as generals } from './generals/definition.ts';
 import { definition as generalCareer } from './general-career/definition.ts';
+import { definition as divisionTemplate } from './division-template/definition.ts';
+import { definition as trainingQueue } from './training-queue/definition.ts';
+import { definition as divisionServiceRecord } from './division-service-record/definition.ts';
+import { definition as mostDecoratedDivisions } from './most-decorated-divisions/definition.ts';
+import { definition as armyLossesByMonth } from './army-losses-by-month/definition.ts';
+import { definition as divisionEquipment } from './division-equipment/definition.ts';
 import { definition as gameScore } from './game-score/definition.ts';
 import { definition as ideaTimeline } from './idea-timeline/definition.ts';
 import { definition as landBattles } from './land-battles/definition.ts';
@@ -78,6 +84,6 @@ import { definition as worldTension } from './world-tension/definition.ts';
 import { definition as operativesRoster } from './operatives-roster/definition.ts';
 import { definition as whoSpiesOnWhom } from './who-spies-on-whom/definition.ts';
 
-export const widgetMetas = [map, nationalFocus, activeResearch, research, politicalPower, politicalPowerSpending, politicalPowerSpendingBreakdown, commandPower, commandPowerSpending, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, balanceOfPower, nextElections,governmentsInExile, civilWars, eventChoices, decisions, resourceBalance, equipmentStockpile, fuel, productionLines, factories, territory, territoryBreakdown, equipmentLosses, equipmentProduced, productionSpending, occupiedStates, occupationTrend, airForceSize, navySize, airRegion, airTimeline, airKillsLosses, bombingDamage, bombingDamageBreakdown, experience, factions, factionStrength, subjects, tradeFlows, peaceDeals, territoryTransfers, wars, warGoals, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, navalLosses, shipsSunk, raidLog, raidTally, decryption, espionageLog, agencyComparison, operativesRoster, whoSpiesOnWhom, scoreboard, gameScore, casualties, casualtiesBetween, casualtiesBreakdown, generals, generalCareer, aces, armySize, supplyHealth, divisionLog, landBattles, navalBattles, eventFeed] as const;
+export const widgetMetas = [map, nationalFocus, activeResearch, research, politicalPower, politicalPowerSpending, politicalPowerSpendingBreakdown, commandPower, commandPowerSpending, stability, ideaTimeline, nationalSpirits, spiritHistory, rulingParty, balanceOfPower, nextElections,governmentsInExile, civilWars, eventChoices, decisions, resourceBalance, equipmentStockpile, fuel, productionLines, factories, territory, territoryBreakdown, equipmentLosses, equipmentProduced, productionSpending, occupiedStates, occupationTrend, airForceSize, navySize, airRegion, airTimeline, airKillsLosses, bombingDamage, bombingDamageBreakdown, experience, factions, factionStrength, subjects, tradeFlows, peaceDeals, territoryTransfers, wars, warGoals, worldTension, autonomy, constructionLog, constructionSpending, specialProjects, nuclearArsenal, navalLosses, shipsSunk, raidLog, raidTally, decryption, espionageLog, agencyComparison, operativesRoster, whoSpiesOnWhom, scoreboard, gameScore, casualties, casualtiesBetween, casualtiesBreakdown, generals, generalCareer, aces, armySize, supplyHealth, divisionLog, divisionTemplate, trainingQueue, mostDecoratedDivisions, divisionServiceRecord, armyLossesByMonth, divisionEquipment, landBattles, navalBattles, eventFeed] as const;
 
 registerWidgets(widgetMetas);

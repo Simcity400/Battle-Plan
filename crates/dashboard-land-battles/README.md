@@ -73,3 +73,40 @@ Equipment labels reuse the shared supplying-read lookup and frame cache, with
 the naming read's country and lexical operands on carried hours. Like battle
 rankings, observer filters retain unknown participants; an empty native country
 list is shown as unknown, and an absent terminal side stays absent.
+
+## Army losses and reached-hour replies
+
+`army-losses` ([products/army_losses.rs](src/products/army_losses.rs)) answers one
+country's retained Combat Log at a reached hour for the
+[Army losses by month](../../ui/src/widgets/army-losses-by-month/README.md) widget:
+each army's retained months with the log's three signed manpower source channels
+(Ground, Air, Navy; additive, not killed/wounded/captured) and each retained ledger
+month's designs with their archetypes. Each army's log joins its orders group by
+full reference; month rows carry the reference's id. Logs of army groups and of
+armies that no longer exist are refused and counted, as the game's own page leaves
+them out. Absent months stay absent: the reply never fills a pruned month.
+Equipment rows join the months the game keeps at the hour, so a pruned month's
+rows that linger until its country's next read are left out and counted. A
+country's ordinary read holds only each array's last two month entries, and a
+full read (the recording's start, a load, a gap, a refresh, or a country whose
+last complete read is older) every retained one. An older month's amounts are
+known at the hour when a read at or before it covered the month and every hour
+from that read to the hour was read: they are what that read found, its rows or
+none (an empty month). One backward walk over the branch's blocks settles every
+older month of a reply together, from each block's index of the latest read
+that covered each country's months and the hours the block did not read
+([army_losses/ledgers.rs](src/products/army_losses/ledgers.rs)). A block that
+ends by the hour is indexed whole for every country, streamed from its changes
+and kept in the observation cache; the walk keeps no block once processed and
+stops when every month is settled or an unread hour leaves the rest unknown. A
+month written after the latest read, one no read covered, or one whose later
+reads or pool were not all recorded is unknown, never zero.
+
+[products/reached.rs](src/products/reached.rs) is the shared reached-hour cache:
+a reply computed from one hour's frames, kept in the observation cache of the
+block holding that hour under the source's recording and content binding and
+the load's presentation (the folders, cache folder and unverified-content
+choice, and the catalogue's languages and texture settings), so a reply is
+never answered under another presentation. The
+army products in [dashboard-army](../dashboard-army/README.md) use it too, along
+with the division log's template artwork and division name groups.

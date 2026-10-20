@@ -10,8 +10,8 @@ import type { TooltipContent } from '../tooltip';
 import { movingRowClass, useRowMotion } from '../useRowMotion';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { easeTau } from '../easing';
-import { FULL_FIT, barFraction, barMaximum, densityRowHeight, fitColumns, groupedRows, isMissing, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
-import type { ColumnFit, RankChange, Sort, TableGroup } from './logic';
+import { FULL_FIT, barFraction, barMaximum, densityRowHeight, fitColumns, groupedRows, isMissing, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, treeRows, visibleRange } from './logic.ts';
+import type { ColumnFit, RankChange, Sort, TableGroup, TableTree, TreeRow } from './logic';
 import { cellContent, columnAlign, growColumnWidths, hideOrder, tableGrid, withHidden } from './columns.ts';
 import type { TableColumn } from './columns';
 import { sortKey } from './options.ts';
@@ -22,6 +22,7 @@ import '../charts.css';
 import './table.css';
 
 export type { TableColumn } from './columns';
+export type { TableTree } from './logic';
 const WINDOWING_THRESHOLD = 120;
 const NO_KEYS: ReadonlySet<string> = new Set();
 const NO_COLUMNS: readonly TableColumn<never>[] = [];
@@ -34,6 +35,10 @@ export interface TableProps<T> {
   tieKey?: (row: T) => string;
   /** Optional grouping keeps the same row identities, geometry and exact values. */
   groupBy?: (row: T) => TableGroup;
+  /** Group header rows with a disclosure and their rows nested under them, windowed together. */
+  tree?: TableTree<T>;
+  /** Rows keep the order they are given, such as the game's own order; headers offer no sorting. */
+  unsorted?: boolean;
   sort: Sort; setOption?: WidgetProps['setOption'];
   /** Content-dependent column choices encode their persisted sort token. */
   sortOptionValue?: (sort: Sort) => string;
@@ -54,7 +59,7 @@ export interface TableProps<T> {
 }
 
 /** style-5 Scoreboard: real table semantics, only the viewport's rows mounted. */
-export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey, groupBy, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
+export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey, groupBy, tree, unsorted = false, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
   rank = false, rankMarkers = true, density = 'comfortable', rowHeight, onRowClick, muted, menu: rowMenu,
   tooltip, onVisibleRows, parity, hoursPerSecond = 1, narrow = 'hide' }: TableProps<T>) {
   const owner = useId();
@@ -86,9 +91,10 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const sortedColumn = columns.find(column => column.key === requestedSort.column && column.sortable !== false)
     ?? columns.find(column => column.sortable !== false);
   const sort = { column: sortedColumn?.key ?? '', direction: sortedColumn?.direction ?? requestedSort.direction };
-  // The row's identity (the first column) and the column it is sorted by never hide.
-  const order = useMemo(() => narrow === 'hide' ? hideOrder(columns).filter(key => key !== sort.column && key !== columns[0]?.key) : [],
-    [narrow, columns, sort.column]);
+  // The row's identity (the first column) and the column it is sorted by never hide;
+  // rows kept in their given order have no sort column.
+  const order = useMemo(() => narrow === 'hide' ? hideOrder(columns).filter(key => (unsorted || key !== sort.column) && key !== columns[0]?.key) : [],
+    [narrow, columns, sort.column, unsorted]);
   const [fit, setFit] = useState<{ scope: string; fit: ColumnFit }>({ scope: '', fit: FULL_FIT });
   // Widths each column needed hold only for the same tracks and typography.
   // The rank track takes width from the other columns too.
@@ -103,18 +109,42 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     ? columns.filter(column => columnFit.hidden.includes(column.key) && !column.inTooltip) : NO_COLUMNS as readonly TableColumn<T>[], [columns, columnFit]);
   // Rebuilt column objects with the same accessor (such as new labels for another column) keep the order.
   const sortValue = sortedColumn?.value;
-  const ordered = useMemo(() => {
+  // Groups the table holds itself: each toggled row's key and whether it is now open.
+  const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const treeChildren = tree?.children, treeOpen = tree?.open, treeInitial = tree?.initiallyOpen, onToggle = tree?.onToggle;
+  const isOpen = useCallback((row: T) => treeOpen ? treeOpen(row) : toggled.get(rowKey(row)) ?? treeInitial?.(row) ?? true,
+    [treeOpen, treeInitial, toggled, rowKey]);
+  const arrange = useCallback((list: readonly T[], level: number) => {
+    if (unsorted) return list.slice();
     const value = sortValue ?? (() => null);
-    return groupBy ? groupedRows(rows, groupBy, value, sort.direction, rowKey, tieKey)
-      : sortRows(rows, value, sort.direction, rowKey, tieKey);
-  }, [rows, sortValue, sort.direction, rowKey, tieKey, groupBy]);
-  const items = useMemo(() => ordered.map((item, slot) => ({ key: rowKey(item), item: { value: item, rank: slot + 1 } })), [ordered, rowKey]);
+    return groupBy && level === 1 ? groupedRows(list, groupBy, value, sort.direction, rowKey, tieKey)
+      : sortRows(list, value, sort.direction, rowKey, tieKey);
+  }, [unsorted, sortValue, sort.direction, rowKey, tieKey, groupBy]);
+  const { ordered, nesting } = useMemo((): { ordered: T[]; nesting: ReadonlyMap<string, TreeRow> | null } => {
+    if (!treeChildren) return { ordered: arrange(rows, 1), nesting: null };
+    const { rows: flat, nesting } = treeRows(rows, treeChildren, isOpen, arrange, rowKey);
+    return { ordered: flat, nesting };
+  }, [rows, arrange, treeChildren, isOpen, rowKey]);
+  const toggle = (row: T, open: boolean) => {
+    if (!treeOpen) setToggled(before => new Map(before).set(rowKey(row), open));
+    onToggle?.(row, open);
+  };
+  const items = useMemo(() => ordered.map((item, slot) => ({ key: rowKey(item),
+    item: { value: item, rank: nesting?.get(rowKey(item))?.position ?? slot + 1 } })), [ordered, rowKey, nesting]);
   if (import.meta.env.MODE === 'parity') {
-    useParityRows(scroll, () => ({ kind: 'table', label,
-      complete: parity?.complete ?? true, total: ordered.length,
-      columns: columns.map(column => ({ key: column.key, label: column.label })), sort, readOutcomes: parity?.reads,
-      rows: ordered.map((row, index) => ({ key: rowKey(row), index, item: parity?.item ? parity.item(row) : row,
-        cells: columns.map(column => ({ key: column.key, value: column.value(row) })) })) }), parity?.preparation);
+    useParityRows(scroll, () => {
+      // Parity covers every nested row, whether its group is open or not.
+      const full = treeChildren ? treeRows(rows, treeChildren, isOpen, arrange, rowKey, true) : null;
+      const all = full?.rows ?? ordered;
+      return { kind: 'table', label,
+        complete: parity?.complete ?? true, total: all.length,
+        columns: columns.map(column => ({ key: column.key, label: column.label })), sort, readOutcomes: parity?.reads,
+        rows: all.map((row, index) => {
+          const node = full?.nesting.get(rowKey(row));
+          return { key: rowKey(row), index, ...(node ? { level: node.level, parent: node.parent, open: node.group ? node.open : undefined } : {}),
+            item: parity?.item ? parity.item(row) : row, cells: columns.map(column => ({ key: column.key, value: column.value(row) })) };
+        }) };
+    }, parity?.preparation);
   }
   const moving = useRowMotion(items);
   const committedWindow = useRef<{ items: typeof items; keys: ReadonlySet<string> } | null>(null);
@@ -122,7 +152,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const glideMs = easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion) * 2.5;
   const [ranks, setRanks] = useState<ReadonlyMap<string, RankChange>>(new Map());
   const rankSort = useRef('');
-  const ordering = `${groupBy ? 'grouped/' : ''}${sortKey(sort)}`;
+  const ordering = `${groupBy ? 'grouped/' : ''}${tree ? 'tree/' : ''}${unsorted ? 'given' : sortKey(sort)}`;
   useLayoutEffect(() => {
     const reset = rankSort.current !== ordering;
     rankSort.current = ordering;
@@ -350,6 +380,15 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     clearTip(); contextMenu.open(x, y, items);
     return true;
   };
+  const focusSlot = (slot: number) => {
+    const top = scrollToShow(offsets, slot, view.top, view.height, view.headerHeight);
+    bottomAnchor.current = false;
+    focusAnchor.current = true;
+    setFocusedKey(rowKey(ordered[slot]));
+    setView(before => ({ ...before, top }));
+    scroll.current?.scrollTo({ top });
+    requestAnimationFrame(() => scroll.current?.querySelector<HTMLElement>(`tr[aria-rowindex="${slot + 2}"]:not([aria-hidden="true"])`)?.focus());
+  };
   const grid = tableGrid(shownColumns, rank, natural.scope === widthScope ? natural.widths : new Map());
   // Hide or restore one prioritised column per pass before paint, until the content fits.
   useLayoutEffect(() => {
@@ -368,19 +407,22 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
       '--table-header-height': `${view.headerHeight || 24}px`, '--table-cell-y': rowHeight == null ? undefined : '0px', '--row-glide': `${glideMs}ms`, '--table-bar-glide': tokens.reducedMotion ? '0ms' : '300ms' } as CSSProperties}
     onWheel={() => { focusAnchor.current = false; }} onPointerDown={() => { focusAnchor.current = false; }}
     onScroll={event => { const element = event.currentTarget; const top = element.scrollTop; bottomAnchor.current = element.scrollHeight - element.clientHeight - top < 1; setView(before => before.top === top ? before : { ...before, top }); }} onPointerLeave={() => { if (activeTip.current?.origin === 'pointer') clearTip(); }}>
-    <table aria-label={label} aria-rowcount={ordered.length + 1}>
+    <table aria-label={label} aria-rowcount={ordered.length + 1} role={tree ? 'treegrid' : undefined}>
       <thead><tr>{rank && <th scope="col" className="table-rank">#</th>}{shownColumns.map(column => <th key={column.key} scope="col"
         className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`} aria-label={column.label} data-tooltip={column.hint}
-        aria-sort={column.sortable === false ? undefined : sort.column === column.key ? sort.direction : 'none'}>
-        {column.sortable === false ? naturalContent(column, column.header) : <button type="button" aria-label={column.label} onClick={() => {
+        aria-sort={column.sortable === false || unsorted ? undefined : sort.column === column.key ? sort.direction : 'none'}>
+        {column.sortable === false || unsorted ? naturalContent(column, column.header) : <button type="button" aria-label={column.label} onClick={() => {
           const next = nextSort(sort, column.key, column.numeric ? 'descending' : 'ascending', column.direction);
           if (setOption) setOption('tableSort', sortOptionValue(next)); else setLocalSort(next);
         }}>{naturalContent(column, <>{column.header}{(sort.column === column.key || column.width === 'max-content') && <span className="table-sort" aria-hidden="true" style={{ visibility: sort.column === column.key ? undefined : 'hidden' }}> {sort.direction === 'descending' ? '▾' : '▴'}</span>}</>)}</button>}
       </th>)}</tr></thead>
       <tbody style={{ height: offsets[count] - view.headerHeight }}>{mounted.map(row => {
         const change = ranks.get(row.key)?.delta ?? 0;
-        return <tr key={row.key} data-table-row={row.key} className={`${movingRowClass(row)}${muted?.(row.item.value) ? ' is-muted' : ''}${onRowClick ? ' is-activatable' : ''}`} tabIndex={row.phase === 'leaving' ? -1 : 0}
+        const node = nesting?.get(row.key);
+        const opens = node?.group === true && node.count > 0;
+        return <tr key={row.key} data-table-row={row.key} className={`${movingRowClass(row)}${muted?.(row.item.value) ? ' is-muted' : ''}${node?.group ? ' is-group' : ''}${opens || (onRowClick && !node?.group) ? ' is-activatable' : ''}`} tabIndex={row.phase === 'leaving' ? -1 : 0}
           aria-hidden={row.phase === 'leaving' || undefined} aria-rowindex={row.slot + 2}
+          aria-level={node?.level} aria-setsize={node?.size} aria-posinset={node?.position} aria-expanded={opens ? node.open : undefined}
           aria-describedby={description?.key === row.key ? `${owner}-description` : undefined}
           style={{ transform: `translateY(${offsets[row.slot] - view.headerHeight}px)` }}
           onPointerMove={event => show(row.key, row.item.value, 'pointer', event.clientX, event.clientY)}
@@ -392,7 +434,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
             setDescription(content ? { key: row.key, text: tooltipText(content) } : null);
           }}
           onBlur={() => { if (activeTip.current?.origin === 'keyboard') clearTip(); setFocusedKey(null); setDescription(null); }}
-          onClick={() => onRowClick?.(row.item.value)}
+          onClick={() => { if (!node?.group) onRowClick?.(row.item.value); else if (opens) toggle(row.item.value, !node.open); }}
           onContextMenu={event => {
             if (keyboardMenu.current) { event.preventDefault(); keyboardMenu.current = false; }
             else if (open(row.item.value, event.clientX, event.clientY)) event.preventDefault();
@@ -405,26 +447,31 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
             if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
               const point = pointAt(event.currentTarget);
               if (open(row.item.value, point.x, point.y)) { event.preventDefault(); keyboardMenu.current = true; }
+            } else if ((event.key === 'Enter' || event.key === ' ') && node?.group) {
+              event.preventDefault(); if (!event.repeat && opens) toggle(row.item.value, !node.open);
             } else if ((event.key === 'Enter' || event.key === ' ') && onRowClick) {
               event.preventDefault(); if (!event.repeat) onRowClick(row.item.value);
             } else if (event.key === 'Escape') clearTip();
-            else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+            else if (node && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
+              // Tree keys open or close a group, then step into its first row or out to its header row.
               event.preventDefault();
-              const slot = event.key === 'Home' ? 0 : event.key === 'End' ? ordered.length - 1 : Math.max(0, Math.min(ordered.length - 1, row.slot + (event.key === 'ArrowDown' ? 1 : -1)));
-              const top = scrollToShow(offsets, slot, view.top, view.height, view.headerHeight);
-              bottomAnchor.current = false;
-              focusAnchor.current = true;
-              setFocusedKey(rowKey(ordered[slot]));
-              setView(before => ({ ...before, top }));
-              scroll.current?.scrollTo({ top });
-              requestAnimationFrame(() => scroll.current?.querySelector<HTMLElement>(`tr[aria-rowindex="${slot + 2}"]:not([aria-hidden="true"])`)?.focus());
+              if (event.key === 'ArrowRight' && opens) {
+                if (!node.open) toggle(row.item.value, true); else focusSlot(row.slot + 1);
+              } else if (event.key === 'ArrowLeft') {
+                if (opens && node.open) toggle(row.item.value, false);
+                else if (node.parent !== null) { const slot = ordered.findIndex(item => rowKey(item) === node.parent); if (slot >= 0) focusSlot(slot); }
+              }
+            } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+              event.preventDefault();
+              focusSlot(event.key === 'Home' ? 0 : event.key === 'End' ? ordered.length - 1 : Math.max(0, Math.min(ordered.length - 1, row.slot + (event.key === 'ArrowDown' ? 1 : -1))));
             }
           }} onPointerDown={() => { keyboardMenu.current = false; }}>
           {rank && <td className="table-rank">{row.item.rank}{rankMarkers && change !== 0 && <span className={`table-delta ${change > 0 ? 'is-positive' : 'is-negative'}`}>{change > 0 ? '▲' : '▼'}{Math.abs(change)}</span>}</td>}
-          {shownColumns.map(column => {
+          {shownColumns.map((column, index) => {
             const value = column.value(row.item.value);
             const missing = isMissing(value);
-            const content = cellContent(column, row.item.value, value);
+            const cell = cellContent(column, row.item.value, value);
+            const content = node && index === 0 ? <TreeCell node={node}>{cell}</TreeCell> : cell;
             return <td key={column.key} className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`}>
               {naturalContent(column, column.bar != null ? <CellBar value={cellBars && !missing && (typeof value === 'number' || typeof value === 'bigint') ? value : null}
                 maximum={maxima.get(column.key) ?? 0}>{content}</CellBar> : content)}
@@ -436,6 +483,14 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     {description && <span id={`${owner}-description`} className="sr-only">{description.text}</span>}
     {contextMenu.menu}
   </div>;
+}
+
+/** A nested row's first cell, indented by depth; a group header row carries the timeline lanes' disclosure mark. */
+function TreeCell({ node, children }: { node: TreeRow; children: ReactNode }) {
+  return <span className={`table-tree${node.group ? ' is-group' : ''}`} style={{ '--table-tree-depth': node.level - 1 } as CSSProperties}>
+    {node.group && <svg className="table-disclosure" viewBox="-6 -6 12 12" aria-hidden="true">
+      {node.count > 0 && <path d={node.open ? 'M-4 -2L4 -2L0 3Z' : 'M-2 -4L3 0L-2 4Z'} />}</svg>}
+    <span className="table-tree-content">{children}</span></span>;
 }
 
 /** Composed cells may sort by one value and draw a bar from another. */

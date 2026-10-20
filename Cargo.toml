@@ -155,6 +155,7 @@ dashboard-raids = { path = "crates/dashboard-raids" }
 dashboard-resource-balance = { path = "crates/dashboard-resource-balance" }
 dashboard-unit-leaders = { path = "crates/dashboard-unit-leaders" }
 dashboard-core = { path = "crates/dashboard-core" }
+dashboard-army = { path = "crates/dashboard-army" }
 dashboard-forces = { path = "crates/dashboard-forces" }
 dashboard-game-window = { path = "crates/dashboard-game-window" }
 dashboard-intelligence = { path = "crates/dashboard-intelligence" }

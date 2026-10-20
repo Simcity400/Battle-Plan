@@ -15,10 +15,11 @@ Shared Canvas charts and windowed HTML logs/tables. Widgets supply exact values,
 | Flow | [flow/](flow/README.md): source/target ribbons, stable ordering and caller-summed remainders. |
 | Heat | [heat/](heat/README.md): categorical rows, dated shares, inactivity, gaps and unknown cells. |
 | Drill | [DrillHost](drill/DrillHost.tsx), [DrillParts](drill/DrillParts.tsx), [drillState.ts](drill/drillState.ts): inline/pop-out breakdowns, Follow, picked moments and Pin as widget. |
-| Table | [table/](table/README.md): typed columns, exact persisted sorting, cell bars, ranks and windowing. |
+| Table | [table/](table/README.md): typed columns, exact persisted sorting, cell bars, ranks, nested group rows and windowing. |
 | Share | [StackedShareChart](StackedShareChart.tsx)/[share.ts](share.ts): held proportions and percent axes; [sunburst/share.ts](sunburst/share.ts) adapts flat world shares. |
 | Butterfly | [ButterflyChart](butterfly/ButterflyChart.tsx): paired bars either side of one axis on one scale, exact end values and ratios, drawn as the race draws its rows (name column, bar shape, fonts, gridlines, value axis and row sizing for the top N). |
 | Meter | [ProgressMeter](meter/ProgressMeter.tsx): known/unknown progress, live/done/idle and opt-in sweep. |
+| Stacked periods | [stackedBars.ts](stackedBars.ts): a time-chart layer of one bar per period (such as a calendar month) stacked by part, signed parts either side of zero, unknown periods hatched; period lookup and keyboard stops. |
 
 ## Shared machinery
 

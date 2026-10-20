@@ -27,6 +27,9 @@ pub use dashboard_country_nukes::products::country_nukes;
 pub use dashboard_equipment_losses::products::equipment_losses;
 pub use dashboard_equipment_stockpile::products::equipment_stockpile;
 pub use dashboard_forces::products::air_force;
+pub use dashboard_army::products::{
+    division_careers, division_equipment, division_templates, training_queue,
+};
 pub use dashboard_forces::products::army_size;
 pub use dashboard_forces::products::naval_management;
 pub use dashboard_forces::products::navy;
@@ -44,6 +47,7 @@ pub use dashboard_intelligence::products::operation_description;
 pub use dashboard_intelligence::products::operative_content;
 pub use dashboard_intelligence::products::operative_placements;
 pub use dashboard_intelligence::products::operatives_roster;
+pub use dashboard_land_battles::products::army_losses;
 pub use dashboard_land_battles::products::combat_log;
 pub use dashboard_land_battles::products::division_log;
 pub use dashboard_land_battles::products::land_battles;
@@ -221,6 +225,12 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<land_battles::LandBattleCourses>(),
     register::<land_battles::LandBattleTerrains>(),
     register::<combat_log::CombatLog>(),
+    register::<army_losses::ArmyLosses>(),
+    register::<division_careers::DivisionCareers>(),
+    register::<division_careers::DivisionRecord>(),
+    register::<division_templates::DivisionTemplates>(),
+    register::<division_equipment::DivisionEquipment>(),
+    register::<training_queue::TrainingQueue>(),
     register::<place_names::PlaceNames>(),
     register::<country_styles::CountryStyles>(),
     register::<faction_details::FactionDetails>(),

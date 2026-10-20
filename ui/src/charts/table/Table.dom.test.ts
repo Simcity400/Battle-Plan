@@ -181,6 +181,39 @@ test('narrow tables hide prioritised columns or scroll sideways', async context 
         assert.equal(scrolled.headers.length, 5);
         assert.ok(scrolled.scrollWidth > scrolled.clientWidth + 1, 'the table scrolls sideways instead');
       });
+      await context.test('group header rows open and close by click and keys, and arrows step in and out', async () => {
+        await act('mountTree()');
+        const tree = () => act('tree()') as Promise<{ rows: string[]; focused: string | null }>;
+        assert.deepEqual((await tree()).rows, ['line0', 'line1+', 'line1:0', 'line2+', 'line2:0', 'line2:1']);
+        await act('focusRow(1)'); await act('press("Enter")');
+        assert.deepEqual((await tree()).rows, ['line0', 'line1-', 'line2+', 'line2:0', 'line2:1'], 'Enter closes a group');
+        await act('press("ArrowRight")');
+        assert.equal((await tree()).rows[1], 'line1+', 'ArrowRight opens a closed group');
+        await act('press("ArrowRight")');
+        assert.equal((await tree()).focused, 'line1:0', 'ArrowRight on an open group steps into its first row');
+        await act('press("ArrowLeft")');
+        assert.equal((await tree()).focused, 'line1', 'ArrowLeft on a nested row returns to its group');
+        await act('press("ArrowLeft")');
+        assert.equal((await tree()).rows[1], 'line1-', 'ArrowLeft closes an open group');
+        await act('click(2)');
+        assert.deepEqual((await tree()).rows, ['line0', 'line1-', 'line2-'], 'a click toggles a group');
+        await act('click(0)');
+        assert.equal((await tree()).rows[0], 'line0', 'an empty group has nothing to open');
+        await act('mountTree(250)');
+        const narrow = await snapshot();
+        assert.equal(narrow.headers[0], 'Country', 'the identity column stays');
+        assert.ok(narrow.headers.length < 4 && !narrow.headers.includes('Second measure'), 'prioritised columns hide from a nested table too');
+        await act('focusRow(1)');
+        const described = (await snapshot()).description ?? '';
+        assert.match(described, /^Synthetic line 1; /, 'a group header row is titled by its identity');
+        assert.match(described, /Second measure 1/, 'its hidden values join its tooltip like any row');
+        await act('mountTree(250, true)'); await act('focusRow(1)');
+        assert.equal((await act('layer()') as { scrollTop: number }).scrollTop, 0);
+        for (let i = 0; i < 6; i++) await act('rowKey(1, "PageDown")');
+        const paged = await act('layer()') as { scrollTop: number; rows: string[] };
+        assert.ok(paged.scrollTop > 0 && paged.rows.some(row => row.includes('Second measure1')), 'the tall tooltip of a group header row pages to its hidden values');
+        assert.equal((await tree()).rows[1], 'line1+', 'page keys scroll the tooltip and leave the group as it was');
+      });
     }, 60_000);
   } finally {
     try {

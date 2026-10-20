@@ -17,6 +17,10 @@ const columnsFor = (fourth: string, firstPriority?: number): TableColumn<Row>[] 
   { key: 'third', header: 'Third measure', label: 'Third measure', numeric: true, width: 'max-content', priority: 3, value: row => row.third },
   { key: 'fourth', header: 'Fourth measure', label: 'Fourth measure', width: fourth, priority: 3, inTooltip: true, value: row => row.key },
 ];
+interface Line { key: string; name: string; first: number; second: number; third: number | null; units?: Line[] }
+const lines: Line[] = Array.from({ length: 3 }, (_, i) => ({ key: `line${i}`, name: `Synthetic line ${i}`, first: i, second: i, third: i,
+  units: Array.from({ length: i }, (_, unit) => ({ key: `line${i}:${unit}`, name: `Synthetic unit ${unit}`, first: unit, second: unit, third: unit })) }));
+const lineChildren = (row: Line) => row.units;
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 async function settle() { for (let i = 0; i < 8; i++) await frame(); }
 const host = document.createElement('div'); document.body.replaceChildren(host);
@@ -51,6 +55,22 @@ export const fixture = {
     const rows = [...(layer?.querySelectorAll('.chart-tooltip-row') ?? [])].map(row => row.textContent ?? '');
     return { open: !!layer?.matches(':popover-open'), scrollTop: layer?.scrollTop ?? 0, clientHeight: layer?.clientHeight ?? 0,
       scrollHeight: layer?.scrollHeight ?? 0, rows };
+  },
+  async mountTree(width = 600, tall = false) {
+    host.style.cssText = `width:${width}px;height:400px;display:flex;flex-direction:column`;
+    root.render(<><TooltipLayer /><Table<Line> key={++mounts} label="Synthetic tree" rows={lines} columns={columnsFor('120px') as unknown as TableColumn<Line>[]} rowKey={row => row.key}
+      tree={{ children: lineChildren }} unsorted sort={{ column: 'first', direction: 'descending' }}
+      tooltip={tall ? row => ({ title: row.name, rows: Array.from({ length: 60 }, (_, i) => ({ label: `Fitted row ${i}`, value: String(i) })) }) : undefined} /></>);
+    await settle();
+  },
+  async press(key: string) {
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); await settle();
+  },
+  async click(index: number) { host.querySelector<HTMLElement>(`tr[aria-rowindex="${index + 2}"]`)!.click(); await settle(); },
+  tree() {
+    return { rows: [...host.querySelectorAll<HTMLElement>('tbody tr')].sort((a, b) => Number(a.ariaRowIndex) - Number(b.ariaRowIndex))
+      .map(row => `${row.dataset.tableRow}${row.getAttribute('aria-expanded') === 'true' ? '+' : row.getAttribute('aria-expanded') === 'false' ? '-' : ''}`),
+      focused: (document.activeElement as HTMLElement | null)?.dataset.tableRow ?? null };
   },
   async resize(width: number) { host.style.width = `${width}px`; await settle(); },
   async focusRow(index: number) { host.querySelector<HTMLElement>(`tr[aria-rowindex="${index + 2}"]`)!.focus(); await settle(); },

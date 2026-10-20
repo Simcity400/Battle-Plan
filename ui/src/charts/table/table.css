@@ -42,3 +42,11 @@
 
 /* Measured layout corrections are immediate; recorded rank changes still glide. */
 .chart-table.is-measuring .moving-row { transition-property: opacity; }
+
+/* Nested rows: each level indents by the timeline lanes' indent, and a group header row's
+   disclosure mark takes that indent, so its text lines up with the rows under it. */
+.table-tree { --table-tree-indent: 18px; display: inline-flex; align-items: center; max-width: 100%; padding-left: calc(var(--table-tree-depth, 0) * var(--table-tree-indent)); vertical-align: top; }
+.table-tree-content { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.table-tree.is-group .table-tree-content { font-weight: 600; }
+.table-disclosure { flex: none; width: 12px; height: 12px; margin-right: 6px; fill: var(--text); }
+.chart-table.is-wrapped .table-tree-content { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }

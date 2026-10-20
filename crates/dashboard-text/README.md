@@ -16,6 +16,7 @@ Nothing here names a product or a source. The [dashboard](../dashboard/README.md
 | [scripted_text.rs](src/scripted_text.rs), [effect_description.rs](src/effect_description.rs) | Scoped localisation and native effect descriptions, sharing the trigger/variable evaluator. |
 | [modifier_text.rs](src/modifier_text.rs), [faction_names.rs](src/faction_names.rs), [unit_names.rs](src/unit_names.rs) | Shared modifier formatting and native stored/generated names. |
 | [party_names.rs](src/party_names.rs) | The ruling party naming ladder shared by party histories and scripted text. |
+| [division_history.rs](src/division_history.rs) | The game's description keys, date text and arguments for a division's recorded career entries, shared by the map's division tooltip and the service record. |
 | [idea_names.rs](src/idea_names.rs) | Country-specific idea names: an idea's selected localisation key or its generated advisor name. |
 | [identity.rs](src/identity.rs) | Character and country identity operands names are chosen by: script tokens, templates, tags, looks and civil-war state (the predicate's inputs indexed once an hour for every country, with the fields it reads). |
 | [variant_names.rs](src/variant_names.rs) | Equipment variant names as the game writes them, and the operands that order variants. |
@@ -213,3 +214,9 @@ its recorded-input refusals.
 Unit effect descriptions retain the selected full unit handle when a carrier lookup refuses at the presentation boundary. The unit existence witness still precedes owner/template lookup and operand evaluation; an absent template still precedes the unit-name read.
 
 An explicitly refused template settings payload reports only the settings section as unavailable. Layout, model, category, country and display-name facts retain their independent availability.
+
+`subunit_requirements` owns canonical authored and recorded local-clone equipment
+requirements shared by army products and model consumers. `subunit_files` and
+`table_access` retain the same file order, token identities and partial-table
+semantics at this lower layer; viewer-foundation re-exports their old paths.
+Model scoring and model-country selection remain in viewer-world.

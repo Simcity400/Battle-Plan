@@ -941,6 +941,11 @@ impl Catalogue {
             .map_err(Clone::clone)
     }
 
+    /// The defines of the recording's complete evaluated content stack.
+    pub fn defines(&self) -> Result<&installed_content_core::defines::Defines, String> {
+        Ok(self.scripted_content()?.environment()?.defines())
+    }
+
     /// Participation factors from the recording's complete evaluated content stack.
     pub fn war_participation_factors(
         &self,

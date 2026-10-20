@@ -154,3 +154,41 @@ export function fitColumns(fit: ColumnFit, order: readonly string[], available: 
     return { hidden: held.hidden.slice(0, -1), needs: held.needs.slice(0, -1) };
   return held;
 }
+
+/** Rows nested under group header rows. `children` returns the rows under a group
+ * header, or undefined for an ordinary row; an empty array is a group with nothing in it. */
+export interface TableTree<T> {
+  children: (row: T) => readonly T[] | undefined;
+  /** Whether a group starts open; groups start open unless this says otherwise. */
+  initiallyOpen?: (row: T) => boolean;
+  /** A widget that draws open and closed groups differently owns their state here. */
+  open?: (row: T) => boolean;
+  onToggle?: (row: T, open: boolean) => void;
+}
+
+/** Where a row sits in the tree: its depth from 1, its group header row, whether it
+ * heads a group and that group is open, its place among its siblings, and its children. */
+export interface TreeRow { level: number; parent: string | null; group: boolean; open: boolean; position: number; size: number; count: number }
+
+/** Depth-first rows of the open groups, each level arranged on its own. A row key met
+ * twice keeps its first place, so a cycle in `children` cannot repeat rows. */
+export function treeRows<T>(top: readonly T[], children: TableTree<T>['children'], open: (row: T) => boolean,
+  arrange: (rows: readonly T[], level: number) => T[], rowKey: (row: T) => string, everyGroup = false): { rows: T[]; nesting: Map<string, TreeRow> } {
+  const rows: T[] = [];
+  const nesting = new Map<string, TreeRow>();
+  const visit = (list: readonly T[], level: number, parent: string | null) => {
+    const arranged = arrange(list, level);
+    for (let index = 0; index < arranged.length; index++) {
+      const row = arranged[index];
+      const key = rowKey(row);
+      if (nesting.has(key)) continue;
+      const nested = children(row);
+      const isOpen = nested !== undefined && open(row);
+      nesting.set(key, { level, parent, group: nested !== undefined, open: isOpen, position: index + 1, size: arranged.length, count: nested?.length ?? 0 });
+      rows.push(row);
+      if (nested?.length && (isOpen || everyGroup)) visit(nested, level + 1, key);
+    }
+  };
+  visit(top, 1, null);
+  return { rows, nesting };
+}

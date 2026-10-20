@@ -1,0 +1,21 @@
+//! Army widget products: division templates, training queues, division
+//! careers and division equipment, each one country or division at a reached
+//! hour.
+//!
+//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! modules keep their dashboard paths (`products::<name>`); the dashboard
+//! re-exports and registers them.
+
+/// Tests run on the allocator the viewer ships with.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+pub mod products {
+    pub mod army_content;
+    pub mod division_careers;
+    pub mod division_equipment;
+    pub mod division_needs;
+    pub mod division_templates;
+    pub mod training_queue;
+}

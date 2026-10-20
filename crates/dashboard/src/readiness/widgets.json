@@ -466,6 +466,48 @@
       ]
     },
     {
+      "kind": "division-template",
+      "requests": [
+        {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
+        {"product": "division-templates", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$last", "tag": "$tag", "countFor": "owner"}}
+      ],
+      "note": "The country binds through its recorded identity history at the hour shown, then one reached-hour reply answers from that hour's frame."
+    },
+    {
+      "kind": "training-queue",
+      "requests": [
+        {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
+        {"product": "training-queue", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$last", "tag": "$tag"}}
+      ],
+      "note": "The country binds through its recorded identity history at the hour shown, then one reached-hour reply answers from that hour's frame. Its queue is the latest daily read within a day."
+    },
+    {
+      "kind": "most-decorated-divisions",
+      "requests": [
+        {"product": "division-careers", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$last", "tags": null}}
+      ]
+    },
+    {
+      "kind": "division-service-record",
+      "note": "Until a division is chosen in its settings the default view reads nothing and asks for a choice."
+    },
+    {
+      "kind": "army-losses-by-month",
+      "requests": [
+        {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
+        {"product": "army-losses", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$last", "tag": "$tag"}}
+      ],
+      "note": "The country binds through its recorded identity history at the hour shown, then one reached-hour reply answers from that hour's frame. Older months come from earlier reads through each block's cached provenance index."
+    },
+    {
+      "kind": "division-equipment",
+      "requests": [
+        {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
+        {"product": "division-equipment", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$last", "tag": "$tag", "countFor": "owner"}}
+      ],
+      "note": "The country binds through its recorded identity history at the hour shown, then one reached-hour reply answers from that hour's frame."
+    },
+    {
       "kind": "land-battles",
       "requests": [
         {"product": "land-battles-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},

@@ -2163,6 +2163,7 @@ dependencies = [
  "blake3",
  "dashboard-air-aces",
  "dashboard-air-superiority",
+ "dashboard-army",
  "dashboard-base",
  "dashboard-construction",
  "dashboard-core",
@@ -2268,6 +2269,29 @@ dependencies = [
  "store",
  "ts-rs",
  "zstd",
+]
+
+[[package]]
+name = "dashboard-army"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-forces",
+ "dashboard-land-battles",
+ "dashboard-text",
+ "engine-executable",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-division-names",
+ "installed-content-localisation",
+ "mimalloc",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "ts-rs",
 ]
 
 [[package]]
@@ -2551,6 +2575,7 @@ dependencies = [
  "dashboard-core",
  "dashboard-text",
  "engine-executable",
+ "engine-land-inputs",
  "installed-content-core",
  "installed-content-division-names",
  "mimalloc",

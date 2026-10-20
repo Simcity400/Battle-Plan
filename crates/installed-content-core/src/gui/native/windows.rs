@@ -3,15 +3,15 @@ use std::io;
 use super as native;
 use crate::fields::invalid;
 
-/// The sprite of a window's own button, found through the shared GUI template registry and
-/// local button lookup. Files follow the game's order, EOF closure and later replacements; no
-/// fixed GUI filename or independent registry is used.
-pub fn window_button_sprite(
-    guis: &native::Guis,
+/// A window's own button, found through the shared GUI template registry and local button
+/// lookup. Files follow the game's order, EOF closure and later replacements; no fixed GUI
+/// filename or independent registry is used.
+fn window_button<'a>(
+    guis: &'a native::Guis,
     window: &str,
     button: &str,
     warnings: &mut Vec<String>,
-) -> io::Result<String> {
+) -> io::Result<&'a native::Element> {
     let (_, element) = kept_container_window(guis, window, warnings)?;
     let child = element
         .find(native::Kind::Button, button)
@@ -29,6 +29,34 @@ pub fn window_button_sprite(
             refusals.join("; ")
         )));
     }
+    Ok(child)
+}
+
+/// The localisation key of the tooltip of a window's own button, found as its sprite is.
+pub fn window_button_tooltip(
+    guis: &native::Guis,
+    window: &str,
+    button: &str,
+    warnings: &mut Vec<String>,
+) -> io::Result<String> {
+    let child = window_button(guis, window, button, warnings)?;
+    let key = crate::parser::text(&child.common.tooltip_key)
+        .map_err(|why| invalid(format!("{window}.{button}: tooltip is {why}")))?;
+    if key.is_empty() {
+        return Err(invalid(format!("{button} in {window} has no tooltip")));
+    }
+    Ok(key.to_owned())
+}
+
+/// The sprite of a window's own button, found through the shared GUI template registry and
+/// local button lookup.
+pub fn window_button_sprite(
+    guis: &native::Guis,
+    window: &str,
+    button: &str,
+    warnings: &mut Vec<String>,
+) -> io::Result<String> {
+    let child = window_button(guis, window, button, warnings)?;
     let bytes = &child
         .button()
         .ok_or_else(|| invalid(format!("{window}.{button}: button fields unavailable")))?

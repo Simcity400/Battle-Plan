@@ -1,0 +1,98 @@
+import { usNumber } from '../../charts/numberFormat.ts';
+import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
+import type { LogRow } from '../../charts/log/logData';
+import { fixedNumber } from '../../charts/valueAxis.ts';
+import { formatDateTime } from '../../dashboard/calendar.ts';
+import { createWidget } from '../../dashboard/model.ts';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import type { CareerFacts, CareerMedal, CareerRow, DivisionCareersReply, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
+
+const isArray = Array.isArray;
+const validFacts = (facts: CareerFacts | null) => facts === null || (isArray(facts.awards) && (facts.medals === null || Number.isInteger(facts.medals)));
+
+export function validateDivisionCareers(value: unknown): DivisionCareersReply {
+  const reply = value as DivisionCareersReply;
+  if (!reply || typeof reply.branchId !== 'string' || !Number.isInteger(reply.hour) || !isArray(reply.divisions) || !isArray(reply.medals)
+    || !isArray(reply.templates) || !isArray(reply.warnings) || reply.divisions.some(row => typeof row.division !== 'string' || !validFacts(row.facts)))
+    throw new Error('Invalid division careers reply');
+  return reply;
+}
+
+export function validateDivisionRecord(value: unknown): DivisionRecordReply {
+  const reply = value as DivisionRecordReply;
+  if (!reply || typeof reply.branchId !== 'string' || !Number.isInteger(reply.hour) || typeof reply.division !== 'string'
+    || typeof reply.absent !== 'boolean' || !isArray(reply.entries) || !isArray(reply.medals) || !validFacts(reply.facts)
+    || reply.entries.some(entry => !Number.isInteger(entry.hour) || typeof entry.award !== 'boolean'))
+    throw new Error('Invalid division record reply');
+  return reply;
+}
+
+export const divisionName = (name: string | null) => name ?? 'Division name unavailable';
+export const medalName = (medal: CareerMedal | undefined) => medal?.name ?? 'Medal name unavailable';
+
+/** Experience as a share of the full scale; null when not recorded or outside it. */
+export function experienceRatio(facts: CareerFacts): number | null {
+  if (facts.experienceRaw === null) return null;
+  const value = fixedNumber(facts.experienceRaw, 5);
+  return value >= 0 && value <= 1 ? value : null;
+}
+
+/** The header's detail line; each part missing on its own reads as a dash. */
+export function headerDetail(templateName: string | null, facts: CareerFacts | null): string {
+  const medals = facts?.medals == null ? '—' : `${usNumber.format(facts.medals)} ${facts.medals === 1 ? 'medal' : 'medals'}`;
+  const level = facts?.levelName ?? '—';
+  const kills = facts?.kills == null ? '—' : `${usNumber.format(facts.kills)} enemy soldiers killed`;
+  return [templateName ?? '—', medals, level, kills].join(' · ');
+}
+
+export type RecordItem = { entry: RecordEntry; medal: CareerMedal | undefined };
+
+/** The record's entries newest first, filtered by the Show setting; repeats keep their places. */
+export function recordRows(reply: DivisionRecordReply, show: string): LogRow<RecordItem>[] {
+  return reply.entries
+    .filter(entry => show === 'both' || (show === 'awards') === entry.award)
+    .map(entry => ({ key: `${entry.award ? 'award' : 'career'}:${entry.ordinal}`, hour: entry.hour,
+      item: { entry, medal: entry.medal === null ? undefined : reply.medals[entry.medal] } }))
+    .sort((a, b) => b.hour - a.hour || (b.item.entry.award ? 1 : 0) - (a.item.entry.award ? 1 : 0) || b.item.entry.ordinal - a.item.entry.ordinal);
+}
+
+export const entryText = (item: RecordItem) => item.entry.description ?? 'Entry description unavailable';
+
+export function entryTooltip(item: RecordItem): TooltipContent {
+  const rows: TooltipRow[] = [{ label: 'Date', value: formatDateTime(item.entry.hour) }];
+  if (item.entry.award) rows.push({ label: 'Medal', value: medalName(item.medal), lookupKey: item.medal?.key });
+  return { title: entryText(item), rows };
+}
+
+/** One leaderboard row: the division's career facts with its country and template. */
+export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, country: string, template: string | null): TooltipContent {
+  const facts = row.facts;
+  const rows: TooltipRow[] = [
+    { label: 'Country', value: country },
+    { label: 'Template', value: template ?? 'Template name unavailable' },
+    { label: 'Medals', value: facts.medals === null ? 'Not recorded' : usNumber.format(facts.medals), divider: true },
+  ];
+  for (const award of facts.awards)
+    rows.push({ label: medalName(reply.medals[award.medal]), lookupKey: reply.medals[award.medal]?.key, value: award.count === 1 ? undefined : `×${award.count}`, indent: true });
+  const ratio = experienceRatio(facts);
+  rows.push({ label: 'Experience', value: facts.levelName === null ? 'Not recorded' : `${facts.levelName}${ratio === null ? '' : ` (${Math.round(ratio * 100)}%)`}`, divider: true },
+    { label: 'Enemy soldiers killed', value: facts.kills === null ? 'Not recorded' : usNumber.format(facts.kills) });
+  return { title: divisionName(row.name), subtitle: `As of ${formatDateTime(reply.hour)}`, rows };
+}
+
+/** A Division service record widget for one division, at the drill's moment. */
+export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<BoundTrack, 'id' | 'branch'>, hour: number, follow: boolean): WidgetSpec {
+  const base = createWidget('division-service-record', track.id);
+  const time: WidgetSpec['time'] = follow ? { mode: 'follow' } : { mode: 'pin', windows: {
+    [track.id]: { firstOffset: 0, lastOffset: Math.floor(hour) - track.branch.firstHour },
+  } };
+  return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
+    contentScale: source.contentScale, options: { division } };
+}
+
+/** Division choices from a careers reply: name and country, ordered by name. */
+export function divisionChoices(reply: DivisionCareersReply, country: (tag: string) => string) {
+  return reply.divisions.map(row => ({ value: row.division, name: divisionName(row.name),
+    label: `${divisionName(row.name)} · ${row.tag ? country(row.tag) : 'Country not recorded'}` }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value)).map(({ value, label }) => ({ value, label }));
+}

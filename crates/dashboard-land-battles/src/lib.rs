@@ -12,7 +12,9 @@
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod products {
+    pub mod army_losses;
     pub mod combat_log;
     pub mod division_log;
     pub mod land_battles;
+    pub mod reached;
 }

@@ -71,7 +71,7 @@ export function CombatLogTables({ data, view }: { data: Reply; view: View }) {
     </details>
     {view === 'manpower' && <><Missing source={availability.manpower} />{!availability.manpower && <>
       <p>Native manpower counters, in their stored order. These monthly group totals have their own admission and retention rules.</p>
-      <table><caption>Manpower losses</caption><thead><tr><th>Country</th><th>First write</th><th>Group</th><th>Order</th><th>Reason</th><th>Counter 1</th><th>Counter 2</th><th>Counter 3</th></tr></thead><tbody>
+      <table><caption>Manpower losses</caption><thead><tr><th>Country</th><th>First write</th><th>Group</th><th>Order</th><th>Reason</th><th>Ground</th><th>Air</th><th>Navy</th></tr></thead><tbody>
         {data.manpower.map((r, i) => <tr key={i}><td>{r.tag}</td><td>{formatDateTime(r.date)}</td><td>{r.group}</td><td>{r.ordinal}</td><td>{r.reason}</td>{r.losses.map((n, j) => <td key={j}>{n.toLocaleString()}</td>)}</tr>)}
       </tbody></table>{!data.manpower.length && <p>No retained manpower months.</p>}</>}</>}
     {view === 'equipment' && <><Missing source={availability.months} /><Missing source={availability.ownEquipment} /><Missing source={availability.enemyEquipment} />{!availability.months && <>

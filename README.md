@@ -199,6 +199,7 @@ Each component's README describes its layout, concepts and local rules.
 | [viewer](crates/viewer/README.md) | Documents, ordered loading, playback, app/corpus composition and image export. |
 | [dashboard-core](crates/dashboard-core/README.md) | Dashboard protocol, transport, recording metadata replies, settings, content findings and block scans. |
 | [dashboard-text](crates/dashboard-text/README.md) | Trigger and scripted-text interpreter, effect descriptions, name rules, content catalogue and recording metadata helpers. |
+| [dashboard-army](crates/dashboard-army/README.md) | Division templates, training queues and division careers at a reached hour. |
 | [dashboard-game-window](crates/dashboard-game-window/README.md) | The game's own windows for one entity at one hour, laid out from the recording's content stack by the native GUI code and drawn read-only. |
 | [dashboard](crates/dashboard/README.md) | Widget data products, data service, host/viewer protocol and frontend types. |
 | [desktop](crates/desktop/README.md) | Tauri host, application setup, packaging and native viewer lifecycle. |

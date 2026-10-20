@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
+import { battalionSummary, priorityLabel, templateRows, templateTooltip, validateDivisionTemplates } from './divisionTemplateData.ts';
+
+const entry = (template: string, extra: Partial<TemplateEntry> = {}): TemplateEntry => ({ template, name: `Template ${template}`, nameMissing: null, icon: null,
+  iconMissing: 'no artwork', rosterOrdinal: Number(template), fielded: 0, units: [], unitsMissing: null, baseWidthRaw: '1800000', priority: 2, priorityName: null, priorityMissing: 'no proved name', locked: false,
+  obsolete: false, obsoleteHour: null, designer: 'ordinary', forceRecruiting: false, newEquipment: true, foreignEquipment: false, manpower: 10_000,
+  trainingDays: 90, settingsMissing: null, ...extra });
+const reply = (templates: TemplateEntry[]): DivisionTemplatesReply => validateDivisionTemplates({ branchId: '1', hour: 60_000_000, tag: 'GER', countFor: 'owner',
+  absent: false, templates, fieldedMissing: null, warnings: [] });
+
+test('obsolete templates gather in one closed group after the current roster, in roster order', () => {
+  const rows = templateRows(reply([entry('1'), entry('2', { obsolete: true, obsoleteHour: 59_000_000 }), entry('3'), entry('4', { obsolete: true })]));
+  assert.deepEqual(rows.map(row => row.key), ['1', '3', 'obsolete']);
+  const group = rows[2];
+  assert.ok(group.kind === 'obsolete' && group.count === 2 && group.children.map(row => row.key).join() === '2,4');
+  assert.deepEqual(templateRows(reply([entry('1')])).map(row => row.key), ['1'], 'no empty group');
+});
+
+test('battalions list their counts, support companies follow, and unknown layouts stay unknown', () => {
+  const units = [{ key: 'line', name: 'Infantry', nameMissing: null, count: 9, support: false, local: false },
+    { key: 'gun', name: null, nameMissing: 'missing', count: 2, support: false, local: false },
+    { key: 'eng', name: 'Engineers', nameMissing: null, count: 1, support: true, local: true }];
+  assert.equal(battalionSummary(entry('1', { units })), 'Infantry ×9, Unit name unavailable ×2 · Engineers');
+  assert.equal(battalionSummary(entry('1', { units: [], unitsMissing: 'not read' })), null);
+  assert.equal(battalionSummary(entry('1')), 'Empty');
+});
+
+test('a stored priority shows only as the game’s name for it, never as its number', () => {
+  assert.equal(priorityLabel(entry('1')), null);
+  assert.equal(priorityLabel(entry('1', { priorityName: 'Reserve' })), 'Reserve');
+  const tip = templateTooltip(entry('1', { fielded: null }), 60_000_000, false);
+  assert.equal(tip.rows.find(row => row.label === 'Priority')?.value, 'Not recorded');
+  assert.equal(tip.rows.find(row => row.label === 'Fielded')?.value, 'Not recorded', 'missing is not zero');
+  assert.equal(tip.note, 'Game view not available yet');
+  assert.equal(templateTooltip(entry('1', { settingsMissing: 'refused' }), 60_000_000, true).rows.find(row => row.label === 'Settings')?.value, 'Not recorded');
+});
+
+test('invalid replies are refused', () => {
+  assert.throws(() => validateDivisionTemplates({ branchId: '1', hour: 1.5, tag: 'GER', absent: false, templates: [], warnings: [] }));
+});

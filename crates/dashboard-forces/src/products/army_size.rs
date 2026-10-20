@@ -308,11 +308,20 @@ static HOLDER_FIELDS: LazyLock<u64> =
     LazyLock::new(|| field_mask(TableId::Countries, &["canonical_slot", "tag"]));
 
 /// Census owner rule: positive signed expeditionary owner, otherwise roster owner.
-fn owner(row: &DivisionRow) -> u32 {
+pub fn owner(row: &DivisionRow) -> u32 {
     if row.expeditionary_owner as i32 > 0 {
         row.expeditionary_owner
     } else {
         row.roster_owner
+    }
+}
+
+/// The raw country a division counts for under the chosen attribution: its
+/// census owner, or the roster that hosts it.
+pub fn attributed(row: &DivisionRow, attribution: ArmyAttribution) -> u32 {
+    match attribution {
+        ArmyAttribution::Owner => owner(row),
+        ArmyAttribution::Host => row.roster_owner,
     }
 }
 

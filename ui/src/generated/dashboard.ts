@@ -815,6 +815,277 @@ export type LogBattle = { tag: string, group: string, ordinal: number, id: numbe
 export type LogDetailTable = { title: string, columns: Array<string>, rows: Array<Array<string>>, };
 export type LogActiveSide = { combat: string, attacker: boolean, terminal: boolean, progressRaw: string, damageRaw: string, activityGroups: number, leaders: number, lossSource: string | null, details: Array<LogDetailTable>, };
 export type CombatLogAvailability = { groups: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, templates: string | null, battles: string | null, active: string | null, terminal: string | null, };
+export type ArmyLossesParams = { branchId: string, hour: number, tag: string, };
+export type ArmyLossesReply = { branchId: string, hour: number, tag: string,
+/**
+ * No country holds the tag at this hour.
+ */
+absent: boolean, armies: Array<LossArmy>, manpower: Array<LossManpower>, equipment: Array<LossEquipment>,
+/**
+ * Ledger months with no design amounts, kept apart from known amounts.
+ */
+emptyMonths: Array<LossMonth>,
+/**
+ * Retained ledger months whose amounts are unknown, never zero.
+ */
+unknownMonths: Array<LossMonth>, availability: ArmyLossesAvailability, warnings: Array<string>, };
+export type LossArmy = {
+/**
+ * The army's full reference, which identifies it in the reply.
+ */
+reference: string,
+/**
+ * Position in the country's list of logs.
+ */
+ordinal: number, name: string | null, nameMissing: string | null,
+/**
+ * The army group holding it now, by full reference; none for an army
+ * with no army group.
+ */
+parent: string | null, parentName: string | null,
+/**
+ * Why the army group is unknown, when the army names one that was not read.
+ */
+parentMissing: string | null, };
+export type LossManpower = { army: string, ordinal: number,
+/**
+ * The game's month: twelve per year plus the zero-based month.
+ */
+month: number,
+/**
+ * The hour of the month's first write.
+ */
+date: number,
+/**
+ * Ground, air and navy source channels, signed as stored.
+ */
+losses: [number, number, number], };
+export type LossEquipment = { army: string, ledger: number, month: number, date: number, variant: string, name: string | null,
+/**
+ * The design's equipment archetype and its in-game name.
+ */
+archetype: string | null, archetypeName: string | null,
+/**
+ * Signed fixed-point amount with five decimals, as stored.
+ */
+amountRaw: string, };
+export type LossMonth = { army: string, ledger: number, month: number, date: number, };
+export type ArmyLossesAvailability = { armies: string | null, manpower: string | null, months: string | null, ownEquipment: string | null, enemyEquipment: string | null, };
+export type DivisionCareersParams = { branchId: string, hour: number,
+/**
+ * The countries whose divisions rank; none ranks every country's.
+ */
+tags: Array<string> | null, };
+export type DivisionCareersReply = { branchId: string, hour: number, divisions: Array<CareerRow>, medals: Array<CareerMedal>, templates: Array<CareerTemplate>,
+/**
+ * Why divisions are unknown at this hour, when they are.
+ */
+missing: string | null, warnings: Array<string>, };
+export type CareerRow = { division: string, tag: string | null, template: string, name: string | null, nameMissing: string | null, facts: CareerFacts, };
+export type CareerFacts = {
+/**
+ * The recorded medal total; none when the history was not read.
+ */
+medals: number | null, awards: Array<CareerAward>, historyMissing: string | null,
+/**
+ * Manpower-normalised experience, fixed-point with five decimals.
+ */
+experienceRaw: string | null,
+/**
+ * Zero-based experience level, and the level's in-game name.
+ */
+level: number | null, levelName: string | null,
+/**
+ * The game's career kill counter.
+ */
+kills: number | null, };
+export type CareerAward = {
+/**
+ * Index into the reply's medals.
+ */
+medal: number, count: number, };
+export type CareerMedal = { key: string, name: string | null, };
+export type CareerTemplate = { template: string, name: string | null, icon: string | null, };
+export type DivisionRecordParams = { branchId: string, hour: number,
+/**
+ * The division's full native handle.
+ */
+division: string, };
+export type DivisionRecordReply = { branchId: string, hour: number, division: string,
+/**
+ * The division is not in service at this hour.
+ */
+absent: boolean, tag: string | null, template: CareerTemplate | null, name: string | null, nameMissing: string | null, facts: CareerFacts | null, medals: Array<CareerMedal>, entries: Array<RecordEntry>, warnings: Array<string>, };
+export type RecordEntry = { award: boolean, ordinal: number,
+/**
+ * The entry's game date.
+ */
+hour: number, description: string | null, descriptionMissing: string | null, provinces: Array<number>,
+/**
+ * The awarded medal, by index into the reply's medals.
+ */
+medal: number | null, };
+export type DivisionTemplatesParams = { branchId: string, hour: number, tag: string, countFor: ArmyAttribution, };
+export type DivisionTemplatesReply = { branchId: string, hour: number, tag: string, countFor: ArmyAttribution,
+/**
+ * No country holds the tag at this hour.
+ */
+absent: boolean, templates: Array<TemplateEntry>,
+/**
+ * Why fielded counts are unknown, when they are.
+ */
+fieldedMissing: string | null, warnings: Array<string>, };
+export type TemplateEntry = {
+/**
+ * The template's full native handle.
+ */
+template: string, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null,
+/**
+ * Position in the country's roster.
+ */
+rosterOrdinal: number | null,
+/**
+ * Divisions of the template counted for the country; none when the
+ * division census was not read.
+ */
+fielded: number | null, units: Array<TemplateUnit>, unitsMissing: string | null,
+/**
+ * Signed fixed-point base combat width with five decimals.
+ */
+baseWidthRaw: string | null,
+/**
+ * The template's stored priority and the game's name for it.
+ */
+priority: number | null, priorityName: string | null, priorityMissing: string | null, locked: boolean | null, obsolete: boolean | null,
+/**
+ * The hour the template was made obsolete, when recorded.
+ */
+obsoleteHour: number | null, designer: DesignerKind | null, forceRecruiting: boolean | null, newEquipment: boolean | null, foreignEquipment: boolean | null, manpower: number | null, trainingDays: number | null, settingsMissing: string | null, };
+export type TemplateUnit = {
+/**
+ * The sub-unit's content key, shown on hover only.
+ */
+key: string | null, name: string | null, nameMissing: string | null, count: number,
+/**
+ * A support company rather than a battalion.
+ */
+support: boolean,
+/**
+ * A country-local copy of the definition.
+ */
+local: boolean, };
+export type DesignerKind = "ordinary" | "headquarters";
+export type DivisionEquipmentParams = { branchId: string, hour: number, tag: string, countFor: ArmyAttribution, template: string | null, division: string | null, };
+export type DivisionEquipmentReply = { branchId: string, hour: number, tag: string, countFor: ArmyAttribution, absent: boolean, poolHour: number | null, divisions: number,
+/**
+ * Divisions with a known shortfall of any type; unknown ones are not among them.
+ */
+divisionsShort: number, unknownDivisions: number, types: Array<EquipmentType>, templates: Array<EquipmentTemplate>, divisionRows?: Array<EquipmentDivision>, pool?: DivisionPool, warnings: Array<string>, };
+export type EquipmentVariant = { variant: string, name: string | null, heldRaw: string, };
+export type EquipmentType = {
+/**
+ * None is the explicit unclassified bucket, not a content key.
+ */
+archetype: string | null, name: string | null, nameMissing: string | null,
+/**
+ * What every division whose pool was read holds, its comparison known or not.
+ */
+heldRaw: string, neededRaw: string | null,
+/**
+ * Each known division's holding capped at its own need, summed: the
+ * fulfilment its need is measured by, so one division's surplus never
+ * fills another's shortfall.
+ */
+filledRaw: string | null, missingRaw: string | null, divisionsShort: number, unknownDivisions: number,
+/**
+ * National stock is never used in the deployed shortfall calculation.
+ */
+stockpileRaw: string | null, stockpileHour: number | null, variants: Array<EquipmentVariant>, };
+export type EquipmentTemplate = { template: string, name: string | null, nameMissing: string | null, icon: string | null, iconMissing: string | null, divisions: number, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null,
+/**
+ * Known divisions only, with unknown_divisions naming the remainder.
+ */
+neededRaw: string | null,
+/**
+ * Only needed archetypes, capped separately at each division's need.
+ */
+heldRaw: string | null, typesShort: number, unknownDivisions: number, };
+export type EquipmentDivision = { division: string, name: string | null, nameMissing: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, neededRaw: string | null, heldRaw: string | null, typesShort: number, poolKnown: boolean,
+/**
+ * The previous template's name during conversion.
+ */
+convertingFrom: string | null, };
+export type DivisionPoolType = { archetype: string | null, name: string | null, heldRaw: string, neededRaw: string | null, missingRaw: string | null, variants: Array<EquipmentVariant>, };
+export type DivisionPool = { division: string, name: string | null, template: string, templateName: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, types: Array<DivisionPoolType>, };
+export type TrainingQueueParams = { branchId: string, hour: number, tag: string, };
+export type TrainingQueueReply = { branchId: string, hour: number, tag: string,
+/**
+ * No country holds the tag at this hour.
+ */
+absent: boolean,
+/**
+ * The read the queue is from; none when none falls within a day.
+ */
+readHour: number | null,
+/**
+ * Why the queue is unknown at this hour, when it is.
+ */
+missing: string | null, orders: Array<TrainingOrder>, warnings: Array<string>, };
+export type TrainingOrder = { order: string, ordinal: number, template: string, templateName: string | null, templateMissing: string | null, icon: string | null, iconMissing: string | null, amount: number,
+/**
+ * The stored priority, and the game's text for it.
+ */
+priority: number, priorityName: string | null, priorityMissing: string | null,
+/**
+ * The stored province (zero for none), and the name the game shows for it.
+ */
+location: number, locationName: string | null, locationMissing: string | null, closed: boolean,
+/**
+ * A government in exile's order names that country.
+ */
+exile: string | null, divisions: Array<TrainingDivision>, };
+export type TrainingDivision = { line: string, ordinal: number, name: string | null, nameMissing: string | null,
+/**
+ * Fixed-point training and its maximum, five decimals.
+ */
+trainingRaw: string, maxTrainingRaw: string,
+/**
+ * Signed sums of the available and needed entries, as the game adds them.
+ */
+manpower: number, manpowerNeeded: number, maxManpower: number, contributors: Array<TrainingManpower>, equipment: Array<TrainingEquipment>,
+/**
+ * What the template needs; empty with `need_missing` when unknown.
+ */
+need: Array<TrainingNeed>, needMissing: string | null,
+/**
+ * Why held equipment cannot be measured against the need: the need is
+ * unknown, or a held design's type is unresolved, so what it fills is
+ * unknown though the known needs and holdings stay.
+ */
+comparisonMissing: string | null,
+/**
+ * A halting reason is stored; its meaning is not named.
+ */
+halted: boolean, };
+export type TrainingManpower = { tag: string | null,
+/**
+ * Available (false) or needed (true).
+ */
+needed: boolean, amount: number, };
+export type TrainingEquipment = { variant: string, name: string | null, archetype: string | null, archetypeName: string | null,
+/**
+ * Signed fixed-point amount with five decimals.
+ */
+amountRaw: string, };
+export type TrainingNeed = { archetype: string, name: string | null,
+/**
+ * Fixed-point need with five decimals.
+ */
+needRaw: string,
+/**
+ * What the division holds of it, fixed-point with five decimals.
+ */
+heldRaw: string, };
 export type PlaceNamesParams = { branchId: string,
 /**
  * Land's presentation ladder; other callers retain the native resolver.
@@ -4505,6 +4776,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
+export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;

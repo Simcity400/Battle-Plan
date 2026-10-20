@@ -42,7 +42,8 @@ use ts_rs::TS;
 
 pub struct PlaceNames;
 
-const NAME_TABLES: [TableId; 8] = [
+/// The tables province and state names are read from.
+pub const NAME_TABLES: [TableId; 8] = [
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,

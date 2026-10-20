@@ -51,6 +51,9 @@ export const PAGES = [
     ['generals', 0, 31, 7, 12], ['general-career', 7, 31, 5, 12],
     ['casualties-breakdown', 0, 43, 6, 10], ['equipment-losses', 6, 43, 6, 10],
     ['division-log', 0, 53, 8, 10], ['experience', 8, 53, 4, 10],
+    ['army-losses-by-month', 0, 63, 6, 8], ['training-queue', 6, 63, 6, 8],
+    ['division-equipment', 0, 71, 7, 11], ['division-template', 7, 71, 5, 11],
+    ['most-decorated-divisions', 0, 82, 7, 10], ['division-service-record', 7, 82, 5, 10],
   ] },
   { id: 'air', label: 'Air', icon: 'plane', panels: [
     ['air-force-size', 0, 0, 6, 10], ['air-kills-losses', 6, 0, 6, 10],
