@@ -29,8 +29,9 @@
 //! window, which remembers the id of what it uploaded, uploads nothing for it;
 //! political workers hold compact region tables. The scene diffs those tables and
 //! computes the gradient only when a displayed state changes. Each such part
-//! waits for the previous hour's value, which was dispatched first and so is
-//! already being built. For the political part the wait is not about the cheap
+//! waits for the preceding built hour's value, which was dispatched first and
+//! so is already being built, even when the playhead skips past the builders.
+//! For the political part the wait is not about the cheap
 //! region derivation: an equal hour must keep the same political id, because
 //! the border classes are shared, and their upload skipped, only by that id.
 
@@ -118,14 +119,16 @@ impl Want {
     fn hours(&self, range: (Hour, Hour)) -> Vec<Hour> {
         let (first, last) = range;
         let mut hours = vec![self.hour];
-        hours.extend(
-            (1..=self.ahead)
-                .map(|step| self.hour + step)
-                .filter(|hour| *hour <= last),
-        );
+        let end = self.hour.saturating_add(self.ahead).min(last);
+        // Consecutive hours share the preceding hour's parts and let the
+        // decoder advance in place. A frame may skip what was built, but the
+        // builders do not sample a predicted frame grid.
+        if self.hour < end {
+            hours.extend(self.hour + 1..=end);
+        }
         hours.extend(
             (1..=self.behind)
-                .map(|step| self.hour - step)
+                .map(|step| self.hour.saturating_sub(step))
                 .filter(|hour| *hour >= first),
         );
         hours.retain(|hour| (first..=last).contains(hour));
@@ -149,23 +152,82 @@ impl Want {
     }
 
     fn keeps_reusable(&self, (branch, hour): (BranchId, Hour)) -> bool {
-        branch == self.branch && (self.hour - self.behind..=self.hour + self.ahead).contains(&hour)
+        branch == self.branch
+            && (self.hour.saturating_sub(self.behind)..=self.hour.saturating_add(self.ahead))
+                .contains(&hour)
     }
 
-    /// Whether an hour in flight is still worth finishing: one of `keep`, or,
-    /// playing, one of this branch at or before the playhead.
+    /// Finish hours already in flight at/before the playing clock, even when
+    /// it has passed their request window: they may still be the newest built
+    /// fallback. Future hours finish only while they remain wanted.
     fn keeps_pending(&self, key: (BranchId, Hour), keep: &BTreeSet<(BranchId, Hour)>) -> bool {
-        keep.contains(&key) || (self.playing && key.0 == self.branch && key.1 <= self.hour)
+        keep.contains(&key)
+            || (self.playing
+                && key.0 == self.branch
+                && key.1 <= self.hour)
+            // A paused catch-up still needs the scripted colour chain from
+            // preceding in-flight hours. Explicit seeks invalidate the epoch
+            // first; ordinary pauses must not cold-start that history.
+            || (matches!(self.map_mode, viewer_world::map::map_mode::MapMode::Scripted(_))
+                && key.0 == self.branch
+                && key.1 <= self.hour)
     }
 
-    /// Old-generation hours cannot satisfy a changed mode or perspective.
-    fn discard_stale_have(&mut self, previous: Option<&Self>) -> bool {
-        let invalidates = previous.is_some_and(|old| old.invalidates(self));
+    /// Explicit seeks, including same-hour seeks, restart history just like
+    /// a changed mode or perspective. No ready or pending result may cross it.
+    fn discard_stale_have(&mut self, previous: Option<&Self>, sought: bool) -> bool {
+        let invalidates = sought || previous.is_some_and(|old| old.invalidates(self));
         if invalidates {
             self.have.clear();
         }
         invalidates
     }
+}
+
+/// Request one pool of consecutive hours, including the playhead. Cold build
+/// latency must not turn into a speculative recording-wide decode window.
+fn playback_ahead(parallel: usize) -> i32 {
+    i32::try_from(parallel.saturating_sub(1)).unwrap_or(i32::MAX)
+}
+
+/// The nearest earlier/later built candidates, not necessarily adjacent
+/// recorded hours. Only already-dispatched slots are considered, so waits
+/// follow dispatch order and cannot form a cycle.
+fn neighbour_slots<T>(
+    slots: &BTreeMap<(BranchId, Hour), T>,
+    branch: BranchId,
+    hour: Hour,
+) -> Vec<((BranchId, Hour), &T)> {
+    slots
+        .range((branch, i32::MIN)..(branch, hour))
+        .next_back()
+        .into_iter()
+        .chain(
+            slots
+                .range((branch, hour)..=(branch, i32::MAX))
+                .find(|(key, _)| key.1 > hour),
+        )
+        .map(|(key, value)| (*key, value))
+        .collect()
+}
+
+/// Advance only scripted colour history through recorded hours that have no
+/// full layer build. An unavailable hour breaks the retained-border history.
+fn carry_colour(
+    mut colour: Option<Arc<viewer_world::map::map_mode::ColourState>>,
+    frames: Vec<Current>,
+    mut fill: impl FnMut(
+        &replay_frame::frame::DecodedFrame,
+        Option<&viewer_world::map::map_mode::ColourState>,
+    ) -> io::Result<Option<Arc<viewer_world::map::map_mode::ColourState>>>,
+) -> io::Result<Option<Arc<viewer_world::map::map_mode::ColourState>>> {
+    for current in frames {
+        colour = match current {
+            Current::Frame(frame) => fill(&frame, colour.as_deref())?,
+            Current::Gap { .. } => None,
+        };
+    }
+    Ok(colour)
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -1106,13 +1168,15 @@ impl Drop for DecodeLane {
     }
 }
 
+type Requested = (u64, Want);
+
 struct Coordinator {
     content: Arc<Content>,
     playback: Playback,
     shared_decoder: Option<Arc<SharedDecoder>>,
     /// The playback decode lane, unless a shared decoder serves this view.
     lane: Option<DecodeLane>,
-    requested: Arc<Mutex<Option<(u64, Want)>>>,
+    requested: Arc<Mutex<Option<Requested>>>,
     /// The window's engaged-flag index, which the overlay part reads when it
     /// is for the wanted perspective's country; it never starts one.
     engaged: Engaged,
@@ -1137,6 +1201,7 @@ struct Coordinator {
 
 impl Coordinator {
     fn run(mut self, inbox: Receiver<Event>) {
+        let run_started = Instant::now();
         loop {
             let event = if self.next_hour().is_some() && self.pending.len() < self.parallel {
                 match inbox.try_recv() {
@@ -1206,6 +1271,14 @@ impl Coordinator {
                             laps,
                             layers,
                         };
+                        if viewer_foundation::profile_writer::profiling() {
+                            viewer_foundation::profile_writer::profile_print(format!(
+                                "PROFILE hour_build hour {hour} wall {:.3} cpu {:.3} elapsed {:.6}",
+                                built.wall,
+                                built.laps.iter().map(|(_, ms)| ms).sum::<f64>(),
+                                run_started.elapsed().as_secs_f64(),
+                            ));
+                        }
                         if !self.send(built) {
                             return;
                         }
@@ -1242,7 +1315,7 @@ impl Coordinator {
         {
             self.reusable.clear();
         }
-        want.discard_stale_have(self.want.as_ref());
+        want.discard_stale_have(self.want.as_ref(), self.epoch != epoch);
         if self.epoch != epoch {
             self.invalidate();
             self.epoch = epoch;
@@ -1266,11 +1339,17 @@ impl Coordinator {
         });
         // Keep an hour the window holds, or one still on its way to it.
         self.sent.retain(|key, order| {
-            keep.contains(key)
+            want.keeps_reusable(*key)
                 && (*order >= want.received || (key.0 == want.branch && want.have.contains(&key.1)))
         });
-        self.slots
-            .retain(|key, _| keep.contains(key) || self.pending.contains_key(key));
+        let predecessor = self
+            .slots
+            .range((want.branch, i32::MIN)..(want.branch, want.hour))
+            .next_back()
+            .map(|(key, _)| *key);
+        self.slots.retain(|key, _| {
+            want.keeps_reusable(*key) || self.pending.contains_key(key) || Some(*key) == predecessor
+        });
         if let Some(lane) = &self.lane {
             lane.want(
                 want.hours(range)
@@ -1319,6 +1398,30 @@ impl Coordinator {
         let branch = want.branch;
         let epoch = self.epoch;
         let started = Instant::now();
+        let nearby = neighbour_slots(&self.slots, branch, hour);
+        let previous = nearby
+            .iter()
+            .find(|(key, _)| key.1 < hour)
+            .map(|(key, slots)| (key.1, Arc::clone(&slots.political)));
+        let neighbours: Vec<Slots> = nearby.into_iter().map(|(_, slots)| slots.clone()).collect();
+        // The playhead may jump past unbuilt hours between wants. Scripted
+        // colours still need their intervening recorded refreshes; other
+        // layers are built only for the current request window.
+        let mut mode_frames = Vec::new();
+        let mode_from = previous.as_ref().map(|(from, _)| from.saturating_add(1));
+        if matches!(
+            &want.map_mode,
+            viewer_world::map::map_mode::MapMode::Scripted(_)
+        ) && let Some(from) = mode_from
+        {
+            for at in from..hour {
+                mode_frames.push(self.frame(branch, at).unwrap_or_else(|error| Current::Gap {
+                    branch,
+                    hour: at,
+                    reason: error.to_string(),
+                }));
+            }
+        }
         let current = match self.frame(branch, hour) {
             Ok(current) => current,
             Err(error) => Current::Gap {
@@ -1379,10 +1482,6 @@ impl Coordinator {
         // those belongs to an hour dispatched before this one, whose jobs the
         // pool therefore took first; a cancelled or panicked part still fills
         // its slots, so no wait is for ever.
-        let neighbours: Vec<Slots> = [hour - 1, hour + 1]
-            .iter()
-            .filter_map(|neighbour| self.slots.get(&(branch, *neighbour)).cloned())
-            .collect();
         self.slots.insert((branch, hour), slots.clone());
         let submit = |name: &'static str, work: Box<dyn FnOnce(&HourView<'_>) -> Part + Send>| {
             let content = Arc::clone(&self.content);
@@ -1423,12 +1522,11 @@ impl Coordinator {
             let political_perspective = want.perspective.clone();
             let map_mode = want.map_mode.clone();
             let near_borders = slots_of(&neighbours, |slots| &slots.borders);
-            // A scripted mode's colour borders carry on from the hour before, built before
-            // this one; without it (after a seek, or the first hour shown) they start empty.
-            let previous = self
-                .slots
-                .get(&(branch, hour - 1))
-                .map(|slots| Arc::clone(&slots.political));
+            // Carry from the preceding built hour, including the mode-only
+            // refreshes of skipped recorded hours. With no predecessor the
+            // first shown hour starts cold, as a seek does.
+            let previous = previous.map(|(_, slot)| slot);
+            let content = Arc::clone(&self.content);
             submit(
                 "political",
                 Box::new(move |view| {
@@ -1438,8 +1536,17 @@ impl Coordinator {
                         let colour = previous
                             .as_ref()
                             .and_then(|political| political.key.mode())
-                            .and_then(|mode| mode.colour.as_deref());
-                        let mode = view.map_mode_fill(&map_mode, &political_perspective, colour)?;
+                            .and_then(|mode| mode.colour.clone());
+                        let colour = carry_colour(colour, mode_frames, |frame, colour| {
+                            Ok(HourView::new(&content, frame, 0.0)
+                                .map_mode_fill(&map_mode, &political_perspective, colour)?
+                                .colour)
+                        })?;
+                        let mode = view.map_mode_fill(
+                            &map_mode,
+                            &political_perspective,
+                            colour.as_deref(),
+                        )?;
                         let key = FrameKey::new(view.frame)?
                             .with_naval(&naval)
                             .with_mode(&mode);
@@ -1676,7 +1783,8 @@ pub struct Pipeline {
     want: Option<Want>,
     epoch: u64,
     received: Cell<u64>,
-    requested: Arc<Mutex<Option<(u64, Want)>>>,
+    seek_pending: bool,
+    requested: Arc<Mutex<Option<Requested>>>,
     /// The engaged-flag index for the last perspective country asked for,
     /// shared with the coordinator's overlay builds.
     engaged: Engaged,
@@ -1709,6 +1817,25 @@ impl Pipeline {
             content,
             replay,
             Arc::new(Pool::new(parallel)?),
+            None,
+            parallel,
+            checkpoints,
+        )
+    }
+
+    /// The Campaign map borrows the root's worker budget, but keeps the same
+    /// decode-ahead lane and in-flight window as a standalone window.
+    pub fn campaign(
+        content: Arc<Content>,
+        replay: Arc<Replay>,
+        resources: &Resources,
+        checkpoints: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
+    ) -> io::Result<Self> {
+        let parallel = viewer_foundation::parallel::Spawn::threads(&*resources.pool);
+        Self::start(
+            content,
+            replay,
+            Arc::clone(&resources.pool),
             None,
             parallel,
             checkpoints,
@@ -1793,6 +1920,7 @@ impl Pipeline {
             want: None,
             epoch: 0,
             received: Cell::new(0),
+            seek_pending: false,
             requested,
             engaged,
             workers,
@@ -1846,12 +1974,23 @@ impl Pipeline {
         Arc::ptr_eq(&self.content, content) && Arc::ptr_eq(&self.replay, replay)
     }
 
+    /// An explicit seek discards ready and pending results at the next want,
+    /// including a seek to the hour already shown. History starts cold there.
+    pub fn seek(&mut self) {
+        self.seek_pending = true;
+    }
+
+    /// The playhead plus its consecutive successors fill one live pool.
+    pub fn playback_ahead(&self) -> i32 {
+        playback_ahead(viewer_foundation::parallel::Spawn::threads(&*self.pool))
+    }
+
     /// Tells the builders what the window wants now. Returns the epoch the
     /// window must keep built hours of: a new perspective begins one.
     pub fn want(&mut self, mut want: Want) -> io::Result<u64> {
         want.received = self.received.get();
-        let invalidates = want.discard_stale_have(self.want.as_ref());
-        if self.want.as_ref() != Some(&want) {
+        let invalidates = want.discard_stale_have(self.want.as_ref(), self.seek_pending);
+        if self.want.as_ref() != Some(&want) || invalidates {
             if invalidates {
                 self.epoch += 1;
             }
@@ -1863,6 +2002,7 @@ impl Pipeline {
                 self.events.0.send(Event::Want).map_err(|_| stopped())?;
             }
             self.want = Some(want);
+            self.seek_pending = false;
         }
         Ok(self.epoch)
     }
@@ -1942,7 +2082,7 @@ mod mode_tests {
             next.counters.set_mode(&next.map_mode);
             assert!(old.invalidates(&next));
             assert!(!old.invalidates_parts(&next));
-            assert!(next.discard_stale_have(Some(&old)));
+            assert!(next.discard_stale_have(Some(&old), false));
             assert!(next.have.is_empty());
         }
         let mut next = old.clone();

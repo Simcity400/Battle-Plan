@@ -152,6 +152,10 @@ impl Resources for GuiResources<'_> {
         self.assets.native_sprite(name)
     }
 
+    fn sprite_info(&self, name: &[u8]) -> Option<std::borrow::Cow<'_, SpriteInfo>> {
+        self.assets.native_sprite_info(name)
+    }
+
     fn unloaded_sprite(&self, name: &[u8]) -> bool {
         self.assets.gui.registry().sprite(name).is_some()
     }

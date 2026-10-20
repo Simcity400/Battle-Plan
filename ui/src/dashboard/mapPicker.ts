@@ -1,5 +1,5 @@
 import type { MapOptions } from '../shell/api';
-import type { DashboardClient, DashboardMapView, MapOptionsEvent, MapToggle, MapToggleEvent } from './client';
+import type { DashboardClient, DashboardMapView, MapOptionsEvent, MapSettingsTarget, MapToggle, MapToggleEvent, DashboardSource } from './client';
 
 /** The view id the desktop's campaign map reports its picker changes under. */
 export const CAMPAIGN_MAP_VIEW = 'campaign-map';
@@ -7,10 +7,14 @@ export const CAMPAIGN_MAP_VIEW = 'campaign-map';
 /** A view's options with fog flipped: a picker fog click applied to the value the host holds now. */
 export const flipFog = (options: MapOptions): MapOptions => ({ ...options, fog: !options.fog });
 
-/** The campaign map's host for a picker toggle: the campaign map's and the pop-out's fog clicks,
- * both under `campaign-map`, each flip the one campaign fog switch in the order they arrive. */
-export function campaignToggled(event: MapToggleEvent, update: (flip: (options: MapOptions) => MapOptions) => void): void {
-  if (event.viewId === CAMPAIGN_MAP_VIEW && event.toggle.setting === 'fog') update(flipFog);
+/** The campaign map and pop-out share fog options and campaign-scope graphics. Each native
+ * picker click flips the host's value; it never writes a viewer's stale copy of the setting. */
+export function campaignToggled(event: MapToggleEvent, update: (flip: (options: MapOptions) => MapOptions) => void,
+  client: DashboardClient, source: Pick<DashboardSource, 'id' | 'revision'> | null): Promise<void> {
+  if (event.viewId !== CAMPAIGN_MAP_VIEW) return Promise.resolve();
+  if (event.toggle.setting === 'fog') { update(flipFog); return Promise.resolve(); }
+  if (!source) return Promise.resolve();
+  return toggleMapSetting(client, { id: CAMPAIGN_MAP_VIEW, sourceId: source.id, revision: source.revision }, event.toggle, { scope: 'campaign' });
 }
 
 /** What each map view's native picker chose, and where its fog toggle goes. The picker owns only
@@ -44,21 +48,22 @@ export class PickerOptions {
   }
 }
 
-/** Each widget's settings writes, in order: a write reads what the last one saved. */
+/** Each scope's settings writes, in order: a write reads what the last one saved. */
 const settingWrites = new Map<string, Promise<void>>();
 
-/** Flips the widget-scope setting a native picker toggle stands for. The service flips it under
- * the lock its saves take, reading the value when the flip runs (the widget's own, else the one
- * it inherits), so an edit or reset saved meanwhile is what it flips and no other choice is
- * written. A widget's flips are sent one at a time, in click order. */
-export function toggleMapSetting(client: DashboardClient, view: DashboardMapView, toggle: MapToggle): Promise<void> {
+/** Flips the scope's setting under the service's save lock, reading its current value (own or
+ * inherited), so an edit or reset saved meanwhile is what it flips. No other choice is written.
+ * Campaign and widget flips are sent one at a time per source and scope, in click order. */
+export function toggleMapSetting(client: DashboardClient, view: Pick<DashboardMapView, 'id' | 'sourceId' | 'revision'>,
+  toggle: MapToggle, target: MapSettingsTarget = { scope: 'widget', id: view.id }): Promise<void> {
   const write = async () => {
     if (!client.flipMapSetting || toggle.setting === 'fog') return;
     const signal = new AbortController().signal;
-    await client.flipMapSetting(view.sourceId, view.revision, toggle.setting, signal, { scope: 'widget', id: view.id });
+    await client.flipMapSetting(view.sourceId, view.revision, toggle.setting, signal, target);
   };
-  const next = (settingWrites.get(view.id) ?? Promise.resolve()).catch(() => undefined).then(write);
-  settingWrites.set(view.id, next);
-  void next.finally(() => { if (settingWrites.get(view.id) === next) settingWrites.delete(view.id); }).catch(() => undefined);
+  const key = JSON.stringify([view.sourceId, view.revision, target]);
+  const next = (settingWrites.get(key) ?? Promise.resolve()).catch(() => undefined).then(write);
+  settingWrites.set(key, next);
+  void next.finally(() => { if (settingWrites.get(key) === next) settingWrites.delete(key); }).catch(() => undefined);
   return next;
 }

@@ -184,7 +184,7 @@ fn native_emitter_basis_preserves_rain_direction_and_rotates_spawn_plane() {
     assert!((v[1] - 1.0).abs() < 1e-6);
 }
 
-fn reference_defines() -> CameraDefines {
+pub(super) fn reference_defines() -> CameraDefines {
     CameraDefines {
         distance_cutoff: 1500.0,
         distance_fade_length: 400.0,
@@ -453,7 +453,7 @@ pub(crate) fn activation_test_emitter() -> Emitter {
     }
 }
 
-fn assert_same_state(left: &Simulation, right: &Simulation) {
+pub(super) fn assert_same_state(left: &Simulation, right: &Simulation) {
     assert_eq!(left.prepared, right.prepared);
     assert_eq!(left.particles.len(), right.particles.len());
     assert_eq!(left.age, right.age);

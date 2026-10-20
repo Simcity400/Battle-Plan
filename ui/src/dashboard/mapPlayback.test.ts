@@ -6,11 +6,11 @@ import type { BoundTrack } from './model.ts';
 const track = { source: { path: 'campaign.battleplan', revision: 'revision-a' }, branch: { id: '7', firstHour: 100, lastHour: 200 }, axisOffset: 100 } as BoundTrack;
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 function clock() {
-  let snapshot = { hour: 0, playing: false, seekSequence: 0 };
+  let snapshot = { hour: 0, fraction: 0, hoursPerSecond: 24, playing: false, seekSequence: 0 };
   const listeners = new Set<() => void>();
   return { getSnapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    seek: (hour: number) => { snapshot = { hour, playing: false, seekSequence: snapshot.seekSequence + 1 }; for (const listener of listeners) listener(); },
-    play: (hour: number, playing = true) => { snapshot = { ...snapshot, hour, playing }; for (const listener of listeners) listener(); }, listeners };
+    seek: (hour: number) => { snapshot = { ...snapshot, hour, playing: false, seekSequence: snapshot.seekSequence + 1 }; for (const listener of listeners) listener(); },
+    play: (hour: number, playing = true) => { snapshot = { ...snapshot, hour, playing }; for (const listener of listeners) listener(); }, update: (next: Partial<typeof snapshot>) => { snapshot = { ...snapshot, ...next }; for (const listener of listeners) listener(); }, listeners };
 }
 
 test('map playback preserves source identity, coalesces hours and stops sending after leaving the view', async () => {
@@ -19,9 +19,9 @@ test('map playback preserves source identity, coalesces hours and stops sending 
   const replies: (() => void)[] = [];
   const stop = followMapPlayback(playback, track, (...args) => { calls.push(args); return new Promise(resolve => replies.push(resolve)); }, error => assert.equal(error, null));
   playback.seek(1); playback.seek(2); playback.seek(3);
-  assert.deepEqual(calls, [['campaign.battleplan', 'revision-a', '7', 100, { playing: false, seekSequence: 0 }]]);
+  assert.deepEqual(calls, [['campaign.battleplan', 'revision-a', '7', 100, { playing: false, seekSequence: 0, fraction: 0, hoursPerSecond: 24 }]]);
   replies.shift()!(); await tick();
-  assert.deepEqual(calls[1], ['campaign.battleplan', 'revision-a', '7', 103, { playing: false, seekSequence: 3 }]);
+  assert.deepEqual(calls[1], ['campaign.battleplan', 'revision-a', '7', 103, { playing: false, seekSequence: 3, fraction: 0, hoursPerSecond: 24 }]);
   playback.seek(4); stop(); replies.shift()!(); await tick();
   assert.equal(calls.length, 2);
   assert.equal(playback.listeners.size, 0);
@@ -77,12 +77,31 @@ test('full map carries seek identity across coalesced playback, same-hour seeks 
   playback.seek(30);
   playback.play(50);
   replies.shift()!(); await tick();
-  assert.deepEqual(calls[1].slice(3), [150, { playing: true, seekSequence: 1 }]);
+  assert.deepEqual(calls[1].slice(3), [150, { playing: true, seekSequence: 1, fraction: 0, hoursPerSecond: 24 }]);
   replies.shift()!(); await tick();
   playback.play(50, false); // Same-hour pause must reach the viewer.
-  assert.deepEqual(calls[2].slice(3), [150, { playing: false, seekSequence: 1 }]);
+  assert.deepEqual(calls[2].slice(3), [150, { playing: false, seekSequence: 1, fraction: 0, hoursPerSecond: 24 }]);
   replies.shift()!(); await tick();
   playback.seek(50); // And a same-hour seek must reset it.
-  assert.deepEqual(calls[3].slice(3), [150, { playing: false, seekSequence: 2 }]);
+  assert.deepEqual(calls[3].slice(3), [150, { playing: false, seekSequence: 2, fraction: 0, hoursPerSecond: 24 }]);
   stop(); replies.shift()!(); await tick();
+});
+
+
+test('fraction-only and speed-only clock updates reach both native map clocks', async () => {
+  const playback = clock();
+  const calls: unknown[][] = [];
+  const stop = followMapPlayback(playback, track, async (...args) => { calls.push(args); }, () => {});
+  await tick();
+  playback.update({ playing: true, fraction: 0.25, hoursPerSecond: 0.25 }); await tick();
+  playback.update({ fraction: 0.375 }); await tick();
+  playback.update({ hoursPerSecond: 1440 }); await tick();
+  playback.update({ playing: false, fraction: 0.75 }); await tick();
+  assert.deepEqual(calls.slice(1).map(call => call.slice(3)), [
+    [100, { playing: true, seekSequence: 0, fraction: 0.25, hoursPerSecond: 0.25 }],
+    [100, { playing: true, seekSequence: 0, fraction: 0.375, hoursPerSecond: 0.25 }],
+    [100, { playing: true, seekSequence: 0, fraction: 0.375, hoursPerSecond: 1440 }],
+    [100, { playing: false, seekSequence: 0, fraction: 0.75, hoursPerSecond: 1440 }],
+  ]);
+  stop();
 });

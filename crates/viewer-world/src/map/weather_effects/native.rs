@@ -4,6 +4,7 @@ use super::{Emitter, Simulation};
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content_core::{mesh::Transform, particles::RenderDescriptor, pdxshader::program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
+#[cfg(test)]
 use std::collections::BTreeSet;
 use std::{
     collections::BTreeMap,
@@ -119,6 +120,7 @@ impl DrawPacket {
             },
             sim.age,
         );
+        out.instances.reserve(sim.particles.len());
         for p in &sim.particles {
             let t = p.age / p.life;
             let position = if e.local_space {
@@ -153,50 +155,107 @@ impl DrawPacket {
     }
 }
 
-///Viewer-owned presentation histories. A newly observed event starts empty;
-///its historical RNG, actor enqueue order and pre-observation motion are not recorded.
+/// Viewer-owned presentation histories. A newly observed event starts empty;
+/// its historical RNG, actor enqueue order and pre-observation motion are not recorded.
+/// Resolve the content name once per event, then use numeric keys for its emitters.
 #[derive(Default)]
 pub(crate) struct EntitySimulations(
-    BTreeMap<(String, crate::map::entity_animation::EventKey, usize), Simulation>,
+    BTreeMap<String, BTreeMap<(crate::map::entity_animation::EventKey, usize), EntityRuntime>>,
 );
+
+struct EntityRuntime {
+    simulation: Simulation,
+    /// The observation in this frame's original event list, also detecting duplicates.
+    seen: Option<usize>,
+}
 
 impl EntitySimulations {
     pub fn clear(&mut self) {
         self.0.clear();
     }
 
-    /// Advance once before scene lights and draws through the same path for every entity producer.
-    /// Retain a kept event's light until its finished particle runtime has no living subsystem.
+    #[cfg(test)]
     pub fn prepare(
         &mut self,
         entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
         events: &[crate::map::entity_animation::Event],
     ) -> io::Result<()> {
-        let mut seen = BTreeSet::new();
-        for event in events {
+        self.prepare_with_workers(entities, events, &Default::default())
+    }
+
+    /// Register observations in event order, then advance independent, privately seeded
+    /// runtimes on borrowed turns. No random stream or particle storage is shared.
+    pub fn prepare_with_workers(
+        &mut self,
+        entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
+        events: &[crate::map::entity_animation::Event],
+        workers: &viewer_foundation::parallel::Workers,
+    ) -> io::Result<()> {
+        for runtimes in self.0.values_mut() {
+            for runtime in runtimes.values_mut() {
+                runtime.seen = None;
+            }
+        }
+        let mut failure = None;
+        'events: for (at, event) in events.iter().enumerate() {
             let Some(name) = &event.definition.particle else {
                 continue;
             };
-            let Some((scale, emitters)) = entities.get(name) else {
+            let Some((_, emitters)) = entities.get(name) else {
                 continue;
             };
+            if emitters.is_empty() {
+                continue;
+            }
+            if !self.0.contains_key(name) {
+                self.0.insert(name.clone(), BTreeMap::new());
+            }
+            let runtimes = self.0.get_mut(name).expect("registered particle name");
             for (ordinal, emitter) in emitters.iter().enumerate() {
-                let key = (name.clone(), event.key, ordinal);
-                // Frame-local invariant; later observations reuse the runtime below.
-                if !seen.insert(key.clone()) {
-                    return Err(io::Error::other(format!(
+                let runtime =
+                    runtimes
+                        .entry((event.key, ordinal))
+                        .or_insert_with(|| EntityRuntime {
+                            simulation: Simulation::cold(
+                                emitter,
+                                u64::from(event.seed) ^ ((ordinal as u64) << 32),
+                                event.transform.translation,
+                                event.age,
+                            ),
+                            seen: None,
+                        });
+                if runtime.seen.is_some() {
+                    failure = Some(io::Error::other(format!(
                         "Map shader particles: 1 refused actor {name}: duplicate presentation identity {:?}",
                         event.key
                     )));
+                    break 'events;
                 }
-                let sim = self.0.entry(key).or_insert_with(|| {
-                    Simulation::cold(
-                        emitter,
-                        u64::from(event.seed) ^ ((ordinal as u64) << 32),
-                        event.transform.translation,
-                        event.age,
-                    )
-                });
+                runtime.seen = Some(at);
+            }
+        }
+        {
+            let tasks: Vec<_> = self
+                .0
+                .iter_mut()
+                .filter_map(|(name, runtimes)| entities.get(name).map(|asset| (runtimes, asset)))
+                .flat_map(|(runtimes, (scale, emitters))| {
+                    runtimes
+                        .iter_mut()
+                        .filter_map(move |((_, ordinal), runtime)| {
+                            let event = &events[runtime.seen?];
+                            Some(Mutex::new((
+                                &mut runtime.simulation,
+                                &emitters[*ordinal],
+                                *scale,
+                                event,
+                            )))
+                        })
+                })
+                .collect();
+            workers.run(tasks.len(), &|at| {
+                let mut task = tasks[at].lock().unwrap_or_else(|error| error.into_inner());
+                let (sim, emitter, scale, event) = &mut *task;
                 let space = Some(super::motion::Space::new(
                     emitter.local_space,
                     emitter.system_local_space,
@@ -204,10 +263,20 @@ impl EntitySimulations {
                     event.transform,
                 ));
                 sim.advance_event(emitter, event.age, event.emission_end, space);
-            }
+            });
         }
-        self.0
-            .retain(|key, sim| seen.contains(key) && (sim.emitting || !sim.particles.is_empty()));
+        // A duplicate refuses after advancing the preceding observations, just as the
+        // serial walk did, without retiring runtimes after an incomplete observation list.
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        self.0.retain(|_, runtimes| {
+            runtimes.retain(|_, runtime| {
+                runtime.seen.is_some()
+                    && (runtime.simulation.emitting || !runtime.simulation.particles.is_empty())
+            });
+            !runtimes.is_empty()
+        });
         Ok(())
     }
 
@@ -215,58 +284,80 @@ impl EntitySimulations {
     /// comparing two sets of simulations stepped alike.
     #[cfg(test)]
     pub(crate) fn presentation_state(&self) -> String {
-        self.0
-            .iter()
-            .map(|((name, key, ordinal), sim)| {
+        self.0.iter().flat_map(|(name, runtimes)| {
+            runtimes.iter().map(move |((key, ordinal), runtime)| {
+                let sim = &runtime.simulation;
                 // The pass namespace differs between passes; the rest names the runtime.
                 format!(
                     "{name} {:?} {ordinal} age={} time={} seed={} emitting={} accumulator={} particles={:?}\n",
-                    key.without_pass(),
-                    sim.age,
-                    sim.time,
-                    sim.seed,
-                    sim.emitting,
-                    sim.accumulator,
-                    sim.particles
-                        .iter()
-                        .map(|p| (p.age, p.life, p.position, p.size, p.rotation))
-                        .collect::<Vec<_>>()
+                    key.without_pass(), sim.age, sim.time, sim.seed, sim.emitting, sim.accumulator,
+                    sim.particles.iter().map(|p| (p.age, p.life, p.position, p.size, p.rotation)).collect::<Vec<_>>()
                 )
             })
-            .collect()
+        }).collect()
     }
 
     pub fn living(&self, event: &crate::map::entity_animation::Event) -> bool {
         let Some(name) = &event.definition.particle else {
             return false;
         };
-        self.0
-            .range((name.clone(), event.key, 0)..=(name.clone(), event.key, usize::MAX))
-            .any(|(_, sim)| !sim.particles.is_empty())
+        self.0.get(name).is_some_and(|runtimes| {
+            runtimes
+                .range((event.key, 0)..=(event.key, usize::MAX))
+                .any(|(_, runtime)| !runtime.simulation.particles.is_empty())
+        })
     }
 
+    #[cfg(test)]
     pub(super) fn packets(
         &self,
         entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
         events: &[crate::map::entity_animation::Event],
         packets: &mut Vec<DrawPacket>,
     ) {
+        self.packets_with_workers(entities, events, packets, &Default::default());
+    }
+
+    pub(super) fn packets_with_workers(
+        &self,
+        entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
+        events: &[crate::map::entity_animation::Event],
+        packets: &mut Vec<DrawPacket>,
+        workers: &viewer_foundation::parallel::Workers,
+    ) {
         // A hidden event's runtime keeps simulating; only its particles are not submitted.
-        for (actor, event) in events.iter().enumerate().filter(|(_, event)| !event.hidden) {
-            let Some(name) = &event.definition.particle else {
-                continue;
-            };
-            let Some((scale, emitters)) = entities.get(name) else {
-                continue;
-            };
+        let tasks: Vec<_> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(actor, event)| {
+                if event.hidden {
+                    return None;
+                }
+                let name = event.definition.particle.as_ref()?;
+                let (scale, emitters) = entities.get(name)?;
+                let runtimes = self.0.get(name)?;
+                Some((
+                    actor,
+                    event,
+                    *scale,
+                    emitters,
+                    runtimes,
+                    Mutex::new(Vec::new()),
+                ))
+            })
+            .collect();
+        workers.run(tasks.len(), &|at| {
+            let (actor, event, scale, emitters, runtimes, out) = &tasks[at];
+            let mut packets = out.lock().unwrap_or_else(|error| error.into_inner());
             for (ordinal, emitter) in emitters.iter().enumerate() {
-                let key = (name.clone(), event.key, ordinal);
-                let Some(sim) = self.0.get(&key) else {
+                let Some(runtime) = runtimes.get(&(event.key, ordinal)) else {
                     continue;
                 };
+                let sim = &runtime.simulation;
                 let mut packet = DrawPacket::entity(emitter, *scale, event);
-                packet.actor = [1, actor, 0, 0];
+                packet.actor = [1, *actor, 0, 0];
                 packet.constants.time = sim.age;
+                packet.instances.reserve(sim.particles.len());
                 for particle in &sim.particles {
                     let t = particle.age / particle.life;
                     let position = particle.position;
@@ -290,6 +381,10 @@ impl EntitySimulations {
                 }
                 packets.push(packet);
             }
+        });
+        // Worker completion order never changes event, emitter or particle order.
+        for (_, _, _, _, _, out) in tasks {
+            packets.extend(out.into_inner().unwrap_or_else(|error| error.into_inner()));
         }
     }
 }
@@ -694,6 +789,294 @@ impl Renderer {
 mod tests {
     use super::*;
 
+    fn workers() -> viewer_foundation::parallel::Workers {
+        struct Pool(Mutex<std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>>);
+        impl viewer_foundation::parallel::Spawn for Pool {
+            fn try_spawn(
+                &self,
+                job: Box<dyn FnOnce() + Send>,
+            ) -> Result<(), Box<dyn FnOnce() + Send>> {
+                self.0.lock().unwrap().send(job).map_err(|error| error.0)
+            }
+            fn threads(&self) -> usize {
+                3
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        let rx = Arc::new(Mutex::new(rx));
+        for _ in 0..3 {
+            let rx = Arc::clone(&rx);
+            std::thread::spawn(move || {
+                loop {
+                    let job = rx.lock().unwrap().recv();
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => return,
+                    }
+                }
+            });
+        }
+        viewer_foundation::parallel::Workers::new(Arc::new(Pool(Mutex::new(tx))))
+    }
+
+    fn assert_packets_equal(a: &[DrawPacket], b: &[DrawPacket]) {
+        assert_eq!(a.len(), b.len());
+        for (a, b) in a.iter().zip(b) {
+            assert_eq!(
+                (a.page, a.registration, a.actor, &a.views),
+                (b.page, b.registration, b.actor, &b.views)
+            );
+            assert_eq!(a.descriptor, b.descriptor);
+            assert_eq!(a.constants.buffers(), b.constants.buffers());
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&a.instances),
+                bytemuck::cast_slice::<_, u8>(&b.instances)
+            );
+        }
+    }
+
+    #[test]
+    fn borrowed_entity_ticks_and_packets_preserve_runtime_and_submission_order() {
+        use crate::map::{entity_animation, models};
+        let rig = entity_animation::pose_tests::rig(1., false, true);
+        let mut player = entity_animation::Player::new(&rig);
+        let mut events = Vec::new();
+        player.evaluate(
+            &rig,
+            models::ModelInstance {
+                scale: 1.,
+                animation_seed: 7,
+                ..Default::default()
+            },
+            1.,
+            &mut [],
+            &mut events,
+        );
+        let prototype = events.remove(0);
+        let entities: BTreeMap<_, _> = ["zeta", "alpha"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_owned(),
+                    (
+                        0.7,
+                        (0..3)
+                            .map(|ordinal| {
+                                let mut e = super::super::tests::activation_test_emitter();
+                                e.registration = [2, 0, 2][ordinal];
+                                e.render.trail = ordinal == 1;
+                                e.local_space = ordinal == 2;
+                                e.system_local_space = ordinal != 0;
+                                e
+                            })
+                            .collect(),
+                    ),
+                )
+            })
+            .collect();
+        let workers = workers();
+        let (mut serial, mut borrowed) =
+            (EntitySimulations::default(), EntitySimulations::default());
+        for (frame, age) in [0., 0.13, 0.4, 0.4, 1.3, 4., 0.2, 0.5]
+            .into_iter()
+            .enumerate()
+        {
+            let mut events: Vec<_> = (0..40)
+                .filter(|actor| frame < 4 || actor % 3 != 0)
+                .map(|actor| {
+                    let mut event = prototype.clone();
+                    event.key.model = 40 - actor;
+                    event.seed = actor as u32;
+                    event.definition.particle =
+                        Some(if actor % 2 == 0 { "zeta" } else { "alpha" }.into());
+                    event.age = age;
+                    event.transform.translation = [actor as f32 + age, 1., -age];
+                    event.hidden = actor % 7 == 0;
+                    event.emission_end = (actor % 5 == 0).then_some(0.3);
+                    event
+                })
+                .collect();
+            if frame == 3 {
+                events.push(events[2].clone());
+            }
+            let a = serial
+                .prepare(&entities, &events)
+                .map_err(|error| error.to_string());
+            let b = borrowed
+                .prepare_with_workers(&entities, &events, &workers)
+                .map_err(|error| error.to_string());
+            assert_eq!(a, b, "duplicate refusals retain the original first failure");
+            assert_eq!(serial.presentation_state(), borrowed.presentation_state());
+            for event in &events {
+                assert_eq!(serial.living(event), borrowed.living(event));
+            }
+            if a.is_err() {
+                continue;
+            }
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            serial.packets(&entities, &events, &mut a);
+            borrowed.packets_with_workers(&entities, &events, &mut b, &workers);
+            assert_packets_equal(&a, &b);
+            let expected: Vec<_> = events
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| !event.hidden)
+                .flat_map(|(actor, event)| {
+                    let runtimes = &serial.0[event.definition.particle.as_ref().unwrap()];
+                    (0..3).filter_map(move |ordinal| {
+                        runtimes
+                            .contains_key(&(event.key, ordinal))
+                            .then_some(([1, actor, 0, 0], [2, 0, 2][ordinal]))
+                    })
+                })
+                .collect();
+            assert_eq!(
+                a.iter()
+                    .map(|packet| (packet.actor, packet.registration))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            order(&mut a);
+            order(&mut b);
+            assert_packets_equal(&a, &b);
+        }
+        // Changing the supplied catalogue retires missing names without a lookup panic.
+        borrowed
+            .prepare_with_workers(&BTreeMap::new(), &[], &workers)
+            .unwrap();
+        assert!(borrowed.0.is_empty());
+    }
+
+    #[test]
+    fn borrowed_weather_packets_match_source_order_reference_across_admission_changes() {
+        use super::super::{
+            Anchor, Assets, Field, Presentation, Simulation, Simulations, WeatherPair, gates,
+            motion, visible_emitters, weather_packets,
+        };
+        use viewer_foundation::map::{
+            camera::{Camera, MapDefines, MapSize, Pose},
+            presentation::Continuity,
+            province_admission::OPEN,
+        };
+        let emitters = || {
+            (0..3)
+                .map(|ordinal| {
+                    let mut e = super::super::tests::activation_test_emitter();
+                    e.registration = [2, 0, 2][ordinal];
+                    e.actor = ordinal;
+                    e.render.trail = ordinal == 1;
+                    e.local_space = ordinal == 2;
+                    e
+                })
+                .collect()
+        };
+        let assets = Assets {
+            effect: Effect::from_compiled(Arc::new(Default::default()), Vec::new(), Vec::new()),
+            max_particles: 100,
+            graphics: super::super::tests::reference_defines(),
+            anchors: (0..20)
+                .map(|index| Anchor {
+                    region: 7,
+                    position: [index as f32 * 5., 10., 30.],
+                    small: index % 2 == 0,
+                })
+                .collect(),
+            systems: BTreeMap::from([(
+                (0, false),
+                vec![WeatherPair {
+                    members: [emitters(), emitters()],
+                    radii: [Some(15.); 2],
+                    sounds: [Vec::new(), Vec::new()],
+                }],
+            )]),
+            pages: Vec::new(),
+            entities: BTreeMap::new(),
+            unresolved: Vec::new(),
+            lights: Default::default(),
+        };
+        let field = Field {
+            branch: 1,
+            hour: 20,
+            kinds: BTreeMap::from([(7, 0)]),
+        };
+        let mut presentation = Presentation::default();
+        presentation.transition(&Field::default(), &field, Continuity::Reset);
+        let (mut serial, mut borrowed) = (Simulations::new(), Simulations::new());
+        let workers = workers();
+        for (frame, time) in [0., 0.13, 0.4, 0.4, 1.3, 4., 0.2, 0.5]
+            .into_iter()
+            .enumerate()
+        {
+            let camera = Camera {
+                center: [10., 20.],
+                height: [300., 800., 1200.][frame % 3],
+                map: MapSize::TEST,
+                defines: MapDefines::test(),
+                pose: Pose::Map,
+            };
+            let views = [
+                (
+                    [0.; 3],
+                    [if frame == 4 { [0., 0., 0., 100.] } else { OPEN }; 6],
+                ),
+                ([0.; 3], [OPEN; 6]),
+            ];
+            let seen = visible_emitters(&assets, &field, &presentation, camera, &views);
+            let visible: BTreeSet<_> = seen.iter().map(|v| v.key).collect();
+            let mut expected = Vec::new();
+            for v in seen {
+                let sim = serial
+                    .entry(v.key)
+                    .or_insert_with(|| Simulation::cold(v.emitter, v.seed, v.anchor, time));
+                let e = v.emitter;
+                sim.advance_space(
+                    e,
+                    time,
+                    gates(camera.height, &assets.graphics).2,
+                    Some(motion::Space::new(
+                        e.local_space,
+                        e.system_local_space,
+                        e.scale,
+                        Transform {
+                            translation: sim.anchor,
+                            ..Transform::IDENTITY
+                        },
+                    )),
+                );
+                let mut packet = DrawPacket::weather(e, sim, v.anchor, v.alpha);
+                packet.actor = [0, v.key.0, usize::from(v.key.1), e.actor];
+                packet.views = v.views;
+                expected.push(packet);
+            }
+            for (key, sim) in &mut serial {
+                if !visible.contains(key) {
+                    sim.time = time.max(0.);
+                }
+            }
+            let mut actual = Vec::new();
+            weather_packets(
+                &assets,
+                &field,
+                &presentation,
+                (camera, &views, time),
+                &mut borrowed,
+                &mut actual,
+                &workers,
+            );
+            assert_eq!(
+                serial.keys().collect::<Vec<_>>(),
+                borrowed.keys().collect::<Vec<_>>()
+            );
+            for (key, sim) in &serial {
+                super::super::tests::assert_same_state(sim, &borrowed[key]);
+            }
+            assert_packets_equal(&expected, &actual);
+            order(&mut expected);
+            order(&mut actual);
+            assert_packets_equal(&expected, &actual);
+        }
+    }
+
     #[test]
     fn settled_hulls_keep_one_simulation_per_persistent_event() {
         use crate::map::{entity_animation, models, unit_history};
@@ -755,7 +1138,7 @@ mod tests {
                 simulations.prepare(&entities, &events).unwrap();
                 assert_eq!(players.len(), 2);
                 assert_eq!(events.len(), 2);
-                assert_eq!(simulations.0.len(), 2, "one runtime per hull event");
+                assert_eq!(simulations.0["wake"].len(), 2, "one runtime per hull event");
                 if first.is_empty() {
                     let mut duplicate = events.clone();
                     duplicate.push(events[0].clone());
@@ -769,7 +1152,7 @@ mod tests {
                 for (event, &(key, age)) in events.iter().zip(&first) {
                     assert_eq!(event.key, key, "reapplying idle keeps the live event");
                     assert!((event.age - age - (time - 1.)).abs() < 1e-5);
-                    let sim = &simulations.0[&("wake".into(), key, 0)];
+                    let sim = &simulations.0["wake"][&(key, 0)].simulation;
                     assert!((sim.age - (time - 1.)).abs() < 1e-5, "no respawn");
                     current.push((sim.seed, sim.particles.len()));
                 }

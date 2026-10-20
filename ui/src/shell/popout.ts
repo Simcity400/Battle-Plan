@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { desktopAvailable } from './api';
 import type { DesktopState, MapOptions } from './api';
 import type { CameraMode } from '../generated/dashboard';
+import type { MapPlayback } from '../dashboard/mapPlayback';
 
 /** The pop-out map window: the campaign map alone, driven by this app. Each window opened is a
  * new `generation`, and every event names the one it belongs to; each viewer started in it, first
@@ -29,7 +30,7 @@ export const nextPopoutMonitor = (generation: number) => invoke<void>('popout_ne
 /** A recording the user unloaded while pop-out window `generation` was shown; that window closes
  * if it shows the recording. Reconnecting does not call this. */
 export const popoutUnloaded = (path: string, generation: number) => invoke<void>('popout_unloaded', { path, generation });
-export const seekPopout = (generation: number, path: string, revision: string, branch: string, hour: number, playback?: { playing: boolean; seekSequence: number }) =>
+export const seekPopout = (generation: number, path: string, revision: string, branch: string, hour: number, playback?: MapPlayback) =>
   invoke<void>('popout_seek', { generation, path, revision, branch, hour, playback });
 /** The pop-out is the map alone: it hides the native map-mode picker, whose keys keep working. */
 export const popoutOptions = (options: MapOptions): MapOptions => ({ ...options, pickerHidden: true });

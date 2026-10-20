@@ -24,6 +24,8 @@ struct Inner {
     current: usize,
     frame: u64,
     recent: Vec<Recent>,
+    /// The preceding block at each reflected position, still checked byte-for-byte.
+    last: [Option<Recent>; super::CONSTANT_BINDINGS],
     /// Packed quads commonly share geometry while their constant blocks place them.
     vertices: Vec<Recent>,
     /// Writes to caller-owned buffers, kept until a flush, even across an unsubmitted frame.
@@ -112,6 +114,7 @@ impl Arena {
         inner.current = 0;
         inner.frame += 1;
         inner.recent.clear();
+        inner.last.fill(None);
         inner.vertices.clear();
     }
 
@@ -158,22 +161,22 @@ impl Arena {
         let inner = &mut *inner;
         if inner.room(&self.device, total + alignment)? {
             inner.recent.clear();
+            inner.last.fill(None);
             inner.vertices.clear();
         }
         let chunk = &mut inner.chunks[inner.current];
-        for (&(bytes, size), slot) in blocks.iter().zip(offsets) {
+        for (index, (&(bytes, size), slot)) in blocks.iter().zip(offsets).enumerate() {
             let reserved = reserved(bytes, size);
-            let found = inner.recent.iter().position(|recent| {
+            let matches = |recent: &Recent| {
                 recent.length == bytes.len()
                     && recent.reserved >= reserved
                     && chunk.staged[recent.offset..recent.offset + recent.length] == *bytes
-            });
-            let offset = match found {
-                Some(index) => {
-                    let recent = inner.recent[index];
-                    inner.recent[index..].rotate_left(1);
-                    recent.offset
-                }
+            };
+            let found = inner.last[index]
+                .filter(matches)
+                .or_else(|| inner.recent.iter().find(|recent| matches(recent)).copied());
+            let recent = match found {
+                Some(recent) => recent,
                 None => {
                     let offset = align(chunk.staged.len(), alignment);
                     chunk.staged.resize(offset, 0);
@@ -182,15 +185,17 @@ impl Arena {
                     if inner.recent.len() == RECENT {
                         inner.recent.remove(0);
                     }
-                    inner.recent.push(Recent {
+                    let recent = Recent {
                         offset,
                         length: bytes.len(),
                         reserved,
-                    });
-                    offset
+                    };
+                    inner.recent.push(recent);
+                    recent
                 }
             };
-            *slot = u32::try_from(offset).map_err(|_| "constant offset exceeds u32")?;
+            inner.last[index] = Some(recent);
+            *slot = u32::try_from(recent.offset).map_err(|_| "constant offset exceeds u32")?;
         }
         Ok(chunk.buffer.clone())
     }
@@ -223,6 +228,7 @@ impl Arena {
         }
         if inner.room(&self.device, size + 4)? {
             inner.recent.clear();
+            inner.last.fill(None);
             inner.vertices.clear();
         }
         let chunk = &mut inner.chunks[inner.current];
@@ -349,6 +355,33 @@ mod tests {
                 "a used scene block must not be evicted by object blocks"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn preceding_block_cache_checks_mutated_bytes_sizes_and_chunk_changes() {
+        let (device, _) = crate::tests::device();
+        let arena = Arena::new(&device);
+        let mut bytes = [1; 16];
+        let mut offsets = [0];
+        let first = arena.constants(&[(&bytes, 16)], &mut offsets).unwrap();
+        let original = offsets[0];
+        arena.constants(&[(&bytes, 16)], &mut offsets).unwrap();
+        assert_eq!(offsets[0], original);
+        // The same native scratch allocation changes between draws.
+        bytes[8] = 2;
+        arena.constants(&[(&bytes, 16)], &mut offsets).unwrap();
+        assert_ne!(offsets[0], original);
+        let mutated = offsets[0];
+        arena.constants(&[(&bytes, 64)], &mut offsets).unwrap();
+        assert_ne!(offsets[0], mutated);
+        // Neither a vertex upload that changes chunks nor a reset retains old offsets.
+        arena.vertices(&vec![9; CHUNK as usize + 1]).unwrap();
+        let next = arena.constants(&[(&bytes, 64)], &mut offsets).unwrap();
+        assert_ne!(next, first);
+        arena.reset();
+        arena.constants(&[(&bytes, 64)], &mut offsets).unwrap();
+        assert_eq!(offsets[0], 0);
     }
 
     #[test]

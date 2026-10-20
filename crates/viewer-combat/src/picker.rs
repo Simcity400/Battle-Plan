@@ -59,7 +59,7 @@ pub struct ModeButton {
 }
 
 /// A toggle's state; `None` disables the button.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Toggles {
     pub day_night: Option<bool>,
     pub player_counters: Option<bool>,
@@ -94,7 +94,7 @@ impl Toggles {
 }
 
 /// Which list window is open.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Open {
     #[default]
     None,
@@ -117,10 +117,10 @@ pub struct State<'a> {
     pub selected: &'a str,
     pub toggles: Toggles,
     pub open: Open,
-    pub click_info: String,
-    pub click_info_assign: String,
-    pub all_tooltip: String,
-    pub default_tooltip: String,
+    pub click_info: &'a str,
+    pub click_info_assign: &'a str,
+    pub all_tooltip: &'a str,
+    pub default_tooltip: &'a str,
 }
 
 /// A clickable control and where it landed, in interface pixels.
@@ -469,9 +469,9 @@ fn picker_values(state: &State<'_>, root: &installed_content_core::gui::native::
         let selected = mode.token == state.selected;
         let large = button < if state.four_buttons { 4 } else { 3 };
         let tooltip = if slot >= state.configurable_from {
-            &state.click_info_assign
+            state.click_info_assign
         } else {
-            &state.click_info
+            state.click_info
         };
         for shown in [false, true] {
             let path = format!("{layout}/{}", button_name(button, shown));
@@ -541,7 +541,7 @@ fn picker_values(state: &State<'_>, root: &installed_content_core::gui::native::
     values.insert(
         "mapmodes_all".to_owned(),
         Widget {
-            tooltip: hover(&state.all_tooltip),
+            tooltip: hover(state.all_tooltip),
             hover_owned: true,
             ..Default::default()
         },
@@ -752,7 +752,7 @@ fn draw_slots(
     window_values.insert(
         "default".to_owned(),
         Widget {
-            tooltip: hover(&state.default_tooltip),
+            tooltip: hover(state.default_tooltip),
             hover_owned: true,
             ..Default::default()
         },
@@ -990,10 +990,10 @@ mod tests {
             selected: "default",
             toggles: Toggles::default(),
             open: Open::None,
-            click_info: String::new(),
-            click_info_assign: String::new(),
-            all_tooltip: String::new(),
-            default_tooltip: String::new(),
+            click_info: "",
+            click_info_assign: "",
+            all_tooltip: "",
+            default_tooltip: "",
         };
         let mut picker = Picker::default();
         picker.refresh_values(&state, root);

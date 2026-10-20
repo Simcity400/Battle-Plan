@@ -8,6 +8,7 @@ use installed_content_core::{
 };
 use installed_content_image::dds;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, Mutex},
@@ -198,7 +199,16 @@ impl Assets {
     }
 
     pub fn native_sprite(&self, name: &[u8]) -> Option<native_gui::SpriteInfo> {
-        let mut info = self.gui.sprite(name)?;
+        self.native_sprite_info(name).map(Cow::into_owned)
+    }
+
+    /// Static declarations borrow their loaded metadata; only a lazy portrait or a
+    /// negative frame-count refusal needs a presentation-specific copy.
+    pub(crate) fn native_sprite_info(
+        &self,
+        name: &[u8],
+    ) -> Option<Cow<'_, native_gui::SpriteInfo>> {
+        let mut info = Cow::Borrowed(self.gui.sprite_info(name)?);
         let Some((path, _)) = std::str::from_utf8(name)
             .ok()
             .and_then(|name| self.lazy_sprites.get(name))
@@ -211,16 +221,15 @@ impl Assets {
                 .plain()
                 .is_some_and(|plain| plain.frames < 0)
             {
-                info.refusals.push((
+                let frames = info.frames;
+                info.to_mut().refusals.push((
                     native_gui::RefusalKind::MissingResource,
-                    format!(
-                        "negative_frame_count: noOfFrames is {} (1 refusal)",
-                        info.frames
-                    ),
+                    format!("negative_frame_count: noOfFrames is {frames} (1 refusal)"),
                 ));
             }
             return Some(info);
         };
+        let mut info = info.into_owned();
         match self.portraits.get(path) {
             Lookup::Loaded { size, .. } => info.texture = size.map(|value| value as i32),
             Lookup::Pending => {
@@ -246,7 +255,7 @@ impl Assets {
                 }
             }
         }
-        Some(info)
+        Some(Cow::Owned(info))
     }
 
     /// Preserve the producers' bound dimensions while the native walk owns actual geometry.

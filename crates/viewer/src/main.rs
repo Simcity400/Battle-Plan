@@ -1384,6 +1384,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let map_text = document
             .hour()?
             .map_text(&*document.vision(&options.perspective)?);
+        // A free camera draws the map's interface, country names included, only when asked to.
+        let interface = camera.free().is_none() || options.free_overlays.unwrap_or(false);
         let report = render::dump_png(
             &document.assets,
             // political fill + borders
@@ -1460,8 +1462,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .flatten(),
                     sprites: None,
                     ui_scale,
-                    // A free camera draws the map's interface only when asked to.
-                    interface: camera.free().is_none() || options.free_overlays.unwrap_or(false),
+                    interface,
+                    country_names: interface,
                     ground: camera
                         .free()
                         .map(|_| viewer_foundation::map::free_icons::Ground {

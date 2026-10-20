@@ -41,14 +41,14 @@ test('the campaign map and the pop-out flip the one campaign fog switch, each cl
   // React applies each queued update to the state the previous one left.
   const update = (flip: (options: MapOptions) => MapOptions) => { options = flip(options); };
   // A click on the campaign map, then one on the pop-out, both under campaign-map.
-  campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'fog' } }, update);
-  campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'fog' } }, update);
+  campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'fog' } }, update, {} as DashboardClient, null);
+  campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'fog' } }, update, {} as DashboardClient, null);
   assert.equal(options.fog, true);
-  campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'fog' } }, update);
+  campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'fog' } }, update, {} as DashboardClient, null);
   assert.equal(options.fog, false);
-  // A widget's click is its own view's, and day/night is not the campaign map's.
-  campaignToggled({ viewId: 'w', toggle: { setting: 'fog' } }, update);
-  campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'dayNight' } }, update);
+  // A widget's click is its own view's; graphics clicks need a loaded campaign.
+  campaignToggled({ viewId: 'w', toggle: { setting: 'fog' } }, update, {} as DashboardClient, null);
+  campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'dayNight' } }, update, {} as DashboardClient, null);
   assert.deepEqual(options, { country: null, fog: false });
 });
 
@@ -59,10 +59,13 @@ test('setting clicks ask the service to flip, in click order, so a reset meanwhi
   const inherited = true;
   const sent: string[] = [];
   let release: () => void = () => undefined;
+  let started: () => void = () => undefined;
+  const writing = new Promise<void>(resolve => { started = resolve; });
   let paused = true;
   const client = {
     async flipMapSetting(_source: string, _revision: string, setting: 'dayNight' | 'alliedPlans', _signal: AbortSignal, target: unknown) {
       sent.push(`${setting} ${JSON.stringify(target)}`);
+      started();
       if (paused) await new Promise<void>((resolve) => { release = resolve; });
       const current = stored.graphics.dayNight ?? inherited;
       stored = { ...stored, graphics: { ...stored.graphics, dayNight: !current } };
@@ -73,7 +76,7 @@ test('setting clicks ask the service to flip, in click order, so a reset meanwhi
   const view = { id: 'w', sourceId: 's', revision: 'r' } as DashboardMapView;
   // A flip is held; a reset saves meanwhile, clearing the widget's overrides.
   const flip = toggleMapSetting(client, view, { setting: 'dayNight' });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await writing;
   stored = { graphics: { dayNight: null, borders: null }, audio: { voice: 40 } };
   paused = false;
   release();
@@ -90,4 +93,51 @@ test('setting clicks ask the service to flip, in click order, so a reset meanwhi
   // Fog is the view's own switch, never a settings flip.
   await toggleMapSetting(client, view, { setting: 'fog' });
   assert.equal(sent.length, 3);
+});
+
+
+test('campaign and pop-out graphics clicks flip campaign settings in order and preserve other choices', async () => {
+  const source = { id: 'campaign-source', revision: 'campaign-revision' };
+  const sent: { sourceId: string; revision: string; setting: string; target: unknown }[] = [];
+  const stored = { dayNight: true, showAlliedPlans: false, borders: false, voice: 40 };
+  let started: () => void = () => undefined;
+  let release: () => void = () => undefined;
+  const writing = new Promise<void>(resolve => { started = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const client = {
+    async flipMapSetting(sourceId: string, revision: string, setting: 'dayNight' | 'alliedPlans', _signal: AbortSignal, target: unknown) {
+      sent.push({ sourceId, revision, setting, target });
+      if (sent.length === 1) { started(); await held; }
+      if (setting === 'dayNight') stored.dayNight = !stored.dayNight;
+      else stored.showAlliedPlans = !stored.showAlliedPlans;
+      return {} as MapSettingsReply;
+    },
+    async mapSettings() { throw new Error('a picker click never writes the whole settings'); },
+  } as unknown as DashboardClient;
+  const update = () => { throw new Error('graphics clicks must not change fog'); };
+  const click = (setting: 'dayNight' | 'alliedPlans') => campaignToggled({ viewId: 'campaign-map', toggle: { setting } }, update, client, source);
+  const first = click('dayNight');
+  await writing;
+  const second = click('alliedPlans');
+  const third = click('dayNight');
+  assert.equal(sent.length, 1, 'later clicks wait for the first host write');
+  release();
+  await Promise.all([first, second, third]);
+  assert.deepEqual(sent, ['dayNight', 'alliedPlans', 'dayNight'].map(setting => ({ sourceId: source.id, revision: source.revision, setting, target: { scope: 'campaign' } })));
+  assert.deepEqual(stored, { dayNight: true, showAlliedPlans: true, borders: false, voice: 40 });
+  await campaignToggled({ viewId: 'widget', toggle: { setting: 'dayNight' } }, update, client, source);
+  await campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'dayNight' } }, update, client, null);
+  assert.equal(sent.length, 3, 'unrelated views and unloaded campaigns write nothing');
+});
+
+test('a failed campaign graphics flip does not discard the next click', async () => {
+  let writes = 0;
+  const client = { async flipMapSetting() { if (++writes === 1) throw new Error('save failed'); return {} as MapSettingsReply; } } as unknown as DashboardClient;
+  const source = { id: 'retry-source', revision: 'r' };
+  const click = () => campaignToggled({ viewId: 'campaign-map', toggle: { setting: 'dayNight' } }, () => undefined, client, source);
+  const first = click();
+  const next = click();
+  await assert.rejects(first, /save failed/);
+  await next;
+  assert.equal(writes, 2);
 });

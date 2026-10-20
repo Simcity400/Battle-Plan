@@ -448,6 +448,7 @@ impl View {
             &self.windows,
             &base,
             self.base_window(),
+            None,
             grid,
             &self.fixture,
             VIEWPORT,
@@ -1407,12 +1408,42 @@ fn the_windows_run_on_the_presentation_clock_they_are_given() {
             &view.windows,
             &visible,
             window,
+            None,
             grid,
             &view.fixture,
             VIEWPORT,
             &mut report,
         )
         .unwrap();
+        let drawn = visible_layout(
+            &visible,
+            window,
+            NAVAL_BASE_WINDOW,
+            &view.fixture,
+            &mut report.icon_gui_notes,
+        )
+        .unwrap();
+        let (reused_holder, reused_items) = port_parts(
+            &view.windows,
+            &visible,
+            window,
+            Some(&drawn.layout),
+            grid,
+            &view.fixture,
+            VIEWPORT,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(reused_holder, holder);
+        assert_eq!(reused_items.len(), items.len());
+        for (reused, fresh) in reused_items.iter().zip(&items) {
+            assert_eq!(reused.key, fresh.key);
+            assert_eq!(reused.place, fresh.place);
+            assert_eq!(reused.layout, fresh.layout);
+            assert_eq!(reused.selectable, fresh.selectable);
+        }
+        assert!(report.navy_counter_gaps.is_empty());
+        assert!(report.icon_gui_notes.is_empty());
         let parts = holder.place(items[0].place, &items[0].layout);
         let hull = shown(&parts[0]).0;
         assert!(parts.iter().all(|part| part.shading.time == time));

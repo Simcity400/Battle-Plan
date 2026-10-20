@@ -89,9 +89,15 @@ impl Viewer {
             .is_none_or(|hours| !hours.serves(&document.content, &replay))
         {
             self.hours = Some(match &self.shared_resources {
-                Some(resources) => {
+                Some(resources) if self.dashboard_map => {
                     hours::Pipeline::shared(Arc::clone(&document.content), replay, resources)?
                 }
+                Some(resources) => hours::Pipeline::campaign(
+                    Arc::clone(&document.content),
+                    replay,
+                    resources,
+                    document.playback.checkpoint_source(),
+                )?,
                 None => hours::Pipeline::with_checkpoint_source(
                     Arc::clone(&document.content),
                     replay,
@@ -109,7 +115,7 @@ impl Viewer {
         let playhead = self.playhead.unwrap_or(Playhead {
             branch: document.playback.branch(),
             hour: document.playback.hour(),
-            fraction: document.hour_fraction,
+            fraction: f64::from(document.hour_fraction),
         });
         let view = self.last_view.unwrap_or_else(|| {
             let map_size = MapSize::of(&document.map);
@@ -141,12 +147,16 @@ impl Viewer {
                 ui_scale: 1.0,
             }
         });
-        // Playing, the builders reach far enough ahead to stay in front of the
-        // clock; paused, a step either way is already built.
+        // Playing, request one pool of consecutive hours from the playhead;
+        // paused, a step either way is already built. Do not turn cold-start
+        // latency into a recording-wide read-ahead window.
         let (ahead, behind) = if self.dashboard_map {
             (0, 0)
         } else if self.playing {
-            ((self.speed as i32 * 3 / 4 + 2).min(96), 0)
+            (
+                self.hours.as_ref().expect("started above").playback_ahead(),
+                0,
+            )
         } else {
             (2, 2)
         };
@@ -210,7 +220,9 @@ impl Viewer {
             .into_iter()
             .partition(|((branch, hour), _)| {
                 *branch == playhead.branch
-                    && ((playhead.hour - behind..=playhead.hour + ahead).contains(hour)
+                    && ((playhead.hour.saturating_sub(behind)
+                        ..=playhead.hour.saturating_add(ahead))
+                        .contains(hour)
                         || fallback == Some((*branch, *hour)))
             });
         self.ready = keep;
@@ -305,7 +317,7 @@ impl Viewer {
         // screen.
         document.hour_fraction = if (document.playback.branch(), document.playback.hour()) == target
         {
-            playhead.fraction
+            playhead.fraction as f32
         } else {
             0.0
         };

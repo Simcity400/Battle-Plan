@@ -1,11 +1,12 @@
 import type { BoundTrack } from './model';
 import type { PlaybackController } from './playback';
 
-type ClockTarget = Pick<ReturnType<PlaybackController['getSnapshot']>, 'hour' | 'playing' | 'seekSequence'>;
+type ClockTarget = Pick<ReturnType<PlaybackController['getSnapshot']>, 'hour' | 'fraction' | 'hoursPerSecond' | 'playing' | 'seekSequence'>;
 type MapClock = { getSnapshot: () => ClockTarget; subscribe: PlaybackController['subscribe'] };
-type SeekMap = (path: string, revision: string, branch: string, hour: number, playback: Omit<ClockTarget, 'hour'>) => Promise<void>;
+export type MapPlayback = Omit<ClockTarget, 'hour'>;
+type SeekMap = (path: string, revision: string, branch: string, hour: number, playback: MapPlayback) => Promise<void>;
 
-/** Send only the latest requested hour when the native command is busy. */
+/** Send only the latest clock anchor when the native command is busy. */
 export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: SeekMap, onStatus: (error: unknown | null) => void) {
   let active = true;
   let sending = false;
@@ -18,7 +19,7 @@ export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: Seek
       while (active && pending != null) {
         const target = pending; pending = null;
         try {
-          await seek(track.source.path, track.source.revision, track.branch.id, target.hour, { playing: target.playing, seekSequence: target.seekSequence });
+          await seek(track.source.path, track.source.revision, track.branch.id, target.hour, { playing: target.playing, seekSequence: target.seekSequence, fraction: target.fraction, hoursPerSecond: target.hoursPerSecond });
           if (active && target === last) onStatus(null);
         } catch (error) {
           if (active && target === last) onStatus(error);
@@ -29,8 +30,9 @@ export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: Seek
   const update = () => {
     if (!active) return;
     const snapshot = clock.getSnapshot();
-    const target = { hour: snapshot.hour + track.axisOffset, playing: snapshot.playing, seekSequence: snapshot.seekSequence };
-    if (target.hour === last?.hour && target.playing === last.playing && target.seekSequence === last.seekSequence) return;
+    const target = { hour: snapshot.hour + track.axisOffset, playing: snapshot.playing, seekSequence: snapshot.seekSequence, fraction: snapshot.fraction, hoursPerSecond: snapshot.hoursPerSecond };
+    if (target.hour === last?.hour && target.fraction === last.fraction && target.hoursPerSecond === last.hoursPerSecond
+      && target.playing === last.playing && target.seekSequence === last.seekSequence) return;
     last = target;
     const { hour } = target;
     if (hour < track.branch.firstHour || hour > track.branch.lastHour) {

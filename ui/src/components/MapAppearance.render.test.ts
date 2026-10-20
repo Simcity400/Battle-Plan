@@ -90,3 +90,49 @@ test('every installed mod can be chosen and a chosen mod no longer installed kee
     assert.match(markup, />Refresh</);
   } finally { await vite.close(); delete host.__mapGraphics; }
 });
+
+
+test('day/night changes stay drafts until Apply and save the intended scope without losing other overrides', async () => {
+  type Settings = import('../dashboard/client').CampaignMapSettings;
+  type Reply = import('../dashboard/client').MapSettingsReply;
+  type Target = import('../dashboard/client').MapSettingsTarget;
+  const settings = { graphics: { dayNight: null, borders: false }, audio: { voice: 40 }, counters: null, visualMods: null } as unknown as Settings;
+  const reply = { settings, inheritedSettings: { graphics: { dayNight: true }, audio: {}, counters: { kind: 'all' }, visualMods: null },
+    mods: [], recordedMods: [], appliedMods: [], appliedNotes: [], sampleCounts: [1, 4], gameGraphics: null, gameSettingsError: null } as unknown as Reply;
+  const host = globalThis as typeof globalThis & { __mapGraphics?: { reply: Reply; draft: Settings };
+    __mapGraphicsActions?: { setGraphics: (key: string, value: unknown) => void; save: () => Promise<void> } };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'map-settings-apply-fixture', enforce: 'pre',
+      transform(source, id) {
+        if (!id.replaceAll('\\', '/').endsWith('/components/MapAppearance.tsx')) return;
+        return source.replace('useState<MapSettingsReply | null>(null)', 'useState(globalThis.__mapGraphics.reply)')
+          .replace('const [draft, setDraft] = useState<CampaignMapSettings | null>(null);',
+            'const draft = globalThis.__mapGraphics.draft; const setDraft = value => { globalThis.__mapGraphics.draft = value; };')
+          .replace('  return <div className="map-menu-section map-appearance">',
+            '  globalThis.__mapGraphicsActions = { setGraphics, save }; return <div className="map-menu-section map-appearance">');
+      },
+    }] });
+  try {
+    const { default: MapAppearance } = await vite.ssrLoadModule('/ui/src/components/MapAppearance.tsx') as typeof import('./MapAppearance');
+    const source = { id: 'source', revision: 'revision', metadata: { countries: [], playerCountryId: null } } as never;
+    for (const scope of [{ global: true }, {}, { viewId: 'widget-map' }]) {
+      const writes: { sourceId: string; revision: string; settings: Settings; target: Target }[] = [];
+      const client = { async mapSettings(sourceId: string, revision: string, saved: Settings, _signal: AbortSignal, target: Target) {
+        writes.push({ sourceId, revision, settings: saved, target });
+        return { ...reply, settings: saved };
+      } } as never;
+      host.__mapGraphics = { reply, draft: settings };
+      const render = () => renderToStaticMarkup(createElement(MapAppearance, { ...scope, source: scope.global ? null : source, client }));
+      render();
+      host.__mapGraphicsActions!.setGraphics('dayNight', false);
+      assert.equal(writes.length, 0, 'toggling alone does not save before Apply');
+      const markup = render();
+      assert.match(markup, /aria-label="Day\/night cycle"[^>]*aria-checked="false"/);
+      assert.match(markup, />Apply<\/button>/);
+      await host.__mapGraphicsActions!.save();
+      assert.deepEqual(writes, [{ sourceId: scope.global ? '' : 'source', revision: scope.global ? '' : 'revision',
+        settings: { ...settings, graphics: { ...settings.graphics, dayNight: false } },
+        target: scope.global ? { scope: 'global' } : scope.viewId ? { scope: 'widget', id: scope.viewId } : { scope: 'campaign' } }]);
+    }
+  } finally { await vite.close(); delete host.__mapGraphics; delete host.__mapGraphicsActions; }
+});

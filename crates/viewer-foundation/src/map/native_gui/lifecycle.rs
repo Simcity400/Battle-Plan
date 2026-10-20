@@ -698,10 +698,16 @@ struct Tree {
     root: usize,
     routes: Vec<(Option<usize>, usize, bool)>,
     indices: HashMap<usize, usize>,
+    paths: HashMap<String, usize>,
 }
 
 impl Tree {
     fn new(elements: &[(&Element, Option<usize>, bool)]) -> Self {
+        let mut paths = HashMap::with_capacity(elements.len());
+        for (index, (element, ..)) in elements.iter().enumerate() {
+            // Repeated authored paths resolve to the first occurrence, just as a walk does.
+            paths.entry(element.path.clone()).or_insert(index);
+        }
         Self {
             root: elements[0].0 as *const Element as usize,
             routes: elements
@@ -720,7 +726,13 @@ impl Tree {
                 .enumerate()
                 .map(|(index, (element, ..))| (*element as *const Element as usize, index))
                 .collect(),
+            paths,
         }
+    }
+
+    fn at<'a>(&self, root: &'a Element, index: usize) -> &'a Element {
+        let (parent, slot, _) = self.routes[index];
+        parent.map_or(root, |parent| nested_at(self.at(root, parent), slot))
     }
 
     fn same(&self, root: &Element) -> bool {
@@ -1406,6 +1418,27 @@ impl Instance {
         Ok(objects)
     }
 
+    /// Resolves an authored path in this instance's template. Repeated paths keep their
+    /// first occurrence; copied templates resolve against their own elements.
+    pub fn element_at_path<'a>(
+        &self,
+        root: &'a Element,
+        path: &str,
+    ) -> Result<&'a Element, String> {
+        self.check(root)?;
+        let element = if self.tree.same(root) {
+            self.tree
+                .paths
+                .get(path)
+                .map(|&index| self.tree.at(root, index))
+        } else {
+            elements(root)
+                .into_iter()
+                .find_map(|(element, ..)| (element.path == path).then_some(element))
+        };
+        element.ok_or_else(|| format!("{path} is not an element of {}", root.path))
+    }
+
     /// `element`'s index in `root`'s pre-order.
     fn index(&self, root: &Element, element: &Element) -> Result<usize, String> {
         self.check(root)?;
@@ -2027,6 +2060,21 @@ impl Instance {
         setter: SpriteSetter,
     ) -> Result<(), String> {
         let index = self.index(root, element)?;
+        let node = &self.nodes[index];
+        // An unchanged setter keeps the drawable, its frame and clocks. Avoid recording
+        // another owned name when no earlier replacement can change that comparison.
+        if node.control.sprite.is_none()
+            && !node
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::Sprite(..)))
+            && node.made.as_ref().map_or_else(
+                || own_sprite(element).map_or(&[][..], |(name, _)| name),
+                |made| made.sprite.as_ref(),
+            ) == name
+        {
+            return Ok(());
+        }
         self.flush(index);
         self.nodes[index]
             .events
@@ -2078,7 +2126,10 @@ impl Instance {
         resources: &dyn Resources,
     ) -> Result<(), String> {
         let index = self.index(root, element)?;
-        self.nodes[index].control.text = Some(text.to_owned());
+        match &mut self.nodes[index].control.text {
+            Some(written) => text.clone_into(written),
+            written @ None => *written = Some(text.to_owned()),
+        }
         let (
             Drawables::TextBox {
                 bar,
@@ -3008,6 +3059,26 @@ impl Instance {
                  Instance::tick_transitions first",
                 self.template
             ));
+        }
+        // No draw reaches a hidden root window. Its child drawables' own clocks have
+        // already ticked, and transitions have run, so only the unused draw traversal
+        // can be omitted. Copied/registry-built graphs and invalid text writes still
+        // take the ordinary validation path. A root scrollbar can draw range icons
+        // despite its authored hide flag and is not covered by this shortcut.
+        if !self.nodes[0].shown.visible
+            && root.kind != Kind::Scrollbar
+            && self.tree.same(root)
+            && self.nodes.len() == self.count
+            && self.text_boxes.iter().all(|&index| {
+                let node = &self.nodes[index];
+                !matches!(&node.drawables, Drawables::TextBox { written, .. }
+                    if node.control.text != *written)
+            })
+        {
+            self.ticked = true;
+            self.phase = Phase::Drawn;
+            self.kept = false;
+            return Ok(());
         }
         let empty = Bindings {
             viewport: Some(self.viewport),
@@ -4092,73 +4163,325 @@ impl<K: Clone + Eq + std::hash::Hash> Calls<K> {
                 .find(|(element, ..)| &element.path == path)
                 .map(|(element, ..)| *element)
                 .ok_or_else(|| format!("{path} is not an element of {}", root.path))?;
-            match call {
-                #[cfg(any(test, feature = "test-support"))]
-                Call::SetPosition(point) => instance.set_position(root, element, *point)?,
-                Call::Show => instance.show(root, element)?,
-                #[cfg(any(test, feature = "test-support"))]
-                Call::GuiShow => instance.gui_show(root, element)?,
-                Call::Hide => instance.hide(root, element)?,
-                #[cfg(any(test, feature = "test-support"))]
-                Call::HideWindow => instance.hide_window(root, element)?,
-                Call::SetHideFlag(hide) => instance.set_hide_flag(root, element, *hide)?,
-                Call::SetFrame(frame) => instance.set_frame(root, element, *frame)?,
-                Call::SetSprite(name, setter) => {
-                    instance.set_sprite(root, element, name, *setter)?
+            call.apply(root, element, instance, resources)?;
+        }
+        Ok(())
+    }
+}
+
+impl Call {
+    /// Makes this call on its resolved element, with the instance's construction resources.
+    fn apply(
+        &self,
+        root: &Element,
+        element: &Element,
+        instance: &mut Instance,
+        resources: &dyn Resources,
+    ) -> Result<(), String> {
+        match self {
+            #[cfg(any(test, feature = "test-support"))]
+            Call::SetPosition(point) => instance.set_position(root, element, *point)?,
+            Call::Show => instance.show(root, element)?,
+            #[cfg(any(test, feature = "test-support"))]
+            Call::GuiShow => instance.gui_show(root, element)?,
+            Call::Hide => instance.hide(root, element)?,
+            #[cfg(any(test, feature = "test-support"))]
+            Call::HideWindow => instance.hide_window(root, element)?,
+            Call::SetHideFlag(hide) => instance.set_hide_flag(root, element, *hide)?,
+            Call::SetFrame(frame) => instance.set_frame(root, element, *frame)?,
+            Call::SetSprite(name, setter) => instance.set_sprite(root, element, name, *setter)?,
+            Call::SetText(text) => instance.set_text(root, element, text, resources)?,
+            #[cfg(any(test, feature = "test-support"))]
+            Call::Play => instance.play(root, element)?,
+            #[cfg(any(test, feature = "test-support"))]
+            Call::SetOpacity(value, children) => {
+                instance.set_opacity(root, element, *value, *children)?
+            }
+            Call::Control(bound) => {
+                let control = instance.control(root, element)?;
+                // The code's own writes; the frame goes through [`Instance::set_frame`] and the rest is
+                // the instance's.
+                let Bound {
+                    sprite,
+                    setter,
+                    text,
+                    resolved_flags,
+                    color,
+                    progress,
+                    progress_float,
+                    texture,
+                    stretch,
+                    offset,
+                    rotation,
+                    position,
+                    shield,
+                    checked,
+                    enabled,
+                    ..
+                } = (**bound).clone();
+                control.sprite = sprite;
+                control.setter = setter;
+                control.resolved_flags = resolved_flags;
+                control.color = color;
+                control.progress = progress;
+                control.progress_float = None;
+                control.texture = texture;
+                control.stretch = stretch;
+                control.offset = offset;
+                control.rotation = rotation;
+                control.position = position;
+                control.shield = shield;
+                control.checked = checked;
+                control.enabled = enabled;
+                if let Some(value) = progress_float {
+                    instance.set_progress_float_value(root, element, value)?;
                 }
-                Call::SetText(text) => instance.set_text(root, element, text, resources)?,
-                #[cfg(any(test, feature = "test-support"))]
-                Call::Play => instance.play(root, element)?,
-                #[cfg(any(test, feature = "test-support"))]
-                Call::SetOpacity(value, children) => {
-                    instance.set_opacity(root, element, *value, *children)?
-                }
-                Call::Control(bound) => {
-                    let control = instance.control(root, element)?;
-                    // The code's own writes; the frame goes through [`Instance::set_frame`] and the rest is
-                    // the instance's.
-                    let Bound {
-                        sprite,
-                        setter,
-                        text,
-                        resolved_flags,
-                        color,
-                        progress,
-                        progress_float,
-                        texture,
-                        stretch,
-                        offset,
-                        rotation,
-                        position,
-                        shield,
-                        checked,
-                        enabled,
-                        ..
-                    } = (**bound).clone();
-                    control.sprite = sprite;
-                    control.setter = setter;
-                    control.resolved_flags = resolved_flags;
-                    control.color = color;
-                    control.progress = progress;
-                    control.progress_float = None;
-                    control.texture = texture;
-                    control.stretch = stretch;
-                    control.offset = offset;
-                    control.rotation = rotation;
-                    control.position = position;
-                    control.shield = shield;
-                    control.checked = checked;
-                    control.enabled = enabled;
-                    if let Some(value) = progress_float {
-                        instance.set_progress_float_value(root, element, value)?;
-                    }
-                    if let Some(text) = text {
-                        instance.set_text(root, element, &text, resources)?;
-                    }
+                if let Some(text) = text {
+                    instance.set_text(root, element, &text, resources)?;
                 }
             }
         }
         Ok(())
+    }
+}
+
+impl Instance {
+    /// Applies one borrowed call stream transactionally. A failed call leaves this instance
+    /// unchanged; producers need not copy calls or put their single window in a keyed map.
+    pub fn apply_calls<'a>(
+        &mut self,
+        root: &Element,
+        calls: impl IntoIterator<Item = (&'a str, &'a Call)>,
+        resources: &dyn Resources,
+    ) -> Result<(), String> {
+        let mut calls = calls.into_iter().peekable();
+        if calls.peek().is_none() {
+            return Ok(());
+        }
+        let mut next = self.clone();
+        for (path, call) in calls {
+            let element = self.element_at_path(root, path)?;
+            call.apply(root, element, &mut next, resources)?;
+        }
+        *self = next;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retained_work_tests {
+    use super::*;
+    use crate::map::test_support::gui::fixture;
+
+    fn template() -> native::Gui {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        native::read(
+            br#"guiTypes={containerWindowType={name=root size={width=100 height=50}
+            iconType={name=icon spriteType=GFX_animated}
+            instantTextBoxType={name=text font=Main_14 text=Initial}}}"#,
+        )
+    }
+
+    #[test]
+    fn retained_paths_keep_first_occurrences_parts_and_copied_template_changes() {
+        let _setup = template();
+        let gui = native::read(
+            br#"guiTypes={containerWindowType={name=root size={width=100 height=50}
+            background={name=back}
+            containerWindowType={name=child iconType={name=icon spriteType=GFX_even}}
+            iconType={name=repeated spriteType=GFX_even}
+            iconType={name=repeated spriteType=GFX_odd}}}"#,
+        );
+        let root = gui.template("root").unwrap();
+        let resources = fixture();
+        let instance = Instance::construct(root, [800, 600], &resources).unwrap();
+        let check = |root: &Element| {
+            let authored = elements(root);
+            for (element, ..) in &authored {
+                let expected = authored
+                    .iter()
+                    .find(|(own, ..)| own.path == element.path)
+                    .unwrap()
+                    .0;
+                assert!(std::ptr::eq(
+                    instance.element_at_path(root, &element.path).unwrap(),
+                    expected
+                ));
+            }
+            assert!(instance.element_at_path(root, "root.missing").is_err());
+        };
+        check(root);
+        let mut copied = root.clone();
+        copied.children[0].children[0].path = "renamed child".into();
+        check(&copied);
+        assert!(instance.element_at_path(&copied, "renamed child").is_ok());
+        assert!(instance.element_at_path(root, "renamed child").is_err());
+    }
+
+    #[test]
+    fn borrowed_single_window_calls_keep_order_and_roll_back_failed_streams() {
+        let gui = template();
+        let root = gui.template("root").unwrap();
+        let resources = fixture();
+        let mut actual = Instance::construct(root, [800, 600], &resources).unwrap();
+        let icon = root.path_named("icon").unwrap();
+        let text = root.path_named("text").unwrap();
+        let calls = Calls {
+            calls: vec![
+                ((), root.path.clone(), Call::GuiShow),
+                ((), icon.path.clone(), Call::SetFrame(3)),
+                (
+                    (),
+                    icon.path.clone(),
+                    Call::SetSprite(b"GFX_even".to_vec(), SpriteSetter::Icon),
+                ),
+                ((), icon.path.clone(), Call::SetFrame(2)),
+                (
+                    (),
+                    icon.path.clone(),
+                    Call::SetSprite(b"undefined".to_vec(), SpriteSetter::Icon),
+                ),
+                ((), text.path.clone(), Call::SetText("Changed".into())),
+            ],
+        };
+        let mut expected = HashMap::from([((), actual.clone())]);
+        calls.apply(root, &mut expected, &resources).unwrap();
+        actual
+            .apply_calls(
+                root,
+                calls
+                    .calls
+                    .iter()
+                    .map(|(_, path, call)| (path.as_str(), call)),
+                &resources,
+            )
+            .unwrap();
+        let expected = expected.get_mut(&()).unwrap();
+        for frame in 0..3 {
+            let tick = Tick {
+                time: frame as f32 * 0.25,
+                dt: 0.25,
+            };
+            actual.tick(root, &resources, tick).unwrap();
+            expected.tick(root, &resources, tick).unwrap();
+            assert_eq!(
+                actual.bindings(root, &resources).unwrap().bound,
+                expected.bindings(root, &resources).unwrap().bound
+            );
+            assert_eq!(
+                actual
+                    .layout_with_regions(root, &resources, None, true)
+                    .unwrap(),
+                expected
+                    .layout_with_regions(root, &resources, None, true)
+                    .unwrap()
+            );
+        }
+        let before = actual.bindings(root, &resources).unwrap().bound;
+        let failed = [
+            (icon.path.as_str(), Call::SetFrame(9)),
+            ("root.missing", Call::Hide),
+        ];
+        let why = actual
+            .apply_calls(
+                root,
+                failed.iter().map(|(path, call)| (*path, call)),
+                &resources,
+            )
+            .unwrap_err();
+        assert!(why.contains("root.missing"), "{why}");
+        assert_eq!(actual.bindings(root, &resources).unwrap().bound, before);
+        assert_eq!(actual.phase, Phase::Drawn);
+    }
+
+    #[test]
+    fn unchanged_sprite_setters_keep_pending_frame_play_and_replacement_order() {
+        let gui = template();
+        let root = gui.template("root").unwrap();
+        let icon = root.path_named("icon").unwrap();
+        let resources = fixture();
+        let mut actual = Instance::construct(root, [800, 600], &resources).unwrap();
+        actual.gui_show(root, root).unwrap();
+        let mut expected = actual.clone();
+        for frame in 0..12 {
+            let name = if !(4..8).contains(&frame) {
+                b"GFX_animated".as_slice()
+            } else {
+                b"GFX_even"
+            };
+            for instance in [&mut actual, &mut expected] {
+                if frame == 2 || frame == 6 {
+                    instance
+                        .set_sprite(root, icon, b"GFX_odd", SpriteSetter::Icon)
+                        .unwrap();
+                }
+                if frame == 3 {
+                    instance.control(root, icon).unwrap().sprite = Some(b"GFX_odd".to_vec());
+                }
+                instance.set_frame(root, icon, 2).unwrap();
+                instance.play(root, icon).unwrap();
+            }
+            actual
+                .set_sprite(root, icon, name, SpriteSetter::Icon)
+                .unwrap();
+            // Record the unpruned setter, as the ordinary ordered stream did.
+            expected.flush(1);
+            expected.nodes[1]
+                .events
+                .push(Event::Sprite(name.to_vec(), SpriteSetter::Icon));
+            let tick = Tick {
+                time: frame as f32 * 0.125,
+                dt: 0.125,
+            };
+            actual.tick(root, &resources, tick).unwrap();
+            expected.tick(root, &resources, tick).unwrap();
+            assert_eq!(
+                actual.bindings(root, &resources).unwrap().bound,
+                expected.bindings(root, &resources).unwrap().bound
+            );
+            assert_eq!(actual.nodes[1].runtime, expected.nodes[1].runtime);
+        }
+        actual
+            .set_sprite(root, icon, b"GFX_animated", SpriteSetter::Icon)
+            .unwrap();
+        assert!(actual.nodes[1].events.is_empty());
+    }
+
+    #[test]
+    fn hidden_root_skips_only_draw_traversal_not_child_clocks_or_show_history() {
+        let gui = template();
+        let root = gui.template("root").unwrap();
+        let copied = root.clone();
+        let resources = fixture();
+        let mut actual = Instance::construct(root, [800, 600], &resources).unwrap();
+        let mut expected = actual.clone();
+        for frame in 0..12 {
+            for instance in [&mut actual, &mut expected] {
+                match frame {
+                    1 | 7 => instance.gui_show(root, root).unwrap(),
+                    // Hide only the window: the child's own frame clock keeps playing.
+                    4 => instance.hide_window(root, root).unwrap(),
+                    _ => {}
+                }
+            }
+            let tick = Tick {
+                time: frame as f32 * 0.125,
+                dt: 0.125,
+            };
+            actual.tick(root, &resources, tick).unwrap();
+            // A copied template takes the complete validation and draw traversal.
+            expected.tick(&copied, &resources, tick).unwrap();
+            assert_eq!(
+                actual.bindings(root, &resources).unwrap().bound,
+                expected.bindings(root, &resources).unwrap().bound
+            );
+            assert_eq!(actual.active(), expected.active());
+            assert_eq!(
+                actual.layout(root, &resources, None).unwrap(),
+                expected.layout(root, &resources, None).unwrap()
+            );
+        }
     }
 }
 

@@ -1,12 +1,11 @@
 import { useSyncExternalStore } from 'react';
 import type { HourWindow } from './model';
 
-// The cap is about a month per second, measured end to end on a recording: the map
-// follows only the latest hour and widgets look hours up locally, so a tick that
-// skips many hours costs no more.
+// Widgets look hours up locally and the native map advances the same clock
+// between host updates; neither clock waits for hour builders.
 export const MIN_PLAYBACK_SPEED = 0.25;
-export const MAX_PLAYBACK_SPEED = 720;
-export const PLAYBACK_SPEEDS = [0.25, 1, 4, 24, 168, 720] as const;
+export const MAX_PLAYBACK_SPEED = 1440;
+export const PLAYBACK_SPEEDS = [0.25, 1, 4, 24, 168, 720, 1440] as const;
 export const validPlaybackSpeed = (speed: number) => Number.isFinite(speed)
   && speed >= MIN_PLAYBACK_SPEED && speed <= MAX_PLAYBACK_SPEED;
 

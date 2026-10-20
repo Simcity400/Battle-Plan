@@ -6,8 +6,9 @@
 //! the view keeps its own choice, so a layout message sent before the click cannot undo it.
 
 use super::Viewer;
-use crate::document::Document;
+use crate::document::{Content, Document};
 use eframe::egui;
+use std::sync::{Arc, Weak};
 use viewer_combat::picker::{self, Control, ModeButton, Open, Toggles};
 use viewer_world::map::map_mode::{MapMode, Stock};
 
@@ -59,6 +60,49 @@ pub struct PickerState {
     pub events: Vec<ViewEvent>,
     /// Hidden in the map-only pop-out; its shortcuts still work.
     pub hidden: bool,
+    labels: Option<PickerLabels>,
+}
+
+/// Localised button and list text depends on content and slot choices, not the frame.
+struct PickerLabels {
+    // Keep the identity alive without retaining a previous load's content.
+    content: Weak<Content>,
+    configured: Vec<String>,
+    four_buttons: bool,
+    slots: Vec<ModeButton>,
+    modes: Vec<ModeButton>,
+    click_info: String,
+    click_info_assign: String,
+    all_tooltip: String,
+    default_tooltip: String,
+}
+
+impl PickerLabels {
+    fn matches(&self, document: &Document, configured: &[String], four_buttons: bool) -> bool {
+        std::ptr::eq(self.content.as_ptr(), Arc::as_ptr(&document.content))
+            && self.configured == configured
+            && self.four_buttons == four_buttons
+    }
+
+    fn new(document: &Document, configured: &[String], four_buttons: bool) -> Self {
+        Self {
+            content: Arc::downgrade(&document.content),
+            configured: configured.to_vec(),
+            four_buttons,
+            slots: slot_modes(document, configured)
+                .iter()
+                .map(|mode| mode_button(document, mode))
+                .collect(),
+            modes: all_modes(document, four_buttons)
+                .iter()
+                .map(|mode| mode_button(document, mode))
+                .collect(),
+            click_info: localised(document, "MAP_MODE_CLICK_INFO"),
+            click_info_assign: localised(document, "MAP_MODE_CLICK_INFO_WITH_ASSIGN"),
+            all_tooltip: localised(document, "MAPMODE_ALL"),
+            default_tooltip: localised(document, "CONFIG_MAPMODE_DEFAULT"),
+        }
+    }
 }
 
 fn localised(document: &Document, key: &str) -> String {
@@ -335,11 +379,6 @@ pub fn click(
 }
 
 impl Viewer {
-    /// The picker's slots as configured, padded to the defaults' length.
-    fn configured_slots(&self) -> Vec<String> {
-        self.picker.slots.clone()
-    }
-
     /// Chooses `mode` and tells the host.
     pub(crate) fn choose_map_mode(&mut self, mode: MapMode) {
         // A mode no recording can draw is offered disabled, and choosing it does nothing.
@@ -394,7 +433,7 @@ impl Viewer {
     /// The toggles' states, each the value its owner last applied: the host's for the settings it
     /// owns, which the picker never anticipates.
     pub(crate) fn picker_toggles(&self) -> Toggles {
-        let host = self.dashboard_map;
+        let host = self.dashboard_map || self.host_graphics;
         Toggles {
             day_night: host.then_some(self.graphics.day_night),
             player_counters: Some(self.player_counters),
@@ -438,28 +477,29 @@ impl Viewer {
             return None;
         }
         let four = four_buttons(document);
-        let slots: Vec<ModeButton> = slot_modes(document, &self.configured_slots())
-            .iter()
-            .map(|mode| mode_button(document, mode))
-            .collect();
-        let modes: Vec<ModeButton> = all_modes(document, four)
-            .iter()
-            .map(|mode| mode_button(document, mode))
-            .collect();
+        if !self
+            .picker
+            .labels
+            .as_ref()
+            .is_some_and(|labels| labels.matches(document, &self.picker.slots, four))
+        {
+            self.picker.labels = Some(PickerLabels::new(document, &self.picker.slots, four));
+        }
         let selected = self.map_mode.token();
         let toggles = self.picker_toggles();
+        let labels = self.picker.labels.as_ref().unwrap();
         let state = picker::State {
             four_buttons: four,
-            slots: &slots,
+            slots: &labels.slots,
             configurable_from: *configurable(document).start(),
-            modes: &modes,
+            modes: &labels.modes,
             selected: &selected,
             toggles,
             open: self.picker.open,
-            click_info: localised(document, "MAP_MODE_CLICK_INFO"),
-            click_info_assign: localised(document, "MAP_MODE_CLICK_INFO_WITH_ASSIGN"),
-            all_tooltip: localised(document, "MAPMODE_ALL"),
-            default_tooltip: localised(document, "CONFIG_MAPMODE_DEFAULT"),
+            click_info: &labels.click_info,
+            click_info_assign: &labels.click_info_assign,
+            all_tooltip: &labels.all_tooltip,
+            default_tooltip: &labels.default_tooltip,
         };
         let fingerprint = {
             use std::hash::{Hash, Hasher};
@@ -467,7 +507,8 @@ impl Viewer {
             four.hash(&mut hasher);
             selected.hash(&mut hasher);
             self.picker.slots.hash(&mut hasher);
-            format!("{:?}{toggles:?}", self.picker.open).hash(&mut hasher);
+            self.picker.open.hash(&mut hasher);
+            toggles.hash(&mut hasher);
             hasher.finish()
         };
         Some(
@@ -488,7 +529,7 @@ impl Viewer {
 
     /// A click on a picker control; `secondary` is the right button.
     pub(crate) fn picker_click(&mut self, document: &Document, control: &Control, secondary: bool) {
-        let slots = slot_modes(document, &self.configured_slots());
+        let slots = slot_modes(document, &self.picker.slots);
         match click(
             &mut self.picker.open,
             &slots,
@@ -771,10 +812,128 @@ mod tests {
             toggles(&mut viewer),
             [flip(MapSetting::DayNight), flip(MapSetting::DayNight)]
         );
-        // The campaign map has no host for day/night: its toggle is disabled.
-        viewer.dashboard_map = false;
+    }
+
+    #[test]
+    fn campaign_picker_requests_day_night_and_allied_plans_without_changing_them_locally() {
+        use dashboard::protocol::{MapSetting, MapToggle, ResolvedMapSettings};
+        let mut viewer = viewer();
+        assert!(!viewer.dashboard_map);
+        let mut settings = ResolvedMapSettings::default();
+        settings.graphics.day_night = true;
+        settings.graphics.show_allied_plans = false;
+        viewer.set_embedded_graphics(&settings);
+        for _ in 0..2 {
+            viewer.picker_toggle("day_night_toggle");
+            viewer.picker_toggle("button_allied_plans");
+        }
+        assert_eq!(viewer.picker_toggles().day_night, Some(true));
+        assert_eq!(viewer.picker_toggles().allied_plans, Some(false));
+        assert_eq!(
+            toggles(&mut viewer),
+            [MapSetting::DayNight, MapSetting::AlliedPlans]
+                .repeat(2)
+                .into_iter()
+                .map(|setting| MapToggle { setting })
+                .collect::<Vec<_>>()
+        );
+        // Only the host's resolved settings change the displayed state.
+        settings.graphics.day_night = false;
+        settings.graphics.show_allied_plans = true;
+        viewer.set_embedded_graphics(&settings);
+        assert_eq!(viewer.picker_toggles().day_night, Some(false));
+        assert_eq!(viewer.picker_toggles().allied_plans, Some(true));
+    }
+
+    #[test]
+    fn a_viewer_without_a_host_offers_no_host_owned_toggles() {
+        let mut viewer = viewer();
+        let shown =
+            |viewer: &Viewer| (viewer.graphics.day_night, viewer.graphics.show_allied_plans);
+        let before = shown(&viewer);
+        assert_eq!(viewer.picker_toggles().day_night, None);
+        assert_eq!(viewer.picker_toggles().allied_plans, None);
         viewer.picker_toggle("day_night_toggle");
+        viewer.picker_toggle("button_allied_plans");
         assert!(toggles(&mut viewer).is_empty());
+        assert_eq!(shown(&viewer), before);
+    }
+
+    #[test]
+    fn campaign_saved_settings_reach_the_frame_without_changing_the_hour() {
+        use dashboard::{map_settings::Store, protocol::CampaignMapSettings};
+        let root =
+            std::env::temp_dir().join(format!("hoi4-campaign-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let previous = std::env::var_os("LOCALAPPDATA");
+        // This test owns its process and sets up both services before starting any workers.
+        unsafe { std::env::set_var("LOCALAPPDATA", &root) };
+        let mut host = Store::open();
+        let service = dashboard::Service::new(Arc::new(|_| true)).unwrap();
+        let replay = crate::playback::tests::fixture();
+        let campaign = dashboard::map_settings::campaign_key(&replay);
+        let widget = dashboard::map_settings::widget_key(&campaign, "another-map");
+        let mut viewer = viewer();
+        assert!(!viewer.dashboard_map);
+        assert!(!viewer.playing);
+        let hour = 60_828_400;
+        let initial = viewer.follow_map_settings(&service, campaign.clone());
+        let light = viewer.frame_day_night(hour);
+        assert_eq!(light.strength, 1.0);
+        let unchanged = viewer.follow_map_settings(&service, campaign.clone());
+        assert!(Arc::ptr_eq(&initial, &unchanged));
+
+        // Apply in global Settings persists the override; the viewer has its own store until
+        // the host's MapSettingsSaved notification reloads it.
+        let mut settings = CampaignMapSettings::default();
+        settings.graphics.day_night = Some(false);
+        host.save("$global".into(), settings).unwrap();
+        assert!(
+            viewer
+                .follow_map_settings(&service, campaign.clone())
+                .graphics
+                .day_night
+        );
+        let generation = service.map_settings_generation();
+        service.reload_map_settings();
+        assert_ne!(service.map_settings_generation(), generation);
+        let off = viewer.follow_map_settings(&service, campaign.clone());
+        assert!(!Arc::ptr_eq(&initial, &off));
+        assert_eq!(viewer.picker_toggles().day_night, Some(false));
+        let dark = viewer.frame_day_night(hour);
+        assert_eq!(dark.strength, 0.0);
+        assert_eq!(dark.hour_fraction, light.hour_fraction);
+        assert_eq!(dark.sun_direction, light.sun_direction);
+
+        // A widget override never decides the Campaign map's value.
+        let mut settings = CampaignMapSettings::default();
+        settings.graphics.day_night = Some(true);
+        host.save(widget, settings).unwrap();
+        service.reload_map_settings();
+        viewer.follow_map_settings(&service, campaign.clone());
+        assert_eq!(viewer.frame_day_night(hour).strength, 0.0);
+
+        // The Campaign map's picker uses the same host-owned store, at campaign scope.
+        viewer.picker_toggle("day_night_toggle");
+        let [toggle]: [dashboard::protocol::MapToggle; 1] =
+            toggles(&mut viewer).try_into().unwrap();
+        host.flip(campaign.clone(), toggle.setting).unwrap();
+        assert_eq!(viewer.frame_day_night(hour).strength, 0.0);
+        service.reload_map_settings();
+        viewer.follow_map_settings(&service, campaign);
+        assert_eq!(viewer.picker_toggles().day_night, Some(true));
+        assert_eq!(viewer.frame_day_night(hour).strength, 1.0);
+        assert!(!viewer.playing);
+        service.shutdown();
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("LOCALAPPDATA", value),
+                None => std::env::remove_var("LOCALAPPDATA"),
+            }
+        }
+        std::fs::remove_file(root.join("HOI4Replay").join("map-settings.json")).unwrap();
+        std::fs::remove_dir(root.join("HOI4Replay")).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use super::{Capture, Playhead, Viewer, VisualStale, seek_open_target};
+use super::{Capture, Playhead, Viewer, VisualStale, anchor_clock, seek_open_target};
 use eframe::{egui, wgpu};
 use replay_data::rows::TableId;
 use replay_frame::frame::TableView;
@@ -252,23 +252,56 @@ impl Viewer {
             match result {
                 Ok(()) => {
                     self.error = None;
-                    self.playing = seek.playback.is_some_and(|clock| clock.playing);
-                    self.last_step = Instant::now();
+                    let now = Instant::now();
+                    let last = self
+                        .document
+                        .as_ref()
+                        .expect("validated above")
+                        .playback
+                        .range(seek.branch)
+                        .expect("validated above")
+                        .1;
+                    // Bank the old rate before anchoring the new one. A pause
+                    // is exact, even if the local clock had run farther ahead.
+                    if self.capture.is_none()
+                        && self.playhead.is_some_and(|head| head.branch == seek.branch)
+                    {
+                        self.tick_playhead(now.duration_since(self.last_step).as_secs_f64(), last);
+                    }
+                    self.last_step = now;
                     let animation_target = Target {
                         branch: seek.branch,
                         hour: seek.hour,
                         seek_sequence: seek.playback.map(|clock| clock.seek_sequence),
                     };
-                    self.animation_seek |= seek.playback.is_none()
+                    let sought = seek.playback.is_none()
                         || self
                             .map_animation_target
                             .is_none_or(|old| animation_target.seeks_from(old));
+                    self.animation_seek |= sought;
+                    if sought && let Some(hours) = &mut self.hours {
+                        hours.seek();
+                    }
                     self.map_animation_target = Some(animation_target);
-                    self.playhead = Some(Playhead {
+                    let playing = seek.playback.is_some_and(|clock| clock.playing);
+                    let target = Playhead {
                         branch: seek.branch,
                         hour: seek.hour,
-                        fraction: 0.0,
-                    });
+                        fraction: seek.playback.map_or(0.0, |clock| clock.fraction),
+                    };
+                    // A changed rate takes the host position exactly: what the old rate ran on
+                    // past it while the update travelled is not playback at the new rate.
+                    let rate_changed = seek
+                        .playback
+                        .is_some_and(|clock| clock.hours_per_second != self.speed);
+                    let (head, lead) =
+                        anchor_clock(self.playhead, target, playing && !sought && !rate_changed);
+                    self.playhead = Some(head);
+                    self.clock_lead = lead;
+                    if let Some(clock) = seek.playback {
+                        self.speed = clock.hours_per_second;
+                    }
+                    self.playing = playing && self.playhead.is_some_and(|head| head.hour < last);
                 }
                 Err(error) => {
                     self.error = Some(error);

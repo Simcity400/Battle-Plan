@@ -1505,6 +1505,8 @@ mod tests {
                     playback: Some(dashboard::protocol::MapPlayback {
                         playing: true,
                         seek_sequence: (hour / 100) as u64,
+                        fraction: 0.375,
+                        hours_per_second: 1440.0,
                     }),
                 })
                 .unwrap();
@@ -1518,7 +1520,9 @@ mod tests {
                 hour: 9999,
                 playback: Some(dashboard::protocol::MapPlayback {
                     playing: true,
-                    seek_sequence: 99
+                    seek_sequence: 99,
+                    fraction: 0.375,
+                    hours_per_second: 1440.0,
                 }),
             })
         );

@@ -1083,37 +1083,41 @@ pub(super) fn tick(
     windows.clock += tick.dt;
     // The windows whose tick failed, with why: a pool's phase fails as a whole.
     let mut failed: Vec<(Registered, String)> = Vec::new();
-    let mut failing = |windows: Vec<Registered>, result: Result<(), String>| {
+    fn failing(
+        failed: &mut Vec<(Registered, String)>,
+        windows: impl FnOnce() -> Vec<Registered>,
+        result: Result<(), String>,
+    ) {
         if let Err(why) = result {
-            failed.extend(windows.into_iter().map(|window| (window, why.clone())));
+            failed.extend(windows().into_iter().map(|window| (window, why.clone())));
         }
-    };
+    }
     // Every drawable's clock.
     if let Some(pool) = windows.combats.as_mut() {
         let result = pool.tick_clocks(combat, resources, tick);
-        failing(pool_windows(pool, IconSlot::Combat), result);
+        failing(&mut failed, || pool_windows(pool, IconSlot::Combat), result);
     }
     if let (Some(pool), Some(base)) = (windows.bases.as_mut(), base) {
         let result = pool.tick_clocks(base, resources, tick);
-        failing(pool_windows(pool, IconSlot::Base), result);
+        failing(&mut failed, || pool_windows(pool, IconSlot::Base), result);
     }
     if let (Some(pool), Some(template)) = (windows.results.as_mut(), result_template) {
         let result = pool.tick_clocks(template, resources, tick);
-        failing(pool_windows(pool, IconSlot::Result), result);
+        failing(&mut failed, || pool_windows(pool, IconSlot::Result), result);
     }
     for (key, item) in &mut windows.items {
         if let Some(template) = item_template(item) {
             let result = item.instance.tick_clocks(template, resources, tick);
-            failing(vec![Registered::Item(*key)], result);
+            failing(&mut failed, || vec![Registered::Item(*key)], result);
         }
     }
     for (source, counter) in &mut windows.counters {
         let result = counter.instance.tick_clocks(navy, resources, tick);
-        failing(vec![Registered::Counter(*source)], result);
+        failing(&mut failed, || vec![Registered::Counter(*source)], result);
     }
     if let Some(missions) = missions {
         let result = windows.missions.tick_clocks(missions, resources, tick);
-        failing(mission_windows(&windows.missions), result);
+        failing(&mut failed, || mission_windows(&windows.missions), result);
     }
     // GUI transitions, last registered first.
     let mut order: Vec<(Registration, Registered)> = Vec::new();
@@ -1181,30 +1185,38 @@ pub(super) fn tick(
                         _ => continue,
                     },
                 };
-                failing(vec![registered], result);
+                failing(&mut failed, || vec![registered], result);
                 // A failed reach leaves the items it did not reach where they were.
                 let result = reach_items(windows, icon, &held);
-                failing(vec![registered], result);
+                failing(&mut failed, || vec![registered], result);
             }
             Registered::Item(key) => {
                 if let Some(item) = windows.items.get_mut(&key)
                     && let Some(template) = item_template(item)
                 {
-                    failing(vec![registered], item.instance.tick_transitions(template));
+                    failing(
+                        &mut failed,
+                        || vec![registered],
+                        item.instance.tick_transitions(template),
+                    );
                 }
             }
             Registered::Counter(source) => {
                 if let Some(counter) = windows.counters.get_mut(&source) {
-                    failing(vec![registered], counter.instance.tick_transitions(navy));
+                    failing(
+                        &mut failed,
+                        || vec![registered],
+                        counter.instance.tick_transitions(navy),
+                    );
                 }
             }
             Registered::Mission(window) => {
                 if let Some(missions) = missions {
                     let result = windows.missions.tick_transitions_of(missions, window);
-                    failing(vec![registered], result);
+                    failing(&mut failed, || vec![registered], result);
                     for (slot, held) in windows.missions.take_grid_held() {
                         let result = reach_items(windows, IconSlot::Mission(slot), &held);
-                        failing(vec![registered], result);
+                        failing(&mut failed, || vec![registered], result);
                     }
                 }
             }
@@ -1213,7 +1225,7 @@ pub(super) fn tick(
     // The draw.
     if let Some(pool) = windows.combats.as_mut() {
         let result = pool.tick_draws(combat, resources);
-        failing(pool_windows(pool, IconSlot::Combat), result);
+        failing(&mut failed, || pool_windows(pool, IconSlot::Combat), result);
         count_noted(
             &mut report.naval_window_notes,
             NAVAL_COMBAT_WINDOW,
@@ -1222,7 +1234,7 @@ pub(super) fn tick(
     }
     if let (Some(pool), Some(base)) = (windows.bases.as_mut(), base) {
         let result = pool.tick_draws(base, resources);
-        failing(pool_windows(pool, IconSlot::Base), result);
+        failing(&mut failed, || pool_windows(pool, IconSlot::Base), result);
         count_noted(
             &mut report.naval_window_notes,
             NAVAL_BASE_WINDOW,
@@ -1231,7 +1243,7 @@ pub(super) fn tick(
     }
     if let (Some(pool), Some(template)) = (windows.results.as_mut(), result_template) {
         let result = pool.tick_draws(template, resources);
-        failing(pool_windows(pool, IconSlot::Result), result);
+        failing(&mut failed, || pool_windows(pool, IconSlot::Result), result);
         count_noted(
             &mut report.naval_window_notes,
             NAVAL_RESULT_WINDOW,
@@ -1241,16 +1253,16 @@ pub(super) fn tick(
     for (key, item) in &mut windows.items {
         if let Some(template) = item_template(item) {
             let result = item.instance.tick_draws(template, resources);
-            failing(vec![Registered::Item(*key)], result);
+            failing(&mut failed, || vec![Registered::Item(*key)], result);
         }
     }
     for (source, counter) in &mut windows.counters {
         let result = counter.instance.tick_draws(navy, resources);
-        failing(vec![Registered::Counter(*source)], result);
+        failing(&mut failed, || vec![Registered::Counter(*source)], result);
     }
     if let Some(missions) = missions {
         let result = windows.missions.tick_draws(missions, resources, report);
-        failing(mission_windows(&windows.missions), result);
+        failing(&mut failed, || mission_windows(&windows.missions), result);
     }
     if let Some((_, why)) = failed.first() {
         *report
@@ -3353,10 +3365,12 @@ pub(super) fn compose_mission_grids(
 /// and layout ([`held_items`]). `None` when its grid holds nothing; when a refusal stands on its
 /// window, its layout is refused or its items cannot be placed, counted once for each item it
 /// holds (none of them is placed).
+#[allow(clippy::too_many_arguments)]
 fn port_parts(
     windows: &Windows,
     base: &Visible<'_, u32>,
     window: &native::Element,
+    drawn: Option<&Layout>,
     grid: &native::Element,
     resources: &dyn native_gui::Resources,
     viewport: [i32; 2],
@@ -3377,29 +3391,39 @@ fn port_parts(
             .or_default() += held;
         return None;
     }
-    let layout = match instance.layout(window, resources, None) {
-        Ok(Some(layout)) => layout,
-        Ok(None) => return None,
-        Err(refusals) => {
-            for refusal in &refusals {
-                *report
-                    .navy_counter_gaps
-                    .entry(
-                        format!(
-                            "port items are not placed: {}",
-                            refused_cause(NAVAL_BASE_WINDOW, refusal)
-                        )
-                        .into(),
-                    )
-                    .or_default() += held;
-            }
-            return None;
+    // The glyph and its port grid share one instance and tick. Reuse the successful
+    // glyph layout; refused or pending resources still take the ordinary second query.
+    let layout;
+    let drawn = match drawn.filter(|layout| layout.diagnostics.is_empty()) {
+        Some(drawn) => drawn,
+        None => {
+            layout = match instance.layout(window, resources, None) {
+                Ok(Some(layout)) => layout,
+                Ok(None) => return None,
+                Err(refusals) => {
+                    for refusal in &refusals {
+                        *report
+                            .navy_counter_gaps
+                            .entry(
+                                format!(
+                                    "port items are not placed: {}",
+                                    refused_cause(NAVAL_BASE_WINDOW, refusal)
+                                )
+                                .into(),
+                            )
+                            .or_default() += held;
+                    }
+                    return None;
+                }
+            };
+            &layout
         }
     };
-    let holder = layout
+    let holder = drawn
         .holders
-        .into_iter()
-        .find(|holder| holder.path == grid.path)?;
+        .iter()
+        .find(|holder| holder.path == grid.path)?
+        .clone();
     match held_items(windows, icon, grid, &holder, resources, viewport, report) {
         Ok(items) => Some((holder, items)),
         Err(refusal) => {
@@ -3447,13 +3471,14 @@ fn draw_ports(
         });
         glyphs.at_anchor(anchor);
         batch.at_anchor(anchor);
-        if let Some(drawn) = visible_layout(
+        let drawn = visible_layout(
             &base,
             window,
             NAVAL_BASE_WINDOW,
             resources,
             &mut report.icon_gui_notes,
-        ) {
+        );
+        if let Some(drawn) = &drawn {
             let key = layer(
                 inputs.priority(PriorityIcon::NavalBase),
                 report.base_ordinal(),
@@ -3478,9 +3503,16 @@ fn draw_ports(
         let Some(grid) = grid else {
             continue;
         };
-        let Some((holder, items)) =
-            port_parts(windows, &base, window, grid, resources, viewport, report)
-        else {
+        let Some((holder, items)) = port_parts(
+            windows,
+            &base,
+            window,
+            drawn.as_ref().map(|drawn| &drawn.layout),
+            grid,
+            resources,
+            viewport,
+            report,
+        ) else {
             continue;
         };
         let origin = base.instance.position();

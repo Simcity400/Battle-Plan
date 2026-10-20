@@ -515,15 +515,25 @@ pub struct MapDetails {
 pub const MAX_EXACT_JS_INTEGER: u64 = 9_007_199_254_740_991;
 
 /// A full-map clock update. Without this, `Seek` is an explicit seek.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapPlayback {
     pub playing: bool,
     pub seek_sequence: u64,
+    /// Position within the target hour, including on a pause.
+    pub fraction: f64,
+    /// The host clock's exact rate, in recorded hours per wall-clock second.
+    pub hours_per_second: f64,
 }
 
 impl MapPlayback {
     pub fn validate(self) -> Result<(), &'static str> {
+        if !self.fraction.is_finite() || !(0.0..1.0).contains(&self.fraction) {
+            return Err("Map hour fraction must be finite and in [0, 1)");
+        }
+        if !self.hours_per_second.is_finite() || self.hours_per_second <= 0.0 {
+            return Err("Map playback speed must be finite and positive");
+        }
         if self.seek_sequence > MAX_EXACT_JS_INTEGER {
             return Err("Map seek sequence exceeds the exact JavaScript integer range");
         }
@@ -706,6 +716,47 @@ impl ViewBounds {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn full_map_clock_roundtrips_fraction_and_exact_rate_and_validates_them() {
+        let clock = super::MapPlayback {
+            playing: true,
+            seek_sequence: 7,
+            fraction: 0.375,
+            hours_per_second: 1440.25,
+        };
+        let json = serde_json::to_value(clock).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "playing": true, "seekSequence": 7, "fraction": 0.375, "hoursPerSecond": 1440.25,
+            })
+        );
+        let decoded: super::MapPlayback = serde_json::from_value(json).unwrap();
+        assert_eq!(clock, decoded);
+        assert!(decoded.validate().is_ok());
+        for fraction in [-0.1, 1.0, f64::NAN, f64::INFINITY] {
+            assert!(super::MapPlayback { fraction, ..clock }.validate().is_err());
+        }
+        for hours_per_second in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                super::MapPlayback {
+                    hours_per_second,
+                    ..clock
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        assert!(
+            super::MapPlayback {
+                seek_sequence: super::MAX_EXACT_JS_INTEGER + 1,
+                ..clock
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
     #[test]
     fn map_targets_preserve_seek_sequence_and_accept_pinned_targets_without_it() {
         let input = serde_json::json!({

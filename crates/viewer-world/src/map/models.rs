@@ -2387,7 +2387,14 @@ fn animate_players_with_workers(
         events: &'a mut Vec<entity_animation::Event>,
     }
     let mut calls = Vec::new();
-    let mut palette = default_palette.to_vec();
+    // Native actors do not read the optional name-joined palette. Keep the logical
+    // offsets identical, but do not allocate or copy unused per-instance ranges.
+    let mut palette = if native_only {
+        Vec::new()
+    } else {
+        default_palette.to_vec()
+    };
+    let mut palette_end = default_palette.len();
     let phase_only = time <= 0.0 && field.clocks.values().any(|clock| clock.phase.is_some());
     let mut alive = BTreeSet::new();
     for instance in &mut field.instances {
@@ -2432,9 +2439,17 @@ fn animate_players_with_workers(
                     entity_animation::Player::new(rig)
                 }
             });
+            let count = if native_only && rig.nodes.iter().all(|node| node.native.is_some()) {
+                0
+            } else {
+                rig.end - rig.start
+            };
             let start = palette.len();
-            palette.extend_from_slice(&default_palette[rig.start..rig.end]);
-            instance.palette_offset = (start - rig.start) as u32;
+            if count != 0 {
+                palette.extend_from_slice(&default_palette[rig.start..rig.end]);
+            }
+            instance.palette_offset = (palette_end - rig.start) as u32;
+            palette_end += rig.end - rig.start;
             let playing = ModelInstance {
                 animation: request.unwrap_or(instance.animation),
                 ..*instance
@@ -2455,7 +2470,7 @@ fn animate_players_with_workers(
                 key,
                 rig,
                 instance: playing,
-                count: rig.end - rig.start,
+                count,
                 clocked: clock.is_some(),
                 events: emitted,
             });
@@ -2463,7 +2478,11 @@ fn animate_players_with_workers(
     }
     {
         let mut by_player = BTreeMap::<_, Vec<Work<'_>>>::new();
-        let mut tail = &mut palette[default_palette.len()..];
+        let mut tail = &mut palette[if native_only {
+            0
+        } else {
+            default_palette.len()
+        }..];
         for call in &mut calls {
             let (palette, rest) = tail.split_at_mut(call.count);
             tail = rest;
@@ -2714,6 +2733,162 @@ mod parallel_animation_tests {
         let installed = pass.actors(0, &pass.rigs[0], None, true);
         assert!(!Arc::ptr_eq(&retained[1], &installed));
         assert_eq!(bits(&retained[1]), bits(&installed));
+    }
+
+    #[test]
+    fn native_only_batches_match_serial_poses_events_and_offsets() {
+        let mut eventless = entity_animation::pose_tests::rig(0.7, true, true);
+        for node in &mut eventless.nodes {
+            for clip in &mut node.clips {
+                clip.state.events.clear();
+            }
+        }
+        let mut event_then_quiet = entity_animation::pose_tests::rig(0.7, true, true);
+        for node in &mut event_then_quiet.nodes {
+            for clip in &mut node.clips {
+                if clip.state.name == "idle" {
+                    for event in &mut clip.state.events {
+                        event.keep_particle = false;
+                    }
+                } else {
+                    clip.state.events.clear();
+                }
+            }
+        }
+        let rigs = [
+            Arc::new(eventless),
+            Arc::new(entity_animation::pose_tests::rig(0.7, true, true)),
+            Arc::new(event_then_quiet),
+        ];
+        let default = vec![PaletteJoint::IDENTITY; rigs[0].end];
+        let workers = workers();
+        let (mut serial, mut borrowed) = (BTreeMap::new(), BTreeMap::new());
+        for (frame, time) in [0., 0.13, 0.7, 0.71, 1.2, 2.1, 4.9, 0.2, 1.3]
+            .into_iter()
+            .enumerate()
+        {
+            let mut field = ModelField::default();
+            for mesh in [1, 0, 2] {
+                let start = field.instances.len() as u32;
+                for seed in [9, 2, 8, 1, 9, 0, 7] {
+                    field.instances.push(ModelInstance {
+                        scale: 1.,
+                        animation_seed: seed,
+                        animation: if time < 0.7 {
+                            entity_animation::IDLE
+                        } else {
+                            entity_animation::MOVE
+                        },
+                        ..Default::default()
+                    });
+                }
+                field.groups.push(ModelGroup {
+                    mesh,
+                    range: start..field.instances.len() as u32,
+                    bounds: [0.; 4],
+                    centroid: [0.; 3],
+                });
+                for seed in [9, 8] {
+                    field.clocks.insert(
+                        (mesh, seed, 0),
+                        entity_animation::Clock {
+                            time,
+                            phase: None,
+                            requests: Arc::new(vec![entity_animation::Request {
+                                time: 0.,
+                                phase_time: None,
+                                state: "move".into(),
+                            }]),
+                        },
+                    );
+                }
+            }
+            let mut other = field.clone();
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            animate_players(
+                &mut serial,
+                &rigs,
+                &default,
+                &mut field,
+                time,
+                &|_| true,
+                &mut a,
+            );
+            let unused = animate_players_with_workers(
+                &mut borrowed,
+                &rigs,
+                &default,
+                &mut other,
+                time,
+                &|_| true,
+                &mut b,
+                &workers,
+                true,
+            );
+            assert!(
+                unused.is_empty(),
+                "native actors allocate no unused palette"
+            );
+            assert_eq!(field, other, "logical palette offsets stay identical");
+            assert_eq!(a.len(), b.len());
+            for (a, b) in a.iter().zip(&b) {
+                assert_eq!(a.definition, b.definition);
+                assert_eq!(
+                    (
+                        a.key,
+                        a.seed,
+                        a.age.to_bits(),
+                        a.state,
+                        a.emission_end.map(f32::to_bits),
+                        a.hidden
+                    ),
+                    (
+                        b.key,
+                        b.seed,
+                        b.age.to_bits(),
+                        b.state,
+                        b.emission_end.map(f32::to_bits),
+                        b.hidden
+                    )
+                );
+                assert_eq!(
+                    bytemuck::bytes_of(&PaletteJoint::from_transform(&a.transform)),
+                    bytemuck::bytes_of(&PaletteJoint::from_transform(&b.transform))
+                );
+            }
+            assert_eq!(
+                serial.keys().collect::<Vec<_>>(),
+                borrowed.keys().collect::<Vec<_>>()
+            );
+            for (key, player) in &borrowed {
+                let actual = player.native_actors(&rigs[key.0]);
+                let expected = super::super::mesh_pose::actors_uncached(
+                    &rigs[key.0],
+                    Some(&serial[key]),
+                    false,
+                );
+                assert_eq!(actual.len(), expected.len());
+                for (a, b) in actual.iter().zip(&expected) {
+                    let matrix =
+                        |value: super::super::mesh_pose::Matrix| value.map(|c| c.map(f32::to_bits));
+                    assert_eq!(
+                        a.world.as_ref().map(|m| matrix(*m)),
+                        b.world.as_ref().map(|m| matrix(*m))
+                    );
+                    let pose = |pose: &super::super::mesh_pose::Pose| {
+                        (
+                            pose.joints.iter().copied().map(matrix).collect::<Vec<_>>(),
+                            pose.bones.iter().copied().map(matrix).collect::<Vec<_>>(),
+                        )
+                    };
+                    assert_eq!(
+                        a.pose.as_ref().map(pose),
+                        b.pose.as_ref().map(pose),
+                        "frame={frame} key={key:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

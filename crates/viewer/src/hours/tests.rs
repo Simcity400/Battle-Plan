@@ -30,8 +30,15 @@ fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
     next.playing = false;
     assert!(!next.keeps_pending((1, 10), &keep));
     assert!(next.keeps_pending((1, 100), &keep));
-    // Seeks and branch changes keep what was built for a step back; only
-    // a perspective change starts a new epoch.
+    next.map_mode = viewer_world::map::map_mode::MapMode::Scripted("held colours".into());
+    assert!(
+        next.keeps_pending((1, 10), &keep),
+        "paused scripted catch-up finishes its colour predecessors"
+    );
+    assert!(!next.keeps_pending((1, 101), &keep));
+    assert!(!next.keeps_pending((2, 10), &keep));
+    // Moving the clock alone is not an explicit seek. The host seek counter
+    // separately invalidates the epoch, including for a same-hour seek.
     for moved in [
         Want {
             hour: 9,
@@ -260,11 +267,11 @@ fn perspective_changes_discard_old_hour_acknowledgements() {
     };
     let mut next = old.clone();
     next.perspective.fog = !next.perspective.fog;
-    assert!(next.discard_stale_have(Some(&old)));
+    assert!(next.discard_stale_have(Some(&old), false));
     assert!(next.have.is_empty());
     let mut next = old.clone();
     next.view.camera.height += 1.0;
-    assert!(!next.discard_stale_have(Some(&old)));
+    assert!(!next.discard_stale_have(Some(&old), false));
     assert_eq!(next.have, old.have);
 }
 
@@ -651,4 +658,218 @@ fn a_failed_part_of_every_name_is_an_error_not_a_value() {
         };
         assert!(failed, "{name} must fail its hour");
     }
+}
+
+#[test]
+fn playing_targets_consecutive_hours_from_the_playhead_and_stops_at_the_branch_end() {
+    let want = Want {
+        branch: 1,
+        hour: 100,
+        ahead: playback_ahead(8),
+        behind: 0,
+        playing: true,
+        perspective: Default::default(),
+        map_mode: Default::default(),
+        show_allied_plans: false,
+        counters: Default::default(),
+        view: test_view(),
+        have: vec![],
+        received: 0,
+    };
+    assert_eq!(want.hours((0, 1000)), (100..=107).collect::<Vec<_>>());
+    assert_eq!(want.hours((0, 105)), (100..=105).collect::<Vec<_>>());
+    let moved = Want {
+        hour: 200,
+        ..want.clone()
+    };
+    assert_eq!(moved.hours((0, 1000)), (200..=207).collect::<Vec<_>>());
+    let paused = Want {
+        playing: false,
+        ahead: 2,
+        behind: 2,
+        ..want.clone()
+    };
+    assert_eq!(paused.hours((0, 1000)), [100, 101, 102, 99, 98]);
+    let keep = want
+        .hours((0, 1000))
+        .into_iter()
+        .map(|hour| (1, hour))
+        .collect();
+    assert!(want.keeps_pending((1, 107), &keep));
+    assert!(want.keeps_pending((1, 99), &keep));
+    assert!(!want.keeps_pending((1, 108), &keep));
+    assert!(!want.keeps_pending((2, 100), &keep));
+    let end = Want {
+        hour: i32::MAX,
+        ..want
+    };
+    assert_eq!(end.hours((i32::MAX - 5, i32::MAX)), [i32::MAX]);
+}
+
+#[test]
+fn lookahead_requests_one_live_pool_including_the_playhead_without_a_chosen_hour_cap() {
+    for parallel in [1, 8, 32, 128, 5_000] {
+        assert_eq!(playback_ahead(parallel) as usize + 1, parallel);
+    }
+    assert_eq!(playback_ahead(usize::MAX), i32::MAX);
+}
+
+#[test]
+fn sharing_uses_nearest_built_hours_across_sparse_samples_and_keeps_branch_identity() {
+    let previous = Shared::share(Vec::new(), vec![1, 2]);
+    let later = Shared::share(Vec::new(), vec![3]);
+    let slots = BTreeMap::from([
+        ((1, 100), Arc::clone(&previous)),
+        ((1, 112), Arc::clone(&later)),
+        ((2, 105), Shared::share(Vec::new(), vec![1, 2])),
+    ]);
+    let neighbours = neighbour_slots(&slots, 1, 106);
+    assert_eq!(
+        neighbours.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+        [(1, 100), (1, 112)]
+    );
+    let same = Shared::share(
+        neighbours
+            .into_iter()
+            .map(|(_, slot)| Arc::clone(slot))
+            .collect(),
+        vec![1, 2],
+    );
+    assert!(Arc::ptr_eq(&same, &previous));
+    let neighbours = || {
+        neighbour_slots(&slots, 1, 106)
+            .into_iter()
+            .map(|(_, slot)| Arc::clone(slot))
+            .collect()
+    };
+    let same_later = Shared::share(neighbours(), vec![3]);
+    assert!(Arc::ptr_eq(&same_later, &later));
+    let changed = Shared::share(neighbours(), vec![4]);
+    assert_ne!(changed.id, previous.id);
+    assert_ne!(changed.id, later.id);
+    assert!(neighbour_slots(&slots, 3, 106).is_empty());
+    assert_eq!(
+        neighbour_slots(&slots, 1, 120)
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>(),
+        [(1, 112)]
+    );
+}
+
+#[test]
+fn sparse_playback_decode_is_identical_to_an_independent_paused_seek_at_every_sample() {
+    let hours: Vec<_> = (100..=300).collect();
+    let replay = long_replay(&hours);
+    let lane = lane_over(&replay);
+    // Sparse upcoming frames and a final off-grid branch end decode exactly,
+    // regardless of the order an asynchronous request reaches them.
+    let samples: Vec<_> = (160..=298)
+        .step_by(6)
+        .chain((100..160).step_by(6))
+        .chain([300])
+        .collect();
+    lane.want(samples.iter().map(|hour| (1, *hour)).collect(), 2);
+    for hour in samples {
+        let Current::Frame(actual) = lane.frame(1, hour) else {
+            panic!("sample {hour} is not a frame")
+        };
+        let replay::container::SeekResult::Frame(expected) = replay.seek(1, hour).unwrap() else {
+            panic!("paused {hour} is not a frame")
+        };
+        assert_eq!(actual.as_ref(), expected.as_ref(), "hour {hour}");
+    }
+}
+
+#[test]
+fn same_hour_seeks_discard_ready_acknowledgements_just_like_other_history_resets() {
+    let old = Want {
+        branch: 1,
+        hour: 10,
+        ahead: 2,
+        behind: 2,
+        playing: false,
+        perspective: Default::default(),
+        map_mode: Default::default(),
+        show_allied_plans: false,
+        counters: Default::default(),
+        view: test_view(),
+        have: vec![10, 11],
+        received: 2,
+    };
+    // A pause or camera update keeps the epoch; a seek to precisely the same
+    // position must force it to change and prevent reusing the ready result.
+    let mut next = old.clone();
+    assert!(!next.discard_stale_have(Some(&old), false));
+    assert_eq!(next.have, [10, 11]);
+    assert!(next.discard_stale_have(Some(&old), true));
+    assert!(next.have.is_empty());
+    assert_eq!((next.branch, next.hour), (old.branch, old.hour));
+}
+
+#[test]
+fn skipped_colour_refreshes_carry_in_recorded_order_and_gaps_start_cold() {
+    use viewer_world::map::map_mode::ColourState;
+    let colour = |name: &str| {
+        Arc::new(ColourState {
+            mode: name.into(),
+            layers: Default::default(),
+        })
+    };
+    let old = colour("before midnight");
+    let daily = colour("midnight refresh");
+    let forced = colour("effect refresh");
+    let cold = colour("after gap");
+    // Model the colour evaluator's first/daily/event refresh decisions; this
+    // tests the builder's traversal, independently of the evaluator's own tests.
+    let mut visited = vec![];
+    let mut evaluate = |frame: &replay_frame::frame::DecodedFrame,
+                        previous: Option<&ColourState>| {
+        visited.push((frame.hour, previous.map(|state| state.mode.clone())));
+        Ok(Some(match previous {
+            None => Arc::clone(&cold),
+            Some(_) if frame.hour == 24 => Arc::clone(&daily),
+            Some(_) if frame.hour == 26 => Arc::clone(&forced),
+            Some(previous) => colour(&previous.mode),
+        }))
+    };
+    let carried = carry_colour(
+        Some(old),
+        (24..=27).map(|hour| sized_frame(hour, 0)).collect(),
+        &mut evaluate,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(carried.mode, forced.mode);
+    assert_eq!(
+        visited,
+        [
+            (24, Some("before midnight".into())),
+            (25, Some("midnight refresh".into())),
+            (26, Some("midnight refresh".into())),
+            (27, Some("effect refresh".into())),
+        ]
+    );
+    let frames = vec![
+        Current::Gap {
+            branch: 1,
+            hour: 28,
+            reason: "not recorded".into(),
+        },
+        sized_frame(29, 0),
+    ];
+    let after_gap = carry_colour(Some(carried), frames, |_, previous| {
+        assert!(previous.is_none());
+        Ok(Some(Arc::clone(&cold)))
+    })
+    .unwrap()
+    .unwrap();
+    assert!(Arc::ptr_eq(&after_gap, &cold));
+    // Evaluation failure is not hidden by the sampling layer.
+    assert!(
+        carry_colour(None, vec![sized_frame(30, 0)], |_, _| Err(
+            io::Error::other("refused colour")
+        ))
+        .is_err()
+    );
 }

@@ -178,6 +178,8 @@ fn restart_restores_unacknowledged_open_and_seek() {
         playback: Some(dashboard::protocol::MapPlayback {
             playing: true,
             seek_sequence: 7,
+            fraction: 0.375,
+            hours_per_second: 1440.0,
         }),
     };
     let mut inner = Inner {

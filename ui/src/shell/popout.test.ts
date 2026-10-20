@@ -177,14 +177,14 @@ test('a restarted or reopened pop-out is sent the hour and playback chosen meanw
   try {
     const { followMapPlayback } = await vite.ssrLoadModule('/ui/src/dashboard/mapPlayback.ts') as typeof import('../dashboard/mapPlayback');
     const track = { source: { path: 'campaign.battleplan', revision: 'r' }, branch: { id: '1', firstHour: 0, lastHour: 100 }, axisOffset: 0 } as Parameters<typeof followMapPlayback>[1];
-    let snapshot = { hour: 10, playing: true, seekSequence: 0 };
+    let snapshot = { hour: 10, fraction: 0.25, hoursPerSecond: 1440, playing: true, seekSequence: 0 };
     const listeners = new Set<() => void>();
     const clock = { getSnapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } };
     const move = (next: typeof snapshot) => { snapshot = next; for (const listener of listeners) listener(); };
     // The host refuses a seek naming any window but the one whose viewer runs.
     let running: number | null = 1;
     const shown: { generation: number; hour: number; playing: boolean; seekSequence: number }[] = [];
-    const seekPopout = async (generation: number, _path: string, _revision: string, _branch: string, hour: number, playback: { playing: boolean; seekSequence: number }) => {
+    const seekPopout = async (generation: number, _path: string, _revision: string, _branch: string, hour: number, playback: import('../dashboard/mapPlayback').MapPlayback) => {
       if (running !== generation) throw new Error('The pop-out map stopped');
       shown.push({ generation, hour, ...playback });
     };
@@ -200,20 +200,20 @@ test('a restarted or reopened pop-out is sent the hour and playback chosen meanw
     };
     let state = nextPopoutState(CLOSED, { generation: 1, sequence: 1, viewer: 1, open: true, status: status() });
     render(state); await tick();
-    assert.deepEqual(shown.at(-1), { generation: 1, hour: 10, playing: true, seekSequence: 0 });
+    assert.deepEqual(shown.at(-1), { generation: 1, hour: 10, playing: true, seekSequence: 0, fraction: 0.25, hoursPerSecond: 1440 });
     running = null;
     state = nextPopoutState(state, { generation: 1, sequence: 2, viewer: 1, status: status({ running: false, ready: false, error: 'Native viewer exited (1)' }) });
     render(state);
-    move({ hour: 40, playing: false, seekSequence: 1 }); await tick();
+    move({ ...snapshot, hour: 40, playing: false, seekSequence: 1, fraction: 0.25, hoursPerSecond: 1440 }); await tick();
     running = 1;
     state = nextPopoutState(state, { generation: 1, sequence: 3, viewer: 2, open: true, status: status({ ready: false }) });
     render(state); await tick();
-    assert.deepEqual(shown.at(-1), { generation: 1, hour: 40, playing: false, seekSequence: 1 });
+    assert.deepEqual(shown.at(-1), { generation: 1, hour: 40, playing: false, seekSequence: 1, fraction: 0.25, hoursPerSecond: 1440 });
     // Closed and reopened between two renders: the new window is sent the clock too.
     running = 2;
     state = nextPopoutState(nextPopoutState(state, { generation: 1, sequence: 4, viewer: 1, open: false, status: null }), { generation: 2, sequence: 5, viewer: 2, open: true, status: status() });
     render(state); await tick();
-    assert.deepEqual(shown.at(-1), { generation: 2, hour: 40, playing: false, seekSequence: 1 });
+    assert.deepEqual(shown.at(-1), { generation: 2, hour: 40, playing: false, seekSequence: 1, fraction: 0.25, hoursPerSecond: 1440 });
     stop?.();
   } finally { await vite.close(); }
 });

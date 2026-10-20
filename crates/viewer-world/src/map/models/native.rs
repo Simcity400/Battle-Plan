@@ -209,9 +209,9 @@ impl ObjectConstants {
 struct Pending {
     part: Option<Key>,
     /// By binding; a slot no draw bound stays `None`.
-    constants: Vec<Option<Vec<u8>>>,
+    constants: [Option<Vec<u8>>; CONSTANT_BINDINGS],
     /// The part whose program last bound a sampler with each texture.
-    samplers: BTreeMap<u32, Key>,
+    samplers: [Option<Key>; TEXTURE_BINDINGS],
     skin: Option<Key>,
     frame: Option<usize>,
     grid: bool,
@@ -221,8 +221,8 @@ impl Default for Pending {
     fn default() -> Self {
         Self {
             part: None,
-            constants: vec![None; CONSTANT_BINDINGS],
-            samplers: BTreeMap::new(),
+            constants: std::array::from_fn(|_| None),
+            samplers: [None; TEXTURE_BINDINGS],
             skin: None,
             frame: None,
             grid: false,
@@ -250,10 +250,11 @@ impl Pending {
 
     fn record(&mut self, key: Key, resident: &Resident, textures: u32) {
         if self.part != Some(key) {
-            for slot in (0..TEXTURE_BINDINGS as u32).filter(|slot| textures & (1 << slot) != 0) {
-                if resident.retained.sampler(slot).is_some() {
-                    self.samplers.insert(slot, key);
-                }
+            let mut samplers = textures & resident.samplers;
+            while samplers != 0 {
+                let slot = samplers.trailing_zeros() as usize;
+                self.samplers[slot] = Some(key);
+                samplers &= samplers - 1;
             }
             if resident.geometry.cpu_skin.is_some() {
                 self.skin = Some(key);
@@ -295,10 +296,8 @@ impl Pending {
             let Some(texture) = texture else {
                 continue;
             };
-            let sampler = self
-                .samplers
-                .get(&key)
-                .and_then(|part| parts[part].retained.sampler(key));
+            let sampler =
+                self.samplers[key as usize].and_then(|part| parts[&part].retained.sampler(key));
             stream.bind_texture(key / 2, stage(key), Some(texture.clone()), sampler);
         }
         let resident = &parts[&part];
@@ -329,6 +328,8 @@ struct Resident {
     geometry: SharedGeometry,
     caster_texture: bool,
     blended: bool,
+    /// Physical slots this material updates, independent of shader reads.
+    samplers: u32,
 }
 
 enum PrepareError {
@@ -397,6 +398,141 @@ pub(super) struct Renderer {
     /// Vertex pools by stream stride and skinning; the index pool.
     pools: BTreeMap<(u64, bool), Pool>,
     indices: Pool,
+    /// Command packet storage returned after this pass has been encoded.
+    draws: DrawList,
+}
+
+type VertexKey = ((u64, bool), usize);
+
+/// Prepared in native order on the presentation thread; encoding reads only GPU handles.
+#[derive(Default)]
+pub(crate) struct DrawList {
+    draws: Vec<RecordedDraw>,
+    vertices: BTreeMap<VertexKey, [Option<wgpu::Buffer>; 2]>,
+    indices: BTreeMap<usize, wgpu::Buffer>,
+}
+
+struct RecordedDraw {
+    bindings: shader_pipeline::gpu::Bindings,
+    reference: u32,
+    vertices: VertexKey,
+    indices: usize,
+    first: u32,
+    count: u32,
+    base: i32,
+}
+
+impl DrawList {
+    pub(crate) fn record(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.record_slice(pass, &self.draws);
+    }
+
+    fn record_slice(&self, pass: &mut wgpu::RenderPass<'_>, draws: &[RecordedDraw]) {
+        if draws.is_empty() {
+            return;
+        }
+        let mut previous: Option<&RecordedDraw> = None;
+        let mut vertices = None;
+        let mut indices = None;
+        pass.set_blend_constant(wgpu::Color::WHITE);
+        for draw in draws {
+            if previous.is_none_or(|last| last.reference != draw.reference) {
+                pass.set_stencil_reference(draw.reference);
+            }
+            if vertices != Some(draw.vertices) {
+                for (slot, stream) in self.vertices[&draw.vertices].iter().enumerate() {
+                    if let Some(stream) = stream {
+                        pass.set_vertex_buffer(slot as u32, stream.slice(..));
+                    }
+                }
+                vertices = Some(draw.vertices);
+            }
+            if indices != Some(draw.indices) {
+                pass.set_index_buffer(
+                    self.indices[&draw.indices].slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                indices = Some(draw.indices);
+            }
+            draw.bindings
+                .bind_after(pass, previous.map(|last| &last.bindings));
+            pass.draw_indexed(draw.first..draw.first + draw.count, draw.base, 0..1);
+            previous = Some(draw);
+        }
+    }
+
+    /// Encode contiguous slices independently; all passes load/store the same attachments.
+    /// Submission retains slice order and no pass samples these attachments between slices.
+    fn encode(
+        lists: &[&Self],
+        device: &wgpu::Device,
+        targets: &Targets,
+        admitted: &viewer_foundation::parallel::Admitted,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let total = lists.iter().map(|list| list.draws.len()).sum::<usize>();
+        let count = total.min(admitted.capacity());
+        let outputs: Vec<_> = (0..count).map(|_| std::sync::Mutex::new(None)).collect();
+        let count = admitted.run(outputs.len(), &|index, count| {
+            let std::ops::Range { start, end } = draw_slice(total, count, index);
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("native model slice"),
+            });
+            {
+                let mut colour = targets.scene_attachment(wgpu::LoadOp::Load);
+                // No producer samples the resolved scene between these slices. Keep every
+                // multisample value, but resolve only after the last slice's draws.
+                if index + 1 < count {
+                    colour.resolve_target = None;
+                }
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("native model slice"),
+                    color_attachments: &[Some(colour)],
+                    depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
+                    ..Default::default()
+                });
+                let mut base = 0;
+                for list in lists {
+                    let next = base + list.draws.len();
+                    if base < end && next > start {
+                        list.record_slice(
+                            &mut pass,
+                            &list.draws
+                                [start.saturating_sub(base)..(end - base).min(list.draws.len())],
+                        );
+                    }
+                    base = next;
+                    if base >= end {
+                        break;
+                    }
+                }
+            }
+            *outputs[index].lock().unwrap_or_else(|e| e.into_inner()) = Some(encoder.finish());
+        });
+        outputs
+            .into_iter()
+            .take(count)
+            .map(|output| {
+                output
+                    .into_inner()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .expect("native slice encoded")
+            })
+            .collect()
+    }
+
+    fn clear(&mut self) {
+        self.draws.clear();
+        self.vertices.clear();
+        self.indices.clear();
+    }
+}
+
+/// Balanced contiguous runs, sized from the actual draw count and borrowed worker count.
+fn draw_slice(total: usize, count: usize, index: usize) -> std::ops::Range<usize> {
+    let width = total / count;
+    let extra = total % count;
+    let start = index * width + index.min(extra);
+    start..start + width + usize::from(index < extra)
 }
 
 /// Resident geometry in shared chunk buffers, so a draw of another part moves
@@ -708,8 +844,45 @@ impl ModelPass {
         queue: Queue,
         object: &mut ObjectConstants,
     ) -> io::Result<()> {
+        let draws = self.prepare_native(arena, frame, inputs, queue, object)?;
+        draws.record(pass);
+        self.recycle_native(draws);
+        Ok(())
+    }
+
+    pub(crate) fn recycle_native(&self, mut draws: DrawList) {
+        draws.clear();
+        if let Some(native) = self.native.borrow_mut().as_mut() {
+            native.draws = draws;
+        }
+    }
+
+    /// Preparation retains native order; encoding lends only the immutable command packets.
+    pub(crate) fn encode_native(
+        lists: &[(&Self, DrawList)],
+        device: &wgpu::Device,
+        targets: &Targets,
+        admitted: &viewer_foundation::parallel::Admitted,
+    ) -> Vec<wgpu::CommandBuffer> {
+        DrawList::encode(
+            &lists.iter().map(|(_, list)| list).collect::<Vec<_>>(),
+            device,
+            targets,
+            admitted,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_native(
+        &self,
+        arena: &shader_pipeline::gpu::Arena,
+        frame: ModelFrame<'_>,
+        inputs: Inputs<'_>,
+        queue: Queue,
+        object: &mut ObjectConstants,
+    ) -> io::Result<DrawList> {
         if self.field.native_order.is_empty() {
-            return Ok(());
+            return Ok(DrawList::default());
         }
         let caster = queue == Queue::Caster;
         // The game forces every train actor and attachment.
@@ -740,9 +913,11 @@ impl ModelPass {
                 queues: BTreeMap::new(),
                 pools: BTreeMap::new(),
                 indices: Pool::default(),
+                draws: DrawList::default(),
             });
         }
         let native = native.as_mut().expect("initialized above");
+        let mut commands = std::mem::take(&mut native.draws);
         let device = arena.device();
         let mut poses = self.poses.borrow_mut();
         if poses.0 != arena.frame() {
@@ -753,15 +928,7 @@ impl ModelPass {
         let mut drawn = 0;
         let mut last_material = None;
         let mut pending = Pending::default();
-        // The last draw's part and bindings: a draw with the same pipeline rebinds only what
-        // changed, and the same part keeps its buffers.
-        let mut previous: Option<(
-            *const shader_pipeline::gpu::Pipeline,
-            shader_pipeline::gpu::Bindings,
-        )> = None;
         let mut prepared = Vec::new();
-        let mut bound_vertices = None;
-        let mut bound_indices = None;
         // Physical pixel slots 4..13; material slots 0..2 are replaced per draw.
         let mut textures: Textures = [None; TEXTURE_BINDINGS];
         let mut texture_mask = 0;
@@ -1027,6 +1194,9 @@ impl ModelPass {
                                                 geometry
                                             }
                                         };
+                                        let samplers = (0..TEXTURE_BINDINGS as u32)
+                                            .filter(|slot| retained.sampler(*slot).is_some())
+                                            .fold(0, |mask, slot| mask | (1 << slot));
                                         entry.insert(Resident {
                                             retained,
                                             geometry,
@@ -1047,6 +1217,7 @@ impl ModelPass {
                                                 .collect(),
                                             caster_texture,
                                             blended,
+                                            samplers,
                                         })
                                     }
                                 };
@@ -1140,40 +1311,29 @@ impl ModelPass {
                                 if !caster {
                                     pending.record(key, gpu, textures);
                                 }
-                                let same = previous.as_ref().filter(|(last, _)| {
-                                    *last == Arc::as_ptr(&gpu.pipeline.pipeline)
-                                });
-                                if same.is_none() {
-                                    gpu.pipeline.begin(pass);
-                                }
                                 let pool = (gpu.geometry.stride, gpu.geometry.cpu_skin.is_some());
-                                if bound_vertices != Some((pool, gpu.geometry.vertices.0)) {
-                                    let chunk =
-                                        &native.pools[&pool].chunks[gpu.geometry.vertices.0];
-                                    for (slot, stream) in chunk.streams.iter().enumerate() {
-                                        if let Some(stream) = stream {
-                                            pass.set_vertex_buffer(slot as u32, stream.slice(..));
-                                        }
-                                    }
-                                    bound_vertices = Some((pool, gpu.geometry.vertices.0));
-                                }
-                                if bound_indices != Some(gpu.geometry.indices.0) {
-                                    let chunk = &native.indices.chunks[gpu.geometry.indices.0];
-                                    let indices = chunk.streams[0].as_ref().expect("index stream");
-                                    pass.set_index_buffer(
-                                        indices.slice(..),
-                                        wgpu::IndexFormat::Uint32,
-                                    );
-                                    bound_indices = Some(gpu.geometry.indices.0);
-                                }
-                                bindings.bind_after(pass, same.map(|(_, last)| last));
-                                let first = gpu.geometry.indices.1;
-                                pass.draw_indexed(
-                                    first..first + count,
-                                    gpu.geometry.vertices.1,
-                                    0..1,
-                                );
-                                previous = Some((Arc::as_ptr(&gpu.pipeline.pipeline), bindings));
+                                let vertices = (pool, gpu.geometry.vertices.0);
+                                commands.vertices.entry(vertices).or_insert_with(|| {
+                                    native.pools[&pool].chunks[vertices.1].streams.clone()
+                                });
+                                commands
+                                    .indices
+                                    .entry(gpu.geometry.indices.0)
+                                    .or_insert_with(|| {
+                                        native.indices.chunks[gpu.geometry.indices.0].streams[0]
+                                            .as_ref()
+                                            .expect("index stream")
+                                            .clone()
+                                    });
+                                commands.draws.push(RecordedDraw {
+                                    bindings,
+                                    reference: gpu.pipeline.reference(),
+                                    vertices,
+                                    indices: gpu.geometry.indices.0,
+                                    first: gpu.geometry.indices.1,
+                                    count,
+                                    base: gpu.geometry.vertices.1,
+                                });
                                 last_material = Some(material);
                                 drawn += 1;
                             }
@@ -1218,13 +1378,341 @@ impl ModelPass {
             pending.apply(&native.parts, textures, &mut object.retained);
             self.drawn.set(self.drawn.get() + drawn);
         }
-        Ok(())
+        Ok(commands)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draw_slices_cover_native_order_without_empty_runs() {
+        for total in [0, 1, 2, 3, 7, 32, 1109, 14475] {
+            for threads in 1..=32 {
+                let count = total.min(threads);
+                let ranges: Vec<_> = (0..count)
+                    .map(|index| draw_slice(total, count, index))
+                    .collect();
+                assert!(ranges.iter().all(|range| !range.is_empty()));
+                assert_eq!(
+                    ranges.into_iter().flatten().collect::<Vec<_>>(),
+                    (0..total).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    /// Native packets fully establish state at each boundary. Splitting between arbitrary
+    /// draws preserves MSAA samples, colour blending, depth, stencil and pooled geometry.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn ordered_encoder_slices_keep_blend_depth_stencil_and_dynamic_bindings() {
+        use shader_pipeline::{
+            Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput, gpu,
+        };
+        use viewer_foundation::{
+            map::gpu_contract::{buffer, read_texture},
+            parallel::{Spawn, Workers},
+        };
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
+        let program = installed_content_core::pdxshader::program::read_with(b"slices.shader", &|path| {
+            Some(if path == b"slices.shader" {
+                b"Effect Draw { }".to_vec()
+            } else {
+                Vec::new()
+            })
+        })
+        .unwrap();
+        let shader = |wgsl: &str| Shader {
+            wgsl: wgsl.into(),
+            buffers: Vec::new(),
+            textures: Vec::new(),
+            samplers: Vec::new(),
+            sampling_pairs: Vec::new(),
+            inputs: Vec::new(),
+            clock: Default::default(),
+        };
+        let mut vertex = shader(
+            r#"
+            struct Block { colour: vec4<f32>, shift: vec4<f32> }
+            @group(0) @binding(0) var<uniform> block: Block;
+            struct Out { @builtin(position) position: vec4<f32>, @location(0) colour: vec4<f32> }
+            @vertex fn main(@location(0) p: vec3<f32>) -> Out {
+                var out: Out;
+                out.position = vec4<f32>(p + block.shift.xyz, 1.0);
+                out.colour = block.colour;
+                return out;
+            }
+        "#,
+        );
+        vertex.buffers.push(Buffer {
+            binding: 0,
+            size: 32,
+            reads: std::iter::once(0..32).collect(),
+        });
+        vertex.inputs.push(VertexInput {
+            kind: ScalarKind::Float,
+            location: 0,
+            semantic: "POSITION".into(),
+            components: 3,
+        });
+        let mut pixel = shader(
+            r#"
+            @group(1) @binding(1) var image: texture_2d<f32>;
+            @fragment fn main(@location(0) colour: vec4<f32>) -> @location(0) vec4<f32> {
+                return colour * textureLoad(image, vec2<i32>(0), 0);
+            }
+        "#,
+        );
+        pixel.textures.push((1, TextureKind::D2));
+        let compiled = Compiled { vertex, pixel };
+        let views: Vec<_> = [[255, 255, 255, 255], [128, 255, 128, 255]]
+            .into_iter()
+            .map(|texel| {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("slice texture"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                queue.write_texture(
+                    texture.as_image_copy(),
+                    &texel,
+                    wgpu::TexelCopyBufferLayout::default(),
+                    texture.size(),
+                );
+                texture.create_view(&Default::default())
+            })
+            .collect();
+        // Distinct vertex/index chunks, with nonzero first_index and base_vertex.
+        let vertices: Vec<_> = [0.0_f32, 0.125]
+            .into_iter()
+            .map(|shift| {
+                let positions = [
+                    [0.; 3],
+                    [-0.9 + shift, -0.8, 0.],
+                    [0.8, -0.7 + shift, 0.],
+                    [-0.1, 0.9, 0.],
+                ];
+                buffer(
+                    &device,
+                    "slice vertices",
+                    wgpu::BufferUsages::VERTEX,
+                    bytemuck::cast_slice(&positions),
+                )
+                .unwrap()
+            })
+            .collect();
+        let indices: Vec<_> = [[0_u32, 0, 1, 2], [0_u32, 2, 1, 0]]
+            .into_iter()
+            .map(|data| {
+                buffer(
+                    &device,
+                    "slice indices",
+                    wgpu::BufferUsages::INDEX,
+                    bytemuck::cast_slice(&data),
+                )
+                .unwrap()
+            })
+            .collect();
+        struct Pool;
+        impl Spawn for Pool {
+            fn try_spawn(
+                &self,
+                job: Box<dyn FnOnce() + Send>,
+            ) -> Result<(), Box<dyn FnOnce() + Send>> {
+                std::thread::spawn(job);
+                Ok(())
+            }
+            fn threads(&self) -> usize {
+                3
+            }
+        }
+        let workers = Workers::new(Arc::new(Pool));
+        struct Busy;
+        impl Spawn for Busy {
+            fn try_spawn(
+                &self,
+                job: Box<dyn FnOnce() + Send>,
+            ) -> Result<(), Box<dyn FnOnce() + Send>> {
+                Err(job)
+            }
+            fn threads(&self) -> usize {
+                3
+            }
+        }
+        let busy = Workers::new(Arc::new(Busy));
+        for samples in [1, 4] {
+            let arena = gpu::Arena::new(&device);
+            let state = gpu::State::authored(&program, &program.techniques[0]).unwrap();
+            let pipelines: Vec<_> = (0..3)
+                .map(|mode| {
+                    let mut pass = gpu::Pass::packed(&compiled, &state, SCENE_FORMAT, samples);
+                    pass.primitive.cull_mode = None;
+                    let face = wgpu::StencilFaceState {
+                        compare: if mode == 0 {
+                            wgpu::CompareFunction::Always
+                        } else {
+                            wgpu::CompareFunction::Equal
+                        },
+                        pass_op: if mode == 0 {
+                            wgpu::StencilOperation::Replace
+                        } else {
+                            wgpu::StencilOperation::Keep
+                        },
+                        ..Default::default()
+                    };
+                    pass.depth_stencil = Some(wgpu::DepthStencilState {
+                        format: DEPTH_FORMAT,
+                        depth_write_enabled: Some(mode != 1),
+                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                        stencil: wgpu::StencilState {
+                            front: face,
+                            back: face,
+                            read_mask: 0xff,
+                            write_mask: 0xff,
+                        },
+                        bias: Default::default(),
+                    });
+                    if mode == 1 {
+                        pass.targets[0].as_mut().unwrap().blend =
+                            Some(wgpu::BlendState::ALPHA_BLENDING);
+                    }
+                    gpu::Pipeline::for_pass(
+                        &device,
+                        &compiled,
+                        &program,
+                        &program.techniques[0],
+                        &state,
+                        &pass,
+                    )
+                    .unwrap()
+                })
+                .collect();
+            // Cross list boundaries and split the first state's consecutive run.
+            let mut lists = [
+                DrawList::default(),
+                DrawList::default(),
+                DrawList::default(),
+            ];
+            for list in &mut lists {
+                for (index, vertex) in vertices.iter().enumerate() {
+                    list.vertices
+                        .insert(((12, false), index), [Some(vertex.clone()), None]);
+                    list.indices.insert(index, indices[index].clone());
+                }
+            }
+            for index in 0..19 {
+                let mode = if index == 0 {
+                    0
+                } else if index < 17 {
+                    1
+                } else {
+                    2
+                };
+                let block = [
+                    index as f32 / 32.,
+                    0.5,
+                    0.75,
+                    0.25,
+                    (index % 3) as f32 / 16.,
+                    0.,
+                    if index == 17 {
+                        0.9
+                    } else if index == 18 {
+                        0.25
+                    } else {
+                        0.5
+                    },
+                    0.,
+                ];
+                let bindings = pipelines[mode]
+                    .bind_with(
+                        &arena,
+                        |_| Some(bytemuck::cast_slice(&block)),
+                        |_| Some(&views[index % views.len()]),
+                    )
+                    .unwrap();
+                lists[usize::from(index >= 11) * 2]
+                    .draws
+                    .push(RecordedDraw {
+                        bindings,
+                        reference: if index == 18 { 2 } else { 1 },
+                        vertices: ((12, false), index % 2),
+                        indices: index % 2,
+                        first: 1,
+                        count: 3,
+                        base: 1,
+                    });
+            }
+            arena.flush(&queue);
+            let render = |workers: Option<(&Workers, usize)>| {
+                let targets = Targets::new(&device, [16, 16], [16, 16], samples);
+                let mut encoder = device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        color_attachments: &[Some(
+                            targets.scene_attachment(wgpu::LoadOp::Clear(wgpu::Color::BLACK)),
+                        )],
+                        depth_stencil_attachment: Some(
+                            targets.depth_attachment(wgpu::LoadOp::Clear(1.)),
+                        ),
+                        ..Default::default()
+                    });
+                    if workers.is_none() {
+                        for list in &lists {
+                            list.record(&mut pass);
+                        }
+                    }
+                }
+                // Like Scene, finish the slices before their preceding clear encoder, but
+                // submit that clear first. Initialization tracking must keep submission order.
+                let slices = workers.map(|(workers, helpers)| {
+                    workers.with_admitted(workers.threads(), |admitted| {
+                        admitted.wait_for_helpers(helpers);
+                        DrawList::encode(
+                            &lists.iter().collect::<Vec<_>>(),
+                            &device,
+                            &targets,
+                            admitted,
+                        )
+                    })
+                });
+                let mut commands = vec![encoder.finish()];
+                commands.extend(slices.into_iter().flatten());
+                queue.submit(commands);
+                read_texture(&device, &queue, targets.scene_texture(), 8).unwrap()
+            };
+            let reference = render(None);
+            assert!(
+                reference
+                    .chunks_exact(8)
+                    .any(|pixel| pixel[..6].iter().any(|byte| *byte != 0))
+            );
+            assert_eq!(
+                render(Some((&Workers::default(), 0))),
+                reference,
+                "serial {samples}x MSAA"
+            );
+            assert_eq!(
+                render(Some((&workers, workers.threads() - 1))),
+                reference,
+                "borrowed {samples}x MSAA"
+            );
+            assert_eq!(render(Some((&busy, 0))), reference, "busy {samples}x MSAA");
+        }
+    }
 
     #[test]
     fn pending_constants_keep_immutable_view_inputs_and_last_bound_snapshots() {

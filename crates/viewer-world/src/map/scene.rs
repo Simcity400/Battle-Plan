@@ -372,9 +372,11 @@ pub struct Overlay<'a> {
     pub ui_scale: f32,
     /// Whether the map's interface that stands in the world draws: borders, demilitarised zones
     /// and strait crossings, battle plans with their labels and raid paths, the selected units'
-    /// movement arrows, floating map text and country names. Off, as the fly and walk modes leave
-    /// it by default, they still step and keep their state; only their drawing stops.
+    /// movement arrows and floating map text. Off, as the fly and walk modes leave it by default,
+    /// they still step and keep their state; only their drawing stops.
     pub interface: bool,
+    /// Whether the country names draw: with the interface, and in the fly mode on their own.
+    pub country_names: bool,
     /// What a free eye's floating map text stands on, for its sight test; `None` tests nothing.
     pub ground: Option<viewer_foundation::map::free_icons::Ground<'a>>,
 }
@@ -389,6 +391,7 @@ impl Default for Overlay<'_> {
             sprites: None,
             ui_scale: 1.0,
             interface: true,
+            country_names: true,
             ground: None,
         }
     }
@@ -2018,7 +2021,7 @@ impl Scene {
         let lights = self
             .weather_effects
             .as_mut()
-            .map(|pass| pass.set_events(events))
+            .map(|pass| pass.set_events_with_workers(events, &self.workers))
             .transpose()?
             .unwrap_or_default();
         self.point_light_tiles.rebuild(camera, &lights);
@@ -2176,6 +2179,7 @@ impl Scene {
         let prepared = clock.map(|clock| clock.elapsed());
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") });
+        let mut command_buffers = Vec::new();
         // Taken for the encoder's lifetime and put back on every way out.
         let mut timer = self.pass_timer.take();
         let mut mark = |encoder: &mut wgpu::CommandEncoder, label: &'static str| {
@@ -2999,12 +3003,13 @@ impl Scene {
             }
         }
         let particle_packets = self.weather_effects.as_mut().map(|weather| {
-            weather.prepare_frame(
+            weather.prepare_frame_with_workers(
                 camera,
                 size,
                 &actor_views,
                 animation_time,
                 self.graphics.weather,
+                &self.workers,
             )
         });
         // Submit all regular materials before all alternate materials across layer boundaries. Preserve
@@ -3069,59 +3074,59 @@ impl Scene {
                     object.forget_pixel_snapshot();
                 }
                 object.begin();
-                // These layers share attachments and never sample the scene between them.
-                // Each layer still applies its own complete draw state and retained binds.
-                let mut mesh_pass = mesh_layers
-                    .iter()
-                    .any(|(model, enabled, _, _)| {
-                        *enabled && model.is_some_and(ModelPass::has_placements)
-                    })
-                    .then(|| {
-                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("model layers"),
-                            color_attachments: &[Some(
-                                targets.scene_attachment(wgpu::LoadOp::Load),
-                            )],
-                            depth_stencil_attachment: Some(
-                                targets.depth_attachment(wgpu::LoadOp::Load),
-                            ),
-                            ..Default::default()
-                        })
+                // Idle helpers register while native preparation retains the serial state chain.
+                let workers = if mesh_layers.iter().any(|(model, enabled, _, _)| {
+                    *enabled && model.is_some_and(ModelPass::has_placements)
+                }) {
+                    self.workers.threads()
+                } else {
+                    1
+                };
+                let (model_draws, buffers) =
+                    self.workers
+                        .with_admitted(workers, |admitted| -> io::Result<_> {
+                            let mut model_draws = Vec::new();
+                            for (model, enabled, alpha, label) in mesh_layers {
+                                if let Some(model) = model.filter(|_| enabled) {
+                                    let frame = ModelFrame {
+                                        camera: actor_camera,
+                                        offsets: &actor_offsets[view..view + 1],
+                                        visible: if label == "map_frame_mesh" {
+                                            None
+                                        } else {
+                                            actor_visible
+                                        },
+                                        alpha,
+                                    };
+                                    let draws = model.prepare_native(
+                                        arena,
+                                        frame,
+                                        crate::map::models::NativeInputs {
+                                            frames: &actor_frame_bytes[view..view + 1],
+                                            ..native_mesh_inputs
+                                        },
+                                        native_queue,
+                                        &mut object,
+                                    )?;
+                                    model_draws.push((model, draws));
+                                    #[cfg(any(test, feature = "test-support"))]
+                                    faults.after(failure_tests::Point::Models)?;
+                                }
+                            }
+                            let buffers =
+                                ModelPass::encode_native(&model_draws, device, targets, admitted);
+                            Ok((model_draws, buffers))
+                        })?;
+                if !buffers.is_empty() {
+                    command_buffers.push(encoder.finish());
+                    command_buffers.extend(buffers);
+                    encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("map"),
                     });
-                for (model, enabled, alpha, label) in mesh_layers {
-                    if let Some(model) = model.filter(|_| enabled) {
-                        let frame = ModelFrame {
-                            camera: actor_camera,
-                            offsets: &actor_offsets,
-                            visible: actor_visible,
-                            alpha,
-                        };
-                        if let Some(pass) = &mut mesh_pass {
-                            model.record_native(
-                                arena,
-                                pass,
-                                ModelFrame {
-                                    offsets: &actor_offsets[view..view + 1],
-                                    visible: if label == "map_frame_mesh" {
-                                        None
-                                    } else {
-                                        frame.visible
-                                    },
-                                    ..frame
-                                },
-                                crate::map::models::NativeInputs {
-                                    frames: &actor_frame_bytes[view..view + 1],
-                                    ..native_mesh_inputs
-                                },
-                                native_queue,
-                                &mut object,
-                            )?;
-                        }
-                        #[cfg(any(test, feature = "test-support"))]
-                        faults.after(failure_tests::Point::Models)?;
-                    }
                 }
-                drop(mesh_pass);
+                for (model, draws) in model_draws {
+                    model.recycle_native(draws);
+                }
                 mark(&mut encoder, "model_layers");
                 if native_queue == crate::map::models::NativeQueue::Alternate {
                     // In each admitted view the native order is meshes, then
@@ -3212,7 +3217,7 @@ impl Scene {
         self.name_pass.validate_draw(&native_frame_bytes, None)?;
         self.near_name_pass
             .validate_draw(&native_frame_bytes, None)?;
-        let names = overlay.interface && self.graphics.country_names;
+        let names = overlay.country_names && self.graphics.country_names;
         passes.run(passes::Pass::CountryNames, || {
             if !names {
                 return Ok(());
@@ -3298,7 +3303,8 @@ impl Scene {
         }
         self.arena.flush(queue);
         let encoded = clock.map(|clock| clock.elapsed());
-        queue.submit([encoder.finish()]);
+        command_buffers.push(encoder.finish());
+        queue.submit(command_buffers);
         #[cfg(any(test, feature = "test-support"))]
         faults.submissions.set(faults.submissions.get() + 1);
         if let Some(timer) = &mut timer {

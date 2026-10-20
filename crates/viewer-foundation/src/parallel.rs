@@ -154,6 +154,32 @@ impl Workers {
         self.run_beside(count, task, None);
     }
 
+    /// Lends idle helpers before caller-side preparation, without waiting for busy builders.
+    /// The callback runs here; its [`Admitted::run`] sizes tasks from helpers that actually
+    /// reached the admission gate during preparation, not jobs still queued on the pool.
+    pub fn with_admitted<R>(&self, maximum: usize, work: impl FnOnce(&Admitted) -> R) -> R {
+        let admitted = Admitted {
+            capacity: maximum.min(self.threads),
+            gate: Arc::new(Admission {
+                state: Mutex::new(AdmissionState {
+                    open: true,
+                    waiting: 0,
+                    turns: None,
+                }),
+                ready: Condvar::new(),
+            }),
+        };
+        if let Some(pool) = &self.pool {
+            for _ in 0..admitted.capacity.saturating_sub(1) {
+                let gate = Arc::clone(&admitted.gate);
+                if pool.try_spawn(Box::new(move || gate.help())).is_err() {
+                    break;
+                }
+            }
+        }
+        work(&admitted)
+    }
+
     /// [`Self::run`], with `beside` run on one pool thread, never the
     /// calling one, if a pool thread takes a turn: it is given whether the
     /// tasks are all done and should return soon once they are. It runs
@@ -178,56 +204,102 @@ impl Workers {
                 return;
             }
         };
-        // SAFETY: the lifetime is erased only for the pool's jobs, which run
-        // `task` only while registered in `Turns::state` before it is closed,
-        // and this call does not return (or unwind) until it is closed with
-        // no job registered.
-        let task: *const (dyn Fn(usize) + Sync + 'static) = unsafe {
-            std::mem::transmute::<*const (dyn Fn(usize) + Sync + '_), *const (dyn Fn(usize) + Sync)>(
-                task,
-            )
-        };
-        // SAFETY: as for `task`.
-        let beside = beside.map(|beside| unsafe {
-            std::mem::transmute::<*const Beside<'_>, *const Beside<'static>>(beside)
-        });
-        let turns = Arc::new(Turns {
-            next: AtomicUsize::new(0),
-            count,
-            task,
-            beside,
-            beside_taken: AtomicBool::new(false),
-            completed: AtomicUsize::new(0),
-            failed: AtomicBool::new(false),
-            priority: crate::worker_priority::current_priority(),
-            state: Mutex::default(),
-            idle: Condvar::new(),
-        });
-        for _ in 0..helpers {
-            let turn = Arc::clone(&turns);
-            if pool.try_spawn(Box::new(move || turn.help())).is_err() {
-                break;
+        let turns = Turns::new(count, task, beside);
+        let spawned = catch_unwind(AssertUnwindSafe(|| {
+            for _ in 0..helpers {
+                let turn = Arc::clone(&turns);
+                if pool.try_spawn(Box::new(move || turn.help())).is_err() {
+                    break;
+                }
             }
-        }
-        let own = catch_unwind(AssertUnwindSafe(|| turns.work()));
-        if own.is_err() {
-            turns.failed.store(true, Ordering::Release);
-        }
-        let mut state = turns.lock();
-        state.closed = true;
-        while state.running > 0 {
-            state = turns
-                .idle
+        }));
+        turns.finish(spawned.and_then(|()| catch_unwind(AssertUnwindSafe(|| turns.work()))));
+    }
+}
+
+/// One caller-side preparation scope and its idle helper turns. Call [`Self::run`] once,
+/// after preparation. Dropping the scope without running releases every waiting helper.
+pub struct Admitted {
+    capacity: usize,
+    gate: Arc<Admission>,
+}
+
+impl Admitted {
+    /// Upper bound from the caller's requested work and [`Workers::threads`].
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Waits for a fixture pool's helpers to reach this scope. Only use when the fixture
+    /// guarantees those jobs start independently of the caller; ordinary batches never wait.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_for_helpers(&self, count: usize) {
+        assert!(count <= self.capacity.saturating_sub(1));
+        let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
+        while state.waiting < count {
+            state = self
+                .gate
+                .ready
                 .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(|e| e.into_inner());
         }
-        let helper = state.panic.take();
+    }
+
+    /// Runs `task(index, count)` for each contiguous index below the final count: at most
+    /// `maximum`, the scope's capacity, and one plus the helpers already waiting. A busy
+    /// pool runs one task in place. Returns the count; zero work runs no task.
+    pub fn run(&self, maximum: usize, task: &(dyn Fn(usize, usize) + Sync)) -> usize {
+        let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(state.open, "admitted batch already run");
+        let count = maximum.min(self.capacity).min(state.waiting + 1);
+        let task = |index| task(index, count);
+        let turns = Turns::new(count, &task, None);
+        state.open = false;
+        state.turns = Some(Arc::clone(&turns));
         drop(state);
-        if let Err(panic) = own {
-            resume_unwind(panic);
+        self.gate.ready.notify_all();
+        turns.finish(catch_unwind(AssertUnwindSafe(|| turns.work())));
+        count
+    }
+}
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        let mut state = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.open = false;
+        state.turns = None;
+        drop(state);
+        self.gate.ready.notify_all();
+    }
+}
+
+struct Admission {
+    state: Mutex<AdmissionState>,
+    ready: Condvar,
+}
+
+struct AdmissionState {
+    open: bool,
+    waiting: usize,
+    turns: Option<Arc<Turns>>,
+}
+
+impl Admission {
+    fn help(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // Busy builders may reach this job after the batch or even the scope ended.
+        if !state.open {
+            return;
         }
-        if let Some(panic) = helper {
-            resume_unwind(panic);
+        state.waiting += 1;
+        self.ready.notify_all();
+        while state.open {
+            state = self.ready.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+        let turns = state.turns.clone();
+        drop(state);
+        if let Some(turns) = turns {
+            turns.help();
         }
     }
 }
@@ -264,6 +336,57 @@ struct TurnState {
 }
 
 impl Turns {
+    fn new(count: usize, task: &(dyn Fn(usize) + Sync), beside: Option<&Beside<'_>>) -> Arc<Self> {
+        // SAFETY: the lifetime is erased only for the pool's jobs, which run
+        // `task` only while registered in `Turns::state` before it is closed.
+        // Both callers finish this run before the borrowed callbacks expire:
+        // `finish` closes it and waits until no job is registered.
+        let task: *const (dyn Fn(usize) + Sync + 'static) = unsafe {
+            std::mem::transmute::<*const (dyn Fn(usize) + Sync + '_), *const (dyn Fn(usize) + Sync)>(
+                task,
+            )
+        };
+        // SAFETY: as for `task`.
+        let beside = beside.map(|beside| unsafe {
+            std::mem::transmute::<*const Beside<'_>, *const Beside<'static>>(beside)
+        });
+        Arc::new(Self {
+            next: AtomicUsize::new(0),
+            count,
+            task,
+            beside,
+            beside_taken: AtomicBool::new(false),
+            completed: AtomicUsize::new(0),
+            failed: AtomicBool::new(false),
+            priority: crate::worker_priority::current_priority(),
+            state: Mutex::default(),
+            idle: Condvar::new(),
+        })
+    }
+
+    /// Close before returning or unwinding, so delayed pool jobs cannot call the borrowed task.
+    fn finish(&self, own: std::thread::Result<()>) {
+        if own.is_err() {
+            self.failed.store(true, Ordering::Release);
+        }
+        let mut state = self.lock();
+        state.closed = true;
+        while state.running > 0 {
+            state = self
+                .idle
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        let helper = state.panic.take();
+        drop(state);
+        if let Err(panic) = own {
+            resume_unwind(panic);
+        }
+        if let Some(panic) = helper {
+            resume_unwind(panic);
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, TurnState> {
         self.state
             .lock()
@@ -386,6 +509,177 @@ mod tests {
                 });
                 assert!(seen.iter().all(|n| n.load(Ordering::Relaxed) == 1));
             }
+        }
+    }
+
+    #[test]
+    fn admitted_batches_size_from_accepted_helpers_and_keep_serial_empty_runs() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Admits {
+            pool: Arc<Threads>,
+            remaining: AtomicUsize,
+        }
+        impl super::Spawn for Admits {
+            fn try_spawn(
+                &self,
+                job: Box<dyn FnOnce() + Send>,
+            ) -> Result<(), Box<dyn FnOnce() + Send>> {
+                if self
+                    .remaining
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_err()
+                {
+                    return Err(job);
+                }
+                super::Spawn::try_spawn(&*self.pool, job)
+            }
+            fn threads(&self) -> usize {
+                super::Spawn::threads(&*self.pool)
+            }
+        }
+        let pool = threads(3);
+        for accepted in [0, 1, 3] {
+            for maximum in [0, 1, 2, 7] {
+                let workers = super::Workers::new(Arc::new(Admits {
+                    pool: Arc::clone(&pool),
+                    remaining: AtomicUsize::new(accepted),
+                }));
+                let expected = maximum.min(workers.threads()).min(accepted + 1);
+                let seen = Mutex::new(Vec::new());
+                assert_eq!(
+                    workers.with_admitted(maximum, |admitted| {
+                        admitted.wait_for_helpers(expected.saturating_sub(1));
+                        admitted.run(maximum, &|index, count| {
+                            seen.lock().unwrap().push((index, count))
+                        })
+                    }),
+                    expected
+                );
+                let mut seen = seen.into_inner().unwrap();
+                seen.sort_unstable();
+                assert_eq!(
+                    seen,
+                    (0..expected)
+                        .map(|index| (index, expected))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        for maximum in [0, 1, 7] {
+            let seen = Mutex::new(Vec::new());
+            let expected = maximum.min(1);
+            assert_eq!(
+                super::Workers::default().with_admitted(maximum, |admitted| admitted.run(
+                    maximum,
+                    &|index, count| {
+                        seen.lock().unwrap().push((index, count));
+                    }
+                )),
+                expected
+            );
+            assert_eq!(
+                seen.into_inner().unwrap(),
+                (0..expected)
+                    .map(|index| (index, expected))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn admitted_helpers_share_one_count_and_finish_before_a_task_panic_returns() {
+        let workers = super::Workers::new(threads(3));
+        let count = workers.threads();
+        let barrier = std::sync::Barrier::new(count);
+        let seen = Mutex::new(Vec::new());
+        assert_eq!(
+            workers.with_admitted(count, |admitted| {
+                admitted.wait_for_helpers(count - 1);
+                admitted.run(count, &|index, admitted| {
+                    assert_eq!(admitted, count);
+                    // No timing assumption: all admitted helpers must enter before any finishes.
+                    barrier.wait();
+                    seen.lock()
+                        .unwrap()
+                        .push((index, std::thread::current().id()));
+                })
+            }),
+            count
+        );
+        let mut seen = seen.into_inner().unwrap();
+        seen.sort_by_key(|entry| entry.0);
+        assert_eq!(
+            seen.iter().map(|entry| entry.0).collect::<Vec<_>>(),
+            (0..count).collect::<Vec<_>>()
+        );
+        let ids: std::collections::HashSet<_> = seen.iter().map(|entry| entry.1).collect();
+        assert_eq!(ids.len(), count);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            workers.with_admitted(count, |admitted| {
+                admitted.run(count, &|index, actual| {
+                    assert_ne!(index, actual - 1, "admitted task")
+                })
+            });
+        }));
+        assert!(caught.is_err());
+        let seen = Mutex::new(Vec::new());
+        let actual = workers.with_admitted(count, |admitted| {
+            admitted.run(count, &|index, _| seen.lock().unwrap().push(index))
+        });
+        assert_eq!(seen.into_inner().unwrap().len(), actual);
+    }
+
+    #[test]
+    fn accepted_jobs_that_start_after_admission_returns_do_not_call_the_borrowed_task() {
+        #[derive(Default)]
+        struct Queued(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+        impl super::Spawn for Queued {
+            fn try_spawn(
+                &self,
+                job: Box<dyn FnOnce() + Send>,
+            ) -> Result<(), Box<dyn FnOnce() + Send>> {
+                self.0.lock().unwrap().push(job);
+                Ok(())
+            }
+            fn threads(&self) -> usize {
+                3
+            }
+        }
+        let pool = Arc::new(Queued::default());
+        let workers = super::Workers::new(pool.clone());
+        let seen = Mutex::new(Vec::new());
+        let count = workers.with_admitted(workers.threads(), |admitted| {
+            admitted.run(workers.threads(), &|index, _| {
+                seen.lock().unwrap().push(index)
+            })
+        });
+        assert_eq!(count, 1);
+        assert_eq!(seen.lock().unwrap().len(), count);
+        for job in std::mem::take(&mut *pool.0.lock().unwrap()) {
+            job();
+        }
+        assert_eq!(seen.into_inner().unwrap().len(), count);
+    }
+
+    #[test]
+    fn abandoning_preparation_releases_helpers_on_return_and_unwind() {
+        let workers = super::Workers::new(threads(3));
+        let count = workers.threads();
+        for panic in [false, true] {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                workers.with_admitted(count, |admitted| {
+                    admitted.wait_for_helpers(count - 1);
+                    assert!(!panic, "preparation refused");
+                });
+            }));
+            assert_eq!(result.is_err(), panic);
+            // Every pool thread must be available again; no clock or timeout decides that.
+            let barrier = std::sync::Barrier::new(count);
+            workers.run(count, &|_| {
+                barrier.wait();
+            });
         }
     }
 

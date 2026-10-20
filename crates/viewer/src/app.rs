@@ -293,7 +293,7 @@ fn pace_profiled_frame() -> Duration {
 struct Playhead {
     branch: replay_data::BranchId,
     hour: i32,
-    fraction: f32,
+    fraction: f64,
 }
 
 /// What the frame path keeps of the hour on screen once its layers are uploaded.
@@ -875,6 +875,10 @@ pub struct Viewer {
     dashboard: Option<Box<crate::dashboard_maps::DashboardMaps>>,
     dashboard_active: bool,
     dashboard_map: bool,
+    /// Whether a host has applied the map's graphics settings ([`Self::set_embedded_graphics`]),
+    /// as the desktop app does for its Campaign map: the picker's day/night and allied plans then
+    /// ask it to flip them, as on a dashboard map. A viewer without a host has neither control.
+    host_graphics: bool,
     shared_resources: Option<Arc<hours::Resources>>,
     source: Option<Arc<dashboard::Source>>,
     source_decoder: Option<Arc<hours::SharedDecoder>>,
@@ -960,7 +964,10 @@ pub struct Viewer {
     /// Whether the window hides and confines the cursor for looking around.
     pointer_grabbed: bool,
     playing: bool,
-    speed: u32,
+    speed: f64,
+    /// Hours the playing clock ran ahead of a late host update at an unchanged rate: it holds
+    /// that much of its next advance, so it meets the host's position without stepping back.
+    clock_lead: f64,
     last_step: Instant,
     started: Instant,
     /// When the replay was opened, so a profiled run reports the cold open:
@@ -1362,6 +1369,7 @@ impl Viewer {
             dashboard: None,
             dashboard_active: false,
             dashboard_map: false,
+            host_graphics: false,
             shared_resources: None,
             source: None,
             source_decoder: None,
@@ -1449,7 +1457,8 @@ impl Viewer {
             scene_target: Presented::default(),
             map_error: None,
             playing: false,
-            speed: 24,
+            speed: 24.0,
+            clock_lead: 0.0,
             last_step: Instant::now(),
             started: Instant::now(),
             opened: None,
@@ -1628,6 +1637,11 @@ impl Viewer {
         settings
     }
 
+    /// Lighting for the frame being drawn, including a setting changed at the same replay hour.
+    fn frame_day_night(&self, hour: i32) -> DayNight {
+        DayNight::at_hour(hour).with_cycle(self.graphics.day_night)
+    }
+
     /// The host's campaign or widget settings, including the counter setting.
     pub(crate) fn set_embedded_graphics(
         &mut self,
@@ -1635,6 +1649,7 @@ impl Viewer {
     ) {
         let graphics = settings.graphics;
         self.graphics = graphics;
+        self.host_graphics = true;
         if self.counter_filter != settings.counters {
             self.counter_filter = settings.counters.clone();
         }
@@ -1742,19 +1757,24 @@ impl Viewer {
         let head = Playhead {
             branch,
             hour: target.hour,
-            fraction: target.fraction,
+            fraction: f64::from(target.fraction),
         };
         let animation_target = Target {
             branch,
             hour: target.hour,
             seek_sequence: target.seek_sequence,
         };
-        self.animation_seek |= self
+        let sought = self
             .map_animation_target
             .is_some_and(|old| animation_target.seeks_from(old));
+        self.animation_seek |= sought;
+        if sought && let Some(hours) = &mut self.hours {
+            hours.seek();
+        }
         self.map_animation_target = Some(animation_target);
         self.playing = target.playing;
         self.playhead = Some(head);
+        self.clock_lead = 0.0;
         let valid = self
             .document
             .as_ref()
@@ -1787,6 +1807,19 @@ impl Viewer {
             && self.map_error.is_none()
         {
             self.rendered_sequence = target.sequence;
+        }
+    }
+
+    /// Advances independently of the builders, for both the live host clock
+    /// and the deterministic playback sweep. The branch end is always exact.
+    fn tick_playhead(&mut self, seconds: f64, last: i32) {
+        if self.playing
+            && let Some(head) = &mut self.playhead
+        {
+            let step = seconds.max(0.0) * self.speed;
+            let held = step.min(self.clock_lead);
+            self.clock_lead -= held;
+            self.playing = advance_clock(head, head.fraction + step - held, last);
         }
     }
 
@@ -1836,7 +1869,7 @@ impl Viewer {
                 Playhead {
                     branch,
                     hour: target.hour,
-                    fraction: target.fraction,
+                    fraction: f64::from(target.fraction),
                 },
                 target.playing,
             )
@@ -1847,7 +1880,7 @@ impl Viewer {
             revision: Some(target.revision.clone()),
             branch_id: self.rendered.map(|shown| shown.branch.to_string()),
             hour: self.rendered.map(|shown| shown.hour),
-            fraction: self.rendered.map(|shown| shown.fraction),
+            fraction: self.rendered.map(|shown| shown.fraction as f32),
             sequence: self.rendered_sequence,
             requested_sequence: target.sequence,
             loading: error.is_none() && !ready,
@@ -2283,11 +2316,15 @@ impl Viewer {
     /// and the process; run_native hands the message to main, which exits 1.
     /// Other captures belong to the map on screen and stay armed.
     fn failed_load(&mut self, error: String, ctx: &egui::Context) {
+        self.failed_window_capture(&format!("replay could not be loaded: {error}"), ctx);
+        self.error = Some(error);
+    }
+
+    /// A window dump cannot write an unavailable map. Surface its failure to
+    /// the caller instead of leaving a capture parked on an error view.
+    fn failed_window_capture(&mut self, error: &str, ctx: &egui::Context) {
         if let Some(capture) = self.capture.take_if(|capture| capture.exit) {
-            let message = format!(
-                "Capture {} failed: replay could not be loaded: {error}",
-                capture.path.display()
-            );
+            let message = format!("Capture {} failed: {error}", capture.path.display());
             *self
                 .failure
                 .lock()
@@ -2295,7 +2332,6 @@ impl Viewer {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             self.capture_note = Some(message);
         }
-        self.error = Some(error);
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
@@ -2335,8 +2371,9 @@ impl Viewer {
                 self.playhead = Some(Playhead {
                     branch: document.playback.branch(),
                     hour: document.playback.hour(),
-                    fraction: document.hour_fraction,
+                    fraction: f64::from(document.hour_fraction),
                 });
+                self.clock_lead = 0.0;
                 self.counter_view =
                     CounterView::new(self.options.counter_settings(document.game_counters));
                 if self.embedded.is_none() {
@@ -3207,6 +3244,19 @@ impl Viewer {
                 profile_print(format!("PROFILE adapter {} {:?}", info.name, info.backend));
             });
         }
+        // The Campaign map runs the host's clock between its updates. Captures
+        // keep their exact target; the play sweep calls the same tick with its
+        // deterministic elapsed time instead of wall time.
+        if !self.dashboard_map && self.capture.is_none() {
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_step).as_secs_f64();
+            self.last_step = now;
+            if let Some(head) = self.playhead
+                && let Some((_, last)) = document.playback.range(head.branch)
+            {
+                self.tick_playhead(elapsed, last);
+            }
+        }
         // The scene arrives with the document from the loading thread
         // (`load_scene`); only hour data uploads per frame from here.
         self.map_error = self
@@ -3221,7 +3271,8 @@ impl Viewer {
         {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
-        if let Some(error) = &self.map_error {
+        if let Some(error) = self.map_error.clone() {
+            self.failed_window_capture(&error, ui.ctx());
             self.rendered = None;
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
@@ -3364,6 +3415,9 @@ impl Viewer {
             Some(_) => true,
             None => !free_mode || self.free_overlays,
         };
+        // The fly mode shows the country names even with the rest of the interface hidden; they
+        // fade by its eye's height as the game camera's do.
+        let flying_names = free_mode && self.camera_mode == CameraMode::Fly;
         // Pointer and drag deltas reach the camera in framebuffer pixels.
         let scale = ui.ctx().pixels_per_point() / raster.stretch;
         let frame_point = |position: egui::Pos2| {
@@ -3804,6 +3858,7 @@ impl Viewer {
             }
         };
         self.grab_pointer(ui.ctx());
+        laps.lap("panel_camera");
         let scene = self.scene.as_mut().expect("created above");
         // A `--window-dump` settles unit models for its camera, as `--dump`
         // does; a host export keeps the live history.
@@ -3814,6 +3869,7 @@ impl Viewer {
                 .as_ref()
                 .expect("prepared above")
                 .field(&document.unit_models);
+            laps.lap("units_field");
             scene
                 .set_unit_models(
                     &state.device,
@@ -3836,13 +3892,9 @@ impl Viewer {
         }
         // Playing, the raid units move every rendered frame by the playback
         // fraction, the tick's progress read by movement updates
-        // each frame; paused, they stand where the hour's start put them.
+        // each frame; paused, they stand at the host's exact fraction.
         // Only they move within the hour: the figures and ships stay uploaded.
-        let tick = if self.playing {
-            document.hour_fraction
-        } else {
-            0.0
-        };
+        let tick = document.hour_fraction;
         // The trade-route convoys sail by the presentation clock, so while they show they are
         // placed again every frame, with the raid units.
         let convoys_shown = |defines: &viewer_world::map::trade_routes::ConvoyDefines| {
@@ -3883,6 +3935,7 @@ impl Viewer {
             self.raid_tick = Some(tick);
             self.convoys_sailing = sailing;
         }
+        laps.lap("movers_place");
         // names: the engine integrates the layer cross-fade by the frame delta
         // and clamps to [0, 1], so it takes one second whatever the zoom speed.
         // It has to start from a settled value, and only this frame knows which:
@@ -3894,7 +3947,7 @@ impl Viewer {
             .get_or_insert_with(|| LayerFade::instant(camera))
             .step(camera, frame_delta);
         self.fade = Some(fade);
-        laps.lap("panel_camera_units");
+        laps.lap("names_fade");
         let now = document.hour().map_err(|error| error.to_string())?;
         self.unit_selection.observe(
             document.playback.branch(),
@@ -3905,6 +3958,7 @@ impl Viewer {
             now.frame,
         );
         self.counter_view.selected = Arc::clone(self.unit_selection.units());
+        laps.lap("unit_selection");
         self.air_selection.observe(
             document.playback.branch(),
             &perspective.country,
@@ -3915,6 +3969,7 @@ impl Viewer {
         );
         self.counter_view.air_selected = Arc::clone(self.air_selection.wings());
         self.counter_view.air_bases = Arc::clone(self.air_selection.bases());
+        laps.lap("air_selection");
         self.fleet_selection.observe(
             document.playback.branch(),
             &perspective.country,
@@ -3924,6 +3979,7 @@ impl Viewer {
             now.frame,
         );
         self.counter_view.fleets_selected = Arc::clone(self.fleet_selection.fleets());
+        laps.lap("fleet_selection");
         // A free mode's pointer reaches the map's interface while it is shown and the pointer is
         // not held for looking around.
         let point = point.filter(|_| !free_mode || (interface && !self.input.captured()));
@@ -3974,7 +4030,7 @@ impl Viewer {
         );
         self.fade = Some(name_fade);
         self.hovered_name_region = hovered_name_region;
-        laps.lap("names");
+        laps.lap("names_pick");
         // counters: one batch carries the bases, the labels, the counters and
         // the combat icons in the map mode's `<table>_PRIORITY_*` order.
         let overlay_key = OverlayKey {
@@ -4610,6 +4666,7 @@ impl Viewer {
                 && hit.kind == viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce)
                 .then(|| Arc::clone(&hit.members))
         });
+        let day_night = self.frame_day_night(document.playback.hour());
         let scene = self.scene.as_mut().unwrap();
         if let Some(prepared) = &self.prepared_overlay {
             let carrier_ranges = hovered_air_carriers
@@ -4684,8 +4741,7 @@ impl Viewer {
                 Request {
                     size: pixels,
                     camera,
-                    day_night: DayNight::at_hour(document.playback.hour())
-                        .with_cycle(self.graphics.day_night),
+                    day_night,
                     animation_time,
                     // The window runs one clock, so the map scene shares it.
                     map_time: animation_time,
@@ -4704,6 +4760,7 @@ impl Viewer {
                         sprites: interface.then_some(label_batch),
                         ui_scale,
                         interface,
+                        country_names: interface || flying_names,
                         ground: camera.free().map(|_| free_icons::Ground {
                             field: document.assets.height_field(),
                             sight: document.assets.terrain_sight(),
@@ -4906,7 +4963,7 @@ impl Viewer {
         self.rendered = Some(Playhead {
             branch: document.playback.branch(),
             hour: document.playback.hour(),
-            fraction: document.hour_fraction,
+            fraction: f64::from(document.hour_fraction),
         });
         Ok(())
     }
@@ -5150,11 +5207,13 @@ impl eframe::App for Viewer {
                 let sweep_frames = profiling_sweep();
                 // `hours`: one hour forward at the sweep's start, back at its middle.
                 let middle = sweep_frames.start + sweep_frames.len() as u32 / 2;
+                let mut sought = false;
                 if let Some(playhead) = &mut self.playhead {
                     if mode == "hours"
                         && (self.profile_frame == sweep_frames.start
                             || self.profile_frame == middle)
                     {
+                        sought = true;
                         playhead.hour += if self.profile_frame == sweep_frames.start {
                             1
                         } else {
@@ -5169,32 +5228,34 @@ impl eframe::App for Viewer {
                         && mode == "seek_end"
                         && let Some((_, last)) = document.playback.range(playhead.branch)
                     {
-                        self.animation_seek = true;
+                        sought = true;
                         playhead.hour = last;
                         playhead.fraction = 0.0;
+                    }
+                }
+                if sought {
+                    self.animation_seek = true;
+                    if let Some(hours) = &mut self.hours {
+                        hours.seek();
                     }
                 }
                 // Steady playback at `play:<hours per second>`, sampled as a
                 // clock at the profiled pace over the sweep, as the host's clock would run.
                 let playing = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE"))
                     .ok()
-                    .and_then(|mode| mode.strip_prefix("play:")?.parse::<f32>().ok());
+                    .and_then(|mode| mode.strip_prefix("play:")?.parse::<f64>().ok());
                 self.playing = playing.is_some() && profiling_sweep().contains(&self.profile_frame);
                 if let Some(speed) = playing {
-                    // The builders reach as far ahead as the host's clock at this speed.
-                    self.speed = speed as u32;
+                    self.speed = speed;
                 }
-                if let Some(speed) = playing
-                    && profiling_sweep().contains(&self.profile_frame)
-                    && let Some(mut moved) = self.playhead
+                if self.playing
+                    && let Some(head) = self.playhead
                 {
                     let last = document
                         .playback
-                        .range(moved.branch)
-                        .map_or(moved.hour, |(_, last)| last);
-                    let fraction = f64::from(moved.fraction) + f64::from(speed) / hz();
-                    advance_clock(&mut moved, fraction, last);
-                    self.playhead = Some(moved);
+                        .range(head.branch)
+                        .map_or(head.hour, |(_, last)| last);
+                    self.tick_playhead(1.0 / hz(), last);
                 }
                 if playing.is_none()
                     && !mode.starts_with("pan:")
@@ -5202,9 +5263,9 @@ impl eframe::App for Viewer {
                     && let Some(playhead) = &mut self.playhead
                 {
                     playhead.fraction = if !profiling_sweep().contains(&self.profile_frame) {
-                        self.options.hour_fraction
+                        f64::from(self.options.hour_fraction)
                     } else {
-                        ((self.profile_frame - sweep_frames.start) % 120) as f32 / 120.0
+                        f64::from((self.profile_frame - sweep_frames.start) % 120) / 120.0
                     };
                 }
                 // A camera sweep: `pan:<world units per second>` drifts the
@@ -5262,6 +5323,7 @@ impl eframe::App for Viewer {
                 let result = self.map(ui, frame, &mut document);
                 self.after_frame_with_visual_mods(&document, result.as_ref().err());
                 if let Err(error) = result {
+                    self.failed_window_capture(&error, ui.ctx());
                     self.error = Some(error);
                 }
             });
@@ -5416,17 +5478,35 @@ fn skipped_hours<T>(
     Some(passed)
 }
 
+/// A delayed host update re-anchors a playing clock without reversing it: a clock ahead of the
+/// host keeps its position and returns the hours it leads by, which it holds before advancing
+/// again. Explicit seeks, paused targets and a changed rate (`forward` false) take the host
+/// position exactly.
+fn anchor_clock(current: Option<Playhead>, target: Playhead, forward: bool) -> (Playhead, f64) {
+    match current {
+        Some(current) if forward && current.branch == target.branch => {
+            let lead = f64::from(current.hour - target.hour) + current.fraction - target.fraction;
+            if lead > 0.0 {
+                (current, lead)
+            } else {
+                (target, 0.0)
+            }
+        }
+        _ => (target, 0.0),
+    }
+}
+
 /// Moves a playing playhead `fraction` hours past its hour, whether or not the
 /// builders have reached it: the map shows the newest built hour at or before
 /// it ([`latest_built_key`]). Returns false at the branch's last hour.
 fn advance_clock(playhead: &mut Playhead, fraction: f64, last: i32) -> bool {
-    if fraction >= f64::from(last.saturating_sub(playhead.hour)) {
+    if fraction >= f64::from(last) - f64::from(playhead.hour) {
         playhead.hour = last;
         playhead.fraction = 0.0;
         return false;
     }
-    playhead.hour += fraction.floor() as i32;
-    playhead.fraction = fraction.fract() as f32;
+    playhead.hour = (f64::from(playhead.hour) + fraction.floor()) as i32;
+    playhead.fraction = fraction.fract();
     true
 }
 
@@ -6591,6 +6671,105 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn host_reanchors_keep_playback_forward_but_seeks_and_pauses_exact() {
+        let current = Playhead {
+            branch: 1,
+            hour: 20,
+            fraction: 0.75,
+        };
+        for target in [
+            Playhead {
+                hour: 19,
+                ..current
+            },
+            Playhead {
+                fraction: 0.25,
+                ..current
+            },
+        ] {
+            assert_eq!(anchor_clock(Some(current), target, true).0, current);
+            assert_eq!(anchor_clock(Some(current), target, false), (target, 0.0));
+        }
+        let later = Playhead {
+            hour: 21,
+            fraction: 0.125,
+            ..current
+        };
+        assert_eq!(anchor_clock(Some(current), later, true), (later, 0.0));
+        let branch = Playhead {
+            branch: 2,
+            hour: 10,
+            ..current
+        };
+        assert_eq!(anchor_clock(Some(current), branch, true), (branch, 0.0));
+        assert_eq!(anchor_clock(None, current, true), (current, 0.0));
+    }
+
+    #[test]
+    fn a_clock_ahead_of_a_late_update_holds_until_the_host_catches_up() {
+        let mut viewer = Viewer::create(
+            crate::Config::default(),
+            crate::Options::default(),
+            None,
+            Arc::new(Mutex::new(None)),
+            None,
+            None,
+        );
+        viewer.playing = true;
+        viewer.speed = 24.0;
+        let host = Playhead {
+            branch: 1,
+            hour: 100,
+            fraction: 0.0,
+        };
+        let ahead = Playhead {
+            fraction: 0.5,
+            ..host
+        };
+        let (head, lead) = anchor_clock(Some(ahead), host, true);
+        assert_eq!((head, lead), (ahead, 0.5));
+        (viewer.playhead, viewer.clock_lead) = (Some(head), lead);
+        // A quarter hour later the host is still behind: the shown position holds.
+        viewer.tick_playhead(0.25 / 24.0, 1_000);
+        assert_eq!(viewer.playhead, Some(ahead));
+        // Another half hour: a quarter of it meets the host, the rest advances.
+        viewer.tick_playhead(0.5 / 24.0, 1_000);
+        let head = viewer.playhead.unwrap();
+        assert_eq!(head.hour, 100);
+        assert!((head.fraction - 0.75).abs() < 1e-9, "{head:?}");
+        assert_eq!(viewer.clock_lead, 0.0);
+        // A changed rate or the branch end never keeps a lead: the host position is exact.
+        let overshot = Playhead {
+            hour: 1_000,
+            fraction: 0.0,
+            ..host
+        };
+        assert_eq!(anchor_clock(Some(overshot), host, false), (host, 0.0));
+    }
+
+    #[test]
+    fn fractional_host_rates_advance_every_frame_and_finish_exactly() {
+        for speed in [0.25, 24.0, 720.0, 1440.25] {
+            let mut head = Playhead {
+                branch: 1,
+                hour: 100,
+                fraction: 0.375,
+            };
+            for _ in 0..240 {
+                let fraction = head.fraction + speed / 240.0;
+                assert!(advance_clock(&mut head, fraction, 10_000));
+            }
+            let position = f64::from(head.hour) + head.fraction;
+            assert!(
+                (position - (100.375 + speed)).abs() < 0.0001,
+                "{speed}: {position}"
+            );
+            assert!(!advance_clock(&mut head, 10_000.0, 10_000));
+            assert_eq!((head.hour, head.fraction), (10_000, 0.0));
+        }
+    }
+
+    #[test]
     fn the_playback_clock_runs_without_the_builders_and_stops_at_the_end() {
         let mut head = Playhead {
             branch: 1,
@@ -6601,6 +6780,9 @@ pub(crate) mod tests {
         assert_eq!((head.hour, head.fraction), (16, 0.25));
         assert!(!advance_clock(&mut head, 100.0, 30));
         assert_eq!((head.hour, head.fraction), (30, 0.0));
+        head.hour = i32::MIN;
+        assert!(advance_clock(&mut head, 3_000_000_000.25, i32::MAX));
+        assert_eq!((head.hour, head.fraction), (852_516_352, 0.25));
     }
 
     #[test]
@@ -6625,6 +6807,25 @@ pub(crate) mod tests {
         assert_eq!(playing(Some((1, 10)), (1, 14)), Some(vec![11, 12]));
         assert_eq!(playing(Some((1, 10)), (1, 16)), None, "14 is a gap");
         assert_eq!(playing(Some((1, 10)), (1, 9)), None, "backwards");
+    }
+
+    #[test]
+    fn sparse_builds_keep_skipped_building_history_during_playback_and_paused_catchup() {
+        // Only the sampled hours were built. Their building snapshots must
+        // advance history in order; unbuilt hours are not fabricated snapshots.
+        let built = |hour| match hour {
+            16 => Some(Some("building added")),
+            22 => Some(Some("building damaged")),
+            _ => None,
+        };
+        // `passes_unbuilt` is deliberately independent of playing: the
+        // final paused catch-up has the same continuity as the fast clock.
+        assert_eq!(
+            skipped_hours(Some((1, 10)), (1, 28), true, built),
+            Some(vec!["building added", "building damaged"])
+        );
+        // An explicit seek cannot infer the unbuilt intermediate history.
+        assert_eq!(skipped_hours(Some((1, 10)), (1, 28), false, built), None);
     }
 
     #[test]
@@ -6765,6 +6966,55 @@ pub(crate) mod tests {
                     assert!(reported.is_none());
                 }
             }
+        }
+    }
+
+    #[test]
+    fn an_unavailable_map_ends_a_window_dump_instead_of_waiting_for_another_frame() {
+        for window_dump in [false, true] {
+            let failure = Arc::new(Mutex::new(None));
+            let mut viewer = Viewer::create(
+                Config::default(),
+                Options {
+                    out: Some("unavailable.png".into()),
+                    window_dump,
+                    ..Default::default()
+                },
+                None,
+                Arc::clone(&failure),
+                None,
+                None,
+            );
+            if !window_dump {
+                viewer.capture = Some(Capture {
+                    path: "export.png".into(),
+                    remaining: 0,
+                    pinned: None,
+                    exit: false,
+                    time: None,
+                    step: 0.0,
+                    frames: 1,
+                    index: 0,
+                });
+            }
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                viewer.failed_window_capture("hour was not recorded", ui.ctx());
+            });
+            output.textures_delta.clear();
+            let closes = output.viewport_output.values().any(|viewport| {
+                viewport
+                    .commands
+                    .iter()
+                    .any(|command| matches!(command, egui::ViewportCommand::Close))
+            });
+            assert_eq!(closes, window_dump);
+            assert_eq!(viewer.capture.is_none(), window_dump);
+            let reported = failure.lock().unwrap();
+            assert_eq!(
+                reported.as_deref(),
+                window_dump.then_some("Capture unavailable.png failed: hour was not recorded")
+            );
         }
     }
 

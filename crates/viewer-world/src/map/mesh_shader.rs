@@ -209,6 +209,10 @@ impl Pass {
         })
     }
 
+    pub(crate) fn reference(&self) -> u32 {
+        self.reference
+    }
+
     /// Dynamic mesh state; resource bindings select the executable pipeline.
     pub fn begin(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_stencil_reference(self.reference);

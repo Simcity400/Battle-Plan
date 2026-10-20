@@ -5,7 +5,7 @@ use dashboard::transport::DataCommand;
 use dashboard::transport::NATIVE_QUEUE_FULL;
 use std::collections::VecDeque;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct SeekTarget {
     pub(super) path: String,
     pub(super) revision: String,

@@ -8,7 +8,6 @@
 //! placed or refused per widget here.
 
 use super::*;
-use std::collections::HashMap;
 use viewer_foundation::map::gui_resources::GuiAssets;
 use viewer_foundation::map::gui_resources::GuiFlags;
 use viewer_foundation::map::gui_resources::HitMode;
@@ -20,7 +19,7 @@ use viewer_foundation::unit_handle::Unit;
 use viewer_foundation::map::native_flags;
 use viewer_foundation::map::native_gui::{
     self, Layout, Texture,
-    lifecycle::{Call, Calls, Instance},
+    lifecycle::{Call, Instance},
 };
 
 /// Every resource the map-icon windows draw: template assets and authored inline icons
@@ -527,7 +526,7 @@ pub(super) const TYPE_SPRITE: &str = "the type child's sprite";
 
 /// Makes the recorded `calls` on `instance`, a window of `root` built with `resources`: every
 /// visibility, frame, sprite, text and position call through the module's one applier
-/// ([`Calls::apply`]), in order, and each control write as the field writes it is ([`overlay`]),
+/// ([`Instance::apply_calls`]), in order, and each control write as the field writes it is ([`overlay`]),
 /// so a field this update's code does not write keeps what the control holds.
 pub(super) fn apply(
     instance: &mut Instance,
@@ -538,24 +537,18 @@ pub(super) fn apply(
     if calls.is_empty() {
         return Ok(());
     }
-    let ordered = Calls {
-        calls: calls
-            .iter()
-            .filter(|(_, call)| !matches!(call, Call::Control(_)))
-            .map(|(path, call)| ((), path.clone(), call.clone()))
-            .collect(),
-    };
-    if !ordered.calls.is_empty() {
-        let mut one = HashMap::from([((), instance.clone())]);
-        ordered.apply(root, &mut one, resources)?;
-        *instance = one.remove(&()).expect("applied above");
-    }
+    instance.apply_calls(
+        root,
+        calls.iter().filter_map(|(path, call)| {
+            (!matches!(call, Call::Control(_))).then_some((path.as_str(), call))
+        }),
+        resources,
+    )?;
     for (path, call) in calls {
         let Call::Control(written) = call else {
             continue;
         };
-        let element = find_path(root, path)
-            .ok_or_else(|| format!("{path} is not an element of {}", root.path))?;
+        let element = instance.element_at_path(root, path)?;
         overlay(instance.control(root, element)?, written);
     }
     Ok(())

@@ -1402,6 +1402,7 @@ pub fn prepare(assets: &Assets, field: Field, camera: Camera, size: [u32; 2]) ->
     Prepared { field, simulations }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn weather_packets(
     assets: &Assets,
     field: &Field,
@@ -1409,38 +1410,38 @@ fn weather_packets(
     frame: (Camera, &[ParentView], f32),
     simulations: &mut Simulations,
     packets: &mut Vec<native::DrawPacket>,
+    workers: &viewer_foundation::parallel::Workers,
 ) {
     let (camera, views, time) = frame;
     let rate = gates(camera.height, &assets.graphics).2;
-    let mut visible = BTreeSet::new();
     let seen = visible_emitters(assets, field, presentation, camera, views);
-    for visible_emitter in &seen {
-        visible.insert(visible_emitter.key);
-    }
-    // A newly active member starts with empty particle storage. The native
-    // producer deactivates pair[1] below the near-zoom cutoff; its first
-    // activation must accumulate births over later frame updates, not show a
-    // steady-state cloud immediately.
-    for visible_emitter in &seen {
-        simulations.entry(visible_emitter.key).or_insert_with(|| {
-            Simulation::cold(
-                visible_emitter.emitter,
-                visible_emitter.seed,
-                visible_emitter.anchor,
-                time,
-            )
+    // A newly active member starts empty; its first activation accumulates births
+    // over later frame updates rather than inventing a steady-state cloud.
+    for visible in &seen {
+        simulations.entry(visible.key).or_insert_with(|| {
+            Simulation::cold(visible.emitter, visible.seed, visible.anchor, time)
         });
     }
-    for Visible {
-        key,
-        emitter: e,
-        seed: _,
-        anchor,
-        alpha,
-        views,
-    } in seen
-    {
-        let sim = simulations.get_mut(&key).expect("visible emitter inserted");
+    // Keys are emitted in anchor/member/emitter order, the numeric map's order too.
+    // Merge the two ordered walks without another keyed allocation or sort.
+    debug_assert!(seen.windows(2).all(|pair| pair[0].key < pair[1].key));
+    let mut seen = seen.into_iter().peekable();
+    let tasks: Vec<_> = simulations
+        .iter_mut()
+        .filter_map(|(key, simulation)| {
+            if let Some(visible) = seen.next_if(|visible| visible.key == *key) {
+                Some(std::sync::Mutex::new((simulation, visible, None)))
+            } else {
+                // Unadmitted populations freeze; rebase so reentry invents no hidden births.
+                simulation.time = time.max(0.0);
+                None
+            }
+        })
+        .collect();
+    workers.run(tasks.len(), &|at| {
+        let mut task = tasks[at].lock().unwrap_or_else(|error| error.into_inner());
+        let (sim, visible, output) = &mut *task;
+        let e = visible.emitter;
         sim.advance_space(
             e,
             time,
@@ -1455,21 +1456,20 @@ fn weather_packets(
                 },
             )),
         );
-        let mut packet = native::DrawPacket::weather(e, sim, anchor, alpha);
-        packet.actor = [0, key.0, usize::from(key.1), e.actor];
-        packet.views = views;
-        //An enabled native actor still binds scale/quad IA before inspecting
-        //its packet counts. Preserve it without inventing particles or a draw.
-        packets.push(packet);
-    }
-    //Viewer-owned presentation freezes unadmitted particle populations until
-    //their region changes weather. Rebase this simulator's clock so reentry
-    //does not invent hidden births; native entity clocks can still advance
-    //off-screen, and their historical clock/population state is not recorded.
-    for (key, simulation) in simulations.iter_mut() {
-        if !visible.contains(key) {
-            simulation.time = time.max(0.0);
-        }
+        let mut packet = native::DrawPacket::weather(e, sim, visible.anchor, visible.alpha);
+        packet.actor = [0, visible.key.0, usize::from(visible.key.1), e.actor];
+        packet.views = std::mem::replace(&mut visible.views, native::ViewMask::All);
+        *output = Some(packet);
+    });
+    // Preserve the producer's anchor/member/emitter order, including empty packets:
+    // an enabled actor binds scale/quad IA before inspecting its particle count.
+    for task in tasks {
+        packets.push(
+            task.into_inner()
+                .unwrap_or_else(|error| error.into_inner())
+                .2
+                .expect("prepared weather packet"),
+        );
     }
 }
 
@@ -1548,11 +1548,20 @@ impl Pass {
         &mut self,
         events: Vec<super::entity_animation::Event>,
     ) -> io::Result<Vec<super::pointlights::Light>> {
-        let (events, lights) = advance_entity_effects(
+        self.set_events_with_workers(events, &Default::default())
+    }
+
+    pub fn set_events_with_workers(
+        &mut self,
+        events: Vec<super::entity_animation::Event>,
+        workers: &viewer_foundation::parallel::Workers,
+    ) -> io::Result<Vec<super::pointlights::Light>> {
+        let (events, lights) = advance_entity_effects_with_workers(
             &mut self.entity_simulations,
             &self.assets.entities,
             &self.assets.lights,
             events,
+            workers,
         )?;
         static PROFILE: OnceLock<bool> = OnceLock::new();
         if *PROFILE.get_or_init(|| std::env::var_os("BATTLE_PLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some()) {
@@ -1638,6 +1647,26 @@ impl Pass {
         animation_time: f32,
         weather: bool,
     ) -> Packets {
+        self.prepare_frame_with_workers(
+            camera,
+            size,
+            cameras,
+            animation_time,
+            weather,
+            &Default::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_frame_with_workers(
+        &mut self,
+        camera: Camera,
+        size: [u32; 2],
+        cameras: &[Camera],
+        animation_time: f32,
+        weather: bool,
+        workers: &viewer_foundation::parallel::Workers,
+    ) -> Packets {
         let mut packets = Vec::new();
         if weather {
             let time = self
@@ -1651,6 +1680,7 @@ impl Pass {
                 (camera, &views, time),
                 &mut self.simulations,
                 &mut packets,
+                workers,
             );
         } else {
             // As the game does: its weather update rereads the map-rendering weather option
@@ -1662,8 +1692,12 @@ impl Pass {
             self.simulations.clear();
             self.clock = Clock::default();
         }
-        self.entity_simulations
-            .packets(&self.assets.entities, &self.events, &mut packets);
+        self.entity_simulations.packets_with_workers(
+            &self.assets.entities,
+            &self.events,
+            &mut packets,
+            workers,
+        );
         #[cfg(any(test, feature = "test-support"))]
         {
             self.offline_packets.clear();
@@ -1714,16 +1748,30 @@ impl Pass {
 /// changes a runtime's population, emission accumulator or random stream; then returns the events
 /// with the lights the shown ones give. A kept event's light lasts until its finished runtime has
 /// no living particle.
+#[cfg(test)]
 pub(crate) fn advance_entity_effects(
     simulations: &mut EntitySimulations,
     entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
     lights: &super::entity_effects::Lights,
-    mut events: Vec<super::entity_animation::Event>,
+    events: Vec<super::entity_animation::Event>,
 ) -> io::Result<(
     Vec<super::entity_animation::Event>,
     Vec<super::pointlights::Light>,
 )> {
-    simulations.prepare(entities, &events)?;
+    advance_entity_effects_with_workers(simulations, entities, lights, events, &Default::default())
+}
+
+pub(crate) fn advance_entity_effects_with_workers(
+    simulations: &mut EntitySimulations,
+    entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
+    lights: &super::entity_effects::Lights,
+    mut events: Vec<super::entity_animation::Event>,
+    workers: &viewer_foundation::parallel::Workers,
+) -> io::Result<(
+    Vec<super::entity_animation::Event>,
+    Vec<super::pointlights::Light>,
+)> {
+    simulations.prepare_with_workers(entities, &events, workers)?;
     for event in &mut events {
         if event.emission_end.is_some() && !simulations.living(event) {
             event.definition.light = None;

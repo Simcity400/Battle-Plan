@@ -70,6 +70,8 @@ fn draw(
 #[test]
 #[ignore = "requires the pinned shader compiler and a GPU"]
 fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let directory = TestDir::new();
     let root = &directory.0;
     std::fs::create_dir_all(root.join("gfx/FX")).unwrap();

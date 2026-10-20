@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { CameraMode, FlyAircraftStatus, ReplayMetadata as GeneratedReplayMetadata } from '../generated/dashboard';
+import type { MapPlayback } from '../dashboard/mapPlayback';
 
 export type ReplayMetadata = GeneratedReplayMetadata & { revision: string };
 
@@ -82,7 +83,7 @@ export function selectNativeView(dashboard: boolean): Promise<void> {
   return invoke<void>('select_native_view', { dashboard });
 }
 
-export function seekMap(path: string, revision: string, branch: string, hour: number, playback?: { playing: boolean; seekSequence: number }): Promise<void> {
+export function seekMap(path: string, revision: string, branch: string, hour: number, playback?: MapPlayback): Promise<void> {
   requireDesktop();
   return invoke<void>('seek_map', { path, revision, branch, hour, playback });
 }

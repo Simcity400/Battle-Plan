@@ -83,7 +83,6 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     void client.onMapOptions?.((event) => {
       if (event.viewId === CAMPAIGN_MAP_VIEW) setCampaignPicked({ mapMode: event.options.mapMode ?? null, mapModeSlots: event.options.mapModeSlots ?? [] });
     }).then(keep);
-    void client.onMapToggle?.((event) => campaignToggled(event, setMapOptions)).then(keep);
     return () => { live = false; for (const stop of stops) stop(); };
   }, [client]);
   const template = useMemo(() => {
@@ -438,6 +437,15 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     if (!campaignsRef.current.some((item) => sameCampaignPath(item.path, path))) void openCampaign(path);
   }, [path, client.available, openCampaign]);
   const defaultSource = defaultRoleId ? sourceMap.get(defaultRoleId) : null;
+  useEffect(() => {
+    let live = true;
+    let stop: (() => void) | undefined;
+    void client.onMapToggle?.((event) => {
+      if (live) void campaignToggled(event, setMapOptions, client, defaultSource ?? null)
+        .catch(cause => onMapError?.(errorMessage(cause)));
+    }).then(unsubscribe => { if (live) stop = unsubscribe; else unsubscribe(); });
+    return () => { live = false; stop?.(); };
+  }, [client, defaultSource, onMapError]);
   const countryTags = useMemo(() => Object.fromEntries(campaigns.map(campaign => {
     const metadata = roles.bindings[campaign.id]?.source?.metadata;
     return [campaign.id, selectedCountries[campaign.id] ?? metadata?.countries.find(country => country.id === metadata.playerCountryId)?.tag ?? null];

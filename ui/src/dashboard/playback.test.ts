@@ -35,6 +35,7 @@ test('rate labels use whole weeks or days where they fit, and round other rates'
   assert.equal(speedLabel(36), '36 h/s');
   assert.equal(speedLabel(168), '1 week/s');
   assert.equal(speedLabel(720), '30 days/s');
+  assert.equal(speedLabel(1440), '60 days/s');
   assert.equal(speedLabel(33.333333333), '33.33 h/s');
   assert.deepEqual(speedParts(168), ['1', 'week/s']);
   assert.ok(PLAYBACK_SPEEDS.every(validPlaybackSpeed));
@@ -132,4 +133,25 @@ test('forward steps keep animation history and backward steps reset it', () => {
   assert.equal(clock.getSnapshot().seekSequence, initial + 1);
   clock.seek(11);
   assert.equal(clock.getSnapshot().seekSequence, initial + 2);
+});
+
+test('the 1440 h/s preset banks fractional positions and stops exactly at the branch end', t => {
+  let now = 1000;
+  t.mock.method(performance, 'now', () => now);
+  const clock = new PlaybackController();
+  t.after(() => clock.stop());
+  clock.setBounds({ firstHour: 100, lastHour: 1000 });
+  clock.setSpeed(1440);
+  clock.setPlaying(true);
+  now += 4.5;
+  clock.setPlaying(false);
+  const paused = clock.getSnapshot();
+  assert.equal(paused.hour, 106);
+  assert.ok(Math.abs(paused.fraction - 0.48) < 1e-10);
+  clock.setPlaying(true);
+  now += 1000;
+  clock.setPlaying(false);
+  assert.equal(clock.getSnapshot().position, 1000);
+  assert.equal(clock.getSnapshot().fraction, 0);
+  assert.equal(clock.getSnapshot().playing, false);
 });
