@@ -164,6 +164,10 @@ impl Fixture {
     pub fn new() -> Self {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        Self::recording_only()
+    }
+    /// Numeric prepared routes need no installation-dependent content readers.
+    pub fn recording_only() -> Self {
         let root =
             std::env::temp_dir().join(format!("forces-progressive-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("common/defines")).unwrap();

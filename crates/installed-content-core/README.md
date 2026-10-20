@@ -82,3 +82,7 @@ Mesh animation frames can stream joint records into retained sampling storage.
 including last supplied duplicate animation names, first skeleton-index matches,
 partial animations, bind fallbacks and the existing bounded parent walk. It changes
 neither sample arithmetic nor skeleton order.
+
+Faction goal definitions retain their authored UI group across standalone and inline declarations. Member-upgrade and group catalogues retain authored names, with the same stack, replacement, inline identity and coverage rules as their numeric fields.
+
+Diplomacy relation labels share the proven diplomatic-relation selectors. Localisation comes from the recorded stack; missing operands, empty labels and unavailable keys remain counted refusals.

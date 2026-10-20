@@ -13,10 +13,15 @@ fn frame(hour: i32) -> DecodedFrame {
         TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
             id: 1,
             owner: 44,
-            controller: 55,
+            controller: 9001,
             victory_points: -7,
             ..Default::default()
         }]));
+    if let TableView::Complete(TableRows::States(rows)) =
+        &mut *frame.tables[TableId::States.index()]
+    {
+        rows[0].controller = 9001;
+    }
     for table in [TableId::States, TableId::Provinces] {
         frame.metrics.table_ns[table.index()] = 1;
     }
@@ -169,6 +174,22 @@ fn faction_prepared_exact_matches_native_oracle_after_commits_resume_append_and_
                 measure: TerritoryMeasure::VictoryPoints,
                 rule: TerritoryRule::Controlled,
             },
+            FactionMeasure::Territory {
+                measure: TerritoryMeasure::States,
+                rule: TerritoryRule::Occupied,
+            },
+            FactionMeasure::Territory {
+                measure: TerritoryMeasure::Provinces,
+                rule: TerritoryRule::Occupied,
+            },
+            FactionMeasure::Territory {
+                measure: TerritoryMeasure::VictoryPoints,
+                rule: TerritoryRule::Occupied,
+            },
+            FactionMeasure::Territory {
+                measure: TerritoryMeasure::Area,
+                rule: TerritoryRule::Occupied,
+            },
             FactionMeasure::Factories {
                 mode: FactoryCount::Built,
                 groups: vec![],
@@ -193,7 +214,10 @@ fn faction_prepared_exact_matches_native_oracle_after_commits_resume_append_and_
                 let (keys, section, measures) = match &source_measure {
                     FactionMeasure::Territory { measure, rule } => (
                         territory_keys.clone(),
-                        format!("territory-values-1-{}", measure.index(*rule)),
+                        format!(
+                            "territory-values-1-{}",
+                            territory::prepared::VALUE_CHANNELS[measure.index(*rule)]
+                        ),
                         territory::faction_tracks(
                             &source,
                             1,

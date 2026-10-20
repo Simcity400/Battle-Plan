@@ -7,6 +7,7 @@ import type { Run } from '../charts/series';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
 import { countryIdentityIndex } from './countryIdentity.ts';
 import type { CountryIdentityIndex } from './countryIdentity.ts';
+import { finalPreparedReply, preparedPrefix } from './preparedPrefix.ts';
 
 /** Smart country groups, resolved from the recording's own history: human players,
  * any recorded faction (including ones founded or dissolved partway through),
@@ -128,6 +129,29 @@ function unrecorded(membership: GroupMembership): string {
   }
 }
 
+/** Whether a groups reply is final. A reply answered from the prepared prefix while the
+ * branch is still being prepared is not: holders and memberships of its later hours may
+ * still be read, so finding no country in it is not yet proof that there is none. Without
+ * a reply (identities supplied from elsewhere) nothing is pending. */
+export function groupsSettled(groups: CountryGroupReply | undefined): boolean {
+  return !groups || finalPreparedReply(groups);
+}
+
+/** Whether `hour` is still being prepared in a partial groups reply: its holders and
+ * memberships are not known yet. */
+export function groupsPendingAt(groups: CountryGroupReply | undefined, hour: number): boolean {
+  const pending = groups ? preparedPrefix(groups)?.pending ?? [] : [];
+  return pending.some(span => span.firstHour <= hour && hour <= span.lastHour);
+}
+
+/** Whether a groups reply has read `hour`: always for a final reply, else only inside the
+ * coverage its prefix reads through. A gap recorded there is a real gap. */
+export function groupsKnownAt(groups: CountryGroupReply | undefined, hour: number): boolean {
+  if (groupsSettled(groups)) return true;
+  const coverage = preparedPrefix(groups)?.coverage;
+  return !!coverage && coverage.firstHour <= hour && hour <= coverage.lastHour && !groupsPendingAt(groups, hour);
+}
+
 export interface WorldFilter {
   tags: ReadonlySet<string> | null;
   reason: string | null;
@@ -148,12 +172,27 @@ function identitiesFor(groups: CountryGroupReply | undefined, index: CountryIden
  * the counted dates; manual picks include all holders ever carrying their tags. */
 export function worldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
   hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
+  const filter = settledWorldFilter(selection, fallback, groups, hour, lastHour, index);
+  if (!filter.reason || filter.reason === CHOOSE) return filter;
+  // While the groups are still being prepared, a reason holds only for the hour it is about
+  // once that hour has been read: membership at each hour or at the end is decided at its
+  // own hour (a gap recorded there stays a gap, an hour still pending is loading); anything
+  // about the whole branch (chosen countries, ever) waits for the final reply.
+  const counted = selection.kind === 'group' && selection.membership !== 'ever' ? selection.membership === 'hour' ? hour : lastHour : null;
+  return counted === null ? groupsSettled(groups) ? filter : { ...filter, reason: null }
+    : groupsKnownAt(groups, counted) ? filter : { ...filter, reason: null };
+}
+
+const CHOOSE = 'Choose a country in the widget settings.';
+
+function settledWorldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
+  hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
   if (selection.kind === 'all') return { tags: null, reason: null };
   const identities = identitiesFor(groups, index);
   const empty = (reason: string | null): WorldFilter => ({ tags: new Set(), countryIds: new Set(), reason });
   if (selection.kind !== 'group') {
     const tags = selection.kind === 'tags' ? selection.tags : fallback;
-    if (!tags.length) return empty('Choose a country in the widget settings.');
+    if (!tags.length) return empty(CHOOSE);
     if (!identities) return empty(null);
     const countryIds = identities.selected(tags);
     return { tags: new Set(identities.aliasesAt(countryIds, hour)), countryIds,
@@ -197,12 +236,15 @@ export function countryMatch(selection: CountrySelection, fallback: readonly str
       const history = byTag.get(run.tag);
       if (history) history.push(run); else byTag.set(run.tag, [run]);
     }
-    const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
+    // Hours not recorded, or still being prepared, have no known members.
+    const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour) || groupsPendingAt(groups, hour);
     return { ready: true, matches: (tag, hour) => identities.keyAt(tag, hour) !== null && !hidden(hour)
       && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), reason: null };
   }
   const { countryIds, reason } = worldFilter(selection, fallback, groups, lastHour, lastHour, identities);
-  return { ready: true, matches: (tag, hour) => {
+  // A partial groups reply that names none of the choice yet is still loading it.
+  const ready = !!countryIds?.size || reason !== null || groupsSettled(groups);
+  return { ready, matches: (tag, hour) => {
     const key = identities.keyAt(tag, hour);
     return key !== null && countryIds?.has(key) === true;
   }, reason };

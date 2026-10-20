@@ -839,6 +839,10 @@ fn cold_force_replies_have_empty_coverage_and_pending_hours() {
     let fixture = Fixture::new();
     for (product, params) in [
         (
+            "volunteers-expeditionaries",
+            json!({"branchId":"1","kind":"land","tags":null}),
+        ),
+        (
             "army-size",
             json!({"branchId":"1", "tags":[tag(0)], "measure":"battalions", "countFor":"owner", "byType":true, "window":0}),
         ),
@@ -853,4 +857,92 @@ fn cold_force_replies_have_empty_coverage_and_pending_hours() {
         assert_eq!(cold["coverage"]["complete"], false, "{product}");
         assert!(!cold["pending"].as_array().unwrap().is_empty(), "{product}");
     }
+}
+
+#[test]
+fn military_aid_prepared_route_cold_prefix_cache_and_independent_coverage() {
+    // Aid rows read their fields through the installation's table metadata.
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use crate::products::{
+        army_size::prepared::Prepared,
+        parts_race_prepared::test_fixtures::{frame, tag},
+    };
+    use replay_data::rows::{SentVolunteerRow, TableId, TableRows, VolunteerHostRow};
+    use replay_frame::frame::TableView;
+    use serde_json::json;
+    let fixture = Fixture::recording_only();
+    let flag = AtomicBool::new(false);
+    let params = json!({"branchId":"1","kind":"land","tags":[tag(0)]});
+    let (cold, decoded) = crate::prepared::query::progressive::without_block_decodes(|| {
+        fixture.query("volunteers-expeditionaries", params.clone())
+    });
+    assert!(!decoded);
+    assert_eq!(cold["links"], json!([]));
+    assert_eq!(cold["coverage"]["lastHour"], -1);
+    let mut state = Prepared::default();
+    let mut changes = FrameChangeTracker::new();
+    for hour in 0..4 {
+        let mut frame = frame(hour, 2);
+        *frame.tables[TableId::SentVolunteers.index()] =
+            TableView::Complete(TableRows::SentVolunteers(vec![SentVolunteerRow {
+                country: 100000,
+                ordinal: 0,
+                division: 2,
+            }]));
+        *frame.tables[TableId::VolunteerHosts.index()] = if hour == 1 {
+            TableView::Unavailable {
+                reason: "tally absent".into(),
+            }
+        } else {
+            TableView::Complete(TableRows::VolunteerHosts(vec![VolunteerHostRow {
+                country: 100000,
+                position: 0,
+                host: 100001,
+                deployed_divisions: 7,
+                ..Default::default()
+            }]))
+        };
+        state
+            .observe(
+                &frame,
+                fixture.source.replay_ref(),
+                &changes.observe(&frame, fixture.source.replay_ref().format),
+            )
+            .unwrap();
+    }
+    let mut writer = fixture.store.replace(fixture.key.clone()).unwrap();
+    state.flush(&mut writer, 1, &flag).unwrap();
+    fixture.identities(&mut writer, 3);
+    writer.commit().unwrap();
+    let (reply, decoded) = crate::prepared::query::progressive::without_block_decodes(|| {
+        fixture.query("volunteers-expeditionaries", params.clone())
+    });
+    assert!(!decoded);
+    assert_eq!(reply["coverage"]["lastHour"], 3);
+    assert!(!reply["pending"].as_array().unwrap().is_empty());
+    assert_eq!(reply["links"][0]["runs"][0]["divisions"], 1.0);
+    assert!(
+        reply["tallies"][0]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|run| run["firstHour"] == 1 && run["divisions"].is_null())
+    );
+    let usage = || {
+        dashboard_base::prepared::query::observations::usage(
+            &fixture.source,
+            "queries:volunteers-expeditionaries",
+        )
+    };
+    let count = usage().2;
+    assert_eq!(fixture.query("volunteers-expeditionaries", params), reply);
+    assert_eq!(usage().2, count);
+    assert!(usage().0 <= usage().1);
+    let selected = fixture.query(
+        "volunteers-expeditionaries",
+        json!({"branchId":"1","kind":"land","tags":["unrelated/mod-country"]}),
+    );
+    assert_eq!(selected["links"], json!([]));
 }

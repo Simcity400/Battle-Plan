@@ -2111,3 +2111,89 @@ fn faction_totals_use_main_template_names_and_dated_refusal_reasons() {
         "only the complete final roster counts in end mode"
     );
 }
+
+#[test]
+fn occupied_faction_sums_include_foreign_control_inside_the_same_faction_and_refuse_missing_reads()
+{
+    use replay_data::rows::{ProvinceRow, StateRow};
+    let reads = (100..=102)
+        .map(|hour| {
+            let mut read = recorded(hour, &[(401, "Synthetic pact", &[44, 9001])]);
+            *read.tables[TableId::States.index()] =
+                TableView::Complete(TableRows::States(vec![StateRow {
+                    id: 1,
+                    owner: 44,
+                    controller: 9001,
+                    ..Default::default()
+                }]));
+            *read.tables[TableId::Provinces.index()] =
+                TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
+                    id: 1,
+                    owner: 9001,
+                    controller: 44,
+                    victory_points: -7,
+                    ..Default::default()
+                }]));
+            if hour == 101 {
+                *read.tables[TableId::States.index()] = TableView::Unavailable {
+                    reason: "missing state member amount".into(),
+                };
+            }
+            read
+        })
+        .collect();
+    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, reads)]).unwrap());
+    let flag = AtomicBool::new(false);
+    let source = opened(
+        replay,
+        "occupied-faction",
+        "memory.battleplan".into(),
+        &flag,
+    );
+    for membership in [
+        FactionMembership::Hour,
+        FactionMembership::End,
+        FactionMembership::Ever,
+    ] {
+        for (measure, amount) in [
+            (TerritoryMeasure::States, 1),
+            (TerritoryMeasure::Provinces, 1),
+            (TerritoryMeasure::VictoryPoints, -7),
+        ] {
+            let reply = FactionTotals::load(
+                &source,
+                &FactionTotalsParams {
+                    branch_id: "1".into(),
+                    source: FactionMeasure::Territory {
+                        measure,
+                        rule: TerritoryRule::Occupied,
+                    },
+                    membership,
+                    top: 10,
+                    faction_id: Some("401".into()),
+                    parts: Some(true),
+                    inventory: None,
+                },
+                &LoadContext { content: None },
+                &flag,
+            )
+            .unwrap();
+            let expected = if matches!(measure, TerritoryMeasure::States) {
+                vec![(100, 100, amount), (102, 102, amount)]
+            } else {
+                vec![(100, 102, amount)]
+            };
+            assert_eq!(
+                values(&reply.series[0].runs),
+                expected,
+                "{membership:?}, {measure:?}"
+            );
+            assert!(reply.member_tracks.as_ref().unwrap().iter().any(|member| {
+                member
+                    .runs
+                    .iter()
+                    .any(|run| run.value.as_deref() == Some(&amount.to_string()))
+            }));
+        }
+    }
+}

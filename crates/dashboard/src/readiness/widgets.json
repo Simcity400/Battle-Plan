@@ -625,6 +625,60 @@
       "requests": [
         {"product": "civil-wars", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}}
       ]
+    },
+    {
+      "kind": "war-contribution",
+      "requests": [
+        {"product": "wars", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "viewpointTag": "$tag"}}
+      ],
+      "note": "The war inventory Wars reads; the war's participation groups are then read from its read hour's frame alone, which that reply names."
+    },
+    {
+      "kind": "faction-goals",
+      "requests": [
+        {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}}
+      ],
+      "note": "The faction is the dashboard country's at the hour shown, from the groups reply; its held goals (faction-details at the hour shown) follow from that reply's faction id."
+    },
+    {
+      "kind": "faction-pooled-strength",
+      "requests": [
+        {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}}
+      ],
+      "note": "The faction is the dashboard country's at the hour shown, from the groups reply; its pools (faction-details at the hour shown) follow from that reply's faction id."
+    },
+    {
+      "kind": "faction-influence",
+      "requests": [
+        {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}}
+      ],
+      "note": "The faction is the dashboard country's at the hour shown, from the groups reply; its influence-share histories (faction-state, influence view) follow from that reply's faction id."
+    },
+    {
+      "kind": "diplomatic-relations",
+      "requests": [
+        {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}}
+      ],
+      "note": "The default countries are the Human players at the hour shown, from the groups reply; their opinions at that hour (diplomacy-state, opinions view) follow."
+    },
+    {
+      "kind": "diplomatic-pacts",
+      "requests": [
+        {"product": "diplomacy-state", "route": "prepared", "firstView": "d", "params": {"view": "proposals", "branchId": "$branch", "tags": null}}
+      ]
+    },
+    {
+      "kind": "faction-upgrades",
+      "requests": [
+        {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}}
+      ],
+      "note": "The faction is the dashboard country's at the hour shown, from the groups reply; its rules and upgrade histories (faction-state, rules view) follow from that reply's faction id."
+    },
+    {
+      "kind": "volunteers",
+      "requests": [
+        {"product": "volunteers-expeditionaries", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "kind": "land", "tags": null}}
+      ]
     }
   ]
 }

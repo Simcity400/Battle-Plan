@@ -6278,3 +6278,234 @@ fn production_stack_prepare_resume_append_and_query_roundtrips() {
         .join()
         .expect("preparation and queries must fit the production worker stack");
 }
+
+#[test]
+fn occupied_territory_progressive_state_summary_top_ranks_and_navigation_keep_exact_values() {
+    independent::with_test_hourly(|| {
+        use crate::products::{LoadContext, country_history::HistoryScan, territory};
+        use replay_data::rows::ProvinceRow;
+        let frames: Vec<_> = (100..=104)
+            .map(|hour| {
+                let mut read = crate::test_fixtures::ownership_frame(
+                    1,
+                    hour,
+                    if hour >= 102 { 55 } else { 44 },
+                );
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *read.tables[TableId::Countries.index()]
+                {
+                    for row in rows {
+                        row.tag = format!("synthetic holder {}", row.id).into_bytes();
+                    }
+                }
+                *read.tables[TableId::Provinces.index()] =
+                    TableView::Complete(TableRows::Provinces(vec![
+                        ProvinceRow {
+                            id: 1,
+                            owner: if hour >= 102 { 55 } else { 44 },
+                            controller: 55,
+                            victory_points: if hour == 100 { -7 } else { 3 },
+                            ..Default::default()
+                        },
+                        ProvinceRow {
+                            id: 2,
+                            owner: 55,
+                            controller: 44,
+                            victory_points: 0,
+                            ..Default::default()
+                        },
+                    ]));
+                if hour == 103 {
+                    *read.tables[TableId::States.index()] = TableView::Unavailable {
+                        reason: "state read missing".into(),
+                    };
+                }
+                if hour == 104 {
+                    *read.tables[TableId::Provinces.index()] = TableView::Unavailable {
+                        reason: "province read missing".into(),
+                    };
+                }
+                read
+            })
+            .collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+        let mut fixture = Fixture::new(&replay);
+        let source = fixture.source("occupied-progressive");
+        let flag = AtomicBool::new(false);
+        let context = LoadContext { content: None };
+        let (store, key) = super::super::files(&source, None).unwrap();
+        let query = |product: &str, params: serde_json::Value| {
+            let request = crate::transport::ProductRequest {
+                source_id: source.key().source_id.clone(),
+                revision: source.key().revision.clone(),
+                product: product.into(),
+                params,
+            };
+            let reply: serde_json::Value = serde_json::from_str(
+                &super::super::query::query(&source, &request, None, &flag).unwrap(),
+            )
+            .unwrap();
+            reply["data"].clone()
+        };
+        let state = |hour| {
+            serde_json::json!({"branchId":"1","family":{"kind":"territory","measure":"states","rule":"occupied"},
+            "tags":["synthetic holder 55"],"reads":[{"hour":hour}]})
+        };
+        let check = || {
+            // Keep one reached-hour working set live; visiting other hours may
+            // legitimately evict it from the bounded observation cache.
+            let mut seed = state(100);
+            seed["family"]["rule"] = serde_json::json!("controlled");
+            query("series-state", seed);
+            let extractions =
+                dashboard_base::prepared::query::observations::usage(&source, "territory:counts").2;
+            for rule in ["controlled", "owned", "occupied"] {
+                for measure in ["states", "provinces", "victoryPoints"] {
+                    let mut request = state(100);
+                    request["family"]["rule"] = serde_json::json!(rule);
+                    request["family"]["measure"] = serde_json::json!(measure);
+                    query("series-state", request);
+                    assert_eq!(
+                        dashboard_base::prepared::query::observations::usage(
+                            &source,
+                            "territory:counts"
+                        )
+                        .2,
+                        extractions,
+                        "changing measure or rule reuses the paired-holder observation"
+                    );
+                }
+            }
+
+            for (hour, expected) in [
+                (100, Some(1)),
+                (101, Some(1)),
+                (102, Some(0)),
+                (103, None),
+                (104, Some(0)),
+            ] {
+                let reply = query("series-state", state(hour));
+                let line = reply["series"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|line| line["tag"] == "synthetic holder 55")
+                    .unwrap();
+                assert_eq!(
+                    line["runs"][0]["values"][territory::columns::OCCUPIED_STATES],
+                    serde_json::json!(expected),
+                    "hour {hour}"
+                );
+            }
+            for (measure, column, amount) in [
+                ("states", territory::columns::OCCUPIED_STATES, 1),
+                ("provinces", territory::columns::OCCUPIED_PROVINCES, 1),
+                (
+                    "victoryPoints",
+                    territory::columns::OCCUPIED_VICTORY_POINTS,
+                    -7,
+                ),
+            ] {
+                let mut request = state(100);
+                request["family"]["measure"] = serde_json::json!(measure);
+                let reply = query("series-state", request);
+                assert_eq!(reply["series"][0]["runs"][0]["values"][column], amount);
+                assert_eq!(
+                    reply["worldTotals"][0]["values"][column],
+                    if measure == "provinces" { 2 } else { amount }
+                );
+                let summary = query(
+                    "series-summary",
+                    serde_json::json!({"branchId":"1","family":{"kind":"territory","measure":measure,"rule":"occupied"},
+                    "tags":["synthetic holder 55"],"from":100,"to":104,"width":5}),
+                );
+                assert_eq!(
+                    summary["series"][0]["summary"]["runs"][0]["value"].as_f64(),
+                    Some(f64::from(amount))
+                );
+            }
+            for (measure, expected) in [("states", 1), ("provinces", 2), ("victoryPoints", -7)] {
+                let sum = query(
+                    "series-summary",
+                    serde_json::json!({"branchId":"1","family":{"kind":"territory","measure":measure,"rule":"occupied","aggregate":true},
+                    "tags":["synthetic holder 44","synthetic holder 55"],"from":100,"to":100,"width":1}),
+                );
+                assert_eq!(
+                    sum["series"][0]["summary"]["runs"][0]["value"].as_f64(),
+                    Some(f64::from(expected)),
+                    "occupied group sum for {measure}"
+                );
+            }
+            let top = query(
+                "series-state",
+                serde_json::json!({"branchId":"1","family":{"kind":"territory","measure":"states","rule":"occupied","top":1},"tags":[],"reads":[{"hour":100}]}),
+            );
+            assert_eq!(top["series"][0]["tag"], "synthetic holder 55");
+            let top = query(
+                "series-summary",
+                serde_json::json!({"branchId":"1","family":{"kind":"territory","measure":"states","rule":"occupied","top":1},"tags":[],"from":100,"to":101,"width":2}),
+            );
+            assert_eq!(top["series"][0]["tag"], "synthetic holder 55");
+            let navigation = query(
+                "series-next-change",
+                serde_json::json!({"branchId":"1","family":{"kind":"territory","measure":"victoryPoints","rule":"occupied"},
+                "tags":["synthetic holder 55"],"from":100,"firstHour":100,"lastHour":104,"key":"ArrowRight"}),
+            );
+            assert_eq!(navigation["hour"].as_f64(), Some(101.0));
+        };
+        check(); // Exact cold reached/hover reads and short summaries share the counts sampler.
+        assert!(store.saved_key().unwrap().is_none());
+        let mut observer = territory::prepared::Prepared::default();
+        let mut identities = HistoryScan::new(false, &[]);
+        let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
+        observer.configure(&source, &context, &flag).unwrap();
+        for (commit, hours) in [0..2, 2..5].into_iter().enumerate() {
+            for index in hours {
+                let read = &frames[index];
+                let changes = tracker.observe(read, replay.format);
+                observer
+                    .observe_owned_states(read, &mut identities, Some(&changes))
+                    .unwrap();
+                observer
+                    .observe(read, replay.format, &flag, &changes)
+                    .unwrap();
+            }
+            let mut writer = if commit == 0 {
+                store.replace(key.clone()).unwrap()
+            } else {
+                store.extend(&key).unwrap()
+            };
+            observer.flush(&mut writer, 1, &flag).unwrap();
+            json(&mut writer, "country-identities-1", &identities).unwrap();
+            json(
+                &mut writer,
+                &coverage_section(1),
+                &Coverage {
+                    schema: SCHEMA,
+                    first_hour: 100,
+                    last_hour: if commit == 0 { 101 } else { 104 },
+                    complete: commit == 1,
+                },
+            )
+            .unwrap();
+            writer.commit().unwrap();
+            check();
+            observer = serde_json::from_slice(&serde_json::to_vec(&observer).unwrap()).unwrap();
+            identities = serde_json::from_slice(&serde_json::to_vec(&identities).unwrap()).unwrap();
+            tracker.invalidate();
+        }
+        let mut invalid = state(100);
+        invalid["family"]["measure"] = serde_json::json!("area");
+        // Without content, map area is refused by name in the reply, as for every rule.
+        let reply =
+            territory::prepared::query(&source, &context, "series-state", invalid, &flag).unwrap();
+        assert!(
+            reply["areaReason"]
+                .as_str()
+                .unwrap()
+                .contains("Map area unavailable")
+        );
+        assert!(reply["areaUnit"].is_null());
+        super::super::clear(&source, None, &flag).unwrap();
+    });
+}

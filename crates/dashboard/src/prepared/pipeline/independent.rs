@@ -233,6 +233,7 @@ pub(super) struct Block<'a> {
     pub index: &'a BlockIndex,
     pub source: &'a Source,
     pub context: &'a LoadContext,
+    pub cancelled: &'a AtomicBool,
     /// The family's share of the shared block reader, when it declares its
     /// tables ([`Own::shared_tables`]).
     pub shared: Option<shared::Lease<'a>>,
@@ -400,7 +401,7 @@ struct Groups;
 static GROUPS: Groups = Groups;
 
 /// Every family prepared on its own, in registry order.
-static REGISTRY: [&dyn Own; 44] = [
+static REGISTRY: &[&dyn Own] = &[
     &GROUPS,
     &IDENTITIES,
     &WARS,
@@ -420,6 +421,8 @@ static REGISTRY: [&dyn Own; 44] = [
     &focus::FOCUS,
     &air_superiority::AIR_SUPERIORITY,
     &world_tension::TENSION,
+    &factions::FACTIONS,
+    &diplomacy::DIPLOMACY,
     &evaluated::RESEARCH,
     &evaluated::PROJECTS,
     &evaluated::OCCUPATION,
@@ -473,8 +476,12 @@ pub(super) mod focus;
 /// Air superiority, with its own read of the country groups.
 pub(super) mod air_superiority;
 
+pub(super) mod diplomacy;
 /// World tension.
 pub(super) mod world_tension;
+
+/// Shared faction account, selection and manpower histories.
+pub(super) mod factions;
 
 /// Research, special projects and occupation.
 pub(super) mod evaluated;
@@ -957,7 +964,7 @@ fn registry() -> &'static [&'static dyn Own] {
             return families;
         }
     }
-    &REGISTRY
+    REGISTRY
 }
 
 /// The families prepared on their own, in name order (the checkpoint's).
@@ -2024,6 +2031,7 @@ fn prepare_family(
                 index,
                 source: phase.source,
                 context: phase.context,
+                cancelled: phase.cancelled,
                 #[cfg(test)]
                 read_hook_family: (!laned).then_some(name),
                 shared: member

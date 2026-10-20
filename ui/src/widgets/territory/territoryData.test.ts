@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { runAt } from '../../charts/series.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
-import { formatTerritory, territoryCountryLines, territoryLegend, territoryNote, measureChoices, measureOf, shownTerritory, territoryModel, territoryRequest, territoryShareKeys, TERRITORY_PRESENTATION, territorySegmentAt, territoryWarnings, validateTerritoryReply } from './territoryData.ts';
+import { formatTerritory, territoryCountryLines, territoryLegend, territoryNote, measureChoices, measureOf, shownTerritory, territoryModel, territoryRequest, territoryShareKeys, TERRITORY_PRESENTATION, territorySegmentAt, territoryWarnings, validateTerritoryReply, territoryColumn } from './territoryData.ts';
 import type { TerritoryReply } from '../../generated/dashboard';
 import { ruleOf, MEASURES } from './territoryData.ts';
 import { aggregateGroupRuns, resolveCountries } from '../../dashboard/groups.ts';
@@ -11,12 +11,12 @@ import type { CountryGroupReply } from '../../generated/dashboard';
 import { countryCapitulationBadges } from '../../dashboard/countryCapitulations.ts';
 
 const reply = (): TerritoryReply => ({ branchId: '7', areaUnit: 'map cells', areaReason: null, warnings: [],
-  worldTotals: [{ firstHour: 100, lastHour: 105, startsSegment: true, values: [5, 10, 250, 800, 4, 9, 200, 700] }],
+  worldTotals: [{ firstHour: 100, lastHour: 105, startsSegment: true, values: [5, 10, 250, 800, 4, 9, 200, 700, null, null, null, null] }],
   series: [{ tag: 'Renamed realm', segments: [{ firstHour: 100, lastHour: 102 }, { firstHour: 103, lastHour: 105 }], membership: null,
-    runs: [{ firstHour: 100, lastHour: 100, startsSegment: true, values: [2, 5, 123, 400, 1, 4, 101, 300] },
-      { firstHour: 101, lastHour: 101, startsSegment: false, values: [2, null, null, null, 1, null, null, null] },
-      { firstHour: 102, lastHour: 102, startsSegment: false, values: [0, 3, -7, 90, 1, 4, 10, 100] },
-      { firstHour: 103, lastHour: 105, startsSegment: true, values: [0, 3, -7, 90, 1, 4, 10, 100] }] }] });
+    runs: [{ firstHour: 100, lastHour: 100, startsSegment: true, values: [2, 5, 123, 400, 1, 4, 101, 300, null, null, null, null] },
+      { firstHour: 101, lastHour: 101, startsSegment: false, values: [2, null, null, null, 1, null, null, null, null, null, null, null] },
+      { firstHour: 102, lastHour: 102, startsSegment: false, values: [0, 3, -7, 90, 1, 4, 10, 100, null, null, null, null] },
+      { firstHour: 103, lastHour: 105, startsSegment: true, values: [0, 3, -7, 90, 1, 4, 10, 100, null, null, null, null] }] }] });
 
 test('Territory asks the shared race view for eased bars and smooth lines with exact hovered values', () => {
   assert.equal(TERRITORY_PRESENTATION.exact, false);
@@ -42,7 +42,7 @@ test('Territory keeps all 5,000 recorded country choices and a user top count be
   const range = { firstHour: 100, lastHour: 105 };
   const data: TerritoryReply = { ...reply(), series: tags.map((tag, index) => ({ tag, membership: null,
     segments: [range], identities: [{ ...range, slot: index, countryId: index + 1 }],
-    runs: [{ ...range, startsSegment: true, values: Array(8).fill(index) }] })) };
+    runs: [{ ...range, startsSegment: true, values: Array(12).fill(index) }] })) };
   const model = territoryModel(data, 'states', 'controlled', tags);
   assert.equal(model.selectedCount, 5_000);
   assert.equal(territoryCountryLines(model, chosen, range).length, 5_000);
@@ -84,14 +84,14 @@ test('validate totals and dated spans; malformed columns, unsafe counts, duplica
 });
 
 test('world totals require ordered recorded runs and exact measure columns before Share reads them', () => {
-  const good = { ...reply(), worldTotals: [{ firstHour: 100, lastHour: 105, startsSegment: true, values: [2, 3, -7, 90, 1, 4, -3, null] }] };
+  const good = { ...reply(), worldTotals: [{ firstHour: 100, lastHour: 105, startsSegment: true, values: [2, 3, -7, 90, 1, 4, -3, null, null, null, null, null] }] };
   assert.equal(validateTerritoryReply(good), good);
   for (const worldTotals of [undefined, null,
     [{ ...good.worldTotals[0], values: [1] }],
     [{ ...good.worldTotals[0], startsSegment: null }],
     [{ ...good.worldTotals[0], firstHour: 106 }],
-    [{ ...good.worldTotals[0], values: [2 ** 53, 3, -7, 90, 1, 4, -3, null] }],
-    [{ ...good.worldTotals[0], values: [-1, 3, -7, 90, 1, 4, -3, null] }],
+    [{ ...good.worldTotals[0], values: [2 ** 53, 3, -7, 90, 1, 4, -3, null, null, null, null, null] }],
+    [{ ...good.worldTotals[0], values: [-1, 3, -7, 90, 1, 4, -3, null, null, null, null, null] }],
     [good.worldTotals[0], { ...good.worldTotals[0], firstHour: 105, lastHour: 106 }],
   ]) assert.throws(() => validateTerritoryReply({ ...good, worldTotals }), /malformed/);
 });
@@ -170,11 +170,11 @@ test('non-faction group sums keep annexed members at recorded zero while incompl
     wars: [], warStarts: [], capitulations: [], identityChanges: [], unobserved: { humans: [], factions: [], wars: [] }, warnings: [], factions: [] };
   const range = { firstHour: 100, lastHour: 105 };
   const data: TerritoryReply = { ...reply(), series: [
-    { tag: 'survivor', membership: null, segments: [range], runs: [{ ...range, startsSegment: true, values: Array(8).fill(5) }] },
+    { tag: 'survivor', membership: null, segments: [range], runs: [{ ...range, startsSegment: true, values: Array(12).fill(5) }] },
     { tag: 'annexed', membership: null, segments: [{ firstHour: 100, lastHour: 102 }], runs: [
-      { firstHour: 100, lastHour: 102, startsSegment: true, values: Array(8).fill(2) },
-      { firstHour: 103, lastHour: 103, startsSegment: true, values: Array(8).fill(0) },
-      { firstHour: 105, lastHour: 105, startsSegment: true, values: Array(8).fill(0) }] },
+      { firstHour: 100, lastHour: 102, startsSegment: true, values: Array(12).fill(2) },
+      { firstHour: 103, lastHour: 103, startsSegment: true, values: Array(12).fill(0) },
+      { firstHour: 105, lastHour: 105, startsSegment: true, values: Array(12).fill(0) }] },
   ] };
   for (const membership of ['hour', 'end', 'ever'] as const) {
     const resolved = resolveCountries({ kind: 'group', group: { type: 'humans' }, membership, aggregate: true }, [], roster, 105, Infinity);
@@ -192,7 +192,7 @@ test('non-faction group sums keep annexed members at recorded zero while incompl
 test('manual Territory picks follow every selected native instance through aliases without admitting unrelated alias holders', () => {
   const range = { firstHour: 100, lastHour: 105 };
   const identity = (firstHour: number, lastHour: number, slot: number, countryId: number) => ({ firstHour, lastHour, slot, countryId });
-  const value = (firstHour: number, lastHour: number, amount: number, startsSegment = true) => ({ firstHour, lastHour, startsSegment, values: Array(8).fill(amount) });
+  const value = (firstHour: number, lastHour: number, amount: number, startsSegment = true) => ({ firstHour, lastHour, startsSegment, values: Array(12).fill(amount) });
   const data: TerritoryReply = { ...reply(), series: [
     { tag: 'picked', membership: null, segments: [identity(100, 101, 1, 7), identity(104, 105, 2, 8)],
       identities: [identity(100, 101, 1, 7), identity(104, 105, 2, 8)],
@@ -231,12 +231,40 @@ test('individual group and legacy country lines end at disappearance while fixed
   const range = { firstHour: 100, lastHour: 105 };
   const data: TerritoryReply = { ...reply(), series: [{ tag: 'annexed', membership: null,
     segments: [{ firstHour: 100, lastHour: 102 }], runs: [
-      { firstHour: 100, lastHour: 102, startsSegment: true, values: Array(8).fill(2) },
-      { firstHour: 103, lastHour: 105, startsSegment: true, values: Array(8).fill(0) },
+      { firstHour: 100, lastHour: 102, startsSegment: true, values: Array(12).fill(2) },
+      { firstHour: 103, lastHour: 105, startsSegment: true, values: Array(12).fill(0) },
     ] }] };
   const resolved = resolveCountries({ kind: 'tags', tags: ['annexed'] }, [], undefined, 105, Infinity);
   const model = territoryModel(data, 'states', 'controlled', resolved.tags);
   assert.equal(runAt(territoryCountryLines(model, resolved, range)[0].runs, 103), null);
   assert.equal(runAt(territoryCountryLines(model, resolved, range, true)[0].runs, 103)?.value, 0);
   assert.deepEqual(territoryShareKeys(model, resolved, 103), []);
+});
+
+test('occupied columns preserve signed VP, exact zero and independent unknowns without reusing owned totals', () => {
+  const data = reply();
+  const occupied = [[2, 4, -9, 27], [2, null, null, null], [0, 3, 0, 0], [0, 3, 5, 50]];
+  data.series[0].runs.forEach((run, index) => run.values.splice(8, 4, ...occupied[index]));
+  assert.equal(validateTerritoryReply(data), data);
+  assert.equal(ruleOf('occupied'), 'occupied');
+  for (const [measure, column] of [['states', 8], ['provinces', 9], ['victoryPoints', 10], ['area', 11]] as const) {
+    assert.equal(territoryColumn(measure, 'occupied'), column);
+    const runs = territoryModel(data, measure, 'occupied').series.get('Renamed realm')!.runs;
+    assert.equal(runs[0].value, occupied[0][column - 8]);
+  }
+  assert.equal(territoryModel(data, 'victoryPoints', 'occupied').series.get('Renamed realm')!.runs[1].value, 0);
+  assert.deepEqual(territoryRequest('7', {tags: [], top: 5_000}, 'victoryPoints', 'occupied').top,
+    {count: 5_000, measure: 'victoryPoints', rule: 'occupied'});
+  assert.deepEqual(measureChoices(data).map(choice => choice.value), ['states', 'provinces', 'victoryPoints', 'area']);
+  assert.deepEqual(territoryRequest('7', {tags: [], top: 5_000}, 'area', 'occupied').top,
+    {count: 5_000, measure: 'area', rule: 'occupied'});
+  assert.equal(territoryModel(data, 'area', 'occupied').series.get('Renamed realm')!.runs[1].value, 0);
+  for (const column of [8, 9, 11]) {
+    const invalid = structuredClone(data); invalid.series[0].runs[0].values[column] = -1;
+    assert.throws(() => validateTerritoryReply(invalid), /malformed/);
+  }
+  for (const column of [10, 11]) {
+    const invalid = structuredClone(data); invalid.series[0].runs[0].values[column] = 2 ** 53;
+    assert.throws(() => validateTerritoryReply(invalid), /malformed/);
+  }
 });

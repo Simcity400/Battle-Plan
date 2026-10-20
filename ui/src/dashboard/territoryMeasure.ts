@@ -13,7 +13,7 @@ export function measureOf(value: unknown): TerritoryMeasure {
 }
 
 export function ruleOf(value: unknown): TerritoryRule {
-  return value === 'owned' ? 'owned' : 'controlled';
+  return value === 'owned' || value === 'occupied' ? value : 'controlled';
 }
 
 export function measureChoices(reply: TerritoryReply | undefined) {
@@ -31,16 +31,29 @@ export function territoryNote(measure: TerritoryMeasure): string | undefined {
 
 export function territoryMeasureLabel(measure: TerritoryMeasure, rule: TerritoryRule, unit: string | null = null): string {
   const name = MEASURES.find(item => item.value === measure)!.label;
-  return `${rule === 'owned' ? 'Owned' : 'Controlled'} ${name.toLowerCase()}${measure === 'area' && unit ? ` · ${unit}` : ''}`;
+  return `${{ controlled: 'Controlled', owned: 'Owned', occupied: 'Occupied' }[rule]} ${name.toLowerCase()}${measure === 'area' && unit ? ` · ${unit}` : ''}`;
 }
+
+/** Named fixed-width wire layout, independent of prepared numeric channels. */
+export const TERRITORY_COLUMNS = {
+  controlled: { states: 0, provinces: 1, victoryPoints: 2, area: 3 },
+  owned: { states: 4, provinces: 5, victoryPoints: 6, area: 7 },
+  occupied: { states: 8, provinces: 9, victoryPoints: 10, area: 11 },
+} as const;
+export const TERRITORY_VALUE_COUNT = 12;
+export function territoryColumn(measure: TerritoryMeasure, rule: TerritoryRule): number {
+  return TERRITORY_COLUMNS[rule][measure];
+}
+const signedColumns = new Set<number>([TERRITORY_COLUMNS.controlled.victoryPoints,
+  TERRITORY_COLUMNS.owned.victoryPoints, TERRITORY_COLUMNS.occupied.victoryPoints]);
 
 const hour = (value: unknown): value is number => Number.isInteger(value) && Number(value) >= -2147483648 && Number(value) <= 2147483647;
 const spans = (value: unknown): value is Span[] => Array.isArray(value) && value.every((span, index) => span != null
   && hour(span.firstHour) && hour(span.lastHour) && span.firstHour <= span.lastHour
   && (index === 0 || value[index - 1].lastHour < span.firstHour));
 const runs = (value: unknown): value is TerritoryRun[] => spans(value) && (value as TerritoryRun[]).every(run => typeof run.startsSegment === 'boolean'
-  && Array.isArray(run.values) && run.values.length === 8
-  && run.values.every((value, index) => value === null || (Number.isSafeInteger(value) && (index % 4 === 2 || value >= 0))));
+  && Array.isArray(run.values) && run.values.length === TERRITORY_VALUE_COUNT
+  && run.values.every((value, index) => value === null || (Number.isSafeInteger(value) && (signedColumns.has(index) || value >= 0))));
 
 export function validateTerritoryReply(data: unknown): TerritoryReply {
   const reply = data as TerritoryReply;

@@ -97,9 +97,10 @@ fn parse_top(bytes: &[u8], names: &KeyNames, top: Node) -> native::Read {
                 Some(b"name" | b"description") => {
                     effect_keys::bound_localization_shape(field).map(|()| Node::Goal)
                 }
-                Some(b"id" | b"category" | b"locked_goal" | b"is_manifest" | b"auto_complete") => {
-                    Shape::One
-                }
+                Some(
+                    b"id" | b"group" | b"category" | b"locked_goal" | b"is_manifest"
+                    | b"auto_complete",
+                ) => Shape::One,
                 Some(b"allowed" | b"visible" | b"available" | b"completed" | b"cancel") => {
                     Shape::Trigger
                 }

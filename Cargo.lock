@@ -2169,9 +2169,11 @@ dependencies = [
  "dashboard-core",
  "dashboard-country-fuel",
  "dashboard-country-nukes",
+ "dashboard-diplomacy",
  "dashboard-economy",
  "dashboard-equipment-losses",
  "dashboard-equipment-stockpile",
+ "dashboard-factions",
  "dashboard-forces",
  "dashboard-game-score",
  "dashboard-game-window",
@@ -2425,6 +2427,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-diplomacy"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "engine-native",
+ "installed-content-core",
+ "installed-content-localisation",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "uuid",
+]
+
+[[package]]
 name = "dashboard-economy"
 version = "0.1.0"
 dependencies = [
@@ -2492,6 +2514,22 @@ dependencies = [
  "store",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "dashboard-factions"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "engine-projects",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "zstd",
 ]
 
 [[package]]

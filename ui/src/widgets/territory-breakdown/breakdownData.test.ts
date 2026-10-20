@@ -20,8 +20,8 @@ const groups: CountryGroupReply = { branchId: '1', humans: [], factions: [], war
 const data: TerritoryBreakdownReply = { branchId: '1', regions: [{ id: 12, name: 'Modded region', missing: null }],
   observed: Array.from({ length: 8 }, () => [{ firstHour: 10, lastHour: 20 }]),
   areaUnit: null, areaReason: 'No raster', warnings: [],
-  countries: [{ tag: 'opaque', runs: [{ firstHour: 10, lastHour: 20, startsSegment: true, values: [1, 1, 7, null, 1, 1, 7, null] }], segments: [{ firstHour: 10, lastHour: 20 }], membership: null }],
-  worldTotals: [{ firstHour: 10, lastHour: 20, startsSegment: true, values: [1, 1, 7, null, 1, 1, 7, null] }],
+  countries: [{ tag: 'opaque', runs: [{ firstHour: 10, lastHour: 20, startsSegment: true, values: [1, 1, 7, null, 1, 1, 7, null, null, null, null, null] }], segments: [{ firstHour: 10, lastHour: 20 }], membership: null }],
+  worldTotals: [{ firstHour: 10, lastHour: 20, startsSegment: true, values: [1, 1, 7, null, 1, 1, 7, null, null, null, null, null] }],
   series: [{ tag: 'opaque', region: 12, missing: null, runs: [{ firstHour: 10, lastHour: 20, startsSegment: true,
     values: ['1', '7', null, '1', '7', null], stateShares: [[{ numerator: '1', denominator: 1 }], [{ numerator: '1', denominator: 1 }]] }] }] };
 const looks = { country: (tag: string, hour: number) => ({ name: `${tag}@${hour}` }), faction: () => ({ name: null, reason: null }),
@@ -53,7 +53,7 @@ test('selected territory uses its native catalogue for aliases, reused tags and 
     countries: [{ ...data.countries[0], tag: 'X', identities: [{ firstHour: 10, lastHour: 11, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 20, slot: 1, countryId: 20 }],
       segments: [{ firstHour: 10, lastHour: 11 }, { firstHour: 15, lastHour: 20 }], runs: [
         { ...data.countries[0].runs[0], lastHour: 11 },
-        { ...data.countries[0].runs[0], firstHour: 12, lastHour: 14, values: [0, 0, 0, null, 0, 0, 0, null] },
+        { ...data.countries[0].runs[0], firstHour: 12, lastHour: 14, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
         { ...data.countries[0].runs[0], firstHour: 15 },
       ] },
       { ...data.countries[0], tag: 'Y', identities: [{ firstHour: 12, lastHour: 14, slot: 1, countryId: 10 }, { firstHour: 16, lastHour: 20, slot: 2, countryId: 30 }] }],
@@ -81,7 +81,7 @@ test('selected territory uses its native catalogue for aliases, reused tags and 
 test('selected territory distinguishes proved absent zero, active identity gaps and missing measure reads', () => {
   const absent: TerritoryBreakdownReply = { ...data, countries: [{ ...data.countries[0], tag: 'X',
     identities: [{ firstHour: 20, lastHour: 20, slot: 1, countryId: 10 }], segments: [{ firstHour: 20, lastHour: 20 }],
-    runs: [{ ...data.countries[0].runs[0], lastHour: 19, values: [0, 0, 0, null, 0, 0, 0, null] },
+    runs: [{ ...data.countries[0].runs[0], lastHour: 19, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
       { ...data.countries[0].runs[0], firstHour: 20 }] }] };
   const identities = breakdownModel(absent, 'states', 'controlled').identities;
   const selected = (tag: string | null, hour: number) => tag !== null && identities.keyAt(tag, hour) !== null;
@@ -132,7 +132,7 @@ test('actual Territory breakdown forwards unknown current and final selection to
     assert.equal(finalGap.authoritativeTotal?.final, null);
     assert.equal(finalGap.authoritativeTotal?.finalUnknown, true);
     fixture.data = { ...unresolved, countries: [{ ...unresolved.countries[0], segments: [{ firstHour: 20, lastHour: 20 }],
-      runs: [{ ...unresolved.countries[0].runs[0], lastHour: 19, values: [0, 0, 0, null, 0, 0, 0, null] },
+      runs: [{ ...unresolved.countries[0].runs[0], lastHour: 19, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
         { ...unresolved.countries[0].runs[0], firstHour: 20 }] }] };
     props.widget.time = { mode: 'follow' };
     const absent = render();
@@ -207,7 +207,7 @@ test('future and ended holders are absent, but a missing roster remains unknown'
   const changing = structuredClone(data);
   const future = { ...structuredClone(changing.countries[0]), tag: 'future',
     segments: [{ firstHour: 15, lastHour: 20 }], runs: [
-      { ...changing.countries[0].runs[0], lastHour: 14, values: [0, 0, 0, null, 0, 0, 0, null] },
+      { ...changing.countries[0].runs[0], lastHour: 14, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
       { ...changing.countries[0].runs[0], firstHour: 15 },
     ] };
   changing.countries.push(future);
@@ -216,7 +216,7 @@ test('future and ended holders are absent, but a missing roster remains unknown'
   changing.countries[0].segments[0].lastHour = 14;
   changing.countries[0].runs = [
     { ...changing.countries[0].runs[0], lastHour: 14 },
-    { ...changing.countries[0].runs[0], firstHour: 15, values: [0, 0, 0, null, 0, 0, 0, null] },
+    { ...changing.countries[0].runs[0], firstHour: 15, values: [0, 0, 0, null, 0, 0, 0, null, null, null, null, null] },
   ];
   changing.series[0].runs[0].lastHour = 14;
   assert.equal(breakdownItems(changing, groups, 12, 20, 'states', 'controlled', looks).items[1].present, false);
@@ -270,4 +270,9 @@ test('country flag failures stay dated and anonymous holders, factions and regio
   assert.equal(shape.items[3].path[1].countryFlag, undefined);
   const tree = groupTree(shape.items, { id: 'world', label: 'World' }, [false, true, false]);
   assert.equal(tree.children.find(node => node.label === pending.name)?.countryFlag, pending);
+});
+
+
+test('occupied territory cannot silently read a controlled regional column', () => {
+  assert.throws(() => breakdownModel(data, 'states', 'occupied'), /no regional breakdown/);
 });

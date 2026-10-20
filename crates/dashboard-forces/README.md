@@ -19,7 +19,7 @@ This is a product crate above [dashboard-base](../dashboard-base/README.md). The
 modules keep their dashboard paths, `products::<name>`, and name what they use
 at the crates that own it (dashboard-base, dashboard-text and dashboard-core). The [dashboard](../dashboard/README.md) re-exports them at
 `dashboard::products::<name>`, registers them, and prepares and queries them in
-its pipeline. The crate implements `ReplyWarnings` for its four replies.
+its pipeline. The crate implements `ReplyWarnings` for its replies.
 
 Air and navy preparation pass exact recorded row deltas to their native
 censuses. A changed wing revisits its owner, effective owner and plane count;
@@ -102,3 +102,18 @@ unchanged. Snapshots, membership changes and unavailable operands retain the
 whole census.
 
 Army size accepts a reached `templateAt` country/hour request for the existing breakdown. It reads the selected country's complete template roster (including unused templates), staff/garrison configuration and country-owned HQ groups from exact replay rows, independently of deployed membership. It shares plain formatting with division hovers, performs no series preparation and adds no recorder work.
+
+`volunteers-expeditionaries` extends the existing army family, division inventory,
+block fold and continuation with sparse sender-to-host histories. List deltas
+revisit their senders; ownership and liveness changes revisit referencing senders.
+
+Land counts use listed live occurrences by logical host. Expeditionaries require
+an explicit sender list, signed-positive expeditionary source (otherwise roster
+owner), and roster host. Null/nonlive references are counted skips; ownership
+conflicts refuse the count. Complete empty lists are zero; unavailable lists are
+unknown. Independent signed VolunteerHosts tallies use the first matching host,
+while event pages preserve every native occurrence and tally/list discrepancy.
+
+Tags select touching links. Replies read requested series pages through shared
+caches, retain coverage/pending gaps and identity boundaries, and refuse oversized
+replies without truncation. Air counts, land caps and ever-sent totals are absent.

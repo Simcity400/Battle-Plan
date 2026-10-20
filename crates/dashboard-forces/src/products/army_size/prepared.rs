@@ -61,6 +61,9 @@ pub const TABLES: &[TableId] = &[
     TableId::DivisionTemplateIcons,
     TableId::DivisionLandInputs,
     TableId::LexicalTokens,
+    TableId::SentVolunteers,
+    TableId::VolunteerHosts,
+    TableId::CountryCounterInputs,
 ];
 
 #[cfg(test)]
@@ -240,6 +243,11 @@ pub struct Prepared {
     #[serde(skip)]
     catalogue_writer: series::CatalogueWriter,
     scan: Scan,
+    aid: aid::History,
+    #[serde(skip)]
+    aid_runtime: aid::Runtime,
+    #[serde(skip)]
+    aid_recorded: Option<Vec<aid::Projection>>,
     tags: BTreeMap<String, u64>,
     values: [Accumulator; 8],
     ranks: [Accumulator; 8],
@@ -268,6 +276,9 @@ impl Default for Prepared {
         Self {
             catalogue_writer: Default::default(),
             scan: Scan::default(),
+            aid: Default::default(),
+            aid_runtime: Default::default(),
+            aid_recorded: None,
             tags: BTreeMap::new(),
             values: Default::default(),
             ranks: Default::default(),
@@ -320,10 +331,32 @@ impl Prepared {
             .inventory
             .as_ref()
             .map(|inventory| inventory.row_updates()[0]);
-        if !self
-            .state
-            .step_updates(&mut self.scan, updates, decoded, replay, Some(changes))
-        {
+        let army_changed =
+            self.state
+                .step_updates(&mut self.scan, updates, decoded, replay, Some(changes));
+        let gap = replay.gaps.iter().any(|gap| {
+            gap.branch == decoded.branch && gap.first_hour <= hour && hour <= gap.last_hour
+        });
+        let projection = self.aid_runtime.step(
+            decoded,
+            changes,
+            self.state
+                .inventory
+                .as_ref()
+                .expect("detailed army inventory"),
+            &self.state.identities,
+            self.state.identity_changed,
+            gap,
+        );
+        self.aid.advance(hour)?;
+        match &mut self.aid_recorded {
+            Some(recorded) if series::record_family(recorded.len() * 2 + 1) => {
+                recorded.push(projection.clone());
+                series::unrecorded(|| self.aid.observe(projection))?;
+            }
+            _ => self.aid.observe(projection)?,
+        }
+        if !army_changed {
             return Ok(());
         }
         #[cfg(test)]
@@ -396,7 +429,7 @@ impl Prepared {
                     match &mut self.recorded {
                         // A block's extract records the publication for its
                         // fold to version on the carried counts.
-                        Some(recorded) if series::record_family(recorded.len()) => {
+                        Some(recorded) if series::record_family(recorded.len() * 2) => {
                             recorded.push(publication.clone());
                             series::unrecorded(|| {
                                 publish_mix(&mut self.mix_ids, &mut self.parts, publication)
@@ -419,6 +452,7 @@ impl Prepared {
             .sum::<usize>()
             + self.parts.bytes()
             + self.coverage.bytes()
+            + self.aid.bytes()
     }
     pub fn flush(
         &mut self,
@@ -509,6 +543,7 @@ impl Prepared {
                 track.segments.drain(..track.segments.len() - 1);
             }
         }
+        self.aid.flush(writer, branch, cancelled)?;
         self.catalogue_writer
             .write(writer, "army", branch, &self.tags, &self.scan)
     }

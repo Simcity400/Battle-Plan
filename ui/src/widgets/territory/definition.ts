@@ -9,7 +9,8 @@ export const OPTIONS: readonly OptionField[] = [
   raceViewOption(undefined, 'race', [{ value: 'share', label: 'Share' }]),
   { key: 'measure', section: 'options', label: 'Measure', kind: 'content-choice', automatic: 'States', default: '' },
   { key: 'rule', section: 'options', label: 'Territory rule', kind: 'choice', default: 'controlled',
-    choices: [{ value: 'controlled', label: 'Controlled' }, { value: 'owned', label: 'Owned' }] },
+    hint: 'Occupied counts what a country controls that another country owns, allies’ and subjects’ land included.',
+    choices: [{ value: 'controlled', label: 'Controlled' }, { value: 'owned', label: 'Owned' }, { value: 'occupied', label: 'Occupied' }] },
   DATE_OVERLAY_OPTION,
   { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => options.view === 'lines' },
   ...RACE_TIME_OPTIONS.map(linesOnly),
@@ -26,5 +27,8 @@ export const definition = {
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, aggregate: true, factions: true }, defaultCountries: TOP_COUNTRIES,
   factionColours: true,
   options: OPTIONS,
-  variants: raceViewVariants('Territory', OPTIONS),
+  variants: [...raceViewVariants('Territory', OPTIONS),
+    // Occupied territory is the same widget on its rule, a card of its own in each race view.
+    { key: 'rule=occupied', initial: { title: 'Occupied territory', options: { rule: 'occupied' } } },
+    { key: 'rule=occupied,view=lines', initial: { title: 'Occupied territory over time', options: { rule: 'occupied', view: 'lines' } } }],
 } as const satisfies WidgetMeta;

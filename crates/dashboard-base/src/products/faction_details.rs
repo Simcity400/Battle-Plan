@@ -20,6 +20,7 @@ mod derived;
 mod manpower;
 mod pools;
 mod presentations;
+pub mod selectors;
 pub use accounts::{FactionAccountDetail, FactionUpgradeDetail};
 pub use companions::{FactionManpowerDetail, FactionProgramDetail, FactionRuleDetail};
 pub use pools::FactionResourceDetail;
@@ -42,7 +43,11 @@ pub struct FactionGoalDefinition {
     pub token: Option<String>,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub icon: Option<String>,
     pub category: Option<String>,
+    /// The term's name as the game's interface names it, from the localisation key
+    /// the native term carries; null when the content does not define it.
+    pub category_name: Option<String>,
     pub reason: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -392,6 +397,7 @@ impl Product for FactionDetails {
             cat.as_deref(),
             &mut reply,
         )?;
+        collect_icon_refusals(&mut reply);
         reply.warnings.extend(warnings);
         check_reply_budget(&reply)?;
         Ok(reply)
@@ -473,6 +479,71 @@ fn needs_environment(
     }
     false
 }
+/// A goal term's name as the interface shows it: the native terms' interface names
+/// are keyed by the term in capitals. None when the content leaves it undefined or empty.
+fn term_name(
+    localisation: &installed_content_localisation::localisation::Localisation,
+    category: &str,
+) -> Option<String> {
+    let key = category.to_ascii_uppercase();
+    localisation.get(&key)?;
+    catalogue::localised(localisation, &key, catalogue::View::Plain)
+        .ok()
+        .filter(|name| !name.is_empty())
+}
+
+fn goal_icon(cat: &catalogue::Catalogue, group: Option<&[u8]>) -> Result<Option<String>, String> {
+    let group = group.ok_or("Faction goal artwork: group is not authored")?;
+    let group =
+        std::str::from_utf8(group).map_err(|_| "Faction goal artwork: group is not UTF-8")?;
+    let name = format!("GFX_{group}");
+    let read = || -> io::Result<String> {
+        let sprite = cat.sprites.lookup(&name).map_err(invalid)?;
+        let decode = cat.gui_decode.as_ref().map_err(invalid)?;
+        catalogue::sprite_frame_png(&cat.content.layers, sprite, *decode, 0, 64)
+    };
+    read()
+        .map(Some)
+        .map_err(|why| format!("Faction goal artwork {name}: {why}"))
+}
+
+fn collect_icon_refusals(reply: &mut FactionDetailReply) {
+    let mut refused = std::collections::BTreeMap::<String, u32>::new();
+    for goal in reply
+        .manifest
+        .iter()
+        .chain(reply.goals.iter().map(|goal| &goal.definition))
+        .chain(&reply.completed)
+        .chain(&reply.cancelled)
+        .chain(
+            reply
+                .accounts
+                .iter()
+                .flatten()
+                .flat_map(|account| &account.completed),
+        )
+    {
+        // Artwork is evaluated before the independent text fields. Preserve
+        // the complete refusal: authored sprite names may contain separators.
+        if let Some(reason) = goal
+            .reason
+            .as_ref()
+            .filter(|reason| reason.starts_with("Faction goal artwork"))
+        {
+            *refused.entry(reason.clone()).or_default() += 1;
+        }
+    }
+    reply.refusals.extend(
+        refused
+            .into_iter()
+            .map(|(reason, count)| FactionRefusalDetail {
+                fact: "goal artwork".into(),
+                count,
+                reason,
+            }),
+    );
+}
+
 fn definition(
     frame: &DecodedFrame,
     faction: u64,
@@ -490,7 +561,9 @@ fn definition(
         token: None,
         name: None,
         description: None,
+        icon: None,
         category: None,
+        category_name: None,
         reason: None,
     };
     let Some(token) = token else {
@@ -535,6 +608,10 @@ fn definition(
                 catalogue::plain_text(&text)
             };
         let mut failures = Vec::new();
+        match goal_icon(cat, definition.group.as_deref()) {
+            Ok(icon) => reply.icon = icon,
+            Err(why) => failures.push(why),
+        }
         presentations::attach(frame, faction, cat, definition, &mut reply);
         match render(&definition.name) {
             Ok(text) => reply.name = Some(text),
@@ -553,6 +630,10 @@ fn definition(
             Ok(category) => reply.category = category,
             Err(_) => failures.push("Faction goal category is not UTF-8".into()),
         }
+        reply.category_name = reply
+            .category
+            .as_deref()
+            .and_then(|category| term_name(&cat.localisation, category));
         if !failures.is_empty() {
             return Err(failures.join("; "));
         }
@@ -662,6 +743,30 @@ mod tests {
     use replay_data::rows::{FactionGoalEntryRow, FactionGoalStatusRow, FactionRow, TableRows};
     use replay_frame::frame::TableView;
     #[test]
+    fn goal_term_names_come_from_the_recorded_localisation() {
+        let localisation: installed_content_localisation::localisation::Localisation = [
+            ("SHORT_TERM".to_owned(), "A mod's short horizon".to_owned()),
+            ("LONG_TERM".to_owned(), String::new()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            super::term_name(&localisation, "short_term").as_deref(),
+            Some("A mod's short horizon")
+        );
+        assert_eq!(
+            super::term_name(&localisation, "long_term"),
+            None,
+            "an empty name is no name"
+        );
+        assert_eq!(
+            super::term_name(&localisation, "medium_term"),
+            None,
+            "an undefined key stays unnamed"
+        );
+    }
+
+    #[test]
     fn faction_goal_details_select_one_owner_among_five_thousand_and_preserve_independent_lists() {
         let mut frame = crate::test_fixtures::source(1, 100, Some(0));
         let selected = u64::MAX;
@@ -737,7 +842,9 @@ mod tests {
                 token: token.map(|id| id.to_string()),
                 name: None,
                 description: None,
+                icon: None,
                 category: None,
+                category_name: None,
                 reason: None,
             }
         })
@@ -754,5 +861,101 @@ mod tests {
             reason: "writer not observed".into(),
         };
         assert!(read(&frame, &params, selected, |_| unreachable!()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod artwork_tests {
+    use super::*;
+    #[test]
+    fn faction_goal_missing_group_and_sprite_are_named_counted_refusals() {
+        let (cat, _guard) = catalogue::tests::folder_catalogue(&[]);
+        assert!(
+            goal_icon(&cat, None)
+                .unwrap_err()
+                .contains("group is not authored")
+        );
+        let reason = goal_icon(&cat, Some(b"mod_missing; group")).unwrap_err();
+        assert!(reason.contains("GFX_mod_missing; group"));
+        let mut reply = FactionDetailReply::default();
+        let goal: FactionGoalDefinition = serde_json::from_value(serde_json::json!({
+            "progress":[], "sections":[], "conditions":[], "rewards":[], "flags":[],
+            "token":"mod_goal", "name":"Still known", "description":null, "icon":null,
+            "category":null, "categoryName":null, "reason":reason,
+        }))
+        .unwrap();
+        reply.completed = vec![goal.clone(), goal.clone()];
+        collect_icon_refusals(&mut reply);
+        assert_eq!(reply.refusals.len(), 1);
+        assert_eq!(reply.refusals[0].count, 2);
+        assert!(reply.refusals[0].reason.contains("GFX_mod_missing; group"));
+        assert_eq!(reply.completed[0].name.as_deref(), Some("Still known"));
+    }
+    #[test]
+    #[ignore = "requires DXC and a GPU; synthetic mod content only"]
+    fn faction_goal_mod_group_sprite_resolves_through_shared_artwork() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let (cat, guards) = catalogue::texture_tests::texture_catalogue(
+            &[
+                (
+                    "interface/art.gfx",
+                    "spriteTypes={spriteType={name=GFX_mod_group textureFile=gfx/mod.png}}",
+                ),
+                (
+                    "common/factions/goals/mod.txt",
+                    "mod_goal={name=MOD_NAME group=mod_group} missing_art={name=MOD_NAME group=missing_mod_group}",
+                ),
+                (
+                    "localisation/mod_l_english.yml",
+                    "l_english:\n MOD_NAME:0 \"Mod goal\"\n",
+                ),
+            ],
+            &[(
+                "gfx/mod.png",
+                catalogue::texture_tests::png_bytes(&installed_content_image::Rgba8Image {
+                    width: 1,
+                    height: 1,
+                    pixels: vec![30, 60, 90, 255],
+                }),
+            )],
+        );
+        catalogue::texture_tests::write_sprite_program(&guards[1].0);
+        use replay_data::rows::{LexicalTokenRow, TableRows};
+        use replay_frame::frame::TableView;
+        let definitions = installed_content_core::faction_goals::cached(&cat.content.layers).unwrap();
+        let mut frame = crate::test_fixtures::source(1, 100, Some(0));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(
+                ["mod_goal", "missing_art"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, token)| LexicalTokenRow {
+                        token: index as u32 + 1,
+                        literal: token.as_bytes().to_vec(),
+                    })
+                    .collect(),
+            ));
+        let lexical =
+            faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+        let resolved = definition(&frame, 9, Some(1), Some(&cat), Some(&definitions), &lexical);
+        assert!(
+            resolved
+                .icon
+                .as_ref()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        assert_eq!(resolved.name.as_deref(), Some("Mod goal"));
+        let unresolved = definition(&frame, 9, Some(2), Some(&cat), Some(&definitions), &lexical);
+        assert!(unresolved.icon.is_none());
+        assert_eq!(unresolved.name.as_deref(), Some("Mod goal"));
+        let mut reply = FactionDetailReply {
+            completed: vec![resolved, unresolved],
+            ..Default::default()
+        };
+        collect_icon_refusals(&mut reply);
+        assert_eq!(reply.refusals.len(), 1);
+        assert_eq!(reply.refusals[0].count, 1);
+        assert!(reply.refusals[0].reason.contains("GFX_missing_mod_group"));
     }
 }

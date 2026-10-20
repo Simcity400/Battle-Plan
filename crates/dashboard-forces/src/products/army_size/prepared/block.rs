@@ -65,6 +65,7 @@ struct BlockFacts {
     recording: Recording,
     names: Vec<String>,
     publications: Vec<Publication>,
+    aid_publications: Vec<super::super::aid::Projection>,
     scan: Scan,
     last: i32,
 }
@@ -125,6 +126,7 @@ impl Extract for BlockExtract {
             .add(prepared.tags.keys().map(String::capacity).sum());
         held.heap(&self.recording)
             .heap(&prepared.recorded)
+            .heap(&prepared.aid_recorded)
             .value(&prepared.scan)
             .total()
     }
@@ -185,6 +187,7 @@ impl Extract for BlockExtract {
             recording,
             names,
             publications: prepared.recorded.unwrap_or_default(),
+            aid_publications: prepared.aid_recorded.unwrap_or_default(),
             scan,
             last: prepared.last,
         }))
@@ -195,6 +198,7 @@ struct Target<'a> {
     prepared: &'a mut Prepared,
     keys: &'a [u64],
     publications: Vec<Option<Publication>>,
+    aid_publications: Vec<Option<super::super::aid::Projection>>,
 }
 
 impl ReplayTarget for Target<'_> {
@@ -205,6 +209,15 @@ impl ReplayTarget for Target<'_> {
         self.keys[key as usize]
     }
     fn family(&mut self, index: usize) -> io::Result<()> {
+        if index % 2 == 1 {
+            let projection = self
+                .aid_publications
+                .get_mut(index / 2)
+                .and_then(Option::take)
+                .ok_or_else(|| io::Error::other("Army fold has no recorded aid projection"))?;
+            return self.prepared.aid.observe(projection);
+        }
+        let index = index / 2;
         let mut publication = self
             .publications
             .get_mut(index)
@@ -240,6 +253,7 @@ impl Prepared {
             self.series(series).record_as(series);
         }
         self.recorded = Some(Vec::new());
+        self.aid_recorded = Some(Vec::new());
     }
 
     /// Fold one block's facts into the carried state, after the block's
@@ -265,6 +279,7 @@ impl Prepared {
             recording,
             names,
             publications,
+            aid_publications,
             scan,
             last,
         } = *facts;
@@ -294,6 +309,7 @@ impl Prepared {
                 prepared: self,
                 keys: &keys,
                 publications: publications.into_iter().map(Some).collect(),
+                aid_publications: aid_publications.into_iter().map(Some).collect(),
             })
             .map_err(failed)?;
         {
@@ -411,6 +427,7 @@ impl Prepared {
     /// observer has none of it.
     fn forget_runtime(&mut self) {
         self.state = scan_state();
+        self.aid_runtime = Default::default();
         self.scan.removed.clear();
         self.scan.observed.clear();
         for track in self.scan.tracks.values_mut() {

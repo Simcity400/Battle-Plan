@@ -99,6 +99,14 @@ const renderers = {
   'land-battles': lazyWidget('land-battles', ['render']),
   'naval-battles': lazyWidget('naval-battles', ['render']),
   'event-feed': lazyWidget('event-feed', ['render']),
+  'volunteers': lazyWidget('volunteers', ['render']),
+  'faction-upgrades': lazyWidget('faction-upgrades', ['render']),
+  'diplomatic-pacts': lazyWidget('diplomatic-pacts', ['render']),
+  'diplomatic-relations': lazyWidget('diplomatic-relations', ['render']),
+  'faction-influence': lazyWidget('faction-influence', ['render']),
+  'faction-pooled-strength': lazyWidget('faction-pooled-strength', ['render']),
+  'faction-goals': lazyWidget('faction-goals', ['render']),
+  'war-contribution': lazyWidget('war-contribution', ['render']),
 } satisfies Record<(typeof widgetMetas)[number]['kind'], WidgetRenderer>;
 renderers['idea-timeline'].usePresets = useIdeaTimelinePresets;
 registerWidgets(widgetMetas.map(meta => ({ ...meta, ...renderers[meta.kind] })));

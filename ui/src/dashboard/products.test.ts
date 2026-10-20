@@ -473,3 +473,45 @@ test('casualty pair availability and 5000-country selections share one request p
   }
   assert.equal(queries, 3);
 });
+
+
+test('diplomacy views use only the prepared route and cache separate selections', async () => {
+  const source = { id: 'diplomacy', revision: '1' } as DashboardSource;
+  let queries = 0;
+  const client = {
+    product: async () => { throw new Error('diplomacy has no branch-scan route'); },
+    preparedQuery: async (_source: DashboardSource, product: string, params: unknown) => {
+      queries++; assert.equal(product, 'diplomacy-state'); return { params };
+    },
+  } as unknown as DashboardClient;
+  for (const params of [
+    { view: 'opinions', branchId: '1', hour: 10, tags: ['arbitrary country/tag'] },
+    { view: 'pair', branchId: '1', first: 'arbitrary country/tag', second: 'another', hour: 10 },
+    { view: 'pacts', branchId: '1', tags: null },
+    { view: 'proposals', branchId: '1', tags: null },
+  ]) {
+    const request = { sourceId: source.id, revision: source.revision, product: 'diplomacy-state', params };
+    for (let repeat = 0; repeat < 2; repeat++) {
+      assert.deepEqual(await loadProduct(client, request, new AbortController().signal, undefined, source), { params });
+    }
+  }
+  assert.equal(queries, 4);
+});
+
+
+test('military aid uses prepared pages and only final coverage enters the reply cache', async () => {
+  const input = { sourceId: 'military-aid', revision: '1', product: 'volunteers-expeditionaries',
+    params: { branchId: '1', kind: 'land', tags: null } };
+  const cold = { links: [], tallies: [], unobserved: [], warnings: [],
+    coverage: { firstHour: 0, lastHour: -1, complete: false }, pending: [{ firstHour: 0, lastHour: 10 }] };
+  const ready = { ...cold, coverage: { firstHour: 0, lastHour: 10, complete: true }, pending: [] };
+  let calls = 0;
+  const client = { preparedQuery: async (_source: unknown, product: string, params: unknown) => {
+    assert.equal(product, input.product); assert.deepEqual(params, input.params);
+    return ++calls === 1 ? cold : ready;
+  }, product: async () => { throw new Error('request-time military aid scan'); } } as unknown as DashboardClient;
+  assert.deepEqual(await loadProduct(client, input, new AbortController().signal), cold);
+  assert.deepEqual(await loadProduct(client, input, new AbortController().signal), ready);
+  assert.deepEqual(await loadProduct(client, input, new AbortController().signal), ready);
+  assert.equal(calls, 2);
+});

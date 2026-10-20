@@ -24,8 +24,10 @@ pub use dashboard_construction::products::construction_log;
 pub use dashboard_construction::products::construction_spending;
 pub use dashboard_country_fuel::products::country_fuel;
 pub use dashboard_country_nukes::products::country_nukes;
+pub use dashboard_diplomacy::products::diplomacy_state;
 pub use dashboard_equipment_losses::products::equipment_losses;
 pub use dashboard_equipment_stockpile::products::equipment_stockpile;
+pub use dashboard_factions::products::faction_state;
 pub use dashboard_forces::products::air_force;
 pub use dashboard_army::products::{
     division_careers, division_equipment, division_templates, training_queue,
@@ -35,6 +37,7 @@ pub use dashboard_forces::products::naval_management;
 pub use dashboard_forces::products::navy;
 pub use dashboard_forces::products::parts_race_prepared;
 pub use dashboard_forces::products::supply_health;
+pub use dashboard_forces::products::volunteers_expeditionaries;
 pub use dashboard_game_score::products::game_score;
 pub use dashboard_game_window::products::{game_window, game_window_artwork};
 pub use dashboard_intelligence::products::agency_comparison;
@@ -205,6 +208,7 @@ fn types<P: Product>() -> Vec<String> {
 /// Every product the service answers. Add a product here and in the frontend
 /// widget registry; nothing else needs to change.
 pub static PRODUCTS: &[Registered] = &[
+    register_prepared::<diplomacy_state::DiplomacyState>(),
     register::<national_focus::NationalFocus>(),
     register::<focus_artwork::FocusArtwork>(),
     register::<crate::prepared_focus::FocusArt>(),
@@ -215,6 +219,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<game_window::GameWindow>(),
     register::<game_window_artwork::GameWindowArtwork>(),
     register_prepared::<army_size::ArmySize>(),
+    register_prepared::<volunteers_expeditionaries::VolunteersExpeditionaries>(),
     register_prepared::<supply_health::SupplyHealth>(),
     register_prepared::<division_log::DivisionLog>(),
     register_prepared::<division_log::DivisionLogManifest>(),
@@ -238,6 +243,8 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_styles::CountryStyles>(),
     register::<faction_details::FactionDetails>(),
     register_prepared::<country_groups::CountryGroups>(),
+    // All faction history views share one prepared publication and gate.
+    register_prepared::<faction_state::FactionState>(),
     register_prepared::<wars::Wars>(),
     register::<wargoals::Wargoals>(),
     register::<country_stability::CountryStability>(),

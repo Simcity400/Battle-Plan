@@ -49,21 +49,51 @@ pub enum TerritoryMeasure {
 pub enum TerritoryRule {
     Controlled,
     Owned,
+    Occupied,
+}
+
+/// Named wire columns. Prepared numeric channels have a separate layout so the
+/// native owned-state counter cannot be mistaken for occupied territory.
+pub mod columns {
+    pub const CONTROLLED_STATES: usize = 0;
+    pub const CONTROLLED_PROVINCES: usize = 1;
+    pub const CONTROLLED_VICTORY_POINTS: usize = 2;
+    pub const CONTROLLED_AREA: usize = 3;
+    pub const OWNED_STATES: usize = 4;
+    pub const OWNED_PROVINCES: usize = 5;
+    pub const OWNED_VICTORY_POINTS: usize = 6;
+    pub const OWNED_AREA: usize = 7;
+    pub const OCCUPIED_STATES: usize = 8;
+    pub const OCCUPIED_PROVINCES: usize = 9;
+    pub const OCCUPIED_VICTORY_POINTS: usize = 10;
+    pub const OCCUPIED_AREA: usize = 11;
+    pub const COUNT: usize = 12;
+
+    pub const fn is_state(column: usize) -> bool {
+        matches!(column, CONTROLLED_STATES | OWNED_STATES | OCCUPIED_STATES)
+    }
+    pub const fn is_area(column: usize) -> bool {
+        matches!(column, CONTROLLED_AREA | OWNED_AREA | OCCUPIED_AREA)
+    }
 }
 
 impl TerritoryMeasure {
     pub fn index(self, rule: TerritoryRule) -> usize {
-        let measure = match self {
-            Self::States => 0,
-            Self::Provinces => 1,
-            Self::VictoryPoints => 2,
-            Self::Area => 3,
-        };
-        measure
-            + match rule {
-                TerritoryRule::Controlled => 0,
-                TerritoryRule::Owned => 4,
-            }
+        use columns::*;
+        match (self, rule) {
+            (Self::States, TerritoryRule::Controlled) => CONTROLLED_STATES,
+            (Self::Provinces, TerritoryRule::Controlled) => CONTROLLED_PROVINCES,
+            (Self::VictoryPoints, TerritoryRule::Controlled) => CONTROLLED_VICTORY_POINTS,
+            (Self::Area, TerritoryRule::Controlled) => CONTROLLED_AREA,
+            (Self::States, TerritoryRule::Owned) => OWNED_STATES,
+            (Self::Provinces, TerritoryRule::Owned) => OWNED_PROVINCES,
+            (Self::VictoryPoints, TerritoryRule::Owned) => OWNED_VICTORY_POINTS,
+            (Self::Area, TerritoryRule::Owned) => OWNED_AREA,
+            (Self::States, TerritoryRule::Occupied) => OCCUPIED_STATES,
+            (Self::Provinces, TerritoryRule::Occupied) => OCCUPIED_PROVINCES,
+            (Self::VictoryPoints, TerritoryRule::Occupied) => OCCUPIED_VICTORY_POINTS,
+            (Self::Area, TerritoryRule::Occupied) => OCCUPIED_AREA,
+        }
     }
 }
 
@@ -89,10 +119,11 @@ pub struct TerritoryRun {
     pub first_hour: i32,
     pub last_hour: i32,
     pub starts_segment: bool,
-    /// States, provinces, victory points, area: controlled first, then owned.
+    /// Controlled states, provinces, signed victory points, area; then owned in
+    /// the same order; then occupied in the same order.
     /// Null means that measure/rule was not recorded, never zero.
     #[ts(type = "Array<number | null>")]
-    pub values: [Option<i64>; 8],
+    pub values: [Option<i64>; columns::COUNT],
 }
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -110,7 +141,8 @@ pub struct TerritorySeries {
 #[serde(rename_all = "camelCase")]
 pub struct TerritoryReply {
     pub branch_id: String,
-    /// The complete world's totals, including unheld territory, independent of selection.
+    /// Independent world totals, including unheld controlled/owned territory.
+    /// Occupied columns total only foreign-controlled units.
     pub world_totals: Vec<TerritoryRun>,
     pub series: Vec<TerritorySeries>,
     /// No physical calibration is present in the province map assets.
@@ -156,9 +188,9 @@ struct Builder {
     #[serde(skip)]
     lineage: Option<Lineage>,
     #[serde(skip)]
-    previous: Vec<[Option<i64>; 8]>,
+    previous: Vec<[Option<i64>; columns::COUNT]>,
     #[serde(skip)]
-    current: Vec<[Option<i64>; 8]>,
+    current: Vec<[Option<i64>; columns::COUNT]>,
     previous_hour: Option<i32>,
     /// The last land reads and, under the current lineage, their totals.
     #[serde(skip)]
@@ -169,7 +201,7 @@ struct Builder {
     aggregations: usize,
     incomplete: bool,
     #[serde(skip)]
-    changed: BTreeMap<Arc<str>, [bool; 8]>,
+    changed: BTreeMap<Arc<str>, [bool; columns::COUNT]>,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub work: crate::prepared::observer_tests::Work,
@@ -420,8 +452,8 @@ pub fn fresh_tables(
 #[derive(Clone, Copy)]
 struct Totals {
     missing_area: bool,
-    world: [Option<i64>; 8],
-    overflowed: [usize; 8],
+    world: [Option<i64>; columns::COUNT],
+    overflowed: [usize; columns::COUNT],
 }
 
 pub const TABLES: &[TableId] = &[
@@ -430,7 +462,7 @@ pub const TABLES: &[TableId] = &[
     TableId::States,
     TableId::Provinces,
 ];
-pub const SAMPLE_FIELDS: [&str; 8] = [
+pub const SAMPLE_FIELDS: [&str; columns::COUNT] = [
     "controlledStates",
     "controlledProvinces",
     "controlledVictoryPoints",
@@ -439,6 +471,10 @@ pub const SAMPLE_FIELDS: [&str; 8] = [
     "ownedProvinces",
     "ownedVictoryPoints",
     "ownedArea",
+    "occupiedStates",
+    "occupiedProvinces",
+    "occupiedVictoryPoints",
+    "occupiedArea",
 ];
 
 /// The empty tag addresses independent world totals, never a country template.
@@ -521,6 +557,41 @@ pub fn sample(
     Ok(result)
 }
 
+/// A raw null is known unassigned; a non-null reference needs a unique native
+/// holder. Dense slots identify that hour's authenticated country instances.
+#[derive(Clone, Copy)]
+enum Holder {
+    Unassigned,
+    Unknown,
+    Country(usize),
+}
+
+impl Holder {
+    fn resolve(raw: u32, slots: &HashMap<u32, usize>) -> Self {
+        if raw == 0 {
+            Self::Unassigned
+        } else {
+            slots
+                .get(&raw)
+                .copied()
+                .map_or(Self::Unknown, Self::Country)
+        }
+    }
+}
+
+/// Shared by the ordinary oracle, preparation and progressive sampling, before
+/// aggregating the paired holders. Unresolved references retain conservative
+/// unknown coverage, separately from known unassigned or domestic territory.
+fn occupied_holder(controller: Holder, owner: Holder) -> Holder {
+    match (controller, owner) {
+        (Holder::Unknown, _) | (_, Holder::Unknown) => Holder::Unknown,
+        (Holder::Country(controller), Holder::Country(owner)) if controller != owner => {
+            Holder::Country(controller)
+        }
+        _ => Holder::Unassigned,
+    }
+}
+
 /// The same exact province weights serve totals and geographic breakdowns.
 pub fn province_values(
     province: &replay_data::rows::ProvinceRow,
@@ -540,8 +611,8 @@ fn sample_rows(
     areas: Option<&ProvinceAreas>,
     raw_slots: &HashMap<u32, usize>,
     slot_count: usize,
-    result: &mut Vec<[Option<i64>; 8]>,
-    previous: Option<(Totals, &[[Option<i64>; 8]])>,
+    result: &mut Vec<[Option<i64>; columns::COUNT]>,
+    previous: Option<(Totals, &[[Option<i64>; columns::COUNT]])>,
     refresh: [bool; 2],
 ) -> Totals {
     let (states, provinces) = fresh_tables(format, frame);
@@ -554,21 +625,25 @@ fn sample_rows(
         provinces.is_some(),
         provinces.is_some(),
         provinces.is_some() && areas.is_some(),
+        states.is_some(),
+        provinces.is_some(),
+        provinces.is_some(),
+        provinces.is_some() && areas.is_some(),
     ];
-    result.resize(slot_count, [Some(0); 8]);
+    result.resize(slot_count, [Some(0); columns::COUNT]);
     let mut totals = previous.map_or(
         Totals {
             missing_area: false,
-            world: [Some(0); 8],
-            overflowed: [0; 8],
+            world: [Some(0); columns::COUNT],
+            overflowed: [0; columns::COUNT],
         },
         |(totals, _)| totals,
     );
     if let Some((_, values)) = previous {
         result.copy_from_slice(values);
     }
-    for column in 0..8 {
-        if refresh[usize::from(column % 4 != 0)] {
+    for column in 0..columns::COUNT {
+        if refresh[usize::from(!columns::is_state(column))] {
             for sums in result.iter_mut() {
                 sums[column] = Some(0);
             }
@@ -577,18 +652,19 @@ fn sample_rows(
         }
     }
     let world = &mut totals.world;
-    let mut add = |raw: u32, column: usize, values: &[Option<i64>]| {
+    let mut add = |holder: Holder, column: usize, values: &[Option<i64>]| {
         for (index, value) in values.iter().enumerate() {
             world[column + index] = world[column + index]
                 .zip(*value)
                 .and_then(|(sum, value)| sum.checked_add(value));
         }
-        if raw == 0 {
-            return;
-        }
-        let Some(&slot) = raw_slots.get(&raw) else {
-            available[column..column + values.len()].fill(false);
-            return;
+        let slot = match holder {
+            Holder::Unassigned => return,
+            Holder::Unknown => {
+                available[column..column + values.len()].fill(false);
+                return;
+            }
+            Holder::Country(slot) => slot,
         };
         let sums = &mut result[slot];
         for (index, value) in values.iter().enumerate() {
@@ -598,20 +674,31 @@ fn sample_rows(
         }
     };
     for state in states.filter(|_| refresh[0]).into_iter().flatten() {
-        add(state.controller, 0, &[Some(1)]);
-        add(state.owner, 4, &[Some(1)]);
+        let controller = Holder::resolve(state.controller, raw_slots);
+        let owner = Holder::resolve(state.owner, raw_slots);
+        add(controller, columns::CONTROLLED_STATES, &[Some(1)]);
+        add(owner, columns::OWNED_STATES, &[Some(1)]);
+        match occupied_holder(controller, owner) {
+            Holder::Unassigned => {}
+            holder => add(holder, columns::OCCUPIED_STATES, &[Some(1)]),
+        }
     }
     let mut missing_area = !refresh[1] && totals.missing_area;
     for province in provinces.filter(|_| refresh[1]).into_iter().flatten() {
         let values = province_values(province, areas);
         missing_area |= areas.is_some() && values[2].is_none();
-        for (raw, offset) in [(province.controller, 0), (province.owner, 4)] {
-            add(raw, offset + 1, &values);
+        let controller = Holder::resolve(province.controller, raw_slots);
+        let owner = Holder::resolve(province.owner, raw_slots);
+        add(controller, columns::CONTROLLED_PROVINCES, &values);
+        add(owner, columns::OWNED_PROVINCES, &values);
+        match occupied_holder(controller, owner) {
+            Holder::Unassigned => {}
+            holder => add(holder, columns::OCCUPIED_PROVINCES, &values),
         }
     }
     let overflowed = sanitise_totals(available, result, world, missing_area, refresh);
-    for column in 0..8 {
-        if refresh[usize::from(column % 4 != 0)] {
+    for column in 0..columns::COUNT {
+        if refresh[usize::from(!columns::is_state(column))] {
             totals.overflowed[column] = overflowed[column];
         }
     }
@@ -622,15 +709,15 @@ fn sample_rows(
 /// A world-share ring also needs every candidate country to be rankable. A
 /// safe signed world sum cannot conceal an overflowing country contribution.
 fn sanitise_totals(
-    available: [bool; 8],
-    countries: &mut [[Option<i64>; 8]],
-    world: &mut [Option<i64>; 8],
+    available: [bool; columns::COUNT],
+    countries: &mut [[Option<i64>; columns::COUNT]],
+    world: &mut [Option<i64>; columns::COUNT],
     missing_area: bool,
     refresh: [bool; 2],
-) -> [usize; 8] {
-    let mut overflowed = [0usize; 8];
+) -> [usize; columns::COUNT] {
+    let mut overflowed = [0usize; columns::COUNT];
     for (column, known) in available.into_iter().enumerate() {
-        if !refresh[usize::from(column % 4 != 0)] {
+        if !refresh[usize::from(!columns::is_state(column))] {
             continue;
         }
         if !known {
@@ -641,7 +728,7 @@ fn sanitise_totals(
             continue;
         }
         let unsafe_value = |value: Option<i64>| {
-            value.is_none() && (column % 4 != 3 || !missing_area)
+            value.is_none() && (!columns::is_area(column) || !missing_area)
                 || value.is_some_and(|value| value.unsigned_abs() > MAX_EXACT_JS_INTEGER)
         };
         let mut country_overflow = false;
@@ -751,9 +838,13 @@ fn observe(
         }
         if let Some(hour) = builder.previous_hour {
             match &builder.lineage {
-                Some(index) => builder
-                    .changed
-                    .extend(index.present.iter().cloned().map(|tag| (tag, [true; 8]))),
+                Some(index) => builder.changed.extend(
+                    index
+                        .present
+                        .iter()
+                        .cloned()
+                        .map(|tag| (tag, [true; columns::COUNT])),
+                ),
                 // A restored builder has no join; publication sealed the present
                 // spans of that hour's holders at it.
                 None => builder.changed.extend(
@@ -765,7 +856,7 @@ fn observe(
                                 .last()
                                 .is_some_and(|span| span.last_hour == hour)
                         })
-                        .map(|(tag, _)| (Arc::clone(tag), [true; 8])),
+                        .map(|(tag, _)| (Arc::clone(tag), [true; columns::COUNT])),
                 ),
             }
         }
@@ -844,7 +935,7 @@ fn observe(
         .overflowed
         .saturating_add(totals.overflowed.iter().sum());
     let world = if index.incomplete {
-        [None; 8]
+        [None; columns::COUNT]
     } else {
         totals.world
     };
@@ -878,7 +969,9 @@ fn observe(
                     span.last_hour = hour;
                 }
             }
-            builder.changed.insert(Arc::clone(tag), [true; 8]);
+            builder
+                .changed
+                .insert(Arc::clone(tag), [true; columns::COUNT]);
         }
         let resolved: BTreeSet<_> = index.entries.iter().map(|(tag, ..)| tag.as_ref()).collect();
         for (tag, ..) in before.into_iter().flat_map(|old| &old.entries) {
@@ -891,7 +984,9 @@ fn observe(
                     }
                 }
                 record_hour(&mut track.present, frame.hour);
-                builder.changed.insert(Arc::clone(tag), [true; 8]);
+                builder
+                    .changed
+                    .insert(Arc::clone(tag), [true; columns::COUNT]);
             }
         }
         // A restored builder has no previous join, but publication sealed it
@@ -910,7 +1005,9 @@ fn observe(
                 if (was_present && !present.contains(tag))
                     || (was_resolved && present.contains(tag) && !resolved.contains(tag.as_ref()))
                 {
-                    builder.changed.insert(Arc::clone(tag), [true; 8]);
+                    builder
+                        .changed
+                        .insert(Arc::clone(tag), [true; columns::COUNT]);
                 }
             }
         }
@@ -921,7 +1018,10 @@ fn observe(
                 &mut scan.series.get_mut(tag).expect("interned tag").present,
                 frame.hour,
             );
-            builder.changed.entry(Arc::clone(tag)).or_insert([false; 8]);
+            builder
+                .changed
+                .entry(Arc::clone(tag))
+                .or_insert([false; columns::COUNT]);
         }
     }
     let previous: HashMap<_, _> = before
@@ -937,10 +1037,9 @@ fn observe(
     let mut incomplete = index.incomplete;
     for (tag, identity, slot) in &index.entries {
         let values = builder.current[*slot];
-        incomplete |= values
-            .iter()
-            .enumerate()
-            .any(|(column, value)| value.is_none() && (column % 4 != 3 || areas.is_some()));
+        incomplete |= values.iter().enumerate().any(|(column, value)| {
+            value.is_none() && (!columns::is_area(column) || areas.is_some())
+        });
         let unchanged = contiguous
             && if same {
                 builder.previous.get(*slot) == Some(&values)
@@ -1154,7 +1253,7 @@ fn for_each_dated_run(
             first_hour: first,
             last_hour: last,
             starts_segment: true,
-            values: [Some(0); 8],
+            values: [Some(0); columns::COUNT],
         })
     })?;
     for run in recorded {

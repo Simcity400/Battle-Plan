@@ -10,6 +10,7 @@ const tabFullTest = 'ui/src/components/VirtualList.dom.test.ts';
 
 // Add every browser fixture here. The dependency check below refuses omissions.
 export const browserTests = [
+  'ui/src/charts/heat/HeatMatrix.dom.test.ts',
   'ui/src/charts/shareDrawing.test.ts',
   'ui/src/charts/table/Table.dom.test.ts',
   'ui/src/widgets/dockyardSizes.dom.test.ts',
@@ -18,6 +19,7 @@ export const browserTests = [
   'ui/src/components/GameWindow.keyboard.dom.test.ts',
   'ui/src/components/Select.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
+  'ui/src/widgets/diplomacySizes.dom.test.ts',
   'ui/src/widgets/economySizes.dom.test.ts',
   'ui/src/widgets/politicsSizes.dom.test.ts',
   tabFullTest,

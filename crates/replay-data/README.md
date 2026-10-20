@@ -316,3 +316,5 @@ branches, gaps and refusals restart labels from the complete current sample.
 Equal entries remain separate occurrences. Independent full identities and signed numeric columns
 avoid identity/amount mixing. `logical_order` and `fact` reconstruct the native
 ordered view for dashboard and save comparisons without losing a stored word.
+
+Military-aid consumers share `military_aid` for alias-held volunteer-list validation, full-handle live resolution, logical-host attribution, signed-positive expeditionary source ownership and repeated-reference signed-wrapping manpower sums. These helpers consume recorded rows only; they introduce no air-volunteer classifier or content defaults.

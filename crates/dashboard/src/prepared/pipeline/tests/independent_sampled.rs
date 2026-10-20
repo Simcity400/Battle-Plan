@@ -1719,3 +1719,104 @@ fn loss_owner_ranges_and_amount_only_drains_publish_and_resume_as_hourly_prepara
         true,
     );
 }
+
+#[test]
+fn occupied_territory_channels_match_hourly_payloads_after_resume_append_and_clear() {
+    use replay_data::rows::{ProvinceRow, StateRow};
+    fn occupied_frame(branch: u64, hour: i32) -> DecodedFrame {
+        let mut read = sampled_frame(branch, hour);
+        let at = hour - BASE - if branch == 2 { 100 } else { 0 };
+        let owner = if (8..=13).contains(&at) {
+            FIRST + 1
+        } else {
+            FIRST
+        };
+        let controller = if (3..=5).contains(&at) {
+            FIRST
+        } else {
+            FIRST + 1
+        };
+        set(
+            &mut read,
+            TableRows::States(vec![StateRow {
+                id: 1,
+                owner,
+                controller,
+                ..Default::default()
+            }]),
+        );
+        set(
+            &mut read,
+            TableRows::Provinces(vec![
+                ProvinceRow {
+                    id: 1,
+                    state: 1,
+                    owner,
+                    controller,
+                    victory_points: at - 9,
+                    ..Default::default()
+                },
+                ProvinceRow {
+                    id: 2,
+                    state: 1,
+                    owner: FIRST + 1,
+                    controller: FIRST,
+                    victory_points: 0,
+                    ..Default::default()
+                },
+                ProvinceRow {
+                    id: 3,
+                    owner: 0,
+                    controller: FIRST,
+                    victory_points: 19,
+                    ..Default::default()
+                },
+            ]),
+        );
+        for table in match at {
+            12 => vec![TableId::States],
+            15 => vec![TableId::Provinces],
+            _ => vec![],
+        } {
+            *read.tables[table.index()] = TableView::Unavailable {
+                reason: "independent occupied read".into(),
+            };
+        }
+        read
+    }
+    let first = scenario_of(3, false, occupied_frame);
+    let grown = scenario_of(5, true, occupied_frame);
+    let mut fixture = Fixture::new(&first);
+    let prepare = |fixture: &mut Fixture| {
+        fixture.replace(&first);
+        let source = fixture.source("occupied-resume");
+        measured(&source);
+        drop(source);
+        fixture.replace(&grown);
+        let source = fixture.source("occupied-resume");
+        measured(&source);
+        let pages = payloads(&source, None);
+        for channel in crate::products::territory::prepared::VALUE_CHANNELS {
+            assert!(
+                pages
+                    .keys()
+                    .any(|(name, _)| name == &format!("territory-values-1-{channel}"))
+            );
+            assert!(
+                pages
+                    .keys()
+                    .any(|(name, _)| name == &format!("territory-ranks-1-{channel}"))
+            );
+        }
+        assert!(
+            pages.keys().any(|(name, _)| name == "territory-values-1-8"),
+            "native owned states remain separate"
+        );
+        clear(source);
+        pages
+    };
+    let hourly = independent::with_test_hourly(|| prepare(&mut fixture));
+    let own = TERRITORY.own(|| prepare(&mut fixture));
+    assert_same(TERRITORY, &own, &hourly, "occupied resume and append", true);
+    assert_covered(TERRITORY, &own, "occupied resume and append");
+}

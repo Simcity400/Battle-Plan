@@ -129,35 +129,24 @@ impl Key {
     ) -> Result<Self, String> {
         // Rows are in key order (country, ordinal); only the viewing country's
         // own object holds a list.
-        let mut lists = links
-            .iter()
-            .filter(|&(_, &slot)| slot == ours)
-            .map(|(&raw, _)| {
-                let start = sent.partition_point(|row| row.country < raw);
-                let end = sent.partition_point(|row| row.country <= raw);
-                &sent[start..end]
-            })
-            .filter(|list| !list.is_empty());
-        let list = lists.next().unwrap_or_default();
-        if lists.next().is_some() {
-            return Err("SentVolunteers holds two lists for the viewing country".into());
-        }
+        let list = replay_data::military_aid::volunteer_list(
+            links
+                .iter()
+                .filter(|&(_, &slot)| slot == ours)
+                .map(|(&raw, _)| {
+                    let start = sent.partition_point(|row| row.country < raw);
+                    let end = sent.partition_point(|row| row.country <= raw);
+                    &sent[start..end]
+                }),
+        )?;
         let mut seen = BTreeSet::new();
         let mut hosts = Vec::new();
-        for (position, row) in list.iter().enumerate() {
-            if row.ordinal as usize != position {
-                return Err("SentVolunteers ordinals are not contiguous".into());
-            }
-            // Skip null and unresolved references. The
-            // complete Divisions census holds every live division; its keys are
-            // sorted and unique.
-            if row.division == 0 {
-                continue;
-            }
-            let Ok(at) = divisions.binary_search_by_key(&row.division, |d| d.id) else {
+        for row in list {
+            let Some(division) = replay_data::military_aid::live_division(divisions, row.division)
+            else {
                 continue;
             };
-            let host = divisions[at].logical_owner;
+            let host = replay_data::military_aid::volunteer_host(division);
             let slot = canonical(links, host)
                 .ok_or("SentVolunteers logical country missing from CountryLinks")?;
             // Actual zero does not alias a positive reference resolving to zero.

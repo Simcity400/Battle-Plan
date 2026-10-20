@@ -17,6 +17,8 @@ pub struct Definition {
     pub name: BoundLocalization,
     pub description: BoundLocalization,
     pub category: Option<Vec<u8>>,
+    /// Authored UI category; its artwork is the group sprite, not the goal token.
+    pub group: Option<Vec<u8>>,
     pub progress_inputs: Vec<Item>,
     pub progress_sections: Vec<Vec<Item>>,
     pub conditions: BTreeMap<String, Vec<Item>>,
@@ -124,6 +126,8 @@ fn apply(catalog: &mut Catalog, key: Option<&[u8]>, fields: &[Item], inline: boo
                     definition.progress_inputs.push(input.clone());
                 }
             }
+        } else if field.keyword_is("group") {
+            definition.group = field.value.scalar().map(<[u8]>::to_vec);
         } else if field.keyword_is("category") {
             let category = field.value.scalar().unwrap_or_default();
             definition.category = [b"short_term".as_slice(), b"medium_term", b"long_term"]
@@ -293,5 +297,54 @@ mod progress_tests {
                 .iter()
                 .any(|item| item.keyword_is("on_activate"))
         );
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+    #[test]
+    fn faction_goal_group_retention_preserves_mod_spelling_and_last_authored_value() {
+        let fields = crate::parser::parse(b"group=first group=mod_group").unwrap();
+        let mut catalog = Catalog::default();
+        apply(&mut catalog, Some(b"mod_goal"), &fields.items, false);
+        assert_eq!(
+            catalog.get("mod_goal").unwrap().unwrap().group.as_deref(),
+            Some(b"mod_group".as_slice())
+        );
+        apply(&mut catalog, Some(b"mod_goal"), &[], false);
+        assert_eq!(
+            catalog.get("mod_goal").unwrap().unwrap().group.as_deref(),
+            Some(b"mod_group".as_slice())
+        );
+    }
+    #[test]
+    fn faction_goal_native_standalone_and_inline_groups_retain_mod_variables_and_quotes() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let stack = crate::test_support::Stack::new("faction-goal-groups");
+        stack.write(
+            &stack.base(),
+            "common/factions/goals/removed.txt",
+            "old={group=old_group}",
+        );
+        stack.write(&stack.addon(),"common/factions/goals/mod.txt","@ui_group=mod_group mod_goal={group=@ui_group} quoted_goal={group=\"mod quoted group\"}");
+        stack.write(
+            &stack.addon(),
+            "common/factions/templates/mod.txt",
+            "mod_template={goals={inline_goal={group=mod_inline_group}}}",
+        );
+        let catalog = read(&stack.layers(&["common/factions/goals"])).unwrap();
+        assert!(catalog.get("old").unwrap().is_none());
+        for (goal, group) in [
+            ("mod_goal", "mod_group"),
+            ("quoted_goal", "mod quoted group"),
+            ("inline_goal", "mod_inline_group"),
+        ] {
+            assert_eq!(
+                catalog.get(goal).unwrap().unwrap().group.as_deref(),
+                Some(group.as_bytes())
+            );
+        }
     }
 }

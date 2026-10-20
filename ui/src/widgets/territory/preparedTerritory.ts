@@ -6,6 +6,7 @@ import type { TimeChartProps } from '../../charts/TimeChart';
 import type { TerritoryMeasure, TerritoryParams, TerritoryReply, TerritoryRule, TerritorySeries, HourSpan } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
 import { overlayCountryIdentities } from '../../dashboard/countryIdentity.ts';
+import { TERRITORY_VALUE_COUNT } from '../../dashboard/territoryMeasure.ts';
 import { validateTerritoryReply, territoryColumn } from './territoryData.ts';
 import { validateMeasureSummaries } from '../country-measure/preparedMeasureData.ts';
 import type { MeasureSummaries } from '../country-measure/preparedMeasureData';
@@ -73,7 +74,7 @@ export function mergeTerritoryReads(head:TerritoryReply|undefined,hover:Territor
     const previous=series.get(line.tag);
     const ends=new Map([...(previous?.runs ?? []),...metadata.endRuns ?? []].map(run=>[JSON.stringify(run),run]));
     const exact=line.summary.approximate?.length ? undefined : line.summary.runs?.map(run=>({firstHour:run.firstHour,lastHour:run.lastHour,startsSegment:!!run.breakBefore,
-      values:Array.from({length:8},(_,index)=>index===column ? run.value : null)}));
+      values:Array.from({length:TERRITORY_VALUE_COUNT},(_,index)=>index===column ? run.value : null)}));
     series.set(line.tag,{tag:line.tag,runs:exact ?? [...ends.values()].sort((a,b)=>a.firstHour-b.firstHour),segments:metadata.segments ?? previous?.segments ?? [],
       identities:metadata.identities ?? previous?.identities,membership:previous?.membership ?? null});
   }

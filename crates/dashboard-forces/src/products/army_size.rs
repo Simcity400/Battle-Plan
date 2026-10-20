@@ -283,6 +283,7 @@ static DIVISION_FIELDS: LazyLock<u64> = LazyLock::new(|| {
     field_mask(
         TableId::Divisions,
         &[
+            "logical_owner",
             "roster_owner",
             "expeditionary_owner",
             "template",
@@ -309,11 +310,7 @@ static HOLDER_FIELDS: LazyLock<u64> =
 
 /// Census owner rule: positive signed expeditionary owner, otherwise roster owner.
 pub fn owner(row: &DivisionRow) -> u32 {
-    if row.expeditionary_owner as i32 > 0 {
-        row.expeditionary_owner
-    } else {
-        row.roster_owner
-    }
+    replay_data::military_aid::owner(row)
 }
 
 /// The raw country a division counts for under the chosen attribution: its
@@ -554,6 +551,8 @@ impl ScanState {
                 && before_inventory == after_inventory,
         );
         observe_updates(result, decoded, updates, replay.format, gap, self, changes);
+        // The observer's cached identity reread must not clear this hour's change.
+        self.identity_changed = identity_changed;
         self.rates = (
             result.unreadable - unreadable,
             result.composition_unreadable - composition,
@@ -1726,6 +1725,7 @@ pub mod prepared;
 mod template_roster;
 pub use composition::check_content;
 use composition::{RawMixRun, composition_reply};
+pub(crate) mod aid;
 mod inventory;
 use inventory::{Inventory, Updates};
 

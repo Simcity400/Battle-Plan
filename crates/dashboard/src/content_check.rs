@@ -505,6 +505,9 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             );
             Ok("Loss cause interface keys, cause names, equipment/design base names and Combat Log retention checked through equipment-losses preparation; recorded designs, loss records and writer coverage determine totals and active selections.".into())
         }
+        diplomacy_state::DiplomacyState::KEY => {
+            Ok("Opinions and every pact kind require RelationOpinions, RelationTuples, SliceReads, LexicalTokens and Countries/CountryLinks at their supplying observations. Pact titles use the shared typed diplomacy selector and recorded localisation; unsupported mappings retain counted named refusals. IncomingDiplomaticActions supplies observed Daily(22) queue episodes, not proposal kind or outcome. No complete relation inventory exists offline.".into())
+        }
         politics_state::civil_wars::CivilWars::KEY => {
             findings.push(Finding::new(Kind::Offline, key,
                 "civil-war rival lists and annexations need recorded CountryCivilWars rows and the native event history; unavailable offline"));
@@ -606,7 +609,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         country_groups::CountryGroups::KEY => {
             Ok("Faction names use recorded keys localised through the content stack; their inventory requires a recording.".into())
         }
-        faction_details::FactionDetails::KEY => {
+        faction_details::FactionDetails::KEY | faction_state::FactionState::KEY => {
             let layers = &content.resolved.layers;
             let goals = installed_content_core::faction_goals::cached(layers)?;
             let upgrades = installed_content_core::faction_upgrades::cached(layers)?;
@@ -675,6 +678,11 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         country_experience::CountryExperience::KEY => {
             Ok("No content dependency: banked army, navy and air experience and daily changes use recorded CountryExperience rows and Countries/CountryLinks identities.".into())
+        }
+        volunteers_expeditionaries::VolunteersExpeditionaries::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "directed deployed division occurrences and native host tallies need recorded aid lists, live Divisions and country identities; unavailable offline"));
+            Ok("Recording-only land aid; country presentation belongs to shared country history. No air-volunteer classifier or lifetime dispatch total is inferred.".into())
         }
         army_size::ArmySize::KEY => {
             findings.extend(army_size::check_content(content.catalogue()?).map_err(|why| why.to_string())?);

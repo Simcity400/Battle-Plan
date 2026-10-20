@@ -1,6 +1,6 @@
 //! Independent faction rule, shared-programme and manpower presentation.
 use super::*;
-use replay_data::rows::{FactionRuleRow, ProjectProgramRow};
+use replay_data::rows::{FactionDoctrineRow, FactionRuleRow, ProjectProgramRow};
 use std::sync::{Arc, OnceLock};
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +51,7 @@ pub(super) fn has_programmes(frame: &DecodedFrame, faction: u64) -> bool {
         .ok()
         .is_some_and(|rows| !selected(rows, faction, |row| row.faction).is_empty())
 }
-pub(super) const PROGRAMME_TABLES: &[TableId] = &[
+pub const PROGRAMME_TABLES: &[TableId] = &[
     TableId::ProjectPrograms,
     TableId::Projects,
     TableId::Countries,
@@ -59,7 +59,7 @@ pub(super) const PROGRAMME_TABLES: &[TableId] = &[
     TableId::ReservedCountryNaming,
     TableId::LexicalTokens,
 ];
-fn tag(frame: &DecodedFrame, raw: u32) -> Result<String, String> {
+pub(super) fn tag(frame: &DecodedFrame, raw: u32) -> Result<String, String> {
     if raw == 0 {
         let [row] = frame
             .complete::<tables::ReservedCountryNaming>()
@@ -105,7 +105,7 @@ fn environment(
     ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, slot)
         .expand_faction(text, faction)
 }
-fn rule(
+pub(super) fn rule(
     frame: &DecodedFrame,
     faction: u64,
     row: &FactionRuleRow,
@@ -138,6 +138,38 @@ fn rule(
     }
     value
 }
+pub(super) fn doctrine(
+    frame: &DecodedFrame,
+    faction: u64,
+    row: &FactionDoctrineRow,
+    cat: Option<&catalogue::Catalogue>,
+) -> FactionRuleDetail {
+    let mut detail = FactionRuleDetail {
+        ordinal: row.ordinal,
+        token: None,
+        name: None,
+        reason: None,
+    };
+    let result = (|| -> Result<(), String> {
+        let spelling = faction_names::template_spelling(frame, Some(row.token))?
+            .ok_or("Faction selection token is absent")?;
+        detail.token = Some(spelling.clone());
+        let cat = cat.ok_or("Faction selection requires recorded localisation")?;
+        let mut text = cat
+            .localisation
+            .localise(spelling.as_bytes())
+            .map_err(|why| why.to_string())?;
+        if text.contains('[') {
+            text = environment(frame, cat, faction, &text)?;
+        }
+        detail.name = Some(catalogue::plain_text(&text)?);
+        Ok(())
+    })();
+    if let Err(why) = result {
+        detail.reason = Some(why);
+    }
+    detail
+}
 pub(super) fn programme(
     frame: &DecodedFrame,
     reference: u64,
@@ -167,7 +199,7 @@ fn project_catalog(
         })
         .clone()
 }
-fn project_name(
+pub(super) fn project_name(
     frame: &DecodedFrame,
     reference: u64,
     cat: &catalogue::Catalogue,
@@ -228,6 +260,42 @@ fn project_name(
             .expand(&text)?;
     }
     catalogue::plain_text(&text).map(Some)
+}
+pub(super) fn programme_detail(
+    supplying: Option<&DecodedFrame>,
+    ordinal: u32,
+    reference: u64,
+    cat: Option<&catalogue::Catalogue>,
+) -> FactionProgramDetail {
+    let mut value = FactionProgramDetail {
+        ordinal,
+        reference: reference.to_string(),
+        owner: None,
+        active_project: None,
+        project: None,
+        reason: None,
+    };
+    let result = (|| -> Result<(), String> {
+        let details = supplying.ok_or("Shared programme supplying read is unavailable")?;
+        let programme = programme(details, reference)?;
+        value.active_project = Some(programme.active_project.is_some());
+        let owner = tag(details, programme.owner);
+        value.owner = owner.as_ref().ok().cloned();
+        if programme.active_project.is_some() {
+            value.project = project_name(
+                details,
+                reference,
+                cat.ok_or("Shared project name needs recorded content")?,
+                true,
+            )?;
+        }
+        owner?;
+        Ok(())
+    })();
+    if let Err(reason) = result {
+        value.reason = Some(reason);
+    }
+    value
 }
 pub(super) fn needs_environment(
     frame: &DecodedFrame,
@@ -304,39 +372,12 @@ pub(super) fn attach(
             .push("Faction companion owner is unavailable; empty lists are not certified".into());
         return;
     }
-    let selection = |group: u32, token: u32| {
-        let mut detail = super::FactionUpgradeDetail {
-            group,
-            token: None,
-            name: None,
-            reason: None,
-        };
-        let result = (|| -> Result<(), String> {
-            let spelling = faction_names::template_spelling(frame, Some(token))?
-                .ok_or("Faction selection token is absent")?;
-            detail.token = Some(spelling.clone());
-            let cat = cat.ok_or("Faction selection requires recorded localisation")?;
-            let mut text = cat
-                .localisation
-                .localise(spelling.as_bytes())
-                .map_err(|why| why.to_string())?;
-            if text.contains('[') {
-                text = environment(frame, cat, faction, &text)?;
-            }
-            detail.name = Some(catalogue::plain_text(&text)?);
-            Ok(())
-        })();
-        if let Err(why) = result {
-            detail.reason = Some(why);
-        }
-        detail
-    };
     match frame.complete::<tables::FactionMinimumUpgrades>() {
         Ok(rows) => {
             reply.minimum_upgrades = Some(
                 selected(rows, faction, |row| row.faction)
                     .iter()
-                    .map(|row| selection(row.group, row.token))
+                    .map(|row| selectors::upgrade(frame, row.group, row.token, cat))
                     .collect(),
             )
         }
@@ -349,15 +390,7 @@ pub(super) fn attach(
             reply.doctrine_folders = Some(
                 selected(rows, faction, |row| row.faction)
                     .iter()
-                    .map(|row| {
-                        let value = selection(row.ordinal, row.token);
-                        FactionRuleDetail {
-                            ordinal: row.ordinal,
-                            token: value.token,
-                            name: value.name,
-                            reason: value.reason,
-                        }
-                    })
+                    .map(|row| selectors::doctrine(frame, faction, row, cat))
                     .collect(),
             )
         }
@@ -475,37 +508,11 @@ pub(super) fn attach(
                         .push("Faction programme ordinals are not contiguous".into());
                     break;
                 }
-                let mut value = FactionProgramDetail {
-                    ordinal: row.ordinal,
-                    reference: row.reference.to_string(),
-                    owner: None,
-                    active_project: None,
-                    project: None,
-                    reason: None,
-                };
-                let result = (|| -> Result<(), String> {
-                    let details =
-                        programme_frame.ok_or("Shared programme supplying read is unavailable")?;
-                    let programme = programme(details, row.reference)?;
-                    value.active_project = Some(programme.active_project.is_some());
-                    let owner = tag(details, programme.owner);
-                    value.owner = owner.as_ref().ok().cloned();
-                    if programme.active_project.is_some() {
-                        value.project = project_name(
-                            details,
-                            row.reference,
-                            cat.ok_or("Shared project name needs recorded content")?,
-                            true,
-                        )?;
-                    }
-                    owner?;
-                    Ok(())
-                })();
-                if let Err(reason) = result {
+                let value = programme_detail(programme_frame, row.ordinal, row.reference, cat);
+                if let Some(reason) = &value.reason {
                     reply
                         .warnings
                         .push(format!("Shared programme {}: {reason}", row.ordinal));
-                    value.reason = Some(reason);
                 }
                 values.push(value);
             }
@@ -519,7 +526,7 @@ pub(super) fn attach(
         Ok(rows) => {
             let rows = selected(rows, faction, |row| row.faction);
             let mut values = Vec::new();
-            let mut total = 0_i32;
+            let total = selectors::manpower_total(rows).ok();
             for (ordinal, row) in rows.iter().enumerate() {
                 if ordinal != row.ordinal as usize {
                     reply
@@ -536,7 +543,6 @@ pub(super) fn attach(
                         None
                     }
                 };
-                total = total.wrapping_add(row.value);
                 values.push(FactionManpowerDetail {
                     ordinal: row.ordinal,
                     tag: country,
@@ -545,7 +551,7 @@ pub(super) fn attach(
             }
             if values.len() == rows.len() {
                 reply.manpower = Some(values);
-                reply.manpower_total = Some(total);
+                reply.manpower_total = total;
             }
         }
         Err(why) => reply.warnings.push(format!("Faction manpower: {why}")),

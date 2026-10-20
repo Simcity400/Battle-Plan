@@ -2,7 +2,17 @@
 use super::*;
 use std::collections::BTreeMap;
 
-fn progress(frame: &DecodedFrame, faction: u64) -> Result<String, String> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DoctrineMinimum {
+    pub folder: u32,
+    pub subdoctrine: u32,
+    pub mastery_raw: i64,
+    pub country: u32,
+}
+pub fn doctrine_progress(
+    frame: &DecodedFrame,
+    faction: u64,
+) -> Result<Vec<DoctrineMinimum>, String> {
     let members = frame
         .complete::<tables::FactionMembers>()
         .map_err(|why| why.to_string())?;
@@ -50,23 +60,55 @@ fn progress(frame: &DecodedFrame, faction: u64) -> Result<String, String> {
             }
         }
     }
+    Ok(result
+        .into_iter()
+        .map(
+            |((folder, subdoctrine), (mastery_raw, country))| DoctrineMinimum {
+                folder,
+                subdoctrine,
+                mastery_raw,
+                country,
+            },
+        )
+        .collect())
+}
+fn progress(frame: &DecodedFrame, faction: u64) -> Result<String, String> {
+    let result = selectors::doctrine_progress(frame, faction)?;
     Ok(if result.is_empty() {
         "No selected tracks with positive mastery".into()
     } else {
-        result.into_iter().map(|((folder,sub),(mastery,country))|format!("Folder {folder}, subdoctrine {sub}: mastery {mastery} (fixed5), supplying country {country}")).collect::<Vec<_>>().join("\n")
+        result
+            .into_iter()
+            .map(|row| {
+                format!(
+                    "Folder {}, subdoctrine {}: mastery {} (fixed5), supplying country {}",
+                    row.folder, row.subdoctrine, row.mastery_raw, row.country
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     })
 }
-fn research(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResearchLevel {
+    pub level: u64,
+    pub supplying_hour: Option<i32>,
+}
+
+pub fn research_level(
     frame: &DecodedFrame,
     supplying: Option<&DecodedFrame>,
     faction: u64,
-) -> Result<String, String> {
+) -> Result<ResearchLevel, String> {
     let refs = frame
         .complete::<tables::FactionPrograms>()
         .map_err(|why| why.to_string())?;
     let refs = companions::selected(refs, faction, |row| row.faction);
     if refs.is_empty() {
-        return Ok("Supporting-assignment level: 0 (no programmes)".into());
+        return Ok(ResearchLevel {
+            level: 0,
+            supplying_hour: None,
+        });
     }
     let supplying = supplying.ok_or("ProjectPrograms supplying read unavailable")?;
     let mut total = 0u64;
@@ -84,10 +126,24 @@ fn research(
         };
         total = total.wrapping_add(assignments.len().saturating_sub(1) as u64);
     }
-    Ok(format!(
-        "Supporting-assignment level: {total}; programme operands supplied at hour {}",
-        supplying.hour
-    ))
+    Ok(ResearchLevel {
+        level: total,
+        supplying_hour: Some(supplying.hour),
+    })
+}
+fn research(
+    frame: &DecodedFrame,
+    supplying: Option<&DecodedFrame>,
+    faction: u64,
+) -> Result<String, String> {
+    let result = selectors::research_level(frame, supplying, faction)?;
+    Ok(match result.supplying_hour {
+        None => "Supporting-assignment level: 0 (no programmes)".into(),
+        Some(hour) => format!(
+            "Supporting-assignment level: {}; programme operands supplied at hour {hour}",
+            result.level
+        ),
+    })
 }
 
 fn advisors(frame: &DecodedFrame, faction: u64) -> Result<String, String> {
@@ -153,11 +209,20 @@ fn advisors(frame: &DecodedFrame, faction: u64) -> Result<String, String> {
         lines.join("\n")
     })
 }
-fn upgrades(
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberUpgradeSource {
+    pub country: u32,
+    pub account: u32,
+    pub token: String,
+    pub group: String,
+    pub upgrade_type: Vec<u8>,
+    pub bonus_raw: i64,
+}
+pub fn member_upgrade_sources(
     frame: &DecodedFrame,
     faction: u64,
     cat: &catalogue::Catalogue,
-) -> Result<String, String> {
+) -> Result<Vec<MemberUpgradeSource>, String> {
     let content = installed_content_core::faction_upgrades::cached(&cat.content.layers)?;
     let rows = frame
         .complete::<tables::FactionAccounts>()
@@ -168,7 +233,7 @@ fn upgrades(
     let links = frame
         .complete::<tables::CountryLinks>()
         .map_err(|why| why.to_string())?;
-    let mut lines = Vec::new();
+    let mut sources = Vec::new();
     for account in rows.iter().filter(|row| {
         row.kind == 0
             && members.iter().any(|member| {
@@ -189,9 +254,37 @@ fn upgrades(
                 .upgrade_type
                 .as_deref()
                 .ok_or_else(|| format!("upgrade group {group_name} type missing"))?;
-            lines.push(format!("Country {}, account {}, source {spelling}, group {group_name}, type {}: bonus {} (fixed5)",account.country,account.account,String::from_utf8_lossy(kind),selected.bonus_raw));
+            sources.push(MemberUpgradeSource {
+                country: account.country,
+                account: account.account,
+                token: spelling,
+                group: group_name,
+                upgrade_type: kind.to_vec(),
+                bonus_raw: selected.bonus_raw,
+            });
         }
     }
+    Ok(sources)
+}
+fn upgrades(
+    frame: &DecodedFrame,
+    faction: u64,
+    cat: &catalogue::Catalogue,
+) -> Result<String, String> {
+    let mut lines = selectors::member_upgrade_sources(frame, faction, cat)?
+        .into_iter()
+        .map(|row| {
+            format!(
+                "Country {}, account {}, source {}, group {}, type {}: bonus {} (fixed5)",
+                row.country,
+                row.account,
+                row.token,
+                row.group,
+                String::from_utf8_lossy(&row.upgrade_type),
+                row.bonus_raw
+            )
+        })
+        .collect::<Vec<_>>();
     let held = frame
         .complete::<tables::FactionGoalEntries>()
         .map_err(|why| why.to_string())?;

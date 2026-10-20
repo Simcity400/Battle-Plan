@@ -18,6 +18,18 @@ fn cold_default_requests_publish_empty_extents_and_pending_hours() {
         let flag = AtomicBool::new(false);
         let tag = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
         let requests = [
+            (
+                "diplomacy-state",
+                json!({"view":"pacts","branchId":"1","tags":null}),
+            ),
+            (
+                "diplomacy-state",
+                json!({"view":"proposals","branchId":"1","tags":null}),
+            ),
+            (
+                "diplomacy-state",
+                json!({"view":"pair","branchId":"1","first":tag,"second":tag,"hour":0}),
+            ),
             ("country-groups", json!({"branchId":"1"})),
             ("subjects", json!({"branchId":"1"})),
             ("wars", json!({"branchId":"1","viewpointTag":tag})),
@@ -446,4 +458,61 @@ fn settled_peace_event_prefixes_are_revisable() {
             );
         }
     });
+}
+
+#[test]
+fn diplomacy_state_is_registered_and_prepared_on_its_own() {
+    use crate::products::Product;
+    use crate::products::diplomacy_state::{DiplomacyParams, DiplomacyState};
+    assert!(crate::products::find(DiplomacyState::KEY).is_some());
+    let params: DiplomacyParams =
+        serde_json::from_value(json!({"view":"opinions","branchId":"1","hour":10,"tags":[]}))
+            .unwrap();
+    DiplomacyState::validate(&params).unwrap();
+    assert_eq!(gate("diplomacy-state"), vec!["diplomacy_state"]);
+    assert!(
+        FAMILIES
+            .iter()
+            .any(|family| family.name == "diplomacy_state")
+    );
+    independent::with_test_families(
+        &[&independent::diplomacy::DIPLOMACY, &independent::IDENTITIES],
+        || {
+            let mut f = scale_frame(1, 10, 2);
+            for table in [
+                TableId::RelationOpinions,
+                TableId::RelationTuples,
+                TableId::SliceReads,
+                TableId::LexicalTokens,
+                TableId::IncomingDiplomaticActions,
+            ] {
+                *f.tables[table.index()] = replay_frame::frame::TableView::Complete(
+                    replay_data::rows::TableRows::empty(table),
+                );
+            }
+            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![f])]).unwrap();
+            let mut fixture = Fixture::new(&replay);
+            let source = fixture.source("diplomacy-independent");
+            run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+            let flag = AtomicBool::new(false);
+            assert!(complete(&source, None, 1, "diplomacy-state", &flag).unwrap());
+            let request = crate::transport::ProductRequest {
+                source_id: source.key().source_id.clone(),
+                revision: source.key().revision.clone(),
+                product: "diplomacy-state".into(),
+                params: json!({"view":"pacts","branchId":"1","tags":null}),
+            };
+            let reply: Value = serde_json::from_str(
+                &crate::prepared::query::query(&source, &request, None, &flag).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(reply["data"]["coverage"]["complete"], true);
+            assert_eq!(reply["data"]["pacts"], json!([]));
+            super::super::super::files(&source, None)
+                .unwrap()
+                .0
+                .clear()
+                .unwrap();
+        },
+    );
 }

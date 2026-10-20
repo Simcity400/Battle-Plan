@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply } from '../generated/dashboard';
 import type { CountrySelection } from './model';
-import { aggregateGroupRuns, resolveCountries, projectResolvedCountries, rankedCandidates, countrySelectionMode, countrySelectionModes, countryMatch, countryMatchFilter, groupLabel, groupMembers, groupRuns, groupUnobserved, membershipChanges, worldFilter, worldRequestTags } from './groups.ts';
+import { aggregateGroupRuns, resolveCountries, projectResolvedCountries, rankedCandidates, countrySelectionMode, countrySelectionModes, countryMatch, countryMatchFilter, groupLabel, groupMembers, groupRuns, groupsKnownAt, groupsPendingAt, groupsSettled, groupUnobserved, membershipChanges, worldFilter, worldRequestTags } from './groups.ts';
 import type { ResolvedCountries } from './groups';
 import { createWidget } from './model.ts';
 import { parseTemplate } from './storage.ts';
@@ -393,4 +393,42 @@ test('hourly membership and server filters omit unrecorded identity spans even w
   assert.deepEqual(filter.membership, [{ tag: 'X', firstHour: 1, lastHour: 3 }, { tag: 'X', firstHour: 6, lastHour: 9 }]);
   assert.equal(match.matches('X', 4), false);
   assert.equal(match.matches('X', 6), true);
+});
+
+test('a groups reply still being prepared is not proof that a choice has no countries', () => {
+  // Answered before any holder or membership is read: every hour is pending.
+  const partial = { ...REPLY, humans: [], countryIdentities: [], coverage: { firstHour: 0, lastHour: -1, complete: false },
+    pending: [{ firstHour: 0, lastHour: 200 }] } as CountryGroupReply;
+  assert.deepEqual([groupsSettled(partial), groupsSettled(REPLY), groupsPendingAt(partial, 150), groupsPendingAt(REPLY, 150)], [false, true, true, false]);
+  const tags: CountrySelection = { kind: 'tags', tags: ['GER'] };
+  assert.deepEqual([countryMatch(tags, [], partial, 200).ready, countryMatch(tags, [], partial, 200).reason], [false, null], 'still loading, not unavailable');
+  assert.equal(worldFilter(tags, [], partial, 150, 200).reason, null);
+  assert.deepEqual(worldRequestTags(tags, [], partial, 200), { tags: ['GER'], ready: true, reason: null }, 'a backend expands the literal pick itself, so it is not refused');
+  const settled = { ...REPLY, countryIdentities: [] };
+  assert.equal(countryMatch(tags, [], settled, 200).reason, 'Selected countries are unavailable in this campaign.', 'a final reply without the country proves it absent');
+  const ever = { kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false } as const;
+  assert.deepEqual([countryMatch(ever, [], partial, 200).ready, countryMatch(ever, [], partial, 200).reason], [false, null], 'a group with no members yet is loading');
+  assert.equal(countryMatch({ kind: 'selected' }, [], partial, 200).reason, 'Choose a country in the widget settings.', 'an empty choice is still a choice to make');
+  // At each hour, an hour still being prepared has no known members.
+  const prepared = { ...REPLY, coverage: { firstHour: 0, lastHour: 160, complete: false }, pending: [{ firstHour: 161, lastHour: 200 }] } as CountryGroupReply;
+  const hourly = countryMatch({ ...ever, membership: 'hour' }, [], prepared, 200);
+  assert.deepEqual([hourly.matches('GER', 150), hourly.matches('GER', 170)], [true, false]);
+});
+
+test('a groups reply read through part of the branch keeps a recorded gap a gap and leaves only pending hours loading', () => {
+  // Read through 160 with a recorded gap in the human players at 140-150; 161-200 still pending.
+  const mixed = { ...REPLY, unobserved: { ...REPLY.unobserved, humans: [{ firstHour: 140, lastHour: 150 }] },
+    coverage: { firstHour: 0, lastHour: 160, complete: false }, pending: [{ firstHour: 161, lastHour: 200 }] } as CountryGroupReply;
+  assert.deepEqual([groupsKnownAt(mixed, 145), groupsKnownAt(mixed, 170), groupsKnownAt(REPLY, 170)], [true, false, true]);
+  const humans = (membership: 'hour' | 'end' | 'ever') => ({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false } as const);
+  assert.equal(worldFilter(humans('hour'), [], mixed, 145, 200).reason, 'Group membership is unavailable at this time.', 'the recorded gap at 145 is not loading');
+  const pending = worldFilter(humans('hour'), [], { ...mixed, humans: [] }, 170, 200);
+  assert.deepEqual([pending.reason, pending.tags?.size], [null, 0], 'the same pick at 170, still pending, is loading');
+  assert.equal(countryMatch(humans('hour'), [], mixed, 200).matches('GER', 145), false);
+  // No humans at 50, read and recorded: a proven empty moment. The end, still pending, is not.
+  assert.equal(worldFilter(humans('hour'), [], mixed, 50, 200).reason, 'This group has no members at this moment.');
+  assert.equal(worldFilter(humans('end'), [], { ...mixed, humans: [] }, 50, 200).reason, null);
+  assert.equal(worldFilter(humans('ever'), [], { ...mixed, humans: [] }, 50, 200).reason, null, 'ever waits for the whole branch');
+  assert.equal(worldFilter({ kind: 'tags', tags: ['XXX'] }, [], mixed, 50, 200).reason, null, 'a pick not yet seen may still appear later');
+  assert.equal(worldFilter({ kind: 'tags', tags: ['XXX'] }, [], REPLY, 50, 200).reason, 'Selected countries are unavailable in this campaign.');
 });

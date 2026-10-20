@@ -16,10 +16,10 @@ import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from 
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { font, LABEL_WEIGHT, VALUE_WEIGHT } from '../draw';
-import { barPath, FLAG, NAME_PAD, VALUE_GAP } from '../race/draw';
+import { barPath, fillHatched, FLAG, NAME_PAD, VALUE_GAP } from '../race/draw';
 import { formatAxisValue } from '../valueAxis';
-import { butterflyLabelWidth, butterflyLayout, butterflyMinimumHeight, butterflyMinimumWidth, butterflyNameX, butterflyRowViewport, butterflyScale, butterflySurface, butterflyTextWidths, butterflyTicks, ellipsizeLabel } from './layout';
-import type { ButterflyValue } from './layout';
+import { butterflyLabelWidth, butterflyLayout, butterflyMinimumHeight, butterflyMinimumWidth, butterflyNameX, butterflyPartAt, butterflyPartSpans, butterflyRowViewport, butterflyScale, butterflySurface, butterflyTextWidths, butterflyTicks, ellipsizeLabel } from './layout';
+import type { ButterflyPart, ButterflyPartHit, ButterflyValue } from './layout';
 import '../charts.css';
 import './butterfly.css';
 
@@ -29,7 +29,12 @@ export interface ButterflyItem extends ButterflyValue {
   leftText: string; rightText: string; ratioText: string;
   /** Identifies an unbroken data stretch. Changing it prevents easing across a gap. */
   segment: string;
+  /** Optional parts of each side's bar, outward from the axis, drawn as the race draws a
+   * bar's segments: each its own colour, hatched where unknown, parted by a surface seam,
+   * in one outline with a rounded tip. Their lengths share the side's bar in proportion. */
+  leftParts?: readonly ButterflyPart[]; rightParts?: readonly ButterflyPart[];
 }
+export type { ButterflyPart, ButterflyPartHit } from './layout';
 export interface ButterflyProps<T extends ButterflyItem> {
   label: string; items: readonly T[];
   /** How many rows to make room for (the top N), so rows keep their height as
@@ -40,15 +45,19 @@ export interface ButterflyProps<T extends ButterflyItem> {
   leftLabel: string; rightLabel: string; ratioLabel: string;
   /** A value-axis label, the same on both sides; `ticks` is one side's ticks. */
   formatTick?: (value: number, ticks: readonly number[]) => string;
+  /** The value axis and its gridlines; off when each row has its own scale. */
+  axis?: boolean;
   showValues?: boolean; showRatio?: boolean; showFlags?: boolean;
   active: boolean; hoursPerSecond?: number;
-  tooltip?: (item: T) => TooltipContent | null;
+  /** The row's tooltip, given the part under the pointer when the row has parts. */
+  tooltip?: (item: T, part?: ButterflyPartHit | null) => TooltipContent | null;
   contextItems?: (item: T) => readonly MenuItem[];
   /** Enter opens the left value; Shift+Enter opens the right. */
   onSelect?: (item: T, side: 'left' | 'right') => void;
 }
 
 interface Shape { slot: number; left: number | null; right: number | null; segment: string }
+interface Span { from: number; to: number }
 
 /** Paired bars either side of one zero axis on one symmetric scale, drawn as the race
  * draws its rows: flag and name on the left, bars in the country's colour with exact
@@ -64,7 +73,7 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
   const task = useRef<FrameTask | null>(null);
   const latest = useRef({ props, tokens, viewport });
   latest.current = { props, tokens, viewport };
-  const hits = useRef<{ item: T; y: number; slot: number }[]>([]);
+  const hits = useRef<{ item: T; y: number; slot: number; left: readonly Span[]; right: readonly Span[] }[]>([]);
   const headerHeight = useRef(0);
   const axisX = useRef(0);
   const keyed = useRef<string | null>(null);
@@ -141,7 +150,7 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
       let moving = scale !== targetScale;
       // The race's value axis on both sides: hairline gridlines through the rows, labelled
       // under them, fixed while the rows scroll.
-      const ticks = butterflyTicks(scale, layout.half);
+      const ticks = p.axis === false ? [] : butterflyTicks(scale, layout.half);
       const format = p.formatTick ?? formatAxisValue;
       const rowsBottom = layout.top + visible.height;
       ctx.lineWidth = t.lineWidth.grid; ctx.strokeStyle = t.grid; ctx.font = axisFont; ctx.fillStyle = t.muted;
@@ -168,23 +177,38 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
         const opacity = row.phase === 'leaving' ? Math.max(0, 1 - (now - row.since) / (tau * 3)) : row.phase === 'entering' && tau > 0 ? Math.min(1, (now - row.since) / tau) : 1;
         moving ||= opacity < 1;
         const y = layout.top + (shape.slot + 0.5) * layout.slot;
-        if (row.phase !== 'leaving') hits.current.push({ item, y, slot: layout.slot });
-        if (y + layout.slot / 2 < visible.start || y - layout.slot / 2 > visible.end) continue;
         const l = Math.min(layout.half, Math.abs(shape.left ?? 0) / scale * layout.half), r = Math.min(layout.half, Math.abs(shape.right ?? 0) / scale * layout.half);
+        const leftSpans = butterflyPartSpans(item.leftParts, l), rightSpans = butterflyPartSpans(item.rightParts, r);
+        if (row.phase !== 'leaving') hits.current.push({ item, y, slot: layout.slot, left: leftSpans, right: rightSpans });
+        if (y + layout.slot / 2 < visible.start || y - layout.slot / 2 > visible.end) continue;
         const selected = keyed.current === item.id || pointer.current && pointer.current.y >= layout.top && pointer.current.y <= rowsBottom
           && Math.abs(pointer.current.y + scrollTop - y) < layout.slot / 2;
         // The race's hover: a faint wash of the text colour across the row.
         if (selected && row.phase !== 'leaving') { ctx.globalAlpha = opacity * 0.05; ctx.fillStyle = t.text; ctx.fillRect(0, y - layout.slot / 2, width, layout.slot); }
         // The race's bars in the country's colour: square at the axis, a rounded tip outside.
         const barTop = y - layout.barHeight / 2;
-        const bar = (size: number, value: number | null, side: -1 | 1) => {
+        const bar = (size: number, value: number | null, side: -1 | 1, parts: readonly ButterflyPart[] | undefined, spans: readonly Span[]) => {
           if (value == null) return;
           ctx.globalAlpha = opacity; ctx.fillStyle = item.color;
-          barPath(ctx, layout.axis, barTop, side * size, layout.barHeight); ctx.fill();
+          barPath(ctx, layout.axis, barTop, side * size, layout.barHeight);
+          if (parts?.length) {
+            // The race's parts: one outline, each part its colour or hatch, a seam between them.
+            ctx.save(); ctx.clip();
+            spans.forEach((span, index) => {
+              const part = parts[index], width = span.to - span.from;
+              if (width <= 0) return;
+              const x0 = side > 0 ? layout.axis + span.from : layout.axis - span.to;
+              if (part.hatched) fillHatched(ctx, x0, barTop, width, layout.barHeight, part.color, 4, 1.5);
+              else { ctx.fillStyle = part.color; ctx.fillRect(x0, barTop, width, layout.barHeight); }
+              if (span.from > 0.5) { ctx.fillStyle = t.surface; ctx.fillRect(layout.axis + side * span.from - 0.5, barTop, 1, layout.barHeight); }
+            });
+            ctx.restore();
+            barPath(ctx, layout.axis, barTop, side * size, layout.barHeight);
+          } else ctx.fill();
           if (value < 0) { ctx.save(); ctx.setLineDash([...SECONDARY_DASH]); ctx.strokeStyle = t.text; ctx.lineWidth = t.lineWidth.series; ctx.stroke(); ctx.restore(); }
         };
-        bar(l, shape.left, -1);
-        bar(r, shape.right, 1);
+        bar(l, shape.left, -1, item.leftParts, leftSpans);
+        bar(r, shape.right, 1, item.rightParts, rightSpans);
         // A surface seam at the axis parts the two sides, as the race parts its segments.
         if (l > 0.5 && r > 0.5) { ctx.globalAlpha = opacity; ctx.fillStyle = t.surface; ctx.fillRect(layout.axis - 0.5, barTop, 1, layout.barHeight); }
         ctx.globalAlpha = opacity;
@@ -216,8 +240,9 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
         : pointer.current && pointer.current.y >= layout.top && pointer.current.y <= rowsBottom ? hits.current.find(hit => Math.abs(hit.y - pointer.current!.y - scrollTop) < hit.slot / 2) : undefined;
       const heldTooltip = tooltipStore.get();
       if (!keyed.current || keyIntent.current || heldTooltip == null || heldTooltip.owner === owner) {
+        const part = hit && pointer.current && !keyed.current ? butterflyPartAt(pointer.current.x - layout.axis, hit.left, hit.right) : null;
         const content = hit && hit.y + hit.slot / 2 >= visible.start && hit.y - hit.slot / 2 <= visible.end
-          ? p.tooltip?.(hit.item) ?? null : null;
+          ? p.tooltip?.(hit.item, part) ?? null : null;
         const flag = flags ? hit?.item.countryFlag : undefined;
         const raw = content && flag ? { ...content, countryFlag: flag } : content;
         const decoded = raw ? countryFlagContent(fitTooltip([raw], room, { keep: 1 }), undefined, loaded) : null;

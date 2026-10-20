@@ -431,6 +431,27 @@ whole-recording loaders of prepared-only products) and the test instrumentation
 (read and work counters) for the tests of the crates above, so their test builds
 behave exactly as this crate's own. Only dev-dependencies enable it.
 
+Territory's one paired-holder traversal publishes controlled, owned and occupied
+amounts. Occupied means a resolved controller and a different resolved legal owner
+at that hour; null holders contribute none and unresolved non-null references leave
+the dependent measure unknown. States use StateRow holders; provinces and signed
+runtime victory points use ProvinceRow holders independently. Map area sums the
+same exact content land-raster weights over the occupied province set; missing map
+operands leave area unknown without erasing the other measures. No diplomatic filter
+applies. Occupied regional breakdowns remain invalid parameters. Faction totals
+reuse the selected members' occupied values,
+including foreign control between members, with their ordinary missing-member gates.
+
+`TerritoryRun.values` has twelve columns: controlled states/provinces/VP/area,
+owned states/provinces/VP/area, then occupied states/provinces/VP/area. The occupied world
+columns total foreign-controlled units independently of the selected countries.
+`territory::columns` names wire columns; `territory::prepared::VALUE_CHANNELS` maps
+them to numeric/rank channels. Channel 8 stays the scoreboard's native owned-state
+counter; occupied states/provinces/VP/area use channels 9/10/11/12. Regional observed inputs
+retain their controlled/owned eight-column prefix, with no occupied projection.
+All count measures share the existing progressive observation scope, continuation,
+rank sweep, summary reads and publication gates; no additional scan is introduced.
+
 ## Country groups first view
 
 Country groups sample later keyframes with the preparation observer, carrying
@@ -897,3 +918,7 @@ The native map selection also retains naval repair-base allocations and ordered 
 Prepared map checkpoints retain AirTransferInputs for selected-wing transfer arrows and progress; these inputs are ordinary recorded simulation state.
 
 Prepared map checkpoints retain the complete sparse Navy mine vectors and ordered standing incident reports. The mine extent witness, signed amounts and stored full incident identities survive checkpoint reconstruction unchanged.
+
+Faction details share typed influence, manpower, programme, upgrade-name and doctrine/research projections through `products::faction_details::selectors`. Prepared faction histories use those same authorities without parsing tooltip prose. Goal group artwork uses the catalogue sprite renderer; faction and system resource pools copy the shared `ResourceInfo` icon, retaining independent amounts and counted artwork refusals.
+
+Country-people's sent-unit manpower loops use replay-data's shared military-aid reference fold. It retains repeated live references, null/nonlive skips, first matching sender contributions, exile-template eligibility and signed i32 wrapping independently of dashboard aid-count histories.

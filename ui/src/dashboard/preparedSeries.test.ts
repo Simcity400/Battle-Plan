@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { preparedReplyData, type DashboardClient, type DashboardSource, type PreparedQueryOptions } from './client.ts';
 import { validatePreparationReply } from '../shell/preparation/contract.ts';
-import { mergeReachedRows, preparedSeriesQuery, preparedWindowQuery } from './preparedSeries.ts';
+import { isPreparedProduct, mergeReachedRows, preparedSeriesQuery, preparedWindowQuery } from './preparedSeries.ts';
 
 const source = { id: 'source', revision: 'revision' } as DashboardSource;
 // Provenance cases place commits eight seconds apart; cadence cases use their own clock.
@@ -752,4 +752,22 @@ test('status and wait failures drain deferred progress, while source cancellatio
     assert.equal(reads, exit === 'cancel' ? 1 : 2);
     assert.deepEqual(published, exit === 'cancel' ? [first] : [first, latest]);
   }
+});
+
+test('faction-state follows only its independent family gate from a cold prefix', async () => {
+  assert.equal(isPreparedProduct('faction-state'), true);
+  const cold = { accounts: [], coverage: { firstHour: 100, lastHour: 99, complete: false }, pending: [{ firstHour: 100, lastHour: 101 }] };
+  const exact = { accounts: [], coverage: { firstHour: 100, lastHour: 101, complete: true }, pending: [] };
+  let queries = 0;
+  const client = {
+    preparedQuery: async (_source: unknown, product: string, params: unknown, options: PreparedQueryOptions) => {
+      assert.equal(product, 'faction-state'); assert.deepEqual(params, { view: 'influence', branchId: '1', faction: '9' });
+      options.gate?.(['faction_state']); return ++queries === 1 ? cold : exact;
+    },
+    preparationStatus: async (request: object) => familyStatus(request, { faction_state: { '1': exact.coverage } }),
+  } as unknown as DashboardClient;
+  const published: unknown[] = [];
+  assert.equal(await preparedSeriesQuery(client, source, 'faction-state', { view: 'influence', branchId: '1', faction: '9' }, new AbortController().signal,
+    false, undefined, async () => {}, value => published.push(value)), exact);
+  assert.deepEqual(published, [cold, exact]);
 });

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BUTTERFLY_HEADER, butterflyLabelWidth, butterflyLayout, butterflyMinimumHeight, butterflyMinimumWidth, butterflyNameX, butterflyRowViewport, butterflyScale, butterflySurface,
+import { BUTTERFLY_HEADER, butterflyPartAt, butterflyPartSpans, butterflyLabelWidth, butterflyLayout, butterflyMinimumHeight, butterflyMinimumWidth, butterflyNameX, butterflyRowViewport, butterflyScale, butterflySurface,
   butterflyTextWidths, butterflyTicks, ellipsizeLabel, formatRatio } from './layout.ts';
 import { FLAG, MIN_LABEL, NAME_PAD, NAME_X, VALUE_GAP } from '../race/draw.ts';
 import { barThickness, MIN_SLOT, RACE_AXIS, raceLayout } from '../race/race.ts';
@@ -152,4 +152,16 @@ test('caller text fitting has no argument-count limit for large item lists', () 
 test('a missing value’s text keeps its room with values off, so it never runs into the names', () => {
   const items = [{ left: null, right: 5, leftText: 'Unknown', rightText: '5', ratioText: '—' }];
   assert.deepEqual(butterflyTextWidths(items, text => text.length, 'Ratio', false, false), { valueWidth: 7, ratioWidth: 0 });
+});
+
+test('a side bar is shared by its parts in proportion and the pointer finds its part', () => {
+  const parts = [{ id: 'a', value: 3, color: '#111' }, { id: 'b', value: -2, color: '#222' }, { id: 'c', value: 1, color: '#333', hatched: true }];
+  const spans = butterflyPartSpans(parts, 100);
+  assert.deepEqual(spans, [{ from: 0, to: 75 }, { from: 75, to: 75 }, { from: 75, to: 100 }], 'a negative part takes no length');
+  assert.deepEqual(butterflyPartSpans([], 100), []);
+  assert.deepEqual(butterflyPartSpans([{ id: 'z', value: 0, color: '#000' }], 100), [{ from: 0, to: 0 }]);
+  assert.deepEqual(butterflyPartAt(-10, spans, []), { side: 'left', index: 0 });
+  assert.deepEqual(butterflyPartAt(80, [], spans), { side: 'right', index: 2 });
+  assert.equal(butterflyPartAt(120, [], spans), null, 'past the bar');
+  assert.equal(butterflyPartAt(-10, [], spans), null, 'a side without parts');
 });

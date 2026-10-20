@@ -16,11 +16,15 @@ use std::{
 };
 #[derive(Default, Debug, Clone)]
 pub struct Upgrade {
+    /// The authored localisation operand, independently of this definition's identity.
+    pub name: Option<Vec<u8>>,
     pub bonus_raw: i64,
     pub cost_raw: i64,
 }
 #[derive(Default, Debug, Clone)]
 pub struct Group {
+    /// The authored localisation operand, independently of this definition's identity.
+    pub name: Option<Vec<u8>>,
     pub upgrade_type: Option<Vec<u8>>,
     pub upgrades: Vec<Vec<u8>>,
 }
@@ -110,6 +114,9 @@ fn upgrade(catalog: &mut Catalog, item: &Item) {
         .entry(Token::c_str(item.key.as_deref().unwrap_or_default()))
         .or_default();
     for field in fields {
+        if field.keyword_is("name") {
+            target.name = field.value.scalar().map(<[u8]>::to_vec);
+        }
         if field.keyword_is("bonus") {
             target.bonus_raw = crate::modifiers::stored(field);
         }
@@ -167,6 +174,9 @@ pub fn cached(layers: &ResolvedLayers) -> Result<Arc<Catalog>, String> {
                         let group = catalog.groups.entry(token).or_default();
                         group.upgrades.extend(selected);
                         for field in fields {
+                            if field.keyword_is("name") {
+                                group.name = field.value.scalar().map(<[u8]>::to_vec);
+                            }
                             if field.keyword_is("upgrade_type") {
                                 group.upgrade_type = field.value.scalar().map(<[u8]>::to_vec);
                             }
@@ -239,5 +249,29 @@ mod tests {
         let mut catalog = Catalog::default();
         upgrade(&mut catalog, &upgrades[0]);
         assert_eq!(catalog.upgrade(b"synthetic").unwrap().bonus_raw, 12500);
+    }
+    #[test]
+    fn faction_upgrade_authored_names_follow_mod_replace_path_and_inline_definitions() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let stack = crate::test_support::Stack::new("faction-names");
+        stack.write(
+            &stack.base(),
+            "common/factions/member_upgrades/base.txt",
+            "old={name=base_name bonus=0.1}",
+        );
+        stack.write(&stack.addon(),"common/factions/member_upgrades/member_groups/mod.txt","mod_group={name=mod_group_name upgrade_type=mod_type upgrades={inline={name=mod_inline_name bonus=0.25}}} missing_name={upgrades={}}");
+        let layers = stack.layers(&["common/factions/member_upgrades"]);
+        let catalog = cached(&layers).unwrap();
+        assert!(catalog.upgrade(b"old").is_err());
+        assert_eq!(
+            catalog.group(b"mod_group").unwrap().name.as_deref(),
+            Some(b"mod_group_name".as_slice())
+        );
+        assert_eq!(
+            catalog.upgrade(b"inline").unwrap().name.as_deref(),
+            Some(b"mod_inline_name".as_slice())
+        );
+        assert!(catalog.group(b"missing_name").unwrap().name.is_none());
     }
 }

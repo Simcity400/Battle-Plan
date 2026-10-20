@@ -6,6 +6,33 @@ import { barThickness, MIN_SLOT, RACE_AXIS } from '../race/race.ts';
 import { linearTicks } from '../valueAxis.ts';
 
 export interface ButterflyValue { id: string; left: number | null; right: number | null }
+/** One part of a side's bar: its amount (its share of the bar's length), colour and
+ * whether it is unknown, drawn hatched. */
+export interface ButterflyPart { id: string; value: number; color: string; hatched?: boolean }
+/** The part under the pointer: its side and its index in that side's parts. */
+export interface ButterflyPartHit { side: 'left' | 'right'; index: number }
+
+/** Where each part lies along a side's drawn bar of `length` px, outward from the axis,
+ * in proportion to the parts' amounts; negative or missing amounts take no length. */
+export function butterflyPartSpans(parts: readonly ButterflyPart[] | undefined, length: number): { from: number; to: number }[] {
+  if (!parts?.length) return [];
+  let sum = 0;
+  for (const part of parts) if (Number.isFinite(part.value) && part.value > 0) sum += part.value;
+  let at = 0;
+  return parts.map(part => {
+    const size = sum > 0 && Number.isFinite(part.value) && part.value > 0 ? part.value / sum * length : 0;
+    const span = { from: at, to: at + size };
+    at += size;
+    return span;
+  });
+}
+
+/** The part at `offset` px from the axis (negative: the left side), or null between parts. */
+export function butterflyPartAt(offset: number, left: readonly { from: number; to: number }[], right: readonly { from: number; to: number }[]): ButterflyPartHit | null {
+  const side = offset < 0 ? 'left' : 'right', spans = offset < 0 ? left : right, distance = Math.abs(offset);
+  const index = spans.findIndex(span => span.to > span.from && distance >= span.from && distance < span.to);
+  return index < 0 ? null : { side, index };
+}
 export interface ButterflyLayout {
   /** The name column's width, the shared zero axis and how far a bar reaches either way. */
   labelWidth: number; axis: number; half: number;

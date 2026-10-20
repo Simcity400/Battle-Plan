@@ -12,6 +12,7 @@ pub mod format;
 pub mod identity;
 pub mod intel_estimates;
 mod map_event_rows;
+pub mod military_aid;
 pub mod naval_trees;
 mod nuclear_rows;
 mod peace_rows;

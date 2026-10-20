@@ -5,6 +5,8 @@ mod profile_tests;
 pub(crate) use dashboard_base::prepared::query::progressive;
 
 #[cfg(test)]
+mod factions_tests;
+#[cfg(test)]
 mod forces_tests;
 
 use crate::{
@@ -118,12 +120,15 @@ fn cache_product(product: &str) -> Option<&'static str> {
         "division-log-manifest" => "queries:division-log-manifest",
         "air-aces" => "queries:air-aces",
         "army-size" => "queries:army-size",
+        "volunteers-expeditionaries" => "queries:volunteers-expeditionaries",
         "trade-flows" => "queries:trade-flows",
         "wars" => "queries:wars",
         "casualty-breakdown" => "queries:casualty-breakdown",
         "military-air-ledger" => "queries:military-air-ledger",
         "special-projects" => "queries:special-projects",
         "resource-balance" => "queries:resource-balance",
+        "faction-state" => "queries:faction-state",
+        "diplomacy-state" => "queries:diplomacy-state",
         "fuel-branches" => "queries:fuel-branches",
         "market-history" => "queries:market-history",
         "market-ledger" => "queries:market-ledger",
@@ -414,6 +419,41 @@ fn query_data(
     let (store, key) = super::files(source, content)?;
     dashboard_base::prepared::query::observations::bind(source, &key);
     Ok(match request.product.as_str() {
+        "diplomacy-state" => {
+            let params: crate::products::diplomacy_state::DiplomacyParams =
+                serde_json::from_value(request.params.clone())?;
+            crate::products::diplomacy_state::DiplomacyState::validate(&params)
+                .map_err(crate::invalid)?;
+            let branch = branch(source, params.branch_id())?;
+            let mut prefix = super::prefix::read_or_empty(
+                source,
+                content,
+                "diplomacy-state",
+                branch,
+                params.hour(),
+                cancelled,
+            )?;
+            if matches!(
+                &params,
+                crate::products::diplomacy_state::DiplomacyParams::Pair { .. }
+            ) {
+                let identities = super::prefix::read_or_empty(
+                    source,
+                    content,
+                    "country-identities",
+                    branch,
+                    None,
+                    cancelled,
+                )?;
+                prefix.coverage.last_hour =
+                    prefix.coverage.last_hour.min(identities.coverage.last_hour);
+                prefix.coverage.complete &= identities.coverage.complete;
+                prefix = super::prefix::Prefix::new(source, branch, prefix.coverage, None);
+            }
+            crate::products::diplomacy_state::query::query(
+                source, &params, content, &store, &key, prefix, cancelled,
+            )?
+        }
         "party-history" => {
             let id = request
                 .params
@@ -786,6 +826,16 @@ fn query_data(
             },
             cancelled,
         )?,
+        "volunteers-expeditionaries" => {
+            serde_json::to_value(crate::products::volunteers_expeditionaries::query(
+                source,
+                &serde_json::from_value(request.params.clone())?,
+                &crate::products::LoadContext {
+                    content: content.cloned(),
+                },
+                cancelled,
+            )?)?
+        }
         "army-size" | "supply-health" => {
             let context = crate::products::LoadContext {
                 content: content.cloned(),
@@ -1454,6 +1504,33 @@ fn query_data(
             )?)?;
             prefix.mark(&mut data)?;
             data
+        }
+        "faction-state" => {
+            let params: crate::products::faction_state::FactionStateParams =
+                serde_json::from_value(request.params.clone())?;
+            crate::products::faction_state::FactionState::validate(&params)
+                .map_err(crate::invalid)?;
+            let (id, _) = params.identity();
+            let branch = branch(source, id)?;
+            let prefix = super::prefix::read_or_empty(
+                source,
+                content,
+                "faction-state",
+                branch,
+                None,
+                cancelled,
+            )?;
+            serde_json::to_value(crate::products::faction_state::prepared::query(
+                source,
+                &params,
+                &crate::products::LoadContext {
+                    content: content.cloned(),
+                },
+                &store,
+                &key,
+                prefix,
+                cancelled,
+            )?)?
         }
         "special-projects" => {
             let params: crate::products::special_projects::SpecialProjectsParams =

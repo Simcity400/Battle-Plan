@@ -448,6 +448,24 @@ offset: string, valueMin: string, valueMax: string, countries: Array<PreparedPro
  * total-by-type units selection supplies them; unknown amounts add nothing.
  */
 typeTotals: Array<[string, string]> | null, warnings: Array<string>, };
+export type DiplomacyParams = { "view": "opinions", branchId: string, hour: number, tags: Array<string>, } | { "view": "pair", branchId: string, first: string, second: string, hour: number, } | { "view": "pacts", branchId: string, tags: Array<string> | null, } | { "view": "proposals", branchId: string, tags: Array<string> | null, };
+export type DiplomacyReply = DiplomacyOpinionsReply | DiplomacyPairReply | DiplomacyPactsReply | DiplomacyProposalsReply;
+export type DiplomacyCountry = { tag: string, slot: number, countryId: number, };
+export type DiplomacyOpinion = { target: string, value: number, };
+export type DiplomacyOwner = { tag: string, identity: DiplomacyCountry | null, readHour: number | null, known: boolean, opinions: Array<DiplomacyOpinion>, };
+export type DiplomacyOpinionsReply = { hour: number, owners: Array<DiplomacyOwner>, unresolved: number,
+/**
+ * True only for an exact, cadence-bounded recorded snapshot beyond the prepared prefix.
+ */
+snapshot: boolean, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
+export type DiplomacyRun = { firstHour: number, lastHour: number, value: number | null, startsSegment: boolean, };
+export type DiplomacyPairReply = { forward: Array<DiplomacyRun>, reverse: Array<DiplomacyRun>, unobserved: Array<HourSpan>, first: DiplomacyCountry | null, second: DiplomacyCountry | null, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
+export type DiplomacyKind = { kind: string, name: string | null, reason: string | null, count: number, };
+export type DiplomacyPact = { id: string, kind: string, owner: string | null, target: string | null, first: string | null, second: string | null, identities: Array<DiplomacyCountry | null>, rawCountries: Array<number>, ordinal: number, startHour: number | null, endHour: number | null, cancelled: boolean | null, retired: boolean | null, cancelRaw: number, retiredRaw: number, firstSeen: number, lastSeen: number, presentAtEnd: boolean, endedBy: boolean, readHour: number, };
+export type DiplomacyReadRun = { owner: DiplomacyCountry | null, firstHour: number, lastHour: number, readHour: number, };
+export type DiplomacyPactsReply = { kinds: Array<DiplomacyKind>, pacts: Array<DiplomacyPact>, reads: Array<DiplomacyReadRun>, unobserved: Array<HourSpan>, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
+export type DiplomacyProposal = { id: string, handle: string, owner: string | null, sender: string | null, recipient: string | null, originalSender: string | null, originalRecipient: string | null, identities: Array<DiplomacyCountry | null>, rawCountries: Array<number>, storedHour: number, lastCommandHour: number, firstSeen: number, lastSeen: number, goneBy: number | null, goneByBound: boolean, presentAtEnd: boolean, readHour: number, };
+export type DiplomacyProposalsReply = { proposals: Array<DiplomacyProposal>, reads: Array<DiplomacyReadRun>, unobserved: Array<HourSpan>, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
 export type CountryParams = { branchId: string, tag: string, };
 export type FocusReply = { history: FocusHistory, artwork: Array<Artwork>,
 /**
@@ -613,6 +631,24 @@ export type ArmyMixRun = { firstHour: number, lastHour: number, values: Array<nu
 rawValues?: Array<string | null>, };
 export type ArmySeries = { tag: string, identities?: Array<CountryIdentityRun>, runs: Array<ArmyRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, mix?: Array<ArmyMixRun>, };
 export type ArmySizeReply = { templateSections?: Array<string>, branchId: string, windows: Array<HourSpan>, window: number | null, interval: HourSpan | null, available: boolean, measures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, warnings: Array<string>, };
+export type MilitaryAidKind = "land" | "expeditionary";
+export type VolunteersExpeditionariesParams = { branchId: string, kind: MilitaryAidKind, tags: Array<string> | null, };
+export type MilitaryAidRun = { firstHour: number, lastHour: number, divisions: number | null, startsSegment: boolean, };
+export type MilitaryAidLink = { key: string, sender: string, senderSlot: number | null, senderCountryId: number | null, host: string, hostSlot: number | null, hostCountryId: number | null, runs: Array<MilitaryAidRun>, };
+export type VolunteersExpeditionariesReply = { links: Array<MilitaryAidLink>, tallies: Array<MilitaryAidLink>, unobserved: Array<HourSpan>, warnings: Array<string>,
+/**
+ * The gate's accepted coverage the reply reads through. A product's
+ * approximate spans identify accepted hours that later commits can revise.
+ * Before its first publication, the empty extent ends immediately before
+ * `firstHour`.
+ */
+coverage: PreparedCoverage,
+/**
+ * The requested recorded hours after `coverage.lastHour`, in order and
+ * without recorded gaps: still being prepared. Empty when the reply
+ * answers every requested hour.
+ */
+pending: Array<HourSpan>, };
 export type SupplyHealthParams = { branchId: string, tags: Array<string>, };
 export type SupplyHealthRun = { firstHour: number, lastHour: number, startsSegment: boolean,
 /**
@@ -1116,7 +1152,12 @@ name: string | null,
 color: [number, number, number] | null, };
 export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
 export type FactionDetailParams = { branchId: string, hour: number, faction: string, };
-export type FactionGoalDefinition = { progress: Array<FactionRewardDetail>, sections: Array<FactionRewardDetail>, conditions: Array<FactionConditionDetail>, rewards: Array<FactionRewardDetail>, flags: Array<FactionConditionDetail>, token: string | null, name: string | null, description: string | null, category: string | null, reason: string | null, };
+export type FactionGoalDefinition = { progress: Array<FactionRewardDetail>, sections: Array<FactionRewardDetail>, conditions: Array<FactionConditionDetail>, rewards: Array<FactionRewardDetail>, flags: Array<FactionConditionDetail>, token: string | null, name: string | null, description: string | null, icon: string | null, category: string | null,
+/**
+ * The term's name as the game's interface names it, from the localisation key
+ * the native term carries; null when the content does not define it.
+ */
+categoryName: string | null, reason: string | null, };
 export type FactionConditionDetail = { kind: string, result: boolean | null, reasons: Array<string>, };
 export type FactionRewardDetail = { kind: string, text: string, reasons: Array<string>, };
 export type FactionGoalDetail = { ordinal: number, definition: FactionGoalDefinition, status: number,
@@ -1134,7 +1175,7 @@ export type FactionVariableDetail = { ordinal: number,
  * Literal bytes remain available when the key is not UTF-8.
  */
 nameBytes: Array<number>, name: string, valueRaw: string, };
-export type FactionResourceDetail = { ordinal: number, token: string | null, name: string | null, raw: string, reason: string | null, };
+export type FactionResourceDetail = { ordinal: number, token: string | null, name: string | null, icon: string | null, raw: string, reason: string | null, };
 export type FactionRefusalDetail = { fact: string, count: number, reason: string, };
 export type FactionDetailReply = { presentations: Array<FactionRewardDetail>, projectionRaw: string | null, influenceTotalRaw: string | null, projectionEffectsRaw: string | null, resources: Array<FactionResourceDetail> | null, systemResources: Array<FactionResourceDetail> | null, refusals: Array<FactionRefusalDetail>, minimumUpgrades: Array<FactionUpgradeDetail> | null, doctrineFolders: Array<FactionRuleDetail> | null, researchBaseRaw: string | null, researchCountries: Array<string> | null, researchBonuses: Array<string> | null, accounts: Array<FactionAccountDetail> | null, variableSeed: number | null, variables: Array<FactionVariableDetail> | null, branchId: string, hour: number, faction: string, goalReason: string | null, researchUnlocked: boolean | null, manpowerUnlocked: boolean | null, rules: Array<FactionRuleDetail> | null, programmes: Array<FactionProgramDetail> | null, programmesReadHour: number | null, manpower: Array<FactionManpowerDetail> | null, manpowerTotal: number | null, manifest: FactionGoalDefinition | null, goals: Array<FactionGoalDetail>, completed: Array<FactionGoalDefinition>, cancelled: Array<FactionGoalDefinition>, extraSlots: Array<number>, termDates: Array<number>, warnings: Array<string>, };
 export type CountryGroupParams = { branchId: string, };
@@ -1207,6 +1248,25 @@ countryIdentities: Array<CountryIdentityHistory>,
  * ends or starts next to one of these is a gap, not a join or a leave.
  */
 unobserved: UnobservedHours, warnings: Array<string>, };
+export type FactionChannelCoverage = { channel: string, known: Array<HourSpan>, read: Array<HourSpan>, };
+export type FactionStateParams = { "view": "influence", branchId: string, faction: string, } | { "view": "rules", branchId: string, faction: string, } | { "view": "manpower", branchId: string, faction: string, };
+export type FactionShareRun = { firstHour: number, lastHour: number, shareRaw: string | null, startsSegment: boolean, };
+export type FactionInfluenceAccount = { key: string, tag: string, slot: number | null, countryId: number | null, runs: Array<FactionShareRun>, member: Array<HourSpan>,
+/**
+ * Proven association without current membership, never assigned to every faction.
+ */
+retained: Array<HourSpan>, };
+export type FactionSelectionRun = { firstHour: number, lastHour: number, token: string | null, name: string | null, reason: string | null, startsSegment: boolean, };
+export type FactionSelectionLane = { slot: number, runs: Array<FactionSelectionRun>, };
+export type FactionMinimumLane = { group: number, runs: Array<FactionSelectionRun>, };
+export type FactionMemberUpgradeLane = { key: string, tag: string, slot: number | null, countryId: number | null, group: number, runs: Array<FactionSelectionRun>, };
+export type FactionUpgradeGroup = { group: number, name: string | null, };
+export type FactionManpowerRun = { firstHour: number, lastHour: number, value: number | null, startsSegment: boolean, };
+export type FactionManpowerMember = { key: string, tag: string, slot: number | null, countryId: number | null, runs: Array<FactionManpowerRun>, };
+export type FactionInfluenceReply = { accounts: Array<FactionInfluenceAccount>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
+export type FactionRulesReply = { rules: Array<FactionSelectionLane>, programmes: Array<FactionSelectionLane>, minimums: Array<FactionMinimumLane>, members: Array<FactionMemberUpgradeLane>, doctrines: Array<FactionSelectionLane>, groups: Array<FactionUpgradeGroup>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
+export type FactionManpowerReply = { members: Array<FactionManpowerMember>, total: Array<FactionManpowerRun>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
+export type FactionStateReply = FactionInfluenceReply | FactionRulesReply | FactionManpowerReply;
 export type WarsParams = { branchId: string,
 /**
  * None follows the recording client's playing/observer country.
@@ -1701,12 +1761,13 @@ fields: Array<FactoryField>,
  */
 series: Array<FactorySeries>, warnings: Array<string>, };
 export type TerritoryMeasure = "states" | "provinces" | "victoryPoints" | "area";
-export type TerritoryRule = "controlled" | "owned";
+export type TerritoryRule = "controlled" | "owned" | "occupied";
 export type TerritoryTop = { count: number, measure: TerritoryMeasure, rule: TerritoryRule, };
 export type TerritoryParams = { branchId: string, tags: Array<string>, top: TerritoryTop | null, };
 export type TerritoryRun = { firstHour: number, lastHour: number, startsSegment: boolean,
 /**
- * States, provinces, victory points, area: controlled first, then owned.
+ * Controlled states, provinces, signed victory points, area; then owned in
+ * the same order; then occupied in the same order.
  * Null means that measure/rule was not recorded, never zero.
  */
 values: Array<number | null>, };
@@ -1717,7 +1778,8 @@ export type TerritorySeries = { tag: string, runs: Array<TerritoryRun>, segments
 identities?: Array<CountryIdentityRun>, };
 export type TerritoryReply = { branchId: string,
 /**
- * The complete world's totals, including unheld territory, independent of selection.
+ * Independent world totals, including unheld controlled/owned territory.
+ * Occupied columns total only foreign-controlled units.
  */
 worldTotals: Array<TerritoryRun>, series: Array<TerritorySeries>,
 /**
@@ -1743,7 +1805,8 @@ stateShares: [Array<TerritoryStateShare> | null, Array<TerritoryStateShare> | nu
 export type TerritoryRegionSeries = { tag: string | null, region: number | null, missing: string | null, runs: Array<TerritoryRegionRun>, };
 export type TerritoryBreakdownReply = { branchId: string, regions: Array<TerritoryRegion>, series: Array<TerritoryRegionSeries>, countries: Array<TerritorySeries>, worldTotals: Array<TerritoryRun>,
 /**
- * Complete region inputs, in TerritoryRun's measure/rule order.
+ * Complete regional inputs for controlled then owned states, provinces,
+ * victory points and area. Occupied territory has no regional projection.
  */
 observed: Array<Array<HourSpan>>, areaUnit: string | null, areaReason: string | null, warnings: Array<string>, };
 export type FactionTotalsParams = { branchId: string, source: FactionMeasure, membership: FactionMembership, top: number,
@@ -5191,6 +5254,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
+export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
 /** Products served separately from whole-branch history reads. */
 export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;

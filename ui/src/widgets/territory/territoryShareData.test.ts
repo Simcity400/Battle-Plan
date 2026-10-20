@@ -9,7 +9,7 @@ import { territoryShareReading, territoryWorldModel } from './territoryShareData
 const look = (key: string) => ({ id: key, label: key, colour: '#797979' });
 const rest = { id: 'rest', label: 'Rest of world', colour: '#888888' };
 const span = { firstHour: 1, lastHour: 20 };
-const reply = (values: (number | null)[] = [100, 200, 300, 400, 500, 600, 700, 800]): TerritoryReply =>
+const reply = (values: (number | null)[] = [100, 200, 300, 400, 500, 600, 700, 800, null, null, null, null]): TerritoryReply =>
   ({ branchId: 'branch', series: [], worldTotals: [{ ...span, startsSegment: false, values }], areaUnit: 'map cells', areaReason: null, warnings: [] });
 const series = raceSeriesIndex([{ tag: 'a', runs: [{ ...span, value: 30 }] }]);
 
@@ -37,9 +37,9 @@ test('a top-country reply subtracts its slices from independently recorded world
 
 test('missing world hours stay gaps and a later complete reading starts a fresh stretch', () => {
   const data = reply();
-  data.worldTotals = [{ firstHour: 1, lastHour: 5, startsSegment: false, values: [100, 200, 300, 400, 500, 600, 700, 800] },
-    { firstHour: 6, lastHour: 7, startsSegment: false, values: [null, 200, 300, 400, 500, 600, 700, 800] },
-    { firstHour: 8, lastHour: 20, startsSegment: false, values: [100, 200, 300, 400, 500, 600, 700, 800] }];
+  data.worldTotals = [{ firstHour: 1, lastHour: 5, startsSegment: false, values: [100, 200, 300, 400, 500, 600, 700, 800, null, null, null, null] },
+    { firstHour: 6, lastHour: 7, startsSegment: false, values: [null, 200, 300, 400, 500, 600, 700, 800, null, null, null, null] },
+    { firstHour: 8, lastHour: 20, startsSegment: false, values: [100, 200, 300, 400, 500, 600, 700, 800, null, null, null, null] }];
   const world = territoryWorldModel(data, 'states', 'controlled');
   assert.equal(territoryShareReading(series, world, 6, 10, look, rest).items.length, 0);
   assert.notEqual(territoryShareReading(series, world, 5, 10, look, rest).stretch,
@@ -103,7 +103,7 @@ test('a complete world and one known smart-group member cannot fill an incomplet
 test('5,000 countries retain exact selected slices, the remainder and the full selection', () => {
   const lines = Array.from({ length: 5_000 }, (_, index) => ({ tag: `tag-${index}`, runs: [{ ...span, value: 5_000 - index }] }));
   const model = raceSeriesIndex(lines);
-  const world = territoryWorldModel(reply(Array(8).fill(12_502_500)), 'states', 'controlled');
+  const world = territoryWorldModel(reply(Array(12).fill(12_502_500)), 'states', 'controlled');
   const reading = territoryShareReading(model, world, 10, 30, look, rest);
   assert.deepEqual(reading.items.map(item => [item.path[0].id, item.value, item.exact]), [
     ...lines.slice(0, 30).map(line => [line.tag, line.runs[0].value, BigInt(line.runs[0].value)]),

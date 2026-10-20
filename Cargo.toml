@@ -132,6 +132,7 @@ blake3 = "1"
 bytemuck = "1"
 dashboard = { path = "crates/dashboard" }
 dashboard-base = { path = "crates/dashboard-base" }
+dashboard-factions = { path = "crates/dashboard-factions" }
 dashboard-air-aces = { path = "crates/dashboard-air-aces" }
 dashboard-air-superiority = { path = "crates/dashboard-air-superiority" }
 dashboard-construction = { path = "crates/dashboard-construction" }
@@ -150,6 +151,7 @@ dashboard-game-score = { path = "crates/dashboard-game-score" }
 dashboard-wars = { path = "crates/dashboard-wars" }
 dashboard-country-fuel = { path = "crates/dashboard-country-fuel" }
 dashboard-special-projects = { path = "crates/dashboard-special-projects" }
+dashboard-diplomacy = { path = "crates/dashboard-diplomacy" }
 dashboard-politics-ledger = { path = "crates/dashboard-politics-ledger" }
 dashboard-economy = { path = "crates/dashboard-economy" }
 dashboard-raids = { path = "crates/dashboard-raids" }

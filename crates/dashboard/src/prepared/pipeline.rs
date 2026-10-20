@@ -150,6 +150,10 @@ pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section>
         ("country-measure", "Country balances"),
         ("country-identities", "Country identities"),
         ("army-size", "Army size"),
+        (
+            "volunteers-expeditionaries",
+            "Volunteers and expeditionaries",
+        ),
         ("air-force-size", "Air force size"),
         ("navy-size", "Navy size"),
         ("country-nukes", "Nuclear arsenal"),
@@ -181,6 +185,10 @@ pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section>
         ("country-stability", "Stability and war support"),
         ("country-experience", "Experience"),
         ("politics-ledger", "Political and command power accounting"),
+        (
+            "diplomacy-state",
+            "Opinions, pacts and diplomatic proposals",
+        ),
         ("country-fuel", "Fuel and consumption"),
         ("fuel-branches", "Fuel by military branch"),
         ("market", "International market and lend-lease"),
@@ -227,6 +235,18 @@ struct Family {
 // The map and land-owner catalogue are recording-wide publication state, not
 // branch families: their errors still stop preparation.
 const FAMILIES: &[Family] = &[
+    Family {
+        name: "faction_state",
+        sections: &["faction-state"],
+        dependents: &[],
+        queries: &["faction-state"],
+    },
+    Family {
+        name: "diplomacy_state",
+        sections: &["diplomacy-state"],
+        dependents: &[],
+        queries: &["diplomacy-state"],
+    },
     Family {
         name: "focus",
         sections: &["focus", "focus-display"],
@@ -279,9 +299,9 @@ const FAMILIES: &[Family] = &[
     },
     Family {
         name: "army",
-        sections: &["army-size"],
+        sections: &["army-size", "volunteers-expeditionaries"],
         dependents: &[],
-        queries: &["army-size", "scoreboard"],
+        queries: &["army-size", "volunteers-expeditionaries", "scoreboard"],
     },
     Family {
         name: "air",

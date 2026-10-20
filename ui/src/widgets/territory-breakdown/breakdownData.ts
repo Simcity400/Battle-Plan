@@ -49,6 +49,7 @@ export interface BreakdownLooks {
 }
 /** Resolve the chosen column and its unbroken stretches once per reply. */
 export function breakdownModel(data: TerritoryBreakdownReply, measure: TerritoryMeasure, rule: TerritoryRule) {
+  if (rule === 'occupied') throw new Error('Occupied territory has no regional breakdown.');
   const regions = new Map(data.regions.map(region => [region.id, region]));
   const countries = new Map(data.countries.map(country => [country.tag, country]));
   const identities = countryIdentityIndex(data.countries.map(country => ({ tag: country.tag, identities: country.identities ?? [] })));

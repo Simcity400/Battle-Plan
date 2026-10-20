@@ -103,6 +103,7 @@ pub(super) fn attach(
                     field.value.items().unwrap_or_default().to_vec(),
                 );
                 let mut rendered = FactionGoalDefinition {
+                    icon: None,
                     progress: Vec::new(),
                     sections: Vec::new(),
                     conditions: Vec::new(),
@@ -112,6 +113,7 @@ pub(super) fn attach(
                     name: None,
                     description: None,
                     category: None,
+                    category_name: None,
                     reason: None,
                 };
                 attach(frame, faction, cat, &temporary, &mut rendered);

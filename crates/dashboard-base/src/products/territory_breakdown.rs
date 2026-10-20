@@ -24,6 +24,8 @@ use std::{
 use ts_rs::TS;
 
 pub struct TerritoryBreakdown;
+/// Regional attribution supports the controlled and owned prefix only.
+const REGIONAL_COLUMN_COUNT: usize = territory::columns::OWNED_AREA + 1;
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TerritoryBreakdownParams {
@@ -69,9 +71,10 @@ pub struct TerritoryBreakdownReply {
     pub series: Vec<TerritoryRegionSeries>,
     pub countries: Vec<TerritorySeries>,
     pub world_totals: Vec<TerritoryRun>,
-    /// Complete region inputs, in TerritoryRun's measure/rule order.
+    /// Complete regional inputs for controlled then owned states, provinces,
+    /// victory points and area. Occupied territory has no regional projection.
     #[ts(type = "Array<Array<HourSpan>>")]
-    pub observed: [Vec<HourSpan>; 8],
+    pub observed: [Vec<HourSpan>; REGIONAL_COLUMN_COUNT],
     pub area_unit: Option<String>,
     pub area_reason: Option<String>,
     pub warnings: Vec<String>,
@@ -229,7 +232,7 @@ pub struct Scan {
     /// One series per key, in key order once the scan ends.
     series: Vec<TerritoryRegionSeries>,
     tags: BTreeSet<String>,
-    observed: [Vec<HourSpan>; 8],
+    observed: [Vec<HourSpan>; REGIONAL_COLUMN_COUNT],
     missing_states: BTreeSet<u32>,
     missing_provinces: BTreeSet<u32>,
 }
@@ -261,7 +264,7 @@ struct Builder {
     reads: LandReads,
     /// The freshness the sums were taken with, and the sums by series.
     #[serde(skip)]
-    available: Option<[bool; 8]>,
+    available: Option<[bool; REGIONAL_COLUMN_COUNT]>,
     #[serde(skip)]
     values: [BTreeMap<usize, RegionValues>; 2],
     active: BTreeSet<usize>,
@@ -295,7 +298,7 @@ struct RegionValues {
     states: [Option<BTreeMap<u32, u64>>; 2],
 }
 impl RegionValues {
-    fn zero(available: [bool; 8]) -> Self {
+    fn zero(available: [bool; REGIONAL_COLUMN_COUNT]) -> Self {
         Self {
             values: [1, 2, 3, 5, 6, 7].map(|column| available[column].then_some(0)),
             states: [0, 4].map(|column| available[column].then(BTreeMap::new)),
@@ -1003,7 +1006,7 @@ impl Prepared {
         self.observed.advance(frame.hour)?;
         // A restored builder keeps no freshness; publication sealed the span of
         // each column observed at its last complete hour there.
-        let was_observed: [bool; 8] = match self.builder.available {
+        let was_observed: [bool; REGIONAL_COLUMN_COUNT] = match self.builder.available {
             Some(available) => available.map(|known| known && self.builder.hour.is_some()),
             None => std::array::from_fn(|column| {
                 self.builder.hour.is_some_and(|hour| {
@@ -1067,7 +1070,7 @@ impl Prepared {
         for (column, known) in self
             .builder
             .available
-            .unwrap_or([false; 8])
+            .unwrap_or([false; REGIONAL_COLUMN_COUNT])
             .into_iter()
             .enumerate()
         {

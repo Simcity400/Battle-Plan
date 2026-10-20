@@ -263,7 +263,11 @@ fn modded_extra_states_and_provinces_with_a_renamed_country_use_the_same_raster_
             Some(1),
             Some(3),
             Some(4),
-            Some(3)
+            Some(3),
+            Some(1),
+            Some(2),
+            Some(9),
+            Some(2),
         ]
     );
 }
@@ -416,7 +420,11 @@ fn independent_owned_and_controlled_counts_are_exact_and_mod_sized() {
             Some(1),
             Some(3),
             Some(4),
-            Some(120)
+            Some(120),
+            Some(1),
+            Some(2),
+            Some(9),
+            Some(90),
         ]
     );
 }
@@ -446,7 +454,7 @@ fn partial_and_unavailable_tables_leave_gaps_while_complete_empty_tables_prove_z
     assert_eq!(runs[1].last_hour, 102);
     assert_eq!(runs[1].values[0], Some(1));
     assert_eq!(runs[1].values[1], None);
-    assert_eq!(runs[2].values, [Some(0); 8]);
+    assert_eq!(runs[2].values, [Some(0); columns::COUNT]);
     let no_map = scan(
         &replay(vec![frame(100, 2, 4)]),
         1,
@@ -697,7 +705,7 @@ fn fixed_territory_choices_project_cached_native_aliases_and_keep_absence_apart(
             .find(|run| run.first_hour == 101)
             .unwrap()
             .values,
-        [Some(0); 8]
+        [Some(0); columns::COUNT]
     );
     let absent = series
         .iter()
@@ -705,7 +713,12 @@ fn fixed_territory_choices_project_cached_native_aliases_and_keep_absence_apart(
         .unwrap();
     assert_eq!(absent.identities, Some(Vec::new()));
     assert!(absent.segments.is_empty());
-    assert!(absent.runs.iter().all(|run| run.values == [Some(0); 8]));
+    assert!(
+        absent
+            .runs
+            .iter()
+            .all(|run| run.values == [Some(0); columns::COUNT])
+    );
     assert!(
         requested_series(
             &scanned,
@@ -734,7 +747,7 @@ fn hourly_top_membership_is_cut_to_changes_with_byte_order_ties_and_cancellation
                 first_hour: first,
                 last_hour: last,
                 starts_segment: true,
-                values: [Some(value); 8],
+                values: [Some(value); columns::COUNT],
             });
     }
     let params = TerritoryParams {
@@ -874,7 +887,7 @@ fn reply_budget_counts_actual_json_without_a_private_conservative_limit() {
                     first_hour: hour,
                     last_hour: hour,
                     starts_segment: false,
-                    values: [Some(i64::from(hour)); 8],
+                    values: [Some(i64::from(hour)); columns::COUNT],
                 })
                 .collect(),
             ..Default::default()
@@ -972,7 +985,11 @@ fn dense_totals_count_aliases_once_and_keep_unresolved_slot_identities_unknown()
             Some(2),
             Some(4),
             Some(2),
-            Some(100)
+            Some(100),
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(0),
         ]
     );
     let mut decoded = decoded;
@@ -1136,7 +1153,12 @@ fn annexation_and_release_emit_dated_zero_only_with_complete_rosters() {
             .collect::<Vec<_>>(),
         [(100, 101), (103, 104)]
     );
-    assert!(reply[1].runs.iter().all(|run| run.values == [Some(0); 8]));
+    assert!(
+        reply[1]
+            .runs
+            .iter()
+            .all(|run| run.values == [Some(0); columns::COUNT])
+    );
     assert!(
         reply[1].segments.is_empty(),
         "zero is not a country identity"
@@ -1401,7 +1423,11 @@ fn the_world_total_includes_unheld_land_and_never_uses_only_selected_countries()
             Some(2),
             Some(4),
             Some(2),
-            Some(100)
+            Some(100),
+            Some(1),
+            Some(3),
+            Some(9),
+            Some(90),
         ]
     );
     let countries = requested_series(
@@ -1459,14 +1485,20 @@ fn overflowing_territory_and_world_totals_have_counted_warnings() {
 
 #[test]
 fn a_safe_signed_world_total_does_not_hide_unsafe_country_candidates() {
-    let mut countries = [[Some(0); 8]; 2];
+    let mut countries = [[Some(0); columns::COUNT]; 2];
     countries[0][2] = Some(9_007_199_254_740_992);
     countries[1][2] = Some(-9_007_199_254_740_992);
-    let mut world = [Some(0); 8];
+    let mut world = [Some(0); columns::COUNT];
     assert_eq!(
-        sanitise_totals([true; 8], &mut countries, &mut world, false, [true; 2])
-            .iter()
-            .sum::<usize>(),
+        sanitise_totals(
+            [true; columns::COUNT],
+            &mut countries,
+            &mut world,
+            false,
+            [true; 2]
+        )
+        .iter()
+        .sum::<usize>(),
         2
     );
     assert_eq!(
@@ -1658,7 +1690,7 @@ fn territory_refuses_two_tags_for_one_canonical_slot() {
     let mut scanned = Scan::default();
     observe(&mut scanned, &decoded, None, &mut Builder::default(), None).unwrap();
     assert!(scanned.series.values().all(|track| track.runs.is_empty()));
-    assert_eq!(scanned.world_totals[0].values, [None; 8]);
+    assert_eq!(scanned.world_totals[0].values, [None; columns::COUNT]);
     let mut warnings = Vec::new();
     scan_warning(&scanned, &mut warnings);
     assert!(
@@ -1750,4 +1782,430 @@ fn territory_top_accepts_the_full_ui_safe_integer_count() {
     })).unwrap();
     assert_eq!(params.top.as_ref().unwrap().count, MAX_EXACT_JS_INTEGER);
     Territory::validate(&params).unwrap();
+}
+
+/// Each pair is (legal owner, current controller), with runtime VP per province.
+fn paired_frame(hour: i32, states: &[(u32, u32)], provinces: &[(u32, u32, i32)]) -> DecodedFrame {
+    let mut read = frame(hour, 3, 0);
+    *read.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        states
+            .iter()
+            .enumerate()
+            .map(|(index, &(owner, controller))| StateRow {
+                id: index as u32 + 1,
+                owner,
+                controller,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *read.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
+        provinces
+            .iter()
+            .enumerate()
+            .map(
+                |(index, &(owner, controller, victory_points))| ProvinceRow {
+                    id: index as u32 + 1,
+                    state: 1,
+                    owner,
+                    controller,
+                    victory_points,
+                    ..Default::default()
+                },
+            )
+            .collect(),
+    ));
+    read.metrics = Metrics::default(); // Hourly complete reads need no timing sample.
+    read
+}
+
+#[test]
+fn occupied_paired_holders_keep_nulls_aliases_native_slot_zero_and_signed_vp_distinct() {
+    const A: u32 = 100_000;
+    const B: u32 = 100_001;
+    const ALIAS: u32 = 4_000_000_001;
+    let mut read = paired_frame(
+        100,
+        &[(A, B), (A, A), (0, A), (A, 0), (ALIAS, A), (B, A)],
+        &[
+            (A, B, -7),
+            (A, B, 13),
+            (B, A, 0),
+            (ALIAS, A, 99),
+            (0, A, 81),
+            (A, 0, 17),
+        ],
+    );
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *read.tables[TableId::CountryLinks.index()]
+    {
+        rows.push(CountryLinkRow {
+            id: ALIAS,
+            canonical_slot: 0,
+        });
+    }
+    let scanned = scan(&replay(vec![read]), 1, None, &AtomicBool::new(false)).unwrap();
+    let first = |tag: &str| scanned.series[tag].runs[0].values;
+    assert_eq!(
+        &first("realm 00000")[columns::OCCUPIED_STATES..],
+        &[Some(1), Some(1), Some(0), None]
+    );
+    assert_eq!(
+        &first("realm 00001")[columns::OCCUPIED_STATES..],
+        &[Some(1), Some(2), Some(6), None]
+    );
+    assert_eq!(
+        &first("realm 00002")[columns::OCCUPIED_STATES..],
+        &[Some(0), Some(0), Some(0), None]
+    );
+    assert_eq!(
+        &scanned.world_totals[0].values[columns::OCCUPIED_STATES..],
+        &[Some(2), Some(3), Some(6), None]
+    );
+    // Unassigned units still belong to controlled/owned world accounting only.
+    assert_eq!(
+        scanned.world_totals[0].values[columns::CONTROLLED_STATES],
+        Some(6)
+    );
+    assert_eq!(
+        scanned.world_totals[0].values[columns::CONTROLLED_PROVINCES],
+        Some(6)
+    );
+}
+
+#[test]
+fn occupied_is_not_controlled_minus_owned_even_when_both_totals_are_equal() {
+    let scanned = scan(
+        &replay(vec![paired_frame(
+            100,
+            &[(100_000, 100_001), (100_001, 100_000)],
+            &[(100_000, 100_001, -7), (100_001, 100_000, 0)],
+        )]),
+        1,
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    for tag in ["realm 00000", "realm 00001"] {
+        let values = scanned.series[tag].runs[0].values;
+        assert_eq!(
+            values[columns::CONTROLLED_STATES],
+            values[columns::OWNED_STATES]
+        );
+        assert_eq!(values[columns::OCCUPIED_STATES], Some(1));
+        assert_eq!(values[columns::OCCUPIED_PROVINCES], Some(1));
+    }
+}
+
+#[test]
+fn occupied_capture_retake_handback_foreign_switch_annexation_and_peace_pairs() {
+    let owners = [
+        100_000, 100_000, 100_000, 100_000, 100_001, 100_002, 100_002, 100_000,
+    ];
+    let controllers = [
+        100_001, 100_000, 100_001, 100_002, 100_002, 100_002, 100_001, 100_000,
+    ];
+    let frames = owners
+        .into_iter()
+        .zip(controllers)
+        .enumerate()
+        .map(|(index, (owner, controller))| {
+            paired_frame(
+                100 + index as i32,
+                &[(owner, controller)],
+                &[(owner, controller, -7)],
+            )
+        })
+        .collect();
+    let scanned = scan(&replay(frames), 1, None, &AtomicBool::new(false)).unwrap();
+    for (index, (owner, controller)) in owners.into_iter().zip(controllers).enumerate() {
+        let hour = 100 + index as i32;
+        for slot in 0..3 {
+            let expected = i64::from(owner != controller && controller == 100_000 + slot);
+            let run = scanned.series[format!("realm {slot:05}").as_str()]
+                .runs
+                .iter()
+                .find(|run| run.first_hour <= hour && run.last_hour >= hour)
+                .unwrap();
+            assert_eq!(
+                &run.values[columns::OCCUPIED_STATES..],
+                &[Some(expected), Some(expected), Some(-7 * expected), None]
+            );
+        }
+        let world = scanned
+            .world_totals
+            .iter()
+            .find(|run| run.first_hour <= hour && run.last_hour >= hour)
+            .unwrap();
+        assert_eq!(
+            world.values[columns::OCCUPIED_STATES],
+            Some(i64::from(owner != controller))
+        );
+    }
+}
+
+#[test]
+fn occupied_state_holders_and_province_vp_reads_are_independent_and_vp_only_changes_recompute() {
+    let mut first = paired_frame(
+        100,
+        &[(100_000, 100_000)],
+        &[(100_000, 100_001, -7), (100_000, 100_001, 0)],
+    );
+    let mut reads = vec![first.clone()];
+    first.hour = 101;
+    if let TableView::Complete(TableRows::Provinces(rows)) =
+        &mut *first.tables[TableId::Provinces.index()]
+    {
+        rows[0].victory_points = 17;
+    }
+    reads.push(first.clone());
+    first.hour = 102;
+    *first.tables[TableId::States.index()] = TableView::Unavailable {
+        reason: "states missing".into(),
+    };
+    reads.push(first);
+    let mut last = paired_frame(103, &[(100_000, 100_001)], &[]);
+    *last.tables[TableId::Provinces.index()] = TableView::Unavailable {
+        reason: "provinces missing".into(),
+    };
+    reads.push(last);
+    let scanned = scan(&replay(reads), 1, None, &AtomicBool::new(false)).unwrap();
+    let values: Vec<_> = scanned.series["realm 00001"]
+        .runs
+        .iter()
+        .map(|run| run.values[columns::OCCUPIED_STATES..].to_vec())
+        .collect();
+    assert_eq!(
+        values,
+        [
+            vec![Some(0), Some(2), Some(-7), None],
+            vec![Some(0), Some(2), Some(17), None],
+            vec![None, Some(2), Some(17), None],
+            vec![Some(1), None, None, None]
+        ]
+    );
+}
+
+#[test]
+fn occupied_unresolved_non_null_or_ambiguous_holders_are_unknown_not_unassigned() {
+    for (states, provinces, expected) in [
+        (
+            vec![(4_000_000_000, 100_001)],
+            vec![(100_000, 100_001, -7)],
+            [None, Some(1), Some(-7), None],
+        ),
+        (
+            vec![(100_000, 100_001)],
+            vec![(100_000, 4_000_000_000, -7)],
+            [Some(1), None, None, None],
+        ),
+        (
+            vec![(0, 100_001)],
+            vec![(100_000, 0, -7)],
+            [Some(0), Some(0), Some(0), None],
+        ),
+    ] {
+        let scanned = scan(
+            &replay(vec![paired_frame(100, &states, &provinces)]),
+            1,
+            None,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            &scanned.series["realm 00001"].runs[0].values[columns::OCCUPIED_STATES..],
+            &expected
+        );
+        assert_eq!(
+            &scanned.world_totals[0].values[columns::OCCUPIED_STATES..],
+            &expected
+        );
+    }
+    let mut ambiguous = paired_frame(100, &[(100_000, 100_001)], &[(100_000, 100_001, 1)]);
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *ambiguous.tables[TableId::CountryLinks.index()]
+    {
+        rows.push(CountryLinkRow {
+            id: 100_000,
+            canonical_slot: 2,
+        });
+    }
+    // Replay rows reject duplicate keys; exercise the defensive join directly.
+    let mut scanned = Scan::default();
+    observe(
+        &mut scanned,
+        &ambiguous,
+        None,
+        &mut Builder::default(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        &scanned.series["realm 00001"].runs[0].values[columns::OCCUPIED_STATES..],
+        &[None; 4]
+    );
+}
+
+#[test]
+fn occupied_map_area_selects_its_named_channels_in_territory_and_faction_parameters() {
+    let params = TerritoryParams {
+        branch_id: "1".into(),
+        tags: vec![],
+        top: Some(TerritoryTop {
+            count: 1,
+            measure: TerritoryMeasure::Area,
+            rule: TerritoryRule::Occupied,
+        }),
+    };
+    Territory::validate(&params).unwrap();
+    let column = TerritoryMeasure::Area.index(TerritoryRule::Occupied);
+    assert_eq!(column, columns::OCCUPIED_AREA);
+    assert_eq!(prepared::VALUE_CHANNELS[column], prepared::OCCUPIED_AREA);
+    assert_eq!(prepared::NATIVE_OWNED_STATES, 8);
+    assert!(!prepared::VALUE_CHANNELS.contains(&prepared::NATIVE_OWNED_STATES));
+    let factions: super::super::faction_totals::FactionTotalsParams =
+        serde_json::from_value(serde_json::json!({
+            "branchId":"1", "source":{"kind":"territory","measure":"area","rule":"occupied"},
+            "membership":"hour", "top":10,
+        }))
+        .unwrap();
+    super::super::faction_totals::FactionTotals::validate(&factions).unwrap();
+}
+
+#[test]
+fn occupied_signed_vp_overflow_refuses_country_and_world_without_erasing_other_measures() {
+    let mut countries = [[Some(0); columns::COUNT]; 2];
+    countries[0][columns::OCCUPIED_VICTORY_POINTS] = Some(MAX_EXACT_JS_INTEGER as i64 + 1);
+    countries[1][columns::OCCUPIED_VICTORY_POINTS] = Some(-(MAX_EXACT_JS_INTEGER as i64) - 1);
+    let mut world = [Some(0); columns::COUNT];
+    let overflow = sanitise_totals(
+        [true; columns::COUNT],
+        &mut countries,
+        &mut world,
+        false,
+        [true; 2],
+    );
+    assert_eq!(overflow[columns::OCCUPIED_VICTORY_POINTS], 2);
+    assert_eq!(world[columns::OCCUPIED_VICTORY_POINTS], None);
+    assert!(
+        countries
+            .iter()
+            .all(|values| values[columns::OCCUPIED_VICTORY_POINTS].is_none())
+    );
+    assert_eq!(world[columns::OCCUPIED_STATES], Some(0));
+    assert_eq!(world[columns::OCCUPIED_PROVINCES], Some(0));
+}
+
+#[test]
+fn occupied_area_sums_the_same_exact_foreign_province_weights_and_keeps_gaps_independent() {
+    const A: u32 = 100_000;
+    const B: u32 = 100_001;
+    let first = paired_frame(
+        100,
+        &[(A, A)],
+        &[
+            (A, B, -7),
+            (A, B, 0),
+            (B, A, 13),
+            (A, A, 99),
+            (0, B, 81),
+            (A, 0, 17),
+        ],
+    );
+    let areas = ProvinceAreas {
+        land: vec![0, 7, 0, 13, 101, 103, 107],
+    };
+    let mut annexed = first.clone();
+    annexed.hour = 101;
+    if let TableView::Complete(TableRows::Provinces(rows)) =
+        &mut *annexed.tables[TableId::Provinces.index()]
+    {
+        rows[0].owner = B;
+        rows[1].owner = B;
+    }
+    let mut missing_states = annexed.clone();
+    missing_states.hour = 102;
+    *missing_states.tables[TableId::States.index()] = TableView::Unavailable {
+        reason: "independent state read missing".into(),
+    };
+    let mut missing_provinces = annexed.clone();
+    missing_provinces.hour = 103;
+    *missing_provinces.tables[TableId::Provinces.index()] = TableView::Unavailable {
+        reason: "area supplying province read missing".into(),
+    };
+    let input = replay(vec![
+        first.clone(),
+        annexed,
+        missing_states,
+        missing_provinces,
+    ]);
+    let flag = AtomicBool::new(false);
+    let scanned = scan(&input, 1, Some(&areas), &flag).unwrap();
+    let at = |tag: &str, hour| {
+        scanned.series[tag]
+            .runs
+            .iter()
+            .find(|run| run.first_hour <= hour && run.last_hour >= hour)
+            .unwrap()
+            .values
+    };
+    assert_eq!(
+        at("realm 00001", 100)[columns::OCCUPIED_STATES..],
+        [Some(0), Some(2), Some(-7), Some(7)]
+    );
+    assert_eq!(at("realm 00000", 100)[columns::OCCUPIED_AREA], Some(13));
+    assert_eq!(at("realm 00002", 100)[columns::OCCUPIED_AREA], Some(0));
+    assert_eq!(
+        scanned.world_totals[0].values[columns::OCCUPIED_AREA],
+        Some(20)
+    );
+    assert_eq!(at("realm 00001", 101)[columns::OCCUPIED_AREA], Some(0));
+    assert_eq!(at("realm 00000", 102)[columns::OCCUPIED_STATES], None);
+    assert_eq!(at("realm 00000", 102)[columns::OCCUPIED_AREA], Some(13));
+    assert_eq!(at("realm 00000", 103)[columns::OCCUPIED_AREA], None);
+    let sampled = sample(&first, None, Some(&areas), input.format).unwrap();
+    assert_eq!(
+        sampled[&("realm 00001".into(), "occupiedArea".into())].1,
+        Some(7)
+    );
+    assert_eq!(sampled[&(String::new(), "occupiedArea".into())].1, Some(20));
+
+    // One missing province weight affects its holder and the world, not other
+    // holders or their independently recorded province/VP amounts.
+    let partial_areas = ProvinceAreas {
+        land: vec![0, 7, 0],
+    };
+    let partial = scan(&input, 1, Some(&partial_areas), &flag).unwrap();
+    assert_eq!(
+        partial.series["realm 00000"].runs[0].values[columns::OCCUPIED_AREA],
+        None
+    );
+    assert_eq!(
+        partial.series["realm 00001"].runs[0].values[columns::OCCUPIED_AREA],
+        Some(7)
+    );
+    assert_eq!(partial.world_totals[0].values[columns::OCCUPIED_AREA], None);
+    let no_map = scan(&input, 1, None, &flag).unwrap();
+    assert_eq!(
+        no_map.series["realm 00001"].runs[0].values[columns::OCCUPIED_STATES..],
+        [Some(0), Some(2), Some(-7), None]
+    );
+}
+
+#[test]
+fn occupied_area_overflow_keeps_province_and_victory_point_amounts_known() {
+    let input = replay(vec![paired_frame(
+        100,
+        &[],
+        &[(100_000, 100_001, -7), (100_000, 100_001, 0)],
+    )]);
+    let areas = ProvinceAreas {
+        land: vec![0, MAX_EXACT_JS_INTEGER as i64, 1],
+    };
+    let scanned = scan(&input, 1, Some(&areas), &AtomicBool::new(false)).unwrap();
+    let values = scanned.series["realm 00001"].runs[0].values;
+    assert_eq!(values[columns::OCCUPIED_AREA], None);
+    assert_eq!(scanned.world_totals[0].values[columns::OCCUPIED_AREA], None);
+    assert_eq!(values[columns::OCCUPIED_PROVINCES], Some(2));
+    assert_eq!(values[columns::OCCUPIED_VICTORY_POINTS], Some(-7));
 }

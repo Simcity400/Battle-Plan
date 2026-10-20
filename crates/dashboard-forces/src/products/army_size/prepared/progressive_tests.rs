@@ -340,7 +340,7 @@ fn army_hour_changing_one_of_5000_divisions_observes_only_its_country() {
 
 #[test]
 fn army_field_masks_name_every_field_they_read() {
-    assert_eq!(DIVISION_FIELDS.count_ones(), 4);
+    assert_eq!(DIVISION_FIELDS.count_ones(), 5);
     assert_eq!(TEMPLATE_FIELDS.count_ones(), 2);
     assert_eq!(LAND_FIELDS.count_ones(), 1);
     assert_eq!(HOLDER_FIELDS.count_ones(), 2);

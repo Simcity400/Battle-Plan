@@ -52,7 +52,7 @@ export default function TerritoryWidget(props: WidgetProps) {
   if (factions) return <FactionRaceView {...props} options={options}
     source={{ kind: 'territory', measure, rule }} max={definition.countries.max} label="Territory"
     measureLabel={unit => territoryMeasureLabel(measure, rule, unit)} formatValue={formatTerritory} note={territoryNote(measure)}
-    renderMain={options.view === 'share' ? (onPick, pickOwner, onDiagnostics, active) => <TerritoryCountryView {...props} active={active}
+    renderMain={options.view === 'share' && rule !== 'occupied' ? (onPick, pickOwner, onDiagnostics, active) => <TerritoryCountryView {...props} active={active}
       onFactionPick={onPick} pickOwner={pickOwner} onDiagnostics={onDiagnostics} /> : undefined}
     unavailableReason={options.measure && !MEASURES.some(item => item.value === options.measure)
       ? 'This territory measure is unavailable. Choose another in settings.' : undefined} />;
@@ -65,7 +65,8 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
-  const view = options.view === 'share' ? 'share' : options.view === 'lines' ? 'lines' : 'race';
+  // A world share of occupied land means nothing: the Occupied rule shows its race.
+  const view = options.view === 'share' && ruleOf(options.rule) !== 'occupied' ? 'share' : options.view === 'lines' ? 'lines' : 'race';
   const measure = measureOf(options.measure);
   const rule = ruleOf(options.rule);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

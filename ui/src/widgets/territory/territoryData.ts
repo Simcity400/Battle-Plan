@@ -5,13 +5,12 @@ import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import type { ResolvedCountries } from '../../dashboard/groups';
 
 export { SMOOTH_TOTALS_PRESENTATION as TERRITORY_PRESENTATION } from '../../charts/race/factionRaceData.ts';
-export { MEASURES, measureOf, ruleOf, measureChoices, formatTerritory, territoryNote, validateTerritoryReply } from '../../dashboard/territoryMeasure.ts';
+export { MEASURES, measureOf, ruleOf, measureChoices, formatTerritory, territoryNote, validateTerritoryReply, territoryColumn } from '../../dashboard/territoryMeasure.ts';
 
-// The wire columns are independent of the settings' label order.
-const MEASURE_COLUMN: Record<TerritoryMeasure, number> = { states: 0, provinces: 1, victoryPoints: 2, area: 3 };
-export const territoryColumn = (measure: TerritoryMeasure, rule: TerritoryRule) => MEASURE_COLUMN[measure] + (rule === 'owned' ? 4 : 0);
+import { territoryColumn } from '../../dashboard/territoryMeasure.ts';
 
 export function territoryRequest(branchId: string, resolved: { tags: readonly string[]; top?: number }, measure: TerritoryMeasure, rule: TerritoryRule): TerritoryParams {
+  territoryColumn(measure, rule);
   return { branchId, tags: resolved.top != null ? [] : [...resolved.tags], top: resolved.top != null ? { count: resolved.top, measure, rule } : null };
 }
 

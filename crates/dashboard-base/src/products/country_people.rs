@@ -557,11 +557,7 @@ pub fn read(
                 .iter()
                 .filter(|division| same(division.roster_owner))
             {
-                let owner = if division.expeditionary_owner as i32 > 0 {
-                    division.expeditionary_owner
-                } else {
-                    division.roster_owner
-                };
+                let owner = replay_data::military_aid::owner(division);
                 if same(owner)
                     && equal(division.roster_owner, division.logical_owner)
                     && ordinary_template(division)?
@@ -569,32 +565,28 @@ pub fn read(
                     total = total.wrapping_add(amount(division.id)?);
                 }
             }
-            for &reference in counters?
+            let expeditionaries = counters?
                 .sent_expeditionaries
                 .require("sent expeditionaries")
                 .ok()?
-                .as_ref()?
-            {
-                if let Some(division) = divisions.iter().find(|division| division.id == reference)
-                    && ordinary_template(division)?
-                {
-                    total = total.wrapping_add(amount(reference)?);
-                }
-            }
-            for reference in frame
-                .complete::<tables::SentVolunteers>()
-                .ok()?
-                .iter()
-                .filter(|row| same(row.country))
-            {
-                if let Some(division) = divisions
+                .as_ref()?;
+            total = total.wrapping_add(replay_data::military_aid::listed_manpower(
+                expeditionaries.iter().copied(),
+                divisions,
+                ordinary_template,
+                amount,
+            )?);
+            total = total.wrapping_add(replay_data::military_aid::listed_manpower(
+                frame
+                    .complete::<tables::SentVolunteers>()
+                    .ok()?
                     .iter()
-                    .find(|division| division.id == reference.division)
-                    && ordinary_template(division)?
-                {
-                    total = total.wrapping_add(amount(reference.division)?);
-                }
-            }
+                    .filter(|row| same(row.country))
+                    .map(|row| row.division),
+                divisions,
+                ordinary_template,
+                amount,
+            )?);
             Some(total)
         });
     let navy = frame

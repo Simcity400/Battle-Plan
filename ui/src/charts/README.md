@@ -13,12 +13,12 @@ Shared Canvas charts and windowed HTML logs/tables. Widgets supply exact values,
 | Timeline | [timeline/](timeline/README.md): holder lanes, bands, career steps, marks and expandable trees. |
 | Chord | [ChordChart.tsx](chord/ChordChart.tsx): directed ribbons/arcs; [frame.ts](chord/frame.ts) binds data, motion and picks; [fold.ts](chord/fold.ts) preserves remainders. |
 | Flow | [flow/](flow/README.md): source/target ribbons, stable ordering and caller-summed remainders. |
-| Heat | [heat/](heat/README.md): categorical rows, dated shares, inactivity, gaps and unknown cells. |
+| Heat | [heat/](heat/README.md): categorical rows, dated shares, inactivity, gaps and unknown cells; a matrix mode ([HeatMatrix](heat/HeatMatrix.tsx)) draws two inventories against each other, windowed both ways. |
 | Drill | [DrillHost](drill/DrillHost.tsx), [DrillParts](drill/DrillParts.tsx), [drillState.ts](drill/drillState.ts): inline/pop-out breakdowns, Follow, picked moments and Pin as widget. |
 | Table | [table/](table/README.md): typed columns, exact persisted sorting, cell bars, ranks, nested group rows and windowing. |
 | Columns | [columns.ts](columns.ts): stacked columns on a time chart, one per period (such as a calendar month), as a `TimeChart` layer. Signed bands stack up and down from zero; an unknown band never stacks as zero but caps its column with the unknown hatch, and a known but incompletely attributed band is hatched over its colour. `columnAt` finds a period for hover and `columnsExtent` fits the value axis. |
 | Share | [StackedShareChart](StackedShareChart.tsx)/[share.ts](share.ts): held proportions and percent axes; [sunburst/share.ts](sunburst/share.ts) adapts flat world shares. |
-| Butterfly | [ButterflyChart](butterfly/ButterflyChart.tsx): paired bars either side of one axis on one scale, exact end values and ratios, drawn as the race draws its rows (name column, bar shape, fonts, gridlines, value axis and row sizing for the top N). |
+| Butterfly | [ButterflyChart](butterfly/ButterflyChart.tsx): paired bars either side of one axis on one scale, exact end values and ratios, drawn as the race draws its rows (name column, bar shape, fonts, gridlines, value axis and row sizing for the top N). Optional per-side parts split a bar as the race splits its segments (colours, hatch for unknown, surface seams); the tooltip is told which part is under the pointer, and `axis={false}` drops the value axis when rows carry their own scales. |
 | Meter | [ProgressMeter](meter/ProgressMeter.tsx): known/unknown progress, live/done/idle and opt-in sweep. |
 | Stacked periods | [stackedBars.ts](stackedBars.ts): a time-chart layer of one bar per period (such as a calendar month) stacked by part, signed parts either side of zero, unknown periods hatched; period lookup and keyboard stops. |
 

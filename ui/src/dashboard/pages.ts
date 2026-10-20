@@ -31,6 +31,11 @@ export const PAGES = [
     ['world-tension', 0, 20, 6, 10], ['autonomy', 6, 20, 6, 10],
     ['peace-deals', 0, 30, 6, 10], ['territory-transfers', 6, 30, 6, 10],
     ['war-goals', 0, 40, 12, 9],
+    ['war-contribution', 0, 49, 12, 10],
+    ['faction-influence', 0, 59, 6, 10], ['faction-goals', 6, 59, 6, 10],
+    ['faction-upgrades', 0, 69, 8, 9], ['faction-pooled-strength', 8, 69, 4, 9],
+    ['diplomatic-relations', 0, 78, 6, 10], ['volunteers', 6, 78, 6, 10],
+    ['diplomatic-pacts', 0, 88, 12, 10],
   ] },
   { id: 'economy', label: 'Economy', icon: 'factory', panels: [
     ['factories', 0, 0, 6, 10], ['equipment-produced', 6, 0, 6, 10],

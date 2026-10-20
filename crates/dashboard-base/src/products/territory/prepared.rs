@@ -6,6 +6,28 @@ use std::collections::BTreeSet;
 
 /// Native counter used by the scoreboard, separate from States ownership totals.
 pub const NATIVE_OWNED_STATES: usize = 8;
+pub const OCCUPIED_STATES: usize = 9;
+pub const OCCUPIED_PROVINCES: usize = 10;
+pub const OCCUPIED_VICTORY_POINTS: usize = 11;
+pub const OCCUPIED_AREA: usize = 12;
+const CHANNEL_COUNT: usize = 13;
+
+/// Wire column to numeric/rank series channel. The native counter has no wire
+/// column and is never used as an occupied-state value.
+pub const VALUE_CHANNELS: [usize; columns::COUNT] = [
+    columns::CONTROLLED_STATES,
+    columns::CONTROLLED_PROVINCES,
+    columns::CONTROLLED_VICTORY_POINTS,
+    columns::CONTROLLED_AREA,
+    columns::OWNED_STATES,
+    columns::OWNED_PROVINCES,
+    columns::OWNED_VICTORY_POINTS,
+    columns::OWNED_AREA,
+    OCCUPIED_STATES,
+    OCCUPIED_PROVINCES,
+    OCCUPIED_VICTORY_POINTS,
+    OCCUPIED_AREA,
+];
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
@@ -14,8 +36,8 @@ pub struct Prepared {
     scan: Scan,
     builder: Builder,
     tags: BTreeMap<String, u64>,
-    values: [Accumulator; NATIVE_OWNED_STATES + 1],
-    ranks: [Accumulator; 8],
+    values: [Accumulator; CHANNEL_COUNT],
+    ranks: [Accumulator; columns::COUNT],
     facts: Accumulator,
     present: Accumulator,
     rosters: Accumulator,
@@ -97,8 +119,8 @@ impl Prepared {
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("territory:observe");
         check_cancel(cancelled)?;
-        for values in self.values.iter_mut().take(NATIVE_OWNED_STATES) {
-            values.advance(frame.hour)?;
+        for channel in VALUE_CHANNELS {
+            self.values[channel].advance(frame.hour)?;
         }
         self.facts.advance(frame.hour)?;
         self.present.advance(frame.hour)?;
@@ -138,7 +160,8 @@ impl Prepared {
             let next = self.tags.len() as u64;
             let key = *self.tags.entry(tag.to_string()).or_insert(next);
             let current = track.runs.last().filter(|run| run.last_hour == frame.hour);
-            for (column, values) in self.values.iter_mut().take(NATIVE_OWNED_STATES).enumerate() {
+            for (column, channel) in VALUE_CHANNELS.into_iter().enumerate() {
+                let values = &mut self.values[channel];
                 let amount = current.and_then(|run| run.values[column]).map(i128::from);
                 let starts =
                     current.is_some_and(|run| run.first_hour == frame.hour && run.starts_segment);
@@ -243,7 +266,7 @@ impl Prepared {
                 )
             })
             .collect();
-        for column in 0..8 {
+        for (column, channel) in VALUE_CHANNELS.into_iter().enumerate() {
             self.ranks[column].through(first);
             crate::ranking::rank_runs(
                 &runs,
@@ -265,14 +288,14 @@ impl Prepared {
             self.ranks[column].through(self.last);
             self.ranks[column].flush_with_payloads(
                 writer,
-                &format!("territory-ranks-{branch}-{column}"),
+                &format!("territory-ranks-{branch}-{channel}"),
                 0,
                 cancelled,
                 &mut payloads,
             )?;
-            self.values[column].flush_with_payloads(
+            self.values[channel].flush_with_payloads(
                 writer,
-                &format!("territory-values-{branch}-{column}"),
+                &format!("territory-values-{branch}-{channel}"),
                 0,
                 cancelled,
                 &mut payloads,
@@ -488,6 +511,11 @@ pub fn query(
     if params.family.top == Some(0) || params.family.top.is_some() && !params.tags.is_empty() {
         return Err(crate::invalid("Invalid top countries"));
     }
+    if params.family.breakdown && matches!(params.family.rule, Some(TerritoryRule::Occupied)) {
+        return Err(crate::invalid(
+            "Occupied territory has no regional breakdown",
+        ));
+    }
     let (store, key) = crate::prepared::files(source, context.content.as_ref())?;
     // The family's own coverage with the identity history's while it is
     // prepared on its own.
@@ -567,6 +595,7 @@ pub fn query(
         .rule
         .ok_or_else(|| crate::invalid("Missing territory rule"))?;
     let column = measure.index(rule);
+    let channel = VALUE_CHANNELS[column];
     let field = SAMPLE_FIELDS[column];
     let requested_tags: BTreeSet<_> = tags.keys().chain(params.tags.iter()).cloned().collect();
     let seed_tags: Vec<String> = requested_tags
@@ -685,7 +714,7 @@ pub fn query(
     let mut ranks = Reader::new(
         &store,
         &key,
-        format!("territory-ranks-{branch}-{column}"),
+        format!("territory-ranks-{branch}-{channel}"),
         cancelled,
     )?;
     let inverse: BTreeMap<_, _> = tags.iter().map(|(tag, &key)| (key, tag)).collect();
@@ -746,7 +775,7 @@ pub fn query(
     let mut values = Reader::new(
         &store,
         &key,
-        format!("territory-values-{branch}-{column}"),
+        format!("territory-values-{branch}-{channel}"),
         cancelled,
     )?;
     match product {
@@ -1474,10 +1503,11 @@ fn aggregate_summary(
     )>,
     cancelled: &AtomicBool,
 ) -> io::Result<crate::prepared_chart::ChartSummary> {
+    let channel = VALUE_CHANNELS[column];
     let mut values = Reader::new(
         store,
         key,
-        format!("territory-values-{branch}-{column}"),
+        format!("territory-values-{branch}-{channel}"),
         cancelled,
     )?;
     let mut present = Reader::new(store, key, format!("territory-present-{branch}"), cancelled)?;
@@ -1485,7 +1515,7 @@ fn aggregate_summary(
     let mut ranks = Reader::new(
         store,
         key,
-        format!("territory-ranks-{branch}-{column}"),
+        format!("territory-ranks-{branch}-{channel}"),
         cancelled,
     )?;
     let bindings: Vec<Vec<_>> = selected
@@ -1587,15 +1617,23 @@ mod tests {
 
     #[test]
     fn cached_area_state_refuses_after_unverified_content_is_disabled() {
-        area_state_verification_transition(true);
+        area_state_verification_transition(true, TerritoryRule::Controlled);
     }
 
     #[test]
     fn cached_area_state_recovers_after_unverified_content_is_enabled() {
-        area_state_verification_transition(false);
+        area_state_verification_transition(false, TerritoryRule::Controlled);
     }
 
-    fn area_state_verification_transition(initially_allowed: bool) {
+    #[test]
+    fn occupied_area_cold_reads_and_faction_sums_follow_content_availability() {
+        // Occupied holders read country fields through the installation's table metadata.
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        area_state_verification_transition(true, TerritoryRule::Occupied);
+    }
+
+    fn area_state_verification_transition(initially_allowed: bool, rule: TerritoryRule) {
         use crate::test_fixtures::{CAMPAIGN, content_identity, file_source, records};
         let root =
             std::env::temp_dir().join(format!("territory-area-binding-{}", uuid::Uuid::new_v4()));
@@ -1610,10 +1648,30 @@ mod tests {
         let (options, identity) = content_identity(&root);
         let mut input = records(
             1,
-            vec![
-                super::super::tests::frame(0, 2, 4),
-                super::super::tests::frame(1, 2, 4),
-            ],
+            (0..=1)
+                .map(|hour| {
+                    use replay_data::rows::{FactionMemberRow, FactionRow, TableRows};
+                    use replay_frame::frame::TableView;
+                    let mut frame = super::super::tests::frame(hour, 2, 4);
+                    *frame.tables[TableId::Factions.index()] =
+                        TableView::Complete(TableRows::Factions(vec![FactionRow {
+                            id: 401,
+                            name: b"Synthetic pact".to_vec(),
+                            ..Default::default()
+                        }]));
+                    *frame.tables[TableId::FactionMembers.index()] =
+                        TableView::Complete(TableRows::FactionMembers(
+                            (0..2)
+                                .map(|slot| FactionMemberRow {
+                                    country: 100_000 + slot,
+                                    faction: 401,
+                                    ordinal: slot,
+                                })
+                                .collect(),
+                        ));
+                    frame
+                })
+                .collect(),
         );
         let replay::spool::Record::SessionStart(session) = &mut input[0] else {
             unreachable!()
@@ -1647,7 +1705,7 @@ mod tests {
                 .is_none()
         );
         let params = json!({"branchId":"1", "family":{"kind":"territory",
-            "measure":"area", "rule":"controlled"}, "tags":[], "reads":[{"hour":1}]});
+            "measure":"area", "rule":rule}, "tags":[], "reads":[{"hour":1}]});
         let ask = |context: &LoadContext| -> TerritoryReply {
             serde_json::from_value(
                 query(&source, context, "series-state", params.clone(), &flag).unwrap(),
@@ -1661,7 +1719,10 @@ mod tests {
                 .find(|country| country.tag == "realm 00000")
                 .unwrap();
             assert_eq!(country.runs.len(), 1);
-            assert_eq!(country.runs[0].values[3], available.then_some(60));
+            assert_eq!(
+                country.runs[0].values[TerritoryMeasure::Area.index(rule)],
+                available.then_some(60)
+            );
             assert_eq!(
                 country.runs[0].values[0],
                 Some(1),
@@ -1683,6 +1744,43 @@ mod tests {
             assert_eq!(inputs.areas.is_some(), allowed);
             let reply = ask(&context);
             check(&reply, allowed);
+            if matches!(rule, TerritoryRule::Occupied) {
+                use super::super::super::faction_totals::{
+                    FactionMeasure, FactionMembership, FactionTotals, FactionTotalsParams,
+                };
+                for membership in [
+                    FactionMembership::Hour,
+                    FactionMembership::End,
+                    FactionMembership::Ever,
+                ] {
+                    let faction = FactionTotals::load(
+                        &source,
+                        &FactionTotalsParams {
+                            branch_id: "1".into(),
+                            source: FactionMeasure::Territory {
+                                measure: TerritoryMeasure::Area,
+                                rule,
+                            },
+                            membership,
+                            top: 1,
+                            faction_id: Some("401".into()),
+                            parts: Some(true),
+                            inventory: None,
+                        },
+                        &context,
+                        &flag,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        faction.unit.as_deref(),
+                        allowed.then_some(ProvinceAreas::UNIT)
+                    );
+                    assert_eq!(
+                        faction.series[0].runs.first().map(|run| run.value),
+                        allowed.then_some(100)
+                    );
+                }
+            }
             if !allowed {
                 assert!(
                     reply
@@ -1741,7 +1839,7 @@ mod tests {
             prepared.builder.aggregations, 1,
             "one land aggregation supplies every numeric channel"
         );
-        assert_eq!(sampled.len(), 5_000 * 9 + 9);
+        assert_eq!(sampled.len(), (5_000 + 1) * (columns::COUNT + 1));
         for (tag, &actor) in &prepared.tags {
             let identity = prepared.scan.series[tag.as_str()].last.unwrap().0;
             for (column, field) in SAMPLE_FIELDS.iter().enumerate() {
@@ -1749,7 +1847,7 @@ mod tests {
                     sampled[&(tag.clone(), (*field).to_owned())],
                     (
                         Some(identity),
-                        prepared.values[column]
+                        prepared.values[VALUE_CHANNELS[column]]
                             .state(actor)
                             .and_then(|state| state.last)
                             .map(|run| run.value)
@@ -1863,6 +1961,8 @@ mod tests {
         let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
         let mut identities = HistoryScan::new(false, &[]);
         let mut reference = HistoryScan::new(true, &[]);
+        let mut land_reference = Scan::default();
+        let mut land_builder = Builder::default();
         for (commit, hours) in [
             vec![100, 101],
             vec![102, 103, 105],
@@ -1875,6 +1975,7 @@ mod tests {
                 let frame = counter_frame(hour);
                 let changes = tracker.observe(&frame, Default::default());
                 reference.observe(&frame);
+                observe(&mut land_reference, &frame, None, &mut land_builder, None).unwrap();
                 prepared
                     .observe_owned_states(&frame, &mut identities, Some(&changes))
                     .unwrap();
@@ -1892,6 +1993,35 @@ mod tests {
             tracker.invalidate();
             prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
             identities = serde_json::from_slice(&serde_json::to_vec(&identities).unwrap()).unwrap();
+            assert_eq!(NATIVE_OWNED_STATES, 8);
+            assert!(!VALUE_CHANNELS.contains(&NATIVE_OWNED_STATES));
+            for (column, channel) in VALUE_CHANNELS.into_iter().enumerate() {
+                let mut values = Reader::new(
+                    &fixture.store,
+                    &fixture.key,
+                    format!("territory-values-1-{channel}"),
+                    &cancelled,
+                )
+                .unwrap();
+                for (tag, track) in &land_reference.series {
+                    for hour in 100..=prepared.last {
+                        let expected = track
+                            .runs
+                            .iter()
+                            .find(|run| run.first_hour <= hour && run.last_hour >= hour)
+                            .and_then(|run| run.values[column])
+                            .map(i128::from);
+                        assert_eq!(
+                            values
+                                .value_at(prepared.tags[tag.as_ref()], hour)
+                                .unwrap()
+                                .map(|run| run.value),
+                            expected,
+                            "column {column}, {tag}, hour {hour}, commit {commit}"
+                        );
+                    }
+                }
+            }
             let native =
                 serde_json::from_slice::<HistoryScan>(&serde_json::to_vec(&reference).unwrap())
                     .unwrap()
@@ -2135,29 +2265,37 @@ mod tests {
                 .iter()
                 .map(|(tag, track)| (tag.to_string(), track.runs.clone()))
                 .collect();
-            let mut ranks = Reader::new(
-                &fixture.store,
-                &fixture.key,
-                "territory-ranks-1-2".into(),
-                &cancelled,
-            )
-            .unwrap();
-            crate::ranking::rank_positions(
-                &reference_runs,
-                |run| (run.first_hour, run.last_hour),
-                |run| run.values[2].map(i128::from),
-                &cancelled,
-                |rank, tag, from, to| {
-                    for hour in from..=to {
-                        assert_eq!(
-                            ranks.value_at(rank as u64 * 2, hour)?.unwrap().value,
-                            i128::from(tags[tag])
-                        );
-                    }
-                    Ok(())
-                },
-            )
-            .unwrap();
+            for (column, channel) in VALUE_CHANNELS.into_iter().enumerate() {
+                let mut ranks = Reader::new(
+                    &fixture.store,
+                    &fixture.key,
+                    format!("territory-ranks-1-{channel}"),
+                    &cancelled,
+                )
+                .unwrap();
+                crate::ranking::rank_positions(
+                    &reference_runs,
+                    |run| (run.first_hour, run.last_hour),
+                    |run| run.values[column].map(i128::from),
+                    &cancelled,
+                    |rank, tag, from, to| {
+                        for hour in from..=to {
+                            assert_eq!(
+                                ranks.value_at(rank as u64 * 2, hour)?.unwrap().value,
+                                i128::from(tags[tag]),
+                                "column {column}, hour {hour}, commit {commit}"
+                            );
+                            assert_eq!(
+                                ranks.value_at(tags[tag] * 2 + 1, hour)?.unwrap().value,
+                                rank as i128 + 1,
+                                "position for column {column}, {tag}, hour {hour}, commit {commit}"
+                            );
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            }
         }
     }
 
@@ -2630,7 +2768,7 @@ mod phase_b_tests {
             };
             assert_eq!(delta.row_visits, 2);
             assert_eq!(delta.history_visits, 2);
-            assert_eq!(delta.emitted, 2);
+            assert_eq!(delta.emitted, 3);
             Ok(delta)
         })
         .unwrap();

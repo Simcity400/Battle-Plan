@@ -91,33 +91,9 @@ pub(super) fn attach(
                 .map(|row| String::from_utf8_lossy(&row.tag).into_owned());
             let mut upgrades = Vec::new();
             for (&group, &token) in row.upgrade_groups.iter().zip(&row.upgrade_tokens) {
-                let mut value = FactionUpgradeDetail {
-                    group,
-                    token: None,
-                    name: None,
-                    reason: None,
-                };
-                let rendered = (|| -> Result<(), String> {
-                    let spelling = faction_names::template_spelling(frame, Some(token))?
-                        .ok_or("Faction member upgrade token is absent")?;
-                    value.token = Some(spelling.clone());
-                    let cat = cat.ok_or("Faction member upgrade needs recorded localisation")?;
-                    let text = cat
-                        .localisation
-                        .localise(spelling.as_bytes())
-                        .map_err(|why| why.to_string())?;
-                    // Dynamic upgrade names require their member's environment.
-                    if text.contains('[') {
-                        return Err(format!(
-                            "Faction upgrade {spelling}: dynamic member name environment is unavailable"
-                        ));
-                    }
-                    value.name = Some(catalogue::plain_text(&text)?);
-                    Ok(())
-                })();
-                if let Err(why) = rendered {
+                let value = selectors::upgrade(frame, group, token, cat);
+                if let Some(why) = &value.reason {
                     reply.warnings.push(why.clone());
-                    value.reason = Some(why);
                 }
                 upgrades.push(value);
             }
@@ -129,7 +105,7 @@ pub(super) fn attach(
                 current_member: owner == Some(faction),
                 influence: influence.iter().map(ToString::to_string).collect(),
                 projection: projection.iter().map(ToString::to_string).collect(),
-                influence_share_raw: row.influence_share().to_string(),
+                influence_share_raw: selectors::influence_share(row).to_string(),
                 projection_share_raw: row.projection_share().to_string(),
                 projection_rank: row.rank(rows).map_err(|why| why.to_string())?,
                 initiative_raw: row.initiative().to_string(),

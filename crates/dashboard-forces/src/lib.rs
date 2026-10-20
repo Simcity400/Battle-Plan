@@ -18,6 +18,7 @@ pub mod products {
     pub mod navy;
     pub mod parts_race_prepared;
     pub mod supply_health;
+    pub mod volunteers_expeditionaries;
 
     dashboard_base::reply_warnings!(
         army_size::ArmySizeReply,
@@ -25,5 +26,6 @@ pub mod products {
         air_force::AirForceReply,
         navy::NavyReply,
         naval_management::NavalManagementReply,
+        volunteers_expeditionaries::VolunteersExpeditionariesReply,
     );
 }

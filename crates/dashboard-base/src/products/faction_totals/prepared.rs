@@ -787,7 +787,10 @@ pub fn query(
             };
             (
                 present_keys.clone(),
-                format!("territory-values-{branch}-{}", measure.index(*rule)),
+                format!(
+                    "territory-values-{branch}-{}",
+                    territory::prepared::VALUE_CHANNELS[measure.index(*rule)]
+                ),
                 CountryMeasures {
                     tracks: Vec::new(),
                     unit: match measure {

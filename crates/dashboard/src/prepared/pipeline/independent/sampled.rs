@@ -1037,8 +1037,9 @@ impl Sampled for Territory {
             .configure(block.source, block.context, &AtomicBool::new(false))
     }
 
-    /// The owned states, which drive the identity history, then territory's
-    /// own observation, as the walk observes them in the same hour.
+    /// The native owned states drive identity history separately from occupied
+    /// territory. One paired-holder observation publishes every controlled,
+    /// owned and occupied channel, as the walk observes them in the same hour.
     fn observe(
         &mut self,
         frame: &DecodedFrame,

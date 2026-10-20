@@ -3888,6 +3888,25 @@ suite and initializes executable metadata from `BATTLE_PLAN_GAME_DIR`. Its fixtu
 preserves unused singleton inputs as unavailable using the table registry, so new
 singleton tables cannot become invalid empty observations.
 
+## Faction histories
+
+`faction-state` is one content-dependent prepared product in [dashboard-factions](../dashboard-factions/README.md), with influence, rules and manpower views for one recorded faction. Its independent `faction_state` family shares the block pre-pass, coalesced series, atomic continuation publication and query observation/series caches. Each channel reports known and supplying-read spans independently. Retained account association is explicit, not a current-member ranking; programme labels never use a later daily read. The selected-hour `faction-details` drill shares its typed selectors and native arithmetic, and goal/resource artwork uses the existing catalogue/resource routes.
+
+## Prepared diplomacy state
+
+[dashboard-diplomacy](../dashboard-diplomacy/README.md) owns `diplomacy-state`,
+with the serde-tagged `opinions`, `pair`, `pacts` and `proposals` views. Its one
+independent `diplomacy_state` family uses the shared block pre-pass, atomic group
+commits, sparse numeric series, occurrence event pages and resumable continuation.
+Availability and supplying reads stay independent for opinions, tuples and the
+Daily(22) queue. Sparse owner proof supplies exact zeros on demand; gaps, aliases,
+missing reads and identity changes never manufacture zero or diplomatic events.
+Queries share the ordinary reply/series caches and cold prefix/pending contract.
+Only an unreached opinion moment may read one cadence-bounded exact window,
+explicitly marked `snapshot`; pair and inventory histories never scan the branch.
+
+`volunteers-expeditionaries` is a prepared-only recording product in dashboard-forces, gated by the existing army family's hourly-walk coverage. Its directed land/expeditionary links and native first-match VolunteerHosts tallies share army's block pre-pass and continuation. Independent source and native-country presence proofs distinguish empty lists, unavailable counts and pending hours; repeated native occurrences remain in army aid event pages. The ordinary query observation/series caches retain its complete prefix answer. No air-volunteer classifier, cumulative dispatch total or additional heavy family is introduced.
+
 ## Prepared dockyard repairs
 
 The `repairs` family prepares hourly used dockyards times the country's carried

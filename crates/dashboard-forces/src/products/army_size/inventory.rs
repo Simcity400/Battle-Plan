@@ -6,7 +6,7 @@ use replay_data::{rows::DeltaRow, rows::RowCodec, rows::TableSchema};
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 use std::collections::HashSet;
 
-enum Applied<R> {
+pub(super) enum Applied<R> {
     Reset(Vec<(Option<R>, Option<R>)>),
     Changes(Vec<(Option<R>, Option<R>)>),
     Same,
@@ -138,9 +138,9 @@ impl<'a> Updates<'a> {
     }
 }
 
-struct Sparse<T: TableSchema> {
-    rows: HashMap<u128, T::Row>,
-    baseline: Option<i32>,
+pub(super) struct Sparse<T: TableSchema> {
+    pub(super) rows: HashMap<u128, T::Row>,
+    pub(super) baseline: Option<i32>,
     error: Option<String>,
     /// Updates applied from changed rows alone.
     #[cfg(test)]
@@ -358,7 +358,7 @@ impl<T: TableSchema> Sparse<T> {
     /// Apply `update` to the held rows, reading the hour's rows from
     /// `decoded` where it names them. A change to no field in `fields`
     /// leaves its held row as it was: nothing reads those fields.
-    fn apply(
+    pub(super) fn apply(
         &mut self,
         update: Update<'_>,
         decoded: &DecodedFrame,
@@ -472,6 +472,7 @@ type Composition = Option<BTreeMap<String, i64>>;
 #[derive(Default)]
 pub(super) struct Inventory {
     divisions: Sparse<tables::Divisions>,
+    pub(super) aid_changes: Option<Vec<u64>>,
     land: Sparse<tables::DivisionLandInputs>,
     templates: Sparse<tables::DivisionTemplateIcons>,
     core: HashMap<u32, Core>,
@@ -659,6 +660,25 @@ impl Inventory {
         let divisions = self
             .divisions
             .apply(updates.divisions, decoded, *DIVISION_FIELDS, false);
+        self.aid_changes = match &divisions {
+            Applied::Same => Some(Vec::new()),
+            Applied::Changes(edits) => Some(
+                edits
+                    .iter()
+                    .filter_map(|(old, new)| {
+                        if old.as_ref().zip(new.as_ref()).is_some_and(|(old, new)| {
+                            old.logical_owner == new.logical_owner
+                                && owner(old) == owner(new)
+                                && old.roster_owner == new.roster_owner
+                        }) {
+                            return None;
+                        }
+                        old.as_ref().or(new.as_ref()).map(|row| row.id)
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        };
         #[cfg(test)]
         {
             self.applied_divisions += match &divisions {
@@ -688,8 +708,8 @@ impl Inventory {
             }
         } else if let Applied::Changes(edits) = divisions {
             for (old, new) in edits {
-                // With the same owners and template only the hit points can
-                // differ: the count, manpower and composition stay.
+                // With the same census owners and template, only HP affects
+                // these totals. Logical-host edits have their own aid invalidation.
                 if let (Some(old), Some(new)) = (&old, &new)
                     && owner(old) == owner(new)
                     && old.roster_owner == new.roster_owner
@@ -888,6 +908,11 @@ impl Inventory {
         ]
     }
 
+    pub(super) fn division(&self, reference: u64) -> Option<&DivisionRow> {
+        (reference != 0)
+            .then(|| self.divisions.rows.get(&u128::from(reference)))
+            .flatten()
+    }
     pub fn known(&self) -> bool {
         self.divisions.baseline.is_some()
     }
