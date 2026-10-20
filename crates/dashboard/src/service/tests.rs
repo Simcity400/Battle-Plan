@@ -1390,23 +1390,28 @@ impl Drop for LoaderHold {
 /// Requests still alive once the response pump lets go of them. A refusal
 /// from a full lane is delivered on the pump thread, which holds that one
 /// request until delivery ends, so a count taken at once can see the full lane
-/// plus it. Lane-retained requests never settle, so the old unbounded channel
-/// still fails at `MAX_PENDING + 1`.
-fn settled_live_requests(retained: &[std::sync::Weak<Request>]) -> usize {
-    let live = || {
-        retained
-            .iter()
-            .filter(|request| request.strong_count() != 0)
-            .count()
-    };
-    let deadline = std::time::Instant::now() + HANG_GUARD;
-    loop {
-        let count = live();
-        if count <= MAX_PENDING || std::time::Instant::now() >= deadline {
-            return count;
-        }
-        thread::sleep(Duration::from_millis(1));
-    }
+/// plus it. A cancelled refusal is discarded without a reply, so the count
+/// waits for a reply queued behind them instead: the pump takes replies in
+/// order and lets go of each before taking the next. `events` receives
+/// every event the service emits. Lane-retained requests never settle, so the old
+/// unbounded channel still fails at `MAX_PENDING + 1`.
+fn settled_live_requests(
+    service: &Service,
+    events: &mpsc::Receiver<DataEvent>,
+    retained: &[std::sync::Weak<Request>],
+) -> usize {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = format!("pump-settled-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    let request = service.inner.begin(id.clone()).unwrap();
+    service.inner.error(request, "settled".into());
+    while !matches!(
+        events.recv_timeout(HANG_GUARD).unwrap(),
+        DataEvent::Error { id: delivered, .. } if delivered == id
+    ) {}
+    retained
+        .iter()
+        .filter(|request| request.strong_count() != 0)
+        .count()
 }
 
 #[test]
@@ -1452,12 +1457,12 @@ fn cancelled_resubmitted_jobs_keep_the_history_and_prepared_lanes_bounded() {
             service.inner.submit(Arc::clone(&request), job);
             drop(service.inner.pending.lock().unwrap().cancel(&id));
             drop(request);
-            assert!(
-                settled_live_requests(&retained) <= MAX_PENDING,
-                "cancelled queued jobs exceeded the existing lane budget at cycle {index}"
+            assert_eq!(
+                settled_live_requests(&service, &receive, &retained),
+                (index + 1).min(MAX_PENDING),
+                "cancelled queued jobs must keep exactly the lane budget at cycle {index}"
             );
         }
-        assert_eq!(settled_live_requests(&retained), MAX_PENDING);
         // A full lane reports the existing retryable capacity refusal.
         let request = service.inner.begin("lane-full".into()).unwrap();
         service.inner.submit(
@@ -1506,7 +1511,8 @@ fn cancelled_resubmitted_jobs_keep_the_history_and_prepared_lanes_bounded() {
 
 #[test]
 fn preparation_refreshes_coalesce_per_source_and_share_the_history_bound() {
-    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
     let hold = LoaderHold::new(&service, Lane::History);
     let source = source();
     for _ in 0..MAX_PENDING * 4 {
@@ -1566,10 +1572,7 @@ fn preparation_refreshes_coalesce_per_source_and_share_the_history_bound() {
         drop(request);
     }
     assert_eq!(
-        retained
-            .iter()
-            .filter(|request| request.strong_count() != 0)
-            .count(),
+        settled_live_requests(&service, &receive, &retained),
         MAX_PENDING - 1
     );
     let other = source_with_id("other-refresh");

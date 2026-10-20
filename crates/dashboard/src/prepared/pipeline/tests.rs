@@ -5115,18 +5115,51 @@ fn game_presence_discards_block_and_library_resume_reads_only_unaccepted_tail() 
         progress.automatic = true;
         Arc::clone(&progress.cancelled)
     };
+    // The families prepared on their own commit beside the walk, so one can
+    // still be folding the first block when the walk reaches the second. Such
+    // a family's accepted prefix is empty and its resume rightly reads the
+    // first block again. The game arrives only once every family has
+    // committed the first block, so the walk's second block is the whole tail.
+    let families = independent::names();
+    let committed = Arc::new((
+        std::sync::Mutex::new(std::collections::BTreeSet::new()),
+        std::sync::Condvar::new(),
+    ));
+    let published = Arc::clone(&committed);
     assert_eq!(
-        run_checked(
-            &source,
-            None,
-            &flag,
-            |_| {},
-            |next| {
-                if next == 2 {
-                    service.set_preparation_suspended(true);
+        independent::with_test_on_publish(
+            move |family, next| {
+                if next > 0 {
+                    published.0.lock().unwrap().insert(family.to_owned());
+                    published.1.notify_all();
                 }
-                Ok(())
-            }
+            },
+            || run_checked(
+                &source,
+                None,
+                &flag,
+                |_| {},
+                |next| {
+                    if next == 2 {
+                        let (accepted, _) = committed
+                            .1
+                            .wait_timeout_while(
+                                committed.0.lock().unwrap(),
+                                std::time::Duration::from_secs(120),
+                                |accepted| accepted.len() < families.len(),
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            accepted.iter().map(String::as_str).collect::<Vec<_>>(),
+                            families,
+                            "every family commits the first block beside the walk"
+                        );
+                        drop(accepted);
+                        service.set_preparation_suspended(true);
+                    }
+                    Ok(())
+                }
+            )
         )
         .unwrap_err()
         .kind(),
