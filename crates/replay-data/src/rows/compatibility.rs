@@ -19,6 +19,13 @@ pub const COMBAT_LOG_FORMAT: u16 = 104;
 /// EventFeedHistory's interval batch uses exact per-field numeric streams,
 /// row-implied generation, sequence anchor/deltas and read-hour-relative dates.
 pub const EVENT_FEED_COLUMNS_FORMAT: u16 = 106;
+/// EventFeedHistory's owner-local refusal markers: a delayed owner's
+/// DelayedRefused change (code 18) and a decision owner's Refused operation
+/// (14), each carrying its reason as the token. The table's layout is
+/// unchanged, so its last change stays at EVENT_FEED_COLUMNS_FORMAT: every
+/// older event batch decodes unchanged, and the new codes appear only from
+/// this format.
+pub const EVENT_FEED_OWNER_REFUSALS_FORMAT: u16 = 109;
 /// Stable semantic observer occurrences and independent signed numeric lanes.
 pub const COMBAT_LOG_OBSERVER_KEYS_FORMAT: u16 = 106;
 /// Private format 95 was retired when #343 merged main's format 96; its
@@ -4266,6 +4273,19 @@ mod tests {
         assert_eq!(history.kind, ChangeKind::Layout);
         assert!(history.table_gap(table, 105).is_some());
         assert!(history.table_gap(table, 106).is_none());
+    }
+
+    #[test]
+    fn event_feed_owner_refusals_keep_the_column_batch_readable() {
+        let table = TableId::EventFeedHistory;
+        let history = table.last_change();
+        assert_eq!(history.format, EVENT_FEED_COLUMNS_FORMAT);
+        assert!(history.table_gap(table, EVENT_FEED_COLUMNS_FORMAT).is_none());
+        assert!(
+            history
+                .table_gap(table, EVENT_FEED_OWNER_REFUSALS_FORMAT)
+                .is_none()
+        );
     }
 
     #[test]

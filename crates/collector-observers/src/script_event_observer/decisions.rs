@@ -5,8 +5,14 @@ use engine_decisions::decision_runtime as runtime;
 use engine_events::script_event_sites::decisions as sites;
 use replay_data::event_feed_rows::decisions::{self as rows, Operation};
 use std::cell::Cell;
-static ORIGINAL: [AtomicUsize; 20] = [const { AtomicUsize::new(0) }; 20];
-static CALL: [AtomicUsize; 14] = [const { AtomicUsize::new(0) }; 14];
+static ORIGINAL: [AtomicUsize; 27] = [const { AtomicUsize::new(0) }; 27];
+static CALL: [AtomicUsize; 17] = [const { AtomicUsize::new(0) }; 17];
+/// [`sites::ENTRIES`] from the first enclosing detour of a pre-store writer.
+const DETOURS: usize = 20;
+/// [`sites::CALLS`] of the duration adds and the replaced-event retirement.
+const EXTEND_MISSION_TIMEOUT: usize = 14;
+const EXTEND_DECISION_REMOVAL: usize = 15;
+const REPLACE_EVENT_RETIREMENT: usize = 16;
 std::thread_local! {static REENABLE:Cell<usize>=const {Cell::new(0)};static REACTIVATION:Cell<(usize,i32)>=const {Cell::new((0,0))};}
 fn count(status: usize, container: u8) -> Result<u32, &'static str> {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -141,7 +147,8 @@ unsafe extern "system-unwind" fn erase_range(header: usize, first: usize, last: 
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    if let Err(reason) = observe_erase_range(&memory, header, first, last, feed::decisions::retire) {
+    if let Err(reason) = observe_erase_range(&memory, header, first, last, feed::decisions::retire)
+    {
         feed::refuse(reason);
     }
     type Original = unsafe extern "system-unwind" fn(usize, usize, usize) -> usize;
@@ -373,7 +380,143 @@ unsafe extern "system-unwind" fn hourly(a: usize, b: usize) -> usize {
 unsafe extern "system-unwind" fn refresh(a: usize, b: usize) -> usize {
     unsafe { update(a, b, 19) }
 }
+/// An enclosing detour: its original runs once under a writer flight, its
+/// latches stage inside, and the committed results publish after it
+/// returns, in native order. Full RAX is returned as the original left it.
+unsafe fn detour(a: usize, b: usize, c: usize, index: usize) -> usize {
+    use super::staging::{Detour, Unit, Witness};
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
+    let unit = match index - DETOURS {
+        0 => Unit::AutoActivation,
+        1 => Unit::ScriptedActivation,
+        2 => Unit::TimedSelection,
+        3 => Unit::TargetedIgnore,
+        4 => Unit::IgnoreAll,
+        5 => Unit::RemovalRequest,
+        _ => Unit::CandidateFinalization,
+    };
+    let detour = Detour::enter(unit);
+    type Original = unsafe extern "system-unwind" fn(usize, usize, usize) -> usize;
+    let original: Original =
+        unsafe { std::mem::transmute(ORIGINAL[index].load(Ordering::Acquire)) };
+    let result = timing.original(|| unsafe { original(a, b, c) });
+    if unit == Unit::CandidateFinalization {
+        // Every clear completed: the same ordered marker pair the clear
+        // published before.
+        #[cfg(test)]
+        super::staging::published(super::staging::Published::Candidates { status: a });
+        feed::decisions::marker(a, Operation::Rebuild, 3, 0, 0);
+        clear_candidates(a);
+    }
+    detour.publish(|witness| match witness {
+        Witness::Reactivated {
+            status,
+            definition,
+            instance,
+        } => super::reactivated(status, definition, instance),
+        Witness::Selected { instance } => selected_result(instance, false),
+        Witness::Ignored { instance, was } => committed_ignore(instance, was),
+        Witness::RemovalRequested { instance, was } => committed_removal(instance, was),
+        Witness::FiredMatch { .. } => feed::refuse(super::staging::OTHER_FRAME),
+    });
+    result
+}
+macro_rules! detour_entry {
+    ($name:ident, $index:expr) => {
+        unsafe extern "system-unwind" fn $name(a: usize, b: usize, c: usize) -> usize {
+            unsafe { detour(a, b, c, $index) }
+        }
+    };
+}
+detour_entry!(auto_activation, DETOURS);
+detour_entry!(scripted_activation, DETOURS + 1);
+detour_entry!(timed_selection, DETOURS + 2);
+detour_entry!(targeted_ignore_command, DETOURS + 3);
+detour_entry!(ignore_all_command, DETOURS + 4);
+detour_entry!(removal_request, DETOURS + 5);
+detour_entry!(candidate_finalization, DETOURS + 6);
+/// A selection's committed result: the stored days of its layout and the
+/// active state it stored before them.
+pub(super) fn selected_result(instance: usize, targeted: bool) {
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let at = if targeted {
+        engine_decisions::ctargeted_decision::DAYS
+    } else {
+        engine_decisions::ctimed_decision::DAYS
+    };
+    let result = field::<i32>(&memory, instance, at).and_then(|days| {
+        #[cfg(test)]
+        super::staging::published(super::staging::Published::Selection { instance, days });
+        emit_selected(
+            instance,
+            targeted,
+            EventFeedSource::DecisionDurationChanged,
+            Some(1),
+            Some(days),
+        )
+    });
+    if let Err(reason) = result {
+        feed::refuse(reason);
+    }
+}
+/// A committed ignore store, suppressed when the flag staged before it was
+/// already the stored value.
+fn committed_ignore(instance: usize, was: bool) {
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    match field::<u8>(
+        &memory,
+        instance,
+        engine_decisions::ctargeted_decision::IGNORE,
+    ) {
+        Ok(now) => {
+            #[cfg(test)]
+            super::staging::published(super::staging::Published::Ignore {
+                instance,
+                was,
+                now: now != 0,
+            });
+            feed::decisions::flags_committed(instance, Some((was, now != 0)), None)
+        }
+        Err(reason) => feed::refuse(reason),
+    }
+}
+/// A committed removal request, suppressed when it was already requested
+/// before the store.
+fn committed_removal(instance: usize, was: bool) {
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let stored = field::<u8>(&memory, instance, runtime::REMOVE_REQUESTED);
+    #[cfg(test)]
+    if let Ok(now) = stored {
+        super::staging::published(super::staging::Published::Removal { instance, was, now });
+    }
+    match stored {
+        Ok(1) => feed::decisions::flags_committed(instance, None, Some(was)),
+        // The continuation stored nothing.
+        Ok(_) => {}
+        Err(reason) => feed::refuse(reason),
+    }
+}
+/// The replaced-event retirement CALL: on its fired-match branch the
+/// latch inside staged the old definition; the retirement publishes once
+/// the count decrement completed.
+unsafe fn retirement(a: usize, b: usize, c: usize) -> usize {
+    use super::staging::{Detour, Unit, Witness};
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
+    let detour = Detour::enter(Unit::FiredRetirement);
+    type Original = unsafe extern "system-unwind" fn(usize, usize, usize) -> usize;
+    let original: Original =
+        unsafe { std::mem::transmute(CALL[REPLACE_EVENT_RETIREMENT].load(Ordering::Acquire)) };
+    let result = timing.original(|| unsafe { original(a, b, c) });
+    detour.publish(|witness| match witness {
+        Witness::FiredMatch { state, definition } => super::retired_fired(state, definition),
+        _ => feed::refuse(super::staging::OTHER_FRAME),
+    });
+    result
+}
 unsafe fn call(a: usize, b: usize, c: usize, index: usize) -> usize {
+    if index == REPLACE_EVENT_RETIREMENT {
+        return unsafe { retirement(a, b, c) };
+    }
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -420,15 +563,37 @@ unsafe fn call(a: usize, b: usize, c: usize, index: usize) -> usize {
             9 | 10 => {
                 feed::decisions::write(a, None, Some(b as i32));
             }
+            // These helpers return before the caller's store: they only
+            // stage the selection and its pre-store flag for the enclosing
+            // command or effect.
             11 => {
                 if result as u8 != 0 {
-                    feed::decisions::flags(b, Some(true), false);
+                    let was =
+                        field::<u8>(&memory, b, engine_decisions::ctargeted_decision::IGNORE)?;
+                    super::staging::stage(
+                        super::staging::Unit::IgnoreAll,
+                        super::staging::Witness::Ignored {
+                            instance: b,
+                            was: was != 0,
+                        },
+                    );
                 }
             }
             12 | 13 => {
                 if result != 0 {
-                    feed::decisions::flags(result, None, true);
+                    let was = field::<u8>(&memory, result, runtime::REMOVE_REQUESTED)?;
+                    super::staging::stage(
+                        super::staging::Unit::RemovalRequest,
+                        super::staging::Witness::RemovalRequested {
+                            instance: result,
+                            was: was == 1,
+                        },
+                    );
                 }
+            }
+            // The duration adds completed: publish their stored days.
+            EXTEND_MISSION_TIMEOUT | EXTEND_DECISION_REMOVAL => {
+                super::lifecycle::adjustments::extended(a, c, index == EXTEND_DECISION_REMOVAL);
             }
             _ => return Err("decision selected call identity differs"),
         }
@@ -461,6 +626,30 @@ call_entry!(console_all_days, 10);
 call_entry!(ignore_selected, 11);
 call_entry!(request_timed, 12);
 call_entry!(request_targeted, 13);
+call_entry!(extend_mission_timeout, EXTEND_MISSION_TIMEOUT);
+call_entry!(extend_decision_removal, EXTEND_DECISION_REMOVAL);
+call_entry!(replace_event_retirement, REPLACE_EVENT_RETIREMENT);
+// The duration adds' native callers hold the scope in a nonvolatile
+// register the two-argument add never reads. Each thunk copies it into R8,
+// unused by the add, and jumps: the wrapper sees the native return address
+// and forwards the real arguments unchanged.
+core::arch::global_asm!(
+    ".text",
+    ".globl event_feed_extend_mission_timeout",
+    "event_feed_extend_mission_timeout:",
+    "mov r8, r15",
+    "jmp {timeout}",
+    ".globl event_feed_extend_decision_removal",
+    "event_feed_extend_decision_removal:",
+    "mov r8, rsi",
+    "jmp {removal}",
+    timeout = sym extend_mission_timeout,
+    removal = sym extend_decision_removal,
+);
+unsafe extern "system-unwind" {
+    fn event_feed_extend_mission_timeout();
+    fn event_feed_extend_decision_removal();
+}
 fn emit_selected(
     pointer: usize,
     _targeted: bool,
@@ -499,30 +688,28 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
             }
         }
         14 => feed::decisions::retire(r.r8, true, true),
-        15 | 16 => {
-            let targeted = index == 16;
-            let pointer = if targeted { r.rsi } else { r.rdi };
-            let default = if targeted { r.r15 as i32 } else { r.rbx as i32 };
-            let days = if r.rax as i32 == 0 {
-                default
-            } else {
-                r.rax as i32
-            };
-
-            if let Err(reason) = emit_selected(
-                pointer,
-                targeted,
-                EventFeedSource::DecisionDurationChanged,
-                Some(1),
-                Some(days),
-            ) {
-                feed::refuse(reason);
-            }
-        }
+        // The selected days store follows these taps: stage the exact
+        // instance for the enclosing selection, never its incidental RAX.
+        15 => super::staging::stage(
+            super::staging::Unit::TimedSelection,
+            super::staging::Witness::Selected { instance: r.rdi },
+        ),
+        16 => super::staging::stage(
+            super::staging::Unit::TargetedSelection,
+            super::staging::Witness::Selected { instance: r.rsi },
+        ),
+        // The ignore store follows this tap: stage the instance with its
+        // flag before the store for the enclosing command.
         17 => {
             let memory = unsafe { engine_native::memory::LiveMemory::new() };
-            match field::<u8>(&memory, r.rbp, 0x48) {
-                Ok(value) => feed::decisions::flags(r.rcx, Some(value != 0), false),
+            match field::<u8>(&memory, r.rcx, engine_decisions::ctargeted_decision::IGNORE) {
+                Ok(was) => super::staging::stage(
+                    super::staging::Unit::TargetedIgnore,
+                    super::staging::Witness::Ignored {
+                        instance: r.rcx,
+                        was: was != 0,
+                    },
+                ),
                 Err(reason) => feed::refuse(reason),
             }
         }
@@ -535,10 +722,6 @@ unsafe extern "system-unwind" fn tap(r: &Registers, index: usize) {
                 Ok(_) => {}
                 Err(reason) => feed::refuse(reason),
             }
-        }
-        18 => {
-            feed::decisions::marker(r.r14, Operation::Rebuild, 3, 0, 0);
-            clear_candidates(r.r14);
         }
         _ => feed::refuse("decision retained-state tap identity differs"),
     }
@@ -569,6 +752,13 @@ pub(super) unsafe fn hooks(
         unignore as *const () as usize,
         hourly as *const () as usize,
         refresh as *const () as usize,
+        auto_activation as *const () as usize,
+        scripted_activation as *const () as usize,
+        timed_selection as *const () as usize,
+        targeted_ignore_command as *const () as usize,
+        ignore_all_command as *const () as usize,
+        removal_request as *const () as usize,
+        candidate_finalization as *const () as usize,
     ];
     let mut hooks = Vec::new();
     let mut taps = Vec::new();
@@ -594,6 +784,9 @@ pub(super) unsafe fn hooks(
         ignore_selected as *const () as usize,
         request_timed as *const () as usize,
         request_targeted as *const () as usize,
+        event_feed_extend_mission_timeout as *const () as usize,
+        event_feed_extend_decision_removal as *const () as usize,
+        replace_event_retirement as *const () as usize,
     ];
     for (index, (site, callback)) in sites::CALLS.into_iter().zip(callbacks).enumerate() {
         let len = sites::call_sentinel_len(site);
@@ -610,7 +803,11 @@ pub(super) unsafe fn hooks(
         hooks.push(hook);
     }
     for (index, site) in sites::TAPS.into_iter().enumerate() {
-        if site.rva == sites::TARGETED_SELECTION_RESULT.rva {
+        // The politics owner installs the targeted selection tap; candidate
+        // finalization encloses the clears the old clear tap preceded.
+        if site.rva == sites::TARGETED_SELECTION_RESULT.rva
+            || site.rva == sites::CLEAR_CANDIDATES.rva
+        {
             continue;
         }
         taps.push(
@@ -702,7 +899,10 @@ mod tests {
                 memory.q(pointer + cooldown::DEFINITION, definition);
                 memory.d(pointer + cooldown::DAYS, days as u32);
                 memory.q(definition, cdecision::VTABLE_RVA);
-                memory.bytes(definition + runtime::PERMANENT, &[u8::from(ordinal % 2 == 1)]);
+                memory.bytes(
+                    definition + runtime::PERMANENT,
+                    &[u8::from(ordinal % 2 == 1)],
+                );
                 let token = format!("cooldown_{ordinal}");
                 let mut header = [0; 32];
                 header[..token.len()].copy_from_slice(token.as_bytes());
@@ -884,6 +1084,398 @@ mod tests {
         }
     }
 
+    const COUNTRY2: usize = 0x28000;
+    const STATUS2: usize = 0x38000;
+    /// A second owner with an empty decision status.
+    fn second_owner(memory: &mut Fixture) {
+        memory.array(GAME + cgame_state::COUNTRIES, 0x1000, 3);
+        memory.array(GAME + cgame_state::COUNTRY_LINKS, 0x2000, 3);
+        memory.q(0x1000 + 16, COUNTRY2);
+        memory.d(0x2000 + 8, 2);
+        memory.q(COUNTRY2, ccountry::VTABLE_RVA);
+        memory.d(COUNTRY2 + ccountry::ID, 2);
+        memory.d(COUNTRY2 + ccountry::ID_INSTANCE, 45);
+        memory.q(COUNTRY2 + ccountry::POLITICAL_STATUS, 0);
+        memory.q(COUNTRY2 + ccountry::DECISION_STATUS, STATUS2);
+        memory.array(COUNTRY2 + runtime::IGNORED_TOKENS, 0, 0);
+        memory.q(STATUS2, cdecision_status::VTABLE_RVA);
+        memory.q(STATUS2 + cdecision_status::COUNTRY, COUNTRY2);
+        for offset in runtime::HEADERS
+            .into_iter()
+            .chain(runtime::CANDIDATE_HEADERS)
+            .chain([cdecision_status::RANDOM_ITEMS])
+        {
+            memory.array(STATUS2 + offset, 0, 0);
+        }
+    }
+    fn publish(
+        store: &mut Store,
+        state: &mut replay_data::event_feed_rows::ScriptEventState,
+        hour: i32,
+    ) -> crate::event_feed_history::Prepared {
+        let mut snapshot = Snapshot::new(0);
+        store
+            .snapshot_growing(
+                &mut snapshot,
+                OwnerBoundary {
+                    generation: 1,
+                    read_hour: hour,
+                    coverage: EventFeedCoverage::Complete,
+                    failure: None,
+                },
+            )
+            .unwrap();
+        let pack = snapshot.prepare_pack().unwrap();
+        state.observe(pack.row()).unwrap();
+        store.acknowledged(pack.publication());
+        pack
+    }
+
+    #[test]
+    fn a_result_for_an_uncertified_owner_keeps_its_occurrence_and_refuses_only_that_owner() {
+        const REASON: &str = "decision result reached an uncertified owner";
+        let first = replay_data::event_feed_rows::EventFeedCountry {
+            reference: 1,
+            id: 1,
+            instance: 44,
+        };
+        let second = replay_data::event_feed_rows::EventFeedCountry {
+            reference: 2,
+            id: 2,
+            instance: 45,
+        };
+        let mut memory = Fixture::new([11, 0, 19, 0, 1]);
+        second_owner(&mut memory);
+        let mut store = Store::new(None).unwrap();
+        store.prepare_capacity(64).unwrap();
+        store.prepare_scripts(1024, 0, 0).unwrap();
+        store.prepare_decisions(8).unwrap();
+        let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+        publish(&mut store, &mut state, 7); // Admit the observed generation.
+        for (pointer, id) in [(COUNTRY, 1), (COUNTRY2, 2)] {
+            store
+                .decision_baseline(
+                    &memory,
+                    0,
+                    1,
+                    GAME,
+                    7,
+                    ccountry::Country {
+                        pointer,
+                        canonical_slot: id,
+                        id,
+                    },
+                )
+                .unwrap();
+        }
+        publish(&mut store, &mut state, 8);
+        assert!(state.decisions(first).is_ok());
+        assert!(state.decisions(second).is_ok());
+
+        // A native status reset withdraws only the first owner. Its earlier
+        // members are no longer attributable; a member a writer stores
+        // afterwards is.
+        let pointer = Fixture::pointer(2);
+        marker(&mut store, &memory, Operation::Invalidate, 0);
+        let world = World::new(&memory, 0).unwrap();
+        assert_eq!(
+            store.decision_result(
+                &world,
+                &memory,
+                0,
+                1,
+                pointer,
+                (Some(1), Some(30)),
+                EventFeedSource::DecisionDurationChanged,
+                REASON,
+            ),
+            Ok(false)
+        );
+        store
+            .decision_selected(
+                &world,
+                &memory,
+                0,
+                1,
+                COUNTRY,
+                pointer,
+                DecisionChange::new(Operation::Store, rows::REENABLE),
+                false,
+                (None, None),
+            )
+            .unwrap();
+        let id = store.decisions.uncertified(pointer).unwrap().id;
+        assert_ne!(id, 3); // A new label, not the reset member's.
+        let result = crate::test_support::with_allocations_denied(|| {
+            store.decision_result(
+                &world,
+                &memory,
+                0,
+                1,
+                pointer,
+                (Some(1), Some(30)),
+                EventFeedSource::DecisionDurationChanged,
+                REASON,
+            )
+        });
+        assert_eq!(result, Ok(true));
+        let refused = publish(&mut store, &mut state, 9);
+        let row = refused.row();
+        assert_eq!(row.coverage, EventFeedCoverage::Complete);
+        assert!(row.failure.is_none());
+        assert_eq!(row.counts.unwrap().rejected, 1);
+        let changes: Vec<_> = row
+            .events
+            .iter()
+            .map(|event| {
+                let script = event.script.unwrap();
+                let Some(EventFeedScriptChange::Decision(change)) = script.change else {
+                    panic!("expected a retained decision operation");
+                };
+                (event.actor, change.operation, script.instance)
+            })
+            .collect();
+        assert_eq!(
+            changes,
+            [
+                (first, Operation::Invalidate, None),
+                (first, Operation::Store, Some(id)),
+                (first, Operation::Refused, None),
+                (first, Operation::Update, Some(id)),
+            ]
+        );
+        let marker = row.events[2].script.unwrap();
+        let start = marker.token_start as usize;
+        assert_eq!(
+            &row.script_tokens[start..start + marker.token_len as usize],
+            REASON.as_bytes()
+        );
+        // The occurrence keeps its source and supplied results.
+        let occurrence = row.events[3];
+        assert_eq!(occurrence.source, EventFeedSource::DecisionDurationChanged);
+        assert_eq!(occurrence.script.unwrap().days, Some(30));
+        assert_eq!(occurrence.script.unwrap().lifecycle, Some(1));
+        assert!(state.decisions(first).is_err());
+        assert!(state.decisions(second).is_ok());
+
+        // No trustworthy attribution: the caller refuses the interval.
+        assert_eq!(
+            store.decision_result(
+                &world,
+                &memory,
+                0,
+                1,
+                0x99000,
+                (Some(1), Some(30)),
+                EventFeedSource::DecisionDurationChanged,
+                REASON,
+            ),
+            Ok(false)
+        );
+        // A new baseline certifies the owner again: results carry deltas.
+        store
+            .decision_baseline(
+                &memory,
+                0,
+                1,
+                GAME,
+                7,
+                ccountry::Country {
+                    pointer: COUNTRY,
+                    canonical_slot: 1,
+                    id: 1,
+                },
+            )
+            .unwrap();
+        assert!(store.decisions.find(pointer).is_some());
+        assert_eq!(
+            store.decision_result(
+                &world,
+                &memory,
+                0,
+                1,
+                pointer,
+                (Some(1), Some(30)),
+                EventFeedSource::DecisionDurationChanged,
+                REASON,
+            ),
+            Ok(true)
+        );
+        let certified = publish(&mut store, &mut state, 10);
+        assert!(owner_refused(certified.row()).is_none());
+        assert_eq!(certified.row().counts.unwrap().rejected, 1);
+        assert!(state.decisions(first).is_ok());
+        assert!(state.decisions(second).is_ok());
+    }
+    #[test]
+    fn a_retired_member_of_an_uncertified_owner_leaves_a_reused_address_a_fresh_label() {
+        const REASON: &str = "decision result reached an uncertified owner";
+        let memory = Fixture::new([11, 0, 19, 0, 1]);
+        let mut store = Store::new(None).unwrap();
+        store.prepare_capacity(64).unwrap();
+        store.prepare_scripts(1024, 0, 0).unwrap();
+        store.prepare_decisions(8).unwrap();
+        let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+        publish(&mut store, &mut state, 7); // Admit the observed generation.
+        store
+            .decision_baseline(
+                &memory,
+                0,
+                1,
+                GAME,
+                7,
+                ccountry::Country {
+                    pointer: COUNTRY,
+                    canonical_slot: 1,
+                    id: 1,
+                },
+            )
+            .unwrap();
+        publish(&mut store, &mut state, 8);
+        let pointer = Fixture::pointer(2);
+        let retired = store.decisions.find(pointer).unwrap().id;
+        // Another writer's refusal revokes the owner without missing a
+        // writer: its members keep their exact attribution.
+        store.reject("synthetic writer refusal");
+        assert_eq!(store.decisions.uncertified(pointer).unwrap().id, retired);
+        let world = World::new(&memory, 0).unwrap();
+        // The observed retirement removes the attribution, with no event.
+        crate::test_support::with_allocations_denied(|| {
+            store.decision_retire(&world, &memory, 0, 1, pointer, false, false)
+        })
+        .unwrap();
+        assert!(store.decisions.uncertified(pointer).is_none());
+        assert_eq!(
+            store.decision_result(
+                &world,
+                &memory,
+                0,
+                1,
+                pointer,
+                (Some(1), Some(30)),
+                EventFeedSource::DecisionDurationChanged,
+                REASON,
+            ),
+            Ok(false)
+        );
+        // The owner reuses the address for a decision of its own.
+        store
+            .decision_selected(
+                &world,
+                &memory,
+                0,
+                1,
+                COUNTRY,
+                pointer,
+                DecisionChange::new(Operation::Store, rows::REENABLE),
+                false,
+                (None, None),
+            )
+            .unwrap();
+        let reused = store.decisions.uncertified(pointer).unwrap().id;
+        assert_ne!(reused, retired);
+        assert_eq!(
+            store.decision_result(
+                &world,
+                &memory,
+                0,
+                1,
+                pointer,
+                (Some(1), Some(30)),
+                EventFeedSource::DecisionDurationChanged,
+                REASON,
+            ),
+            Ok(true)
+        );
+        let row = publish(&mut store, &mut state, 9);
+        let members: Vec<_> = row
+            .row()
+            .events
+            .iter()
+            .filter_map(|event| {
+                let script = event.script.unwrap();
+                let Some(EventFeedScriptChange::Decision(change)) = script.change else {
+                    return None;
+                };
+                Some((change.operation, script.instance))
+            })
+            .collect();
+        // No retirement event, and the result names the reused decision.
+        assert_eq!(
+            members,
+            [
+                (Operation::Store, Some(reused)),
+                (Operation::Refused, None),
+                (Operation::Update, Some(reused)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_uncertified_owners_member_follows_its_transfer_into_its_owner_local_result() {
+        let memory = Fixture::new([11, 0, 19, 0, 1]);
+        let mut store = Store::new(None).unwrap();
+        store.prepare_capacity(64).unwrap();
+        store.prepare_scripts(1024, 0, 0).unwrap();
+        store.prepare_decisions(8).unwrap();
+        let mut state = replay_data::event_feed_rows::ScriptEventState::default();
+        publish(&mut store, &mut state, 7); // Admit the observed generation.
+        // Never baselined: writer stores still attribute the member exactly.
+        let world = World::new(&memory, 0).unwrap();
+        let pointer = Fixture::pointer(2);
+        for container in [rows::REENABLE, rows::REMOVAL] {
+            store
+                .decision_selected(
+                    &world,
+                    &memory,
+                    0,
+                    1,
+                    COUNTRY,
+                    pointer,
+                    DecisionChange::new(Operation::Store, container),
+                    false,
+                    (None, None),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store.decisions.uncertified(pointer).unwrap().container,
+            rows::REMOVAL
+        );
+        assert_eq!(
+            store.decision_result(
+                &world,
+                &memory,
+                0,
+                1,
+                pointer,
+                (None, Some(30)),
+                EventFeedSource::DecisionDurationChanged,
+                "decision result reached an uncertified owner",
+            ),
+            Ok(true)
+        );
+        let row = publish(&mut store, &mut state, 8);
+        let occurrence = row.row().events.last().unwrap().script.unwrap();
+        let Some(EventFeedScriptChange::Decision(change)) = occurrence.change else {
+            panic!("expected a retained decision operation");
+        };
+        // The result names the container the member is in now.
+        assert_eq!(change.operation, Operation::Update);
+        assert_eq!(change.container, rows::REMOVAL);
+    }
+    fn owner_refused(
+        row: &replay_data::event_feed_rows::EventFeedHistoryRow,
+    ) -> Option<replay_data::event_feed_rows::EventFeedCountry> {
+        row.events.iter().find_map(|event| {
+            matches!(
+                event.script?.change?,
+                EventFeedScriptChange::Decision(change) if change.operation == Operation::Refused
+            )
+            .then_some(event.actor)
+        })
+    }
+
     #[test]
     fn reenable_iteration_erasure_requires_the_active_owners_single_tail_slot() {
         let mut memory = Fixture::new([11, 0, 19, 0, 1]);
@@ -918,5 +1510,469 @@ mod tests {
         })
         .unwrap();
         REENABLE.set(0);
+    }
+
+    /// Detour tests drive each unit's real wrapper over a fake original
+    /// that runs the latch, then performs the native store, in process
+    /// memory: nothing native executes.
+    mod detours {
+        use super::super::*;
+        use crate::event_feed_observer::{writer_cut, writer_cut_holds};
+        use crate::script_event_observer::staging::{Published, open_frames, take_published};
+        use engine_decisions::{
+            cdecision_cooldown, ctargeted_decision, ctimed_decision, decision_runtime,
+        };
+        use std::cell::RefCell;
+
+        /// A fake native object, owned through a raw pointer like native
+        /// memory: the fake originals write it while the test holds it.
+        struct Object(*mut [u8; 0x100]);
+        impl Object {
+            fn new() -> Self {
+                Self(Box::into_raw(Box::new([0; 0x100])))
+            }
+            fn at(&self) -> usize {
+                self.0 as usize
+            }
+            fn q(&mut self, offset: usize, value: usize) {
+                unsafe { ((self.at() + offset) as *mut u64).write_unaligned(value as u64) }
+            }
+            fn d(&mut self, offset: usize, value: i32) {
+                unsafe { store_i32(self.at() + offset, value) }
+            }
+            fn b(&mut self, offset: usize, value: u8) {
+                unsafe { store_u8(self.at() + offset, value) }
+            }
+        }
+        impl Drop for Object {
+            fn drop(&mut self) {
+                drop(unsafe { Box::from_raw(self.0) });
+            }
+        }
+        /// The store a fake original performs through the pointer it holds.
+        unsafe fn store_i32(at: usize, value: i32) {
+            unsafe { (at as *mut i32).write_unaligned(value) }
+        }
+        unsafe fn store_u8(at: usize, value: u8) {
+            unsafe { (at as *mut u8).write(value) }
+        }
+        fn registers() -> crate::hook::Registers {
+            unsafe { std::mem::zeroed() }
+        }
+        std::thread_local! {
+            /// (instance, value) pairs a fake original stages and stores.
+            static PLAN: RefCell<Vec<(usize, i32)>> = const { RefCell::new(Vec::new()) };
+        }
+        fn plan(steps: &[(usize, i32)]) {
+            PLAN.with_borrow_mut(|plan| *plan = steps.to_vec());
+        }
+        fn steps() -> Vec<(usize, i32)> {
+            PLAN.with_borrow(Clone::clone)
+        }
+        /// Inside the original the writer flight is open: a recovery sample
+        /// cannot begin, and one already begun is crossed.
+        fn assert_inside(before: u64) {
+            assert!(writer_cut().is_none());
+            assert!(!writer_cut_holds(before));
+        }
+        /// Afterwards the flight closed and nothing stays staged.
+        fn assert_after() {
+            assert!(writer_cut().is_some());
+            assert_eq!(open_frames(), 0);
+        }
+        static CUT: AtomicUsize = AtomicUsize::new(0);
+        /// Each test holds one of these: a SHARED store (staging goes
+        /// through it now) and the family lock, restored on drop.
+        fn env() -> crate::event_feed_observer::StagingTest {
+            crate::event_feed_observer::staging_test(64)
+        }
+        /// Clear the published log and snapshot the writer cut for a run.
+        fn begin() {
+            let _ = take_published();
+            CUT.store(writer_cut().unwrap() as usize, Ordering::SeqCst);
+        }
+        fn cut() -> u64 {
+            CUT.load(Ordering::SeqCst) as u64
+        }
+
+        fn timed(days: i32) -> Object {
+            let mut object = Object::new();
+            object.q(0, ctimed_decision::VTABLE_RVA);
+            object.q(ctimed_decision::DEFINITION, 0x7000);
+            object.d(ctimed_decision::DAYS, days);
+            object.d(ctimed_decision::STATE, 2);
+            object
+        }
+
+        #[test]
+        fn a_duration_add_publishes_the_stored_days_after_it_returns() {
+            let _env = env();
+            unsafe extern "system-unwind" fn add(instance: usize, delta: usize, _: usize) -> usize {
+                assert_inside(cut());
+                let at = instance + ctimed_decision::DAYS;
+                let days = unsafe { (at as *const i32).read_unaligned() };
+                unsafe { store_i32(at, days.wrapping_add(delta as i32)) };
+                0
+            }
+            unsafe extern "system-unwind" fn add_cooldown(
+                instance: usize,
+                delta: usize,
+                _: usize,
+            ) -> usize {
+                assert_inside(cut());
+                let at = instance + cdecision_cooldown::DAYS;
+                let days = unsafe { (at as *const i32).read_unaligned() };
+                unsafe { store_i32(at, days.wrapping_add(delta as i32)) };
+                0
+            }
+            let mission = timed(10);
+            CALL[EXTEND_MISSION_TIMEOUT].store(add as *const () as usize, Ordering::SeqCst);
+            begin();
+            unsafe { extend_mission_timeout(mission.at(), 5, 0x9000) };
+            assert_after();
+            assert_eq!(
+                take_published(),
+                [Published::Duration {
+                    instance: mission.at(),
+                    days: 15
+                }]
+            );
+            let mut timer = Object::new();
+            timer.q(0, cdecision_cooldown::VTABLE_RVA);
+            timer.q(cdecision_cooldown::DEFINITION, 0x7000);
+            timer.d(cdecision_cooldown::DAYS, 20);
+            CALL[EXTEND_DECISION_REMOVAL]
+                .store(add_cooldown as *const () as usize, Ordering::SeqCst);
+            begin();
+            unsafe { extend_decision_removal(timer.at(), (-3_i32) as u32 as usize, 0x9000) };
+            assert_after();
+            assert_eq!(
+                take_published(),
+                [Published::Duration {
+                    instance: timer.at(),
+                    days: 17
+                }]
+            );
+        }
+
+        #[test]
+        fn reached_reactivations_publish_their_committed_stores_in_native_order() {
+            let _env = env();
+            unsafe extern "system-unwind" fn activate(status: usize, _: usize, _: usize) -> usize {
+                assert_inside(cut());
+                for (instance, days) in steps() {
+                    let mut registers = registers();
+                    registers.rbp = status;
+                    registers.rsi = 0x7000;
+                    registers.rdi = instance;
+                    // The tap precedes the reactivation's stores.
+                    unsafe { super::super::super::tap(&registers, 5) };
+                    unsafe {
+                        store_i32(instance + ctimed_decision::DAYS, days);
+                        store_i32(
+                            instance + ctimed_decision::STATE,
+                            ctimed_decision::STATE_ACTIVE,
+                        );
+                    }
+                }
+                // Full RAX is returned unchanged.
+                0x1234
+            }
+            let (first, second) = (timed(1), timed(2));
+            ORIGINAL[DETOURS].store(activate as *const () as usize, Ordering::SeqCst);
+            plan(&[(second.at(), 40), (first.at(), 30)]);
+            let status = Object::new();
+            begin();
+            assert_eq!(unsafe { auto_activation(status.at(), 0, 0) }, 0x1234);
+            assert_after();
+            assert_eq!(
+                take_published(),
+                [
+                    Published::Activation {
+                        instance: second.at(),
+                        state: ctimed_decision::STATE_ACTIVE,
+                        days: 40
+                    },
+                    Published::Activation {
+                        instance: first.at(),
+                        state: ctimed_decision::STATE_ACTIVE,
+                        days: 30
+                    },
+                ]
+            );
+            // A skip or append branch reaches no reactivation tap.
+            plan(&[]);
+            begin();
+            unsafe { auto_activation(status.at(), 0, 0) };
+            assert!(take_published().is_empty());
+        }
+
+        #[test]
+        fn a_timed_selection_publishes_its_stored_days_after_returning() {
+            let _env = env();
+            unsafe extern "system-unwind" fn select(_: usize, _: usize, _: usize) -> usize {
+                assert_inside(cut());
+                for (instance, days) in steps() {
+                    let mut registers = registers();
+                    registers.rdi = instance;
+                    unsafe { super::super::tap(&registers, 15) };
+                    unsafe { store_i32(instance + ctimed_decision::DAYS, days) };
+                }
+                0
+            }
+            let mission = timed(0);
+            ORIGINAL[DETOURS + 2].store(select as *const () as usize, Ordering::SeqCst);
+            plan(&[(mission.at(), 9)]);
+            let status = Object::new();
+            begin();
+            unsafe { timed_selection(status.at(), 0x7000, 0) };
+            assert_after();
+            assert_eq!(
+                take_published(),
+                [Published::Selection {
+                    instance: mission.at(),
+                    days: 9
+                }]
+            );
+        }
+
+        #[test]
+        fn ignore_publication_is_decided_from_the_staged_pre_store_flag() {
+            let _env = env();
+            unsafe extern "system-unwind" fn command(_: usize, _: usize, _: usize) -> usize {
+                assert_inside(cut());
+                for (instance, _) in steps() {
+                    let mut registers = registers();
+                    registers.rcx = instance;
+                    unsafe { super::super::tap(&registers, 17) };
+                    unsafe { store_u8(instance + ctargeted_decision::IGNORE, 1) };
+                }
+                0
+            }
+            let (mut fresh, mut ignored) = (Object::new(), Object::new());
+            fresh.b(ctargeted_decision::IGNORE, 0);
+            ignored.b(ctargeted_decision::IGNORE, 1);
+            ORIGINAL[DETOURS + 3].store(command as *const () as usize, Ordering::SeqCst);
+            plan(&[(fresh.at(), 0), (ignored.at(), 0)]);
+            let status = Object::new();
+            begin();
+            unsafe { targeted_ignore_command(status.at(), 0, 0) };
+            assert_after();
+            assert_eq!(
+                take_published(),
+                [
+                    Published::Ignore {
+                        instance: fresh.at(),
+                        was: false,
+                        now: true
+                    },
+                    Published::Ignore {
+                        instance: ignored.at(),
+                        was: true,
+                        now: true
+                    },
+                ]
+            );
+            // Only the changed flag publishes, never against the written byte.
+            assert_eq!(
+                crate::event_feed_observer::decisions::committed_flags(Some((false, true)), None),
+                Some((Some(true), false))
+            );
+            assert_eq!(
+                crate::event_feed_observer::decisions::committed_flags(Some((true, true)), None),
+                None
+            );
+        }
+
+        #[test]
+        fn ignore_all_stages_at_its_admission_call_and_publishes_after_the_command() {
+            let _env = env();
+            unsafe extern "system-unwind" fn admitted(_: usize, _: usize, _: usize) -> usize {
+                1
+            }
+            unsafe extern "system-unwind" fn command(status: usize, _: usize, _: usize) -> usize {
+                assert_inside(cut());
+                for (instance, _) in steps() {
+                    // The admission CALL returns before the caller's store.
+                    if unsafe { ignore_selected(status, instance, 1) } as u8 != 0 {
+                        unsafe { store_u8(instance + ctargeted_decision::IGNORE, 1) };
+                    }
+                }
+                0
+            }
+            let mut target = Object::new();
+            target.b(ctargeted_decision::IGNORE, 0);
+            CALL[11].store(admitted as *const () as usize, Ordering::SeqCst);
+            ORIGINAL[DETOURS + 4].store(command as *const () as usize, Ordering::SeqCst);
+            plan(&[(target.at(), 0)]);
+            let status = Object::new();
+            begin();
+            unsafe { ignore_all_command(status.at(), 0, 0) };
+            assert_after();
+            assert_eq!(
+                take_published(),
+                [Published::Ignore {
+                    instance: target.at(),
+                    was: false,
+                    now: true
+                }]
+            );
+        }
+
+        #[test]
+        fn removal_requests_publish_once_the_shared_store_completed() {
+            let _env = env();
+            unsafe extern "system-unwind" fn lookup(_: usize, _: usize, _: usize) -> usize {
+                steps()[0].0
+            }
+            unsafe extern "system-unwind" fn effect(status: usize, _: usize, _: usize) -> usize {
+                assert_inside(cut());
+                let instance = unsafe { request_timed(status, 0x7000, 0) };
+                if instance != 0 {
+                    unsafe { store_u8(instance + decision_runtime::REMOVE_REQUESTED, 1) };
+                }
+                0x55
+            }
+            CALL[12].store(lookup as *const () as usize, Ordering::SeqCst);
+            ORIGINAL[DETOURS + 5].store(effect as *const () as usize, Ordering::SeqCst);
+            for was in [0, 1] {
+                let mut target = Object::new();
+                target.b(decision_runtime::REMOVE_REQUESTED, was);
+                plan(&[(target.at(), 0)]);
+                let effect = Object::new();
+                begin();
+                assert_eq!(unsafe { removal_request(effect.at(), 0, 0) }, 0x55);
+                assert_after();
+                assert_eq!(
+                    take_published(),
+                    [Published::Removal {
+                        instance: target.at(),
+                        was: was == 1,
+                        now: 1
+                    }]
+                );
+                // An already requested removal publishes nothing.
+                assert_eq!(
+                    crate::event_feed_observer::decisions::committed_flags(None, Some(was == 1))
+                        .is_some(),
+                    was == 0
+                );
+            }
+        }
+
+        #[test]
+        fn a_fired_retirement_publishes_only_its_staged_match_branch() {
+            let _env = env();
+            unsafe extern "system-unwind" fn retire(
+                state: usize,
+                definition: usize,
+                _: usize,
+            ) -> usize {
+                assert_inside(cut());
+                if !steps().is_empty() {
+                    let mut registers = registers();
+                    registers.rsi = state;
+                    registers.rdi = definition;
+                    unsafe { super::super::super::tap(&registers, 8) };
+                }
+                0
+            }
+            CALL[REPLACE_EVENT_RETIREMENT].store(retire as *const () as usize, Ordering::SeqCst);
+            let (world, definition) = (Object::new(), Object::new());
+            plan(&[(0, 0)]);
+            begin();
+            unsafe { replace_event_retirement(world.at(), definition.at(), 0) };
+            assert_after();
+            assert_eq!(
+                take_published(),
+                [Published::Fired {
+                    definition: definition.at()
+                }]
+            );
+            // No fired match: no witness and no fact.
+            plan(&[]);
+            begin();
+            unsafe { replace_event_retirement(world.at(), definition.at(), 0) };
+            assert_after();
+            assert!(take_published().is_empty());
+        }
+
+        #[test]
+        fn candidate_finalization_publishes_its_marker_pair_after_every_clear() {
+            let _env = env();
+            unsafe extern "system-unwind" fn finalize(_: usize, _: usize, _: usize) -> usize {
+                assert_inside(cut());
+                assert!(take_published().is_empty());
+                0
+            }
+            ORIGINAL[DETOURS + 6].store(finalize as *const () as usize, Ordering::SeqCst);
+            let status = Object::new();
+            begin();
+            unsafe { candidate_finalization(status.at(), 0, 0) };
+            assert_after();
+            assert_eq!(
+                take_published(),
+                [Published::Candidates {
+                    status: status.at()
+                }]
+            );
+        }
+
+        #[test]
+        fn a_latch_outside_its_detour_stages_and_publishes_nothing() {
+            let _env = env();
+            let mission = timed(0);
+            let mut registers = registers();
+            registers.rdi = mission.at();
+            begin();
+            unsafe { super::super::tap(&registers, 15) };
+            assert_eq!(open_frames(), 0);
+            assert!(take_published().is_empty());
+        }
+
+        #[test]
+        fn a_detour_whose_witnesses_a_boundary_reset_refuses_at_publication() {
+            use crate::script_event_observer::staging::{
+                Detour, Unit, WITNESS_ABANDONED, Witness, stage,
+            };
+            let env = env();
+            env.prepare(1);
+            let (_, rejected) = env.failure();
+            let detour = Detour::enter(Unit::TimedSelection);
+            stage(Unit::TimedSelection, Witness::Selected { instance: 1 });
+            assert_eq!(env.staged_live(), 1);
+            // A boundary on another thread resets the arena under it.
+            env.prepare(2);
+            assert_eq!(env.failure(), (Some(WITNESS_ABANDONED), rejected + 1));
+            let mut published = 0;
+            detour.publish(|_| published += 1);
+            // Nothing published, and the reset is refused by name in the
+            // publication's interval.
+            assert_eq!(published, 0);
+            assert_eq!(env.failure().1, rejected + 2);
+            assert_eq!(open_frames(), 0);
+        }
+
+        #[test]
+        fn a_latch_of_the_wrong_unit_inside_a_detour_refuses_and_stages_nothing() {
+            // A timed-selection detour whose original fires a targeted-ignore
+            // latch: the mismatched kind refuses, so nothing is staged and
+            // publication is empty.
+            unsafe extern "system-unwind" fn select(_: usize, _: usize, _: usize) -> usize {
+                let mut registers = registers();
+                registers.rcx = steps()[0].0;
+                unsafe { super::super::tap(&registers, 17) };
+                0
+            }
+            let _env = env();
+            let target = Object::new();
+            ORIGINAL[DETOURS + 2].store(select as *const () as usize, Ordering::SeqCst);
+            plan(&[(target.at(), 0)]);
+            let status = Object::new();
+            begin();
+            unsafe { timed_selection(status.at(), 0, 0) };
+            assert_after();
+            assert!(take_published().is_empty());
+        }
     }
 }

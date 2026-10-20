@@ -1,7 +1,7 @@
 //! Actual retained-container writers; no state-wide before/after walk.
 use super::*;
 use super::{hook_failure, verify_hook};
-mod adjustments;
+pub(super) mod adjustments;
 static ORIGINAL: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 
 pub(super) fn owner(status: usize) -> Result<usize, &'static str> {
@@ -408,13 +408,8 @@ pub(super) unsafe fn hooks(
                 .named(site.label()),
         );
     }
-    for (index, site) in native::DURATION_TAPS.into_iter().enumerate() {
-        taps.push(
-            unsafe { Tap::new(verify(site)?, adjustments::tap, index, site.sentinel) }
-                .map_err(|cause| hook_failure(site, "construction", cause))?
-                .named(site.label()),
-        );
-    }
+    // The duration extensions' scalar adds are CALL detours of the decision
+    // family: their old pre-add taps are not installed.
     for (index, (site, callback)) in native::LIFECYCLE_ENTRIES
         .into_iter()
         .zip([

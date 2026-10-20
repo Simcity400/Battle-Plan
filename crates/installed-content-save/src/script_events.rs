@@ -55,14 +55,27 @@ pub struct Delayed {
     pub scope: Option<ScopeGraph>,
     pub extra_keys: Vec<Vec<u8>>,
 }
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Each registry and each country's delayed queue is read on its own: an
+/// unreadable one carries its reason and never hides the others.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pack {
     /// Both global blocks are unconditional in an ordinary native save.
-    pub pending: Option<Vec<Pending>>,
-    pub fired: Option<Vec<Vec<u8>>>,
-    pub delayed: BTreeMap<Vec<u8>, Vec<Delayed>>,
+    pub pending: Result<Option<Vec<Pending>>, String>,
+    pub fired: Result<Option<Vec<Vec<u8>>>, String>,
+    pub delayed: BTreeMap<Vec<u8>, Result<Vec<Delayed>, String>>,
     pub pending_extra: Vec<Vec<u8>>,
     pub fired_extra: Vec<Vec<u8>>,
+}
+impl Default for Pack {
+    fn default() -> Self {
+        Self {
+            pending: Ok(None),
+            fired: Ok(None),
+            delayed: BTreeMap::new(),
+            pending_extra: Vec::new(),
+            fired_extra: Vec::new(),
+        }
+    }
 }
 fn extra(items: &[Item], allowed: &[&[u8]]) -> io::Result<Vec<Vec<u8>>> {
     items
@@ -152,71 +165,84 @@ pub fn scope(value: &Value) -> io::Result<ScopeGraph> {
     }
     Ok(ScopeGraph { nodes })
 }
+fn pending(root: &[Item], output: &mut Pack) -> io::Result<Option<Vec<Pending>>> {
+    let Some(value) = field(root, b"pending_events")? else {
+        return Ok(None);
+    };
+    let items = block(value)?;
+    let mut rows = Vec::new();
+    output.pending_extra = extra(items, &[b"event"])?;
+    for item in items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"event"))
+    {
+        let fields = block(&item.value)?;
+        rows.push(Pending {
+            identity: bytes(fields, b"id")?,
+            instance: number(fields, b"pending_id")?,
+            due: field(fields, b"timeout")?
+                .map(|value| GameDate::parse(scalar(value)?))
+                .transpose()?,
+            scope: field(fields, b"scope")?.map(scope).transpose()?,
+            extra_keys: extra(fields, &[b"id", b"pending_id", b"timeout", b"scope"])?,
+        });
+    }
+    Ok(Some(rows))
+}
+fn fired(root: &[Item], output: &mut Pack) -> io::Result<Option<Vec<Vec<u8>>>> {
+    let Some(value) = field(root, b"fired_event_names")? else {
+        return Ok(None);
+    };
+    let items = block(value)?;
+    output.fired_extra = extra(items, &[b"id"])?;
+    items
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"id"))
+        .map(|item| scalar(&item.value).map(<[u8]>::to_vec))
+        .collect::<io::Result<_>>()
+        .map(Some)
+}
+fn delayed(country: &Value) -> io::Result<Vec<Delayed>> {
+    let mut rows = Vec::new();
+    for item in block(country)?
+        .iter()
+        .filter(|item| item.key.as_deref() == Some(b"delayed_event"))
+    {
+        let fields = block(&item.value)?;
+        rows.push(Delayed {
+            definition: field(fields, b"event")?.map(definition).transpose()?,
+            hours: number(fields, b"hours")?,
+            days: number(fields, b"days")?,
+            months: number(fields, b"months")?,
+            originator: bytes(fields, b"originator")?,
+            scope: field(fields, b"scope")?.map(scope).transpose()?,
+            extra_keys: extra(
+                fields,
+                &[
+                    b"event",
+                    b"hours",
+                    b"days",
+                    b"months",
+                    b"originator",
+                    b"scope",
+                ],
+            )?,
+        });
+    }
+    Ok(rows)
+}
+/// Fails as a whole only when a country cannot be named; every registry and
+/// queue otherwise carries its own result.
 pub fn parse(root: &[Item], countries: &[&Item]) -> io::Result<Pack> {
     let mut output = Pack::default();
-    if let Some(value) = field(root, b"pending_events")? {
-        let items = block(value)?;
-        let mut rows = Vec::new();
-        output.pending_extra = extra(items, &[b"event"])?;
-        for item in items
-            .iter()
-            .filter(|item| item.key.as_deref() == Some(b"event"))
-        {
-            let fields = block(&item.value)?;
-            rows.push(Pending {
-                identity: bytes(fields, b"id")?,
-                instance: number(fields, b"pending_id")?,
-                due: field(fields, b"timeout")?
-                    .map(|value| GameDate::parse(scalar(value)?))
-                    .transpose()?,
-                scope: field(fields, b"scope")?.map(scope).transpose()?,
-                extra_keys: extra(fields, &[b"id", b"pending_id", b"timeout", b"scope"])?,
-            });
-        }
-        output.pending = Some(rows);
-    }
-    if let Some(value) = field(root, b"fired_event_names")? {
-        let items = block(value)?;
-        output.fired_extra = extra(items, &[b"id"])?;
-        output.fired = Some(
-            items
-                .iter()
-                .filter(|item| item.key.as_deref() == Some(b"id"))
-                .map(|item| scalar(&item.value).map(<[u8]>::to_vec))
-                .collect::<io::Result<_>>()?,
-        );
-    }
+    output.pending = pending(root, &mut output).map_err(|error| error.to_string());
+    output.fired = fired(root, &mut output).map_err(|error| error.to_string());
     for country in countries {
         let tag = country
             .key
             .as_ref()
             .ok_or_else(|| invalid("keyless delayed-event country"))?;
-        let mut rows = Vec::new();
-        for item in block(&country.value)?
-            .iter()
-            .filter(|item| item.key.as_deref() == Some(b"delayed_event"))
-        {
-            let fields = block(&item.value)?;
-            rows.push(Delayed {
-                definition: field(fields, b"event")?.map(definition).transpose()?,
-                hours: number(fields, b"hours")?,
-                days: number(fields, b"days")?,
-                months: number(fields, b"months")?,
-                originator: bytes(fields, b"originator")?,
-                scope: field(fields, b"scope")?.map(scope).transpose()?,
-                extra_keys: extra(
-                    fields,
-                    &[
-                        b"event",
-                        b"hours",
-                        b"days",
-                        b"months",
-                        b"originator",
-                        b"scope",
-                    ],
-                )?,
-            });
-        }
+        let rows = delayed(&country.value).map_err(|error| error.to_string());
         if output.delayed.insert(tag.clone(), rows).is_some() {
             return Err(invalid("duplicate unprojected delayed-event country"));
         }
@@ -240,20 +266,20 @@ mod tests {
             .collect::<Vec<_>>();
         let pack = parse(&document.items, &country_items).unwrap();
         assert_eq!(
-            pack.fired.unwrap(),
+            pack.fired.unwrap().unwrap(),
             [
                 b"synthetic.1".to_vec(),
                 b"synthetic.1".to_vec(),
                 b"123".to_vec()
             ]
         );
-        let pending = &pack.pending.unwrap()[0];
+        let pending = &pack.pending.unwrap().unwrap()[0];
         assert_eq!(pending.instance, Some(7));
         let scope = pending.scope.as_ref().unwrap();
         assert_eq!(scope.nodes[0].random, Some([4, 3]));
         assert_eq!(scope.nodes[0].bindings, [Some(1), None, None]);
         assert_eq!(scope.nodes[1].random, Some([6, 5]));
-        let delayed = &pack.delayed[b"AAA".as_slice()][0];
+        let delayed = &pack.delayed[b"AAA".as_slice()].as_ref().unwrap()[0];
         assert_eq!(
             delayed.definition,
             Some(Definition::Reference((13_u64 << 32) | 42))
@@ -262,9 +288,30 @@ mod tests {
             (delayed.hours, delayed.days, delayed.months),
             (Some(-3), Some(-2), Some(-1))
         );
-        assert!(pack.delayed[b"BBB".as_slice()].is_empty());
+        assert!(pack.delayed[b"BBB".as_slice()].as_ref().unwrap().is_empty());
         let empty = parse(&[], &[]).unwrap();
-        assert!(empty.pending.is_none());
-        assert!(empty.fired.is_none());
+        assert!(empty.pending.unwrap().is_none());
+        assert!(empty.fired.unwrap().is_none());
+    }
+    #[test]
+    fn one_unreadable_registry_or_country_queue_leaves_the_others_readable() {
+        let document = installed_content_core::parser::parse(
+            br#"
+            fired_event_names={id=synthetic.1}
+            pending_events={event={id=synthetic.1 pending_id=malformed}}
+            countries={AAA={delayed_event={hours=malformed}} BBB={delayed_event={hours=1}}}
+        "#,
+        )
+        .unwrap();
+        let country_items = block(field(&document.items, b"countries").unwrap().unwrap())
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>();
+        let pack = parse(&document.items, &country_items).unwrap();
+        assert!(pack.pending.is_err());
+        assert_eq!(pack.fired.unwrap().unwrap(), [b"synthetic.1".to_vec()]);
+        assert!(pack.delayed[b"AAA".as_slice()].is_err());
+        let sibling = pack.delayed[b"BBB".as_slice()].as_ref().unwrap();
+        assert_eq!(sibling[0].hours, Some(1));
     }
 }

@@ -50,6 +50,20 @@ pub const SET_POLITICAL_POWER: HookSite = HookSite {
     commit: true,
 };
 
+/// The set-political-power effect's entry. RCX effect, RDX scope. Its
+/// evaluated store and the conditional floor store both precede its return;
+/// the commit tap inside only stages its operands.
+pub const SET_POLITICAL_POWER_EFFECT: HookSite = HookSite {
+    name: "SetPoliticalPowerEffect",
+    function_rva: 0x3638e0,
+    rva: 0x3638e0,
+    sentinel: [
+        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30,
+        0x48,
+    ],
+    commit: false,
+};
+
 /// Entry: RCX status; retains the old government before party destruction.
 pub const CLEAR_POLITICS: HookSite = HookSite {
     name: "ClearPolitics",

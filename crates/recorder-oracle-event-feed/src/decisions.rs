@@ -1,15 +1,15 @@
 //! Retained decisions are compared at the save hour, independently of census age.
 use installed_content_save::{SaveDocument, governance as saved};
+use super::script_events::{Owner, uncertified};
 use recorder_oracle_support::{
     report::Report,
-    support::{country_context, country_items, eq, invalid},
+    support::{country_items, eq, invalid},
 };
-use replay_data::event_feed_rows::EventFeedCountry;
 use replay_data::event_feed_rows::ScriptEventState;
 use replay_data::event_feed_rows::decisions::CONTAINERS;
 use replay_data::event_feed_rows::decisions::DecisionState;
 use replay_data::event_feed_rows::decisions::IGNORED;
-use replay_data::rows::tables;
+use replay_data::rows::CountryRow;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 fn compare_owner(
@@ -112,16 +112,14 @@ fn compare_owner(
 pub(super) fn compare(
     frame: &DecodedFrame,
     document: &SaveDocument,
+    owners: &[Owner<'_>],
+    links: &BTreeMap<u32, &CountryRow>,
     state: &ScriptEventState,
     report: &mut Report,
 ) -> io::Result<()> {
-    let context = country_context(frame)?;
-    let identities = frame
-        .complete::<tables::CountryExperienceGains>()?
-        .iter()
-        .map(|row| (row.country, row.instance))
-        .collect::<BTreeMap<_, _>>();
     let countries = country_items(document, frame)?;
+    // Only an unnamed country fails the whole group; each owner's saved
+    // status is read on its own, so one unreadable owner hides no other.
     let saved = countries
         .into_iter()
         .map(|item| {
@@ -129,57 +127,82 @@ pub(super) fn compare(
                 .key
                 .as_deref()
                 .ok_or_else(|| invalid("decision country lacks tag"))?;
-            let body = item
+            let status = item
                 .value
                 .items()
-                .ok_or_else(|| invalid("decision country body absent"))?;
-            let status = body
-                .iter()
-                .find(|item| item.keyword_is("decision_status"))
-                .map(|item| {
-                    item.value
-                        .items()
-                        .ok_or_else(|| invalid("decision status body absent"))
-                        .and_then(saved::parse_decisions)
-                })
-                .transpose()?;
+                .ok_or_else(|| invalid("decision country body absent"))
+                .and_then(|body| {
+                    body.iter()
+                        .find(|item| item.keyword_is("decision_status"))
+                        .map(|item| {
+                            item.value
+                                .items()
+                                .ok_or_else(|| invalid("decision status body absent"))
+                                .and_then(saved::parse_decisions)
+                        })
+                        .transpose()
+                });
             Ok((tag, status))
         })
         .collect::<io::Result<BTreeMap<_, _>>>()?;
-    for (tag, country) in &context.by_tag {
-        let instance = *identities
-            .get(&country.id)
-            .ok_or_else(|| invalid("decision owner instance witness absent"))?;
-        let actual = state
-            .decisions(EventFeedCountry {
-                reference: country.id,
-                id: country.id,
-                instance,
-            })
-            .map_err(|reason| {
-                invalid(format!(
-                    "{}.decision_status: {reason}",
-                    String::from_utf8_lossy(tag)
-                ))
-            })?;
-        let expected = saved
-            .get(*tag)
-            .ok_or_else(|| invalid("saved decision owner absent"))?;
-        compare_owner(
-            actual,
-            expected.as_ref(),
-            tag,
-            |reference| {
-                context
-                    .links
-                    .get(&reference)
-                    .map(|country| country.tag.clone())
-                    .ok_or_else(|| invalid("decision target country link absent"))
-            },
-            report,
-        )?;
-    }
+    compare_owners(
+        owners,
+        &saved,
+        state,
+        |reference| {
+            links
+                .get(&reference)
+                .map(|country| country.tag.clone())
+                .ok_or_else(|| invalid("decision target country link absent"))
+        },
+        report,
+    );
     Ok(())
+}
+
+/// Every certified owner is compared; uncertified owners are listed by reason
+/// and an owner whose saved operands cannot be read is refused alone.
+pub(super) fn compare_owners(
+    owners: &[Owner<'_>],
+    saved: &BTreeMap<&[u8], io::Result<Option<saved::Decisions>>>,
+    state: &ScriptEventState,
+    mut target_country: impl FnMut(u32) -> io::Result<Vec<u8>>,
+    report: &mut Report,
+) {
+    let group = "EventFeedHistory decisions";
+    let mut refused = BTreeMap::<String, Vec<String>>::new();
+    for &(tag, owner) in owners {
+        let name = String::from_utf8_lossy(tag).into_owned();
+        let actual = match owner
+            .ok_or("owner instance witness absent")
+            .and_then(|owner| state.decisions(owner))
+        {
+            Ok(actual) => actual,
+            Err(reason) => {
+                refused.entry(reason.to_owned()).or_default().push(name);
+                continue;
+            }
+        };
+        let compared = saved
+            .get(tag)
+            .ok_or_else(|| invalid("saved decision owner absent"))
+            .and_then(|expected| {
+                let expected = expected.as_ref().map_err(|error| {
+                    invalid(format!("saved decision_status unreadable: {error}"))
+                })?;
+                compare_owner(
+                    actual,
+                    expected.as_ref(),
+                    tag,
+                    &mut target_country,
+                    report,
+                )
+            });
+        if let Err(error) = compared {
+            report.incomplete(group, format!("{name}: {error}"));
+        }
+    }
+    uncertified(report, group, owners.len(), refused);
 }
 
 #[cfg(test)]

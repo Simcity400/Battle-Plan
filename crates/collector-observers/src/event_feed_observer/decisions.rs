@@ -13,7 +13,7 @@ fn access(
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         return;
     };
-    let _ = owner.observe(|store| {
+    let _ = owner.observe(Role::DecisionWriter, |store| {
         let Some(generation) = observed(owner, store) else {
             return;
         };
@@ -224,27 +224,28 @@ pub fn ignored(country: usize, token: usize, ignored: bool) {
         )
     });
 }
-pub fn flags(pointer: usize, ignored: Option<bool>, removed: bool) {
+/// What a committed flag store publishes, from its staged pre-store flags:
+/// the ignore flag now and whether removal is requested. `None` when the
+/// store changed nothing: the ignore flag already had its value, or removal
+/// was already requested.
+pub(crate) fn committed_flags(
+    ignored: Option<(bool, bool)>,
+    removed: Option<bool>,
+) -> Option<(Option<bool>, bool)> {
+    if ignored.is_some_and(|(was, now)| was == now) || removed == Some(true) {
+        return None;
+    }
+    Some((ignored.map(|(_, now)| now), removed.is_some()))
+}
+/// A committed ignore or removal-request store, after the enclosing native
+/// writer returned. Suppression follows the flags its latch staged before
+/// the store, never the bytes already written: `ignored` is the flag
+/// before and after, `removed` whether it was already requested.
+pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: Option<bool>) {
+    let Some((ignored, removed)) = committed_flags(ignored, removed) else {
+        return;
+    };
     access(|store, world, memory, base, generation| {
-        if let Some(ignored) = ignored {
-            let old = engine_native::read::<u8>(
-                memory,
-                pointer + engine_decisions::ctargeted_decision::IGNORE,
-            )
-            .ok_or("decision ignore operand unreadable")?;
-            if (old != 0) == ignored {
-                return Ok(());
-            }
-        }
-        if removed
-            && engine_native::read::<u8>(
-                memory,
-                pointer + engine_decisions::decision_runtime::REMOVE_REQUESTED,
-            ) == Some(1)
-        {
-            return Ok(());
-        }
-
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
@@ -302,7 +303,9 @@ pub fn activated(status: usize, pointer: usize, container: u8, state: i32, days:
     recorded
 }
 
-/// A real result store supplies both the retained delta and its feed occurrence.
+/// A real result store supplies both the retained delta and its feed
+/// occurrence. An uncertified owner's exact member keeps its occurrence and
+/// refuses only that owner; `false` when no attribution can be trusted.
 pub fn write_result(
     pointer: usize,
     state: Option<i32>,
@@ -311,22 +314,16 @@ pub fn write_result(
 ) -> bool {
     let mut recorded = false;
     access(|store, world, memory, base, generation| {
-        let Some(slot) = store.decisions.find(pointer) else {
-            return Ok(());
-        };
-        store.decision_selected_source(
+        recorded = store.decision_result(
             world,
             memory,
             base,
             generation,
-            slot.owner,
             pointer,
-            DecisionChange::new(Operation::Update, slot.container),
-            false,
             (state, days),
-            Some(source),
+            source,
+            "decision result reached an uncertified owner",
         )?;
-        recorded = true;
         Ok(())
     });
     recorded
@@ -339,7 +336,7 @@ pub fn political_balance(pointer: usize, reference: u32, instance: u32, before: 
     }
     let mut flight = crate::script_event_observer::Flight::enter();
     if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
-        let _ = owner.observe(|store| {
+        let _ = owner.observe(Role::PoliticalBalance, |store| {
             let Some(generation) = observed(owner, store) else {
                 return;
             };
@@ -376,23 +373,27 @@ fn reactivation_days(
 }
 pub fn reactivated(pointer: usize, state: i32, paired: (usize, i32)) {
     access(|store, world, memory, base, generation| {
+        const UNATTRIBUTED: &str =
+            "targeted reactivation has no owner baseline/pointer certificate";
         let slot = store
             .decisions
             .find(pointer)
-            .ok_or("targeted reactivation has no owner baseline/pointer certificate")?;
+            .or_else(|| store.decisions.uncertified(pointer))
+            .ok_or(UNATTRIBUTED)?;
         let days = reactivation_days(slot.container, pointer, paired)?;
-        store.decision_selected_source(
-            world,
-            memory,
-            base,
-            generation,
-            slot.owner,
-            pointer,
-            DecisionChange::new(Operation::Update, slot.container),
-            false,
-            (Some(state), days),
-            Some(replay_data::event_feed_rows::EventFeedSource::DecisionActivated),
-        )
+        store
+            .decision_result(
+                world,
+                memory,
+                base,
+                generation,
+                pointer,
+                (Some(state), days),
+                replay_data::event_feed_rows::EventFeedSource::DecisionActivated,
+                "targeted reactivation reached an uncertified owner",
+            )?
+            .then_some(())
+            .ok_or(UNATTRIBUTED)
     });
 }
 #[cfg(test)]

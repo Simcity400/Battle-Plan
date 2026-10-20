@@ -10,16 +10,24 @@ pub(super) struct Slot {
     pub id: u32,
     pub owner: CountryIdentity,
 }
+/// One census owner, keyed by its canonical census slot.
 #[derive(Clone, Copy, Default)]
-struct Country {
-    pointer: usize,
-    id: u32,
-    ready: bool,
+pub(super) struct Country {
+    pub pointer: usize,
+    pub id: u32,
+    /// Its baseline completed.
+    pub ready: bool,
+    /// Its baseline was tried; it is not tried again in this loss epoch.
+    pub attempted: bool,
+    /// Its refusal marker is published for this loss epoch: a later refusal
+    /// emits nothing. A completed baseline, a native reset or a loss
+    /// re-arms it.
+    pub refused: bool,
 }
 #[derive(Default)]
 pub(super) struct Index {
     slots: Vec<Slot>,
-    countries: Vec<Country>,
+    pub(super) countries: Vec<Country>,
     /// The world these labels belong to. An observation loss keeps it, so a
     /// later timer of the same world never reuses an earlier timer's label.
     generation: Option<u64>,
@@ -51,6 +59,10 @@ impl Index {
     }
     pub fn reset(&mut self, generation: u64) {
         let world = self.generation != Some(generation);
+        if world || self.invalidated || self.revoked {
+            // The next census visit recovers what this retires.
+            super::recovery_needed();
+        }
         if world || self.invalidated {
             self.slots.fill(Slot::default());
             self.countries.fill(Country::default());
@@ -222,7 +234,7 @@ impl Store {
         growing: bool,
     ) -> Result<(), &'static str> {
         self.observation(generation)?;
-        if growing && self.delayed.live.saturating_add(1) > self.delayed.capacity() {
+        if self.grows(growing) && self.delayed.live.saturating_add(1) > self.delayed.capacity() {
             self.prepare_delayed(
                 self.delayed
                     .live
@@ -254,6 +266,8 @@ impl Store {
         };
         self.script_mode(memory, base, generation, hour, fact, growing)
     }
+    /// A native delayed-event retirement. `pass` is the authenticated
+    /// iteration owner and the world its pass was anchored in.
     #[allow(
         clippy::too_many_arguments,
         reason = "Retirement forwards the native iteration facts with the existing world and publication certificate."
@@ -265,27 +279,119 @@ impl Store {
         base: usize,
         generation: u64,
         pointer: usize,
-        iteration: bool,
+        pass: Option<(usize, u64)>,
         visited: bool,
     ) -> Result<(), &'static str> {
         self.observation(generation)?;
         let Some(slot) = self.delayed.remove(pointer) else {
-            return if iteration {
-                Err("native delayed-event retirement has no owner certificate")
-            } else {
-                Ok(())
+            // A destroy outside a pass may free any object.
+            let Some((owner, anchored)) = pass else {
+                return Ok(());
             };
+            if anchored != generation {
+                return Err(UNCERTIFIED_RETIREMENT);
+            }
+            // The pass owner's own queue never had this timer certified, so
+            // only that owner's retained queue is unknown. Its census slot
+            // comes from the same resolution; no native queue is read.
+            let (record, identity) = world.country_record(owner)?;
+            let slot = record.canonical_slot as usize;
+            let entry = self.delayed.countries.get_mut(slot);
+            match entry {
+                Some(entry) if entry.pointer == owner && entry.id == identity.id => {
+                    if entry.ready {
+                        return Err(CERTIFIED_RETIREMENT_MISSING);
+                    }
+                }
+                // Not yet visited: the next census still attempts it.
+                Some(entry) => {
+                    *entry = Country {
+                        pointer: owner,
+                        id: identity.id,
+                        ..Country::default()
+                    };
+                }
+                // Beyond the prepared census table, which only its census
+                // visit grows: refused without a record.
+                None => {}
+            }
+            let hour = world.hour()?;
+            return self.refuse_delayed_owner(
+                memory,
+                base,
+                generation,
+                hour,
+                identity,
+                Some(slot),
+                UNCERTIFIED_RETIREMENT,
+                true,
+                false,
+            );
         };
         let mut fact = super::registry::marker(
             world,
             memory,
-            Change::DelayedRemoved { iteration, visited },
+            Change::DelayedRemoved {
+                iteration: pass.is_some(),
+                visited,
+            },
             Some(slot.id),
         )?;
         fact.target = slot.owner;
         self.script_known(memory, base, generation, world.hour()?, fact)
     }
-    pub(crate) fn delayed_baseline(
+    /// Refuse one owner's retained delayed queue: its marker carries the
+    /// reason, and every other owner, registry and the interval keep their
+    /// certificates. A failed attempt stays attempted. Once per owner and
+    /// loss epoch: a repeat is only counted. `slot`'s entry, when it is this
+    /// owner's, records the refusal.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The refused owner, its census slot and the reason travel with the publication operands."
+    )]
+    pub(crate) fn refuse_delayed_owner(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        generation: u64,
+        hour: i32,
+        owner: CountryIdentity,
+        slot: Option<usize>,
+        reason: &'static str,
+        count: bool,
+        growing: bool,
+    ) -> Result<(), &'static str> {
+        let entry = slot
+            .and_then(|slot| self.delayed.countries.get_mut(slot))
+            .filter(|entry| entry.id == owner.id && entry.pointer != 0);
+        let attempted = match entry {
+            Some(entry) => {
+                entry.ready = false;
+                if entry.refused {
+                    super::repeated_owner_refusal(super::OwnerRegistry::Delayed);
+                    return Ok(());
+                }
+                entry.refused = true;
+                entry.attempted
+            }
+            None => false,
+        };
+        // A failed attempt is not retried in this loss epoch, so only an
+        // owner the next census would baseline requests one.
+        if !attempted {
+            super::recovery_needed();
+        }
+        if count {
+            let _ = self.advance();
+            self.count_rejected(1);
+        }
+        let mut marker = super::registry::marker_for(memory, Change::DelayedRefused, None);
+        marker.target = owner;
+        self.script_text(memory, base, generation, hour, marker, reason, growing)
+    }
+    /// The census visit's delayed half. A first-seen or retired owner is
+    /// attempted once; a refusal stays with that owner.
+    pub(crate) fn recover_delayed(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -293,77 +399,147 @@ impl Store {
         state: usize,
         hour: i32,
         country: engine_native::ccountry::Country,
-    ) -> Result<(), &'static str> {
-        self.observation(generation)?;
-        if self.registry_state != Some(state) {
-            return Err("delayed-event census world certificate differs");
+    ) {
+        if self.failure.is_some() || self.observation(generation).is_err() {
+            return;
         }
         let slot = country.canonical_slot as usize;
-        if self
+        let seen = self
             .delayed
             .countries
             .get(slot)
-            .is_some_and(|seen| seen.pointer == country.pointer && seen.id == country.id)
-        {
-            return Ok(());
+            .filter(|seen| seen.pointer == country.pointer && seen.id == country.id)
+            .copied();
+        if seen.is_some_and(|seen| seen.attempted) {
+            return;
         }
-        if slot >= self.delayed.countries.len() {
-            self.prepare_delayed(
-                slot.checked_add(1)
-                    .ok_or("delayed-event country slot overflow")?,
-            )
-            .map_err(|_| "delayed-event country baseline allocation failed")?;
+        // Recovery allocates nothing under the lease, its refusal markers
+        // included: only presize grows the census table.
+        let recorded = slot < self.delayed.countries.len();
+        if recorded {
+            // One attempt per owner certificate, not periodic retries of
+            // queues. A refusal before this first attempt stays published.
+            self.delayed.countries[slot] = Country {
+                pointer: country.pointer,
+                id: country.id,
+                ready: false,
+                attempted: true,
+                refused: seen.is_some_and(|seen| seen.refused),
+            };
         }
-        // One attempt per owner certificate, not periodic retries of queues.
-        self.delayed.countries[slot] = Country {
-            pointer: country.pointer,
-            id: country.id,
-            ready: false,
+        let mut named = None;
+        let result = self.owner_scope(super::OwnerRegistry::Delayed, |store| {
+            // The sample's cut precedes even the identity word.
+            let cut = store.sample()?;
+            // Country's pointer/id/vtable came from this existing census.
+            // Read only its additional identity word; no second traversal.
+            let instance = country
+                .pointer
+                .checked_add(engine_native::ccountry::ID_INSTANCE)
+                .and_then(|at| engine_native::read::<u32>(memory, at))
+                .ok_or("delayed-event country identity word unreadable")?;
+            let owner = CountryIdentity {
+                reference: country.id,
+                id: country.id,
+                instance,
+            };
+            named = Some(owner);
+            if !recorded {
+                // Raise the census table's demand; retried at the next visit.
+                store.delayed.demand = store.delayed.demand.max(slot.saturating_add(1));
+                store.short();
+                return Err(super::OWNER_STORAGE);
+            }
+            store.delayed_owner_baseline(memory, base, generation, state, hour, country, owner, cut)
+        });
+        let refusal = match result {
+            Ok(()) => {
+                let entry = &mut self.delayed.countries[slot];
+                entry.ready = true;
+                entry.refused = false;
+                return;
+            }
+            Err(refusal) => refusal,
         };
-        let rejected = self.counts.rejected;
-        let array = native::delayed_array(memory, country.pointer)?;
-        // Country's pointer/id/vtable came from this existing census. Read
-        // only its additional identity word; no second country traversal.
-        let instance = country
-            .pointer
-            .checked_add(engine_native::ccountry::ID_INSTANCE)
-            .and_then(|at| engine_native::read::<u32>(memory, at))
-            .ok_or("delayed-event country identity word unreadable")?;
-        let owner = CountryIdentity {
-            reference: country.id,
-            id: country.id,
-            instance,
-        };
-        if array.count == 0 {
-            let mut marker = super::registry::marker_for(memory, Change::DelayedEmpty, None);
-            marker.target = owner;
-            self.script_growing(memory, base, generation, hour, marker)?;
-        } else {
-            let world = World::new(memory, base)?;
-            let mut marker = super::registry::marker_for(memory, Change::DelayedBaseline, None);
-            marker.target = owner;
-            self.script_growing(memory, base, generation, hour, marker)?;
-            for ordinal in 0..array.count {
-                self.delayed_stored(
-                    &world,
+        // A crossed or storage-short sample is retried, not failed.
+        if recorded && refusal.retry {
+            self.delayed.countries[slot].attempted = false;
+        }
+        match named {
+            Some(owner) => {
+                let _ = self.refuse_delayed_owner(
                     memory,
                     base,
                     generation,
                     hour,
                     owner,
-                    native::delayed_at(memory, base, array, ordinal)?,
-                    true,
-                )?;
+                    recorded.then_some(slot),
+                    refusal.reason,
+                    !refusal.counted,
+                    false,
+                );
             }
-            if native::delayed_array(memory, country.pointer)? != array {
-                return Err("delayed-event baseline changed during acquisition");
+            // Crossed before the owner could be named: retried, unnamed.
+            None if refusal.retry => {}
+            // A refusal must name its owner.
+            None => {
+                self.reject(refusal.reason);
             }
-            let mut marker = super::registry::marker_for(memory, Change::DelayedReady, None);
-            marker.target = owner;
-            self.script_growing(memory, base, generation, hour, marker)?;
         }
-        self.delayed.countries[slot].ready = self.counts.rejected == rejected;
-        Ok(())
+        if refusal.retry {
+            // Even a repeated refusal keeps the next walk coming.
+            super::recovery_needed();
+        }
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The census owner's identity is read once by its visit."
+    )]
+    fn delayed_owner_baseline(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        generation: u64,
+        state: usize,
+        hour: i32,
+        country: engine_native::ccountry::Country,
+        owner: CountryIdentity,
+        cut: super::Cut,
+    ) -> Result<(), &'static str> {
+        if self.registry_state != Some(state) {
+            return Err("delayed-event census world certificate differs");
+        }
+        // Every queue read the certificate rests on follows `cut`.
+        let array = native::delayed_array(memory, country.pointer)?;
+        if array.count == 0 {
+            Self::certifies(cut)?;
+            let mut marker = super::registry::marker_for(memory, Change::DelayedEmpty, None);
+            marker.target = owner;
+            return self.script_growing(memory, base, generation, hour, marker);
+        }
+        let world = World::new(memory, base)?;
+        let mut marker = super::registry::marker_for(memory, Change::DelayedBaseline, None);
+        marker.target = owner;
+        self.script_growing(memory, base, generation, hour, marker)?;
+        for ordinal in 0..array.count {
+            self.delayed_stored(
+                &world,
+                memory,
+                base,
+                generation,
+                hour,
+                owner,
+                native::delayed_at(memory, base, array, ordinal)?,
+                true,
+            )?;
+        }
+        if native::delayed_array(memory, country.pointer)? != array {
+            return Err("delayed-event baseline changed during acquisition");
+        }
+        Self::certifies(cut)?;
+        let mut marker = super::registry::marker_for(memory, Change::DelayedReady, None);
+        marker.target = owner;
+        self.script_growing(memory, base, generation, hour, marker)
     }
     pub fn invalidate_delayed_country(&mut self, pointer: usize) {
         for country in &mut self.delayed.countries {
@@ -371,8 +547,15 @@ impl Store {
                 *country = Country::default();
             }
         }
+        // A native reset gives the owner a new queue to baseline.
+        super::recovery_needed();
     }
 }
+
+pub(crate) const UNCERTIFIED_RETIREMENT: &str =
+    "native delayed-event retirement has no owner certificate";
+pub(crate) const CERTIFIED_RETIREMENT_MISSING: &str =
+    "native delayed-event retirement is missing from its certified owner queue";
 
 #[cfg(test)]
 mod tests {
@@ -468,11 +651,15 @@ mod tests {
             pointer: 0x10,
             id: 1,
             ready: true,
+            attempted: true,
+            refused: false,
         };
         let attempted = Country {
             pointer: 0x20,
             id: 2,
             ready: false,
+            attempted: true,
+            refused: true,
         };
         crate::test_support::with_allocations_denied(|| {
             assert_eq!(index.insert(0x1000, owner).unwrap(), 1);
@@ -499,6 +686,8 @@ mod tests {
             index.reset(1);
             assert_eq!(index.countries[0].pointer, 0);
             assert_eq!(index.countries[1].pointer, attempted.pointer);
+            // A revocation is no new loss epoch for the refused attempt.
+            assert!(index.countries[1].attempted && index.countries[1].refused);
             assert_eq!(index.insert(0x2000, owner).unwrap(), 4);
             index.reset(2);
             assert_eq!(index.live, 0);

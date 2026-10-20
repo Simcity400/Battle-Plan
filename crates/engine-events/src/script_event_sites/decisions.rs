@@ -243,6 +243,7 @@ pub const CONSOLE_ALL_DAYS: Site = Site {
         0x07,
     ],
 };
+/// A witness only, staged for [`IGNORE_ALL_COMMAND`]: its return precedes the store.
 pub const IGNORE_ALL_SELECTED: Site = Site {
     name: "DecisionIgnoreAllSelected",
     rva: 0x0114232c,
@@ -251,6 +252,7 @@ pub const IGNORE_ALL_SELECTED: Site = Site {
         0xc3,
     ],
 };
+/// A witness only, staged for [`TARGETED_REMOVAL_REQUEST`].
 pub const REQUEST_TARGETED_TIMED: Site = Site {
     name: "DecisionRequestTargetedTimed",
     rva: 0x0035ed39,
@@ -259,6 +261,7 @@ pub const REQUEST_TARGETED_TIMED: Site = Site {
         0x74,
     ],
 };
+/// A witness only, staged for [`TARGETED_REMOVAL_REQUEST`].
 pub const REQUEST_TARGETED: Site = Site {
     name: "DecisionRequestTargeted",
     rva: 0x0035ed40,
@@ -387,6 +390,7 @@ pub const REMOVAL_RETIRED: Site = Site {
         0xc7,
     ],
 };
+/// A witness only, staged for [`TIMED_SELECTION`].
 pub const TIMED_SELECTION_RESULT: Site = Site {
     name: "DecisionTimedSelectionResult",
     rva: 0x0072903b,
@@ -395,6 +399,7 @@ pub const TIMED_SELECTION_RESULT: Site = Site {
         0xc4,
     ],
 };
+/// A witness only, staged for the politics-owned targeted decision entry.
 pub const TARGETED_SELECTION_RESULT: Site = Site {
     name: "DecisionTargetedSelectionResult",
     rva: 0x00728f6c,
@@ -403,6 +408,7 @@ pub const TARGETED_SELECTION_RESULT: Site = Site {
         0xb1,
     ],
 };
+/// A witness only, staged for [`TARGETED_IGNORE_COMMAND`].
 pub const TARGETED_IGNORE_RESULT: Site = Site {
     name: "DecisionTargetedIgnoreResult",
     rva: 0x011428ef,
@@ -411,7 +417,103 @@ pub const TARGETED_IGNORE_RESULT: Site = Site {
         0x85,
     ],
 };
-pub const ENTRIES: [Site; 20] = [
+/// Automatic mission activation. RCX status. For each retained mission it
+/// skips, appends or reactivates; every reached reactivation's days and
+/// active-state stores precede its return.
+pub const AUTO_MISSION_ACTIVATION: Site = Site {
+    name: "AutoMissionActivation",
+    rva: 0x0072aa40,
+    sentinel: [
+        0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
+        0x57,
+    ],
+};
+/// Timed decision selection. RCX status, RDX definition. It selects the
+/// timed instance and stores its active state and selected days before
+/// returning them, zero-extended, in RAX.
+pub const TIMED_SELECTION: Site = Site {
+    name: "TimedDecisionSelection",
+    rva: 0x00728fb0,
+    sentinel: [
+        0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20,
+        0x48,
+    ],
+};
+/// Targeted ignore command execution. RCX command. Every selected targeted
+/// instance's ignore store precedes its return.
+pub const TARGETED_IGNORE_COMMAND: Site = Site {
+    name: "TargetedIgnoreCommand",
+    rva: 0x011427e0,
+    sentinel: [
+        0x4c, 0x8b, 0xdc, 0x53, 0x55, 0x48, 0x83, 0xec, 0x58, 0x48, 0x8b, 0x59, 0x30, 0x48, 0x8b,
+        0xe9,
+    ],
+};
+/// Ignore-all command execution. RCX command. Every admitted instance's
+/// ignore store precedes its return.
+pub const IGNORE_ALL_COMMAND: Site = Site {
+    name: "IgnoreAllDecisionsCommand",
+    rva: 0x01142270,
+    sentinel: [
+        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54, 0x41,
+        0x56,
+    ],
+};
+/// Targeted removal-request effect execution. RCX effect, RDX scope. Both
+/// lookups join one removal-request store, which precedes its return.
+pub const TARGETED_REMOVAL_REQUEST: Site = Site {
+    name: "TargetedRemovalRequest",
+    rva: 0x0035ec10,
+    sentinel: [
+        0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x60,
+        0x48,
+    ],
+};
+/// Decision candidate finalization. RCX status. All four candidate header
+/// clears precede its return.
+pub const CANDIDATE_FINALIZATION: Site = Site {
+    name: "DecisionCandidateFinalization",
+    rva: 0x0072b630,
+    sentinel: [
+        0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
+        0x41,
+    ],
+};
+/// The mission timeout extension's scalar add. RCX the timed instance, EDX
+/// the signed day delta; the scope is R15 at this CALL. The add completes
+/// before the call returns.
+pub const EXTEND_MISSION_TIMEOUT_CALL: Site = Site {
+    name: "ExtendMissionTimeoutCall",
+    rva: 0x00349771,
+    sentinel: [
+        0xe8, 0x9a, 0xfb, 0x3c, 0x00, 0x48, 0x8b, 0x7c, 0x24, 0x68, 0x48, 0x8b, 0x5c, 0x24, 0x58,
+        0x48,
+    ],
+};
+/// The removal timer extension's scalar add. RCX the removal timer, EDX the
+/// signed day delta; the scope is RSI at this CALL.
+pub const EXTEND_DECISION_REMOVAL_CALL: Site = Site {
+    name: "ExtendDecisionRemovalCall",
+    rva: 0x003497ec,
+    sentinel: [
+        0xe8, 0x0f, 0xfb, 0x3c, 0x00, 0x48, 0x8b, 0x5c, 0x24, 0x30, 0x48, 0x8b, 0x74, 0x24, 0x38,
+        0x48,
+    ],
+};
+/// Replaced-event retirement. RCX world, RDX the old definition. On a
+/// fired match it unlinks the node and decrements the fired count before
+/// returning; a no-match retires nothing.
+pub const REPLACE_EVENT_RETIREMENT_CALL: Site = Site {
+    name: "ReplaceEventRetirementCall",
+    rva: 0x00a02097,
+    sentinel: [
+        0xe8, 0x64, 0x7e, 0x7d, 0xff, 0x48, 0x8b, 0x75, 0x70, 0x49, 0x63, 0x47, 0x0c, 0x41, 0x8b,
+        0x4f,
+    ],
+};
+/// Entry detours. The last seven enclose pre-store writers: their selected
+/// taps and CALLs only stage witnesses, published once the original returns.
+pub const ENTRIES: [Site; 27] = [
     TIMED_PASS,
     TARGETED_PASS,
     TARGETED_TIMED_PASS,
@@ -432,8 +534,17 @@ pub const ENTRIES: [Site; 20] = [
     UNIGNORE_TOKEN,
     HOURLY_UPDATE,
     REFRESH_UPDATE,
+    AUTO_MISSION_ACTIVATION,
+    super::ACTIVATE_MISSION,
+    TIMED_SELECTION,
+    TARGETED_IGNORE_COMMAND,
+    IGNORE_ALL_COMMAND,
+    TARGETED_REMOVAL_REQUEST,
+    CANDIDATE_FINALIZATION,
 ];
-pub const CALLS: [Site; 14] = [
+/// Selected CALLs. The last three run their decoded target under a writer
+/// flight and publish the committed result after it.
+pub const CALLS: [Site; 17] = [
     APPEND_TAKEN,
     APPEND_REMOVAL,
     TRANSFER_REENABLE,
@@ -448,6 +559,9 @@ pub const CALLS: [Site; 14] = [
     IGNORE_ALL_SELECTED,
     REQUEST_TARGETED_TIMED,
     REQUEST_TARGETED,
+    EXTEND_MISSION_TIMEOUT_CALL,
+    EXTEND_DECISION_REMOVAL_CALL,
+    REPLACE_EVENT_RETIREMENT_CALL,
 ];
 pub const TAPS: [Site; 20] = [
     HOURLY_REENABLE_BEGIN,
@@ -487,6 +601,7 @@ pub const REFRESH_UPDATE: Site = Site {
         0x89,
     ],
 };
+/// A descriptor only, no longer installed: [`CANDIDATE_FINALIZATION`] encloses every clear.
 pub const CLEAR_CANDIDATES: Site = Site {
     name: "DecisionClearCandidates",
     rva: 0x0072b9cf,

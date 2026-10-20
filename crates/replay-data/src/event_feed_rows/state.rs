@@ -230,7 +230,8 @@ impl ScriptEventState {
                 | DelayedEmpty
                 | DelayedStored { .. }
                 | DelayedAdvance { .. }
-                | DelayedRemoved { .. } => {
+                | DelayedRemoved { .. }
+                | DelayedRefused => {
                     self.delayed
                         .entry((event.target.id, event.target.instance))
                         .or_default()
@@ -281,7 +282,20 @@ fn identity(row: &EventFeedHistoryRow, script: EventFeedScript) -> io::Result<Sc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::decisions::{DecisionChange, Operation};
     use EventFeedScriptChange::*;
+    /// Owner refusals carry this reason after the shared definition token.
+    const REASON: &[u8] = b"synthetic owner refusal";
+    fn refusal(change: &EventFeedScriptChange) -> bool {
+        matches!(
+            change,
+            DelayedRefused
+                | Decision(DecisionChange {
+                    operation: Operation::Refused,
+                    ..
+                })
+        )
+    }
     fn row(
         hour: i32,
         first: u64,
@@ -296,7 +310,7 @@ mod tests {
                 settled: 1000,
                 ..Default::default()
             }),
-            script_tokens: b"synthetic.1".to_vec(),
+            script_tokens: [b"synthetic.1".as_slice(), REASON].concat(),
             script_scopes: vec![EventFeedScope::default()],
             events: changes
                 .iter()
@@ -323,6 +337,7 @@ mod tests {
                             | DelayedStored { .. }
                             | DelayedAdvance { .. }
                             | DelayedRemoved { .. }
+                            | DelayedRefused
                     ) {
                         EventFeedCountry {
                             reference: 6,
@@ -334,7 +349,14 @@ mod tests {
                     },
                     cause: Recorded::Value(Default::default()),
                     script: Some(EventFeedScript {
-                        token_len: if id.is_some() { 11 } else { 0 },
+                        token_start: if refusal(change) { 11 } else { 0 },
+                        token_len: if refusal(change) {
+                            REASON.len() as u32
+                        } else if id.is_some() {
+                            11
+                        } else {
+                            0
+                        },
                         scope_len: u32::from(matches!(
                             change,
                             PendingStored { .. } | DelayedStored { .. }
@@ -860,7 +882,13 @@ mod tests {
             Ok(())
         }
         fn timers(&self) -> Result<Vec<(u32, u32, i32)>, &'static str> {
-            self.0[0].delayed(DELAYED_OWNER).map(|timers| {
+            self.timers_of(DELAYED_OWNER)
+        }
+        fn timers_of(
+            &self,
+            owner: EventFeedCountry,
+        ) -> Result<Vec<(u32, u32, i32)>, &'static str> {
+            self.0[0].delayed(owner).map(|timers| {
                 timers
                     .iter()
                     .map(|timer| {
@@ -1105,6 +1133,231 @@ mod tests {
                 .iter()
                 .all(|timer| timer.remaining == 19)
         );
+    }
+    fn owner(id: u32) -> EventFeedCountry {
+        EventFeedCountry {
+            reference: id + 1,
+            id,
+            instance: 7,
+        }
+    }
+    fn decision(operation: Operation) -> Change {
+        (Decision(DecisionChange::new(operation, 0)), None, None)
+    }
+    /// `row` with each occurrence's owner chosen: a delayed change's target,
+    /// a decision change's actor. Registry changes ignore it.
+    fn owned(hour: i32, first: u64, changes: &[(u32, Change)]) -> EventFeedHistoryRow {
+        let plain: Vec<_> = changes.iter().map(|(_, change)| *change).collect();
+        let mut row = row(hour, first, &plain);
+        for (event, (id, _)) in row.events.iter_mut().zip(changes) {
+            if matches!(
+                event.script.and_then(|script| script.change),
+                Some(Decision(_))
+            ) {
+                event.actor = owner(*id);
+            } else if event.target != EventFeedCountry::default() {
+                event.target = owner(*id);
+            }
+        }
+        row
+    }
+    #[test]
+    fn delayed_owner_refusal_retires_only_its_queue_until_its_next_baseline() {
+        let (a, b, c) = (1, 2, 3);
+        let mut state = Reductions::default();
+        state
+            .observe(&owned(
+                1,
+                0,
+                &[
+                    (a, (DelayedBaseline, None, None)),
+                    (a, store(10, 1, 40)),
+                    (a, (DelayedReady, None, None)),
+                    (b, (DelayedBaseline, None, None)),
+                    (b, store(20, 2, 41)),
+                    (b, (DelayedReady, None, None)),
+                    (c, (DelayedEmpty, None, None)),
+                    (0, (PendingBaseline, None, None)),
+                    (0, (PendingStored { due_hour: 50 }, Some(3), Some(90))),
+                    (0, (PendingReady, None, None)),
+                    (0, (FiredBaseline, None, None)),
+                    (0, (FiredMember, None, Some(91))),
+                    (0, (FiredReady, None, None)),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(state.timers_of(owner(a)).unwrap(), [(1, 40, 10)]);
+        let others = |state: &Reductions, b_timers: &[(u32, u32, i32)]| {
+            assert_eq!(state.timers_of(owner(b)).unwrap(), b_timers);
+            assert!(state.timers_of(owner(c)).unwrap().is_empty());
+            let pending = state.0[0].pending().unwrap();
+            assert_eq!(
+                pending
+                    .iter()
+                    .map(|row| (row.instance, row.definition.native_event.id, row.due_hour))
+                    .collect::<Vec<_>>(),
+                [(3, 90, 50)]
+            );
+            assert_eq!(
+                state.0[0]
+                    .fired()
+                    .unwrap()
+                    .iter()
+                    .map(|member| member.native_event.id)
+                    .collect::<Vec<_>>(),
+                [91]
+            );
+        };
+        others(&state, &[(2, 41, 20)]);
+        // A Complete row refuses A alone. A's later writer is not checked
+        // against the retired queue; B's pass still applies.
+        let refused = owned(
+            2,
+            13,
+            &[
+                (a, (DelayedRefused, None, None)),
+                (a, store(5, 9, 42)),
+                (b, advance(1, true)),
+            ],
+        );
+        assert_eq!(refused.coverage, EventFeedCoverage::Complete);
+        state.observe(&refused).unwrap();
+        assert!(state.timers_of(owner(a)).is_err());
+        others(&state, &[(2, 41, 19)]);
+        // A's next baseline restores it.
+        state
+            .observe(&owned(
+                3,
+                16,
+                &[
+                    (a, (DelayedBaseline, None, None)),
+                    (a, store(9, 1, 40)),
+                    (a, (DelayedReady, None, None)),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(state.timers_of(owner(a)).unwrap(), [(1, 40, 9)]);
+        others(&state, &[(2, 41, 19)]);
+        // A refusal also closes an open baseline.
+        assert!(
+            state.0[0]
+                .observe(&owned(
+                    4,
+                    19,
+                    &[
+                        (a, (DelayedBaseline, None, None)),
+                        (a, (DelayedRefused, None, None)),
+                        (a, (DelayedReady, None, None)),
+                    ],
+                ))
+                .is_err()
+        );
+    }
+    #[test]
+    fn decision_owner_refusal_retires_only_its_owner_and_closes_an_open_baseline() {
+        let (a, b, c) = (1, 2, 3);
+        let mut state = Reductions::default();
+        state
+            .observe(&owned(
+                1,
+                0,
+                &[
+                    (a, decision(Operation::Baseline)),
+                    (a, decision(Operation::Ready)),
+                    (b, decision(Operation::Baseline)),
+                    (b, decision(Operation::Ready)),
+                    // C's baseline stays open.
+                    (c, decision(Operation::Baseline)),
+                    (b, (DelayedEmpty, None, None)),
+                    (0, (PendingBaseline, None, None)),
+                    (0, (PendingReady, None, None)),
+                ],
+            ))
+            .unwrap();
+        assert!(state.0[0].decisions(owner(a)).is_ok());
+        assert!(state.0[0].decisions(owner(c)).is_err());
+        state
+            .observe(&owned(
+                2,
+                8,
+                &[
+                    (a, decision(Operation::Refused)),
+                    (c, decision(Operation::Refused)),
+                ],
+            ))
+            .unwrap();
+        assert!(state.0[0].decisions(owner(a)).is_err());
+        assert!(state.0[0].decisions(owner(b)).is_ok());
+        assert!(state.0[0].decisions(owner(c)).is_err());
+        assert!(state.timers_of(owner(b)).unwrap().is_empty());
+        assert!(state.0[0].pending().unwrap().is_empty());
+        state
+            .observe(&owned(
+                3,
+                10,
+                &[
+                    (a, decision(Operation::Baseline)),
+                    (a, decision(Operation::Ready)),
+                ],
+            ))
+            .unwrap();
+        assert!(state.0[0].decisions(owner(a)).is_ok());
+        assert!(state.0[0].decisions(owner(b)).is_ok());
+        // C's refused baseline has nothing left to complete.
+        assert!(
+            state.0[0]
+                .observe(&owned(4, 12, &[(c, decision(Operation::Ready))]))
+                .is_err()
+        );
+    }
+    #[test]
+    fn one_owner_refusal_touches_only_its_owner_among_thousands() {
+        for owners in [1_500_u32, 5_000] {
+            let mut changes = Vec::new();
+            for id in 1..=owners {
+                changes.push((id, (DelayedEmpty, None, None)));
+                changes.push((id, decision(Operation::Baseline)));
+                changes.push((id, decision(Operation::Ready)));
+            }
+            let mut baseline = owned(1, 0, &changes);
+            let total = 4 * u64::from(owners);
+            baseline.counts = Some(EventFeedCounts {
+                acquired: total,
+                settled: total,
+                ..Default::default()
+            });
+            let mut state = ScriptEventState::default();
+            state.observe(&baseline).unwrap();
+            let refused = owners / 2;
+            state
+                .observe(&owned(
+                    2,
+                    3 * u64::from(owners),
+                    &[
+                        (refused, (DelayedRefused, None, None)),
+                        (refused + 1, decision(Operation::Refused)),
+                    ],
+                ))
+                .unwrap();
+            assert_eq!(state.delayed_owners().count(), owners as usize);
+            assert_eq!(state.decision_owners().count(), owners as usize);
+            assert_eq!(
+                state
+                    .delayed_owners()
+                    .filter(|(_, rows)| rows.is_err())
+                    .map(|(country, _)| country)
+                    .collect::<Vec<_>>(),
+                [owner(refused)]
+            );
+            assert_eq!(
+                state
+                    .decision_owners()
+                    .filter(|state| !state.complete())
+                    .map(|state| state.country)
+                    .collect::<Vec<_>>(),
+                [owner(refused + 1)]
+            );
+        }
     }
 }
 

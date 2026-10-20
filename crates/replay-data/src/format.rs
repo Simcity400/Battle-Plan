@@ -252,7 +252,10 @@ mod tests {
 
     #[test]
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
-        assert_eq!(FORMAT_VERSION, 107);
+        assert_eq!(
+            FORMAT_VERSION,
+            crate::rows::compatibility::EVENT_FEED_OWNER_REFUSALS_FORMAT
+        );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
                 assert!(FormatVersion::read(version).is_err());

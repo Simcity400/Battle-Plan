@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod decisions;
 mod delayed;
 mod lifecycle;
+pub mod staging;
 
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static REGISTER_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
@@ -23,11 +24,14 @@ static DECISION_ORIGINAL: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
 static ACTIVATION_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
 const RETAIN_NATIVE_FLIGHT: usize = 1 << 63;
+/// A bracketed native original in flight. Its entry and return move the
+/// event feed's writer epoch, so no baseline sample certifies across it.
 pub(crate) struct Flight {
     normal: bool,
 }
 impl Flight {
     pub(crate) fn enter() -> Self {
+        feed::writer_moved();
         ACTIVE.fetch_add(1, Ordering::SeqCst);
         Self { normal: false }
     }
@@ -42,6 +46,7 @@ impl Drop for Flight {
         } else {
             ACTIVE.fetch_or(RETAIN_NATIVE_FLIGHT, Ordering::SeqCst);
         }
+        feed::writer_moved();
     }
 }
 pub fn active() -> usize {
@@ -245,47 +250,72 @@ fn last_instance(
         .ok_or("mission append has no selected entry")?;
     field::<u64>(memory, last, 0).map(|pointer| pointer as usize)
 }
-fn activation(status: usize, definition: usize, instance: Option<usize>, days: i32) {
+/// An appended mission: its stores precede this tap.
+fn appended(status: usize, definition: usize, days: i32) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let base = BASE.load(Ordering::Acquire);
+    let result = last_instance(
+        &memory,
+        status,
+        engine_decisions::cdecision_status::ACTIVE_TIMED,
+    )
+    .and_then(|instance| publish_activation(&memory, status, definition, instance, 0, days));
+    if let Err(reason) = result {
+        feed::refuse(reason);
+    }
+}
+/// A reached reactivation, after its enclosing activation returned: the
+/// committed days and active state of the instance its latch staged.
+pub(super) fn reactivated(status: usize, definition: usize, instance: usize) {
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let result = (|| {
-        let instance = match instance {
-            Some(instance) => instance,
-            None => last_instance(
-                &memory,
-                status,
-                engine_decisions::cdecision_status::ACTIVE_TIMED,
-            )?,
-        };
-        if instance == 0
-            || engine_native::read::<u64>(&memory, instance)
-                != base
-                    .checked_add(engine_decisions::ctimed_decision::VTABLE_RVA)
-                    .map(|at| at as u64)
-            || field::<u64>(
-                &memory,
-                instance,
-                engine_decisions::ctimed_decision::DEFINITION,
-            )? as usize
-                != definition
-        {
-            return Err("mission activation selected instance identity differs");
-        }
-        if !feed::decisions::activated(status, instance, 3, 0, days) {
-            decision_result(
-                EventFeedSource::DecisionActivated,
-                definition,
-                lifecycle::owner(status)?,
-                None,
-                Some(0),
-                Some(days),
-            );
-        }
-        Ok(())
+        let days = field::<i32>(&memory, instance, engine_decisions::ctimed_decision::DAYS)?;
+        let state = field::<i32>(&memory, instance, engine_decisions::ctimed_decision::STATE)?;
+        publish_activation(&memory, status, definition, instance, state, days)
     })();
     if let Err(reason) = result {
         feed::refuse(reason);
     }
+}
+fn publish_activation(
+    memory: &impl Memory,
+    status: usize,
+    definition: usize,
+    instance: usize,
+    state: i32,
+    days: i32,
+) -> Result<(), &'static str> {
+    let base = BASE.load(Ordering::Acquire);
+    if instance == 0
+        || engine_native::read::<u64>(memory, instance)
+            != base
+                .checked_add(engine_decisions::ctimed_decision::VTABLE_RVA)
+                .map(|at| at as u64)
+        || field::<u64>(
+            memory,
+            instance,
+            engine_decisions::ctimed_decision::DEFINITION,
+        )? as usize
+            != definition
+    {
+        return Err("mission activation selected instance identity differs");
+    }
+    #[cfg(test)]
+    staging::published(staging::Published::Activation {
+        instance,
+        state,
+        days,
+    });
+    if !feed::decisions::activated(status, instance, 3, state, days) {
+        decision_result(
+            EventFeedSource::DecisionActivated,
+            definition,
+            lifecycle::owner(status)?,
+            None,
+            Some(state),
+            Some(days),
+        );
+    }
+    Ok(())
 }
 unsafe extern "system-unwind" fn activate_targeted(
     status: usize,
@@ -435,30 +465,52 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             }
         }
         2 | 3 => option(registers.rbx, registers.rsi, registers.rdi as i32),
-        4 | 5 => activation(
-            registers.rbp,
-            registers.rsi,
-            (index == 5).then_some(registers.rdi),
-            registers.r12 as i32,
+        4 => appended(registers.rbp, registers.rsi, registers.r12 as i32),
+        6 => appended(registers.r15, registers.r14, registers.r12 as i32),
+        // Reactivation stores follow these taps: only the enclosing
+        // activation publishes, after its return.
+        5 => staging::stage(
+            staging::Unit::AutoActivation,
+            staging::Witness::Reactivated {
+                status: registers.rbp,
+                definition: registers.rsi,
+                instance: registers.rdi,
+            },
         ),
-        6 | 7 => activation(
-            registers.r15,
-            registers.r14,
-            (index == 7).then_some(registers.rdi),
-            registers.r12 as i32,
+        7 => staging::stage(
+            staging::Unit::ScriptedActivation,
+            staging::Witness::Reactivated {
+                status: registers.r15,
+                definition: registers.r14,
+                instance: registers.rdi,
+            },
         ),
-        8 => feed::record_script(|world, memory, base| {
-            if world.state_pointer() != registers.rsi {
-                return Err("fired-event erasure world differs");
-            }
-            let mut fact =
-                crate::event_feed_history::registry::fired(world, memory, base, registers.rdi)?;
-            fact.script.change =
-                Some(replay_data::event_feed_rows::EventFeedScriptChange::FiredRemoved);
-            Ok(Some(fact))
-        }),
+        // The fired-match branch: the node is unlinked and the count
+        // decrement follows, so the enclosing retirement CALL publishes.
+        8 => staging::stage(
+            staging::Unit::FiredRetirement,
+            staging::Witness::FiredMatch {
+                state: registers.rsi,
+                definition: registers.rdi,
+            },
+        ),
         _ => feed::refuse("script event tap identity differs"),
     }
+}
+/// A fired-event retirement whose match branch was staged, after its CALL
+/// returned. The old definition stays live; the freed node is never read.
+pub(super) fn retired_fired(state: usize, definition: usize) {
+    #[cfg(test)]
+    staging::published(staging::Published::Fired { definition });
+    feed::record_script(|world, memory, base| {
+        if world.state_pointer() != state {
+            return Err("fired-event erasure world differs");
+        }
+        let mut fact = crate::event_feed_history::registry::fired(world, memory, base, definition)?;
+        fact.script.change =
+            Some(replay_data::event_feed_rows::EventFeedScriptChange::FiredRemoved);
+        Ok(Some(fact))
+    });
 }
 
 unsafe extern "system-unwind" fn register(
@@ -788,9 +840,39 @@ pub unsafe fn delayed_pass_taps(
     unsafe { delayed::forwarded_taps(memory, base) }
 }
 
+/// The politics family's targeted decision entry: `run` is its original
+/// and politics forwarding. The selection tap inside only stages the
+/// selected instance; its stored days and active state publish once `run`
+/// returned, all under one writer flight. An unwinding `run` discards the
+/// frame and retains the flight.
+pub fn targeted_selection(run: impl FnOnce() -> usize) -> usize {
+    let detour = staging::Detour::enter(staging::Unit::TargetedSelection);
+    let result = run();
+    #[cfg(any(test, feature = "test-support"))]
+    SELECTION_CAUSE.set(Some(crate::war_provenance::inside()));
+    detour.publish(|witness| match witness {
+        staging::Witness::Selected { instance } => decisions::selected_result(instance, true),
+        _ => feed::refuse(staging::OTHER_FRAME),
+    });
+    result
+}
+
+#[cfg(any(test, feature = "test-support"))]
+std::thread_local! {
+    static SELECTION_CAUSE: std::cell::Cell<Option<replay_data::event_feed_rows::EventFeedCause>> =
+        const { std::cell::Cell::new(None) };
+}
+/// Test only: the provenance cause in force when [`targeted_selection`]
+/// last published, taken.
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_selection_cause() -> Option<replay_data::event_feed_rows::EventFeedCause> {
+    SELECTION_CAUSE.take()
+}
+
 /// # Safety
 /// The politics family owns this function and forwards its selected final
-/// store through this tap, publishing/restoring it with its entry detour.
+/// store through this tap, which only stages its witness for
+/// [`targeted_selection`].
 pub unsafe fn targeted_selection_tap(
     memory: &impl Memory,
     base: usize,

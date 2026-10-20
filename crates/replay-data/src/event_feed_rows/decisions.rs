@@ -36,6 +36,9 @@ pub enum Operation {
     Rebuild = 11,
     Candidate = 12,
     Ignore = 13,
+    /// The capture refused this owner's retained state (the event's actor);
+    /// the token is the reason. Other owners keep their certificates.
+    Refused = 14,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecisionChange {
@@ -73,6 +76,15 @@ impl DecisionChange {
         }
         if self.operation == Store && script.instance == Some(0) {
             return Err(invalid("decision stored compact identity is zero"));
+        }
+        if self.operation == Refused
+            && (script.token_len == 0
+                || script.token_unrecorded
+                || self.container != 0
+                || self.flags != 0
+                || self.ordinal != 0)
+        {
+            return Err(invalid("decision owner refusal operands differ"));
         }
         Ok(())
     }
@@ -130,6 +142,7 @@ impl Value for DecisionChange {
             11 => Rebuild,
             12 => Candidate,
             13 => Ignore,
+            14 => Refused,
             _ => return Err(invalid("unknown retained decision operation")),
         };
         Ok(Self {
@@ -306,6 +319,11 @@ impl DecisionState {
                 self.baseline_hour = Some(row.read_hour);
             }
             Invalidate => self.gap(),
+            // Also closes an open baseline: a Ready after it has nothing to complete.
+            Refused => {
+                self.gap();
+                self.building = false;
+            }
             RandomSet => {
                 self.random_counts.push(RetainedRandomCount {
                     token: token(),

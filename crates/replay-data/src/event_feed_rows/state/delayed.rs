@@ -160,6 +160,9 @@ impl Owner {
                     self.refuse();
                 }
             }
+            // The capture refused this owner alone; like a loss, only a new
+            // baseline or empty certificate restores it.
+            DelayedRefused => self.gap(),
             _ => return Err(invalid("non-country change reached delayed-event reducer")),
         }
         Ok(())

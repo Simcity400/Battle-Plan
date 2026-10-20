@@ -11,6 +11,22 @@ fn apply(
     flags: u8,
     ordinal: u32,
 ) {
+    reduce(
+        state, operation, container, id, token, days, lifecycle, flags, ordinal,
+    )
+    .unwrap();
+}
+fn reduce(
+    state: &mut DecisionState,
+    operation: Operation,
+    container: u8,
+    id: Option<u32>,
+    token: &[u8],
+    days: Option<i32>,
+    lifecycle: Option<i32>,
+    flags: u8,
+    ordinal: u32,
+) -> io::Result<()> {
     let change = DecisionChange {
         operation,
         container,
@@ -45,8 +61,8 @@ fn apply(
         cause: Recorded::Value(Default::default()),
         script: Some(script),
     };
-    change.validate(script).unwrap();
-    state.observe(&row, &event, script, change).unwrap();
+    change.validate(script)?;
+    state.observe(&row, &event, script, change)
 }
 fn marker(state: &mut DecisionState, operation: Operation, container: u8, ordinal: u32) {
     apply(
@@ -96,6 +112,7 @@ fn compact_decision_operations_roundtrip_and_reject_invented_operands() {
         Operation::Rebuild,
         Operation::Candidate,
         Operation::Ignore,
+        Operation::Refused,
     ] {
         let value = EventFeedScriptChange::Decision(DecisionChange {
             operation,
@@ -593,4 +610,84 @@ fn rebuild_balance_codec_preserves_signed_fixed5_and_other_ops_have_no_extra_byt
     }
     let change = DecisionChange::new(Operation::Ready, 0);
     assert_eq!(change.encoded_bytes().unwrap(), 4);
+}
+
+#[test]
+fn owner_refusal_needs_its_reason_and_retires_a_certified_or_open_baseline() {
+    let refusal = DecisionChange::new(Operation::Refused, 0);
+    let reason = EventFeedScript {
+        token_len: 6,
+        ..Default::default()
+    };
+    refusal.validate(reason).unwrap();
+    for script in [
+        EventFeedScript::default(),
+        EventFeedScript {
+            token_unrecorded: true,
+            ..Default::default()
+        },
+        EventFeedScript {
+            instance: Some(1),
+            ..reason
+        },
+        EventFeedScript {
+            native_event: Some(EventFeedEventIdentity { kind: 1, id: 1 }),
+            ..reason
+        },
+        EventFeedScript {
+            scope_len: 1,
+            ..reason
+        },
+        EventFeedScript {
+            scope_unrecorded: true,
+            ..reason
+        },
+    ] {
+        assert!(refusal.validate(script).is_err(), "{script:?}");
+    }
+    for (container, flags, ordinal) in [(TIMED, 0, 0), (0, IGNORED, 0), (0, 0, 1)] {
+        let change = DecisionChange {
+            container,
+            flags,
+            ordinal,
+            ..refusal
+        };
+        assert!(change.validate(reason).is_err());
+    }
+    let mut certified = baseline();
+    store(&mut certified, TIMED, 1, b"x", 10, 0, 0);
+    marker(&mut certified, Operation::Ready, 0, 0);
+    assert!(certified.complete());
+    apply(
+        &mut certified,
+        Operation::Refused,
+        0,
+        None,
+        b"reason",
+        None,
+        None,
+        0,
+        0,
+    );
+    assert!(certified.members(TIMED).is_err());
+    // An open baseline is closed too: its Ready has nothing left to complete.
+    let mut open = baseline();
+    store(&mut open, TIMED, 1, b"x", 10, 0, 0);
+    apply(
+        &mut open,
+        Operation::Refused,
+        0,
+        None,
+        b"reason",
+        None,
+        None,
+        0,
+        0,
+    );
+    assert!(reduce(&mut open, Operation::Ready, 0, None, b"", None, None, 0, 0).is_err());
+    assert!(!open.complete());
+    // Only a new baseline restores the owner.
+    marker(&mut open, Operation::Baseline, 0, 0);
+    marker(&mut open, Operation::Ready, 0, 0);
+    assert!(open.members(TIMED).unwrap().is_empty());
 }

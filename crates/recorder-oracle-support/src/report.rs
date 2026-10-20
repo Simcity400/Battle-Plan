@@ -295,9 +295,24 @@ impl Report {
         match result {
             Ok(()) => true,
             Err(error) => {
-                self.failed_comparisons
-                    .insert(name.into(), error.to_string());
+                self.incomplete(name, error.to_string());
                 false
+            }
+        }
+    }
+
+    /// Record one reason a comparison group is incomplete. Reasons for one
+    /// group accumulate, so a later refusal never hides an earlier one.
+    pub fn incomplete(&mut self, group: impl Into<String>, reason: impl Into<String>) {
+        let reason = reason.into();
+        match self.failed_comparisons.entry(group.into()) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let existing = entry.get_mut();
+                existing.push_str("; ");
+                existing.push_str(&reason);
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(reason);
             }
         }
     }
@@ -873,5 +888,25 @@ impl Report {
         for line in self.limitation_lines() {
             println!("{line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_incomplete_reason_for_one_group_survives() {
+        let group = "EventFeedHistory delayed_events";
+        let mut report = Report::default();
+        report.incomplete(group, "first reason");
+        assert!(!report.attempt(group, |_| Err(io::Error::other("second reason"))));
+        report.incomplete(group, "third reason");
+        assert_eq!(
+            report.failed_comparisons[group],
+            "first reason; second reason; third reason"
+        );
+        assert_eq!(report.failed_comparisons.len(), 1);
+        assert!(report.outcome().is_err());
     }
 }

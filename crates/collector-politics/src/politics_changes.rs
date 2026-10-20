@@ -45,7 +45,7 @@ static LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<String> = OnceLock::new();
 // 11: thread registrations beyond the dedicated lanes, 12: refused shared appends.
 static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
-const FAILURE_NAMES: [&str; 39] = [
+const FAILURE_NAMES: [&str; 41] = [
     "ideology identity unreadable",
     "module address overflow",
     "political party address overflow",
@@ -85,6 +85,8 @@ const FAILURE_NAMES: [&str; 39] = [
     "string heap pointer invalid",
     "string length overflow",
     "string terminator unreadable or invalid",
+    SET_POWER_NESTED,
+    SET_POWER_NO_FRAME,
 ];
 static FAILURES: [AtomicU64; FAILURE_NAMES.len()] =
     [const { AtomicU64::new(0) }; FAILURE_NAMES.len()];
@@ -719,6 +721,7 @@ fn power_record(
     requested: Option<i64>,
     identity: Identity,
 ) -> Record {
+    POWER_RECORDS.set(POWER_RECORDS.get().wrapping_add(1));
     if currency == PowerCurrency::Political && before != after {
         crate::event_feed_observer::decisions::political_balance(
             owner.pointer,
@@ -1513,7 +1516,100 @@ fn caller_cause(caller: usize) -> PowerCause {
     }
 }
 
-const ENTRY_COUNT: usize = 38;
+const ENTRY_COUNT: usize = 39;
+/// [`entry_sites`] index of the targeted decision scope, whose selection
+/// tap stages for the event feed's targeted selection detour.
+const TARGETED_DECISION_ENTRY: usize = 21;
+/// [`entry_sites`] index of the set-political-power effect, after every
+/// scope.
+const SET_POWER_ENTRY: usize = 38;
+/// A set-political-power effect's original ran another power writer, whose
+/// own record already published: its delta and this one's can't be ordered.
+const SET_POWER_NESTED: &str = "set political power nested another power writer";
+/// The commit tap fired with no open set-power effect frame.
+const SET_POWER_NO_FRAME: &str = "set political power commit outside its effect";
+
+/// What the set-political-power commit tap saw before its store: the owner,
+/// its balance, the raw evaluated target and the context identity.
+#[derive(Clone, Copy)]
+struct SetPower {
+    owner: native::Owner,
+    before: i64,
+    raw: i64,
+    identity: Identity,
+}
+std::thread_local! {
+    /// The innermost open set-power effect's witness slot, a pointer to its
+    /// own stack local, or null. Nesting lives on the native call stack:
+    /// each effect saves and restores its parent, so there is no cap and no
+    /// allocation. The tap writes it synchronously on the same thread while
+    /// the frame is live.
+    static SET_POWER_FRAME: Cell<*mut Option<SetPower>> = const { Cell::new(std::ptr::null_mut()) };
+    /// Power records this thread published: a set-power effect whose
+    /// original changed it nested another writer.
+    static POWER_RECORDS: Cell<u64> = const { Cell::new(0) };
+}
+/// The fields a set-political-power witness publishes once its effect
+/// returned: the stored balance after, and the requested amount from the
+/// raw target, which the floor may have clamped.
+fn set_power_published(witness: SetPower, stored: i64) -> (i64, i64, i64) {
+    (
+        witness.before,
+        stored,
+        witness.raw.wrapping_sub(witness.before),
+    )
+}
+/// The set-political-power effect's entry. Its evaluated store and the
+/// conditional floor store both complete before its original returns; the
+/// commit tap inside only staged its operands. They publish here with the
+/// stored balance, under one event-feed writer flight, unless another power
+/// writer ran inside the original.
+unsafe fn set_power(a: usize, b: usize, c: usize, d: usize, fifth: usize) -> usize {
+    /// Restores the parent frame however the effect exits, so the tap never
+    /// writes through a freed stack slot after an unwind.
+    struct Frame(*mut Option<SetPower>);
+    impl Drop for Frame {
+        fn drop(&mut self) {
+            SET_POWER_FRAME.set(self.0);
+        }
+    }
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::PoliticsCapture);
+    let _active = Call::enter();
+    let original: NativeFunction =
+        unsafe { std::mem::transmute(ORIGINAL[SET_POWER_ENTRY].load(Ordering::Acquire)) };
+    let mut flight = crate::event_feed_observer::WriterFlight::enter();
+    let mut staged: Option<SetPower> = None;
+    let _frame = Frame(SET_POWER_FRAME.replace(&mut staged as *mut _));
+    let records = POWER_RECORDS.get();
+    let result = timing.original(|| unsafe { original(a, b, c, d, fifth) });
+    // Restore the parent frame before publishing, so the tap of any nested
+    // effect a publisher triggers cannot target this returned slot.
+    drop(_frame);
+    if let Some(witness) = staged
+        && ENABLED.load(Ordering::Acquire)
+    {
+        if POWER_RECORDS.get() != records {
+            // Another power writer ran inside: the deltas cannot be ordered.
+            failed(SET_POWER_NESTED);
+        } else if let Some(stored) = balance(witness.owner, PowerCurrency::Political) {
+            let (before, after, requested) = set_power_published(witness, stored);
+            power(
+                witness.owner,
+                PowerCurrency::Political,
+                PowerOperation::Set,
+                PowerCause::ScriptEffect,
+                PowerSite::SetPoliticalPower,
+                before,
+                after,
+                Some(requested),
+                witness.identity,
+            );
+            resume_pending(witness.owner, PowerCurrency::Political, after);
+        }
+    }
+    flight.returned();
+    result
+}
 /// [`entry_sites`] index of country appearance reset.
 const RESET_COUNTRY_ENTRY: usize = 3;
 /// [`entry_sites`] index of the daily politics update, the first
@@ -1636,6 +1732,7 @@ pub fn entry_sites() -> Vec<native::HookSite> {
     ]
     .into_iter()
     .chain(native::SCOPES.iter().copied())
+    .chain([native::SET_POLITICAL_POWER_EFFECT])
     .collect()
 }
 
@@ -1701,6 +1798,7 @@ entry!(entry_34, 34);
 entry!(entry_35, 35);
 entry!(entry_36, 36);
 entry!(entry_37, 37);
+entry!(entry_38, 38);
 fn callbacks() -> [usize; ENTRY_COUNT] {
     [
         entry_0 as *const () as usize,
@@ -1741,6 +1839,7 @@ fn callbacks() -> [usize; ENTRY_COUNT] {
         entry_35 as *const () as usize,
         entry_36 as *const () as usize,
         entry_37 as *const () as usize,
+        entry_38 as *const () as usize,
     ]
 }
 
@@ -2081,6 +2180,47 @@ unsafe extern "system-unwind" fn entry_body(
     fifth: usize,
     index: usize,
     caller: usize,
+    native_rbp: usize,
+) -> usize {
+    // A country reset publishes its empty delayed-event queue before the
+    // original resets it, and no event-feed callback follows its stores:
+    // an event-feed writer flight spans that publication through the
+    // original's return, so no baseline sample certifies across it. An
+    // abnormal exit retains it, as a script flight does.
+    if index == SET_POWER_ENTRY {
+        return unsafe { set_power(a, b, c, d, fifth) };
+    }
+    if index == TARGETED_DECISION_ENTRY {
+        // The event feed's targeted selection detour: its selection tap
+        // stages inside, and the committed result publishes after. Its
+        // provenance scope is entered here, not in `entry_forward`, so it
+        // outlives the publication: the result carries the TargetedDecision
+        // cause, not the parent route.
+        let _provenance = crate::war_provenance::politics(
+            crate::war_provenance::PoliticsScope::TargetedDecision,
+            caller,
+        );
+        return crate::script_event_observer::targeted_selection(|| unsafe {
+            entry_forward(a, b, c, d, fifth, index, caller, native_rbp)
+        });
+    }
+    let mut reset =
+        (index == RESET_COUNTRY_ENTRY).then(crate::event_feed_observer::WriterFlight::enter);
+    let result = unsafe { entry_forward(a, b, c, d, fifth, index, caller, native_rbp) };
+    if let Some(reset) = &mut reset {
+        reset.returned();
+    }
+    result
+}
+#[allow(clippy::too_many_arguments)] // Native args plus shim-only provenance.
+unsafe fn entry_forward(
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+    fifth: usize,
+    index: usize,
+    caller: usize,
     _native_rbp: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::PoliticsCapture);
@@ -2107,7 +2247,10 @@ unsafe extern "system-unwind" fn entry_body(
     // The event feed's operations: how the wars and territory changes inside
     // these scopes began ([`crate::war_provenance::politics`]).
     let scope = index.checked_sub(10).map(|scope| SCOPE_ORDER[scope]);
+    // The targeted decision's scope is entered by `entry_body`, around its
+    // event-feed publication too; entering it again here would nest it.
     let _provenance = scope
+        .filter(|_| index != TARGETED_DECISION_ENTRY)
         .and_then(Scope::provenance)
         .and_then(|scope| crate::war_provenance::politics(scope, caller));
     let original: NativeFunction =
@@ -2538,22 +2681,23 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             if let Some(owner) = owner
                 && let Some(before) = balance(owner, PowerCurrency::Political)
             {
-                power(
+                // The evaluated store and its floor follow this tap: stage
+                // its operands for the enclosing effect, which publishes the
+                // stored balance once it returned.
+                let witness = SetPower {
                     owner,
-                    PowerCurrency::Political,
-                    PowerOperation::Set,
-                    PowerCause::ScriptEffect,
-                    PowerSite::SetPoliticalPower,
                     before,
-                    (registers.rcx as i64).max(0),
-                    Some((registers.rcx as i64).wrapping_sub(before)),
-                    CONTEXT.get().identity,
-                );
-                resume_pending(
-                    owner,
-                    PowerCurrency::Political,
-                    (registers.rcx as i64).max(0),
-                );
+                    raw: registers.rcx as i64,
+                    identity: CONTEXT.get().identity,
+                };
+                let frame = SET_POWER_FRAME.get();
+                if frame.is_null() {
+                    failed(SET_POWER_NO_FRAME);
+                } else {
+                    // Synchronous, same thread, while the effect frame is
+                    // live: its own slot takes this set's operands.
+                    unsafe { *frame = Some(witness) };
+                }
             }
         }
         1 => {
@@ -4285,6 +4429,87 @@ mod tests {
 
     /// Each entry's scope is the native scope of that index, and only the
     /// event feed's seven scopes start an operation.
+    #[test]
+    fn set_power_publishes_its_stored_balance_and_raw_request_after_the_effect() {
+        let witness = SetPower {
+            owner: native::Owner {
+                pointer: 0x1000,
+                country: 7,
+                instance: 1,
+                politics: Some(0x2000),
+            },
+            before: 100 * 100_000,
+            raw: -500 * 100_000,
+            identity: Identity::default(),
+        };
+        // The floor stored zero; the request stays the raw target's delta.
+        assert_eq!(
+            set_power_published(witness, 0),
+            (100 * 100_000, 0, -600 * 100_000)
+        );
+        // An unclamped target publishes the stored balance it left.
+        let witness = SetPower {
+            raw: 150 * 100_000,
+            ..witness
+        };
+        assert_eq!(
+            set_power_published(witness, 150 * 100_000),
+            (100 * 100_000, 150 * 100_000, 50 * 100_000)
+        );
+    }
+
+    #[test]
+    fn targeted_selection_publishes_inside_its_targeted_decision_scope() {
+        let _guard = staging_test();
+        // Politics provenance scopes are entered only once a base is known.
+        crate::war_provenance::base_for_test(1);
+        ORIGINAL[TARGETED_DECISION_ENTRY]
+            .store(shim_fixture as *const () as usize, Ordering::Release);
+        let callback: NativeFunction =
+            unsafe { std::mem::transmute(callbacks()[TARGETED_DECISION_ENTRY]) };
+        let _ = crate::script_event_observer::take_selection_cause();
+        assert_eq!(unsafe { callback(1, 2, 3, 4, 0) }, 10);
+        // The cause in force at publication is the targeted decision's, not
+        // the parent route's.
+        let cause = crate::script_event_observer::take_selection_cause().unwrap();
+        assert_eq!(
+            cause.route,
+            replay_data::event_feed_rows::EventFeedRoute::TargetedDecision
+        );
+        // Outside the entry, its scope is gone.
+        assert_ne!(
+            crate::war_provenance::inside().route,
+            replay_data::event_feed_rows::EventFeedRoute::TargetedDecision
+        );
+        crate::war_provenance::base_for_test(0);
+    }
+
+    #[test]
+    fn the_event_feed_detours_own_their_politics_entries_once() {
+        let sites = entry_sites();
+        assert_eq!(sites.len(), ENTRY_COUNT);
+        assert_eq!(
+            sites[SET_POWER_ENTRY].name,
+            native::SET_POLITICAL_POWER_EFFECT.name
+        );
+        assert_eq!(
+            sites[SET_POWER_ENTRY].rva,
+            native::SET_POLITICAL_POWER.function_rva
+        );
+        assert_eq!(
+            SCOPE_ORDER[TARGETED_DECISION_ENTRY - 10],
+            Scope::TargetedDecision
+        );
+        for (index, site) in sites.iter().enumerate() {
+            assert!(sites[..index].iter().all(|other| other.rva != site.rva));
+        }
+        // The commit tap stays installed, inside the entry it now stages for.
+        assert!(
+            TAPS.iter()
+                .any(|tap| tap.rva == native::SET_POLITICAL_POWER.rva)
+        );
+    }
+
     #[test]
     fn scope_entries_follow_the_native_scope_order() {
         assert_eq!(SCOPE_ORDER.len(), native::SCOPES.len());

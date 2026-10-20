@@ -3330,6 +3330,12 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
                 "completed!(pending, Divisions)",
             ],
         ),
+        // The event feed seals after the census the Governance job ran.
+        (
+            "EventFeedSeal",
+            0,
+            &["collected!(governance_pending, Governance)"],
+        ),
     ];
     for (job, occurrence, producers) in dependent {
         let mut queued = at(&queue(job));
@@ -3457,6 +3463,11 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
     assert!(parts_join < at("completed!(ordinary_pending, Ordinary)"));
     assert!(at("completed!(ordinary_pending, Ordinary)") < at(".capture_tables(&cached"));
     assert!(at("completed!(ordinary_pending, Ordinary)") < at("completed!(late_pending, Late)"));
+    // The sealed event feed is back in the frame before the assembly.
+    let seal_join = at("let acquisition::Job::EventFeedSeal(feed) = job");
+    assert!(at(&queue("EventFeedSeal")) < seal_join);
+    assert!(seal_join < at(".restore_event_feed_seal(feed"));
+    assert!(at(".restore_event_feed_seal(feed") < at(".capture_tables(&cached"));
     // The stability tables join where Slow does, before the assembly that
     // takes their ticks.
     let stability_join = at("completed!(stability_pending, Stability)");

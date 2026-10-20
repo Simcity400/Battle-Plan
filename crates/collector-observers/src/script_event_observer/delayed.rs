@@ -106,7 +106,8 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             return;
         };
         flush_to(end, false);
-        feed::retired_delayed(registers.rbx, true, visited);
+        // The pass this tap authenticated owns the retired timer.
+        feed::retired_delayed(registers.rbx, Some((pass.owner, pass.generation)), visited);
         let mut pass = PASS.get();
         if let Err(reason) = pass.retired(ordinal, visited) {
             pass.bad = true;
@@ -136,7 +137,7 @@ unsafe extern "system-unwind" fn schedule(
 unsafe extern "system-unwind" fn destroy(pointer: usize, flags: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
     let mut flight = Flight::enter();
-    feed::retired_delayed(pointer, false, false);
+    feed::retired_delayed(pointer, None, false);
     type Original = unsafe extern "system-unwind" fn(usize, usize) -> usize;
     let original: Original = unsafe { std::mem::transmute(ORIGINAL[1].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(pointer, flags) });

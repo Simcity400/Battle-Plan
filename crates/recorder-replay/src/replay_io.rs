@@ -1580,6 +1580,43 @@ fn print_script_events(branch: BranchId, state: &replay_data::event_feed_rows::S
     }
 }
 
+/// Print one interval row's owner refusal markers; returns its delayed and
+/// decision refusal counts.
+fn print_owner_refusals(
+    branch: BranchId,
+    row: &replay_data::event_feed_rows::EventFeedHistoryRow,
+) -> (u64, u64) {
+    use replay_data::event_feed_rows::{EventFeedScriptChange as Change, decisions::Operation};
+    let mut counts = (0, 0);
+    for event in &row.events {
+        let Some(script) = event.script else {
+            continue;
+        };
+        let (registry, owner) = match script.change {
+            Some(Change::DelayedRefused) => {
+                counts.0 += 1;
+                ("delayed", event.target)
+            }
+            Some(Change::Decision(change)) if change.operation == Operation::Refused => {
+                counts.1 += 1;
+                ("decisions", event.actor)
+            }
+            _ => continue,
+        };
+        let start = script.token_start as usize;
+        let reason = row
+            .script_tokens
+            .get(start..start + script.token_len as usize)
+            .unwrap_or_default();
+        println!(
+            "event_feed_owner_refusal branch={branch} hour={} registry={registry} owner={owner:?} reason={}",
+            event.hour,
+            String::from_utf8_lossy(reason)
+        );
+    }
+    counts
+}
+
 pub fn inspect(path: &Path) -> Result<()> {
     let replay = open(path)?;
     println!(
@@ -1614,6 +1651,7 @@ pub fn inspect(path: &Path) -> Result<()> {
         BranchId,
         replay_data::event_feed_rows::ScriptEventState,
     >::new();
+    let mut owner_refusals = std::collections::BTreeMap::<BranchId, (u64, u64)>::new();
     for index in &replay.index {
         let layout = match replay
             .block_sections(index)
@@ -1650,6 +1688,10 @@ pub fn inspect(path: &Path) -> Result<()> {
                             .or_default()
                             .observe(row)
                             .map_err(|error| failure(path, error))?;
+                        let (delayed, decisions) = print_owner_refusals(index.branch, row);
+                        let counts = owner_refusals.entry(index.branch).or_default();
+                        counts.0 += delayed;
+                        counts.1 += decisions;
                     }
                 }
                 Err(reason) => {
@@ -1664,6 +1706,9 @@ pub fn inspect(path: &Path) -> Result<()> {
     }
     for (branch, state) in &script_states {
         print_script_events(*branch, state);
+    }
+    for (branch, (delayed, decisions)) in &owner_refusals {
+        println!("event_feed_owner_refusals branch={branch} delayed={delayed} decisions={decisions}");
     }
     for branch in &replay.branches {
         let parent = match branch.parent {

@@ -702,6 +702,9 @@ pub(crate) enum Job {
     Radar(RadarRequest),
     MapCombats(map_capture::CombatRequest),
     ObserverBoundary(crate::extended::observer_boundary::ObserverBoundaryRequest),
+    /// The event feed the observer boundary prepared, sealed after the
+    /// Governance job's census.
+    EventFeedSeal(crate::extended::event_feed::Captured),
     FinalInputs(crate::extended::FinalInputsRequest),
     OrderRoots(OrderRootsRequest),
     DivisionInputs(DivisionsRequest),
@@ -777,6 +780,8 @@ pub(crate) enum Report {
     Radar(fog::RadarCopyReport),
     MapCombats(map_capture::CombatReport),
     ObserverBoundary(crate::extended::observer_boundary::ObserverBoundaryReport),
+    /// The seal's outcome is in the returned capture.
+    EventFeedSeal,
     FinalInputs(crate::extended::FinalInputsReport),
     OrderRoots(u64),
     DivisionInputs(bool),
@@ -1215,7 +1220,8 @@ impl Job {
             Self::Weather(..) => Role::Weather,
             Self::Radar(..) => Role::Radar,
             Self::MapCombats(..) => Role::MapCombats,
-            Self::ObserverBoundary(..) => Role::ObserverBoundary,
+            // The seal finishes the boundary's event feed and is charged with it.
+            Self::ObserverBoundary(..) | Self::EventFeedSeal(..) => Role::ObserverBoundary,
             Self::DivisionInputs(..) => Role::DivisionInputs,
             Self::Divisions(..) => Role::Divisions,
             Self::DivisionInputParts(..) => Role::DivisionInputParts,
@@ -1625,6 +1631,10 @@ fn run_with_memory(
         }
         Job::MapCombats(request) => Report::MapCombats(request.capture(memory)),
         Job::ObserverBoundary(request) => Report::ObserverBoundary(request.capture()),
+        Job::EventFeedSeal(feed) => {
+            feed.seal_growing();
+            Report::EventFeedSeal
+        }
         Job::FinalInputs(request) => {
             let countries = Arc::clone(&request.countries);
             let cached = countries.roster_view(memory);
@@ -2192,8 +2202,8 @@ impl Role {
             Self::Presentation => 2,
             Self::ProductionModifierParts => crate::extended::production_modifiers::MAX_PARTS - 1,
             Self::OrdersPart => crate::orders_parts::MAX_PARTS - 1,
-            // Roles whose jobs follow one another (the two observer
-            // boundaries) hold one at once. OrderRoots and Orders, and
+            // Roles whose jobs follow one another (the observer boundary
+            // and the event-feed seal) hold one at once. OrderRoots and Orders, and
             // DivisionInputs and Divisions, also follow one another, but are
             // reserved apart.
             _ => 1,

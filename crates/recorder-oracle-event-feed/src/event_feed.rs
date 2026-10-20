@@ -76,10 +76,9 @@ fn report_coverage(row: &EventFeedHistoryRow, hour: i32, save_hour: i32, report:
         "native event interval coverage is incomplete; the save retains no event history and cannot certify the unobserved interval",
         subject.clone(),
     );
+    // Its own group: retained-state refusals at the same hour stay listed beside it.
     if hour == save_hour {
-        report
-            .failed_comparisons
-            .insert("EventFeedHistory".into(), subject);
+        report.incomplete("EventFeedHistory interval", subject);
     }
 }
 
@@ -168,7 +167,7 @@ mod tests {
         row.failure = None;
         report_coverage(&row, 11, 11, &mut report);
         assert!(report.differences.is_empty());
-        assert!(report.failed_comparisons["EventFeedHistory"].contains("partial native interval"));
+        assert!(report.failed_comparisons["EventFeedHistory interval"].contains("partial native interval"));
         row.coverage = EventFeedCoverage::Complete;
         report_coverage(&row, 12, 12, &mut report);
         assert_eq!(report.limitations.values().map(Vec::len).sum::<usize>(), 2);

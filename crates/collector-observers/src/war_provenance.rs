@@ -285,11 +285,14 @@ pub fn state_owner_after(before: Option<StateOwner>) {
     });
 }
 
-/// Counts an entry detour in flight until it returns or unwinds.
+/// Counts an entry detour in flight until it returns or unwinds. Its entry
+/// and return also move the event feed's writer epoch, so no baseline
+/// sample certifies across it.
 struct Flight;
 
 impl Flight {
     fn enter() -> Self {
+        crate::event_feed_observer::writer_moved();
         ACTIVE.fetch_add(1, Ordering::SeqCst);
         Self
     }
@@ -298,6 +301,7 @@ impl Flight {
 impl Drop for Flight {
     fn drop(&mut self) {
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        crate::event_feed_observer::writer_moved();
     }
 }
 
@@ -482,6 +486,12 @@ pub unsafe fn hooks(memory: &impl Memory, base: usize) -> Result<Vec<Hook>, &'st
     }
     BASE.store(base, Ordering::Relaxed);
     Ok(hooks)
+}
+
+/// Test only: politics scopes are entered only once the base is known.
+#[cfg(any(test, feature = "test-support"))]
+pub fn base_for_test(base: usize) {
+    BASE.store(base, Ordering::Relaxed);
 }
 
 /// Entry detours in flight.

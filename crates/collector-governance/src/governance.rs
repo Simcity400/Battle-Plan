@@ -1763,15 +1763,19 @@ fn acquire(
     // Taken before the walk's first read or registration.
     let mut hour = politics.map(|walk| politics_hour::Hour::start(walk, base, game_state, enabled));
     let mut o = Observation::new();
-    let delayed_census = if enabled[8] {
-        collector_observers::event_feed_observer::begin_delayed_census(
-            base,
-            game_state,
-            capture_hour,
-        )
-    } else {
-        None
-    };
+    // The Daily(6) slot's census, and between slots while an owner
+    // certificate waits for recovery: this walk visits every country hourly.
+    let delayed_census =
+        if enabled[8] || collector_observers::event_feed_observer::recovery_pending() {
+            collector_observers::event_feed_observer::begin_delayed_census(
+                base,
+                game_state,
+                capture_hour,
+                enabled[8],
+            )
+        } else {
+            None
+        };
     for (outcome, &active) in o.outcomes.iter_mut().zip(enabled) {
         if !active {
             *outcome = Outcome::Unavailable {
@@ -1888,7 +1892,11 @@ fn acquire(
     let mut modifiers = enabled[10]
         .then(|| modifier_store::Walk::begin(&crate::world_input_changes::Observer))
         .flatten();
-    let countries = (enabled[..12].iter().any(|&value| value) || enabled[21]).then(|| {
+    // A census visits every country even when no table here reads one.
+    let countries = (enabled[..12].iter().any(|&value| value)
+        || enabled[21]
+        || delayed_census.is_some())
+    .then(|| {
         let started = qpc();
         let countries = read_accounting::with_table(TABLES[5], || {
             ccountry::Reader::new(memory, base, game_state)
@@ -2311,12 +2319,13 @@ fn acquire(
                         }
                         o.ticks[5] += elapsed(started);
                     }
+                    // Certified owners cost no native queue read.
+                    if let Some(context) = delayed_census {
+                        collector_observers::event_feed_observer::baseline_delayed_country(
+                            memory, context, country,
+                        );
+                    }
                     if enabled[8] {
-                        if let Some(context) = delayed_census {
-                            collector_observers::event_feed_observer::baseline_delayed_country(
-                                memory, context, country,
-                            );
-                        }
                         let _reads = read_accounting::table(TABLES[8]);
                         let started = qpc();
                         let first = o.outcomes[9].len();
@@ -2467,6 +2476,11 @@ fn acquire(
                 }
             }
         }
+    }
+    // A census exists only with the country reader, so `census` is false
+    // when the reader or any slot failed.
+    if let Some(context) = delayed_census {
+        collector_observers::event_feed_observer::finish_delayed_census(context, census);
     }
     if let Some(reason) = demand_failure {
         o.outcomes[9] = Outcome::Unavailable { reason };

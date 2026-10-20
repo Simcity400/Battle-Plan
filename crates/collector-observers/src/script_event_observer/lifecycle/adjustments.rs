@@ -29,24 +29,36 @@ fn duration_script(days: i32) -> EventFeedScript {
         ..Default::default()
     }
 }
-fn emit(instance: usize, tag: usize, cooldown: bool, delta: Option<i32>) {
+/// Publish an instance's stored duration, after the native writer that
+/// stored it returned. Nothing is predicted.
+fn emit(instance: usize, tag: usize, cooldown: bool) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    if let Ok((_, days)) = values(
+    let stored = values(
         &memory,
         BASE.load(Ordering::Acquire),
         instance,
         cooldown,
-        delta,
-    ) && feed::decisions::write_result(
-        instance,
         None,
-        Some(days),
-        EventFeedSource::DecisionDurationChanged,
-    ) {
+    );
+    #[cfg(test)]
+    if let Ok((_, days)) = stored {
+        super::super::staging::published(super::super::staging::Published::Duration {
+            instance,
+            days,
+        });
+    }
+    if let Ok((_, days)) = stored
+        && feed::decisions::write_result(
+            instance,
+            None,
+            Some(days),
+            EventFeedSource::DecisionDurationChanged,
+        )
+    {
         return;
     }
     feed::record_script(|world, memory, base| {
-        let (definition, days) = values(memory, base, instance, cooldown, delta)?;
+        let (definition, days) = values(memory, base, instance, cooldown, None)?;
         if engine_native::read::<u64>(memory, definition)
             != base
                 .checked_add(engine_decisions::cdecision::VTABLE_RVA)
@@ -73,25 +85,13 @@ fn emit(instance: usize, tag: usize, cooldown: bool, delta: Option<i32>) {
         }))
     });
 }
-pub(super) unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
-    let _timing = crate::hook_timing::enter(crate::hook_timing::Family::EventFeedProvenance);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let operands = if index == 0 {
-        Ok((registers.rdi, registers.r15, registers.rax as i32, false))
-    } else {
-        field::<i32>(&memory, registers.rbx, native::REMOVAL_EXTENSION_DAYS)
-            .map(|delta| (registers.rax, registers.rsi, delta, true))
-    };
-    match operands.and_then(|(instance, scope, delta, cooldown)| {
-        let tag = scope
-            .checked_add(engine_events::cevent_scope::COUNTRY_TAG)
-            .ok_or("decision duration scope overflow")?;
-        Ok((instance, tag, delta, cooldown))
-    }) {
-        // Both authenticated call sites unconditionally forward this operand
-        // to the selected scalar add. No trigger/effect runs before its store.
-        Ok((instance, tag, delta, cooldown)) => emit(instance, tag, cooldown, Some(delta)),
-        Err(reason) => feed::refuse(reason),
+/// A duration extension's scalar add returned, under its CALL detour's
+/// writer flight: publish the stored days of the timed mission, or of the
+/// removal timer when `cooldown`. `scope` is the native caller's scope.
+pub(crate) fn extended(instance: usize, scope: usize, cooldown: bool) {
+    match scope.checked_add(engine_events::cevent_scope::COUNTRY_TAG) {
+        Some(tag) => emit(instance, tag, cooldown),
+        None => feed::refuse("decision duration scope overflow"),
     }
 }
 pub(super) unsafe extern "system-unwind" fn display_duration(instance: usize, tag: usize) -> usize {
@@ -102,7 +102,7 @@ pub(super) unsafe extern "system-unwind" fn display_duration(instance: usize, ta
     let result = timing.original(|| unsafe { original(instance, tag) });
     // The helper has completed every authored/default branch. Read its result,
     // including the default branch after effects changed its lifecycle.
-    emit(instance, tag, false, None);
+    emit(instance, tag, false);
     flight.returned();
     result
 }

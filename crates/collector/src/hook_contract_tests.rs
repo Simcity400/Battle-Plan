@@ -565,11 +565,12 @@ fn constructor_sites(family: Family) -> Vec<usize> {
             sites.extend(
                 engine_events::script_event_sites::LIFECYCLE_TAPS
                     .iter()
-                    .chain(engine_events::script_event_sites::DURATION_TAPS.iter())
                     .chain(engine_events::script_event_sites::decisions::TAPS.iter())
                     .filter(|s| {
                         s.rva
                             != engine_events::script_event_sites::decisions::TARGETED_SELECTION_RESULT.rva
+                            && s.rva
+                                != engine_events::script_event_sites::decisions::CLEAR_CANDIDATES.rva
                     })
                     .map(|s| s.rva),
             );

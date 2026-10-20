@@ -15,6 +15,8 @@ const ASSEMBLED: &str = "Event feed assembled by spool";
 pub struct Captured {
     snapshot: collector_observers::event_feed_history::Snapshot,
     sampled: bool,
+    /// The hour and partial flag `drain_growing` prepared, until sealed.
+    prepared: Option<(i32, bool)>,
 }
 
 impl Captured {
@@ -22,19 +24,29 @@ impl Captured {
         Self::with_capacities(&Capacities { events: 0 })
     }
     pub fn fail(&mut self, hour: i32, reason: &'static str) {
+        self.prepared = None;
         collector_observers::event_feed_observer::lost_drain();
         self.snapshot
             .refuse(crate::world_lifetime::generation(), hour, reason);
         self.sampled = true;
     }
+    /// Refuses a prepared hour that will not be sealed; an hour already
+    /// refused keeps its own reason.
+    pub fn fail_prepared(&mut self, reason: &'static str) {
+        if let Some((hour, _)) = self.prepared {
+            self.fail(hour, reason);
+        }
+    }
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             snapshot: collector_observers::event_feed_history::Snapshot::new(capacity.events),
             sampled: false,
+            prepared: None,
         }
     }
     pub fn reset(&mut self) {
         self.sampled = false;
+        self.prepared = None;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.snapshot.allocated_bytes()
@@ -43,13 +55,28 @@ impl Captured {
         crate::table_capture::grow_capacity(&mut capacity.events, self.snapshot.required);
         let _ = self.snapshot.grow(capacity.events);
     }
+    /// Prepares the hour at the observer boundary; [`Self::seal_growing`]
+    /// publishes it.
     pub fn drain_growing(&mut self, hour: i32, partial: bool) {
-        collector_observers::event_feed_observer::capture_growing(
-            &mut self.snapshot,
-            hour,
-            partial,
-        );
-        self.sampled = true;
+        self.prepared = None;
+        match collector_observers::event_feed_observer::prepare_growing(hour, partial) {
+            Ok(()) => self.prepared = Some((hour, partial)),
+            Err(reason) => self.fail(hour, reason),
+        }
+    }
+    /// The seal follows the country census, so its markers belong to the
+    /// hour they were read. An hour already refused stays refused.
+    pub fn seal_growing(&mut self) {
+        if let Some((hour, partial)) = self.prepared {
+            collector_observers::event_feed_observer::seal_growing(
+                &mut self.snapshot,
+                hour,
+                partial,
+            );
+            // Kept until sealed: a seal that unwinds still refuses its hour.
+            self.prepared = None;
+            self.sampled = true;
+        }
     }
     pub fn discard(&mut self) {
         if self.sampled {
@@ -73,5 +100,40 @@ impl Captured {
     }
     pub fn tables(&self) -> [TableView; N] {
         [crate::table_conversion::unavailable(ASSEMBLED)]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay_data::event_feed_rows::EventFeedCoverage;
+
+    // This process installs no Event feed owner, so the boundary refuses
+    // the hour's preparation.
+    #[test]
+    fn a_refused_preparation_is_sampled_and_no_seal_or_join_failure_replaces_it() {
+        let mut captured = Captured::vacant();
+        captured.drain_growing(7, false);
+        let refused = captured.snapshot.boundary;
+        assert!(matches!(refused.coverage, EventFeedCoverage::Unavailable));
+        assert_eq!(refused.read_hour, 7);
+        let reason = refused.failure.expect("a refused preparation names its reason");
+        assert!(captured.prepared.is_none());
+        assert!(captured.prepare_pack().unwrap().is_some());
+
+        // Nothing was prepared: the seal and a failed seal job keep the
+        // boundary's own refusal.
+        captured.seal_growing();
+        captured.fail_prepared("event feed seal job failed");
+        let kept = captured.snapshot.boundary;
+        assert!(matches!(kept.coverage, EventFeedCoverage::Unavailable));
+        assert_eq!(kept.read_hour, 7);
+        assert_eq!(kept.failure, Some(reason));
+        assert!(captured.prepare_pack().unwrap().is_some());
+
+        captured.reset();
+        assert!(captured.prepare_pack().unwrap().is_none());
+        captured.seal_growing();
+        assert!(captured.prepare_pack().unwrap().is_none());
     }
 }

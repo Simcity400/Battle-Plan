@@ -302,13 +302,23 @@ impl<'a, M: Memory> World<'a, M> {
 
     /// A `CCountry*`, which must be its reference's canonical object.
     pub fn country_object(&self, country: usize) -> Result<CountryIdentity, &'static str> {
+        Ok(self.country_record(country)?.1)
+    }
+
+    /// [`Self::country_object`] with the canonical census record it resolved
+    /// to, so a caller can key per-country state by its census slot without
+    /// another read.
+    pub fn country_record(
+        &self,
+        country: usize,
+    ) -> Result<(ccountry::Country, CountryIdentity), &'static str> {
         verify_vtable(self.memory, self.base, country, ccountry::VTABLE_RVA)?;
         let reference = value(self.memory, country, ccountry::ID)?;
         let (resolved, identity) = identity(self.memory, self.base, &self.countries, reference)?;
         if resolved.pointer != country {
             return Err("event feed country is not its canonical object");
         }
-        Ok(identity)
+        Ok((resolved, identity))
     }
 
     /// The owner of a `CDiplomacyStatus*`.

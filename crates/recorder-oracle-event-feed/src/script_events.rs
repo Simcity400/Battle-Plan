@@ -4,6 +4,7 @@ use recorder_oracle_support::{
     report::Report,
     support::{country_context, country_items, eq, invalid},
 };
+use replay_data::event_feed_rows::DelayedEvent;
 use replay_data::event_feed_rows::EventFeedCountry;
 use replay_data::event_feed_rows::EventFeedScope;
 use replay_data::event_feed_rows::ScriptEventState;
@@ -137,6 +138,43 @@ fn scopes(
     Ok(())
 }
 
+/// A comparison owner: its tag and, when the frame witnesses its instance,
+/// its native identity.
+pub(super) type Owner<'a> = (&'a [u8], Option<EventFeedCountry>);
+
+/// Compare one domain, recording its refusal under its own group so the
+/// other domains are still compared.
+fn domain(
+    report: &mut Report,
+    group: &str,
+    compare: impl FnOnce(&mut Report) -> io::Result<()>,
+) {
+    if let Err(error) = compare(report) {
+        report.incomplete(group, error.to_string());
+    }
+}
+
+/// Uncertified owners: one entry per reason, naming every owner it refuses.
+pub(super) fn uncertified(
+    report: &mut Report,
+    group: &str,
+    owners: usize,
+    refused: BTreeMap<String, Vec<String>>,
+) {
+    for (reason, tags) in refused {
+        report.incomplete(
+            group,
+            format!(
+                "{} of {owners} owners: {reason}: {}",
+                tags.len(),
+                tags.join(", ")
+            ),
+        );
+    }
+}
+
+/// Only an unnamed save country or a frame context that cannot be read fails the
+/// group as a whole; every retained domain and owner is otherwise compared.
 pub fn compare(
     frame: &DecodedFrame,
     document: &SaveDocument,
@@ -145,145 +183,444 @@ pub fn compare(
 ) -> io::Result<()> {
     let saved = saved::parse(document.items(), &country_items(document, frame)?)?;
     let context = country_context(frame)?;
-    known(&saved.pending_extra, "pending_events")?;
-    known(&saved.fired_extra, "fired_event_names")?;
-    let pending = state.pending().map_err(invalid)?;
-    let saved_pending = saved
-        .pending
-        .as_ref()
-        .ok_or_else(|| invalid("pending_events block absent"))?;
-    eq(
-        report,
-        "pending_events.count",
-        pending.len(),
-        saved_pending.len(),
-    );
-    for (n, (actual, expected)) in pending.iter().zip(saved_pending).enumerate() {
-        let label = format!("pending_events[{n}]");
-        known(&expected.extra_keys, &label)?;
-        eq(
-            report,
-            &format!("{label}.id"),
-            Some(name(&actual.definition)),
-            expected.identity.clone(),
-        );
-        eq(
-            report,
-            &format!("{label}.pending_id"),
-            Some(actual.instance),
-            expected.instance,
-        );
-        eq(
-            report,
-            &format!("{label}.timeout"),
-            Some(actual.due_hour),
-            expected.due.map(|date| date.engine_hour()).transpose()?,
-        );
-        scopes(
-            &actual.scopes,
-            expected.scope.as_ref(),
-            &context.links,
-            &label,
-            report,
-        )?;
-    }
-    report.limitation("pending event originators and occurrence history are not serialized; retained scope operands and membership are compared", "pending_events.originator");
-    let mut fired = state
-        .fired()
-        .map_err(invalid)?
-        .iter()
-        .map(name)
-        .collect::<Vec<_>>();
-    let mut saved_fired = saved
-        .fired
-        .ok_or_else(|| invalid("fired_event_names block absent"))?;
-    fired.sort();
-    saved_fired.sort();
-    eq(report, "fired_event_names.members", fired, saved_fired);
     let identities = frame
         .complete::<tables::CountryExperienceGains>()?
         .iter()
         .map(|row| (row.country, row.instance))
         .collect::<BTreeMap<_, _>>();
+    let owners = context
+        .by_tag
+        .iter()
+        .map(|(tag, row)| {
+            let owner = identities.get(&row.id).map(|&instance| EventFeedCountry {
+                reference: row.id,
+                id: row.id,
+                instance,
+            });
+            (*tag, owner)
+        })
+        .collect::<Vec<Owner<'_>>>();
+    compare_retained(&saved, &owners, &context.links, state, report);
+    super::decisions::compare(frame, document, &owners, &context.links, state, report)
+}
+
+fn compare_retained(
+    saved: &saved::Pack,
+    owners: &[Owner<'_>],
+    links: &BTreeMap<u32, &CountryRow>,
+    state: &ScriptEventState,
+    report: &mut Report,
+) {
+    domain(report, "EventFeedHistory pending_events", |report| {
+        let saved_pending = saved
+            .pending
+            .as_ref()
+            .map_err(|reason| invalid(format!("saved pending_events unreadable: {reason}")))?;
+        known(&saved.pending_extra, "pending_events")?;
+        let pending = state.pending().map_err(invalid)?;
+        let saved_pending = saved_pending
+            .as_ref()
+            .ok_or_else(|| invalid("pending_events block absent"))?;
+        eq(
+            report,
+            "pending_events.count",
+            pending.len(),
+            saved_pending.len(),
+        );
+        for (n, (actual, expected)) in pending.iter().zip(saved_pending).enumerate() {
+            let label = format!("pending_events[{n}]");
+            known(&expected.extra_keys, &label)?;
+            eq(
+                report,
+                &format!("{label}.id"),
+                Some(name(&actual.definition)),
+                expected.identity.clone(),
+            );
+            eq(
+                report,
+                &format!("{label}.pending_id"),
+                Some(actual.instance),
+                expected.instance,
+            );
+            eq(
+                report,
+                &format!("{label}.timeout"),
+                Some(actual.due_hour),
+                expected.due.map(|date| date.engine_hour()).transpose()?,
+            );
+            scopes(&actual.scopes, expected.scope.as_ref(), links, &label, report)?;
+        }
+        report.limitation("pending event originators and occurrence history are not serialized; retained scope operands and membership are compared", "pending_events.originator");
+        Ok(())
+    });
+    domain(report, "EventFeedHistory fired_event_names", |report| {
+        let saved_fired = saved
+            .fired
+            .as_ref()
+            .map_err(|reason| invalid(format!("saved fired_event_names unreadable: {reason}")))?;
+        known(&saved.fired_extra, "fired_event_names")?;
+        let mut fired = state
+            .fired()
+            .map_err(invalid)?
+            .iter()
+            .map(name)
+            .collect::<Vec<_>>();
+        let mut saved_fired = saved_fired
+            .clone()
+            .ok_or_else(|| invalid("fired_event_names block absent"))?;
+        fired.sort();
+        saved_fired.sort();
+        eq(report, "fired_event_names.members", fired, saved_fired);
+        Ok(())
+    });
     eq(
         report,
         "delayed_events.country_count",
-        context.by_tag.len(),
+        owners.len(),
         saved.delayed.len(),
     );
-    for (tag, country_row) in context.by_tag {
-        let instance = *identities
-            .get(&country_row.id)
-            .ok_or_else(|| invalid("delayed-event owner instance witness absent"))?;
-        let owner = EventFeedCountry {
-            reference: country_row.id,
-            id: country_row.id,
-            instance,
+    let group = "EventFeedHistory delayed_events";
+    let mut refused = BTreeMap::<String, Vec<String>>::new();
+    for &(tag, owner) in owners {
+        let name = String::from_utf8_lossy(tag).into_owned();
+        let actual = match owner
+            .ok_or("owner instance witness absent")
+            .and_then(|owner| state.delayed(owner))
+        {
+            Ok(actual) => actual,
+            Err(reason) => {
+                refused.entry(reason.to_owned()).or_default().push(name);
+                continue;
+            }
         };
-        let actual = state.delayed(owner).map_err(|reason| {
-            invalid(format!(
-                "{}.delayed_event: {reason}",
-                String::from_utf8_lossy(tag)
-            ))
-        })?;
-        let expected = saved
-            .delayed
-            .get(tag)
-            .ok_or_else(|| invalid("delayed-event saved country absent"))?;
-        let label = format!("{}.delayed_event", String::from_utf8_lossy(tag));
-        eq(
+        if let Err(error) = compare_delayed(
+            actual,
+            saved
+                .delayed
+                .get(tag)
+                .map(|rows| rows.as_deref().map_err(String::as_str)),
+            &name,
+            links,
             report,
-            &format!("{label}.count"),
-            actual.len(),
-            expected.len(),
-        );
-        for (n, (actual, expected)) in actual.iter().zip(expected).enumerate() {
-            let label = format!("{label}[{n}]");
-            known(&expected.extra_keys, &label)?;
-            let definition = if actual.definition.token.is_empty() {
-                let id = actual.definition.native_event;
-                saved::Definition::Reference((u64::from(id.id) << 32) | u64::from(id.kind))
-            } else {
-                saved::Definition::Name(text(&actual.definition.token).to_vec())
-            };
-            eq(
-                report,
-                &format!("{label}.event"),
-                Some(definition),
-                expected.definition.clone(),
-            );
-            eq(
-                report,
-                &format!("{label}.duration"),
-                (
-                    Some((actual.remaining % 720) % 24),
-                    Some((actual.remaining % 720) / 24),
-                    Some(actual.remaining / 720),
-                ),
-                (expected.hours, expected.days, expected.months),
-            );
-            eq(
-                report,
-                &format!("{label}.originator"),
-                country(actual.originator.reference, &context.links)?,
-                expected.originator.clone(),
-            );
-            scopes(
-                &actual.scopes,
-                expected.scope.as_ref(),
-                &context.links,
-                &label,
-                report,
-            )?;
+        ) {
+            report.incomplete(group, format!("{name}: {error}"));
         }
     }
-    super::decisions::compare(frame, document, state, report)?;
+    uncertified(report, group, owners.len(), refused);
+}
+
+fn compare_delayed(
+    actual: &[DelayedEvent],
+    expected: Option<Result<&[saved::Delayed], &str>>,
+    tag: &str,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let expected = expected
+        .ok_or_else(|| invalid("delayed-event saved country absent"))?
+        .map_err(|reason| invalid(format!("saved delayed_event unreadable: {reason}")))?;
+    let label = format!("{tag}.delayed_event");
+    eq(
+        report,
+        &format!("{label}.count"),
+        actual.len(),
+        expected.len(),
+    );
+    for (n, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        let label = format!("{label}[{n}]");
+        known(&expected.extra_keys, &label)?;
+        let definition = if actual.definition.token.is_empty() {
+            let id = actual.definition.native_event;
+            saved::Definition::Reference((u64::from(id.id) << 32) | u64::from(id.kind))
+        } else {
+            saved::Definition::Name(text(&actual.definition.token).to_vec())
+        };
+        eq(
+            report,
+            &format!("{label}.event"),
+            Some(definition),
+            expected.definition.clone(),
+        );
+        eq(
+            report,
+            &format!("{label}.duration"),
+            (
+                Some((actual.remaining % 720) % 24),
+                Some((actual.remaining % 720) / 24),
+                Some(actual.remaining / 720),
+            ),
+            (expected.hours, expected.days, expected.months),
+        );
+        eq(
+            report,
+            &format!("{label}.originator"),
+            country(actual.originator.reference, links)?,
+            expected.originator.clone(),
+        );
+        scopes(&actual.scopes, expected.scope.as_ref(), links, &label, report)?;
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay_data::event_feed_rows::{
+        EventFeedCounts, EventFeedCoverage, EventFeedEvent, EventFeedEventIdentity,
+        EventFeedHistoryRow, EventFeedScript, EventFeedScriptChange as Change, EventFeedSource,
+        decisions::{DecisionChange, Operation},
+    };
+    use replay_data::rows::Recorded;
+
+    fn owner(n: u32) -> EventFeedCountry {
+        EventFeedCountry {
+            reference: n,
+            id: n,
+            instance: 1,
+        }
+    }
+    fn owners() -> Vec<Owner<'static>> {
+        vec![
+            (b"AAA".as_slice(), Some(owner(1))),
+            (b"BBB".as_slice(), Some(owner(2))),
+            (b"CCC".as_slice(), Some(owner(3))),
+        ]
+    }
+    /// One Complete interval: pending certified and empty, fired never
+    /// baselined, AAA's delayed queue and decisions never baselined, BBB and
+    /// CCC each certified with one 30-hour timer and empty decisions.
+    fn state() -> ScriptEventState {
+        let mut changes = vec![
+            (owner(0), Change::PendingBaseline, None),
+            (owner(0), Change::PendingReady, None),
+        ];
+        for n in [2, 3] {
+            changes.extend([
+                (owner(n), Change::DelayedBaseline, None),
+                (owner(n), Change::DelayedStored { remaining: 30 }, Some(n)),
+                (owner(n), Change::DelayedReady, None),
+            ]);
+            for operation in [Operation::Baseline, Operation::Ready] {
+                let change = Change::Decision(DecisionChange::new(operation, 0));
+                changes.push((owner(n), change, None));
+            }
+        }
+        let row = EventFeedHistoryRow {
+            generation: 1,
+            read_hour: 5,
+            coverage: EventFeedCoverage::Complete,
+            counts: Some(EventFeedCounts {
+                acquired: 100,
+                settled: 100,
+                ..Default::default()
+            }),
+            script_tokens: b"synthetic.1".to_vec(),
+            script_scopes: vec![EventFeedScope::default()],
+            events: changes
+                .into_iter()
+                .enumerate()
+                .map(|(n, (country, change, timer))| {
+                    let decision = matches!(change, Change::Decision(_));
+                    let delayed = !decision
+                        && !matches!(change, Change::PendingBaseline | Change::PendingReady);
+                    EventFeedEvent {
+                        sequence: n as u64 + 1,
+                        generation: 1,
+                        hour: 5,
+                        source: EventFeedSource::ScriptState,
+                        actor: if decision { country } else { Default::default() },
+                        target: if delayed { country } else { Default::default() },
+                        cause: Recorded::Value(Default::default()),
+                        script: Some(EventFeedScript {
+                            token_len: if timer.is_some() { 11 } else { 0 },
+                            scope_len: u32::from(timer.is_some()),
+                            native_event: timer.map(|_| EventFeedEventIdentity { kind: 1, id: 90 }),
+                            instance: timer,
+                            change: Some(change),
+                            ..Default::default()
+                        }),
+                    }
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut state = ScriptEventState::default();
+        state.observe(&row).unwrap();
+        state
+    }
+    /// The saved counterpart of `state`'s 30-hour timers.
+    fn timer() -> saved::Delayed {
+        saved::Delayed {
+            definition: Some(saved::Definition::Name(b"synthetic.1".to_vec())),
+            hours: Some(6),
+            days: Some(1),
+            months: Some(0),
+            originator: None,
+            scope: Some(saved::ScopeGraph {
+                nodes: vec![saved::Scope {
+                    random: Some([0, 0]),
+                    ..Default::default()
+                }],
+            }),
+            extra_keys: Vec::new(),
+        }
+    }
+    fn pack() -> saved::Pack {
+        saved::Pack {
+            pending: Ok(Some(Vec::new())),
+            fired: Ok(Some(Vec::new())),
+            delayed: [
+                (b"AAA".to_vec(), Ok(Vec::new())),
+                (b"BBB".to_vec(), Ok(vec![timer()])),
+                (b"CCC".to_vec(), Ok(vec![timer()])),
+            ]
+            .into(),
+            ..Default::default()
+        }
+    }
+
+    fn queue<'a>(saved: &'a mut saved::Pack, tag: &[u8]) -> &'a mut Vec<saved::Delayed> {
+        saved.delayed.get_mut(tag).unwrap().as_mut().unwrap()
+    }
+
+    #[test]
+    fn unreadable_saved_operands_refuse_only_their_domain_or_owner() {
+        let state = state();
+        let mut saved = pack();
+        saved.pending = Err("synthetic unreadable pending block".into());
+        saved
+            .delayed
+            .insert(b"CCC".to_vec(), Err("synthetic unreadable queue".into()));
+        // The readable sibling's own difference must still be reported.
+        queue(&mut saved, b"BBB")[0].days = Some(2);
+        let mut report = Report::default();
+        compare_retained(&saved, &owners(), &BTreeMap::new(), &state, &mut report);
+        let decisions = BTreeMap::from([
+            (b"AAA".as_slice(), Ok(None)),
+            (
+                b"BBB".as_slice(),
+                Err(invalid("synthetic unreadable decision_status")),
+            ),
+            (
+                b"CCC".as_slice(),
+                Ok(Some(installed_content_save::governance::Decisions {
+                    taken: vec![b"mod_decision".to_vec()],
+                    containers: Default::default(),
+                    random_items: Vec::new(),
+                })),
+            ),
+        ]);
+        crate::decisions::compare_owners(
+            &owners(),
+            &decisions,
+            &state,
+            |_| Ok(Vec::new()),
+            &mut report,
+        );
+        let failed = &report.failed_comparisons;
+        assert!(
+            failed["EventFeedHistory pending_events"]
+                .contains("saved pending_events unreadable: synthetic unreadable pending block"),
+            "{failed:?}"
+        );
+        assert!(failed["EventFeedHistory fired_event_names"].contains("fired_event_names"));
+        let delayed = &failed["EventFeedHistory delayed_events"];
+        assert!(
+            delayed.contains("1 of 3 owners: country delayed-event baseline was not observed: AAA"),
+            "{delayed}"
+        );
+        assert!(
+            delayed.contains("CCC: saved delayed_event unreadable: synthetic unreadable queue"),
+            "{delayed}"
+        );
+        let decisions = &failed["EventFeedHistory decisions"];
+        assert!(
+            decisions.contains("1 of 3 owners: decision owner baseline/writer certificate unavailable: AAA"),
+            "{decisions}"
+        );
+        assert!(
+            decisions.contains("BBB: saved decision_status unreadable: synthetic unreadable decision_status"),
+            "{decisions}"
+        );
+        assert_eq!(failed.len(), 4, "{failed:?}");
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.starts_with("BBB.delayed_event[0].duration")),
+            "{:?}",
+            report.differences
+        );
+        assert!(
+            report.differences.iter().any(|difference| difference
+                .starts_with("CCC.event_feed_decision_status.decisions_taken")),
+            "{:?}",
+            report.differences
+        );
+    }
+
+    #[test]
+    fn every_retained_domain_and_owner_reports_its_refusal_beside_certified_differences() {
+        let state = state();
+        let mut saved = pack();
+        queue(&mut saved, b"BBB")[0].days = Some(2);
+        queue(&mut saved, b"CCC")[0].extra_keys = vec![b"unknown_key".to_vec()];
+        let mut report = Report::default();
+        compare_retained(&saved, &owners(), &BTreeMap::new(), &state, &mut report);
+        let decisions = BTreeMap::from([
+            (b"AAA".as_slice(), Ok(None)),
+            (b"BBB".as_slice(), Ok(None)),
+            (b"CCC".as_slice(), Ok(None)),
+        ]);
+        crate::decisions::compare_owners(
+            &owners(),
+            &decisions,
+            &state,
+            |_| Ok(Vec::new()),
+            &mut report,
+        );
+        let failed = &report.failed_comparisons;
+        assert!(
+            !failed.contains_key("EventFeedHistory pending_events"),
+            "{failed:?}"
+        );
+        assert!(failed["EventFeedHistory fired_event_names"].contains("fired_event_names"));
+        let delayed = &failed["EventFeedHistory delayed_events"];
+        assert!(
+            delayed.contains("1 of 3 owners: country delayed-event baseline was not observed: AAA"),
+            "{delayed}"
+        );
+        assert!(
+            delayed.contains("CCC: CCC.delayed_event[0] has unrecorded saved fields"),
+            "{delayed}"
+        );
+        assert!(
+            failed["EventFeedHistory decisions"]
+                .contains("1 of 3 owners: decision owner baseline/writer certificate unavailable: AAA"),
+            "{failed:?}"
+        );
+        assert_eq!(failed.len(), 3, "{failed:?}");
+        // The certified owner's difference survives every refusal beside it.
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].starts_with("BBB.delayed_event[0].duration"));
+        assert_eq!(report.compared_tables["EventFeedHistory decision registry"], 2);
+    }
+
+    #[test]
+    fn an_incomplete_domain_without_differences_still_fails_the_comparison() {
+        let state = state();
+        let mut saved = pack();
+        saved.delayed.remove(b"AAA".as_slice());
+        let mut report = Report::default();
+        compare_retained(&saved, &owners()[1..], &BTreeMap::new(), &state, &mut report);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(
+            report.failed_comparisons.keys().collect::<Vec<_>>(),
+            ["EventFeedHistory fired_event_names"]
+        );
+        assert!(report.outcome().is_err());
+    }
     #[test]
     fn retained_scope_comparison_checks_native_random_order_links_and_reference_words() {
         let graph = saved::ScopeGraph {

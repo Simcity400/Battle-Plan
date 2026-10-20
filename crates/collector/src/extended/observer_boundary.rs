@@ -32,7 +32,8 @@ pub(crate) struct ObserverBoundaryReport {
 /// Run  (the operation completion writer from pre-hourly update);
 /// the snapshot and `prepare_hour` between them call no native code that
 /// appends to a lane. One job seals the same events with one worker wake,
-/// behind the snapshot.
+/// behind the snapshot. The event feed only prepares its hour here; the
+/// EventFeedSeal job seals it after the Governance job's census joins.
 pub(crate) struct ObserverBoundaryRequest {
     base: usize,
     hour: i32,

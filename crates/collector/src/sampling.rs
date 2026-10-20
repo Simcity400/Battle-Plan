@@ -50,7 +50,7 @@ const AIR_RELATION_PARTS: usize = extended::air_relations::PARTS;
 const AIR_HISTORY_PARTS: usize = extended::air_histories::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
 pub const SEGMENTS: usize = 15;
-pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first burst (every job that needs no other job, queued without waking the pool and released at once: ShipModels census, Countries, the template dictionary, division inputs, root census, AirWing, character roster, World, Economy, Research, Governance, slot-hour Variants, the Ordinary parts but task forces, Slow, WarOverview, Stability, the slot-8 production walks and their production modifier parts, IntelResidual, AirBases, the core and raw-copy jobs but provinces, states and wars, raids, air relations, supply, MapCombats and ScoresRails); 1 root census join + Orders, OrdersPart and Naval dispatch + the slack burst (Ordinary task forces, provinces, weather, capitulation, states, wars, relations) + division inputs and parts join + divisions/presentation/movement/intel/Gated/province-order dispatch + ShipModels census join + detail dispatch + Countries join + Ordinary counter-part dispatch; 2 unused; 3 character roster join + portrait/character input/character role dispatch; 4 AirWing join; 5 AirMissions dispatch + Orders and OrdersPart joins and OrdersStitch dispatch when they have all completed + radar/projects joins + Economy and World joins + divisions/players/air statistics/supremacy/sunk joins; 6 Orders and OrdersPart joins and OrdersStitch dispatch otherwise + Naval join + wing census install + OrdersStitch join + Fronts and ChildFronts dispatch; 7 MapCombats join + map sample; 8 AirMissions dispatch after a typed wing census + ChildFronts, ArmyIcons, AirMissions and ScoresRails joins + Late and history-part dispatch + intel residual/capitulation/weather/lexical/session/relations/variants/character role joins + FinalInputs dispatch + core joins; 9 supply/portraits/order/template/slow/war overview/stability/raid/gated/character input/governance/research joins + ShipModels detail joins + Ordinary family joins + slot-8 production and part joins; 10 capture_tables; 11 Late join + Fronts join + presentation and movement joins + order transport + border inputs; 12 history-part joins + FinalInputs join + capture_tables_late; 13 Intel and AirBases joins + visibility + failure handling; 14 ShipModels completed projection";
+pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first burst (every job that needs no other job, queued without waking the pool and released at once: ShipModels census, Countries, the template dictionary, division inputs, root census, AirWing, character roster, World, Economy, Research, Governance, slot-hour Variants, the Ordinary parts but task forces, Slow, WarOverview, Stability, the slot-8 production walks and their production modifier parts, IntelResidual, AirBases, the core and raw-copy jobs but provinces, states and wars, raids, air relations, supply, MapCombats and ScoresRails); 1 root census join + Orders, OrdersPart and Naval dispatch + the slack burst (Ordinary task forces, provinces, weather, capitulation, states, wars, relations) + division inputs and parts join + divisions/presentation/movement/intel/Gated/province-order dispatch + ShipModels census join + detail dispatch + Countries join + Ordinary counter-part dispatch; 2 unused; 3 character roster join + portrait/character input/character role dispatch; 4 AirWing join; 5 AirMissions dispatch + Orders and OrdersPart joins and OrdersStitch dispatch when they have all completed + radar/projects joins + Economy and World joins + divisions/players/air statistics/supremacy/sunk joins; 6 Orders and OrdersPart joins and OrdersStitch dispatch otherwise + Naval join + wing census install + OrdersStitch join + Fronts and ChildFronts dispatch; 7 MapCombats join + map sample; 8 AirMissions dispatch after a typed wing census + ChildFronts, ArmyIcons, AirMissions and ScoresRails joins + Late and history-part dispatch + intel residual/capitulation/weather/lexical/session/relations/variants/character role joins + FinalInputs dispatch + core joins; 9 supply/portraits/order/template/slow/war overview/stability/raid/gated/character input/governance/research joins + event-feed seal dispatch + ShipModels detail joins + Ordinary family joins + event-feed seal join + slot-8 production and part joins; 10 capture_tables; 11 Late join + Fronts join + presentation and movement joins + order transport + border inputs; 12 history-part joins + FinalInputs join + capture_tables_late; 13 Intel and AirBases joins + visibility + failure handling; 14 ShipModels completed projection";
 /// Core row capacities: countries, provinces, links, states, divisions, wars,
 /// factions, faction members, faction name bytes, border-conflict provinces,
 /// their admitted group handles, and state name bytes.
@@ -4960,6 +4960,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     unsafe { *shared.party_store.get() = Some(store) };
                 }
             });
+            // The event feed seals once the Governance census has joined, so
+            // the census markers of this hour publish in this hour's row. A
+            // worker seals it: the seal may wait for the shared store.
+            let event_feed_seal_bytes = frame.extended.event_feed().allocated_bytes();
+            let event_feed_seal_pending = queue!(acquisition::Job::EventFeedSeal(
+                frame.extended.take_event_feed_seal()
+            ));
             // Research returns into the restored family and charges its costs there.
             let (research_request, research_report) = collected!(research_pending, Research);
             let fingerprints = frame
@@ -5045,6 +5052,46 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     *shared.slice_fingerprints[crate::slicing::NAVAL_MISSIONS].get() = Some(store);
                 }
             }
+            // The event feed seal joins before capture_tables, which reads
+            // the frame's event feed. A seal that did not run refuses its
+            // prepared hour with the job's failure.
+            // Out of line: the job-sized request stays off the hourly body's frame.
+            out_of_line(|| {
+                // SAFETY: this thread still owns the live acquisition boundary.
+                let (feed, report) = unsafe {
+                    collect_acquisition(
+                        shared,
+                        &mut batch,
+                        event_feed_seal_pending,
+                        |job| {
+                            let acquisition::Job::EventFeedSeal(feed) = job else {
+                                unreachable!("event feed seal ticket type")
+                            };
+                            feed
+                        },
+                        |report| {
+                            let acquisition::Report::EventFeedSeal = report else {
+                                unreachable!("event feed seal report type")
+                            };
+                        },
+                    )
+                };
+                let bytes = feed.allocated_bytes();
+                if bytes >= event_feed_seal_bytes {
+                    shared.pool_bytes.fetch_add(
+                        (bytes - event_feed_seal_bytes) as u64,
+                        Ordering::Relaxed,
+                    );
+                } else {
+                    shared.pool_bytes.fetch_sub(
+                        (event_feed_seal_bytes - bytes) as u64,
+                        Ordering::Relaxed,
+                    );
+                }
+                frame
+                    .extended
+                    .restore_event_feed_seal(feed, report.err().map(acquisition_failure_reason));
+            });
             // The daily production slot's walks join last before the
             // assembly that takes their ticks: on their slot they are the
             // hour's longest job.

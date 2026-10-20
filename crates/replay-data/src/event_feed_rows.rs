@@ -621,6 +621,9 @@ pub enum EventFeedScriptChange {
         iteration: bool,
         visited: bool,
     },
+    /// The capture refused one owner's retained queue (the event's target);
+    /// the token is the reason. Other owners and registries keep theirs.
+    DelayedRefused,
 }
 impl Value for EventFeedScriptChange {
     const MINIMUM_ENCODED_BYTES: usize = 1;
@@ -670,6 +673,7 @@ impl Value for EventFeedScriptChange {
                 visited: true,
             } => 14,
             Self::DelayedEmpty => 15,
+            Self::DelayedRefused => 18,
             Self::DelayedRemoved {
                 iteration: false,
                 visited: true,
@@ -721,6 +725,7 @@ impl Value for EventFeedScriptChange {
                 visited: code == 14,
             }),
             15 => Ok(Self::DelayedEmpty),
+            18 => Ok(Self::DelayedRefused),
             _ => Err(invalid("Event feed script registry change differs")),
         }
     }
@@ -1194,13 +1199,18 @@ impl EventFeedHistoryRow {
                         | DelayedBaseline
                         | DelayedReady
                         | DelayedEmpty
-                        | DelayedAdvance { .. } => (false, false, false),
+                        | DelayedAdvance { .. }
+                        | DelayedRefused => (false, false, false),
                     };
+                    // A refusal's token is its recorded reason, never a definition.
+                    let reason = change == DelayedRefused;
                     if identity != script.native_event.is_some()
                         || instance != script.instance.is_some()
                         || scope != (script.scope_len != 0 || script.scope_unrecorded)
+                        || reason && (script.token_len == 0 || script.token_unrecorded)
                         || !matches!(change, Decision(_))
                             && !identity
+                            && !reason
                             && (script.token_len != 0 || script.token_unrecorded)
                         || !matches!(change, Decision(_))
                             && (script.country_target.is_some() || script.numeric_target.is_some())
@@ -1385,6 +1395,57 @@ pub mod tests {
                     ..Default::default()
                 }),
             }],
+        }
+    }
+
+    #[test]
+    fn delayed_owner_refusal_carries_its_reason_and_nothing_else() {
+        let mut row = row();
+        row.script_tokens = b"synthetic delayed owner refusal".to_vec();
+        row.events[0].source = EventFeedSource::ScriptState;
+        row.events[0].target = row.events[0].actor;
+        let reason = EventFeedScript {
+            token_len: row.script_tokens.len() as u32,
+            change: Some(EventFeedScriptChange::DelayedRefused),
+            ..Default::default()
+        };
+        row.events[0].script = Some(reason);
+        let mut bytes = Vec::new();
+        row.encode(&mut bytes).unwrap();
+        assert_eq!(
+            EventFeedHistoryRow::decode(&mut Decoder::new(&bytes)).unwrap(),
+            row
+        );
+        row.script_scopes = vec![EventFeedScope::default()];
+        for script in [
+            EventFeedScript {
+                token_len: 0,
+                ..reason
+            },
+            EventFeedScript {
+                token_len: 0,
+                token_unrecorded: true,
+                ..reason
+            },
+            EventFeedScript {
+                instance: Some(1),
+                ..reason
+            },
+            EventFeedScript {
+                native_event: Some(EventFeedEventIdentity { kind: 1, id: 1 }),
+                ..reason
+            },
+            EventFeedScript {
+                scope_len: 1,
+                ..reason
+            },
+            EventFeedScript {
+                scope_unrecorded: true,
+                ..reason
+            },
+        ] {
+            row.events[0].script = Some(script);
+            assert!(row.validate().is_err(), "{script:?}");
         }
     }
 

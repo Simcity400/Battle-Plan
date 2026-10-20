@@ -8,7 +8,8 @@ pub const PENDING_DEFINITION: usize = 8;
 pub const PENDING_SCOPE: usize = 0x10;
 pub const PENDING_ORIGINATOR: usize = 0x18;
 pub const PENDING_DUE: usize = 0x28;
-const SET_COUNT: usize = 0;
+/// A fired-event set's member count.
+pub const SET_COUNT: usize = 0;
 const SET_BUCKET_COUNT: usize = 4;
 const SET_BUCKETS: usize = 8;
 const NODE_DEFINITION: usize = 0;

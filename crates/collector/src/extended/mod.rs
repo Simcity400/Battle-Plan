@@ -1191,6 +1191,23 @@ impl Captured {
     pub(crate) fn discard_event_feed(&mut self) {
         self.event_feed.discard();
     }
+    /// The observer boundary prepared the hour's event feed; a worker seals
+    /// it once the Governance job's census has joined.
+    pub(crate) fn take_event_feed_seal(&mut self) -> event_feed::Captured {
+        std::mem::replace(&mut self.event_feed, event_feed::Captured::vacant())
+    }
+    /// A seal job that did not run refuses its prepared hour, so no hour
+    /// stays prepared but unsealed.
+    pub(crate) fn restore_event_feed_seal(
+        &mut self,
+        mut feed: event_feed::Captured,
+        failure: Option<&'static str>,
+    ) {
+        if let Some(reason) = failure {
+            feed.fail_prepared(reason);
+        }
+        self.event_feed = feed;
+    }
     pub(crate) fn event_feed(&self) -> &event_feed::Captured {
         &self.event_feed
     }

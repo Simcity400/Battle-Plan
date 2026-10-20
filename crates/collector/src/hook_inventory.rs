@@ -1025,10 +1025,14 @@ pub(crate) fn patches() -> Vec<Patch> {
     for (name, rva, sentinel) in engine_decisions::cdecision::EVENT_FEED_ENTRIES {
         add("event_feed_observer", name, rva, PATCH, &sentinel);
     }
+    // The duration taps and the candidate clear tap are descriptors only:
+    // their enclosing CALL and entry detours replace them.
     for site in engine_events::script_event_sites::LIFECYCLE_TAPS
         .into_iter()
-        .chain(engine_events::script_event_sites::DURATION_TAPS)
         .chain(engine_events::script_event_sites::decisions::TAPS)
+        .filter(|site| {
+            site.rva != engine_events::script_event_sites::decisions::CLEAR_CANDIDATES.rva
+        })
     {
         add(
             if site.rva

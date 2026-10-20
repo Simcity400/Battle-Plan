@@ -2,6 +2,8 @@
 
 Political event capture: the observer of native political writers (elections, ruling parties, ideas, diplomatic dispatch and civil wars, forwarded to the country input, event feed and war provenance observers in collector-observers) and the pack that converts its drained events into the hour's tables. The host installs the hooks, drains at the hourly boundary and assembles the tables.
 
+Two of its detours enclose event-feed writers. The targeted decision entry runs under the event feed's targeted selection detour, whose selection tap only stages the selected instance. The set-political-power effect's entry publishes the commit tap's staged operands once its original returned: the stored balance after the floor, and the raw target's requested amount. A set whose original ran another power writer is refused by name rather than reordered.
+
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-politics` and `cargo clippy -p collector-politics --all-targets -- -D warnings` for its synthetic checks.

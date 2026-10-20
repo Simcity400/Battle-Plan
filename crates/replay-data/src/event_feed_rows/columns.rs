@@ -75,6 +75,7 @@ fn words(event: &EventFeedEvent, read_hour: i32) -> Words {
                 }
                 DelayedEmpty => (15, None),
                 FiredRemoved => (16, None),
+                DelayedRefused => (18, None),
                 Decision(decision) => {
                     words[32] = Some(decision.operation as u64);
                     words[33] = Some(decision.container.into());
@@ -432,6 +433,7 @@ mod tests {
                 iteration: true,
                 visited: true,
             },
+            DelayedRefused,
         ];
         let mut row = super::super::tests::row();
         row.events.clear();
@@ -469,7 +471,12 @@ mod tests {
                 cause: Recorded::Value(Default::default()),
                 script: Some(EventFeedScript {
                     token_start: 2,
-                    token_len: if identity { 5 } else { 0 },
+                    // An owner refusal's token is its reason.
+                    token_len: if identity || change == DelayedRefused {
+                        5
+                    } else {
+                        0
+                    },
                     scope_start: 0,
                     scope_len: u32::from(scope),
                     native_event: identity.then_some(EventFeedEventIdentity {
@@ -497,7 +504,9 @@ mod tests {
             Operation::Rebuild,
             Operation::Candidate,
             Operation::Ignore,
+            Operation::Refused,
         ] {
+            let refused = operation == Operation::Refused;
             let member = matches!(
                 operation,
                 Operation::Store | Operation::Erase | Operation::Update | Operation::PassCut
@@ -514,9 +523,9 @@ mod tests {
                 days: Some(i32::MIN),
                 change: Some(Decision(DecisionChange {
                     operation,
-                    container: 3,
-                    flags: u8::MAX,
-                    ordinal: u32::MAX,
+                    container: if refused { 0 } else { 3 },
+                    flags: if refused { 0 } else { u8::MAX },
+                    ordinal: if refused { 0 } else { u32::MAX },
                     political_power: (operation == Operation::Rebuild).then_some(i64::MIN),
                 })),
                 ..Default::default()

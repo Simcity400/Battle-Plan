@@ -137,6 +137,8 @@ pub const DELAYED_ENTRIES: [Site; 3] = [DELAYED_SCHEDULE, DELAYED_DESTROY, DELAY
 
 /// Replacement unlinked one fired-set node; RSI is the world and RDI the
 /// still-live old definition. No-match replacement bypasses this count store.
+/// A witness only: the fired-match branch staged for
+/// [`decisions::REPLACE_EVENT_RETIREMENT_CALL`].
 pub const ERASE_FIRED: Site = Site {
     name: "EraseFiredEvent",
     rva: 0x001d_9f7f,
@@ -164,7 +166,8 @@ pub const MISSION_APPENDED: Site = Site {
     ],
 };
 /// The automatic writer found a retained mission and selected reactivation.
-/// Its next member stores set the days and native active lifecycle code.
+/// Its next member stores set the days and native active lifecycle code. A
+/// witness only, staged for [`decisions::AUTO_MISSION_ACTIVATION`].
 pub const MISSION_REACTIVATED: Site = Site {
     name: "MissionReactivated",
     rva: 0x0072_ac6d,
@@ -201,6 +204,8 @@ pub const SCRIPTED_MISSION_APPENDED: Site = Site {
         0x49, 0x8b, 0xd6, 0x49, 0x8b, 0xcf, 0xe8, 0xc3, 1, 0, 0, 0x41, 0xc6, 0x87, 0xc0, 1,
     ],
 };
+/// Scripted reactivation of an existing mission: a witness only, staged for
+/// [`ACTIVATE_MISSION`], which publishes the stored days and state.
 pub const SCRIPTED_MISSION_REACTIVATED: Site = Site {
     name: "ScriptedMissionReactivated",
     rva: 0x0071_92f0,
@@ -444,6 +449,9 @@ pub const EXTEND_DECISION_REMOVAL: Site = Site {
 };
 /// Signed literal day operand retained by the removal-delay effect.
 pub const REMOVAL_EXTENSION_DAYS: usize = 0x78;
+/// Descriptors only, no longer installed: these taps ran before the scalar
+/// add. [`decisions::EXTEND_MISSION_TIMEOUT_CALL`] and
+/// [`decisions::EXTEND_DECISION_REMOVAL_CALL`] enclose it instead.
 pub const DURATION_TAPS: [Site; 2] = [EXTEND_MISSION_TIMEOUT, EXTEND_DECISION_REMOVAL];
 
 #[cfg(test)]

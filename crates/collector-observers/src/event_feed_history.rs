@@ -1,5 +1,6 @@
 //! Owned native observations and pointer-free hourly publications with exact receipts.
 
+pub(crate) use crate::script_event_observer::staging::Witness;
 use engine_allocation as allocation;
 use engine_events::event_feed_sites as native;
 use engine_native::Memory;
@@ -11,10 +12,132 @@ use replay_data::{
     },
     rows::Recorded,
 };
-use std::{io, mem::size_of};
+use std::{
+    io,
+    mem::size_of,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+/// More detour witnesses staged in one hour than prepared: refused by name,
+/// never grown on a callback.
+pub(crate) const WITNESS_STORAGE: &str = crate::script_event_observer::staging::WITNESS_STORAGE;
+/// Witnesses a frame abandoned on an unwind, dropped at the next boundary.
+pub(crate) const WITNESS_ABANDONED: &str = crate::script_event_observer::staging::WITNESS_ABANDONED;
+/// An open detour's witnesses a boundary reset before it published.
+pub(crate) const WITNESS_RESET: &str = crate::script_event_observer::staging::WITNESS_RESET;
+
+/// One latch's witness, tagged with its frame token. The arena bumps within
+/// an hour and resets at the boundary, like the token and scope arenas; a
+/// publisher marks its frame's witnesses consumed.
+#[derive(Clone, Copy)]
+struct Staged {
+    token: u64,
+    witness: Witness,
+    consumed: bool,
+}
 
 // Spool recycles one captured frame before completing its prepared write.
 pub const PUBLICATION_CAPACITY: usize = collector_extended_support::hourly::BUFFERS + 1;
+
+/// Bumped whenever an owner certificate is retired, or an owner the next
+/// census would baseline is refused. Constant work, so native callbacks may
+/// bump it.
+pub(crate) static RECOVERY: AtomicU64 = AtomicU64::new(1);
+/// The latest epoch a complete census visited every live owner in.
+pub(crate) static RECOVERED: AtomicU64 = AtomicU64::new(0);
+pub(crate) fn recovery_needed() {
+    RECOVERY.fetch_add(1, Ordering::AcqRel);
+}
+/// The registries an owner refusal belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnerRegistry {
+    Delayed,
+    Decisions,
+}
+/// Since load: refusals of an owner already refused in the same loss epoch.
+/// They emit no marker and request no census.
+pub(crate) static REPEATED_OWNER_REFUSALS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+pub(crate) fn repeated_owner_refusal(registry: OwnerRegistry) {
+    REPEATED_OWNER_REFUSALS[registry as usize].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Since load: baseline samples a native writer crossed, indexed by
+/// [`OwnerRegistry`] then [`REGISTRY_SAMPLE`]. None is certified.
+pub(crate) static CROSSED_SAMPLES: [AtomicU64; 3] =
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+pub(crate) const REGISTRY_SAMPLE: usize = 2;
+fn crossed_sample(sample: usize) {
+    CROSSED_SAMPLES[sample].fetch_add(1, Ordering::Relaxed);
+}
+/// An owner baseline a native writer crossed: refused, and retried at the
+/// next visit rather than recorded as a failed attempt.
+pub(crate) const OWNER_CROSSED: &str = "owner baseline crossed a native writer";
+/// A recovery baseline never grows storage under the shared-store lease. It
+/// raises the demand presize prepares, and is retried at the next visit.
+pub(crate) const OWNER_STORAGE: &str = "owner baseline needs prepared storage";
+
+/// Prepared certificate indexes out of room. An owner baseline that meets
+/// one raises its demand and is retried, like any storage shortage.
+const INDEX_SHORTAGES: [&str; 4] = [
+    "decision owner certificates need prepared capacity",
+    "decision pointer certificates need prepared capacity",
+    "decision pointer certificates are full",
+    "delayed-event pointer index needs prepared storage",
+];
+
+/// A baseline sample's writer cut, taken inside a worker lease. It holds
+/// while no native writer has attempted the store or run a bracketed
+/// original since it was taken, and none is in flight. Nothing waits for a
+/// native writer: a crossed sample is refused instead.
+#[derive(Clone, Copy)]
+pub(crate) struct Cut(u64);
+impl Cut {
+    /// `None` while a native writer is in flight.
+    pub(crate) fn take() -> Option<Self> {
+        crate::event_feed_observer::writer_cut().map(Self)
+    }
+    pub(crate) fn holds(self) -> bool {
+        crate::event_feed_observer::writer_cut_holds(self.0)
+    }
+}
+
+/// An owner baseline's refusal, kept with that owner.
+pub(crate) struct OwnerRefusal {
+    pub reason: &'static str,
+    /// A rejection was already counted inside the baseline.
+    pub counted: bool,
+    /// Crossed by a writer, or short of prepared storage: retried at the
+    /// next visit, not a failed attempt.
+    pub retry: bool,
+}
+
+/// A recorded token: the native writer's string, or a capture refusal's
+/// static reason. Neither allocates on a callback.
+#[derive(Clone, Copy)]
+enum Token {
+    Native(engine_native::msvc_string::Descriptor),
+    Text(&'static str),
+}
+impl Token {
+    fn len(self) -> usize {
+        match self {
+            Self::Native(descriptor) => descriptor.len,
+            Self::Text(text) => text.len(),
+        }
+    }
+    fn copy(self, memory: &impl Memory, output: &mut [u8]) -> Result<(), &'static str> {
+        match self {
+            Self::Native(descriptor) => descriptor.copy(memory, output),
+            Self::Text(text) => {
+                output
+                    .get_mut(..text.len())
+                    .ok_or("string output too short")?
+                    .copy_from_slice(text.as_bytes());
+                Ok(())
+            }
+        }
+    }
+}
 
 /// The observed world boundary and interval coverage.
 #[derive(Clone, Copy)]
@@ -100,6 +223,39 @@ impl Snapshot {
     pub fn grow(&mut self, capacity: usize) -> io::Result<()> {
         let additional = capacity.saturating_sub(self.events.len());
         allocation::reserve_exact(&mut self.events, additional)
+    }
+    /// Capacity for a seal of `demand`.
+    pub fn reserve(&mut self, demand: SealDemand) -> Result<(), &'static str> {
+        self.grow(demand.events)
+            .map_err(|_| "Event feed snapshot allocation failed")?;
+        let tokens = demand.tokens.saturating_sub(self.script_tokens.len());
+        allocation::reserve_exact(&mut self.script_tokens, tokens)
+            .map_err(|_| "event feed token snapshot allocation failed")?;
+        let scopes = demand.scopes.saturating_sub(self.script_scopes.len());
+        allocation::reserve_exact(&mut self.script_scopes, scopes)
+            .map_err(|_| "event feed scope snapshot allocation failed")
+    }
+    /// Off the shared-store lease: room for a measured seal, with headroom
+    /// for facts callbacks add before the sealing lease.
+    pub fn reserve_with_headroom(&mut self, demand: SealDemand) -> Result<(), &'static str> {
+        let headroom = |value: usize, floor: usize| value.saturating_add((value / 4).max(floor));
+        self.reserve(SealDemand {
+            events: headroom(demand.events, 64),
+            tokens: headroom(demand.tokens, 1024),
+            scopes: headroom(demand.scopes, 64),
+        })
+    }
+    /// Callbacks the store declined while the seal held it refuse this
+    /// output and count in its rejections.
+    pub(crate) fn declined_during_seal(&mut self, declined: u64) {
+        self.boundary.coverage = EventFeedCoverage::Unavailable;
+        self.boundary
+            .failure
+            .get_or_insert(crate::event_feed_observer::OBSERVATION_OVERLAP);
+        self.counts = self.counts.and_then(|mut counts| {
+            counts.rejected = counts.rejected.checked_add(declined)?;
+            Some(counts)
+        });
     }
     pub fn refuse(&mut self, generation: u64, hour: i32, reason: &'static str) {
         self.events.clear();
@@ -201,6 +357,27 @@ pub struct Store {
     registry_baseline: Option<u64>,
     registry_complete: bool,
     pub(crate) registry_state: Option<usize>,
+    /// Every entry before it has a publication, so callbacks and the seal
+    /// visit only the unpublished tail.
+    unpublished_from: usize,
+    /// Inside a worker owner baseline: the first rejection's reason.
+    local: Option<Option<&'static str>>,
+    /// Inside a worker owner baseline: prepared storage ran short. Owner
+    /// baselines never grow it under the lease.
+    local_short: bool,
+    /// The owner baseline sample being read: its writer cut, or `None` when
+    /// it began while a native writer was in flight.
+    sample: Option<Option<Cut>>,
+    /// The world a boundary was prepared in, awaiting its seal.
+    prepared: Option<u64>,
+    /// Detour witnesses staged this hour ([`Staged`]), a bump arena reset at
+    /// the boundary.
+    staged: Vec<Option<Staged>>,
+    staged_used: usize,
+    staged_demand: usize,
+    /// Bumped by every arena reset, so a detour open across a boundary
+    /// knows its witnesses were dropped.
+    staged_epoch: u64,
 }
 
 impl Store {
@@ -243,6 +420,15 @@ impl Store {
             registry_baseline: None,
             registry_complete: false,
             registry_state: None,
+            unpublished_from: 0,
+            local: None,
+            local_short: false,
+            sample: None,
+            prepared: None,
+            staged: Vec::new(),
+            staged_used: 0,
+            staged_demand: 0,
+            staged_epoch: 0,
         })
     }
 
@@ -260,6 +446,7 @@ impl Store {
                 + crate::raw_memory::vector_bytes(&self.scope_nodes)
                 + crate::raw_memory::vector_bytes(&self.scope_index),
             index_vectors: self.delayed.bytes() + self.decisions.bytes(),
+            auxiliary_vectors: crate::raw_memory::vector_bytes(&self.staged),
             ..Default::default()
         });
     }
@@ -315,6 +502,83 @@ impl Store {
             .max(self.delayed.capacity())
             .max(self.decisions.demand)
             .max(self.decisions.capacity())
+            .max(self.staged_demand)
+    }
+
+    /// Prepared alongside the decision index: every detour witness is a
+    /// decision or activation one.
+    pub(crate) fn prepare_staged(&mut self, capacity: usize) -> io::Result<()> {
+        if capacity > self.staged.len() {
+            allocation::reserve_exact(&mut self.staged, capacity - self.staged.len())?;
+            self.staged.resize(capacity, None);
+        }
+        Ok(())
+    }
+    /// A latch appends its witness. Demand rises even when it does not fit,
+    /// so the next hour is prepared larger; never grows on the callback.
+    pub(crate) fn stage_witness(
+        &mut self,
+        token: u64,
+        witness: Witness,
+    ) -> Result<(), &'static str> {
+        self.staged_demand = self.staged_demand.max(self.staged_used.saturating_add(1));
+        let slot = self
+            .staged
+            .get_mut(self.staged_used)
+            .ok_or(WITNESS_STORAGE)?;
+        *slot = Some(Staged {
+            token,
+            witness,
+            consumed: false,
+        });
+        self.staged_used += 1;
+        Ok(())
+    }
+    /// The arena's current epoch, recorded by a detour at entry.
+    pub(crate) fn staged_epoch(&self) -> u64 {
+        self.staged_epoch
+    }
+    /// The frame's next unconsumed witness in native order, marked consumed.
+    /// A frame entered in an earlier `epoch` had its witnesses reset by a
+    /// boundary: that is refused by name, never an empty publication.
+    pub(crate) fn take_staged(
+        &mut self,
+        token: u64,
+        epoch: Option<u64>,
+    ) -> Result<Option<Witness>, &'static str> {
+        if epoch.is_some_and(|epoch| epoch != self.staged_epoch) {
+            return Err(WITNESS_RESET);
+        }
+        for slot in &mut self.staged[..self.staged_used] {
+            if let Some(staged) = slot
+                && staged.token == token
+                && !staged.consumed
+            {
+                staged.consumed = true;
+                return Ok(Some(staged.witness));
+            }
+        }
+        Ok(None)
+    }
+    /// Reset the arena at a boundary. Witnesses no publisher consumed were
+    /// abandoned by an unwinding detour: drop them and refuse their hour.
+    fn reset_staged(&mut self) {
+        let abandoned = self.staged[..self.staged_used]
+            .iter()
+            .filter(|slot| slot.is_some_and(|staged| !staged.consumed))
+            .count() as u64;
+        self.staged_used = 0;
+        self.staged_epoch = self.staged_epoch.wrapping_add(1);
+        if abandoned != 0 {
+            self.reject_many(WITNESS_ABANDONED, abandoned);
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn staged_live(&self) -> usize {
+        self.staged[..self.staged_used]
+            .iter()
+            .filter(|slot| slot.is_some_and(|staged| !staged.consumed))
+            .count()
     }
 
     fn advance(&mut self) -> Result<(), &'static str> {
@@ -348,10 +612,21 @@ impl Store {
     /// A declined observation owns no ticket. Retain its exact loss count
     /// until the boundary publishes the refused interval.
     pub(crate) fn reject_many(&mut self, reason: &'static str, count: u64) -> &'static str {
-        self.revoke_retained_baselines();
         let _ = self.advance();
+        self.count_rejected(count);
+        if let Some(local) = self.local.as_mut() {
+            // One owner's baseline: its refusal marker names the reason, and
+            // no other certificate or interval is affected.
+            local.get_or_insert(reason);
+            return reason;
+        }
+        self.revoke_retained_baselines();
         self.failure.get_or_insert(reason);
         self.failure_revision = self.revision;
+        reason
+    }
+
+    fn count_rejected(&mut self, count: u64) {
         if let Some(rejected) = self.counts.rejected.checked_add(count) {
             self.counts.rejected = rejected;
         } else {
@@ -359,7 +634,94 @@ impl Store {
             self.retained
                 .get_or_insert("Event feed rejected count exhausted");
         }
-        reason
+    }
+
+    /// A worker owner baseline of `registry`. Its rejections count but stay
+    /// with that owner; the refusal carries the first reason, whether a
+    /// rejection was already counted, and whether it is retried at the next
+    /// visit. Retention and observation loss stay global. Nothing inside
+    /// grows prepared storage.
+    ///
+    /// Every exit that does not certify checks the sample's writer cut
+    /// first: a sample a writer crossed is retried whatever error or
+    /// rejection it ended in, since a concurrent writer can make any read
+    /// fail or differ. Only an unbroken cut makes a stable failure.
+    pub(crate) fn owner_scope<T>(
+        &mut self,
+        registry: OwnerRegistry,
+        apply: impl FnOnce(&mut Self) -> Result<T, &'static str>,
+    ) -> Result<T, OwnerRefusal> {
+        let outer = self.local.replace(None);
+        let outer_short = std::mem::replace(&mut self.local_short, false);
+        self.sample = None;
+        let result = apply(self);
+        let scoped = self.local.take().flatten();
+        let short = std::mem::replace(&mut self.local_short, outer_short);
+        let sample = self.sample.take();
+        self.local = outer;
+        let reason = match (result, scoped) {
+            (Ok(value), None) if !short => return Ok(value),
+            (Err(reason), _) => reason,
+            (Ok(_), Some(reason)) => reason,
+            (Ok(_), None) => OWNER_STORAGE,
+        };
+        let crossed =
+            reason == OWNER_CROSSED || sample.is_some_and(|cut| cut.is_none_or(|cut| !cut.holds()));
+        if crossed {
+            crossed_sample(registry as usize);
+        }
+        // A prepared index short of room is a storage shortage too.
+        let short = !crossed && (short || INDEX_SHORTAGES.contains(&reason));
+        Err(OwnerRefusal {
+            reason: if crossed {
+                OWNER_CROSSED
+            } else if short {
+                OWNER_STORAGE
+            } else {
+                reason
+            },
+            counted: scoped.is_some(),
+            retry: short || crossed,
+        })
+    }
+    /// Only outside an owner baseline may storage grow, on a worker.
+    fn grows(&self, growing: bool) -> bool {
+        growing && self.local.is_none()
+    }
+    /// Prepared storage ran short: an owner baseline is retried.
+    fn short(&mut self) {
+        if self.local.is_some() {
+            self.local_short = true;
+        }
+    }
+    /// A baseline sample certifies only across an unbroken writer cut, with
+    /// no decline recorded in this interval: such a decline is a lost
+    /// writer.
+    pub(super) fn sample_holds(cut: Cut) -> bool {
+        cut.holds() && crate::event_feed_observer::untaken_declines() == 0
+    }
+    /// The certifying marker of an owner baseline follows only a sample
+    /// that holds.
+    pub(crate) fn certifies(cut: Cut) -> Result<(), &'static str> {
+        if Self::sample_holds(cut) {
+            Ok(())
+        } else {
+            Err(OWNER_CROSSED)
+        }
+    }
+    /// An owner baseline's start, before its first native read: no sample
+    /// while a native writer is in flight. The cut stays with the store
+    /// until the owner scope ends.
+    pub(crate) fn sample(&mut self) -> Result<Cut, &'static str> {
+        let cut = Cut::take();
+        self.sample = Some(cut);
+        cut.ok_or(OWNER_CROSSED)
+    }
+    /// A certified owner's scalar acquisition, before its native read. It
+    /// certifies nothing, so a writer in flight refuses nothing, but a read
+    /// error under a crossed cut is retried rather than failed.
+    pub(crate) fn watch(&mut self) {
+        self.sample = Some(Cut::take());
     }
 
     fn revoke_retained_baselines(&mut self) {
@@ -372,7 +734,47 @@ impl Store {
             self.registry_state = None;
         }
         self.delayed.revoke_retained();
-        self.decisions.invalidate();
+        // No native writer was missed: pointer attributions stay exact.
+        self.decisions.revoke();
+    }
+
+    /// Census begin on the existing worker. Recovery is receipt-qualified:
+    /// nothing is read while a loss or refusal awaits its receipt, or before
+    /// the boundary's registry baseline established this world.
+    pub(crate) fn begin_recovery(&mut self, generation: u64, state: usize) -> Option<u64> {
+        if self.failure.is_some() || self.observation(generation).is_err() {
+            return None;
+        }
+        if self.registry_state? != state {
+            self.reject("delayed-event census world certificate unavailable");
+            return None;
+        }
+        // Prepared index resets run on this worker, never on a writer.
+        self.decisions.reset(generation);
+        Some(RECOVERY.load(Ordering::Acquire))
+    }
+
+    /// One live country's visit: certified owners read nothing more than
+    /// their scalar political balance; others are attempted once per epoch.
+    pub(crate) fn recover_owner(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        generation: u64,
+        state: usize,
+        hour: i32,
+        country: engine_native::ccountry::Country,
+    ) {
+        self.recover_decisions(memory, base, generation, state, hour, country);
+        self.recover_delayed(memory, base, generation, state, hour, country);
+    }
+
+    /// A census that visited every live country without an interval loss
+    /// recovered every owner certificate retired before its begin.
+    pub(crate) fn finish_recovery(&self, generation: u64, epoch: u64, complete: bool) {
+        if complete && self.failure.is_none() && self.observation(generation).is_ok() {
+            RECOVERED.fetch_max(epoch, Ordering::AcqRel);
+        }
     }
 
     fn observation(&self, generation: u64) -> Result<(), &'static str> {
@@ -394,6 +796,7 @@ impl Store {
             return Err(self.reject(reason));
         }
         if self.entries.len() == self.entries.capacity() {
+            self.short();
             return Err(self.reject("Event feed callback storage needs growth"));
         }
         let Some(next) = self.next_sequence.checked_add(1) else {
@@ -485,21 +888,64 @@ impl Store {
         fact: ScriptFact,
         growing: bool,
     ) -> Result<(), &'static str> {
+        let token = Token::Native(fact.token);
+        self.script_token(memory, base, generation, hour, fact, token, growing)
+    }
+    /// A capture refusal marker whose token is the static reason.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The refusal reason travels beside the usual occurrence operands."
+    )]
+    fn script_text(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        generation: u64,
+        hour: i32,
+        fact: ScriptFact,
+        reason: &'static str,
+        growing: bool,
+    ) -> Result<(), &'static str> {
+        self.script_token(
+            memory,
+            base,
+            generation,
+            hour,
+            fact,
+            Token::Text(reason),
+            growing,
+        )
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The token source is separate from the fact's native descriptor."
+    )]
+    fn script_token(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        generation: u64,
+        hour: i32,
+        fact: ScriptFact,
+        token: Token,
+        growing: bool,
+    ) -> Result<(), &'static str> {
         let result = (|| {
             self.observation(generation)?;
-            if growing && self.entries.len() == self.entries.capacity() {
+            if self.grows(growing) && self.entries.len() == self.entries.capacity() {
                 self.prepare_capacity(self.entries.len().max(1))
                     .map_err(|_| "event registry baseline occurrence allocation failed")?;
             }
             if self.entries.len() == self.entries.capacity() {
+                self.short();
                 return Err("Event feed callback storage needs growth");
             }
             let mut token_end = self
                 .tokens_used
-                .checked_add(fact.token.len)
+                .checked_add(token.len())
                 .ok_or("event feed script token demand overflow")?;
             self.token_demand = self.token_demand.max(token_end);
-            if growing && token_end > self.script_tokens.len() {
+            if self.grows(growing) && token_end > self.script_tokens.len() {
                 self.prepare_scripts(
                     token_end.max(self.script_tokens.len().saturating_mul(2)),
                     self.script_scopes.len(),
@@ -507,12 +953,19 @@ impl Store {
                 )
                 .map_err(|_| "event registry baseline token allocation failed")?;
             }
+            if token_end > self.script_tokens.len() {
+                self.short();
+            }
             let token_result = self
                 .script_tokens
                 .get_mut(self.tokens_used..token_end)
                 .ok_or("event feed script tokens need prepared storage")
-                .and_then(|token| fact.token.copy(memory, token));
+                .and_then(|output| token.copy(memory, output));
             let token_unrecorded = if let Err(reason) = token_result {
+                // A refusal without its reason would not name what it refuses.
+                if let Token::Text(_) = token {
+                    return Err(reason);
+                }
                 self.reject(reason);
                 token_end = self.tokens_used;
                 true
@@ -528,7 +981,9 @@ impl Store {
                     &mut self.scope_nodes,
                     &mut self.scope_index,
                 );
-                while growing && graph.failure.is_some() && graph.required > self.scope_nodes.len()
+                while self.grows(growing)
+                    && graph.failure.is_some()
+                    && graph.required > self.scope_nodes.len()
                 {
                     self.prepare_scripts(
                         self.script_tokens.len(),
@@ -545,6 +1000,9 @@ impl Store {
                     );
                 }
                 self.graph_demand = self.graph_demand.max(graph.required);
+                if graph.failure.is_some() && graph.required > self.scope_nodes.len() {
+                    self.short();
+                }
                 if let Some(reason) = graph.failure {
                     self.reject(reason);
                     scope_unrecorded = true;
@@ -560,7 +1018,7 @@ impl Store {
                 .checked_add(graph_len)
                 .ok_or("event feed script scope demand overflow")?;
             self.scope_demand = self.scope_demand.max(scope_end);
-            if growing && scope_end > self.script_scopes.len() {
+            if self.grows(growing) && scope_end > self.script_scopes.len() {
                 self.prepare_scripts(
                     self.script_tokens.len(),
                     scope_end.max(self.script_scopes.len().saturating_mul(2)),
@@ -569,6 +1027,7 @@ impl Store {
                 .map_err(|_| "event registry baseline scope allocation failed")?;
             }
             if scope_end > self.script_scopes.len() {
+                self.short();
                 self.reject("event feed script scopes need prepared storage");
                 scope_unrecorded = true;
                 graph_len = 0;
@@ -633,11 +1092,16 @@ impl Store {
         if self.observation(generation).is_err() {
             return;
         }
-        if let Some(entry) = self.entries.iter_mut().rev().find(|entry| {
-            entry.dispatch_frame == frame
-                && entry.event.generation == generation
-                && entry.publication.is_none()
-        }) && let Some(script) = entry.event.script.as_mut()
+        // Published receipts can retain hours of entries; none is a dispatch.
+        if let Some(entry) = self.entries[self.unpublished_from..]
+            .iter_mut()
+            .rev()
+            .find(|entry| {
+                entry.dispatch_frame == frame
+                    && entry.event.generation == generation
+                    && entry.publication.is_none()
+            })
+            && let Some(script) = entry.event.script.as_mut()
         {
             script.instance = Some(instance);
             entry.dispatch_frame = 0;
@@ -654,13 +1118,17 @@ impl Store {
         if self.observation(generation).is_err() {
             return;
         }
-        if let Some(entry) = self.entries.iter_mut().rev().find(|entry| {
-            entry.dispatch_frame != 0
-                && entry.dispatch_scope == scope
-                && entry.event.generation == generation
-                && entry.publication.is_none()
-                && entry.dispatch_definition == definition
-        }) && let Some(script) = entry.event.script.as_mut()
+        if let Some(entry) = self.entries[self.unpublished_from..]
+            .iter_mut()
+            .rev()
+            .find(|entry| {
+                entry.dispatch_frame != 0
+                    && entry.dispatch_scope == scope
+                    && entry.event.generation == generation
+                    && entry.publication.is_none()
+                    && entry.dispatch_definition == definition
+            })
+            && let Some(script) = entry.event.script.as_mut()
         {
             script.instance = Some(instance);
             entry.dispatch_frame = 0;
@@ -847,6 +1315,7 @@ impl Store {
             && spare.scope_nodes.len() >= self.scope_nodes.len()
             && spare.delayed.covers(&self.delayed)
             && spare.decisions.covers(&self.decisions)
+            && spare.staged.len() >= self.staged.len()
         {
             spare.entries.clear();
             spare.entries.append(&mut self.entries);
@@ -862,6 +1331,8 @@ impl Store {
             std::mem::swap(&mut self.scope_index, &mut spare.scope_index);
             self.delayed.install(&mut spare.delayed);
             self.decisions.install(&mut spare.decisions);
+            spare.staged[..self.staged_used].copy_from_slice(&self.staged[..self.staged_used]);
+            std::mem::swap(&mut self.staged, &mut spare.staged);
         }
     }
 
@@ -916,6 +1387,8 @@ impl Store {
                 entry.publication = None;
             }
         }
+        // The next seal publishes these entries again.
+        self.unpublished_from = 0;
         if self
             .handoff
             .is_some_and(|(handoff, _)| handoff == publication)
@@ -956,52 +1429,47 @@ impl Store {
             failed_batches: self.failed_batches,
         })
     }
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn snapshot(
         &mut self,
         output: &mut Snapshot,
         boundary: OwnerBoundary,
     ) -> Result<(), &'static str> {
-        self.snapshot_mode(output, boundary, false, |_| Ok(()))
+        self.prepare_boundary::<engine_native::memory::LiveMemory>(boundary, None)?;
+        self.seal(output, boundary, false)
     }
+    #[cfg(test)]
     pub fn snapshot_growing(
         &mut self,
         output: &mut Snapshot,
         boundary: OwnerBoundary,
     ) -> Result<(), &'static str> {
-        self.snapshot_mode(output, boundary, true, |_| Ok(()))
+        self.prepare_boundary::<engine_native::memory::LiveMemory>(boundary, None)?;
+        self.seal(output, boundary, true)
     }
-    pub fn snapshot_with_registry(
+    #[cfg(test)]
+    pub fn snapshot_with_registry<M: Memory>(
         &mut self,
         output: &mut Snapshot,
         boundary: OwnerBoundary,
-        memory: &impl Memory,
+        memory: &M,
         base: usize,
     ) -> Result<(), &'static str> {
-        self.snapshot_mode(output, boundary, true, |store| {
-            // A bootstrap interval may have refused pre-observation calls.
-            // Start the single retained census only after that refusal has
-            // an output receipt; never acquire a baseline we must invalidate
-            // in the same publication. Missing writer coverage also waits;
-            // a healthy first interval can still publish a fresh baseline.
-            if store.failure.is_some() || boundary.coverage != EventFeedCoverage::Complete {
-                return Ok(());
-            }
-            if let Err(reason) =
-                store.registry_baseline(memory, base, boundary.generation, boundary.read_hour)
-            {
-                store.reject(reason);
-            }
-            Ok(())
-        })
+        self.prepare_boundary(boundary, Some((memory, base)))?;
+        self.seal(output, boundary, true)
     }
-    fn snapshot_mode(
+    /// The boundary worker's first half: retire acknowledged history, admit
+    /// the observed world and acquire the registry baseline. Owner census
+    /// visits may follow before [`Self::seal`] publishes the same hour.
+    pub fn prepare_boundary<M: Memory>(
         &mut self,
-        output: &mut Snapshot,
-        mut boundary: OwnerBoundary,
-        growing: bool,
-        prepare: impl FnOnce(&mut Self) -> Result<(), &'static str>,
+        boundary: OwnerBoundary,
+        registry: Option<(&M, usize)>,
     ) -> Result<(), &'static str> {
+        self.prepared = None;
+        // Every detour completed on its writer's thread before this
+        // boundary; a witness still here was abandoned on an unwind.
+        self.reset_staged();
         // No outstanding ticket can still refer to an index that retain moves.
         if self.outstanding() == 0 && self.retained.is_none() {
             self.entries.retain(|entry| entry.state != State::Published);
@@ -1026,6 +1494,11 @@ impl Store {
             }
             self.tokens_used = tokens;
             self.scopes_used = scopes;
+            self.unpublished_from = self
+                .entries
+                .iter()
+                .position(|entry| entry.publication.is_none())
+                .unwrap_or(self.entries.len());
         }
         if self.generation != Some(boundary.generation) {
             if self.outstanding() != 0 || self.generation.is_some() && self.retained.is_some() {
@@ -1045,6 +1518,7 @@ impl Store {
                 .checked_add(discarded as u64)
                 .ok_or("Event feed rejected count exhausted")?;
             self.entries.clear();
+            self.unpublished_from = 0;
             self.tokens_used = 0;
             self.scopes_used = 0;
             self.generation = Some(boundary.generation);
@@ -1059,7 +1533,61 @@ impl Store {
         }
         self.observing = self.retained.is_none();
         self.delayed.reset(boundary.generation);
-        prepare(self)?;
+        // A bootstrap interval may have refused pre-observation calls.
+        // Start the single retained census only after that refusal has
+        // an output receipt; never acquire a baseline we must invalidate
+        // in the same publication. Missing writer coverage also waits;
+        // a healthy first interval can still publish a fresh baseline.
+        // This registry baseline still grows storage under the worker
+        // lease: it predates owner recovery and is small. Owner baselines
+        // never grow.
+        if let Some((memory, base)) = registry
+            && self.failure.is_none()
+            && boundary.coverage == EventFeedCoverage::Complete
+            && let Err(reason) =
+                self.registry_baseline(memory, base, boundary.generation, boundary.read_hour)
+        {
+            self.reject(reason);
+        }
+        self.prepared = Some(boundary.generation);
+        Ok(())
+    }
+    /// What sealing now would publish: unpublished facts, their tokens and
+    /// scopes. Read-only, so the output can grow off the shared-store lease.
+    pub fn seal_demand(&self) -> Result<SealDemand, &'static str> {
+        self.entries[self.unpublished_from..]
+            .iter()
+            .filter(|entry| entry.publication.is_none() && entry.fact())
+            .try_fold(SealDemand::default(), |demand, entry| {
+                let script = entry.event.script;
+                Ok(SealDemand {
+                    events: demand.events + 1,
+                    tokens: demand
+                        .tokens
+                        .checked_add(script.map_or(0, |script| script.token_len as usize))
+                        .ok_or("event feed token snapshot demand overflow")?,
+                    scopes: demand
+                        .scopes
+                        .checked_add(script.map_or(0, |script| script.scope_len as usize))
+                        .ok_or("event feed scope snapshot demand overflow")?,
+                })
+            })
+    }
+    /// The boundary worker's second half: publish everything reached since
+    /// the previous seal, including the prepared hour's census markers. In
+    /// production the output was grown off the lease from [`Self::seal_demand`]
+    /// and nothing grows here; a shortfall refuses the hour.
+    pub fn seal(
+        &mut self,
+        output: &mut Snapshot,
+        mut boundary: OwnerBoundary,
+        growing: bool,
+    ) -> Result<(), &'static str> {
+        if self.prepared.take() != Some(boundary.generation)
+            || self.generation != Some(boundary.generation)
+        {
+            return Err("Event feed boundary seal differs from its prepared world");
+        }
         let outstanding = self.outstanding();
         boundary.failure = self
             .retained
@@ -1067,62 +1595,22 @@ impl Store {
             .or(boundary.failure)
             .or_else(|| (outstanding != 0).then_some("Event feed acquired events unsettled"))
             .or_else(|| (!self.counts_valid).then_some("Event feed accounting exhausted"));
-        output.required = self
-            .entries
-            .iter()
-            .filter(|entry| entry.publication.is_none() && entry.fact())
-            .count();
+        // Every entry before this one already has a publication.
+        let unpublished = self.unpublished_from;
+        let demand = self.seal_demand()?;
+        output.required = demand.events;
         if growing {
-            output
-                .grow(output.required)
-                .map_err(|_| "Event feed snapshot allocation failed")?;
-            let mut tokens = 0_usize;
-            let mut scopes = 0_usize;
-            for entry in &self.entries {
-                if entry.publication.is_none()
-                    && entry.fact()
-                    && let Some(script) = entry.event.script
-                {
-                    tokens = tokens
-                        .checked_add(script.token_len as usize)
-                        .ok_or("event feed token snapshot demand overflow")?;
-                    scopes = scopes
-                        .checked_add(script.scope_len as usize)
-                        .ok_or("event feed scope snapshot demand overflow")?;
-                }
-            }
-            let token_growth = tokens.saturating_sub(output.script_tokens.len());
-            let scope_growth = scopes.saturating_sub(output.script_scopes.len());
-            allocation::reserve_exact(&mut output.script_tokens, token_growth)
-                .map_err(|_| "event feed token snapshot allocation failed")?;
-            allocation::reserve_exact(&mut output.script_scopes, scope_growth)
-                .map_err(|_| "event feed scope snapshot allocation failed")?;
+            output.reserve(demand)?;
         }
         if output.required > output.events.capacity() {
             return Err("Event feed hourly storage needs growth");
         }
-        if !growing {
-            let (tokens, scopes) = self
-                .entries
-                .iter()
-                .filter(|entry| entry.publication.is_none() && entry.fact())
-                .filter_map(|entry| entry.event.script)
-                .try_fold((0_usize, 0_usize), |(tokens, scopes), script| {
-                    Ok::<_, &'static str>((
-                        tokens
-                            .checked_add(script.token_len as usize)
-                            .ok_or("event feed token snapshot demand overflow")?,
-                        scopes
-                            .checked_add(script.scope_len as usize)
-                            .ok_or("event feed scope snapshot demand overflow")?,
-                    ))
-                })?;
-            if tokens > output.script_tokens.capacity() || scopes > output.script_scopes.capacity()
-            {
-                return Err("Event feed script hourly storage needs growth");
-            }
+        if demand.tokens > output.script_tokens.capacity()
+            || demand.scopes > output.script_scopes.capacity()
+        {
+            return Err("Event feed script hourly storage needs growth");
         }
-        if self.entries.iter().any(|entry| {
+        if self.entries[unpublished..].iter().any(|entry| {
             entry.publication.is_none() && entry.fact() && entry.event.hour > boundary.read_hour
         }) {
             return Err("Event feed event is later than its supplying hour");
@@ -1138,7 +1626,7 @@ impl Store {
         // publication. The first interval can supply one; an older retained
         // certificate cannot survive a later forwarder/input gap.
         let fresh_registry = |change| {
-            self.entries.iter().any(|entry| {
+            self.entries[unpublished..].iter().any(|entry| {
                 entry.publication.is_none()
                     && entry.fact()
                     && entry
@@ -1174,7 +1662,7 @@ impl Store {
         output.events.clear();
         output.script_tokens.clear();
         output.script_scopes.clear();
-        for entry in &mut self.entries {
+        for entry in &mut self.entries[unpublished..] {
             if entry.publication.is_none() && entry.fact() {
                 let mut event = entry.event;
                 if let Some(script) = event.script.as_mut() {
@@ -1197,6 +1685,12 @@ impl Store {
                 entry.publication = Some(self.revision);
             }
         }
+        // Skip what this seal published; a war proof awaiting its settlement
+        // keeps itself and every later entry in the unpublished tail.
+        self.unpublished_from += self.entries[unpublished..]
+            .iter()
+            .position(|entry| entry.publication.is_none())
+            .unwrap_or(self.entries.len() - unpublished);
         output.boundary = boundary;
         output.counts = self.counts_valid.then_some(self.counts);
         output.outstanding = outstanding;
@@ -1207,6 +1701,42 @@ impl Store {
         self.first_interval = boundary.coverage == EventFeedCoverage::Unavailable;
         Ok(())
     }
+
+    /// Callbacks the store declined while the seal still held it happened
+    /// before the next interval began. They refuse the sealed publication,
+    /// whose receipt ends the loss, and retire every certificate a missed
+    /// writer may have broken. Observation continues: nothing after the
+    /// seal's release was missed.
+    pub(crate) fn seal_declined(&mut self, sealed: u64, declined: u64) {
+        let _ = self.advance();
+        self.registry_baseline = None;
+        self.registry_complete = false;
+        self.registry_state = None;
+        self.delayed.invalidate();
+        self.decisions.invalidate();
+        self.count_rejected(declined);
+        self.failure
+            .get_or_insert(crate::event_feed_observer::OBSERVATION_OVERLAP);
+        self.failure_revision = self.failure_revision.max(sealed);
+    }
+}
+
+#[cfg(test)]
+impl Store {
+    pub(crate) fn failure_for_test(&self) -> Option<&'static str> {
+        self.failure
+    }
+    pub(crate) fn rejected_for_test(&self) -> u64 {
+        self.counts.rejected
+    }
+}
+
+/// A seal's output demand.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SealDemand {
+    pub events: usize,
+    pub tokens: usize,
+    pub scopes: usize,
 }
 
 impl Entry {
