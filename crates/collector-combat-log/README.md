@@ -14,4 +14,18 @@ conversion edits keyed held rows incrementally; complete encoder inputs are
 materialised there, outside the hourly callback's acquisition join. Sequence
 gaps require a full seed. A quiet batch touches no held rows.
 
+Event storage also uses the existing worker-only active-combat operand census,
+including its aggregate equipment entries. An empty retained-history seed must
+not leave active writers with a single slot. The worker grows a drained lane
+before writers resume; pending events defer replacement until the existing drain.
+Status reports installed capacity beside complete required-entry demand. Genuine
+loss still revokes the certificate until an explicit full seed; no reread fallback
+or hidden loss recovery is added.
+
 Run `cargo test -p collector-combat-log` and `cargo clippy -p collector-combat-log --all-targets -- -D warnings` for its synthetic checks.
+
+`observer_projection` assigns active-observer occurrence labels from the existing
+encoder baseline on the conversion lane. Collection insertion cannot relabel
+other kinds or activity parents. Native acquisition, pool admission, duplicates,
+refusals and hourly cadence are unchanged; no process-global identity cache is
+kept. A missing baseline restarts labels from the complete current sample.

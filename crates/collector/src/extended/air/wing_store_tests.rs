@@ -137,6 +137,22 @@ fn settle(
     check: Check,
     ids: [u64; WINGS],
 ) -> (Vec<rows::WingEquipmentRow>, bool, usize) {
+    settle_selected(
+        bytes,
+        store,
+        watches,
+        check,
+        &ids.into_iter().enumerate().collect::<Vec<_>>(),
+    )
+}
+
+fn settle_selected(
+    bytes: &[u8],
+    store: &mut WingStore,
+    watches: &Watches,
+    check: Check,
+    selected: &[(usize, u64)],
+) -> (Vec<rows::WingEquipmentRow>, bool, usize) {
     let memory = Calls {
         bytes,
         calls: RefCell::default(),
@@ -144,7 +160,7 @@ fn settle(
     let mut reuse = WingReuse::begin(store, watches, check);
     let mut rows = Vec::new();
     let mut complete = true;
-    for (index, id) in ids.into_iter().enumerate() {
+    for &(index, id) in selected {
         let row = cair_wing::Row {
             id,
             ..Default::default()
@@ -454,4 +470,104 @@ fn without_the_kill_airplanes_detour_nothing_is_carried() {
     watches.boundary(false);
     let after = walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
     assert_eq!((after.counts.read, after.counts.reused), (3, 0));
+}
+
+#[test]
+fn quiet_and_equal_verified_wings_keep_the_whole_owned_row_buffer() {
+    let bytes = world();
+    let watches = Watches::enabled(16);
+    let mut store = WingStore::new();
+    let first = first_hour(&bytes, &mut store, &watches);
+    let storage = store.held_rows().as_ptr();
+    for check in [Check::Nothing, Check::Every, Check::Slice { hour: 1 }] {
+        let hour = walk(&bytes, &mut store, &watches, check, IDS);
+        assert_eq!(hour.rows, first.rows);
+        assert_eq!(store.held_rows().as_ptr(), storage);
+        assert_eq!(store.held_rows().len(), first.rows.len());
+    }
+}
+
+#[test]
+fn changed_new_removed_reordered_and_refused_wings_match_fresh_rows() {
+    let mut bytes = world();
+    let watches = Watches::enabled(16);
+    let mut store = WingStore::new();
+    let mut capture = |bytes: &[u8], selected: &[(usize, u64)], expected_reads| {
+        let (actual, complete, _) =
+            settle_selected(bytes, &mut store, &watches, Check::Nothing, selected);
+        assert_eq!(store.counts().read, expected_reads);
+        let (fresh, fresh_complete, _) = settle_selected(
+            bytes,
+            &mut WingStore::new(),
+            &watches,
+            Check::Nothing,
+            selected,
+        );
+        assert_eq!((actual, complete), (fresh, fresh_complete));
+        store.conclude(complete);
+    };
+    capture(&bytes, &[(0, 7), (1, 8)], 2);
+    capture(&bytes, &[(0, 7), (1, 8)], 0);
+    // One new wing, a withdrawal, and a different census order.
+    capture(&bytes, &[(2, 9), (0, 7)], 1);
+    drop(watches.notify(wing(0) + cair_wing::EQUIPMENT_POOL, 0));
+    set_amount(&mut bytes, 0, 1, -123);
+    capture(&bytes, &[(0, 7), (2, 9)], 1);
+    // Entry-count changes must repack held ranges without changing ordinals.
+    put(
+        &mut bytes,
+        wing(0) + cair_wing::EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+        &1_i32.to_le_bytes(),
+    );
+    drop(watches.notify(wing(0) + cair_wing::EQUIPMENT_POOL, 0));
+    capture(&bytes, &[(2, 9), (0, 7)], 1);
+    put(
+        &mut bytes,
+        wing(2) + cair_wing::EQUIPMENT_POOL,
+        &0_u64.to_le_bytes(),
+    );
+    drop(watches.notify(wing(2) + cair_wing::EQUIPMENT_POOL, 0));
+    capture(&bytes, &[(2, 9), (0, 7)], 1);
+    // An incomplete census certifies no survivors, even if their bytes match.
+    capture(&bytes, &[(0, 7)], 1);
+    capture(&bytes, &[], 0);
+    capture(&bytes, &[(0, 7)], 1);
+}
+
+#[test]
+fn quiet_wing_cache_needs_no_allocation_and_duplicate_wings_never_certify_a_read() {
+    let bytes = world();
+    let watches = Watches::enabled(16);
+    let mut store = WingStore::new();
+    first_hour(&bytes, &mut store, &watches);
+    walk(&bytes, &mut store, &watches, Check::Nothing, IDS);
+    let storage = store.held_rows().as_ptr();
+    crate::test_support::with_allocations_denied(|| {
+        let mut reuse = WingReuse::begin(&mut store, &watches, Check::Nothing);
+        for (index, id) in IDS.into_iter().enumerate() {
+            let plan = reuse.plan(wing(index), id);
+            assert_eq!(plan.carry_rows(), Some(2));
+            assert_eq!(reuse.carry(&plan).len(), 2);
+        }
+        reuse.settle();
+    });
+    store.conclude(true);
+    assert_eq!(store.held_rows().as_ptr(), storage);
+    let (_, complete, _) = settle_selected(
+        &bytes,
+        &mut store,
+        &watches,
+        Check::Nothing,
+        &[(0, 7), (0, 7), (1, 8)],
+    );
+    store.conclude(complete);
+    let (_, complete, _) = settle_selected(
+        &bytes,
+        &mut store,
+        &watches,
+        Check::Nothing,
+        &[(0, 7), (1, 8)],
+    );
+    assert!(complete);
+    assert_eq!((store.counts().read, store.counts().reused), (1, 1));
 }

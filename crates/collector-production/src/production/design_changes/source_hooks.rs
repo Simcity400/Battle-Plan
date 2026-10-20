@@ -38,7 +38,7 @@ fn country_enabled(enabled: bool) {
     COUNTRY_ENABLED.store(enabled, Ordering::Release);
     super::update_enabled();
     if !enabled {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
     }
 }
 unsafe fn country(
@@ -113,13 +113,13 @@ fn observe(memory: &impl Memory, base: usize, key: sources::Key, retired: bool) 
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        MISSED.store(true, Ordering::Release);
+        lock_contended();
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
-    let Some(owner) = store.interests.get(key) else {
+    let Some(owner) = store.interests.changed(key) else {
         return;
     };
     store.batch.required_events = store.batch.required_events.saturating_add(1);
@@ -195,7 +195,7 @@ impl Drop for Scope {
     fn drop(&mut self) {
         REVISION.fetch_add(1, Ordering::AcqRel);
         if !self.complete {
-            MISSED.store(true, Ordering::Release);
+            unobserved();
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
@@ -260,11 +260,11 @@ unsafe fn around<const SITE: usize>(
                     {
                         observe(&memory, base, sources::Key::Direct(pointer as usize), false);
                     } else {
-                        MISSED.store(true, Ordering::Release);
+                        unobserved();
                     }
                 }
             } else {
-                MISSED.store(true, Ordering::Release);
+                unobserved();
             }
         }
     }

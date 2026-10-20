@@ -646,25 +646,30 @@ impl Captured {
             &self.registrations.rows,
             ArenaRow::key,
             |r, old| {
+                let inputs = self.carrier.registration(r);
+                let fuel = inputs.state_fuel();
                 r.base == old.base
                     && r.slot == old.slot
                     && r.capacity_raw == old.capacity_raw
                     && wings(r) == old.wings
-                    && self.carrier.equal(r, &old.carrier)
-                    && old.fuel_demand_raw == rows::Recorded::Value(self.carrier.state_fuel(r)[0])
-                    && old.fuel_allocated_raw
-                        == rows::Recorded::Value(self.carrier.state_fuel(r)[1])
+                    && inputs.equal(&old.carrier)
+                    && old.fuel_demand_raw == rows::Recorded::Value(fuel[0])
+                    && old.fuel_allocated_raw == rows::Recorded::Value(fuel[1])
                     && old.transport_planes == rows::Recorded::Value(rows::Retired)
             },
-            |r| rows::AirBaseRegistrationRow {
-                base: r.base,
-                slot: r.slot,
-                capacity_raw: r.capacity_raw,
-                wings: owned_vec(copy_vec(wings(r))),
-                carrier: self.carrier.packet(r),
-                fuel_demand_raw: rows::Recorded::Value(self.carrier.state_fuel(r)[0]),
-                fuel_allocated_raw: rows::Recorded::Value(self.carrier.state_fuel(r)[1]),
-                transport_planes: rows::Recorded::Value(rows::Retired),
+            |r| {
+                let inputs = self.carrier.registration(r);
+                let fuel = inputs.state_fuel();
+                rows::AirBaseRegistrationRow {
+                    base: r.base,
+                    slot: r.slot,
+                    capacity_raw: r.capacity_raw,
+                    wings: owned_vec(copy_vec(wings(r))),
+                    carrier: inputs.packet(),
+                    fuel_demand_raw: rows::Recorded::Value(fuel[0]),
+                    fuel_allocated_raw: rows::Recorded::Value(fuel[1]),
+                    transport_planes: rows::Recorded::Value(rows::Retired),
+                }
             },
         )
     }

@@ -93,6 +93,9 @@ struct ReadGroupData {
 
 // Native conversion reuse stays within its pack's existing timing scope.
 macro_rules! spool_inputs {
+    (combat_progress, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
     (combat_log, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };
@@ -901,28 +904,48 @@ impl Capacities {
         memory: &impl Memory,
         base: usize,
     ) -> Result<(), &'static str> {
+        self.presize_live_inputs_periodic(memory, base, true)
+    }
+
+    pub(crate) fn presize_live_inputs_periodic(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        capacity_census: bool,
+    ) -> Result<(), &'static str> {
         let mut failure = None;
         for result in [
-            crate::country_scale::observe_advisor_modifiers(memory, base).map(|demand| {
-                if let Some(demand) = demand
-                    && characters::advisors::note_modifier_demand(demand)
-                {
-                    crate::decode::presize_advisor_pools();
-                }
+            capacity_census.then(|| {
+                crate::country_scale::observe_advisor_modifiers(memory, base).map(|demand| {
+                    if let Some(demand) = demand
+                        && characters::advisors::note_modifier_demand(demand)
+                    {
+                        crate::decode::presize_advisor_pools();
+                    }
+                })
             }),
-            crate::country_scale::observe_production_modifiers(memory, base).map(|demand| {
-                if let Some(demand) = demand {
-                    self.production_modifiers.raise_for_demand(demand);
-                }
+            capacity_census.then(|| {
+                crate::country_scale::observe_production_modifiers(memory, base).map(|demand| {
+                    if let Some(demand) = demand {
+                        self.production_modifiers.raise_for_demand(demand);
+                    }
+                })
             }),
-            crate::country_scale::observe_land_event_words(memory, base).map(|demand| {
-                if let Some(words) = demand {
-                    crate::land_events::presize(words);
-                    self.land_events.words =
-                        self.land_events.words.max(crate::land_events::capacity());
-                }
-            }),
-        ] {
+            // Native land-event writers cannot grow their bounded word log.
+            // Unlike the two worker-grown hints above, this stays prompt.
+            Some(
+                crate::country_scale::observe_land_event_words(memory, base).map(|demand| {
+                    if let Some(words) = demand {
+                        crate::land_events::presize(words);
+                        self.land_events.words =
+                            self.land_events.words.max(crate::land_events::capacity());
+                    }
+                }),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        {
             if let Err(reason) = result {
                 failure.get_or_insert(reason);
             }
@@ -1192,25 +1215,32 @@ impl Captured {
         &self.construction_ic
     }
 
+    /// Exact growth delta of the selected packs only, including any storage
+    /// retained after a failed advisory reserve. Other heaps are unchanged.
     pub(crate) fn apply_combat_hints(
         &mut self,
         land: Option<&combat_details::Capacities>,
         naval: Option<&naval_details::Capacities>,
-    ) -> [bool; 2] {
+    ) -> ([bool; 2], usize) {
         let mut applied = [false; 2];
+        let mut added = 0;
         if let Some(capacity) = land {
+            let before = self.combat_details.allocated_bytes();
             applied[0] = self.combat_details.try_grow_hint(capacity).is_ok();
+            added += self.combat_details.allocated_bytes().saturating_sub(before);
             if !applied[0] {
                 crate::country_scale::note_combat_hint_failure(0);
             }
         }
         if let Some(capacity) = naval {
+            let before = self.naval_details.allocated_bytes();
             applied[1] = self.naval_details.try_grow_hint(capacity).is_ok();
+            added += self.naval_details.allocated_bytes().saturating_sub(before);
             if !applied[1] {
                 crate::country_scale::note_combat_hint_failure(1);
             }
         }
-        applied
+        (applied, added)
     }
 
     #[cfg(test)]

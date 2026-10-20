@@ -84,6 +84,8 @@ struct Pool {
     count: u32,
     variants: Arc<Vec<(u32, u64, usize)>>,
     seen: u64,
+    context: Option<(usize, u32, u32)>,
+    context_refusal: Option<&'static str>,
 }
 struct Variant {
     refs: usize,
@@ -122,7 +124,6 @@ pub struct Store {
     membership_changed: bool,
     membership_bytes: usize,
     context_changed: bool,
-    contexts: BTreeMap<u64, (usize, u32, u32)>,
     dirty: Vec<usize>,
     variant_epoch: Option<u64>,
     retired: Vec<usize>,
@@ -149,7 +150,6 @@ impl Default for Store {
             membership_changed: false,
             membership_bytes: 0,
             context_changed: false,
-            contexts: BTreeMap::new(),
             dirty: Vec::new(),
             variant_epoch: None,
             retired: Vec::new(),
@@ -178,7 +178,6 @@ impl Store {
         self.states.clear();
         self.variant_handles.clear();
         self.provinces.clear();
-        self.contexts.clear();
         self.variant_epoch = None;
         self.lifetime_epoch = None;
         self.retired.clear();
@@ -199,7 +198,6 @@ impl Store {
             + self.states.len() * std::mem::size_of::<((u32, u32), State)>()
             + self.provinces.len() * std::mem::size_of::<(usize, Option<(u32, usize)>)>()
             + self.membership_scratch.capacity() * std::mem::size_of::<(u32, u64, usize)>()
-            + self.contexts.len() * std::mem::size_of::<(u64, (usize, u32, u32))>()
             + self.dirty.capacity() * std::mem::size_of::<usize>()
     }
     fn root(
@@ -210,6 +208,15 @@ impl Store {
         receiver: usize,
         accumulator: usize,
     ) -> Result<(), &'static str> {
+        // Shared roots already visited this pass keep the first selection,
+        // including its refusal, without another registry lookup.
+        if self
+            .roots
+            .get(&(kind, owner))
+            .is_some_and(|held| held.seen == self.turn)
+        {
+            return Ok(());
+        }
         self.root_with_certificate(
             memory,
             kind,
@@ -263,15 +270,13 @@ impl Store {
         if let Err(reason) = result {
             operands::refused();
             self.rows
-                .remove_range(key(kind, owner, 0)..key(kind, owner, old_count.max(count).max(1)))?;
-            self.rows.insert(Arc::new(DivisionPanelSourceRow {
+                .remove_range(key(kind, owner, 1)..key(kind, owner, old_count.max(count).max(1)))?;
+            self.refusal_row(
                 kind,
                 owner,
-                ordinal: 0,
-                node: None,
-                reason: engine_allocation::copy_vec(reason.as_bytes())
-                    .map_err(|_| "division source refusal allocation failed")?,
-            }))?;
+                reason,
+                "division source refusal allocation failed",
+            )?;
             count = 1;
         } else if count < old_count {
             self.rows
@@ -402,13 +407,20 @@ impl Store {
             self.membership(memory, base, seed)?;
             let context_result = (|| {
                 let province =
-                    engine_native::division_panel_operands::selected_province(memory, seed)?;
+                    engine_native::division_panel_operands::selected_province(memory, state, seed)?;
                 let current = (
                     province,
                     seed.roster_owner.unwrap_or(0),
                     seed.logical_owner.unwrap_or(0),
                 );
-                if self.contexts.insert(seed.division, current) != Some(current) {
+                if self
+                    .pools
+                    .get_mut(&seed.division)
+                    .unwrap()
+                    .context
+                    .replace(current)
+                    != Some(current)
+                {
                     self.context_changed = true;
                 }
                 let context = match self.provinces.get(&province) {
@@ -431,12 +443,7 @@ impl Store {
                 }
                 Ok::<_, &'static str>(())
             })();
-            if let Some(why) = selection_failure.or(context_result.err()) {
-                self.refusal(6, seed.division, why)?;
-            } else {
-                self.rows
-                    .remove_range(key(6, seed.division, 0)..key(6, seed.division, 1))?;
-            }
+            self.context_refusal(seed.division, selection_failure.or(context_result.err()))?;
         }
         // Variant pointers touched by a rebuild refresh only that shared
         // operand. New memberships seed their variants in membership().
@@ -524,6 +531,23 @@ impl Store {
         }
         Ok(())
     }
+    fn context_refusal(
+        &mut self,
+        division: u64,
+        reason: Option<&'static str>,
+    ) -> Result<(), &'static str> {
+        if self.pools[&division].context_refusal == reason {
+            return Ok(());
+        }
+        if let Some(reason) = reason {
+            self.refusal(6, division, reason)?;
+        } else {
+            self.rows
+                .remove_range(key(6, division, 0)..key(6, division, 1))?;
+        }
+        self.pools.get_mut(&division).unwrap().context_refusal = reason;
+        Ok(())
+    }
     fn refusal(&mut self, kind: u8, owner: u64, reason: &'static str) -> Result<(), &'static str> {
         if self
             .rows
@@ -533,11 +557,32 @@ impl Store {
             return Ok(());
         }
         operands::refused();
+        self.refusal_row(
+            kind,
+            owner,
+            reason,
+            "division operand refusal allocation failed",
+        )
+    }
+    fn refusal_row(
+        &mut self,
+        kind: u8,
+        owner: u64,
+        reason: &'static str,
+        allocation_failure: &'static str,
+    ) -> Result<(), &'static str> {
+        if self
+            .rows
+            .get(key(kind, owner, 0))
+            .is_some_and(|row| row.node.is_none() && row.reason == reason.as_bytes())
+        {
+            return Ok(());
+        }
         self.rows.insert(Arc::new(DivisionPanelSourceRow {
             kind,
             owner,
             reason: engine_allocation::copy_vec(reason.as_bytes())
-                .map_err(|_| "division operand refusal allocation failed")?,
+                .map_err(|_| allocation_failure)?,
             ..Default::default()
         }))
     }
@@ -620,14 +665,9 @@ impl Store {
                 operands::refused();
                 // The failed attempt may have emitted more rows than the
                 // previous baseline. Withdraw its complete ordinal range.
-                self.rows.remove_range(owner_range(3, handle))?;
-                self.rows.insert(Arc::new(DivisionPanelSourceRow {
-                    kind: 3,
-                    owner: handle,
-                    reason: engine_allocation::copy_vec(reason.as_bytes())
-                        .map_err(|_| "attrition refusal allocation failed")?,
-                    ..Default::default()
-                }))?;
+                self.rows
+                    .remove_range(key(3, handle, 1)..owner_range(3, handle).end)?;
+                self.refusal_row(3, handle, reason, "attrition refusal allocation failed")?;
                 1
             }
         };
@@ -740,15 +780,14 @@ impl Store {
                 operands::refused();
                 scratch.clear();
                 self.rows.remove_range(
-                    key(5, seed.division, 0)..key(5, seed.division, old_count.max(1)),
+                    key(5, seed.division, 1)..key(5, seed.division, old_count.max(1)),
                 )?;
-                self.rows.insert(Arc::new(DivisionPanelSourceRow {
-                    kind: 5,
-                    owner: seed.division,
-                    reason: engine_allocation::copy_vec(reason.as_bytes())
-                        .map_err(|_| "attrition refusal allocation failed")?,
-                    ..Default::default()
-                }))?;
+                self.refusal_row(
+                    5,
+                    seed.division,
+                    reason,
+                    "attrition refusal allocation failed",
+                )?;
                 1
             }
         };
@@ -764,10 +803,13 @@ impl Store {
                 held.refs += 1;
             }
         }
-        let variants = Arc::new(
-            engine_allocation::copy_vec(&scratch)
-                .map_err(|_| "attrition membership ownership allocation failed")?,
-        );
+        let variants = match self.pools.get(&seed.division) {
+            Some(held) if held.variants.as_ref() == &scratch => Arc::clone(&held.variants),
+            _ => Arc::new(
+                engine_allocation::copy_vec(&scratch)
+                    .map_err(|_| "attrition membership ownership allocation failed")?,
+            ),
+        };
         self.membership_bytes = self.membership_bytes.saturating_sub(
             self.pools.get(&seed.division).map_or(0, |held| {
                 held.variants.capacity() * std::mem::size_of::<(u32, u64, usize)>()
@@ -775,6 +817,9 @@ impl Store {
         ) + variants.capacity() * std::mem::size_of::<(u32, u64, usize)>();
         scratch.clear();
         self.membership_scratch = scratch;
+        let previous = self.pools.get(&seed.division);
+        let context = previous.and_then(|held| held.context);
+        let context_refusal = previous.and_then(|held| held.context_refusal);
         self.pools.insert(
             seed.division,
             Pool {
@@ -783,6 +828,8 @@ impl Store {
                 count,
                 variants,
                 seen: self.turn,
+                context,
+                context_refusal,
             },
         );
         Ok(())
@@ -824,13 +871,12 @@ impl Store {
         })();
         if let Err(reason) = result {
             operands::refused();
-            self.rows.insert(Arc::new(DivisionPanelSourceRow {
-                kind: 4,
+            self.refusal_row(
+                4,
                 owner,
-                reason: engine_allocation::copy_vec(reason.as_bytes())
-                    .map_err(|_| "state attrition refusal allocation failed")?,
-                ..Default::default()
-            }))?;
+                reason,
+                "state attrition refusal allocation failed",
+            )?;
         }
         self.states.insert(
             (id, country),
@@ -856,7 +902,6 @@ impl Store {
             self.membership_bytes = self.membership_bytes.saturating_sub(
                 pool.variants.capacity() * std::mem::size_of::<(u32, u64, usize)>(),
             );
-            self.contexts.remove(&division);
             self.rows
                 .remove_range(key(6, division, 0)..key(6, division, 1))?;
             self.rows
@@ -943,6 +988,209 @@ mod tests {
             true
         }
     }
+    #[test]
+    fn unchanged_contexts_and_changed_new_removed_divisions_match_fresh_publication() {
+        use engine_native::{carmy, cequipment_variant_pool as pool, cgame_state};
+        use replay_data::rows::tables;
+        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        const DIVISIONS: usize = 5_000;
+        const STATE: usize = 0x100;
+        const COUNTRY: usize = 0x1000;
+        operands::demand(DIVISIONS, 0, 0);
+        operands::presize();
+        operands::boundary(true);
+        operands::patched(true);
+        let _enabled = Enabled;
+        let mut world = World {
+            bytes: vec![0; 0x4000 + DIVISIONS * 0x1000],
+            reads: Cell::new(0),
+            deny: Cell::new(false),
+        };
+        let put = |bytes: &mut [u8], at: usize, value: u64| {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        for (header, data) in [
+            (STATE + cgame_state::COUNTRIES, 0x800),
+            (STATE + cgame_state::COUNTRY_LINKS, 0x900),
+        ] {
+            put(&mut world.bytes, header, data);
+            put(&mut world.bytes, header + 8, 2 | (2 << 32));
+        }
+        put(&mut world.bytes, 0x808, COUNTRY as u64);
+        put(&mut world.bytes, 0x900, 1 << 32);
+        put(&mut world.bytes, COUNTRY, ccountry::VTABLE_RVA as u64);
+        put(&mut world.bytes, COUNTRY + ccountry::ID, 1);
+        let mut seeds: Vec<_> = (0..DIVISIONS)
+            .map(|index| {
+                let pointer = 0x4000 + index * 0x1000;
+                put(
+                    &mut world.bytes,
+                    pointer + carmy::EQUIPMENT_POOL,
+                    pool::VTABLE_RVA as u64,
+                );
+                DivisionSeed {
+                    pointer,
+                    division: index as u64 + 1,
+                    roster_owner: Some(1),
+                    logical_owner: Some(1),
+                    orders_group: Some(0),
+                    ordinary_route: Some([0; 16]),
+                    location: Some(0),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let mut store = Store::default();
+        let mut selected = Vec::new();
+        let first = store
+            .capture(&world, 0, STATE, &seeds, &mut selected)
+            .unwrap();
+        assert_eq!(first.len(), DIVISIONS + 1);
+        assert!(
+            selected
+                .iter()
+                .all(|(_, selection)| *selection == Some([1, 0, 0]))
+        );
+        let complete = |snapshot: &SourceSnapshot| {
+            snapshot
+                .publish(|rows| rows.complete::<tables::DivisionPanelSources>().unwrap())
+                .unwrap()
+        };
+        let assert_fresh = |snapshot: &SourceSnapshot, seeds: &[DivisionSeed]| {
+            let mut fresh = Store::default();
+            let mut selection = Vec::new();
+            let expected = fresh
+                .capture(&world, 0, STATE, seeds, &mut selection)
+                .unwrap();
+            assert_eq!(complete(snapshot), complete(&expected));
+            selection
+        };
+        assert_eq!(selected, assert_fresh(&first, &seeds));
+        let quiet = collector_test_support::with_allocations_denied(|| {
+            store
+                .capture(&world, 0, STATE, &seeds, &mut selected)
+                .unwrap()
+        });
+        assert!(Arc::ptr_eq(&first, &quiet));
+
+        // Context is still evaluated hourly: a new refusal changes exactly its
+        // own row, repeated refusals carry, and recovery removes that row.
+        seeds[0].ordinary_route = None;
+        let refused = store
+            .capture(&world, 0, STATE, &seeds, &mut selected)
+            .unwrap();
+        assert_eq!(selected, assert_fresh(&refused, &seeds));
+        assert_eq!(refused.rows.changed.len(), 1);
+        assert_eq!(refused.rows.changed[0].kind, 6);
+        assert_eq!(
+            refused.rows.changed[0].reason,
+            b"attrition ordinary route unavailable"
+        );
+        let quiet = collector_test_support::with_allocations_denied(|| {
+            store
+                .capture(&world, 0, STATE, &seeds, &mut selected)
+                .unwrap()
+        });
+        assert!(Arc::ptr_eq(&refused, &quiet));
+        seeds[0].ordinary_route = Some([0; 16]);
+        let recovered = store
+            .capture(&world, 0, STATE, &seeds, &mut selected)
+            .unwrap();
+        assert_eq!(complete(&recovered), complete(&first));
+        assert_eq!(recovered.rows.ranges.len(), 1);
+        assert!(recovered.rows.changed.is_empty());
+
+        // A replacement has the retired division's address, not its identity.
+        let mut new = seeds.remove(1);
+        new.division = DIVISIONS as u64 + 1;
+        new.ordinary_route = None;
+        seeds.push(new);
+        let replaced = store
+            .capture(&world, 0, STATE, &seeds, &mut selected)
+            .unwrap();
+        assert_eq!(selected, assert_fresh(&replaced, &seeds));
+        assert!(!store.pools.contains_key(&2));
+        assert!(store.rows.get(key(5, 2, 0)).is_none());
+        assert_eq!(
+            store.pools[&new.division].context_refusal,
+            Some("attrition ordinary route unavailable")
+        );
+        seeds.last_mut().unwrap().roster_owner = None;
+        let changed_reason = store
+            .capture(&world, 0, STATE, &seeds, &mut selected)
+            .unwrap();
+        assert_eq!(selected, assert_fresh(&changed_reason, &seeds));
+        assert_eq!(changed_reason.rows.changed.len(), 1);
+        assert_eq!(
+            changed_reason.rows.changed[0].reason,
+            b"division source owner unavailable"
+        );
+        seeds.pop();
+        let removed = store
+            .capture(&world, 0, STATE, &seeds, &mut selected)
+            .unwrap();
+        assert_eq!(selected, assert_fresh(&removed, &seeds));
+        assert!(store.rows.get(key(5, new.division, 0)).is_none());
+        assert!(store.rows.get(key(6, new.division, 0)).is_none());
+        assert_eq!(complete(&first), complete(&recovered));
+    }
+
+    #[test]
+    fn repeated_dirty_refusals_keep_rows_and_membership_allocations_and_refusal_counts() {
+        use engine_native::{carmy, cequipment_variant_pool};
+        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        operands::demand(1, 0, 0);
+        operands::presize();
+        operands::boundary(true);
+        operands::patched(true);
+        let _enabled = Enabled;
+        let seed = DivisionSeed {
+            pointer: 0x100,
+            division: 7,
+            ..Default::default()
+        };
+        let pool = seed.pointer + carmy::EQUIPMENT_POOL;
+        let mut world = World {
+            bytes: vec![0; 0x1000],
+            reads: Cell::new(0),
+            deny: Cell::new(true),
+        };
+        world.bytes[pool..pool + 8]
+            .copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes());
+        let mut store = Store::default();
+        store.membership(&world, 0, &seed).unwrap();
+        store
+            .root_with_certificate(&world, 0, 1, 0x800, 0x900, Some((1, 1)))
+            .unwrap();
+        let first = store.rows.finish().unwrap();
+        let variants = Arc::clone(&store.pools[&seed.division].variants);
+        let refused = || {
+            serde_json::to_value(operands::status()).unwrap()["refused_operands"]
+                .as_u64()
+                .unwrap()
+        };
+        let before = refused();
+        drop(operands::notify(pool));
+        store.turn += 1;
+        world.reads.set(0);
+        collector_test_support::with_allocations_denied(|| {
+            store.membership(&world, 0, &seed).unwrap();
+            store
+                .root_with_certificate(&world, 0, 1, 0x800, 0x900, Some((1, 2)))
+                .unwrap();
+            assert!(Arc::ptr_eq(&first, &store.rows.finish().unwrap()));
+        });
+        assert!(
+            world.reads.get() > 0,
+            "dirty failures must still attempt their native reads"
+        );
+        assert_eq!(refused(), before + 2);
+        assert!(Arc::ptr_eq(
+            &variants,
+            &store.pools[&seed.division].variants
+        ));
+    }
+
     #[test]
     fn a_pool_clear_replaces_refused_membership_with_successful_empty_membership() {
         use engine_native::{carmy, cequipment_variant_pool};

@@ -10,7 +10,8 @@ pub(super) enum Key {
 }
 #[derive(Default)]
 pub(super) struct Interests {
-    entries: HashMap<Key, usize>,
+    entries: HashMap<Key, (u32, bool)>,
+    dirty_authors: std::collections::HashSet<u64>,
     pub(super) organisations: HashMap<u64, usize>,
     pub(super) organisation_pointers: HashMap<usize, u64>,
 }
@@ -23,10 +24,12 @@ impl Interests {
         if !self.entries.contains_key(&key) && self.entries.len() == self.entries.capacity() {
             return Err("design source watch capacity exhausted");
         }
-        self.entries.insert(key, owner as usize);
+        self.entries.entry(key).or_insert((owner, false)).0 = owner;
         Ok(())
     }
     pub fn prepare_organisations(&mut self, count: usize) -> Result<(), &'static str> {
+        engine_allocation::reserve_set(&mut self.dirty_authors, count)
+            .map_err(|_| "design liveness watch allocation failed")?;
         engine_allocation::reserve_map(&mut self.organisations, count)
             .map_err(|_| "design liveness watch allocation failed")?;
         engine_allocation::reserve_map(&mut self.organisation_pointers, count)
@@ -67,8 +70,19 @@ impl Interests {
         self.organisations.insert(handle, pointer.unwrap_or(0));
         Ok(())
     }
-    pub fn get(&self, key: Key) -> Option<u32> {
-        self.entries.get(&key).map(|owner| *owner as u32)
+    pub(super) fn changed(&mut self, key: Key) -> Option<u32> {
+        let (owner, dirty) = self.entries.get_mut(&key)?;
+        *dirty = true;
+        Some(*owner)
+    }
+    pub(super) fn author_changed(&mut self, handle: u64) {
+        if !self.dirty_authors.contains(&handle)
+            && self.dirty_authors.len() == self.dirty_authors.capacity()
+        {
+            unobserved();
+            return;
+        }
+        self.dirty_authors.insert(handle);
     }
 }
 
@@ -87,10 +101,32 @@ fn bindings() -> std::sync::MutexGuard<'static, HashMap<u64, Binding>> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+pub(super) struct CertifiedBindings(std::sync::MutexGuard<'static, HashMap<u64, Binding>>);
+impl CertifiedBindings {
+    pub(super) fn unchanged(&self, id: u64, interests: &Interests) -> bool {
+        let Some(binding) = self.0.get(&id) else {
+            return false;
+        };
+        let clean = |key| interests.entries.get(&key).is_some_and(|(_, dirty)| !dirty);
+        (binding.author == 0 || interests.organisations.contains_key(&binding.author))
+            && !interests.dirty_authors.contains(&binding.author)
+            && binding
+                .direct
+                .iter()
+                .all(|pointer| clean(Key::Direct(*pointer)))
+            && binding
+                .provider
+                .is_none_or(|(_, pointer)| clean(Key::Provider(pointer)))
+    }
+}
+pub(super) fn certified_bindings() -> CertifiedBindings {
+    CertifiedBindings(bindings())
+}
 pub(super) fn seed(variants: &Variants, interests: &mut Interests) -> Result<(), &'static str> {
     let mut held = bindings();
     let count = variants.definitions.outcome.len();
-    engine_allocation::reserve_map(&mut held, count)
+    let additional = count.saturating_sub(held.len());
+    engine_allocation::reserve_map(&mut held, additional)
         .map_err(|_| "design source binding allocation failed")?;
     let demand = variants.definitions.rows[..count]
         .iter()
@@ -108,6 +144,7 @@ pub(super) fn seed(variants: &Variants, interests: &mut Interests) -> Result<(),
     );
     held.retain(|id, _| live.contains(id));
     interests.entries.clear();
+    interests.dirty_authors.clear();
     let actual = held
         .values()
         .map(|binding| binding.direct.len() + usize::from(binding.provider.is_some()))
@@ -144,6 +181,16 @@ fn track_in(
         interests.insert(Key::Provider(provider), owner)?;
     }
     let state = row.design.as_ref();
+    if held.get(&row.identity.id).is_some_and(|binding| {
+        binding.author == state.design_team
+            && binding.direct == links.direct
+            && binding.provider == links.provider
+            && binding.handles == state.named_bonuses
+            && binding.references.direct == state.bonus_sources
+            && binding.references.named == state.named_sources
+    }) {
+        return Ok(());
+    }
     held.insert(
         row.identity.id,
         Binding {
@@ -547,5 +594,85 @@ mod tests {
             interests.organisation(9_999, Some(50_000)).unwrap();
             assert_eq!(interests.organisation_pointers[&50_000], 9_999);
         });
+    }
+    #[test]
+    fn variant_recovery_bindings_select_only_changed_sources_providers_and_authors() {
+        let mut one = binding();
+        one.author = 11;
+        let mut two = binding();
+        two.author = 22;
+        two.direct = vec![SOURCE + 1];
+        two.provider = Some((5_001, 0x2000));
+        *bindings() = HashMap::from([(1, one), (2, two)]);
+        let mut interests = Interests::default();
+        interests.prepare(4).unwrap();
+        interests.prepare_organisations(2).unwrap();
+        interests.organisation(11, None).unwrap();
+        interests.organisation(22, None).unwrap();
+        for key in [
+            Key::Direct(SOURCE),
+            Key::Direct(SOURCE + 1),
+            Key::Provider(0x1000),
+            Key::Provider(0x2000),
+        ] {
+            interests.insert(key, 0).unwrap();
+        }
+        let proof = certified_bindings();
+        collector_test_support::with_allocations_denied(|| {
+            assert!(proof.unchanged(1, &interests) && proof.unchanged(2, &interests));
+            assert!(!proof.unchanged(3, &interests));
+            interests.changed(Key::Direct(SOURCE));
+            interests.insert(Key::Direct(SOURCE), 0).unwrap();
+            assert!(
+                !proof.unchanged(1, &interests),
+                "restaging must not erase an earlier dirty mark"
+            );
+            assert!(proof.unchanged(2, &interests));
+            interests.author_changed(22);
+            assert!(!proof.unchanged(2, &interests));
+            interests.dirty_authors.clear();
+            interests.changed(Key::Provider(0x2000));
+            assert!(!proof.unchanged(2, &interests));
+        });
+    }
+    #[test]
+    fn unchanged_fresh_variant_source_bindings_keep_their_allocations() {
+        let mut held = HashMap::from([(1, binding())]);
+        let mut interests = Interests::default();
+        interests.prepare(2).unwrap();
+        let row = native::DefinitionRow {
+            identity: native::Row {
+                id: 1,
+                ..Default::default()
+            },
+            design: std::sync::Arc::new(rows::VariantDesignState {
+                named_bonuses: held[&1].handles.clone(),
+                bonus_sources: held[&1].references.direct.clone(),
+                named_sources: held[&1].references.named.clone(),
+                ..Default::default()
+            }),
+            source_links: Some(native::DesignSourceLinks {
+                direct: held[&1].direct.clone(),
+                provider: held[&1].provider,
+            }),
+            ..Default::default()
+        };
+        let pointers = (
+            held[&1].direct.as_ptr(),
+            held[&1].handles.as_ptr(),
+            held[&1].references.direct.as_ptr(),
+        );
+        collector_test_support::with_allocations_denied(|| {
+            track_in(&mut held, &mut interests, &row)
+        })
+        .unwrap();
+        assert_eq!(
+            pointers,
+            (
+                held[&1].direct.as_ptr(),
+                held[&1].handles.as_ptr(),
+                held[&1].references.direct.as_ptr()
+            )
+        );
     }
 }

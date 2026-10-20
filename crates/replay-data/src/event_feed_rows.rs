@@ -9,6 +9,7 @@ use crate::{
 };
 use engine_allocation as allocation;
 use std::io;
+pub(crate) mod columns;
 pub mod decisions;
 pub mod state;
 pub use state::{DelayedEvent, PendingEvent, ScriptEventState, ScriptIdentity};
@@ -1170,6 +1171,17 @@ impl EventFeedHistoryRow {
                     if let Decision(change) = change {
                         change.validate(script)?;
                     }
+                    if matches!(
+                        change,
+                        DelayedRemoved {
+                            iteration: false,
+                            visited: true
+                        }
+                    ) {
+                        return Err(invalid(
+                            "delayed-event cancellation cannot be a native visit",
+                        ));
+                    }
                     let (identity, instance, scope) = match change {
                         Decision(_) => (false, script.instance.is_some(), false),
                         PendingStored { .. } | DelayedStored { .. } => (true, true, true),
@@ -1250,7 +1262,10 @@ impl Value for EventFeedHistoryRow {
         self.validate()?;
         let size = allocation::add(22, self.counts.encoded_bytes()?)?;
         let size = allocation::add(size, self.failure.encoded_bytes()?)?;
-        let size = allocation::add(size, self.events.encoded_bytes()?)?;
+        let size = allocation::add(
+            size,
+            crate::value::EncodeValue::encoded_bytes(&columns::Batch(self))?,
+        )?;
         let size = allocation::add(size, self.script_tokens.encoded_bytes()?)?;
         allocation::add(size, self.script_scopes.encoded_bytes()?)
     }
@@ -1278,12 +1293,12 @@ impl Value for EventFeedHistoryRow {
         self.outstanding.encode_reserved(output)?;
         self.failure.encode_reserved(output)?;
         self.script_refusals.encode_reserved(output)?;
-        self.events.encode_reserved(output)?;
+        crate::value::EncodeValue::encode_value(&columns::Batch(self), output)?;
         self.script_tokens.encode_reserved(output)?;
         self.script_scopes.encode_reserved(output)
     }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
-        let row = Self {
+        let mut row = Self {
             generation: u64::decode(input)?,
             read_hour: i32::decode(input)?,
             coverage: EventFeedCoverage::decode(input)?,
@@ -1291,10 +1306,13 @@ impl Value for EventFeedHistoryRow {
             outstanding: u64::decode(input)?,
             failure: Option::decode(input)?,
             script_refusals: u8::decode(input)?,
-            events: Vec::decode(input)?,
-            script_tokens: Vec::decode(input)?,
-            script_scopes: Vec::decode(input)?,
+            events: Vec::new(),
+            script_tokens: Vec::new(),
+            script_scopes: Vec::new(),
         };
+        row.events = columns::decode(&row, input)?;
+        row.script_tokens = Vec::decode(input)?;
+        row.script_scopes = Vec::decode(input)?;
         row.validate()?;
         Ok(row)
     }

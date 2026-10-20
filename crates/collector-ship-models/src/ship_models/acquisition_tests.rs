@@ -168,6 +168,7 @@ fn acquire(capture: &mut Captured, source: &Source) -> Result<(), &'static str> 
         let memory = ModifierMemory {
             inner: &bounded,
             arena: &capture.modifiers,
+            held_task: None,
         };
         modifier_accumulator::lookup_at(&memory, BASE, 1)
     };
@@ -180,6 +181,59 @@ fn acquire(capture: &mut Captured, source: &Source) -> Result<(), &'static str> 
     }
     capture.finish_details(Outcome::Rows { len: 1 });
     result.map(|_| ())
+}
+
+#[test]
+fn held_task_modifiers_borrow_without_copying_and_preserve_current_values_and_refusals() {
+    let source = Source::new(1);
+    let capture = Captured::with_capacities(&capacities(2, 4));
+    let mut entries = [[0_u8; 16]];
+    entries[0][..4].copy_from_slice(&1_u32.to_le_bytes());
+    entries[0][8..].copy_from_slice(&117_i64.to_le_bytes());
+    let memory = ModifierMemory {
+        inner: &source,
+        arena: &capture.modifiers,
+        held_task: Some((BASE, &entries)),
+    };
+    assert_eq!(
+        modifier_accumulator::lookup_at(&memory, BASE, 1)
+            .unwrap()
+            .raw,
+        117
+    );
+    assert!(source.reads.borrow().is_empty());
+    assert!(capture.modifiers.borrow().observed(BASE).is_none());
+
+    source.put(ENTRIES + 8, &42_i64.to_le_bytes());
+    capture
+        .modifiers
+        .borrow_mut()
+        .observe(&source, BASE)
+        .unwrap();
+    let before = source.reads.borrow().len();
+    assert_eq!(
+        modifier_accumulator::lookup_at(&memory, BASE, 1)
+            .unwrap()
+            .raw,
+        42
+    );
+    assert_eq!(source.reads.borrow().len(), before);
+
+    capture.modifiers.borrow_mut().clear();
+    source.fault.set(Some(BASE));
+    assert!(
+        capture
+            .modifiers
+            .borrow_mut()
+            .observe(&source, BASE)
+            .is_none()
+    );
+    let before = source.reads.borrow().len();
+    assert_eq!(
+        modifier_accumulator::lookup_at(&memory, BASE, 1),
+        Err("modifier accumulator header unreadable or invalid")
+    );
+    assert_eq!(source.reads.borrow().len(), before);
 }
 
 #[test]
@@ -351,6 +405,7 @@ fn only_current_country_authentication_is_forwarded_for_matching_context() {
     let memory = ModifierMemory {
         inner: &bounded,
         arena: &arena,
+        held_task: None,
     };
     assert!(memory.authenticated_countries(0, STATE).is_some());
     assert!(memory.authenticated_countries(1, STATE).is_none());
@@ -514,6 +569,7 @@ fn malformed_snapshot_prefix_precedes_a_later_batch_budget_refusal() {
     let memory = ModifierMemory {
         inner: &bounded,
         arena: &arena,
+        held_task: None,
     };
     let reason = modifier_accumulator::lookup_at(&memory, BASE, 1).unwrap_err();
     assert_eq!(used.get(), (READ_LIMIT, COPY_LIMIT));
@@ -597,6 +653,7 @@ fn whole_census_budget_refuses_bytes_and_calls_before_memory_access() {
             let memory = ModifierMemory {
                 inner: &bounded,
                 arena: &arena,
+                held_task: None,
             };
             let expected = engine_native::read::<u32>(&Scalar(&memory), ENTRIES);
             let expected_used = used.replace(initial);
@@ -942,6 +999,7 @@ fn cold_ship_model_modifier_arenas_grow_from_original_mod_sized_headers() {
         let core = ModifierMemory {
             inner: &source,
             arena: &capture.modifiers,
+            held_task: None,
         };
         assert_eq!(
             modifier_accumulator::lookup_at(&core, BASE, count)
@@ -1263,6 +1321,7 @@ fn ship_model_details_equal_the_direct_readers_in_under_half_their_guarded_calls
             let memory = ModifierMemory {
                 inner: &world,
                 arena: &direct.modifiers,
+                held_task: None,
             };
             let (mut row, selected) = cship::read_model_with_selection(
                 &memory,
@@ -1761,6 +1820,7 @@ fn ship_model_phase_bench() {
                         let memory = ModifierMemory {
                             inner: &gathered,
                             arena: &direct.modifiers,
+                            held_task: None,
                         };
                         let model = cship::read_model_with_selection(
                             &memory,
@@ -2210,6 +2270,7 @@ mod carry_cost_bench {
             let memory = ModifierMemory {
                 inner: &gathered,
                 arena: &capture.modifiers,
+                held_task: None,
             };
             let timer = Instant::now();
             let terms = cship::read_task_terms(&memory, fleet::IMAGE, &task, &mut capture.doctrine);
@@ -2281,6 +2342,66 @@ mod carry_cost_bench {
             }]
         );
         capture.rows.rows[..world.census.len()].to_vec()
+    }
+
+    #[test]
+    fn quiet_task_arrays_share_ownership_through_verification_and_roster_changes() {
+        let mut world = World::new(4);
+        let mut fields = cship::ShipFields::new(fleet::IMAGE);
+        for index in 0..world.tasks.len() {
+            fields.visit(&world.memory, fleet::ship(index * PER_TASK));
+            let task = fields.task_force().unwrap();
+            let entry = task.pointer + 0x780;
+            let offset = task.modifiers - fleet::LOW;
+            world.memory.low[offset..offset + 8].copy_from_slice(&(entry as u64).to_le_bytes());
+            world.memory.low[offset + 8..offset + 16]
+                .copy_from_slice(&0x0000_0001_0000_0001_u64.to_le_bytes());
+            let offset = entry - fleet::LOW;
+            world.memory.low[offset..offset + 4].copy_from_slice(&1_u32.to_le_bytes());
+            world.memory.low[offset + 8..offset + 16]
+                .copy_from_slice(&(index as i64 + 1).to_le_bytes());
+        }
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut captured = capture(world.census.len());
+        let fresh = hour(&world, &mut captured, &watches, Check::Nothing);
+        let arrays: Vec<_> = captured
+            .store
+            .tasks
+            .iter()
+            .map(|task| {
+                (
+                    task.pointer,
+                    Arc::clone(task.modifiers.as_ref().expect("task modifiers observed")),
+                )
+            })
+            .collect();
+        for check in [Check::Nothing, Check::Nothing, Check::Every] {
+            assert_eq!(hour(&world, &mut captured, &watches, check), fresh);
+            for (pointer, entries) in &arrays {
+                assert!(!entries.is_empty());
+                let held = captured
+                    .store
+                    .task(*pointer)
+                    .unwrap()
+                    .modifiers
+                    .as_ref()
+                    .unwrap();
+                assert!(
+                    Arc::ptr_eq(entries, held),
+                    "equal task arrays must not be copied"
+                );
+            }
+        }
+        let all = world.census.clone();
+        world.census.truncate(2 * PER_TASK);
+        let deleted = hour(&world, &mut captured, &watches, Check::Nothing);
+        assert_eq!(captured.store.tasks.len(), 2);
+        let mut direct = capture(all.len());
+        assert_eq!(deleted, hour(&world, &mut direct, &watches, Check::Every));
+        world.census = all;
+        let added = hour(&world, &mut captured, &watches, Check::Nothing);
+        assert_eq!(added, hour(&world, &mut direct, &watches, Check::Every));
+        assert_eq!(captured.store.tasks.len(), 4);
     }
 
     #[test]
@@ -3405,13 +3526,11 @@ mod carry_cost_bench {
             assert!(store.index.is_empty());
             assert!(store.tasks.is_empty());
             assert!(store.variants.is_empty());
-            assert!(store.entries.is_empty());
             assert!(store.next.is_empty());
             assert!(store.next_hot.is_empty());
             assert!(store.next_tasks.is_empty());
             assert!(store.next_variants.is_empty());
             assert!(store.next_variant_index.is_empty());
-            assert!(store.next_entries.is_empty());
             assert_eq!(store.quiet, None);
             assert_eq!(store.generation, 0);
         }

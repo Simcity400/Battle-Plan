@@ -35,7 +35,7 @@ static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
     "a held commander's retreat bans differ from a fresh read",
 ]);
-/// Commanders the latest capture reached, for off-thread sizing.
+/// Peak commanders reached by capture or the existing group sizing census.
 static LEADERS: AtomicUsize = AtomicUsize::new(0);
 /// The held bans, between the Presentation job's captures.
 static STORE: Mutex<Option<Box<Store>>> = Mutex::new(None);
@@ -55,9 +55,15 @@ pub fn boundary(invalidate: bool) {
     WATCHES.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the commanders the latest
-/// capture reached. Nothing is offered before a capture reached any: the
-/// first table installs at once, a later larger one at an invalidating hour.
+/// Off-thread: the existing group census bounds its distinct commanders before
+/// installation, including groups whose commander is not currently demanded.
+pub fn prepare(leaders: usize) {
+    LEADERS.fetch_max(leaders, Ordering::Relaxed);
+    presize();
+}
+
+/// Off-thread: include every reached commander, even a refused certificate.
+/// The first table installs at once; later growth follows invalidation.
 pub fn presize() {
     let leaders = LEADERS.load(Ordering::Relaxed);
     if leaders != 0 {
@@ -182,6 +188,7 @@ impl<'a> Leaders<'a> {
     /// not in this hour's sampled slice; otherwise `None`, and the walk reads
     /// it.
     pub fn held(&mut self, leader: usize) -> Option<RetreatBans> {
+        self.counts.leaders += 1;
         let Some(certificate) = self.changes.sequence(leader) else {
             self.counts.refused += 1;
             return None;
@@ -241,7 +248,6 @@ impl<'a> Leaders<'a> {
         if engine_allocation::reserve_map(&mut self.store.held, fresh.len()).is_ok() {
             self.store.held.extend(fresh);
         }
-        self.counts.leaders = (self.carried.len() + self.pending.len()) as u64;
         self.counts
     }
 }
@@ -262,7 +268,7 @@ pub fn record(counts: &Counts) {
         WATCHES.poison();
     }
     if counts.leaders != 0 {
-        LEADERS.store(counts.leaders as usize, Ordering::Relaxed);
+        LEADERS.fetch_max(counts.leaders as usize, Ordering::Relaxed);
     }
 }
 
@@ -326,7 +332,7 @@ mod tests {
     /// One capture: `walk` answers each commander the store does not carry.
     fn capture(
         store: &mut Store,
-        changes: &Registry,
+        changes: &dyn Changes,
         check: Check,
         reached: &[usize],
         walk: impl Fn(usize) -> RetreatBans,
@@ -344,6 +350,37 @@ mod tests {
             }
         }
         (leaders.finish(results.into_iter()), answers)
+    }
+
+    #[test]
+    fn refused_commanders_bootstrap_watch_demand_and_then_carry_exact_bans() {
+        let mut store = Store::default();
+        WATCHES.set_enabled(true);
+        let reached = [0x100, 0x200, 0x300];
+        let (counts, answers) = capture(&mut store, &Observer, Check::Nothing, &reached, |l| {
+            bans(l, 4)
+        });
+        assert_eq!((counts.leaders, counts.refused), (3, 3));
+        assert_eq!(answers, reached.map(|l| bans(l, 4)));
+        assert!(store.held.is_empty());
+        record(&counts);
+        presize();
+        boundary(false);
+        let (counts, _) = capture(&mut store, &Observer, Check::Nothing, &reached, |l| {
+            bans(l, 4)
+        });
+        assert_eq!((counts.leaders, counts.read, counts.refused), (3, 3, 0));
+        let (counts, answers) = capture(&mut store, &Observer, Check::Nothing, &reached, |_| {
+            panic!("quiet commanders must carry")
+        });
+        assert_eq!((counts.leaders, counts.reused), (3, 3));
+        assert_eq!(answers, reached.map(|l| bans(l, 4)));
+        drop(forwarded(0x200));
+        let (counts, answers) = capture(&mut store, &Observer, Check::Nothing, &reached, |l| {
+            bans(l, 8)
+        });
+        assert_eq!((counts.read, counts.reused), (1, 2));
+        assert_eq!(answers, [bans(0x100, 4), bans(0x200, 8), bans(0x300, 4)]);
     }
 
     /// A commander no forwarded writer touched is carried; one a writer

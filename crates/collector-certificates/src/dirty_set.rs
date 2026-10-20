@@ -132,6 +132,7 @@ impl DirtySet {
         }
     }
 
+    #[inline]
     fn installed(&self) -> Option<&Bits> {
         // SAFETY: a bitmap is freed only after a boundary replaced it and saw
         // no writer running; consumers run only after the boundary.
@@ -150,10 +151,18 @@ impl DirtySet {
 
     /// Sets `id`'s bit, or moves the epoch when the installed bitmap cannot
     /// hold it.
+    #[inline]
     fn mark(&self, id: usize) {
         match self.installed().and_then(|bits| bits.words.get(id / BITS)) {
             Some(word) => {
-                word.fetch_or(1 << (id % BITS), SeqCst);
+                let bit = 1 << (id % BITS);
+                // The SeqCst load is the mark when the bit is already set.
+                // An earlier take needs the OR unless another writer already
+                // reasserted the bit; a later take consumes the existing mark.
+                // The active counter still covers the complete native write.
+                if word.load(SeqCst) & bit == 0 {
+                    word.fetch_or(bit, SeqCst);
+                }
             }
             None => {
                 self.overflows.fetch_add(1, Relaxed);
@@ -164,6 +173,7 @@ impl DirtySet {
 
     /// Hook path, allocation-free: a writer is about to change `id`.
     /// Dropping the guard marks it again for the writer's return.
+    #[inline]
     pub fn notify(&self, id: usize) -> Dirty<'_> {
         self.active.fetch_add(1, SeqCst);
         self.mark(id);
@@ -384,6 +394,7 @@ pub struct Dirty<'a> {
 }
 
 impl Drop for Dirty<'_> {
+    #[inline]
     fn drop(&mut self) {
         match self.id {
             Some(id) => self.set.mark(id),
@@ -477,6 +488,35 @@ mod tests {
             assert_eq!(later.contains(&writer), swapped_before);
             assert!(visited.contains(&writer) || later.contains(&writer));
         }
+    }
+
+    #[test]
+    fn repeated_marks_do_not_clear_siblings_and_return_marks_survive_a_take() {
+        let set = set(128);
+        let epoch = take(&set).0.unwrap();
+        drop(set.notify(5));
+        drop(set.notify(6));
+        let first = set.notify(5);
+        let second = set.notify(5);
+        assert_eq!(set.active(), 2);
+        assert_eq!(take(&set), (None, vec![]));
+        drop(first);
+        assert_eq!(take(&set), (None, vec![]));
+        drop(second);
+        assert_eq!(take(&set), (Some(epoch), vec![5, 6]));
+        drop(set.notify(70));
+        let mut running = None;
+        assert_eq!(
+            set.take(|id| {
+                assert_eq!(id, 70);
+                drop(set.notify(5));
+                running = Some(set.notify(5));
+            }),
+            None
+        );
+        drop(running);
+        assert_eq!(take(&set), (Some(epoch), vec![5]));
+        assert_eq!(take(&set), (Some(epoch), vec![]));
     }
 
     #[test]

@@ -96,28 +96,31 @@ fn forwarded_site(site: usize) -> Option<Forward> {
         _ => None,
     }
 }
-unsafe fn invoke(site: usize, args: [usize; 4]) -> usize {
-    let original: Original = unsafe { std::mem::transmute(ORIGINAL[site].load(Ordering::Acquire)) };
+#[inline]
+unsafe fn invoke<const SITE: usize>(args: [usize; 4]) -> usize {
+    let original: Original = unsafe { std::mem::transmute(ORIGINAL[SITE].load(Ordering::Acquire)) };
+    let Some(site) = forwarded_site(SITE) else {
+        return unsafe { original(args[0], args[1], args[2], args[3]) };
+    };
     let receiver = if DESIGN_OBSERVING.load(Ordering::SeqCst) {
         DESIGN_FORWARD.load(Ordering::Acquire)
     } else {
         0
     };
-    let site = forwarded_site(site);
     let mut call = ForwardCall {
         args,
         before: [None, None],
     };
-    if receiver != 0 && matches!(site, Some(Forward::DesignMove | Forward::DesignClone)) {
+    if receiver != 0 && matches!(site, Forward::DesignMove | Forward::DesignClone) {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Acquire);
         call.before[0] = engine_native::cequipment_variant::identity(&memory, base, args[0]).ok();
-        if site == Some(Forward::DesignMove) {
+        if site == Forward::DesignMove {
             call.before[1] =
                 engine_native::cequipment_variant::identity(&memory, base, args[1]).ok();
         }
     }
-    unsafe { invoke_forwarder(receiver, site, call, original) }
+    unsafe { invoke_forwarder(receiver, Some(site), call, original) }
 }
 
 unsafe fn invoke_forwarder(
@@ -727,9 +730,10 @@ impl Drop for Hooks {
 
 /// Hook path: a writer of `site` ([`MUTATIONS`] index) is about to run;
 /// `first` is its first argument.
-fn notify(site: usize, first: usize) -> Notification<'static> {
-    CALLS[site].fetch_add(1, Ordering::Relaxed);
-    let domain = MUTATIONS[site].1;
+#[inline]
+fn notify<const SITE: usize>(first: usize) -> Notification<'static> {
+    CALLS[SITE].fetch_add(1, Ordering::Relaxed);
+    let domain = MUTATIONS[SITE].1;
     let receiver = match domain {
         // The container the writer is about to write names its country (a
         // state's names none). Only its constructor writes the link.
@@ -757,8 +761,8 @@ macro_rules! callback {
             fourth: usize,
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldInputChanges);
-            let _notification = notify($site, first);
-            timing.original(|| unsafe { invoke($site, [first, second, third, fourth]) })
+            let _notification = notify::<$site>(first);
+            timing.original(|| unsafe { invoke::<$site>([first, second, third, fourth]) })
         }
     };
 }
@@ -777,7 +781,7 @@ unsafe extern "system" fn reset_navy(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldInputChanges);
-    let _notification = notify(3, first);
+    let _notification = notify::<3>(first);
     let original = ORIGINAL[3].load(Ordering::Acquire);
     let forward = NAVY_RESET_FORWARD.load(Ordering::Acquire);
     timing.original(|| unsafe {
@@ -833,9 +837,9 @@ unsafe extern "system-unwind" fn design_mio_move(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldInputChanges);
-    let _destination = notify(19, first);
+    let _destination = notify::<19>(first);
     let _source = WATCHES[Domain::DesignIndustrialOrganisation as usize].notify(second);
-    timing.original(|| unsafe { invoke(19, [first, second, third, fourth]) })
+    timing.original(|| unsafe { invoke::<19>([first, second, third, fourth]) })
 }
 // CloneInto receives the destination in its second argument.
 unsafe extern "system-unwind" fn design_mio_clone(
@@ -845,8 +849,8 @@ unsafe extern "system-unwind" fn design_mio_clone(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldInputChanges);
-    let _destination = notify(20, second);
-    timing.original(|| unsafe { invoke(20, [first, second, third, fourth]) })
+    let _destination = notify::<20>(second);
+    timing.original(|| unsafe { invoke::<20>([first, second, third, fourth]) })
 }
 
 callback!(mio_policy_score_refresh, 22);
@@ -863,10 +867,18 @@ unsafe extern "system-unwind" fn fog_enter_game(
     e: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldInputChanges);
-    let _notification = notify(23, a);
+    let _notification = notify::<23>(a);
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[23].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(a, b, c, d, e) })
+}
+
+/// Tests: supply a synthetic original and return the actual shared bonus
+/// refresh callback. Set only in an isolated test process with no writer active.
+#[cfg(any(test, feature = "test-support"))]
+pub fn design_bonus_refresh_for_test(original: Original) -> Original {
+    ORIGINAL[17].store(original as usize, Ordering::Release);
+    design_mio_bonuses
 }
 
 /// Tests: domains of one test's own.
@@ -1035,6 +1047,79 @@ mod tests {
             987
         );
         assert_eq!(ORDER.get(), 2);
+    }
+
+    #[test]
+    fn non_design_callback_keeps_its_domain_flight_without_entering_design_dispatch() {
+        unsafe extern "system-unwind" fn original(a: usize, b: usize, c: usize, d: usize) -> usize {
+            assert_eq!([a, b, c, d], [11, 22, 33, 44]);
+            assert_eq!(WATCHES[Domain::Tension as usize].active(), 1);
+            assert_eq!(WATCHES[Domain::Tension as usize].quiet(), None);
+            assert_eq!(design_forwarder_active(), 0);
+            987
+        }
+        unsafe fn unrelated(_: Forward, _: ForwardCall, _: Original) -> usize {
+            panic!("a non-design writer entered the design forwarder")
+        }
+        forwarder(Some(Forwarder {
+            call: unrelated,
+            enabled: |_| {},
+        }));
+        observe_forwarder(true);
+        let domain = &WATCHES[Domain::Tension as usize];
+        domain.set_enabled(true);
+        let before = domain.quiet().unwrap();
+        let previous = ORIGINAL[4].swap(original as *const () as usize, Ordering::AcqRel);
+        assert_eq!(
+            collector_test_support::with_allocations_denied(|| unsafe {
+                update_threat_total(11, 22, 33, 44)
+            }),
+            987
+        );
+        assert_eq!(domain.quiet(), Some((before.0, before.1 + 1)));
+        assert_eq!(domain.active(), 0);
+        ORIGINAL[4].store(previous, Ordering::Release);
+        forwarder(None);
+    }
+
+    #[test]
+    #[ignore = "per-call world-input callback microbenchmark; run only without a live game benchmark"]
+    fn hook_cost_world_input_dispatch() {
+        const CALLS: usize = 100_000;
+        unsafe extern "system-unwind" fn original(a: usize, b: usize, c: usize, d: usize) -> usize {
+            std::hint::black_box(a ^ b ^ c ^ d)
+        }
+        for index in [4, 8, 17] {
+            ORIGINAL[index].store(original as *const () as usize, Ordering::Release);
+        }
+        let mut container = vec![
+            0_u8;
+            engine_mutations::world_input_mutations::CONTAINER_COUNTRY
+                + size_of::<usize>()
+        ];
+        let offset = engine_mutations::world_input_mutations::CONTAINER_COUNTRY;
+        container[offset..offset + size_of::<usize>()].copy_from_slice(&0x1230_usize.to_ne_bytes());
+        let pointer = container.as_ptr() as usize;
+        for (name, callback, first) in [
+            ("quiet_token", update_threat_total as Original, 1),
+            (
+                "dynamic_country",
+                dynamic_modifier_daily_update as Original,
+                pointer,
+            ),
+            (
+                "design_forwarding_closed",
+                design_mio_bonuses as Original,
+                0x1230,
+            ),
+        ] {
+            let nanos = collector_test_support::per_call_ns(CALLS, || {
+                for _ in 0..CALLS {
+                    std::hint::black_box(unsafe { std::hint::black_box(callback)(first, 2, 3, 4) });
+                }
+            });
+            println!("hook_cost world_input {name}: {nanos:.1} ns/call");
+        }
     }
 
     #[test]

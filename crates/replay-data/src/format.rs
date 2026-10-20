@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
-        assert_eq!(FORMAT_VERSION, 105);
+        assert_eq!(FORMAT_VERSION, 106);
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
                 assert!(FormatVersion::read(version).is_err());
@@ -261,6 +261,9 @@ mod tests {
             let format = FormatVersion::read(version).unwrap();
             // Retired tables are refused by name in every recording.
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version < crate::rows::compatibility::COMBAT_LOG_OBSERVER_KEYS_FORMAT {
+                expected.push(TableId::CombatLogObservers);
+            }
             if version < crate::rows::compatibility::OCCUPATION_MAP_FORMAT {
                 expected.push(TableId::StateResistance);
             }
@@ -309,7 +312,7 @@ mod tests {
                     TableId::DoctrineCountries,
                 ]);
             }
-            if version < crate::rows::compatibility::SCRIPT_EVENT_FORMAT {
+            if version < crate::rows::compatibility::EVENT_FEED_COLUMNS_FORMAT {
                 expected.push(TableId::EventFeedHistory);
             }
             if version < 104 {
@@ -433,7 +436,6 @@ mod tests {
                     TableId::CombatLogBattleEquipment,
                     TableId::CombatLogBattleModifiers,
                     TableId::CombatLogBattleCountries,
-                    TableId::CombatLogObservers,
                     TableId::NavalRepairCountries,
                     TableId::NavalRepairFleets,
                     TableId::NavalRepairTaskForces,

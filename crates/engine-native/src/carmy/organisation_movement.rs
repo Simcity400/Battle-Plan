@@ -60,21 +60,129 @@ pub fn land_speed_demand(
     (failure.map_or(Ok(false), Err), refused)
 }
 
-/// Only branch inputs of a province, with no state/controller/region demand.
-fn land_province(
-    memory: &impl Memory,
-    base: usize,
-    province: usize,
-) -> Result<(u32, u8), &'static str> {
-    let definition = movement_definition(memory, base, province)?;
-    Ok((
-        presentation_field(memory, province, cprovince::ID)?,
-        presentation_field::<u8>(
-            memory,
+/// Successful geography facts shared only inside this quiescent pass. A full
+/// memo takes the ordinary reads; native faults are never retained, so a
+/// transient failure cannot withhold another division's readable operands.
+pub(super) struct OrganisationMemo {
+    identities: crate::carmy_leader::PassTable<Result<(u32, usize), &'static str>>,
+    flags: crate::carmy_leader::PassTable<Result<u8, &'static str>>,
+    provinces: Option<Array>,
+}
+
+impl OrganisationMemo {
+    pub(super) fn new(units: usize) -> std::io::Result<Self> {
+        // This storage only saves reads; failure must not make capture terminal.
+        crate::allocation::advisory(|| {
+            Ok(Self {
+                identities: crate::carmy_leader::PassTable::try_with_capacity(units)?,
+                flags: crate::carmy_leader::PassTable::try_with_capacity(units)?,
+                provinces: None,
+            })
+        })
+    }
+
+    pub(super) fn vacant() -> Self {
+        Self {
+            identities: crate::carmy_leader::PassTable::vacant(),
+            flags: crate::carmy_leader::PassTable::vacant(),
+            provinces: None,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.identities.clear();
+        self.flags.clear();
+        self.provinces = None;
+    }
+
+    pub(super) fn allocated_bytes(&self) -> usize {
+        self.identities.allocated_bytes() + self.flags.allocated_bytes()
+    }
+
+    /// Authenticate before applying the route's expected id, then demand its
+    /// terrain flags. Reuse the id already acquired for authentication, never
+    /// state/controller/region fields or source gaps.
+    fn province(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        province: usize,
+        expected: Option<u32>,
+    ) -> Result<(u32, u8), &'static str> {
+        let (id, definition) = self.identities.get_or_if(
+            province,
+            || {
+                if province == 0
+                    || read::<u64>(memory, province)
+                        != base.checked_add(cprovince::VTABLE_RVA).map(|p| p as u64)
+                {
+                    return Err("movement province identity mismatch");
+                }
+                let definition = movement_pointer(memory, province, cprovince::DEFINITION)?;
+                if definition == 0 {
+                    return Err("movement province definition mismatch");
+                }
+                let definition_id =
+                    presentation_field::<u32>(memory, definition, crate::province_definition::ID)?;
+                let id = presentation_field::<u32>(memory, province, cprovince::ID)?;
+                if definition_id != id {
+                    return Err("movement province definition mismatch");
+                }
+                Ok((id, definition))
+            },
+            |value| value.is_ok(),
+        )?;
+        if expected.is_some_and(|expected| id != expected) {
+            return Err("movement route province identity mismatch");
+        }
+        let flags = self.flags.get_or_if(
             definition,
-            crate::province_definition::TERRAIN_FLAGS,
-        )?,
-    ))
+            || {
+                presentation_field(
+                    memory,
+                    definition,
+                    crate::province_definition::TERRAIN_FLAGS,
+                )
+            },
+            |value| value.is_ok(),
+        )?;
+        Ok((id, flags))
+    }
+
+    /// A route position authenticates its province once, rather than repeating
+    /// movement_route_province's authentication in the following branch read.
+    fn route(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        route: Array,
+        index: u32,
+    ) -> Result<(u32, u8), &'static str> {
+        let id = read::<u32>(
+            memory,
+            route
+                .element(index, 4)
+                .ok_or("movement route index invalid")?,
+        )
+        .ok_or("movement route id unreadable")?;
+        let provinces = match self.provinces {
+            Some(provinces) => provinces,
+            None => {
+                let provinces = presentation_array(memory, state, cgame_state::PROVINCES, 8)?;
+                self.provinces = Some(provinces);
+                provinces
+            }
+        };
+        let province = read::<u64>(
+            memory,
+            provinces
+                .element(id, 8)
+                .ok_or("movement route province outside roster")?,
+        )
+        .ok_or("movement route province unreadable")? as usize;
+        self.province(memory, base, province, Some(id))
+    }
 }
 
 impl StatusPacket {
@@ -91,6 +199,7 @@ impl StatusPacket {
     ) -> u64 {
         let mut refused = 0;
         let mut threshold = None;
+        self.organisation_memo.clear();
         for index in 0..self.units.len() {
             let value = (|| -> Result<Option<[i64; 2]>, &'static str> {
                 let seed = seeds.get(index).ok_or("organisation census missing")?;
@@ -109,10 +218,11 @@ impl StatusPacket {
                 }
                 let location = seed.location.ok_or("organisation location unreadable")?;
                 let (ordinary, route_refused) = land_speed_demand(
-                    land_province(memory, base, location),
+                    self.organisation_memo
+                        .province(memory, base, location, None),
                     (0..route.count).map(|index| {
-                        movement_route_province(memory, base, state, route, index)
-                            .and_then(|province| land_province(memory, base, province))
+                        self.organisation_memo
+                            .route(memory, base, state, route, index)
                     }),
                 );
                 // Keep a proven pair available while counting independent route faults.

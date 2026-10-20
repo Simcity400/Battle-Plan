@@ -164,7 +164,7 @@ fn registered(memory: &impl Memory, base: usize, pointer: usize) {
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        MISSED.store(true, Ordering::Release);
+        lock_contended();
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
@@ -172,10 +172,14 @@ fn registered(memory: &impl Memory, base: usize, pointer: usize) {
     }
     let result = (|| {
         let handle = engine_native::read::<u64>(memory, pointer + organisation::REFERENCE)
-            .ok_or("design organisation reference unreadable")?;
+            .ok_or_else(|| {
+                unobserved();
+                "design organisation reference unreadable"
+            })?;
         if !store.interests.organisations.contains_key(&handle) {
             return Ok(());
         }
+        store.interests.author_changed(handle);
         if engine_native::read::<u64>(memory, pointer)
             != Some((base + organisation::VTABLE_RVA) as u64)
         {
@@ -201,7 +205,7 @@ fn retired(memory: &impl Memory, base: usize, pointer: usize) {
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        MISSED.store(true, Ordering::Release);
+        lock_contended();
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
@@ -210,6 +214,7 @@ fn retired(memory: &impl Memory, base: usize, pointer: usize) {
     let Some(handle) = store.interests.organisation_pointers.remove(&pointer) else {
         return;
     };
+    store.interests.author_changed(handle);
     store.interests.organisations.insert(handle, 0);
     if let Err(reason) = event(&mut store, memory, base, handle, pointer, false) {
         store.batch.failure = Some(reason);
@@ -231,12 +236,12 @@ fn roster(memory: &impl Memory, base: usize, header: usize) {
         }
         Ok(_) => {}
         Err(_) => {
-            MISSED.store(true, Ordering::Release);
+            unobserved();
             return;
         }
     }
     let Some(array) = Array::read(memory, header, 8) else {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
         return;
     };
     for ordinal in 0..array.count {
@@ -246,7 +251,7 @@ fn roster(memory: &impl Memory, base: usize, header: usize) {
         if let Some(pointer) = pointer {
             registered(memory, base, pointer as usize);
         } else {
-            MISSED.store(true, Ordering::Release);
+            unobserved();
         }
     }
 }
@@ -257,7 +262,7 @@ impl Drop for Scope {
     fn drop(&mut self) {
         REVISION.fetch_add(1, Ordering::AcqRel);
         if !self.complete {
-            MISSED.store(true, Ordering::Release);
+            unobserved();
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }

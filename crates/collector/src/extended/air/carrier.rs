@@ -352,80 +352,103 @@ impl Registrations {
             .rows
             .sort_unstable_by_key(|row| (row.base, row.slot));
     }
-    fn row(&self, base: u64, slot: u32) -> Option<&CarrierRegistration> {
+    /// Resolve once for both the optional packet and independent state scalars.
+    pub(crate) fn registration(&self, source: &cair_base::RegistrationRow) -> Registration<'_> {
+        let key = (source.base, source.slot);
         if let Ok(index) = self
             .state
             .rows
-            .binary_search_by_key(&(base, slot), |row| (row.base, row.slot))
-        {
-            return self.state.rows.get(index);
-        }
-        if !self.indexed {
-            return None;
-        }
-        let rows = self.rows.get(..self.len)?;
-        let key = (base, slot);
-        let index = rows
             .binary_search_by_key(&key, |row| (row.base, row.slot))
-            .ok()?;
-        if index
-            .checked_sub(1)
-            .and_then(|index| rows.get(index))
-            .is_some_and(|row| (row.base, row.slot) == key)
-            || rows
-                .get(index + 1)
-                .is_some_and(|row| (row.base, row.slot) == key)
         {
-            return None;
+            return Registration {
+                row: self.state.rows.get(index),
+                pools: &self.state.pools,
+                pools_len: self.state.pools.len(),
+                wing_len: source.wings_len,
+                state: true,
+            };
         }
-        rows.get(index)
+        let row = self
+            .indexed
+            .then(|| self.rows.get(..self.len))
+            .flatten()
+            .and_then(|rows| {
+                let index = rows
+                    .binary_search_by_key(&key, |row| (row.base, row.slot))
+                    .ok()?;
+                if index
+                    .checked_sub(1)
+                    .and_then(|index| rows.get(index))
+                    .is_some_and(|row| (row.base, row.slot) == key)
+                    || rows
+                        .get(index + 1)
+                        .is_some_and(|row| (row.base, row.slot) == key)
+                {
+                    return None;
+                }
+                rows.get(index)
+            });
+        Registration {
+            row,
+            pools: &self.pools,
+            pools_len: self.pools_len,
+            wing_len: source.wings_len,
+            state: false,
+        }
     }
-    fn pool_slice(&self, row: &CarrierRegistration, wing_len: usize) -> Option<&[CarrierPool]> {
-        let state = self
-            .state
-            .rows
-            .binary_search_by_key(&(row.base, row.slot), |item| (item.base, item.slot))
-            .is_ok();
-        let pools = if state {
-            span(&self.state.pools, self.state.pools.len(), row.pools.ok()?)?
-        } else {
-            span(&self.pools, self.pools_len, row.pools.ok()?)?
-        };
+    #[cfg(test)]
+    pub(crate) fn state_fuel(&self, source: &cair_base::RegistrationRow) -> [Option<i64>; 2] {
+        self.registration(source).state_fuel()
+    }
+    #[cfg(test)]
+    pub fn packet(
+        &self,
+        source: &cair_base::RegistrationRow,
+    ) -> rows::Recorded<Option<rows::AirBaseRegistrationCarrierInputs>> {
+        self.registration(source).packet()
+    }
+    #[cfg(test)]
+    pub fn equal(
+        &self,
+        source: &cair_base::RegistrationRow,
+        old: &rows::Recorded<Option<rows::AirBaseRegistrationCarrierInputs>>,
+    ) -> bool {
+        self.registration(source).equal(old)
+    }
+}
+
+/// A borrowed lookup result; no repeated key searches for one projected row.
+pub(crate) struct Registration<'a> {
+    row: Option<&'a CarrierRegistration>,
+    pools: &'a [CarrierPool],
+    pools_len: usize,
+    wing_len: usize,
+    state: bool,
+}
+impl Registration<'_> {
+    fn pool_slice(&self, row: &CarrierRegistration) -> Option<&[CarrierPool]> {
+        let pools = span(self.pools, self.pools_len, row.pools.ok()?)?;
         let mut consumed = 0;
         for pool in pools {
             if pool.wings_start != consumed {
                 return None;
             }
             consumed = consumed.checked_add(pool.wings_len as usize)?;
-            if consumed > wing_len || u32::try_from(pool.wings_start).is_err() {
+            if consumed > self.wing_len || u32::try_from(pool.wings_start).is_err() {
                 return None;
             }
         }
-        (consumed == wing_len).then_some(pools)
+        (consumed == self.wing_len).then_some(pools)
     }
-    pub(crate) fn state_fuel(&self, source: &cair_base::RegistrationRow) -> [Option<i64>; 2] {
-        self.state
-            .rows
-            .binary_search_by_key(&(source.base, source.slot), |row| (row.base, row.slot))
-            .ok()
-            .map(|index| {
-                let row = &self.state.rows[index];
-                [row.fuel.demand.ok(), row.fuel.allocated.ok()]
-            })
+    pub(crate) fn state_fuel(&self) -> [Option<i64>; 2] {
+        self.row
+            .filter(|_| self.state)
+            .map(|row| [row.fuel.demand.ok(), row.fuel.allocated.ok()])
             .unwrap_or([None, None])
     }
-    fn is_state(&self, row: &CarrierRegistration) -> bool {
-        self.state
-            .rows
-            .binary_search_by_key(&(row.base, row.slot), |item| (item.base, item.slot))
-            .is_ok()
-    }
-    pub fn packet(
-        &self,
-        source: &cair_base::RegistrationRow,
-    ) -> rows::Recorded<Option<rows::AirBaseRegistrationCarrierInputs>> {
-        rows::Recorded::Value(self.row(source.base, source.slot).map(|row| {
-            let pools = self.pool_slice(row, source.wings_len).map(|source| {
+    pub(crate) fn packet(&self) -> rows::Recorded<Option<rows::AirBaseRegistrationCarrierInputs>> {
+        rows::Recorded::Value(self.row.map(|row| {
+            let pools = self.pool_slice(row).map(|source| {
                 allocation::owned_vec(allocation::collect_vec(source.iter().map(|pool| {
                     rows::CarrierAirPool {
                         type_index: pool.type_index,
@@ -439,41 +462,31 @@ impl Registrations {
             });
             rows::AirBaseRegistrationCarrierInputs {
                 country: row.country,
-                fuel_demand_raw: (!self.is_state(row))
-                    .then(|| row.fuel.demand.ok())
-                    .flatten(),
-                fuel_allocated_raw: (!self.is_state(row))
-                    .then(|| row.fuel.allocated.ok())
-                    .flatten(),
+                fuel_demand_raw: (!self.state).then(|| row.fuel.demand.ok()).flatten(),
+                fuel_allocated_raw: (!self.state).then(|| row.fuel.allocated.ok()).flatten(),
                 pools,
             }
         }))
     }
     /// Compare borrowed values before allocating a changed replay row.
-    pub fn equal(
+    pub(crate) fn equal(
         &self,
-        source: &cair_base::RegistrationRow,
         old: &rows::Recorded<Option<rows::AirBaseRegistrationCarrierInputs>>,
     ) -> bool {
         let rows::Recorded::Value(old) = old else {
             return false;
         };
-        match (self.row(source.base, source.slot), old) {
+        match (self.row, old) {
             (None, None) => true,
             (Some(row), Some(old)) => {
                 if row.country != old.country
-                    || (!self.is_state(row))
-                        .then(|| row.fuel.demand.ok())
-                        .flatten()
-                        != old.fuel_demand_raw
-                    || (!self.is_state(row))
-                        .then(|| row.fuel.allocated.ok())
-                        .flatten()
+                    || (!self.state).then(|| row.fuel.demand.ok()).flatten() != old.fuel_demand_raw
+                    || (!self.state).then(|| row.fuel.allocated.ok()).flatten()
                         != old.fuel_allocated_raw
                 {
                     return false;
                 }
-                match (self.pool_slice(row, source.wings_len), &old.pools) {
+                match (self.pool_slice(row), &old.pools) {
                     (None, None) => true,
                     (Some(current), Some(old)) => {
                         current.len() == old.len()

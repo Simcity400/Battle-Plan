@@ -29,8 +29,11 @@ keys. Destruction removes them before reuse. Native group ordinals, repeated
 reference ordinals, full template and equipment handles, signed counters and
 serializer omission gates are retained independently.
 
-All producer storage is reusable and sized off-thread from the initial seed
-and complete attempted event demand. Producers reserve individual fixed
+All producer storage is reusable and sized off-thread from the initial seed,
+the existing active-combat operand census (including aggregate equipment entries)
+and complete attempted event demand. Empty retained history does not imply empty
+writer demand. Growth preserves pending records and installs after the existing
+drain before native writers resume. Producers reserve individual fixed
 elements without allocation or waiting. A capacity failure, guarded-read
 failure, hook publication gap, overlapping writer/drain, unmatched allocation
 or escaped unwind revokes the certificate; no partial interval becomes an

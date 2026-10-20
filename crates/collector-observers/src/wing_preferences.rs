@@ -178,8 +178,9 @@ impl Drop for Scope {
     }
 }
 /// The existing air-base patch owner forwards publication and split outer return.
+#[inline]
 pub(crate) fn base_site(site: usize, args: &[usize]) -> Option<Scope> {
-    if !AVAILABLE.load(Ordering::Acquire) || !matches!(site, 4 | 6 | 7) {
+    if !matches!(site, 4 | 6 | 7) || !AVAILABLE.load(Ordering::Acquire) {
         return None;
     }
     let scope = Scope::begin(site == 7);
@@ -415,6 +416,24 @@ mod tests {
             assert_eq!(cache.read(&Quiet, 0x2000, 80, 2), None)
         });
     }
+    #[test]
+    fn unrelated_base_sites_need_no_arguments_or_preference_scope() {
+        let _serial = SERIAL.lock().unwrap();
+        let previous = AVAILABLE.swap(true, Ordering::AcqRel);
+        let epoch = EPOCH.load(Ordering::Acquire);
+        let revision = REVISION.load(Ordering::Acquire);
+        let active = ACTIVE.load(Ordering::Acquire);
+        collector_test_support::with_allocations_denied(|| {
+            for site in [0, 1, 2, 3, 5, 8, 9] {
+                assert!(base_site(site, &[]).is_none());
+            }
+        });
+        assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+        assert_eq!(REVISION.load(Ordering::Acquire), revision);
+        assert_eq!(ACTIVE.load(Ordering::Acquire), active);
+        AVAILABLE.store(previous, Ordering::Release);
+    }
+
     #[test]
     fn split_late_write_publication_and_unwind_cannot_reuse_an_intermediate_setting() {
         let _serial = SERIAL.lock().unwrap();

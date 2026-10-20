@@ -7,6 +7,7 @@ pub(super) mod liveness;
 mod scalar;
 mod source_hooks;
 mod sources;
+mod writers;
 use engine_native::cequipment_variant as native;
 pub use forward::{Availability, Forwarder, Phase, Writer, availability_is_current, forwarder};
 use std::collections::HashMap;
@@ -18,6 +19,48 @@ use std::sync::{
 const ROOT_BYTES: usize = native::DESIGN_TEAM_TRAITS + 4;
 static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
 static MISSED: AtomicBool = AtomicBool::new(false);
+static MISSED_AT: std::sync::atomic::AtomicPtr<std::panic::Location<'static>> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+static LAST_MISSED_AT: std::sync::atomic::AtomicPtr<std::panic::Location<'static>> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+static RUNNING_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static MISSED_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static COMPETING_WRITER_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+static LOCK_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
+static UNKNOWN_RECEIVERS: AtomicU64 = AtomicU64::new(0);
+static CLAIM_CAPACITY_REFUSALS: AtomicU64 = AtomicU64::new(0);
+#[track_caller]
+fn lock_contended() {
+    LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
+    unobserved();
+}
+#[track_caller]
+fn unknown_receiver() {
+    UNKNOWN_RECEIVERS.fetch_add(1, Ordering::Relaxed);
+    unobserved();
+}
+#[track_caller]
+fn missed() {
+    MISSED_AT.store(
+        std::ptr::from_ref(std::panic::Location::caller()).cast_mut(),
+        Ordering::Release,
+    );
+    MISSED.store(true, Ordering::Release);
+}
+// A refused occurrence log does not by itself revoke unchanged saved objects.
+// Lost receiver/dependency evidence does: only a complete census can restore it.
+static CENSUS_REVISION: AtomicU64 = AtomicU64::new(1);
+static CENSUS_BASELINE: AtomicU64 = AtomicU64::new(0);
+static REFUSED_INTERVALS: AtomicU64 = AtomicU64::new(0);
+static LAST_REFUSAL: Mutex<Option<&'static str>> = Mutex::new(None);
+pub(super) fn refuse_census() {
+    CENSUS_REVISION.fetch_add(1, Ordering::AcqRel);
+}
+#[track_caller]
+fn unobserved() {
+    refuse_census();
+    missed();
+}
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static REVISION: AtomicU64 = AtomicU64::new(1);
@@ -36,13 +79,22 @@ static EPOCH: AtomicU64 = AtomicU64::new(1);
 static SAVED_BASELINE: AtomicBool = AtomicBool::new(false);
 static SOURCE_BASELINE: AtomicBool = AtomicBool::new(false);
 static LIVENESS_BASELINE: AtomicBool = AtomicBool::new(false);
+fn observe_world_forwarder(enabled: bool) {
+    if !enabled {
+        // Shared writers bypass our dirty marks while forwarding is closed,
+        // including writers that finish before the next recovery read.
+        refuse_census();
+    }
+    collector_observers::world_input_changes::observe_forwarder(enabled);
+}
 fn publish_availability() {
     let epoch = EPOCH.load(Ordering::Acquire);
     let token = forward::token();
-    let saved = ENABLED.load(Ordering::Acquire) && SAVED_BASELINE.load(Ordering::Acquire);
+    let observing = ENABLED.load(Ordering::Acquire);
+    let saved = observing && SAVED_BASELINE.load(Ordering::Acquire);
     // Shared move forwarding must be live before a dependent capability can
     // become current. Reset wins any raced world-input publication below.
-    collector_observers::world_input_changes::observe_forwarder(saved);
+    observe_world_forwarder(observing);
     forward::available_at(
         token,
         saved
@@ -53,8 +105,8 @@ fn publish_availability() {
     );
     // A reset can run while this worker publishes either forwarding gate.
     // Its epoch wins even when the old publisher resumes after the reset.
-    if EPOCH.load(Ordering::Acquire) != epoch || !SAVED_BASELINE.load(Ordering::Acquire) {
-        collector_observers::world_input_changes::observe_forwarder(false);
+    if EPOCH.load(Ordering::Acquire) != epoch || !ENABLED.load(Ordering::Acquire) {
+        observe_world_forwarder(false);
     }
 }
 
@@ -63,7 +115,8 @@ fn withdraw_baselines() {
     SOURCE_BASELINE.store(false, Ordering::Release);
     LIVENESS_BASELINE.store(false, Ordering::Release);
     forward::invalidate();
-    collector_observers::world_input_changes::observe_forwarder(false);
+    // A local log refusal withdraws dependent availability, not shared writer
+    // observation. Its dirty/revision evidence must survive until recovery.
 }
 
 // Descriptor order stays shared with the receiver decoder. These sites are
@@ -101,7 +154,7 @@ impl Drop for ProviderReset {
     fn drop(&mut self) {
         REVISION.fetch_add(1, Ordering::AcqRel);
         if !self.complete {
-            MISSED.store(true, Ordering::Release);
+            unobserved();
         }
     }
 }
@@ -120,7 +173,7 @@ pub(super) unsafe fn provider_reset(
 fn world_enabled(enabled: bool) {
     WORLD_ENABLED.store(enabled, Ordering::Release);
     if !enabled {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
     }
     update_enabled();
 }
@@ -182,6 +235,7 @@ struct Watch {
     id: u64,
     pointer: usize,
     flags: [u8; 3],
+    dirty: bool,
 }
 struct Store {
     batch: Batch,
@@ -219,13 +273,13 @@ pub(super) fn baseline_admitted() -> bool {
 }
 pub fn boundary(invalidate: bool) {
     if invalidate {
-        collector_observers::world_input_changes::observe_forwarder(false);
+        observe_world_forwarder(false);
         EPOCH.fetch_add(1, Ordering::AcqRel);
         withdraw_baselines();
         super::design_context::invalidate();
         RECOVER.store(true, Ordering::Release);
         RECOVERY_READ.store(true, Ordering::Release);
-        MISSED.store(true, Ordering::Release);
+        unobserved();
         if let Some(store) = STORE.get() {
             // A worker may be preparing its next buffers. The missed verdict
             // already invalidates this batch; never wait for that worker here.
@@ -582,7 +636,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
             super::bonus_snapshots::raw_demand(&state.bonus_sources)
         else {
             RECOVER.store(true, Ordering::Release);
-            MISSED.store(true, Ordering::Release);
+            unobserved();
             return;
         };
         bytes = bytes.saturating_add(source_bytes);
@@ -591,7 +645,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
             super::bonus_snapshots::raw_demand(&state.named_sources)
         else {
             RECOVER.store(true, Ordering::Release);
-            MISSED.store(true, Ordering::Release);
+            unobserved();
             return;
         };
         bytes = bytes.saturating_add(source_bytes);
@@ -634,7 +688,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
         || REVISION.load(Ordering::Acquire) != revision
         || active() != 0
     {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
         RECOVER.store(true, Ordering::Release);
         return;
     }
@@ -653,39 +707,62 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
     store
         .spare
         .prepare(registry.len().saturating_mul(2).max(1), spans, bytes);
-    store.watched.clear();
-    if engine_allocation::reserve_map(&mut store.watched, registry.len().saturating_mul(2).max(1))
-        .is_err()
-    {
-        RECOVER.store(true, Ordering::Release);
-        MISSED.store(true, Ordering::Release);
+    if let Err(reason) = writers::prepare(registry.len().saturating_mul(2).max(1)) {
+        store.batch.failure = Some(reason);
         return;
     }
-    let mut ids = std::collections::HashSet::new();
-    for (source, definition) in registry.iter().zip(&variants.definitions.rows) {
-        if !ids.insert(source.id)
-            || store
-                .watched
-                .insert(
-                    source.pointer(),
-                    Watch {
-                        id: source.id,
-                        pointer: source.pointer(),
-                        flags: [
-                            definition.design.can_upgrade_type,
-                            definition.design.can_upgrade_variant,
-                            definition.design.can_upgrade_modules,
-                        ],
-                    },
-                )
-                .is_some()
-        {
+    let mut identities = HashMap::new();
+    if engine_allocation::reserve_map(&mut identities, registry.len()).is_err() {
+        store.batch.failure = Some("variant change identity allocation failed");
+        return;
+    }
+    for source in registry {
+        if identities.insert(source.id, source.pointer()).is_some() {
             store.batch.failure =
                 Some("variant change census contains duplicate identity or address");
             return;
         }
     }
-    if let Err(reason) = held::seed(registry, variants) {
+    store
+        .watched
+        .retain(|pointer, watch| identities.get(&watch.id) == Some(pointer));
+    let additional = registry
+        .len()
+        .saturating_mul(2)
+        .max(1)
+        .saturating_sub(store.watched.len());
+    if engine_allocation::reserve_map(&mut store.watched, additional).is_err() {
+        RECOVER.store(true, Ordering::Release);
+        unobserved();
+        return;
+    }
+    for watch in store.watched.values_mut() {
+        watch.dirty = true;
+    }
+    for (source, definition) in registry.iter().zip(&variants.definitions.rows) {
+        let watch = store.watched.entry(source.pointer()).or_insert(Watch {
+            id: source.id,
+            pointer: source.pointer(),
+            flags: [0; 3],
+            dirty: true,
+        });
+        if !watch.dirty {
+            store.batch.failure =
+                Some("variant change census contains duplicate identity or address");
+            return;
+        }
+        *watch = Watch {
+            id: source.id,
+            pointer: source.pointer(),
+            flags: [
+                definition.design.can_upgrade_type,
+                definition.design.can_upgrade_variant,
+                definition.design.can_upgrade_modules,
+            ],
+            dirty: false,
+        };
+    }
+    if let Err(reason) = held::seed(registry, variants, &store.watched) {
         store.batch.failure = Some(reason);
         RECOVER.store(true, Ordering::Release);
         return;
@@ -704,7 +781,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
         || store.epoch != EPOCH.load(Ordering::Acquire)
         || REVISION.load(Ordering::Acquire) != revision
     {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
         return;
     }
     SAVED_BASELINE.store(true, Ordering::Release);
@@ -712,12 +789,13 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
     LIVENESS_BASELINE.store(true, Ordering::Release);
     RECOVER.store(false, Ordering::Release);
     MISSED.store(false, Ordering::Release);
+    CENSUS_BASELINE.store(CENSUS_REVISION.load(Ordering::Acquire), Ordering::Release);
     drop(store);
     if REVISION.load(Ordering::Acquire) != revision
         || active() != 0
         || EPOCH.load(Ordering::Acquire) != epoch
     {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
         RECOVER.store(true, Ordering::Release);
         withdraw_baselines();
     } else {
@@ -736,24 +814,27 @@ impl Drop for BaselineAttempt {
             // A consumed recovery read is not retried every hour. The existing
             // daily census can admit a later stable baseline.
             RECOVER.store(true, Ordering::Release);
-            MISSED.store(true, Ordering::Release);
+            unobserved();
         }
     }
 }
 
 fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, published: bool) {
     let Some(store) = STORE.get() else {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        MISSED.store(true, Ordering::Release);
+        lock_contended();
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
-    let watched = store.watched.get(&pointer).copied();
+    let watched = store.watched.get_mut(&pointer).map(|watch| {
+        watch.dirty = true;
+        *watch
+    });
     if !published && watched.is_none() {
         return;
     }
@@ -780,6 +861,7 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
                 id: identity,
                 pointer,
                 flags: [0; 3],
+                dirty: true,
             },
         );
     }
@@ -813,6 +895,29 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
         store.batch.failure = Some("variant change flags unreadable");
         return;
     }
+    // The snapshot authenticates its parent's identity as well as this
+    // receiver. Protect that short read against a foreign move/destruction,
+    // without excluding unrelated writers for the whole original's duration.
+    let Some(parent) = pointer
+        .checked_add(native::PARENT)
+        .and_then(|address| engine_native::read::<u64>(memory, address))
+    else {
+        store.batch.failure = Some("variant change parent unreadable");
+        return;
+    };
+    let parent_claim = if parent != 0 {
+        let Some(claim) = writers::enter(parent as usize, None, writers::Footprint::Identity)
+        else {
+            return;
+        };
+        if !claim.admitted() {
+            store.batch.failure = Some("variant parent snapshot has a competing writer");
+            return;
+        }
+        Some(claim)
+    } else {
+        None
+    };
     let start = store.batch.log.spans.len();
     let Store {
         batch, interests, ..
@@ -834,22 +939,62 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
         }
         Err(reason) => store.batch.failure = Some(reason),
     }
+    if parent_claim.is_some_and(writers::Flight::finish) {
+        store.batch.failure = Some("variant parent snapshot has a competing writer");
+    }
+}
+
+/// A competing receiver writer cannot retain occurrences, but a saved receiver still
+/// revokes its held value before and after the original. Unknown receivers and
+/// failed registration locking revoke every recovery value.
+fn unrecorded_writer(receiver: Receiver, pointer: usize, moved_source: Option<usize>) {
+    if pointer == 0 || matches!(receiver, Receiver::Roster | Receiver::CreateCommand) {
+        unknown_receiver();
+        return;
+    }
+    if matches!(receiver, Receiver::Published) {
+        missed();
+    }
+    // Busy designer threads also edit excluded drafts. Only receivers watched
+    // before or after their original can lose a saved occurrence.
+    dirty_receiver(pointer);
+    if let Some(source) = moved_source {
+        dirty_receiver(source);
+    }
+}
+fn dirty_receiver(pointer: usize) {
+    let Some(store) = STORE.get() else {
+        unobserved();
+        return;
+    };
+    let Ok(mut store) = store.try_lock() else {
+        lock_contended();
+        return;
+    };
+    if let Some(watch) = store.watched.get_mut(&pointer) {
+        watch.dirty = true;
+        missed();
+    }
 }
 
 /// Destruction retires the prepared binding before any native fields die.
 /// Drafts need one map lookup and no native reads or event payload.
-fn retire(memory: &impl Memory, base: usize, pointer: usize) {
+fn retire(memory: &impl Memory, base: usize, pointer: usize) -> bool {
     let Some(store) = STORE.get() else {
-        return;
+        return false;
     };
     let Ok(mut store) = store.try_lock() else {
-        MISSED.store(true, Ordering::Release);
-        return;
+        lock_contended();
+        return false;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
-        return;
+        return false;
     }
-    retire_from(&mut store, memory, base, pointer);
+    let watched = store.watched.contains_key(&pointer);
+    if watched {
+        retire_from(&mut store, memory, base, pointer);
+    }
+    watched
 }
 fn retire_from(store: &mut Store, memory: &impl Memory, base: usize, pointer: usize) {
     let Some(watch) = store.watched.remove(&pointer) else {
@@ -883,7 +1028,7 @@ fn retire_from(store: &mut Store, memory: &impl Memory, base: usize, pointer: us
 }
 
 /// A complete interval is meaningful only with every mutation site installed
-/// and no overlapping or lost callback. A full refresh cannot invent its past.
+/// and no conflicting or lost callback. A full refresh cannot invent its past.
 pub fn pending() -> bool {
     needs_full()
         || !enabled()
@@ -895,34 +1040,39 @@ pub fn pending() -> bool {
         })
 }
 pub fn active() -> usize {
-    ACTIVE.load(Ordering::SeqCst) + super::design_template_changes::active()
+    ACTIVE.load(Ordering::SeqCst)
+        + super::design_template_changes::active()
+        + collector_observers::world_input_changes::design_forwarder_active()
 }
 
 fn flag_change(memory: &impl Memory, base: usize, pointer: usize) {
     let Some(store) = STORE.get() else {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        MISSED.store(true, Ordering::Release);
+        lock_contended();
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
-    let Some(watch) = store.watched.get(&pointer).copied() else {
+    let Some(watch) = store.watched.get_mut(&pointer) else {
         return;
     };
     let Some(flags) = pointer
         .checked_add(native::CAN_UPGRADE_TYPE)
         .and_then(|p| engine_native::read::<[u8; 3]>(memory, p))
     else {
+        watch.dirty = true;
         store.batch.failure = Some("variant eligibility flags unreadable");
         return;
     };
     if watch.flags == flags {
         return;
     }
+    watch.dirty = true;
+    let variant = watch.id;
     store.batch.required_events = store.batch.required_events.saturating_add(1);
     if store.batch.events.len() == store.batch.events.capacity() {
         store.batch.failure = Some("variant change event capacity exhausted");
@@ -942,7 +1092,6 @@ fn flag_change(memory: &impl Memory, base: usize, pointer: usize) {
         store.batch.failure = Some("variant change hour unreadable");
         return;
     };
-    let variant = watch.id;
     store.watched.get_mut(&pointer).unwrap().flags = flags;
     store.batch.events.push(Event {
         kind: Kind::Design,
@@ -959,9 +1108,8 @@ fn flag_change(memory: &impl Memory, base: usize, pointer: usize) {
 
 use collector_hooks::hook::Hook;
 use native::mutations::{FORWARDED_SITES, MUTATIONS, Receiver};
-use std::{cell::Cell, ops::Range, sync::atomic::AtomicU32};
+use std::{cell::Cell, ops::Range};
 static BASE: AtomicUsize = AtomicUsize::new(0);
-static OWNER: AtomicU32 = AtomicU32::new(0);
 static ORIGINAL: [AtomicUsize; MUTATIONS.len()] = [const { AtomicUsize::new(0) }; MUTATIONS.len()];
 thread_local! {
     static TARGET: Cell<usize> = const { Cell::new(0) };
@@ -972,7 +1120,7 @@ thread_local! {
 /// Restore observation ownership even when the original unwinds through us.
 /// An unwound writer has no completed snapshot and cannot certify carry.
 struct CallbackScope {
-    outer: bool,
+    claims: Option<writers::Flight>,
     previous_target: usize,
     creation: Option<(bool, usize)>,
     completed: bool,
@@ -981,16 +1129,14 @@ impl Drop for CallbackScope {
     fn drop(&mut self) {
         REVISION.fetch_add(1, Ordering::AcqRel);
         if !self.completed {
-            MISSED.store(true, Ordering::Release);
+            unobserved();
         }
         if let Some((creating, created)) = self.creation {
             CREATING.set(creating);
             CREATED.set(created);
         }
         TARGET.set(self.previous_target);
-        if self.outer {
-            OWNER.store(0, Ordering::Release);
-        }
+        drop(self.claims.take());
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -1139,13 +1285,13 @@ fn target(
                 .checked_add(native::mutations::COMMAND_VARIANT)
                 .and_then(|p| engine_native::read::<u64>(memory, p))
             else {
-                MISSED.store(true, Ordering::Release);
+                unknown_receiver();
                 return 0;
             };
             match engine_native::creference_registry::resolve(memory, base, handle) {
                 Ok(pointer) => pointer.unwrap_or(0),
                 Err(_) => {
-                    MISSED.store(true, Ordering::Release);
+                    unknown_receiver();
                     0
                 }
             }
@@ -1193,13 +1339,13 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
     match mutation.receiver {
         Receiver::Published if CREATING.get() => {
             if CREATED.get() != 0 && CREATED.get() != pointer {
-                MISSED.store(true, Ordering::Release);
+                unobserved();
             }
             CREATED.set(pointer);
         }
         Receiver::Roster => {
             let Some(array) = Array::read(memory, first, 8) else {
-                MISSED.store(true, Ordering::Release);
+                unobserved();
                 return;
             };
             for ordinal in 0..array.count {
@@ -1207,7 +1353,7 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
                     .element(ordinal, 8)
                     .and_then(|p| engine_native::read::<u64>(memory, p))
                 else {
-                    MISSED.store(true, Ordering::Release);
+                    unobserved();
                     return;
                 };
                 flag_change(memory, base, pointer as usize);
@@ -1264,21 +1410,54 @@ unsafe fn around_with_identities<const SITE: usize>(
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
     REVISION.fetch_add(1, Ordering::AcqRel);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
-    let thread = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
-    let outer = OWNER
-        .compare_exchange(0, thread, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok();
-    let admitted = outer || OWNER.load(Ordering::Acquire) == thread;
-    if !admitted {
-        MISSED.store(true, Ordering::Release);
-    }
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let pointer = if admitted {
-        target(&memory, base, MUTATIONS[SITE].receiver, first, second)
+    let pointer = target(&memory, base, MUTATIONS[SITE].receiver, first, second);
+    let moving = MUTATIONS[SITE].name == "MoveAssign";
+    let footprint = if SITE == 1 {
+        writers::Footprint::Ancestry
+    } else if moving || matches!(MUTATIONS[SITE].receiver, Receiver::Removed) {
+        writers::Footprint::Lifetime
     } else {
-        0
+        writers::Footprint::Design
     };
+    let mut claims = writers::enter(pointer, moving.then_some(second), footprint);
+    // Claim ancestry before following it. A concurrent consuming move or
+    // destruction anywhere can change that path, so it conflicts with this
+    // footprint even if its direct receiver is different.
+    let version = if SITE == 1 && pointer != 0 {
+        let count = STORE.get().and_then(|store| match store.try_lock() {
+            Ok(store) => Some(store.watched.len()),
+            Err(_) => {
+                lock_contended();
+                None
+            }
+        });
+        count.and_then(|count| match version_owner(&memory, pointer, count) {
+            Ok(owner) => {
+                if owner != pointer
+                    && let Some(claims) = claims.as_mut()
+                {
+                    claims.extend(owner);
+                }
+                Some(owner)
+            }
+            Err(_) => {
+                unknown_receiver();
+                None
+            }
+        })
+    } else {
+        None
+    };
+    let admitted = claims.as_ref().is_some_and(writers::Flight::admitted);
+    if !admitted {
+        unrecorded_writer(
+            MUTATIONS[SITE].receiver,
+            pointer,
+            (MUTATIONS[SITE].name == "MoveAssign").then_some(second),
+        );
+    }
     let previous = TARGET.replace(pointer);
     let create_scope = admitted && matches!(MUTATIONS[SITE].receiver, Receiver::CreateCommand);
     let previous_creating = if create_scope {
@@ -1288,35 +1467,37 @@ unsafe fn around_with_identities<const SITE: usize>(
     };
     let previous_created = if create_scope { CREATED.replace(0) } else { 0 };
     let mut scope = CallbackScope {
-        outer,
+        claims,
         previous_target: previous,
         creation: create_scope.then_some((previous_creating, previous_created)),
         completed: false,
     };
     let selected = admitted && (pointer == 0 || pointer != previous);
-    if selected && matches!(MUTATIONS[SITE].receiver, Receiver::Removed) && pointer != 0 {
-        retire(&memory, base, pointer);
-    }
-    let moving = MUTATIONS[SITE].name == "MoveAssign";
+    let retired = selected
+        && matches!(MUTATIONS[SITE].receiver, Receiver::Removed)
+        && pointer != 0
+        && retire(&memory, base, pointer);
     let move_bindings = if admitted && moving {
-        STORE.get().and_then(|store| {
-            store.try_lock().ok().map(|store| {
-                [
-                    store.watched.get(&first).copied(),
-                    store.watched.get(&second).copied(),
-                ]
-            })
+        STORE.get().and_then(|store| match store.try_lock() {
+            Ok(store) => Some([
+                store.watched.get(&first).copied(),
+                store.watched.get(&second).copied(),
+            ]),
+            Err(_) => {
+                lock_contended();
+                None
+            }
         })
     } else {
         None
     };
     if admitted && moving && move_bindings.is_none() {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
     }
     if let (Some(bindings), Some(identities)) = (move_bindings, identities) {
         for (binding, identity) in bindings.into_iter().zip(identities) {
             if binding.is_some_and(|binding| Some(binding.id) != identity) {
-                MISSED.store(true, Ordering::Release);
+                unobserved();
             }
         }
     }
@@ -1332,15 +1513,20 @@ unsafe fn around_with_identities<const SITE: usize>(
         .and_then(|offset| pointer.checked_add(offset))
         .and_then(|p| engine_native::read::<u16>(&memory, p));
     if MUTATIONS[SITE].witness.is_some() && before.is_none() {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
     }
     let forwarded = unsafe { forward::begin(SITE, pointer) };
-    let moved_source = if admitted && moving && first != second {
+    let moved_source = if moving && first != second {
         unsafe { forward::begin(SITE, second) }
     } else {
         None
     };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
+    if !admitted {
+        // A retired move receiver or excluded draft can become saved while the
+        // original runs. Its entry-time absence cannot certify this edit.
+        unrecorded_writer(MUTATIONS[SITE].receiver, pointer, moving.then_some(second));
+    }
     if let Some(moved_source) = moved_source {
         unsafe { moved_source.finish() };
     }
@@ -1353,7 +1539,7 @@ unsafe fn around_with_identities<const SITE: usize>(
                 .checked_add(offset)
                 .and_then(|p| engine_native::read::<u16>(&memory, p));
             if after.is_none() {
-                MISSED.store(true, Ordering::Release);
+                unobserved();
             }
             after != before
         });
@@ -1367,23 +1553,44 @@ unsafe fn around_with_identities<const SITE: usize>(
     // This writer can change a different saved design even when an enclosing
     // edit owns the current design's final snapshot, or the current object is
     // an excluded draft. Never suppress that shared ancestry write.
-    if admitted && SITE == 1 && pointer != 0 {
+    if SITE == 1 && pointer != 0 {
         let count = STORE
             .get()
             .and_then(|s| s.try_lock().ok().map(|s| s.watched.len()))
             .unwrap_or(0);
         match version_owner(&memory, pointer, count) {
-            Ok(owner) if owner != pointer => {
-                scalar::observe(&memory, base, owner, scalar::Field::MaxVersion)
+            Ok(owner) => {
+                if Some(owner) != version {
+                    unknown_receiver();
+                } else if owner != pointer {
+                    if admitted {
+                        scalar::observe(&memory, base, owner, scalar::Field::MaxVersion);
+                    } else {
+                        dirty_receiver(owner);
+                    }
+                }
             }
-            Ok(_) => {}
-            Err(_) => MISSED.store(true, Ordering::Release),
+            Err(_) => unknown_receiver(),
         }
     }
     if create_scope {
         let created = CREATED.get();
         if created != 0 {
             observe(&memory, base, created, false, true);
+        }
+    }
+    // A conflict stays latched until every participant exits, including a
+    // rejected draft that finished before this writer published its receiver.
+    // Check after registration/snapshotting so a consuming move cannot hide it.
+    let conflicted = scope.claims.take().is_some_and(writers::Flight::finish);
+    if admitted && conflicted {
+        if retired {
+            // The saved binding is already gone, but this was not a draft.
+            missed();
+        }
+        unrecorded_writer(MUTATIONS[SITE].receiver, pointer, moving.then_some(second));
+        if let Some(owner) = version {
+            dirty_receiver(owner);
         }
     }
     scope.completed = true;
@@ -1645,7 +1852,15 @@ pub(super) fn drain(
         if !ENABLED.load(Ordering::Acquire) {
             return Err("variant change hooks unavailable");
         }
-        if MISSED.swap(false, Ordering::AcqRel) || active() != 0 {
+        let missed = MISSED.swap(false, Ordering::AcqRel);
+        if active() != 0 {
+            RUNNING_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            refuse_census();
+            return Err("variant change interval has an unobserved or running writer");
+        }
+        if missed {
+            MISSED_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            LAST_MISSED_AT.store(MISSED_AT.load(Ordering::Acquire), Ordering::Release);
             return Err("variant change interval has an unobserved or running writer");
         }
         if let Some(reason) = batch.failure {
@@ -1656,7 +1871,11 @@ pub(super) fn drain(
         sources::prune_interests()?;
         Ok(())
     })();
-    if result.is_err() {
+    if let Err(reason) = result {
+        REFUSED_INTERVALS.fetch_add(1, Ordering::Relaxed);
+        *LAST_REFUSAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
         withdraw_baselines();
         if !RECOVER.swap(true, Ordering::AcqRel) {
             RECOVERY_READ.store(true, Ordering::Release);
@@ -2092,12 +2311,19 @@ impl Drop for Hooks {
                 epoch: EPOCH.load(Ordering::Acquire),
             };
         }
+        writers::release();
         super::bonus_snapshots::release();
         sources::release();
         liveness::release();
         held::release();
         super::design_context::invalidate();
     }
+}
+
+#[derive(serde::Serialize)]
+struct MissedAt {
+    file: &'static str,
+    line: u32,
 }
 
 #[derive(serde::Serialize)]
@@ -2108,6 +2334,15 @@ pub struct Status {
     needs_recovery: bool,
     missed: bool,
     next_sequence: u64,
+    refused_intervals: u64,
+    running_refusals: u64,
+    missed_refusals: u64,
+    competing_writer_rejections: u64,
+    lock_contentions: u64,
+    unknown_receivers: u64,
+    claim_capacity_refusals: u64,
+    last_missed_at: Option<MissedAt>,
+    last_refusal: Option<&'static str>,
     bonus_snapshots: super::bonus_snapshots::Status,
     country_context: super::design_context::Status,
     templates: super::design_template_changes::Status,
@@ -2120,6 +2355,24 @@ pub fn status() -> Status {
         needs_recovery: RECOVER.load(Ordering::Acquire),
         missed: MISSED.load(Ordering::Acquire),
         next_sequence: SEQUENCE.load(Ordering::Acquire),
+        refused_intervals: REFUSED_INTERVALS.load(Ordering::Relaxed),
+        running_refusals: RUNNING_REFUSALS.load(Ordering::Relaxed),
+        missed_refusals: MISSED_REFUSALS.load(Ordering::Relaxed),
+        competing_writer_rejections: COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed),
+        lock_contentions: LOCK_CONTENTIONS.load(Ordering::Relaxed),
+        unknown_receivers: UNKNOWN_RECEIVERS.load(Ordering::Relaxed),
+        claim_capacity_refusals: CLAIM_CAPACITY_REFUSALS.load(Ordering::Relaxed),
+        // Caller locations have static storage; callbacks publish no borrowed
+        // native memory and do no diagnostic formatting or allocation.
+        last_missed_at: unsafe { LAST_MISSED_AT.load(Ordering::Acquire).as_ref() }.map(|at| {
+            MissedAt {
+                file: at.file(),
+                line: at.line(),
+            }
+        }),
+        last_refusal: *LAST_REFUSAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
         bonus_snapshots: super::bonus_snapshots::status(),
         country_context: super::design_context::status(),
         templates: super::design_template_changes::status(),

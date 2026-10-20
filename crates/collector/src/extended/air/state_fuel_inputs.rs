@@ -276,6 +276,19 @@ struct SnapshotSpan {
     maximum_end: usize,
 }
 fn prepare_snapshot(log: &RawLog<3>, index: &mut Vec<SnapshotSpan>) -> Result<(), &'static str> {
+    // Ordinals and covering geometry alone define this index. New values,
+    // including failures, are always read from the current owned log.
+    if index.len() == log.spans.iter().filter(|span| span.len != 0).count()
+        && index.iter().all(|entry| {
+            log.spans.get(entry.index).is_some_and(|span| {
+                span.len != 0
+                    && span.addr == entry.start
+                    && span.addr.checked_add(span.len as usize) == Some(entry.end)
+            })
+        })
+    {
+        return Ok(());
+    }
     index.clear();
     engine_allocation::reserve(index, log.spans.len())
         .map_err(|_| "state air-base snapshot index storage unavailable")?;
@@ -285,10 +298,11 @@ fn prepare_snapshot(log: &RawLog<3>, index: &mut Vec<SnapshotSpan>) -> Result<()
         .enumerate()
         .filter(|(_, span)| span.len != 0)
     {
-        let end = span
-            .addr
-            .checked_add(span.len as usize)
-            .ok_or("state air-base snapshot address overflow")?;
+        let Some(end) = span.addr.checked_add(span.len as usize) else {
+            // A partial, unsorted index must not become next hour's geometry.
+            index.clear();
+            return Err("state air-base snapshot address overflow");
+        };
         index.push(SnapshotSpan {
             start: span.addr,
             end,
@@ -761,5 +775,80 @@ mod tests {
         };
         assert_eq!(read::<u64>(&metadata, 0x1008), None);
         assert_eq!(live.reads.get(), 0);
+    }
+
+    #[test]
+    fn snapshot_geometry_carries_but_current_values_and_failures_do_not() {
+        let mut log = RawLog::<3>::new(3, 32);
+        let mut index = Vec::new();
+        let read_at = |log: &RawLog<3>, index: &[SnapshotSpan], at| {
+            read::<u64>(&SnapshotMemory { log, index }, at)
+        };
+        let first = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &[7; 16],
+        };
+        assert!(log.take(&first, 0x1000, 16, 0).is_some());
+        prepare_snapshot(&log, &mut index).unwrap();
+        assert_eq!(
+            read_at(&log, &index, 0x1008),
+            Some(u64::from_le_bytes([7; 8]))
+        );
+        log.clear();
+        let second = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &[9; 16],
+        };
+        assert!(log.take(&second, 0x1000, 16, 0).is_some());
+        prepare_snapshot(&log, &mut index).unwrap();
+        assert_eq!(
+            read_at(&log, &index, 0x1008),
+            Some(u64::from_le_bytes([9; 8]))
+        );
+        log.spans[0].ok = false;
+        prepare_snapshot(&log, &mut index).unwrap();
+        assert_eq!(read_at(&log, &index, 0x1008), None);
+        log.clear();
+        assert!(log.take(&second, 0x1000, 8, 0).is_some());
+        prepare_snapshot(&log, &mut index).unwrap();
+        assert_eq!(
+            read_at(&log, &index, 0x1000),
+            Some(u64::from_le_bytes([9; 8]))
+        );
+        assert_eq!(read_at(&log, &index, 0x1008), None);
+    }
+
+    #[test]
+    fn a_refused_snapshot_index_cannot_certify_a_later_log() {
+        let source = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &[7; 16],
+        };
+        let mut log = RawLog::<3>::new(3, 32);
+        assert!(log.take(&source, 0x1000, 16, 0).is_some());
+        log.spans.push(crate::raw::Span {
+            addr: usize::MAX - 3,
+            len: 8,
+            start: 0,
+            mask: 0,
+            ok: true,
+            bulk: false,
+        });
+        let mut index = Vec::new();
+        assert_eq!(
+            prepare_snapshot(&log, &mut index),
+            Err("state air-base snapshot address overflow")
+        );
+        assert!(index.is_empty());
+        log.spans.pop();
+        prepare_snapshot(&log, &mut index).unwrap();
+        let snapshot = SnapshotMemory {
+            log: &log,
+            index: &index,
+        };
+        assert_eq!(
+            read::<u64>(&snapshot, 0x1008),
+            Some(u64::from_le_bytes([7; 8]))
+        );
     }
 }

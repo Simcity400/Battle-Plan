@@ -1861,3 +1861,126 @@ fn a_selected_read_checks_every_section_of_a_block_not_yet_verified() {
         .unwrap();
     assert!(replay.is_verified(block));
 }
+
+/// Isolate key stability with the same current numeric-lane representation on
+/// both sides. This is not an attempt to reopen or transcode an older replay.
+#[test]
+fn grouped_combat_log_observer_stable_keys_keep_exact_ordered_hours_and_seeks() {
+    use crate::rows::{CombatLogObserverKind as K, CombatLogObserverRow, tables};
+    fn observations(hour: i32, stable: bool) -> Vec<CombatLogObserverRow> {
+        let mut rows = Vec::new();
+        let mut put = |label, kind: K, item, values| {
+            let mut row =
+                CombatLogObserverRow::from_fact(7 << 32 | 62, true, kind as u8, item, values)
+                    .unwrap();
+            row.ordinal = if stable { label } else { rows.len() as u64 };
+            rows.push(row);
+        };
+        put(0, K::State, 0, [hour as u64 * 100, hour as u64, 3, 0, 0]);
+        for first in (0..30).step_by(5) {
+            put(1 + first, K::Counters, first, [hour as u64; 5]);
+        }
+        // Changing an early collection length formerly rekeyed every activity.
+        for index in 0..hour as u64 % 5 {
+            put(
+                10_000 + index,
+                K::Leader,
+                index,
+                [(index + 1) << 32 | 64, hour as u64, 0, 0, 0],
+            );
+        }
+        for parent in 0..32 {
+            let label = 100 + parent * 20;
+            put(
+                label,
+                K::Activity,
+                parent,
+                [(parent + 1) << 32 | 53, 11, 12, 0, 0],
+            );
+            for index in 0..16 {
+                put(
+                    label + 1 + index,
+                    K::ActivityDamage,
+                    parent,
+                    [
+                        index,
+                        (parent * 16 + index + 1) << 32 | 51,
+                        if hour < 40 {
+                            hour as u64 * 13 + index
+                        } else {
+                            (hour as u64 - 40) * 7 + index
+                        },
+                        0,
+                        0,
+                    ],
+                );
+            }
+            put(
+                label + 17,
+                K::ActivityEquipment,
+                parent,
+                [u64::MAX, 0, 1, 0, 0],
+            );
+        }
+        rows.sort_unstable_by_key(CombatLogObserverRow::key);
+        rows
+    }
+    let frames = |stable| {
+        (1..=96)
+            .map(|hour| {
+                let mut frame = source(1, hour);
+                *frame.tables[TableId::CombatLogObservers.index()] = if hour == 48 {
+                    TableView::Unavailable {
+                        reason: "synthetic observer refusal".into(),
+                    }
+                } else {
+                    TableView::Complete(TableRows::CombatLogObservers(observations(hour, stable)))
+                };
+                frame.metrics.table_ns[TableId::CombatLogObservers.index()] = 1;
+                frame
+            })
+            .collect::<Vec<_>>()
+    };
+    let stable_frames = frames(true);
+    let stable = Replay::from_records(CAMPAIGN.into(), &[session_records(&stable_frames)]).unwrap();
+    let flattened =
+        Replay::from_records(CAMPAIGN.into(), &[session_records(&frames(false))]).unwrap();
+    let section = Section::Later(TableId::CombatLogObservers);
+    let stable_bytes = size(&stable, 0, section).unwrap().compressed;
+    let flattened_bytes = size(&flattened, 0, section).unwrap().compressed;
+    println!(
+        "CombatLogObservers synthetic 96-hour section: stable keys {stable_bytes} compressed bytes, global ordinals {flattened_bytes}; numeric lanes identical"
+    );
+    assert!(
+        stable_bytes < flattened_bytes,
+        "{stable_bytes} vs {flattened_bytes}"
+    );
+    for (decoded, expected) in decoded_hours(&stable).into_iter().zip(stable_frames) {
+        let SeekResult::Frame(seek) = stable.seek(1, expected.hour).unwrap() else {
+            panic!("observer hour missing")
+        };
+        assert_eq!(
+            decoded.tables[TableId::CombatLogObservers.index()],
+            expected.tables[TableId::CombatLogObservers.index()]
+        );
+        assert_eq!(
+            seek.tables[TableId::CombatLogObservers.index()],
+            decoded.tables[TableId::CombatLogObservers.index()]
+        );
+        if expected.hour != 48 {
+            let ordered = |frame: &DecodedFrame| {
+                let mut rows = frame
+                    .complete::<tables::CombatLogObservers>()
+                    .unwrap()
+                    .to_vec();
+                rows.sort_unstable_by_key(CombatLogObserverRow::logical_order);
+                rows.iter()
+                    .map(CombatLogObserverRow::fact)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(ordered(&seek), ordered(&expected));
+        } else {
+            assert!(seek.complete::<tables::CombatLogObservers>().is_err());
+        }
+    }
+}

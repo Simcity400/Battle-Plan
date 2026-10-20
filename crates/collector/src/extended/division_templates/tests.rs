@@ -1204,3 +1204,274 @@ fn country_template_state_covers_five_thousand_empty_rosters_and_is_independent_
         }
     ));
 }
+
+struct CoreChanges {
+    templates: crate::template_changes::Watches,
+    locals: crate::local_subunit_changes::Watches,
+}
+impl CoreChanges {
+    fn new() -> Self {
+        Self {
+            templates: crate::template_changes::Watches::enabled(64),
+            locals: crate::local_subunit_changes::Watches::enabled(16),
+        }
+    }
+}
+impl crate::template_changes::Changes for CoreChanges {
+    fn quiet(&self) -> Option<(u64, u64)> {
+        crate::template_changes::Changes::quiet(&self.templates)
+    }
+    fn sequence(&self, pointer: usize) -> Option<(u64, u64)> {
+        crate::template_changes::Changes::sequence(&self.templates, pointer)
+    }
+    fn core_dependencies(&self) -> Option<(u64, u64)> {
+        crate::local_subunit_changes::Changes::quiet(&self.locals)
+    }
+    fn mismatch(&self) {
+        crate::template_changes::Changes::mismatch(&self.templates);
+    }
+}
+
+#[test]
+fn certified_template_cores_match_fresh_for_quiet_changed_new_reordered_deleted_and_refused_rows() {
+    struct Counting<'a> {
+        source: &'a Fixture,
+        core_reads: std::cell::Cell<usize>,
+    }
+    impl Memory for Counting<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            if (0x6000..0x6200).contains(&at) || (0x7000..0x7400).contains(&at) {
+                self.core_reads.set(self.core_reads.get() + 1);
+            }
+            self.source.copy(at, out)
+        }
+    }
+    let changes = CoreChanges::new();
+    let mut source = fixture();
+    source.bytes[0x5000 + native::REGIMENT_DATA..][..8].copy_from_slice(&0x6100_u64.to_le_bytes());
+    source.bytes[0x5000 + native::REGIMENT_DATA + 8..][..8]
+        .copy_from_slice(&0x0000_0003_0000_0003_u64.to_le_bytes());
+    source.bytes[0x6100..0x6108].copy_from_slice(&0x7000_u64.to_le_bytes());
+    source.bytes[0x6110..0x6118].copy_from_slice(&0x7000_u64.to_le_bytes());
+    source.bytes[0x5000 + native::GRID_DIMENSIONS..][..4]
+        .copy_from_slice(&0x0003_0001_u32.to_le_bytes());
+    let mut capture = Captured::with_capacities(&capacity());
+    for hour in 0..13 {
+        match hour {
+            2 => {
+                source.bytes[0x6008..0x600c].copy_from_slice(&7_i32.to_le_bytes());
+                drop(changes.templates.notify(0x5000, 1));
+            }
+            3 => {
+                source.bytes[0x7000 + subunit::COMBAT_WIDTH..][..8]
+                    .copy_from_slice(&34000_i64.to_le_bytes());
+                drop(changes.locals.notify(Some(0x8400), 1));
+            }
+            4 => {
+                // This count is not covered by the template writer domain.
+                source.bytes[0x5000 + native::FORMATION_DIVISION_COUNT..][..4]
+                    .copy_from_slice(&19_i32.to_le_bytes());
+            }
+            5 => {
+                let template = source.bytes[0x5000..0x5400].to_vec();
+                source.bytes[0x7800..0x7c00].copy_from_slice(&template);
+                source.bytes[0x7808..0x7810].copy_from_slice(&((17_u64 << 32) | 52).to_le_bytes());
+                source.bytes[0x4008..0x4010].copy_from_slice(&0x7800_u64.to_le_bytes());
+                source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + 8..][..8]
+                    .copy_from_slice(&0x0000_0002_0000_0002_u64.to_le_bytes());
+            }
+            6 => {
+                source.bytes[0x4000..0x4008].copy_from_slice(&0x7800_u64.to_le_bytes());
+                source.bytes[0x4008..0x4010].copy_from_slice(&0x5000_u64.to_le_bytes());
+            }
+            7 => {
+                // A readable fixed record with an unreadable followed model array.
+                source.bytes[0x7800 + native::SUBUNIT_COUNTS..][..8]
+                    .copy_from_slice(&0xf000_u64.to_le_bytes());
+                drop(changes.templates.notify(0x7800, 1));
+            }
+            8 => {
+                source.bytes[0x7800 + native::SUBUNIT_COUNTS..][..8]
+                    .copy_from_slice(&0x6000_u64.to_le_bytes());
+                drop(changes.templates.notify(0x7800, 1));
+                source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + 8..][..8]
+                    .copy_from_slice(&0x0000_0001_0000_0001_u64.to_le_bytes());
+            }
+            10 => {
+                // Literal bytes are read fresh even without a template writer.
+                source.bytes[0x5000 + native::NAME] = b'B';
+                source.bytes[0x7800 + native::NAME] = b'C';
+            }
+            11 => {
+                source.bytes[0x7800 + native::NAME + 16..][..8]
+                    .copy_from_slice(&0_u64.to_le_bytes());
+            }
+            12 => {
+                // The fallback key lies outside the fixed icon record.
+                source.bytes[0x7800 + native::NAME_KEY..][..8].copy_from_slice(b"new_name");
+            }
+            _ => {}
+        }
+        let counted = Counting {
+            source: &source,
+            core_reads: 0.into(),
+        };
+        capture.capture_original(&counted, 0, 0x1000, hour, false, &changes);
+        let mut fresh = Captured::with_capacities(&capacity());
+        fresh.capture_original(&source, 0, 0x1000, hour, true, &changes);
+        assert_eq!(capture.tables(), fresh.tables(), "hour {hour}");
+        assert_eq!(
+            capture.model_failures(),
+            fresh.model_failures(),
+            "hour {hour}"
+        );
+        if matches!(hour, 1 | 9 | 12) {
+            assert_eq!(
+                counted.core_reads.get(),
+                0,
+                "quiet core and speed keys must not be walked"
+            );
+        } else {
+            assert!(
+                counted.core_reads.get() > 0,
+                "fresh or changed core must be read: {hour}"
+            );
+        }
+    }
+}
+
+#[test]
+fn template_core_sample_publishes_fresh_values_and_poisoning_withdraws_carry() {
+    let changes = CoreChanges::new();
+    let mut source = fixture();
+    let mut capture = Captured::with_capacities(&capacity());
+    capture.capture_original(&source, 0, 0x1000, 0, false, &changes);
+    // Deliberately omit the writer: the rotating sample must detect it.
+    source.bytes[0x6008..0x600c].copy_from_slice(&11_i32.to_le_bytes());
+    let hour = (u32::MAX as u64 % crate::sampled_verify::BURNED_IN_ROTATION) as i32;
+    crate::sampled_verify::begin_hour(hour);
+    capture.capture_original(&source, 0, 0x1000, hour, false, &changes);
+    assert!(changes.templates.poisoned());
+    let mut fresh = Captured::with_capacities(&capacity());
+    fresh.capture_original(&source, 0, 0x1000, hour, true, &changes);
+    assert_eq!(capture.tables(), fresh.tables());
+}
+
+#[test]
+fn template_speed_key_sample_publishes_fresh_keys_and_poisoning_withdraws_carry() {
+    let changes = CoreChanges::new();
+    let mut source = fixture();
+    let key = 0x7000 + subunit::SPEED_MODIFIER_KEY;
+    source.bytes[key..key + 4].copy_from_slice(&155_u32.to_le_bytes());
+    let mut capture = Captured::with_capacities(&capacity());
+    capture.capture_original(&source, 0, 0x1000, 0, false, &changes);
+    assert_eq!(capture.speed_keys, [155]);
+    capture.capture_original(&source, 0, 0x1000, 1, false, &changes);
+    assert_eq!(capture.speed_keys, [155]);
+    source.bytes[key..key + 4].copy_from_slice(&222_u32.to_le_bytes());
+    let hour = (u32::MAX as u64 % crate::sampled_verify::BURNED_IN_ROTATION) as i32;
+    crate::sampled_verify::begin_hour(hour);
+    capture.capture_original(&source, 0, 0x1000, hour, false, &changes);
+    assert_eq!(capture.speed_keys, [222]);
+    assert!(changes.templates.poisoned());
+    let mut fresh = Captured::with_capacities(&capacity());
+    fresh.capture_original(&source, 0, 0x1000, hour, true, &changes);
+    assert_eq!(capture.tables(), fresh.tables());
+}
+
+#[test]
+fn missing_local_certificate_withdraws_a_held_core_without_withholding_fresh_model_values() {
+    let changes = CoreChanges::new();
+    let mut source = fixture();
+    let mut capture = Captured::with_capacities(&capacity());
+    capture.capture_original(&source, 0, 0x1000, 0, false, &changes);
+    source.bytes[0x6008..0x600c].copy_from_slice(&9_i32.to_le_bytes());
+    let running = changes.locals.notify(None, 4);
+    capture.capture_original(&source, 0, 0x1000, 1, false, &changes);
+    let mut fresh = Captured::with_capacities(&capacity());
+    fresh.capture_original(&source, 0, 0x1000, 1, true, &changes);
+    assert_eq!(capture.tables(), fresh.tables());
+    assert!(
+        !changes.templates.poisoned(),
+        "missing certification is not a mismatch"
+    );
+    drop(running);
+}
+
+#[test]
+#[ignore = "synthetic quiet template core acquisition timing"]
+fn certified_template_core_scale_bench() {
+    use std::time::Instant;
+    const TEMPLATES: usize = 1500;
+    let changes = CoreChanges {
+        templates: crate::template_changes::Watches::enabled(TEMPLATES + 16),
+        locals: crate::local_subunit_changes::Watches::enabled(16),
+    };
+    let mut source = fixture();
+    for (grid, data, count) in [
+        (native::REGIMENT_DATA, 0x6100, 25_u32),
+        (native::SUPPORT_DATA, 0x6200, 5),
+        (native::REGIMENTAL_SUPPORT_DATA, 0x6300, 5),
+    ] {
+        source.bytes[0x5000 + grid..][..8].copy_from_slice(&(data as u64).to_le_bytes());
+        source.bytes[0x5000 + grid + 8..][..8]
+            .copy_from_slice(&((u64::from(count) << 32) | u64::from(count)).to_le_bytes());
+        for index in 0..count as usize {
+            source.bytes[data + index * 8..][..8].copy_from_slice(&0x7000_u64.to_le_bytes());
+        }
+    }
+    let template = source.bytes[0x5000..0x5400].to_vec();
+    let list = 0xa000;
+    let objects = (list + TEMPLATES * 8).next_multiple_of(0x1000);
+    source.bytes.resize(objects + TEMPLATES * 0x400, 0);
+    source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES..][..8]
+        .copy_from_slice(&(list as u64).to_le_bytes());
+    for offset in [8, 12] {
+        source.bytes[0x3000 + ccountry::DIVISION_TEMPLATES + offset..][..4]
+            .copy_from_slice(&(TEMPLATES as u32).to_le_bytes());
+    }
+    for index in 0..TEMPLATES {
+        let pointer = objects + index * 0x400;
+        source.bytes[pointer..pointer + 0x400].copy_from_slice(&template);
+        source.bytes[pointer + 8..pointer + 16]
+            .copy_from_slice(&(((index as u64 + 1) << 32) | 52).to_le_bytes());
+        source.bytes[list + index * 8..][..8].copy_from_slice(&(pointer as u64).to_le_bytes());
+    }
+    let capacities = Capacities {
+        rows: TEMPLATES,
+        icon_rows: TEMPLATES,
+        counts: TEMPLATES * 16,
+        bytes: TEMPLATES * 32,
+        icon_bytes: TEMPLATES * 32,
+        name_bytes: TEMPLATES * 32,
+        ..capacity()
+    };
+    let mut expected = None;
+    for (name, observer) in [
+        (
+            "fresh_core",
+            &changes.templates as &dyn crate::template_changes::Changes,
+        ),
+        ("held_core", &changes),
+    ] {
+        let mut capture = Captured::with_capacities(&capacities);
+        capture.capture_original(&source, 0, 0x1000, 0, false, observer);
+        let mut elapsed = Vec::new();
+        for hour in 1..31 {
+            let start = Instant::now();
+            capture.capture_original(&source, 0, 0x1000, hour, false, observer);
+            elapsed.push(start.elapsed());
+        }
+        elapsed.sort_unstable();
+        let tables = capture.tables();
+        if let Some(expected) = &expected {
+            assert_eq!(&tables, expected);
+        } else {
+            expected = Some(tables);
+        }
+        println!(
+            "TEMPLATE_CORE_BENCH templates={TEMPLATES} mode={name} p50_us={}",
+            elapsed[elapsed.len() / 2].as_micros()
+        );
+    }
+}

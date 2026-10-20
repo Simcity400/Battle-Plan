@@ -102,6 +102,22 @@ fn put<R: RowCodec>(root: &Link<R>, row: R) -> Result<Arc<Node<R>>, &'static str
         std::cmp::Ordering::Equal => node(row, n.left.clone(), n.right.clone()),
     })
 }
+/// Replacements preserve tree geometry. Paths already private to this batch
+/// need neither another node allocation nor another drop of that same path.
+fn replace<R: RowCodec>(root: &mut Link<R>, row: R) -> Result<(), &'static str> {
+    let Some(n) = root.as_mut().and_then(Arc::get_mut) else {
+        *root = Some(put(root, row)?);
+        return Ok(());
+    };
+    match row.key().cmp(&n.row.key()) {
+        std::cmp::Ordering::Less => replace(&mut n.left, row)?,
+        std::cmp::Ordering::Greater => replace(&mut n.right, row)?,
+        std::cmp::Ordering::Equal => n.row = row,
+    }
+    n.bytes =
+        std::mem::size_of::<Node<R>>() + n.row.heap_bytes() + bytes(&n.left) + bytes(&n.right);
+    Ok(())
+}
 fn remove<R: RowCodec>(root: &Link<R>, key: u128) -> Result<Link<R>, &'static str> {
     let Some(n) = root else {
         return Ok(None);
@@ -245,10 +261,11 @@ impl<R: RowCodec> Store<R> {
         None
     }
     pub fn insert(&mut self, row: R) -> Result<(), &'static str> {
-        if self.get(row.key()) == Some(&row) {
-            return Ok(());
+        match self.get(row.key()) {
+            Some(held) if held == &row => return Ok(()),
+            Some(_) => replace(&mut self.root, copy(&row)?)?,
+            None => self.root = Some(put(&self.root, copy(&row)?)?),
         }
-        self.root = Some(put(&self.root, copy(&row)?)?);
         self.edits.insert(row.key(), Some(row));
         Ok(())
     }
@@ -316,6 +333,65 @@ mod tests {
             ..Default::default()
         })
     }
+    #[test]
+    fn repeated_replacements_reuse_private_paths_without_changing_published_snapshots() {
+        let mut store = Store::default();
+        for ordinal in 0..100 {
+            store.insert(row(1, ordinal)).unwrap();
+        }
+        let original = store.finish().unwrap();
+        let original_rows = original.complete::<tables::DivisionHistory>().unwrap();
+        let changed = |ordinal, name: &[u8]| {
+            let mut value = (*row(1, ordinal)).clone();
+            value.name = name.to_vec();
+            Arc::new(value)
+        };
+        let first = changed(20, b"first replacement");
+        store.insert(first).unwrap();
+        let root = Arc::as_ptr(store.root.as_ref().unwrap());
+        let last = changed(20, b"a longer replacement with a different byte count");
+        collector_test_support::with_allocations_denied(|| {
+            store.insert(Arc::clone(&last)).unwrap();
+        });
+        assert_eq!(root, Arc::as_ptr(store.root.as_ref().unwrap()));
+        assert_eq!(
+            original.complete::<tables::DivisionHistory>().unwrap(),
+            original_rows
+        );
+        let updated = store.finish().unwrap();
+        assert_eq!(updated.parent, original.revision);
+        assert_eq!(updated.len(), original.len());
+        assert_eq!(updated.changed.as_slice(), std::slice::from_ref(&last));
+        assert_eq!(
+            updated.ranges.as_slice(),
+            std::slice::from_ref(&(last.key()..last.key() + 1))
+        );
+        let replay_data::rows::TableRows::DivisionHistory(rows) =
+            updated.complete::<tables::DivisionHistory>().unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(rows[20], last);
+        let replay_data::rows::TableRows::DivisionHistory(previous) = original_rows else {
+            panic!()
+        };
+        for ordinal in (0..100).filter(|&ordinal| ordinal != 20) {
+            assert!(Arc::ptr_eq(&rows[ordinal], &previous[ordinal]));
+        }
+        // Cached byte totals must match an independently rebuilt tree.
+        let mut fresh = Store::default();
+        for row in rows {
+            fresh.insert(row).unwrap();
+        }
+        assert_eq!(bytes(&store.root), bytes(&fresh.root));
+        store.insert(changed(20, b"after publication")).unwrap();
+        assert_eq!(updated.changed[0], last);
+        assert!(Arc::ptr_eq(
+            &store.finish().unwrap(),
+            &store.finish().unwrap()
+        ));
+    }
+
     #[test]
     fn withdrawal_forks_only_selected_ranges_and_keeps_the_original_snapshot() {
         let mut store = Store::default();
@@ -408,6 +484,15 @@ mod tests {
             let key = row(1, number).key();
             store.remove_range(key..key + 1).unwrap();
             expected.remove(&key);
+        }
+        for pass in 0..2 {
+            for number in (0..1000u32).step_by(7).filter(|number| number % 3 != 0) {
+                let mut value = (*row(1, number)).clone();
+                value.name = format!("replacement {number}/{pass}").into_bytes();
+                let value = Arc::new(value);
+                expected.insert(value.key(), Arc::clone(&value));
+                store.insert(value).unwrap();
+            }
         }
         let after = store.finish().unwrap();
         let all = after.complete::<tables::DivisionHistory>().unwrap();

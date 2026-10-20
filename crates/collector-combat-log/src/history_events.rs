@@ -186,8 +186,9 @@ fn equipment_enabled() -> bool {
     }
 }
 
-/// Worker only. Demand comes from the initial existing group walk and attempted
-/// events, including every refused element. No game census is performed here.
+/// Worker only. Demand comes from the initial retained-history seed, the active
+/// combat operand census and attempted events, including every refused element.
+/// No game census is performed here.
 pub fn prepare(demand: usize) {
     REQUIRED.fetch_max(demand, SeqCst);
     if REQUIRED.load(SeqCst) <= CAPACITY.load(SeqCst) {
@@ -244,7 +245,7 @@ pub fn drain(output: &mut Vec<Logged>) -> Result<(u64, u64), &'static str> {
     Ok((LOST.load(SeqCst), before))
 }
 pub fn status() -> impl serde::Serialize {
-    crate::status::status!({"lost": LOST.load(SeqCst), "first_loss": FIRST_LOSS.get(), "unhooked": UNHOOKED.get(), "required_entries": REQUIRED.load(SeqCst), "escaped_unwind": ESCAPED.load(SeqCst), "scope": "retained combat log writer occurrences since attach; any loss revokes the retained-history certificate"})
+    crate::status::status!({"lost": LOST.load(SeqCst), "first_loss": FIRST_LOSS.get(), "unhooked": UNHOOKED.get(), "required_entries": REQUIRED.load(SeqCst), "capacity": CAPACITY.load(SeqCst), "escaped_unwind": ESCAPED.load(SeqCst), "scope": "retained combat log writer occurrences since attach; any loss revokes the retained-history certificate"})
 }
 
 // Only the group's creation append reaches this call site. Existing lookup
@@ -625,6 +626,73 @@ impl Hooks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn row(ordinal: usize) -> native::Fact {
+        native::Fact {
+            kind: native::MANPOWER,
+            root: ordinal as u64 + 1,
+            item: ordinal as u64 + 100,
+            values: [0, 60_000_000, i32::MIN as u32 as u64, 0, i32::MAX as u64],
+        }
+    }
+
+    #[test]
+    fn active_operand_demand_grows_empty_history_storage_before_writers() {
+        // An empty retained seed supplies one slot, not the live event demand.
+        prepare(1);
+        assert_eq!(CAPACITY.load(SeqCst), 1);
+        let demand = 5_000;
+        prepare(demand);
+        assert!(CAPACITY.load(SeqCst) >= demand);
+        ENABLED.store(true, SeqCst);
+        SIGNAL.set(Some(123));
+        collector_test_support::with_allocations_denied(|| {
+            for ordinal in 0..demand {
+                emit(row(ordinal));
+            }
+        });
+        let mut output = Vec::new();
+        assert_eq!(drain(&mut output).unwrap().0, 0);
+        assert_eq!(output.len(), demand);
+        for (ordinal, actual) in output.iter().enumerate() {
+            assert_eq!(actual.order, ordinal as u64 + 1);
+            assert_eq!(actual.signal, 123);
+            assert_eq!(actual.fact, row(ordinal));
+        }
+        assert_eq!(losses(), 0);
+    }
+
+    #[test]
+    fn pending_history_events_survive_deferred_worker_growth() {
+        prepare(1);
+        ENABLED.store(true, SeqCst);
+        SIGNAL.set(Some(123));
+        emit(row(0));
+        // Growth must not replace an undrained lane or discard its last event.
+        let demand = 65;
+        prepare(demand);
+        assert_eq!(CAPACITY.load(SeqCst), 1);
+        let mut output = Vec::new();
+        assert_eq!(drain(&mut output).unwrap().0, 0);
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].fact, row(0));
+        // The existing boundary worker applies remembered demand after drain,
+        // before native writers resume; no rejected event is needed to grow.
+        prepare(0);
+        assert!(CAPACITY.load(SeqCst) >= demand);
+        collector_test_support::with_allocations_denied(|| {
+            for ordinal in 1..=demand {
+                emit(row(ordinal));
+            }
+        });
+        assert_eq!(drain(&mut output).unwrap().0, 0);
+        assert_eq!(output.len(), demand);
+        for (ordinal, actual) in output.iter().enumerate() {
+            assert_eq!(actual.order, ordinal as u64 + 2);
+            assert_eq!(actual.fact, row(ordinal + 1));
+        }
+        assert_eq!(losses(), 0);
+    }
+
     #[test]
     fn combat_log_history_producer_allocates_nothing_and_counts_complete_refused_demand() {
         let lane = Lane::new(2, 0).unwrap();

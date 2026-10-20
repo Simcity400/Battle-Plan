@@ -477,11 +477,126 @@ fn combat_log_complete_observer_uses_the_loss_census_and_preserves_signed_counte
     assert!(
         rows.iter()
             .filter(|r| r.kind == engine_land_inputs::combat_log_events::SIDE as u8)
-            .all(|r| r.a == 0)
+            .all(|r| r.fact().2[0] == 0)
     );
     assert!(
         !rows.iter().any(
             |r| r.kind == engine_land_inputs::combat_log_events::EQUIPMENT as u8 && r.item == 0
         )
     );
+}
+
+#[test]
+fn active_census_sizes_history_events_even_when_retained_history_is_empty() {
+    collector_combat_log::history_events::prepare(1);
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    let worlds = [World::new(5_000)];
+    read(&mut captured, &worlds);
+    assert!(captured.losses_complete());
+    let demand = captured.observers.len() + captured.equipment.len;
+    assert_eq!(captured.equipment.len, 10_000);
+    assert!(demand > captured.observers.len());
+    let status = serde_json::to_value(collector_combat_log::history_events::status()).unwrap();
+    assert_eq!(status["required_entries"], demand);
+    assert!(status["capacity"].as_u64().unwrap() >= demand as u64);
+    assert_eq!(status["lost"], 0);
+    let capacities = status["capacity"].clone();
+    // A later quiet census neither shrinks the lane nor needs a refused event.
+    read(&mut captured, &[]);
+    let status = serde_json::to_value(collector_combat_log::history_events::status()).unwrap();
+    assert_eq!(status["capacity"], capacities);
+    assert_eq!(status["required_entries"], demand);
+    assert_eq!(status["lost"], 0);
+}
+
+#[test]
+fn combat_log_projection_uses_committed_labels_across_capture_buffers_and_keyframes() {
+    use crate::projection::{Projection, ProjectionScratch};
+    use replay_data::rows::{CombatLogObserverKind as K, CombatLogObserverRow, TableRows};
+    use replay_frame::frame::{FrameEncoder, FrameInput, Metrics, TableInput, TableUpdate};
+    let scratch = ProjectionScratch::default();
+    let mut encoder = FrameEncoder::new();
+    let mut previous: Vec<CombatLogObserverRow> = Vec::new();
+    for (branch, hour) in [(1, 1), (1, 2), (1, 3), (1, 4), (1, 6), (2, 7)] {
+        // A new pooled capture buffer has no retained identity registry.
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        captured.rows.outcome = Outcome::Rows { len: 0 };
+        for (kind, item, values) in [
+            (K::State, 0, [hour as u64, 0, 0, 0, 0]),
+            (K::Activity, 0, [71, 0, 0, 0, 0]),
+            (K::ActivityDamage, 0, [0, 72, 10, 0, 0]),
+        ] {
+            captured.observers.push(
+                CombatLogObserverRow::from_fact(u64::MAX, true, kind as u8, item, values).unwrap(),
+            );
+        }
+        if hour > 1 {
+            captured.observers.insert(
+                1,
+                CombatLogObserverRow::from_fact(
+                    u64::MAX,
+                    true,
+                    K::Leader as u8,
+                    0,
+                    [73, 1, 0, 0, 0],
+                )
+                .unwrap(),
+            );
+        }
+        let force = hour == 2 || hour == 6;
+        let mut projection = Projection::new(&encoder, branch, hour, force, &scratch);
+        let [_, observers] = captured.table_inputs(Some(&mut projection));
+        let TableInput::Sampled(TableView::Complete(TableRows::CombatLogObservers(rows))) =
+            &observers
+        else {
+            panic!("complete observer census missing")
+        };
+        if hour == 2 {
+            for old in &previous {
+                let new = rows
+                    .iter()
+                    .find(|row| row.semantic_key() == old.semantic_key())
+                    .unwrap();
+                assert_eq!(new.key(), old.key());
+            }
+        }
+        if hour == 4 || hour == 6 || branch == 2 {
+            assert_eq!(
+                rows,
+                &collector_combat_log::observer_projection::project(&captured.observers, &[])
+                    .unwrap(),
+                "a discontinuity cannot reuse another observation interval's labels"
+            );
+        }
+        previous = rows.clone();
+        let mut input = FrameInput {
+            branch,
+            hour,
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "fixture".into(),
+                }
+                .into()
+            }),
+            metrics: Metrics::default(),
+        };
+        input.tables[TableId::CombatLogObservers.index()] = if hour == 3 {
+            TableView::Unavailable {
+                reason: "synthetic observer refusal".into(),
+            }
+            .into()
+        } else {
+            observers
+        };
+        let encoded = encoder.encode_input(input, force).unwrap();
+        if hour == 4 || hour == 6 || branch == 2 {
+            assert!(
+                matches!(
+                    encoded.tables[TableId::CombatLogObservers.index()],
+                    TableUpdate::Snapshot(_)
+                ),
+                "refusals, gaps and branches require a fresh snapshot"
+            );
+        }
+    }
 }

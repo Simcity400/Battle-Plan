@@ -86,3 +86,107 @@ fn registration_demand_growth_is_accounted_and_propagated_to_pooled_capacities()
         assert_eq!(next.wings.first.len(), captured.wings.first.len());
     }
 }
+
+#[test]
+fn air_registration_projection_matches_complete_tables_across_membership_and_refusals() {
+    use crate::{
+        extended::air::StateFuelPacket,
+        projection::{Projection, ProjectionScratch},
+    };
+    use engine_native::cair_base::{CarrierPool, CarrierRegistration, ContainerFuel};
+    use replay_frame::frame::{FrameEncoder, FrameInput, Metrics};
+    let mut captured = captured();
+    captured.registrations.rows[0] = cair_base::RegistrationRow {
+        base: 12,
+        slot: 3,
+        capacity_raw: -7,
+        wings_start: 0,
+        wings_len: 1,
+    };
+    captured.registrations.rows[1] = cair_base::RegistrationRow {
+        base: 15,
+        slot: 2,
+        capacity_raw: 9,
+        wings_start: 1,
+        wings_len: 0,
+    };
+    captured.wings.first[0] = 42;
+    captured.wings.len = 1;
+    captured.wings.required = 1;
+    let mut state = StateFuelPacket::default();
+    state.rows.push(CarrierRegistration {
+        base: 12,
+        slot: 3,
+        country: 8,
+        pools: Ok((0, 1)),
+        fuel: ContainerFuel {
+            demand: Ok(-23),
+            allocated: Ok(41),
+        },
+    });
+    state.pools.push(CarrierPool {
+        type_index: -4,
+        subunit_index: 7,
+        wings_len: 1,
+        ..Default::default()
+    });
+    let mut projected = FrameEncoder::new();
+    let mut complete = FrameEncoder::new();
+    let scratch = ProjectionScratch::default();
+    let frame = |hour, table| {
+        let mut frame = FrameInput {
+            branch: 1,
+            hour,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|_| crate::spooling::unavailable("fixture table").into()),
+        };
+        frame.tables[TableId::AirBaseRegistrations.index()] = table;
+        frame
+    };
+    for hour in 1..=9 {
+        captured.registrations.outcome = Outcome::Rows {
+            len: if hour == 4 { 2 } else { 1 },
+        };
+        match hour {
+            3 => state.rows[0].fuel.allocated = Ok(-99),
+            4 => {} // New registration with independently absent optional inputs.
+            5 => {} // Withdraw the second registration.
+            6 => {
+                state.rows[0].fuel.demand = Err("synthetic scalar refusal");
+                state.rows[0].pools = Err("synthetic pool refusal");
+            }
+            7 => state.rows.clear(), // Revoked state packet must not keep old values.
+            8 => {
+                captured.registrations.outcome = Outcome::Unavailable {
+                    reason: "synthetic registration refusal",
+                }
+            }
+            _ => {}
+        }
+        captured.carrier.install_states(&state);
+        let ordinary = captured.registration_table(captured.registrations.outcome, None);
+        assert_eq!(
+            matches!(ordinary, TableInput::Sampled(TableView::Complete(_))),
+            hour != 8
+        );
+        let mut projection = Projection::new(&projected, 1, hour, false, &scratch);
+        let compared =
+            captured.registration_table(captured.registrations.outcome, Some(&mut projection));
+        if hour == 2 {
+            assert!(matches!(compared, TableInput::ComparedEqual(_)));
+            crate::test_support::with_allocations_denied(|| {
+                assert!(matches!(
+                    captured
+                        .registration_table(captured.registrations.outcome, Some(&mut projection)),
+                    TableInput::ComparedEqual(_)
+                ));
+            });
+        }
+        assert_eq!(
+            projected
+                .encode_input(frame(hour, compared), false)
+                .unwrap(),
+            complete.encode_input(frame(hour, ordinary), false).unwrap()
+        );
+    }
+}

@@ -74,6 +74,8 @@ use std::{
 #[cfg(test)]
 #[path = "decoded_section_tests.rs"]
 mod decoded_section_tests;
+#[cfg(test)]
+mod event_feed_tests;
 mod keyed;
 mod modelled;
 mod predicted;

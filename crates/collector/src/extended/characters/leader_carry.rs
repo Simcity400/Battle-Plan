@@ -32,8 +32,8 @@ use std::ops::Range;
 /// A held row type: its text spans, relative to its leader's held text.
 pub(super) trait Held: Copy + PartialEq + std::fmt::Debug {
     /// Appends this fresh row's text from the table's `bytes` to `text` and
-    /// returns the row with spans from `start`.
-    fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Self;
+    /// returns the row with spans from `start`, or `None` for an invalid span.
+    fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Option<Self>;
     /// The row's text bytes.
     fn text_len(&self) -> usize;
     /// A refused appended value must refresh only this leader, without
@@ -49,34 +49,36 @@ fn take(
     (at, len): (usize, usize),
     text: &mut Vec<u8>,
     start: usize,
-) -> (usize, usize) {
+) -> Option<(usize, usize)> {
     let moved = text.len() - start;
-    text.extend_from_slice(&bytes[at..at + len]);
-    (moved, len)
+    text.extend_from_slice(bytes.get(at..at.checked_add(len)?)?);
+    Some((moved, len))
 }
 
 impl Held for LeaderRow {
     fn can_hold(&self) -> bool {
         self.training_reason.is_none()
     }
-    fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Self {
-        let (text_a_start, _) = take(bytes, (self.text_a_start, self.text_a_len), text, start);
-        let (text_b_start, _) = take(bytes, (self.text_b_start, self.text_b_len), text, start);
-        let codename = self.codename.map(|mut name| {
-            name.custom = take(bytes, name.custom, text, start);
-            name.group = take(bytes, name.group, text, start);
-            name
-        });
-        let training = take(bytes, self.training, text, start);
-        let training_factors = take(bytes, self.training_factors, text, start);
-        LeaderRow {
+    fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Option<Self> {
+        let (text_a_start, _) = take(bytes, (self.text_a_start, self.text_a_len), text, start)?;
+        let (text_b_start, _) = take(bytes, (self.text_b_start, self.text_b_len), text, start)?;
+        let codename = if let Some(mut name) = self.codename {
+            name.custom = take(bytes, name.custom, text, start)?;
+            name.group = take(bytes, name.group, text, start)?;
+            Some(name)
+        } else {
+            None
+        };
+        let training = take(bytes, self.training, text, start)?;
+        let training_factors = take(bytes, self.training_factors, text, start)?;
+        Some(LeaderRow {
             training,
             training_factors,
             text_a_start,
             text_b_start,
             codename,
             ..*self
-        }
+        })
     }
 
     fn text_len(&self) -> usize {
@@ -89,12 +91,12 @@ impl Held for LeaderRow {
 }
 
 impl Held for cunit_leader::TraitRow {
-    fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Self {
-        let (token_start, _) = take(bytes, (self.token_start, self.token_len), text, start);
-        Self {
+    fn gather(&self, bytes: &[u8], text: &mut Vec<u8>, start: usize) -> Option<Self> {
+        let (token_start, _) = take(bytes, (self.token_start, self.token_len), text, start)?;
+        Some(Self {
             token_start,
             ..*self
-        }
+        })
     }
 
     fn text_len(&self) -> usize {
@@ -398,9 +400,16 @@ impl<R: Held> LeaderCarry<R> {
             return false;
         };
         let entry = &self.entries[entry];
+        if rows.iter().any(|row| !row.can_hold()) {
+            return false;
+        }
         let mut text = Vec::new();
         let gathered = rows.iter().map(|row| row.gather(bytes, &mut text, 0));
-        self.rows[entry.rows.clone()].iter().copied().eq(gathered)
+        self.rows[entry.rows.clone()]
+            .iter()
+            .copied()
+            .map(Some)
+            .eq(gathered)
             && self.text[entry.text.clone()] == text[..]
     }
 
@@ -489,7 +498,9 @@ impl<R: Held> LeaderCarry<R> {
             })
             .map_err(|_| ())?;
             for row in read {
-                let gathered = row.gather(bytes, &mut self.added_text, text_start);
+                let gathered = row
+                    .gather(bytes, &mut self.added_text, text_start)
+                    .ok_or(())?;
                 self.added_rows.push(gathered);
             }
             let same = held.is_some_and(|entry| {

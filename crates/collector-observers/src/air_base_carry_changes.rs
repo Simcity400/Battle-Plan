@@ -171,6 +171,7 @@ impl Watches {
     /// Hook path, allocation-free: a writer is about to change the base with
     /// `handle`; `None` names no base and revokes every certificate.
     /// Dropping the guard notifies its return.
+    #[inline]
     pub fn notify(&self, handle: Option<u64>) -> Notification<'_> {
         match handle.and_then(|handle| usize::try_from(handle).ok()) {
             Some(handle) => self.registry.notify(handle),
@@ -184,6 +185,7 @@ impl Watches {
     /// Hook path: the notification of a call of `site` whose first argument
     /// is `first`, naming its base by the handle the site's [`Receiver`]
     /// holds.
+    #[inline]
     pub fn notify_site(&self, site: usize, first: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.notify(handle(MUTATIONS[site].1, first))
@@ -234,6 +236,7 @@ impl Watches {
 
 /// The base handle `receiver` holds in RCX's object `first`; `None` when it
 /// does not read.
+#[inline]
 fn handle(receiver: Receiver, first: usize) -> Option<u64> {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     first
@@ -528,6 +531,40 @@ callback!(rebind_pool_definition, 9, (pool));
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "per-call air-base callback microbenchmark; run only without a live game benchmark"]
+    fn hook_cost_air_base_carry_dispatch() {
+        const CALLS: usize = 100_000;
+        unsafe extern "system-unwind" fn original(pool: usize) -> usize {
+            std::hint::black_box(pool)
+        }
+        let handle = (7_u64 << 32) | 0x43;
+        let mut pool = vec![0_u8; Receiver::Pool.handle() + 8];
+        pool[Receiver::Pool.handle()..].copy_from_slice(&handle.to_ne_bytes());
+        let pointer = pool.as_ptr() as usize;
+        WATCHES.registry.offer(1);
+        WATCHES.registry.boundary(false);
+        WATCHES.registry.set_enabled(true);
+        WATCHES.sequence(handle).unwrap();
+        ORIGINAL[9].store(original as *const () as usize, Ordering::Release);
+        let callback: unsafe extern "system-unwind" fn(usize) -> usize = rebind_pool_definition;
+        let nanos = collector_test_support::per_call_ns(CALLS, || {
+            for _ in 0..CALLS {
+                std::hint::black_box(unsafe { std::hint::black_box(callback)(pointer) });
+            }
+        });
+        let registry = collector_test_support::per_call_ns(CALLS, || {
+            for _ in 0..CALLS {
+                drop(std::hint::black_box(
+                    WATCHES.registry.notify(handle as usize),
+                ));
+            }
+        });
+        println!(
+            "hook_cost air_base pool rebind: callback={nanos:.1} ns/call, registry={registry:.1} ns/call"
+        );
+    }
 
     /// A base site names its base by its handle and a pool site by the pool's base handle; a
     /// receiver that does not read names none, so it revokes every certificate.

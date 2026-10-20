@@ -128,6 +128,51 @@ unsafe extern "system" fn demand(container: usize, base: usize, penalty: usize) 
 mod tests {
     use super::*;
     #[test]
+    fn demand_callback_preserves_arguments_and_brackets_only_its_container() {
+        unsafe extern "system" fn original(container: usize, base: usize, penalty: usize) -> usize {
+            assert_eq!([container, base, penalty], [0x1200, 0x2200, 33]);
+            assert_eq!(WATCHES.active(), 1);
+            assert_eq!(WATCHES.sequence(container), None);
+            assert_eq!(WATCHES.quiet(), None);
+            57
+        }
+        WATCHES.offer(2);
+        WATCHES.boundary(false);
+        WATCHES.set_enabled(true);
+        let before = WATCHES.sequence(0x1200).unwrap();
+        let other = WATCHES.sequence(0x1300).unwrap();
+        ORIGINAL.store(original as *const () as usize, Ordering::Release);
+        let result = collector_test_support::with_allocations_denied(|| unsafe {
+            demand(0x1200, 0x2200, 33)
+        });
+        assert_eq!(result, 57);
+        assert_eq!(WATCHES.active(), 0);
+        assert_eq!(WATCHES.sequence(0x1200), Some((before.0, before.1 + 1)));
+        assert_eq!(WATCHES.sequence(0x1300), Some(other));
+    }
+
+    #[test]
+    #[ignore = "per-call air-container demand microbenchmark; run only without a live game benchmark"]
+    fn hook_cost_air_container_demand_dispatch() {
+        const CALLS: usize = 100_000;
+        unsafe extern "system" fn original(container: usize, base: usize, penalty: usize) -> usize {
+            std::hint::black_box(container ^ base ^ penalty)
+        }
+        WATCHES.offer(1);
+        WATCHES.boundary(false);
+        WATCHES.set_enabled(true);
+        WATCHES.sequence(0x1200).unwrap();
+        ORIGINAL.store(original as *const () as usize, Ordering::Release);
+        let callback: unsafe extern "system" fn(usize, usize, usize) -> usize = demand;
+        let nanos = collector_test_support::per_call_ns(CALLS, || {
+            for _ in 0..CALLS {
+                std::hint::black_box(unsafe { std::hint::black_box(callback)(0x1200, 0x2200, 33) });
+            }
+        });
+        println!("hook_cost air_base container demand: callback={nanos:.1} ns/call");
+    }
+
+    #[test]
     fn demand_and_allocation_are_independent_of_registration_receivers() {
         let domain = WatchRegistry::enabled(4);
         let first = domain.sequence(0x1200).unwrap();

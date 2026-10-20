@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 test-support = ["collector-extended-support/test-support"]
-default = ["advisor_changes", "opinion_changes", "character_changes", "advisor_pool_changes", "wing_changes", "roster_changes", "political_status_changes", "rail_changes", "territory_changes", "country_input_changes", "raid_changes", "naval_tree_changes", "area_changes", "world_input_changes", "retreat_ban_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "appearance_changes", "counter_changes", "war_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes", "visibility_verify"]
+default = ["advisor_changes", "opinion_changes", "character_changes", "advisor_pool_changes", "wing_changes", "roster_changes", "political_status_changes", "rail_changes", "territory_changes", "country_input_changes", "raid_changes", "naval_tree_changes", "area_changes", "world_input_changes", "retreat_ban_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "appearance_changes", "counter_changes", "war_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes"]
 advisor_changes = []
 advisor_pool_changes = ["character_changes"]
 advisor_pool_verify = ["advisor_pool_changes"]

@@ -21,6 +21,7 @@ pub mod history_capture;
 pub mod history_events;
 pub mod history_reducer;
 mod history_projection;
+pub mod observer_projection;
 
 #[cfg(test)]
 #[global_allocator]

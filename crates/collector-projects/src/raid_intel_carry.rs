@@ -10,8 +10,8 @@
 //! store.
 //!
 //! Each country is read afresh and compared with its held answers on its
-//! hour of the sampled rotation (by id), and `raid_intel_verify`, on by
-//! default during the family's burn-in, compares every carryable country
+//! hour of the sampled rotation (by id), and `raid_intel_verify`, off by
+//! default since the family's burn-in passed, compares every carryable country
 //! every hour. A compared read across which the certificate stood still and
 //! that differs is a write no hook saw: it disables every naval
 //! tree certificate for the attachment ([`crate::naval_tree_changes::missed_write`]),

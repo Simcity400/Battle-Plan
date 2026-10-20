@@ -16,7 +16,7 @@ observer epochs and swap prepared journals without reading doctrine objects or
 growing storage. Baselines and structural insertions prepare journals for every
 existing frame buffer. Grant expiry advances one carried country counter; grant rows keep signed
 days and a counter anchor, so scalar expiry publishes no grant payload. Spool
-conversion applies events and shares unchanged replay tables. Lost observation refuses the doctrine tables until full refresh.
+conversion applies events and shares unchanged replay tables. Lost observation or a failed conversion refuses that hour and rebuilds the baseline at the next capture.
 
 Cost consumption publishes prepared scalar occurrence events, with constant-size
 folder authentication and a native result-count witness. Immutable reduction

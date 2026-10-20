@@ -41,6 +41,57 @@ fn row(scope: usize) -> usize {
     0xb000 + scope * cscript_flag::STRIDE
 }
 
+/// Add empty historical scopes without adding flag rows: watch demand must
+/// follow scope count, not the usually much smaller live flag count.
+fn with_empty_characters(count: usize) -> Vec<u8> {
+    let mut bytes = flag_scopes();
+    let list = 0x10000;
+    let stride = 0x200;
+    let characters = (list + (count + 2) * 8).next_multiple_of(stride);
+    bytes.resize(characters + count * stride, 0);
+    let historical = 0x5000 + ccharacter_manager::HISTORICAL_CHARACTERS;
+    put(&mut bytes, historical, &(list as u64).to_le_bytes());
+    for field in [8, 12] {
+        put(
+            &mut bytes,
+            historical + field,
+            &((count + 2) as u32).to_le_bytes(),
+        );
+    }
+    for (index, character) in [0x6000_u64, 0x6200].into_iter().enumerate() {
+        put(&mut bytes, list + index * 8, &character.to_le_bytes());
+    }
+    for index in 0..count {
+        let character = characters + index * stride;
+        put(
+            &mut bytes,
+            list + (index + 2) * 8,
+            &(character as u64).to_le_bytes(),
+        );
+        for (field, vtable) in [
+            (0, ccharacter::VTABLE_RVA),
+            (ccharacter::FLAGS, cflag_manager::VTABLE_RVA),
+        ] {
+            put(
+                &mut bytes,
+                character + field,
+                &((BASE + vtable) as u64).to_le_bytes(),
+            );
+        }
+        put(
+            &mut bytes,
+            character + ccharacter::TYPE,
+            &ccharacter::REFERENCE_TYPE.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            character + ccharacter::ID,
+            &((index + 100) as u32).to_le_bytes(),
+        );
+    }
+    bytes
+}
+
 struct Hour {
     outcome: Outcome,
     rows: Vec<ScopedFlag>,
@@ -451,6 +502,18 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
         character + ccharacter::FLAGS,
         &((BASE + cflag_manager::VTABLE_RVA) as u64).to_le_bytes(),
     );
+    put(
+        &mut bytes,
+        character + ccharacter::FLAGS + cflag_manager::ROWS,
+        &(row(3) as u64).to_le_bytes(),
+    );
+    for field in [cflag_manager::SLOT_COUNT, cflag_manager::ENTRY_COUNT] {
+        put(
+            &mut bytes,
+            character + ccharacter::FLAGS + field,
+            &1_i32.to_le_bytes(),
+        );
+    }
     // Unseen, the quiet hour still publishes the held rows...
     let (stale, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
     assert!(stale.counts.quiet);
@@ -461,7 +524,33 @@ fn a_flag_write_rereads_its_manager_and_a_roster_write_walks_every_scope() {
     let (appended, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
     assert!(!appended.counts.quiet);
     assert_ne!(reads, 0);
-    assert_eq!(appended.counts.read + appended.counts.reused, 6);
+    // The country changed since the last full walk too: its old per-scope
+    // certificate conservatively rereads it when the scope census resumes.
+    assert_eq!((appended.counts.read, appended.counts.reused), (2, 4));
+    assert_eq!(appended.outcome, Outcome::Rows { len: 5 });
+    assert_eq!(
+        appended.rows,
+        walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing).rows
+    );
+    watches.boundary(false);
+    // Removing that scope revokes the roster token too. No surviving
+    // manager changed; only its scope membership disappears.
+    put(
+        &mut bytes,
+        historical + engine_native::cpdx_array::COUNT,
+        &2_u32.to_le_bytes(),
+    );
+    watches.roster_write();
+    watches.boundary(false);
+    let (removed, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    assert!(!removed.counts.quiet);
+    assert_ne!(reads, 0);
+    assert_eq!((removed.counts.read, removed.counts.reused), (0, 5));
+    assert_eq!(removed.outcome, Outcome::Rows { len: 4 });
+    assert_eq!(
+        removed.rows,
+        walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing).rows
+    );
 }
 
 /// A quiet hour's slice reads its managers afresh: a write no hook saw
@@ -662,4 +751,188 @@ fn a_quiet_hour_visits_only_the_scopes_it_reads() {
     assert!(next.counts.quiet);
     assert!(FlagStore::visited_scopes().is_empty());
     assert_eq!(next.rows, fresh);
+}
+
+/// MIO sizing can offer a table first. The existing ScriptFlags sizing
+/// census must replace that offer with the combined demand before install;
+/// waiting for the first capture leaves growth stuck until an invalidation.
+#[test]
+fn preinstall_flag_sizing_includes_empty_scopes_and_embedded_stores() {
+    let bytes = with_empty_characters(5_000);
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let scopes = 5_005;
+    // One watch past a sizing boundary: omitting even one scope leaves the
+    // smaller offer, while the embedded-only offer matches the undersizing.
+    let embedded = 8_193 - scopes;
+    crate::flag_changes::offer_embedded(embedded);
+    assert_eq!(script_flag_demand(&memory, BASE, GAME), Some(4));
+    crate::flag_changes::boundary(false);
+    let status = serde_json::to_value(crate::flag_changes::status()).unwrap();
+    let capacity = status["watches"]["capacity"].as_u64().unwrap() as usize;
+    assert_eq!(capacity, ((scopes + embedded) * 4).next_power_of_two());
+    assert_eq!(status["watches"]["installs"], 1);
+
+    // The same prepared demand certifies every scope, even when almost all
+    // managers are empty. The next hour walks and reads none of them.
+    let watches = Watches::enabled(scopes + embedded);
+    let mut store = FlagStore::new();
+    let (first, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    assert_eq!(first.outcome, Outcome::Rows { len: 4 });
+    assert_eq!((first.counts.read, first.counts.reused), (scopes as u64, 0));
+    watches.boundary(false);
+    let (quiet, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    assert!(quiet.counts.quiet);
+    assert_eq!(quiet.outcome, first.outcome);
+    assert_eq!(quiet.rows, first.rows);
+    assert_eq!((quiet.counts.read, quiet.counts.reused), (0, scopes as u64));
+    assert_eq!(reads, 0);
+    assert!(FlagStore::visited_scopes().is_empty());
+}
+
+#[test]
+fn refused_flag_sizing_keeps_the_prior_watch_demand() {
+    let mut bytes = with_empty_characters(5_000);
+    // The last manager's invalid header refuses the entire sizing census,
+    // not a successful partial scope count.
+    let last = bytes.len() - 0x200;
+    put(&mut bytes, last + ccharacter::FLAGS, &0_u64.to_le_bytes());
+    crate::flag_changes::offer_embedded(1_024);
+    assert_eq!(
+        script_flag_demand(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes
+            },
+            BASE,
+            GAME
+        ),
+        None
+    );
+    crate::flag_changes::boundary(false);
+    let status = serde_json::to_value(crate::flag_changes::status()).unwrap();
+    assert_eq!(status["watches"]["capacity"], 4_096);
+}
+
+#[test]
+fn refused_flag_watches_read_fresh_instead_of_certifying_a_quiet_hour() {
+    use crate::flag_changes::Changes;
+    let mut bytes = flag_scopes();
+    let watches = Watches::enabled(1);
+    // Fill the real bounded watch table with unrelated receivers.
+    for receiver in 1..=16_384 {
+        let _ = watches.sequence(receiver);
+    }
+    assert!(
+        MANAGERS
+            .iter()
+            .all(|&manager| watches.sequence(manager).is_none())
+    );
+    let mut store = FlagStore::new();
+    let (first, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    assert_eq!(first.outcome, Outcome::Rows { len: 4 });
+    watches.boundary(false);
+    set_value(&mut bytes, 1, 7);
+    let (fresh, reads) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    assert!(!fresh.counts.quiet);
+    assert_eq!((fresh.counts.read, fresh.counts.reused), (5, 0));
+    assert_ne!(reads, 0);
+    assert_eq!(fresh.rows[1].flag.value, 7);
+}
+
+#[test]
+fn a_marked_flag_read_refusal_never_publishes_the_held_table() {
+    let mut bytes = flag_scopes();
+    let watches = Watches::enabled(16);
+    let mut store = FlagStore::new();
+    walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    watches.boundary(false);
+    let notification = watches.notify(MANAGERS[1], 0);
+    put(&mut bytes, MANAGERS[1], &0_u64.to_le_bytes());
+    drop(notification);
+    watches.boundary(false);
+    let (refused, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    let fresh = walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing);
+    assert_eq!(
+        refused.outcome,
+        Outcome::Unavailable {
+            reason: "flag manager vtable mismatch"
+        }
+    );
+    assert_eq!(refused.outcome, fresh.outcome);
+    assert_eq!(refused.rows, fresh.rows);
+    assert!(refused.rows.is_empty());
+    assert!(!refused.counts.quiet);
+    // No failed acquisition remains eligible for quiet carry.
+    put(
+        &mut bytes,
+        MANAGERS[1],
+        &((BASE + cflag_manager::VTABLE_RVA) as u64).to_le_bytes(),
+    );
+    watches.boundary(false);
+    let (recovered, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    assert_eq!((recovered.counts.read, recovered.counts.reused), (5, 0));
+    assert_eq!(recovered.outcome, Outcome::Rows { len: 4 });
+}
+
+#[test]
+fn a_daily_expiry_mark_refreshes_the_countdown_and_removal_only() {
+    let mut bytes = flag_scopes();
+    put(
+        &mut bytes,
+        row(1) + cscript_flag::REMAINING_DAYS,
+        &2_i16.to_le_bytes(),
+    );
+    let watches = Watches::enabled(16);
+    let mut store = FlagStore::new();
+    let (first, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+    watches.boundary(false);
+    // Advancing an ordinary hour changes neither the stored set hour nor
+    // the native remaining-days field, even for a timed flag.
+    let (quiet, reads) = walk_with(
+        &bytes,
+        &mut store,
+        &watches,
+        Check::BurnedIn { hour: 23 },
+        false,
+    );
+    assert!(quiet.counts.quiet);
+    assert_eq!(quiet.rows, first.rows);
+    assert_eq!(reads, 0);
+    for remaining in [1_i16, 0] {
+        let notification = watches.notify(MANAGERS[1], 3);
+        put(
+            &mut bytes,
+            row(1) + cscript_flag::REMAINING_DAYS,
+            &remaining.to_le_bytes(),
+        );
+        if remaining == 0 {
+            put(
+                &mut bytes,
+                MANAGERS[1] + cflag_manager::ENTRY_COUNT,
+                &0_i32.to_le_bytes(),
+            );
+        }
+        drop(notification);
+        watches.boundary(false);
+        let (expired, _) = walk_with(&bytes, &mut store, &watches, Check::Nothing, false);
+        assert!(expired.counts.quiet);
+        assert_eq!((expired.counts.read, expired.counts.reused), (1, 4));
+        assert_eq!(FlagStore::visited_scopes(), [1]);
+        assert_eq!(
+            expired.outcome,
+            Outcome::Rows {
+                len: if remaining == 0 { 3 } else { 4 }
+            }
+        );
+        if remaining != 0 {
+            assert_eq!(expired.rows[1].flag.remaining_days, remaining);
+        }
+        assert_eq!(
+            expired.rows,
+            walk(&bytes, &mut FlagStore::new(), &watches, Check::Nothing).rows
+        );
+    }
 }

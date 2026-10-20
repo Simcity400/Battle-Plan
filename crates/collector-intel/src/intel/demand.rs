@@ -113,7 +113,7 @@ impl Capacities {
             &mut self.strategic_operative_entries,
             rows(strategic.required_entries, 1),
         );
-        count!(8, 7, walk_flags(memory, base, state, &mut [], &mut []));
+        count!(8, 7, flag_demand(memory, base, state));
         let variables = cvariables::walk_scopes(memory, base, state, &mut [], &mut [], &mut []);
         count!(9, 8, variables.outcome);
         if let Ok(scopes) = count(variables.outcome) {

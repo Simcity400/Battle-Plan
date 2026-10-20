@@ -11,8 +11,8 @@ use crate::{
     walk::{Buffer, Outcome},
 };
 
-pub mod replacement;
 pub mod fuel_inputs;
+pub mod replacement;
 pub mod transport_operands;
 
 /// Primary wing vtable.

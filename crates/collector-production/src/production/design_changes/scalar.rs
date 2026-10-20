@@ -81,11 +81,11 @@ fn stage(
 }
 pub(super) fn observe(memory: &impl Memory, base: usize, pointer: usize, field: Field) {
     let Some(store) = STORE.get() else {
-        MISSED.store(true, Ordering::Release);
+        unobserved();
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        MISSED.store(true, Ordering::Release);
+        lock_contended();
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
@@ -94,9 +94,11 @@ pub(super) fn observe(memory: &impl Memory, base: usize, pointer: usize, field: 
     record(&mut store, memory, base, pointer, field);
 }
 fn record(store: &mut Store, memory: &impl Memory, base: usize, pointer: usize, field: Field) {
-    let Some(watch) = store.watched.get(&pointer).copied() else {
+    let Some(watch) = store.watched.get_mut(&pointer) else {
         return;
     };
+    watch.dirty = true;
+    let variant = watch.id;
     store.batch.required_events = store.batch.required_events.saturating_add(1);
     if store.batch.events.len() == store.batch.events.capacity() {
         store.batch.failure = Some("variant scalar event capacity exhausted");
@@ -121,7 +123,7 @@ fn record(store: &mut Store, memory: &impl Memory, base: usize, pointer: usize, 
             sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
             hour,
             pointer,
-            variant: watch.id,
+            variant,
             flags: None,
             removed: false,
             start,
@@ -253,6 +255,7 @@ mod tests {
                     id: 70,
                     pointer: POINTER,
                     flags: [0; 3],
+                    dirty: false,
                 },
             )]),
             interests: sources::Interests::default(),
@@ -282,6 +285,41 @@ mod tests {
         assert_eq!(store.batch.log.bytes.len(), 2);
         assert!(output.iter().all(|row| row.snapshot.is_none()));
     }
+    #[test]
+    fn scalar_capacity_refusal_keeps_the_receiver_dirty_without_native_reads() {
+        let mut store = Store {
+            batch: Batch::empty(),
+            spare: Batch::empty(),
+            watched: HashMap::from([(
+                POINTER,
+                Watch {
+                    id: 70,
+                    pointer: POINTER,
+                    flags: [0; 3],
+                    dirty: false,
+                },
+            )]),
+            interests: sources::Interests::default(),
+            epoch: 1,
+        };
+        let memory = ToggleMemory {
+            value: 1,
+            reads: Cell::new(0),
+        };
+        collector_test_support::with_allocations_denied(|| {
+            record(&mut store, &memory, 0, POINTER, Field::AutoUpgraded);
+        });
+        assert!(store.watched[&POINTER].dirty);
+        assert_eq!(store.watched[&POINTER].id, 70);
+        assert_eq!(store.batch.required_events, 1);
+        assert_eq!(
+            store.batch.failure,
+            Some("variant scalar event capacity exhausted")
+        );
+        assert_eq!(memory.reads.get(), 0);
+        assert!(store.batch.events.is_empty());
+    }
+
     #[test]
     fn narrow_writer_routes_and_owned_fields_do_not_follow_design_dependencies() {
         for (name, expected) in [

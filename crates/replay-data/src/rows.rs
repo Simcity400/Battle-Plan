@@ -2585,11 +2585,7 @@ macro_rules! row_codec {
 }
 row_codec!(ClockRow, 0, |_row| 0, |_key| {  }, {0 => hour: I32, 1 => play_time: U64, 2 => play_session_started_at: I64, 3 => seed: I32, 4 => speed: I32, 5 => debug_current_ref_id: OptionalU32, 6 => unit: OptionalI32, 7 => order_index: OptionalI32, 8 => front_index: OptionalI32, 9 => theatre_index: OptionalI32, 10 => theater_group_index: OptionalI32, 11 => military_deployment_line_index: OptionalI32, 12 => military_deployment_conveyor_index: OptionalI32, 13 => equipment_variant_index: OptionalI32, 14 => country_leader_index: OptionalI32, 15 => navy_id: OptionalI32, 16 => land_combat_id: OptionalI32, 17 => multiplayer_random_count: OptionalI32}, |_row| Ok(()));
 row_codec!(CampaignRow, 0, |_row| 0, |_key| {  }, {0 => id: Bytes}, |_row| Ok(()));
-row_codec!(EventFeedHistoryRow, 0, |_row| 0, |_key| {}, {
-    0 => generation: U64, 1 => read_hour: I32, 2 => coverage: Opaque,
-    3 => counts: Opaque, 4 => outstanding: U64, 5 => failure: Opaque,
-    6 => events: Opaque, 7 => script_tokens: Bytes, 8 => script_scopes: Opaque, 9 => script_refusals: U8
-}, |row| row.validate());
+mod event_feed;
 row_codec!(CountryRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32, 1 => tag: Bytes, 2 => political_power_raw: OptionalI64, 3 => command_power_raw: I64, 4 => stability_raw: I64, 5 => war_support_raw: I64, 6 => convoys_raw: OptionalI64, 7 => peace_conference_participant: U8, 8 => manpower_residual: I32, 9 => border_land_doctrine_level: OptionalI32}, |_row| Ok(()));
 row_codec!(CountryLinkRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => canonical_slot: U32}, |_row| Ok(()));
 row_codec!(ProvinceRow, 32, |row| row.id as u128, |key| { id: key as u32 }, {0 => state: U32, 1 => owner: U32, 2 => controller: U32, 3 => victory_points: I32, 4 => fort_positive: U8, 5 => move_gate: U8, 6 => port_sea: I32, 7 => attack: Opaque, 8 => selected_areas: Opaque, 9 => fort_bunker: OptionalI64, 10 => controller_area: OptionalU32, 11 => owner_area: OptionalU32, 12 => area_node: Opaque}, |_row| Ok(()));
@@ -2972,7 +2968,7 @@ impl<'a> Change<'a> {
         put_varint(output, zigzag);
         Ok(())
     }
-    fn apply(self, kind: Kind, previous: Field<'a>) -> io::Result<Field<'a>> {
+    pub(crate) fn apply(self, kind: Kind, previous: Field<'a>) -> io::Result<Field<'a>> {
         match self {
             Self::Bytes(value) => Ok(Field::Bytes(value)),
             Self::U32List(value) => Ok(Field::U32List(value)),

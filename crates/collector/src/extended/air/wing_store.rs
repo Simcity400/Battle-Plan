@@ -42,6 +42,8 @@ pub(crate) struct Certificate {
 struct Entry {
     certificate: Certificate,
     rows: Range<usize>,
+    /// During a pass only: range into the changed-read scratch, not held rows.
+    fresh: bool,
 }
 
 /// One pass's held rows.
@@ -68,26 +70,6 @@ impl Held {
         (entry.certificate == *certificate).then(|| entry.rows.clone())
     }
 
-    /// Holds `rows` for `certificate`; `false` when the storage could not
-    /// grow, which only withholds the certificate.
-    fn hold(&mut self, certificate: Certificate, rows: &[WingEquipmentRow]) -> bool {
-        let stored = allocation::advisory(|| {
-            allocation::reserve(&mut self.entries, 1)?;
-            allocation::reserve(&mut self.rows, rows.len())?;
-            std::io::Result::Ok(())
-        });
-        if stored.is_err() {
-            return false;
-        }
-        let first = self.rows.len();
-        self.rows.extend_from_slice(rows);
-        self.entries.push(Entry {
-            certificate,
-            rows: first..self.rows.len(),
-        });
-        true
-    }
-
     fn measure(&self) -> usize {
         self.entries.capacity() * size_of::<Entry>()
             + self.rows.capacity() * size_of::<WingEquipmentRow>()
@@ -105,6 +87,9 @@ pub(crate) struct WingStore {
     bytes: usize,
     /// Set on the game thread; the next pass drops every held row.
     forgotten: bool,
+    /// Only changed reads need row scratch; carried and equal verified rows
+    /// remain ranges into the preceding whole buffer until settlement.
+    fresh: Vec<WingEquipmentRow>,
 }
 
 impl WingStore {
@@ -128,6 +113,11 @@ impl WingStore {
         self.counts
     }
 
+    #[cfg(test)]
+    pub(super) fn held_rows(&self) -> &[WingEquipmentRow] {
+        &self.current.rows
+    }
+
     fn begin(&mut self) {
         if std::mem::take(&mut self.forgotten) {
             self.current.clear();
@@ -137,6 +127,7 @@ impl WingStore {
         self.current.clear();
         self.counts = Counts::default();
         self.wings = 0;
+        self.fresh.clear();
     }
 
     /// Indexes this pass's rows for the next hour; [`Self::conclude`]
@@ -158,12 +149,79 @@ impl WingStore {
                 index = end;
             }
         }
+        let live_rows = self
+            .current
+            .entries
+            .iter()
+            .map(|entry| entry.rows.len())
+            .sum();
+        let carried = self.current.entries.iter().all(|entry| !entry.fresh);
+        let fresh = self.current.entries.iter().all(|entry| entry.fresh);
+        if carried && live_rows == self.previous.rows.len() {
+            std::mem::swap(&mut self.current.rows, &mut self.previous.rows);
+        } else if fresh && live_rows == self.fresh.len() {
+            std::mem::swap(&mut self.current.rows, &mut self.fresh);
+        } else if allocation::advisory(|| allocation::reserve(&mut self.current.rows, live_rows))
+            .is_ok()
+        {
+            // Only a changed pass or withdrawal merges ranges. Each live row
+            // is copied once, whether it came from a fresh or a held read.
+            for entry in &mut self.current.entries {
+                let source = if entry.fresh {
+                    &self.fresh
+                } else {
+                    &self.previous.rows
+                };
+                let start = self.current.rows.len();
+                self.current
+                    .rows
+                    .extend_from_slice(&source[entry.rows.clone()]);
+                entry.rows = start..self.current.rows.len();
+            }
+        } else {
+            self.current.clear();
+        }
+        if !carried {
+            for entry in &mut self.current.entries {
+                entry.fresh = false;
+            }
+        }
         self.previous.clear();
+        self.fresh.clear();
         self.measure();
     }
 
+    /// A carried range needs only an entry, not another copy of its rows.
+    fn hold_carried(&mut self, certificate: Certificate, rows: Range<usize>) {
+        if allocation::advisory(|| allocation::reserve(&mut self.current.entries, 1)).is_ok() {
+            self.current.entries.push(Entry {
+                certificate,
+                rows,
+                fresh: false,
+            });
+        }
+    }
+
+    fn hold_read(&mut self, certificate: Certificate, rows: &[WingEquipmentRow]) {
+        let stored = allocation::advisory(|| {
+            allocation::reserve(&mut self.current.entries, 1)?;
+            allocation::reserve(&mut self.fresh, rows.len())
+        });
+        if stored.is_ok() {
+            let start = self.fresh.len();
+            self.fresh.extend_from_slice(rows);
+            self.current.entries.push(Entry {
+                certificate,
+                rows: start..self.fresh.len(),
+                fresh: true,
+            });
+        }
+    }
+
     fn measure(&mut self) {
-        self.bytes = self.current.measure() + self.previous.measure();
+        self.bytes = self.current.measure()
+            + self.previous.measure()
+            + self.fresh.capacity() * size_of::<WingEquipmentRow>();
     }
 
     /// This pass's counts and the wings it planned.
@@ -246,18 +304,10 @@ impl<'a> WingReuse<'a> {
         let (Some(certificate), Some(range)) = (plan.certificate, plan.held.clone()) else {
             return &[];
         };
-        let WingStore {
-            previous,
-            current,
-            counts,
-            ..
-        } = &mut *self.store;
-        let rows = &previous.rows[range];
-        counts.reused += 1;
-        counts.reused_rows += rows.len() as u64;
-        // A failed hold only withholds the next hour's certificate.
-        let _ = current.hold(certificate, rows);
-        rows
+        self.store.counts.reused += 1;
+        self.store.counts.reused_rows += range.len() as u64;
+        self.store.hold_carried(certificate, range.clone());
+        &self.store.previous.rows[range]
     }
 
     /// A fresh read of a planned wing: `rows` are its rows in pool order when
@@ -269,13 +319,19 @@ impl<'a> WingReuse<'a> {
         store.counts.read_rows += rows.len() as u64;
         if let Some(range) = plan.held.clone() {
             store.counts.verified += 1;
-            if !matches!(outcome, Outcome::Rows { .. }) || store.previous.rows[range] != *rows {
-                store.counts.mismatches += 1;
-                self.changes.mismatch();
+            if matches!(outcome, Outcome::Rows { .. })
+                && store.previous.rows[range.clone()] == *rows
+            {
+                if let Some(certificate) = plan.certificate {
+                    store.hold_carried(certificate, range);
+                }
+                return;
             }
+            store.counts.mismatches += 1;
+            self.changes.mismatch();
         }
         if let (Some(certificate), Outcome::Rows { .. }) = (plan.certificate, outcome) {
-            let _ = store.current.hold(certificate, rows);
+            store.hold_read(certificate, rows);
         }
     }
 

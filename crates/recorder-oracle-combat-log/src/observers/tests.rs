@@ -142,20 +142,13 @@ fn fixture() -> (DecodedFrame, Save) {
             entries
                 .iter()
                 .enumerate()
-                .map(
-                    move |(ordinal, &(kind, item, [a, b, c, d, e]))| CombatLogObserverRow {
-                        combat: COMBAT,
-                        attacker,
-                        ordinal: ordinal as u64,
-                        kind: kind as u8,
-                        item,
-                        a,
-                        b,
-                        c,
-                        d,
-                        e,
-                    },
-                )
+                .map(move |(ordinal, &(kind, item, values))| {
+                    let mut row =
+                        CombatLogObserverRow::from_fact(COMBAT, attacker, kind as u8, item, values)
+                            .unwrap();
+                    row.ordinal = ordinal as u64;
+                    row
+                })
         })
         .collect();
     *frame.tables[TableId::CombatLogObservers.index()] =
@@ -405,4 +398,21 @@ fn observer_comparison_retains_presence_membership_and_collection_order() {
     assert_eq!(run(&frame, &saved).differences.len(), 1);
     saved.land_combats.clear();
     assert_eq!(run(&frame, &saved).differences.len(), 2);
+}
+
+#[test]
+fn observer_comparison_reconstructs_native_order_from_noncontiguous_stable_labels() {
+    let (mut frame, saved) = fixture();
+    let TableView::Complete(TableRows::CombatLogObservers(rows)) =
+        &mut *frame.tables[TableId::CombatLogObservers.index()]
+    else {
+        unreachable!()
+    };
+    for row in rows.iter_mut() {
+        row.ordinal = 1_000_000 - row.ordinal * 13;
+    }
+    rows.sort_unstable_by_key(CombatLogObserverRow::key);
+    let report = run(&frame, &saved);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["CombatLogObservers"], 2);
 }

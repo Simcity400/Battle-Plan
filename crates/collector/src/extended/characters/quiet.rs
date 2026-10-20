@@ -746,7 +746,9 @@ pub(super) fn fresh_leaders_unchanged<M: Memory>(
         let read = loop {
             let read = read_unit(memory, base, pointer, character, &mut row, &mut bytes);
             match read.outcome {
-                Outcome::Truncated { .. } if read.required_bytes > bytes.len() => {
+                Outcome::Rows { .. } | Outcome::Truncated { .. }
+                    if read.required_bytes > bytes.len() =>
+                {
                     bytes.resize(read.required_bytes, 0);
                 }
                 _ => break read,

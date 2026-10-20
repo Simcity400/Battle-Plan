@@ -7319,7 +7319,7 @@ fixture!(CombatLogBattleEquipmentRow, |key| {battle: (key >> 48) as u32, side: (
 fixture!(CombatLogBattleModifierRow, |key| {battle: (key >> 40) as u32, side: (key >> 32) as u8, ordinal: key as u32}, {modifier: i32, hours: i32});
 fixture!(CombatLogBattleCountryRow, |key| {battle: (key >> 40) as u32, side: (key >> 32) as u8, ordinal: key as u32}, {country: u32});
 
-fixture!(CombatLogObserverRow, |key| {combat:(key >> 64) as u64, attacker:key & 1 != 0, ordinal:(key as u64) >> 1}, {kind:u8, item:u64, a:u64, b:u64, c:u64, d:u64, e:u64});
+fixture!(CombatLogObserverRow, |key| {combat:(key >> 64) as u64, attacker:key & 1 != 0, ordinal:(key as u64) >> 1}, {kind:u8, item:u64, index:u64, identity:u64, identity_2:u64, identity_3:u64, a:i64, b:i64, c:i64, d:i64, e:i64});
 
 #[test]
 fn combat_log_rows_roundtrip_all_ordinary_and_prepared_columns() {
@@ -7788,4 +7788,31 @@ fn experience_suffixes_keep_retired_bearing_prefixes_readable() {
             ..Default::default()
         },
     );
+}
+
+#[test]
+fn combat_log_observer_numeric_columns_round_trip_rows_deltas_and_prepared_checkpoints() {
+    check_table::<CombatLogObserverRow>(TableId::CombatLogObservers);
+    for tick in [0, 5, 12] {
+        let expected = vec![CombatLogObserverRow::fixture(
+            CombatLogObserverRow::largest_key(),
+            tick,
+        )];
+        let mut bytes = Vec::new();
+        crate::checkpoint::rows::encode_rows(&expected, &mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        assert_eq!(
+            crate::checkpoint::rows::decode_rows::<CombatLogObserverRow>(&mut input).unwrap(),
+            expected
+        );
+        input.finish().unwrap();
+        for end in 0..bytes.len() {
+            assert!(
+                crate::checkpoint::rows::decode_rows::<CombatLogObserverRow>(&mut Decoder::new(
+                    &bytes[..end]
+                ))
+                .is_err()
+            );
+        }
+    }
 }

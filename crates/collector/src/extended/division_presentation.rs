@@ -2110,6 +2110,7 @@ mod tests {
 
     mod read_ahead;
     mod status_bench;
+    mod status_reads;
 
     fn member(base: usize, name: &[u8], order: i32) -> [u8; cname_group_member::INPUT_SPAN] {
         assert!(name.len() < 16);

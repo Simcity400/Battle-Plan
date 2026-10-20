@@ -312,6 +312,9 @@ impl Variants {
 
     pub fn fail(&mut self, reason: &'static str, hour: i32, force_full: bool) {
         self.reset();
+        if reason != replay_data::cadence::SKIPPED_REASON {
+            design_changes::refuse_census();
+        }
         if replay_data::cadence::should_walk(TABLES[5], hour, force_full) {
             self.organisations_complete = false;
             self.liveness.refuse();
@@ -341,7 +344,11 @@ impl Variants {
         full: bool,
     ) -> [u64; N] {
         self.baseline_admitted = false;
-        if !full && !replay_data::cadence::should_walk(TableId::VariantDefinitions, hour, false) {
+        let recovery = design_changes::needs_full();
+        if !full
+            && !recovery
+            && !replay_data::cadence::should_walk(TableId::VariantDefinitions, hour, false)
+        {
             self.fail(replay_data::cadence::SKIPPED_REASON, hour, false);
             return [0; N];
         }
@@ -349,6 +356,7 @@ impl Variants {
         // A failed recovery consumes its immediate read request. The next
         // ordinary daily visit still rebuilds its missing proof, while an
         // admitted daily visit preserves every certified dependency.
+        let forced = full;
         let full = full || (design_changes::enabled() && design_changes::needs_baseline());
         design_changes::begin_read();
         if full {
@@ -357,7 +365,7 @@ impl Variants {
         self.fog = design_fog::capture(memory, base);
         let registry = variants.rows;
         let outcome = variants.outcome;
-        let ticks = self.capture_state(memory, base, variants, hour, full);
+        let ticks = self.capture_state_carried(memory, base, variants, hour, full, !forced);
         match bonus_snapshots::snapshot() {
             Ok(snapshot) => self.dictionary = snapshot,
             Err(reason) => {
@@ -394,6 +402,11 @@ impl Variants {
                 self.liveness = design_changes::liveness::observation()
                     .unwrap_or_else(|_| design_changes::liveness::Observation::refused());
             }
+        } else if full {
+            // A failed recovery can leave shared forwarding withdrawn during
+            // the following native interval. Its old object proofs cannot
+            // survive until a later scheduled retry.
+            design_changes::refuse_census();
         }
         self.canonicalize_definitions();
         ticks
@@ -420,12 +433,27 @@ impl Variants {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
+        self.capture_state_carried(memory, base, variants, hour, force_full, false)
+    }
+
+    fn capture_state_carried(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        variants: Sources<'_, cequipment_variant::RegistryRow>,
+        hour: i32,
+        force_full: bool,
+        recovery_carry: bool,
+    ) -> [u64; N] {
         let mut ticks = [0; N];
         let mut reads = read_accounting::table(TABLES[3]);
         let begin = qpc();
         let source = complete_source(variants.rows, variants.outcome);
         let held = (!force_full)
             .then(design_changes::held::certified)
+            .flatten();
+        let census = (force_full && recovery_carry)
+            .then(design_changes::held::census)
             .flatten();
         capture_text(
             &mut self.definitions,
@@ -439,7 +467,11 @@ impl Variants {
                     rows,
                     arena,
                     |source| {
-                        let Some(state) = held.as_ref().and_then(|held| held.get(source)) else {
+                        let Some(state) = held
+                            .as_ref()
+                            .and_then(|held| held.get(source))
+                            .or_else(|| census.as_ref().and_then(|held| held.get(source)))
+                        else {
                             return Ok(None);
                         };
                         Ok(Some(state))
@@ -448,6 +480,29 @@ impl Variants {
                 )
             },
         );
+        let retry = census.as_ref().is_some_and(|census| !census.is_current());
+        drop(census);
+        drop(held);
+        if retry {
+            // Uncertain evidence never supplies the census. Reacquire all deep
+            // inputs through the same full reader used without certificates.
+            capture_text(
+                &mut self.definitions,
+                &mut self.definition_bytes,
+                source,
+                |source, rows, arena| {
+                    cequipment_variant::walk_definitions_carried(
+                        memory,
+                        base,
+                        source,
+                        rows,
+                        arena,
+                        |_| Ok(None),
+                        |state| bonus_snapshots::intern(state).map(std::sync::Arc::new),
+                    )
+                },
+            );
+        }
         ticks[3] = elapsed(begin);
         if !replay_data::cadence::should_walk(TableId::VariantModules, hour, force_full) {
             let skipped = Outcome::Unavailable {

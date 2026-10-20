@@ -194,7 +194,6 @@ impl Captured {
         self.len += 1;
         if self.observer_failure.is_none() {
             for (side, pointer) in source.sides.into_iter().enumerate() {
-                let mut ordinal = 0u64;
                 let mut storage = Ok(());
                 let read = engine_land_inputs::combat_log_events::observer(
                     memory,
@@ -207,21 +206,16 @@ impl Captured {
                         storage = engine_allocation::reserve_push_batch(&mut self.observers, 1)
                             .map_err(|_| "combat log observer arena allocation failed");
                         if storage.is_ok() {
-                            let [a, b, c, d, e] = fact.values;
-                            self.observers
-                                .push(replay_data::rows::CombatLogObserverRow {
-                                    combat: source.id,
-                                    attacker: side == 0,
-                                    ordinal,
-                                    kind: fact.kind as u8,
-                                    item: fact.item,
-                                    a,
-                                    b,
-                                    c,
-                                    d,
-                                    e,
-                                });
-                            ordinal += 1;
+                            match replay_data::rows::CombatLogObserverRow::from_fact(
+                                source.id,
+                                side == 0,
+                                fact.kind as u8,
+                                fact.item,
+                                fact.values,
+                            ) {
+                                Ok(row) => self.observers.push(row),
+                                Err(reason) => storage = Err(reason),
+                            }
                         }
                     },
                 );
@@ -234,6 +228,12 @@ impl Captured {
     }
     pub fn finish(&mut self, parent: Outcome) {
         crate::land_events::observe_observer_rows(self.observers.len());
+        // This worker already counted the live side/activity operands. Retained
+        // history may be empty, but those combats can publish before next hour.
+        // Include the aggregate loss entries omitted from the observer packet.
+        collector_combat_log::history_events::prepare(
+            self.observers.len().saturating_add(self.equipment.len),
+        );
         let missing = match parent {
             Outcome::Truncated { unread_rows, .. } => unread_rows,
             _ => 0,
@@ -279,7 +279,24 @@ impl Captured {
     pub fn losses_complete(&self) -> bool {
         matches!(self.rows.outcome, Outcome::Rows { .. })
     }
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
+        self.tables_with_baseline(&[])
+    }
+    pub fn table_inputs(
+        &self,
+        projection: Option<&mut crate::projection::Projection<'_>>,
+    ) -> [replay_frame::frame::TableInput; N] {
+        let previous = projection
+            .and_then(|p| p.observed_baseline::<tables::CombatLogObservers>())
+            .unwrap_or_default();
+        self.tables_with_baseline(previous)
+            .map(replay_frame::frame::TableInput::Sampled)
+    }
+    fn tables_with_baseline(
+        &self,
+        previous: &[replay_data::rows::CombatLogObserverRow],
+    ) -> [TableView; N] {
         [
             table_iter::<tables::LandCombatProgress, _>(
                 self.outcomes()[0],
@@ -297,11 +314,23 @@ impl Captured {
                     ..Default::default()
                 },
             ),
-            table_iter::<tables::CombatLogObservers, _>(
-                self.outcomes()[1],
-                self.observers.iter(),
-                Clone::clone,
-            ),
+            match self.outcomes()[1] {
+                Outcome::Rows { .. } => match collector_combat_log::observer_projection::project(
+                    &self.observers,
+                    previous,
+                ) {
+                    Ok(rows) => {
+                        TableView::Complete(replay_data::rows::TableRows::CombatLogObservers(rows))
+                    }
+                    Err(reason) => TableView::Unavailable {
+                        reason: reason.into(),
+                    },
+                },
+                Outcome::Unavailable { reason } => TableView::Unavailable {
+                    reason: reason.into(),
+                },
+                _ => unreachable!("observer census is complete or unavailable"),
+            },
         ]
     }
     fn equipment_rows(

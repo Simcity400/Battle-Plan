@@ -74,6 +74,7 @@ const fn word(generation: u64, phase: u64) -> u64 {
 }
 static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
 static BOOST_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static PRIORITY_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static JOINS: AtomicU64 = AtomicU64::new(0);
 static JOIN_WALL_NS: AtomicU64 = AtomicU64::new(0);
 static JOIN_WALL_MAX_NS: AtomicU64 = AtomicU64::new(0);
@@ -192,6 +193,8 @@ pub(crate) struct Calibration {
     /// Body wall of jobs executed by join help, also in caller_executed.
     pub help_ns: u64,
     pub wake_boost_refusals: u64,
+    /// Workers left at normal priority because raising it failed.
+    pub priority_refusals: u64,
     pub joins: u64,
     pub join_wall_ns: u64,
     pub join_wall_max_ns: u64,
@@ -1554,6 +1557,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             #[cfg(not(feature = "executor_join_help"))]
             help_ns: 0,
             wake_boost_refusals: BOOST_REFUSALS.load(Ordering::Relaxed),
+            priority_refusals: PRIORITY_REFUSALS.load(Ordering::Relaxed),
             joins: JOINS.load(Ordering::Relaxed),
             join_wall_ns: JOIN_WALL_NS.load(Ordering::Relaxed),
             join_wall_max_ns: JOIN_WALL_MAX_NS.load(Ordering::Relaxed),
@@ -1599,7 +1603,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Drop for Pool<J, R> {
     }
 }
 
-// Normal priority and the existing dynamic-wake-boost policy; no affinity change.
+// Above-normal priority and the existing dynamic-wake-boost policy; no affinity
+// change. Workers run only while the hourly callback holds the game's
+// simulation, so other processes' normal-priority threads cannot lengthen that
+// pause; between hours they wait for work and take no CPU.
 fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     shared: Arc<Shared<J, R>>,
     index: usize,
@@ -1607,11 +1614,18 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
 ) {
     #[cfg(feature = "worker_sampler")]
     let _sampler_registration = crate::worker_sampler::register_worker();
-    if !wake_boost {
-        use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriorityBoost};
+    {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, SetThreadPriorityBoost,
+            THREAD_PRIORITY_ABOVE_NORMAL,
+        };
         // SAFETY: this worker's pseudo-handle needs no close.
-        if unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
+        if !wake_boost && unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
             BOOST_REFUSALS.fetch_add(1, Ordering::Relaxed);
+        }
+        // SAFETY: as above.
+        if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
+            PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
         }
     }
     shared.thread_ids[index].store(unsafe { GetCurrentThreadId() }, Ordering::Release);

@@ -452,13 +452,34 @@ pub fn script_variable_demand(
 }
 
 /// Sizing only: the live flag count of every ScriptFlags scope, from each
-/// manager's header, through the walk itself with no room for rows.
+/// manager's header, through the walk itself with no room for rows. The same
+/// census adds watches for every scope, including empty managers, to the
+/// embedded-store demand before the first watch table is installed.
 pub fn script_flag_demand(memory: &impl Memory, base: usize, state: usize) -> Option<usize> {
-    match walk_flags(memory, base, state, &mut [], &mut []) {
+    match flag_demand(memory, base, state) {
         Outcome::Rows { len } => Some(len),
         Outcome::Truncated { unread_rows, .. } => Some(unread_rows as usize),
         Outcome::Unavailable { .. } => None,
     }
+}
+
+/// Both existing sizing callers retain the walk's named refusal and only
+/// offer scope demand after a complete census (rows themselves may not fit).
+fn flag_demand(memory: &impl Memory, base: usize, state: usize) -> Outcome {
+    let mut scopes = 0;
+    let outcome = walk_flags_buffer(
+        memory,
+        base,
+        state,
+        engine_native::walk::Buffer::Fixed(&mut []),
+        engine_native::walk::Buffer::Fixed(&mut []),
+        None,
+        Some(&mut scopes),
+    );
+    if !matches!(outcome, Outcome::Unavailable { .. }) {
+        crate::flag_changes::offer_scopes(scopes);
+    }
+    outcome
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2966,6 +2987,7 @@ fn valid_variable_parts(
 /// Every character in both serialized rosters is a scope too, with its flag
 /// manager embedded in the character (`ccharacter::FLAGS`); each manager's
 /// live count sizes its rows, and an omitted count is kept for growth.
+#[cfg(test)]
 fn walk_flags(
     memory: &impl Memory,
     base: usize,
@@ -2979,6 +3001,7 @@ fn walk_flags(
         state,
         engine_native::walk::Buffer::Fixed(output),
         engine_native::walk::Buffer::Fixed(scratch),
+        None,
         None,
     )
 }
@@ -3000,6 +3023,7 @@ fn walk_flags_growing(
         engine_native::walk::Buffer::Growing(output),
         engine_native::walk::Buffer::Growing(scratch),
         reuse,
+        None,
     )
 }
 
@@ -3010,6 +3034,7 @@ fn walk_flags_buffer(
     mut output: engine_native::walk::Buffer<'_, ScopedFlag>,
     mut scratch: engine_native::walk::Buffer<'_, cscript_flag::Row>,
     mut reuse: Option<FlagReuse<'_>>,
+    mut scopes: Option<&mut usize>,
 ) -> Outcome {
     // A quiet hour publishes the held rows without walking any scope.
     if let Some(reuse) = reuse.as_mut()
@@ -3039,6 +3064,9 @@ fn walk_flags_buffer(
                          gathered: Option<Option<[u8; cflag_manager::HEADER]>>,
                          country: Option<usize>|
          -> Result<(), &'static str> {
+            if let Some(scopes) = scopes.as_mut() {
+                **scopes += 1;
+            }
             if let (Some(reuse), Some(country)) = (reuse.as_mut(), country) {
                 reuse.country(country, id);
             }

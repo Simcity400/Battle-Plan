@@ -1,6 +1,6 @@
 //! Read-only operands demanded by deployed fresh attrition.
 use crate::{
-    Memory, carmy, carmy::DivisionSeed, cequipment_variant, cequipment_variant_pool,
+    Memory, carmy, carmy::DivisionSeed, cequipment_variant, cequipment_variant_pool, cgame_state,
     cpdx_array::Array, cprovince, cstate, equipment_entry, read,
 };
 pub const VARIANT_TERRAIN_ATTRITION: usize = 0x3a0;
@@ -67,14 +67,39 @@ pub fn terrain(
     }
     Ok(array.count)
 }
-/// The first nonnull ordinary route province, otherwise the held location.
-pub fn selected_province(memory: &impl Memory, seed: &DivisionSeed) -> Result<usize, &'static str> {
+/// The province of the ordinary route's first province id, otherwise the held
+/// location. Route entries are four-byte province ids, resolved through the
+/// game state's province roster.
+pub fn selected_province(
+    memory: &impl Memory,
+    game_state: usize,
+    seed: &DivisionSeed,
+) -> Result<usize, &'static str> {
     let route = seed
         .ordinary_route
         .ok_or("attrition ordinary route unavailable")?;
-    let array = Array::from_header(route, 8).ok_or("attrition ordinary route invalid")?;
+    let array = Array::from_header(route, 4).ok_or("attrition ordinary route invalid")?;
     let first = if array.count > 0 {
-        read::<u64>(memory, array.data).ok_or("attrition route province unreadable")? as usize
+        let id = read::<u32>(memory, array.data).ok_or("attrition first route id unreadable")?;
+        let provinces = Array::read(
+            memory,
+            game_state
+                .checked_add(cgame_state::PROVINCES)
+                .ok_or("attrition province roster overflow")?,
+            8,
+        )
+        .ok_or("attrition province roster invalid")?;
+        let province = read::<u64>(
+            memory,
+            provinces
+                .element(id, 8)
+                .ok_or("attrition route province outside roster")?,
+        )
+        .ok_or("attrition route province unreadable")? as usize;
+        if province != 0 && read::<u32>(memory, province + cprovince::ID) != Some(id) {
+            return Err("attrition route province identity mismatch");
+        }
+        province
     } else {
         0
     };
@@ -165,5 +190,46 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].source_ordinal, 1);
         assert_eq!(seen[0].amount_raw, -2);
+    }
+
+    #[test]
+    fn route_ids_resolve_through_the_province_roster() {
+        let mut bytes = vec![0u8; 0x2000];
+        let (state, roster, ids, province) = (0x100, 0x800, 0x900, 0x1000);
+        let header = |data: usize, count: u32| {
+            let mut header = [0u8; 16];
+            header[..8].copy_from_slice(&(data as u64).to_le_bytes());
+            header[8..12].copy_from_slice(&count.to_le_bytes());
+            header[12..].copy_from_slice(&count.to_le_bytes());
+            header
+        };
+        let at = state + cgame_state::PROVINCES;
+        bytes[at..at + 16].copy_from_slice(&header(roster, 8));
+        bytes[roster + 7 * 8..roster + 8 * 8].copy_from_slice(&(province as u64).to_le_bytes());
+        // Two route ids; read as one eight-byte word they name no province.
+        bytes[ids..ids + 8].copy_from_slice(&(7u64 | (3 << 32)).to_le_bytes());
+        bytes[province + cprovince::ID..province + cprovince::ID + 4]
+            .copy_from_slice(&7u32.to_le_bytes());
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut seed = DivisionSeed {
+            ordinary_route: Some(header(ids, 2)),
+            location: Some(0x1800),
+            ..Default::default()
+        };
+        assert_eq!(selected_province(&memory, state, &seed), Ok(province));
+        bytes[province + cprovince::ID] = 8;
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            selected_province(&memory, state, &seed),
+            Err("attrition route province identity mismatch")
+        );
+        seed.ordinary_route = Some(header(ids, 0));
+        assert_eq!(selected_province(&memory, state, &seed), Ok(0x1800));
     }
 }

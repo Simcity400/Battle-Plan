@@ -873,12 +873,13 @@ impl Product for CombatLog {
         for r in rows!(CombatLogObservers) {
             active.entry((r.combat, r.attacker)).or_default().push(r);
         }
-        for ((combat, attacker), operands) in active {
+        for ((combat, attacker), mut operands) in active {
+            operands.sort_unstable_by_key(|row| row.logical_order());
             if !matches_observer(
                 operands
                     .iter()
                     .filter(|r| r.kind == CombatLogObserverKind::Country as u8)
-                    .map(|r| r.b as u32),
+                    .map(|r| r.identity as u32),
                 &links,
                 &p.countries,
                 frame.hour,
@@ -916,9 +917,7 @@ impl Product for CombatLog {
                 combat,
                 attacker,
                 false,
-                operands
-                    .into_iter()
-                    .map(|r| (r.kind, r.item, [r.a, r.b, r.c, r.d, r.e])),
+                operands.into_iter().map(|r| r.fact()),
                 losses,
                 &mut ObserverLabels {
                     country: &mut country,
@@ -1418,8 +1417,8 @@ mod tests {
                     ordinal,
                     kind: CombatLogObserverKind::Leader as u8,
                     item: ordinal,
-                    a: 1000 + ordinal,
-                    b: 12,
+                    identity: 1000 + ordinal,
+                    a: 12,
                     ..Default::default()
                 })
                 .collect(),
@@ -1440,7 +1439,7 @@ mod tests {
         else {
             unreachable!()
         };
-        rows[17].b += 1;
+        rows[17].a += 1;
         let frame = encoder.encode(changed, false).unwrap();
         let TableUpdate::Delta {
             changed, deleted, ..
@@ -1452,7 +1451,7 @@ mod tests {
         assert_eq!(changed[0].key, (71u128 << 64) | (17 << 1) | 1);
         assert_eq!(
             changed[0].mask,
-            1 << 3,
+            1 << 6,
             "only the leader-hour operand changes"
         );
         assert!(deleted.is_empty());
@@ -1482,23 +1481,13 @@ mod tests {
                 }
             }));
             let combat = 71 + at as u64;
-            active.extend(
-                operands
-                    .iter()
-                    .enumerate()
-                    .map(|(ordinal, r)| CombatLogObserverRow {
-                        combat,
-                        attacker: r.attacker,
-                        ordinal: ordinal as u64,
-                        kind: r.kind,
-                        item: r.item,
-                        a: r.values[0],
-                        b: r.values[1],
-                        c: r.values[2],
-                        d: r.values[3],
-                        e: r.values[4],
-                    }),
-            );
+            active.extend(operands.iter().enumerate().map(|(ordinal, r)| {
+                let mut row =
+                    CombatLogObserverRow::from_fact(combat, r.attacker, r.kind, r.item, r.values)
+                        .unwrap();
+                row.ordinal = ordinal as u64;
+                row
+            }));
             terminal.push(LandCombatResultsRow {
                 id: at as u64 + 1,
                 combat,
@@ -1559,5 +1548,68 @@ mod tests {
             }
             assert!(reply.warnings.iter().any(|w| w.contains("1234")));
         }
+    }
+    #[test]
+    fn combat_log_stable_labels_reconstruct_the_flattened_dashboard_view() {
+        use CombatLogObserverKind as K;
+        let facts = [
+            (K::State, 0, [123_456, 987_654, 3, 0, 0]),
+            (K::Counters, 0, [0, 1, u64::MAX, 3, 4]),
+            (K::Side, 0, [0, 12_500, u64::MAX, 0, 0]),
+            (K::Pool, 1, [1, 1, 0, 0, 0]),
+            (K::Equipment, 1, [0, 71, 0, 0, 0]),
+            (K::Equipment, 1, [1, 71, u64::MAX, 0, 0]),
+            (K::Modifier, 0, [0, 11, 12, 0, 0]),
+            (K::Country, 0, [0, 11, 0, 0, 0]),
+            (K::Country, 0, [1, 11, 0, 0, 0]),
+            (K::Leader, 0, [u64::MAX, u64::MAX, 0, 0, 0]),
+            (K::Leader, 1, [u64::MAX, 4, 0, 0, 0]),
+            (K::Damage, 0, [11, 11, 11, u64::MAX, 0]),
+            (K::Activity, 0, [72, 11, 11, 0, 0]),
+            (K::ActivityTemplate, 0, [0, 73, 0, 0, 0]),
+            (K::ActivityTemplate, 0, [1, 73, 0, 0, 0]),
+            (K::ActivityDamage, 0, [0, 74, u64::MAX, 0, 0]),
+            (K::ActivityEquipment, 0, [u64::MAX, 1, 1, 0, 0]),
+            (K::ActivityEquipment, 0, [0, 71, u64::MAX, 0, 0]),
+            (K::Activity, 1, [75, 11, 11, 0, 0]),
+            (K::ActivityDamage, 1, [0, 76, 10, 0, 0]),
+        ];
+        let mut f = fixture();
+        let rows = facts
+            .iter()
+            .enumerate()
+            .map(|(ordinal, &(kind, item, values))| {
+                let mut row =
+                    CombatLogObserverRow::from_fact(71, true, kind as u8, item, values).unwrap();
+                row.ordinal = ordinal as u64;
+                row
+            })
+            .collect();
+        *f.tables[TableId::CombatLogObservers.index()] =
+            TableView::Complete(TableRows::CombatLogObservers(rows));
+        let flattened = load(f.clone());
+        let TableView::Complete(TableRows::CombatLogObservers(rows)) =
+            &mut *f.tables[TableId::CombatLogObservers.index()]
+        else {
+            unreachable!()
+        };
+        for row in rows.iter_mut() {
+            row.ordinal = 1_000_000 - row.ordinal * 13;
+        }
+        rows.sort_unstable_by_key(CombatLogObserverRow::key);
+        let stable = load(f);
+        assert_eq!(
+            serde_json::to_value(&stable.active).unwrap(),
+            serde_json::to_value(&flattened.active).unwrap()
+        );
+        let active = stable.active.iter().find(|side| !side.terminal).unwrap();
+        assert_eq!(active.activity_groups, 2);
+        assert_eq!(active.leaders, 2);
+        let templates = active
+            .details
+            .iter()
+            .find(|detail| detail.title == "Activity templates")
+            .unwrap();
+        assert_eq!(templates.rows.len(), 2, "duplicate templates stay ordered");
     }
 }

@@ -16,6 +16,11 @@ pub const OCCUPATION_HOVER_FORMAT: u16 = 104;
 pub const OCCUPATION_MAP_FORMAT: u16 = 105;
 /// Native retained Combat Log history.
 pub const COMBAT_LOG_FORMAT: u16 = 104;
+/// EventFeedHistory's interval batch uses exact per-field numeric streams,
+/// row-implied generation, sequence anchor/deltas and read-hour-relative dates.
+pub const EVENT_FEED_COLUMNS_FORMAT: u16 = 106;
+/// Stable semantic observer occurrences and independent signed numeric lanes.
+pub const COMBAT_LOG_OBSERVER_KEYS_FORMAT: u16 = 106;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -1745,8 +1750,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::CountryExperienceGains.index()].introduced = WIDGET_CAPTURE_FORMAT;
     history[TableId::EventFeedHistory.index()] = table(
         TableId::EventFeedHistory,
-        SCRIPT_EVENT_FORMAT,
-        "pol/capture-events-decisions",
+        EVENT_FEED_COLUMNS_FORMAT,
+        "event-feed-numeric-streams",
     );
     history[TableId::EventFeedHistory.index()].introduced = WIDGET_CAPTURE_FORMAT;
     history[TableId::AdvisorRoles.index()] = appended_at(
@@ -3065,8 +3070,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         introduced: COMBAT_LOG_FORMAT,
         ..table(
             TableId::CombatLogObservers,
-            COMBAT_LOG_FORMAT,
-            "pol/capture-combat-log",
+            COMBAT_LOG_OBSERVER_KEYS_FORMAT,
+            "combat-log-observer-keys",
         )
     };
     history[TableId::ResourceOrigins.index()] = LastChange {
@@ -4242,6 +4247,17 @@ mod tests {
             assert!(history.table_gap(field.table, POLITICAL_FORMAT).is_none());
             assert!(history.table_gap(field.table, FORMAT_VERSION).is_none());
         }
+    }
+
+    #[test]
+    fn combat_log_observer_semantic_keys_and_numeric_lanes_change_at_106() {
+        let table = TableId::CombatLogObservers;
+        let history = table.last_change();
+        assert_eq!(history.introduced, COMBAT_LOG_FORMAT);
+        assert_eq!(history.format, COMBAT_LOG_OBSERVER_KEYS_FORMAT);
+        assert_eq!(history.kind, ChangeKind::Layout);
+        assert!(history.table_gap(table, 105).is_some());
+        assert!(history.table_gap(table, 106).is_none());
     }
 
     #[test]

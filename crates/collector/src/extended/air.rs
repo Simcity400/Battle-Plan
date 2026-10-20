@@ -1697,12 +1697,8 @@ fn read_equipment_carried(
         && output.ensure(end) == Ok(true)
     {
         let carried = reuse.carry(&plan);
-        for (destination, row) in output[start..end].iter_mut().zip(carried) {
-            *destination = rows::WingEquipmentRow {
-                wing: source.row.id,
-                ..*row
-            };
-        }
+        // The plan certifies the same full wing identity, including row ids.
+        output[start..end].clone_from_slice(carried);
         return (Outcome::Rows { len: rows }, rows);
     }
     let (outcome, required) = read_equipment_buffer(memory, base, source, output.suffix(0), start);
@@ -1860,6 +1856,8 @@ pub(crate) use bases::{
 use bases::{
     AIR_REGISTRATIONS_MASK, CarryRun, bases_pool_u32, bspan, copy_air_bases_pass, resolve_link,
 };
+#[cfg(test)]
+pub(super) use state_fuel_inputs::Packet as StateFuelPacket;
 pub(crate) use state_fuel_inputs::status as state_fuel_capture_status;
 
 #[cfg(test)]

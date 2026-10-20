@@ -447,8 +447,16 @@ fn unavailable_air_supply_is_local_to_the_noncore_movement_operand() {
         seed.exiled = Some(exiled);
         seed.noncore_supply_bypass = Some(bypass);
         let mut packet = packet(65);
-        let outcome =
-            packet.capture_holding(&source, 0, GS, &[seed], Outcome::Rows { len: 1 }, 1, &[], &[]);
+        let outcome = packet.capture_holding(
+            &source,
+            0,
+            GS,
+            &[seed],
+            Outcome::Rows { len: 1 },
+            1,
+            &[],
+            &[],
+        );
         assert_eq!(outcome, Outcome::Rows { len: 1 });
         assert_eq!(packet.units[0].air_supply, None);
         let mut rows = [carmy::StatusRow::default()];

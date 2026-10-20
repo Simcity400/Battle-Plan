@@ -713,6 +713,17 @@ impl<V: Copy> PassTable<V> {
     /// `key`'s value this pass: the kept one, else `compute`'s, kept while
     /// the table is at most half full.
     pub(crate) fn get_or(&mut self, key: usize, compute: impl FnOnce() -> V) -> V {
+        self.get_or_if(key, compute, |_| true)
+    }
+
+    /// Keep only observations the caller can reuse. In particular a failed
+    /// native read must not turn a one-shot fault into later refusals.
+    pub(crate) fn get_or_if(
+        &mut self,
+        key: usize,
+        compute: impl FnOnce() -> V,
+        keep: impl FnOnce(V) -> bool,
+    ) -> V {
         if self.slots.is_empty() {
             return compute();
         }
@@ -731,7 +742,7 @@ impl<V: Copy> PassTable<V> {
             }
         }
         let value = compute();
-        if self.used < self.slots.len() / 2 {
+        if self.used < self.slots.len() / 2 && keep(value) {
             self.slots[at] = Some(PassEntry {
                 generation: self.generation,
                 key,

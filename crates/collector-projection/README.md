@@ -18,3 +18,5 @@ Periodic and forced encoding keyframes materialize complete state from that
 baseline and selected changes, without native acquisition. Carried collections
 stay shared; empty changes reuse the baseline Arc. Missing/partial baselines,
 branch changes and hour gaps still refuse carry. Ordinary hours remain sparse.
+
+Within one unpublished batch, replacements reuse exclusively owned tree paths. Shared paths still copy before editing, so published snapshots, changed ranges and cached byte totals retain their immutable contract. Inserts and deletions retain their existing balancing.

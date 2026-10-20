@@ -3,6 +3,35 @@ use engine_native::carmy;
 use std::collections::BTreeSet;
 
 #[test]
+fn periodic_live_input_sizing_keeps_land_events_prompt_and_skips_worker_hints() {
+    struct Unreadable;
+    impl Memory for Unreadable {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            false
+        }
+    }
+    let failures = || {
+        let status = serde_json::to_value(crate::country_scale::demand_diagnostics()).unwrap();
+        [
+            "advisor_modifiers",
+            "production_modifiers",
+            "land_event_words",
+        ]
+        .map(|name| status[name]["failed_observations"].as_u64().unwrap())
+    };
+    let mut capacities = Capacities::default();
+    let before = failures();
+    assert!(
+        capacities
+            .presize_live_inputs_periodic(&Unreadable, 0, false)
+            .is_err()
+    );
+    assert_eq!(failures(), [before[0], before[1], before[2] + 1]);
+    assert!(capacities.presize_live_inputs(&Unreadable, 0).is_err());
+    assert_eq!(failures(), [before[0] + 1, before[1] + 1, before[2] + 2]);
+}
+
+#[test]
 fn final_worker_loan_preserves_mod_sized_storage_without_callback_allocation() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.divisions = Divisions::new(5_000);

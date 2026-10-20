@@ -35,17 +35,83 @@ pub(in super::super) fn certified() -> Option<Certified> {
         && active() == 0)
         .then(|| Certified(cache()))
 }
+/// Recovery still acquires/authenticates the complete registry and every
+/// prefix. Only untouched deep values from the last complete dependency
+/// interval survive a local occurrence-log refusal.
+pub(in super::super) struct Census {
+    store: MutexGuard<'static, Store>,
+    held: MutexGuard<'static, HashMap<u64, Entry>>,
+    bindings: sources::CertifiedBindings,
+    revision: u64,
+    epoch: u64,
+    dependencies: u64,
+}
+impl Census {
+    pub(in super::super) fn get(
+        &self,
+        source: &native::RegistryRow,
+    ) -> Option<Arc<rows::VariantDesignState>> {
+        let watch = self.store.watched.get(&source.pointer())?;
+        if watch.id != source.id
+            || watch.dirty
+            || !self.bindings.unchanged(source.id, &self.store.interests)
+        {
+            return None;
+        }
+        self.held
+            .get(&source.id)
+            .filter(|(pointer, _)| *pointer == source.pointer())
+            .map(|(_, state)| Arc::clone(state))
+    }
+    pub(in super::super) fn is_current(&self) -> bool {
+        enabled()
+            && active() == 0
+            && self.epoch == EPOCH.load(Ordering::Acquire)
+            && self.revision == REVISION.load(Ordering::Acquire)
+            && self.dependencies == CENSUS_REVISION.load(Ordering::Acquire)
+    }
+}
+pub(in super::super) fn census() -> Option<Census> {
+    let store = STORE
+        .get()?
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dependencies = CENSUS_REVISION.load(Ordering::Acquire);
+    if native::mutations::WRITER_AUDIT_REFUSAL.is_some()
+        || !enabled()
+        || active() != 0
+        || store.epoch != EPOCH.load(Ordering::Acquire)
+        || dependencies != CENSUS_BASELINE.load(Ordering::Acquire)
+    {
+        return None;
+    }
+    Some(Census {
+        epoch: store.epoch,
+        store,
+        held: cache(),
+        bindings: sources::certified_bindings(),
+        revision: REVISION.load(Ordering::Acquire),
+        dependencies,
+    })
+}
 pub(super) fn seed(
     registry: &[native::RegistryRow],
     variants: &Variants,
+    watches: &HashMap<usize, Watch>,
 ) -> Result<(), &'static str> {
     let mut held = cache();
-    held.clear();
-    engine_allocation::reserve_map(&mut held, registry.len())
+    held.retain(|id, (pointer, _)| watches.get(pointer).is_some_and(|watch| watch.id == *id));
+    let additional = registry.len().saturating_sub(held.len());
+    engine_allocation::reserve_map(&mut held, additional)
         .map_err(|_| "variant held state allocation failed")?;
     for (source, row) in registry.iter().zip(&variants.definitions.rows) {
         if row.identity.id != source.id {
             return Err("variant held state identity mismatch");
+        }
+        if held.get(&source.id).is_some_and(|(pointer, state)| {
+            *pointer == source.pointer() && Arc::ptr_eq(state, &row.design)
+        }) {
+            continue;
         }
         held.insert(source.id, (source.pointer(), Arc::clone(&row.design)));
     }
@@ -281,5 +347,566 @@ mod tests {
         .unwrap();
         assert!(!held.contains_key(&1));
         assert!(Arc::ptr_eq(&held[&2].1, &quiet));
+    }
+}
+
+#[cfg(test)]
+mod census_tests {
+    use super::super::super::variant_scale_tests::{Space, space};
+    use super::*;
+    use collector_observers::world_input_changes;
+    use std::{cell::Cell, sync::Barrier};
+
+    fn acquire(
+        memory: &impl Memory,
+        base: usize,
+        sources: &[native::RegistryRow],
+        carry: bool,
+    ) -> Variants {
+        let mut variants = Variants::vacant();
+        variants.capture_state_carried(
+            memory,
+            base,
+            Sources {
+                rows: sources,
+                outcome: Outcome::Rows { len: sources.len() },
+            },
+            7,
+            true,
+            carry,
+        );
+        variants
+    }
+    fn views(variants: Variants) -> [TableView; 4] {
+        let mut captured = super::super::super::Captured::with_capacities(&Capacities::default());
+        captured.restore_variants(variants);
+        let [_, _, _, definitions, modules, stats, upgrades, ..] = captured.tables();
+        [definitions, modules, stats, upgrades]
+    }
+    fn setup() -> (Space, Vec<native::RegistryRow>, Variants) {
+        let space = space(2, 4);
+        writers::prepare(8).unwrap();
+        let mut sources = Vec::new();
+        assert_eq!(
+            native::walk_registry(&space.memory(), space.base, space.game_state, &mut sources),
+            Outcome::Rows { len: 8 }
+        );
+        let baseline = acquire(&space.memory(), space.base, &sources[..7], false);
+        assert_eq!(baseline.definitions.outcome, Outcome::Rows { len: 7 });
+        let watches = sources[..7]
+            .iter()
+            .map(|source| {
+                (
+                    source.pointer(),
+                    Watch {
+                        id: source.id,
+                        pointer: source.pointer(),
+                        flags: [0; 3],
+                        dirty: false,
+                    },
+                )
+            })
+            .collect();
+        seed(&sources[..7], &baseline, &watches).unwrap();
+        let mut interests = sources::Interests::default();
+        liveness::seed(&baseline, &mut interests).unwrap();
+        sources::seed(&baseline, &mut interests).unwrap();
+        assert!(
+            STORE
+                .set(Mutex::new(Store {
+                    batch: Batch::empty(),
+                    spare: Batch::empty(),
+                    watched: watches,
+                    interests,
+                    epoch: EPOCH.load(Ordering::Acquire),
+                }))
+                .is_ok()
+        );
+        ENABLED.store(true, Ordering::Release);
+        SAVED_BASELINE.store(true, Ordering::Release);
+        SOURCE_BASELINE.store(true, Ordering::Release);
+        LIVENESS_BASELINE.store(true, Ordering::Release);
+        RECOVER.store(false, Ordering::Release);
+        RECOVERY_READ.store(false, Ordering::Release);
+        CENSUS_BASELINE.store(CENSUS_REVISION.load(Ordering::Acquire), Ordering::Release);
+        (space, sources, baseline)
+    }
+    struct Meter<'a> {
+        space: &'a Space,
+        bytes: Cell<usize>,
+        unreadable: Option<usize>,
+    }
+    impl Memory for Meter<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self
+                .unreadable
+                .is_some_and(|at| (address..address + output.len()).contains(&at))
+            {
+                return false;
+            }
+            self.bytes.set(self.bytes.get() + output.len());
+            self.space.memory().copy(address, output)
+        }
+    }
+    #[test]
+    fn variant_recovery_reads_only_marked_and_new_deep_values_and_matches_a_full_census() {
+        let (mut space, sources, baseline) = setup();
+        let changed = sources[1];
+        let removed = sources[2];
+        let at = changed.pointer() + native::AUTO_UPGRADED - space.bytes.as_ptr() as usize;
+        space.bytes[at] = 1;
+        // Even an exhausted scalar log marks its receiver before it refuses.
+        // Unrelated deep state keeps its independent dependency proof.
+        scalar::observe(
+            &space.memory(),
+            space.base,
+            changed.pointer(),
+            scalar::Field::AutoUpgraded,
+        );
+        let mut changes = Vec::new();
+        assert_eq!(
+            drain(space.base, 7, &mut changes),
+            Err("variant scalar event capacity exhausted")
+        );
+        assert!(needs_full());
+        assert_eq!(
+            *LAST_REFUSAL.lock().unwrap(),
+            Some("variant scalar event capacity exhausted")
+        );
+        let sources: Vec<_> = sources
+            .into_iter()
+            .filter(|source| source.id != removed.id)
+            .collect();
+        let meter = Meter {
+            space: &space,
+            bytes: Cell::new(0),
+            unreadable: None,
+        };
+        let reduced = acquire(&meter, space.base, &sources, true);
+        let reduced_bytes = meter.bytes.replace(0);
+        let full = acquire(&meter, space.base, &sources, false);
+        let full_bytes = meter.bytes.get();
+        assert!(
+            reduced_bytes < full_bytes,
+            "{reduced_bytes} must be less than {full_bytes}"
+        );
+        assert!(Arc::ptr_eq(
+            &reduced.definitions.rows[0].design,
+            &baseline.definitions.rows[0].design
+        ));
+        assert!(!Arc::ptr_eq(
+            &reduced.definitions.rows[1].design,
+            &baseline.definitions.rows[1].design
+        ));
+        assert_eq!(reduced.definitions.rows[1].design.auto_upgraded, 1);
+        assert!(
+            reduced
+                .definitions
+                .rows
+                .last()
+                .unwrap()
+                .source_links
+                .is_some()
+        );
+        assert!(
+            !reduced
+                .definitions
+                .rows
+                .iter()
+                .any(|row| row.identity.id == removed.id)
+        );
+        assert_eq!(views(reduced), views(full));
+
+        // The current read refusal remains exactly the full reader's verdict.
+        let failing = Meter {
+            space: &space,
+            bytes: Cell::new(0),
+            unreadable: Some(changed.pointer() + native::AUTO_UPGRADED),
+        };
+        let reduced = acquire(&failing, space.base, &sources, true);
+        let full = acquire(&failing, space.base, &sources, false);
+        assert!(matches!(
+            reduced.definitions.outcome,
+            Outcome::Unavailable { .. }
+        ));
+        assert_eq!(views(reduced), views(full));
+
+        let fresh = acquire(&space.memory(), space.base, &sources, true);
+        let watches = sources
+            .iter()
+            .map(|source| {
+                (
+                    source.pointer(),
+                    Watch {
+                        id: source.id,
+                        pointer: source.pointer(),
+                        flags: [0; 3],
+                        dirty: false,
+                    },
+                )
+            })
+            .collect();
+        seed(&sources, &fresh, &watches).unwrap();
+        assert!(!cache().contains_key(&removed.id));
+        assert_eq!(cache().len(), sources.len());
+    }
+    // Exercise the shared owner's real dispatch gate and original-call flight,
+    // rather than calling the production adapter or changing its counter.
+    fn shared_bonus_refresh() -> world_input_changes::Original {
+        world_input_changes::forwarder(Some(world_input_changes::Forwarder {
+            call: forwarded,
+            enabled: |_| {},
+        }));
+        world_input_changes::design_bonus_refresh_for_test(refresh_bonus)
+    }
+    unsafe extern "system-unwind" fn rebuilt(_: usize, _: usize, _: usize, _: usize) -> usize {
+        19
+    }
+    unsafe extern "system-unwind" fn refresh_bonus(
+        variant: usize,
+        pause: usize,
+        traits: usize,
+        rebuild: usize,
+    ) -> usize {
+        unsafe {
+            std::ptr::write_unaligned(
+                (variant + native::DESIGN_TEAM_TRAITS) as *mut i32,
+                traits as i32,
+            );
+        }
+        if pause != 0 {
+            let pause = unsafe { &*(pause as *const Barrier) };
+            pause.wait();
+            pause.wait();
+        }
+        if rebuild != 0 {
+            unsafe { around::<0>([variant, 0, 0, 0], rebuilt) }
+        } else {
+            19
+        }
+    }
+    #[test]
+    fn variant_census_rejects_unforwarded_shared_refresh_before_inner_rebuild() {
+        let (space, sources, _) = setup();
+        BASE.store(space.base, Ordering::Release);
+        let refresh = shared_bonus_refresh();
+        // The fixture supplies a fresh census before shared dispatch is opened.
+        // Such a census still cannot survive a new unforwarded original.
+        let proof = census().unwrap();
+        let revision = REVISION.load(Ordering::Acquire);
+        let pause = Barrier::new(2);
+        let args = [
+            sources[0].pointer(),
+            &pause as *const Barrier as usize,
+            23,
+            1,
+        ];
+        let writer =
+            std::thread::spawn(move || unsafe { refresh(args[0], args[1], args[2], args[3]) });
+        pause.wait();
+        let shared_active = world_input_changes::design_forwarder_active();
+        let private_active = ACTIVE.load(Ordering::SeqCst);
+        let private_revision = REVISION.load(Ordering::Acquire);
+        let watch_dirty = proof.store.watched[&sources[0].pointer()].dirty;
+        let traits = engine_native::read::<i32>(
+            &space.memory(),
+            sources[0].pointer() + native::DESIGN_TEAM_TRAITS,
+        );
+        let current = proof.is_current();
+        drop(proof);
+        let admitted = census().is_some();
+        let interval = drain(space.base, 7, &mut Vec::new());
+        pause.wait();
+        let result = writer.join().unwrap();
+        assert_eq!(shared_active, 1);
+        assert_eq!(private_active, 0);
+        assert_eq!(private_revision, revision);
+        assert!(!watch_dirty);
+        assert_eq!(traits, Some(23));
+        assert!(
+            !current,
+            "the shared original invalidates an acquired census"
+        );
+        assert!(!admitted, "the shared original prevents census admission");
+        assert_eq!(world_input_changes::design_forwarder_active(), 0);
+        assert!(
+            REVISION.load(Ordering::Acquire) > revision,
+            "the inner rebuild arrives later"
+        );
+        assert_eq!(result, 19);
+        assert_eq!(
+            interval,
+            Err("variant change interval has an unobserved or running writer")
+        );
+        assert_eq!(status().running_refusals, 1);
+    }
+    #[test]
+    fn variant_recovery_reacquires_deep_values_after_a_completed_unforwarded_bonus_refresh() {
+        let (space, sources, baseline) = setup();
+        let refresh = shared_bonus_refresh();
+        observe_world_forwarder(true);
+        let proof = census().unwrap();
+        observe_world_forwarder(false);
+        assert!(
+            !proof.is_current(),
+            "closing dispatch revokes acquired proofs too"
+        );
+        drop(proof);
+        let revision = REVISION.load(Ordering::Acquire);
+        assert_eq!(unsafe { refresh(sources[0].pointer(), 0, 23, 0) }, 19);
+        assert_eq!(world_input_changes::design_forwarder_active(), 0);
+        assert_eq!(REVISION.load(Ordering::Acquire), revision);
+        assert!(!STORE.get().unwrap().lock().unwrap().watched[&sources[0].pointer()].dirty);
+        assert!(
+            census().is_none(),
+            "closing shared dispatch revokes the old census"
+        );
+        observe_world_forwarder(true);
+        assert!(
+            census().is_none(),
+            "reopening dispatch cannot restore that proof"
+        );
+        let recovered = acquire(&space.memory(), space.base, &sources, true);
+        assert_eq!(recovered.definitions.rows[0].design.design_team_traits, 23);
+        assert!(!Arc::ptr_eq(
+            &recovered.definitions.rows[0].design,
+            &baseline.definitions.rows[0].design,
+        ));
+        assert_eq!(
+            views(recovered),
+            views(acquire(&space.memory(), space.base, &sources, false))
+        );
+    }
+    #[test]
+    fn variant_recovery_keeps_shared_observation_and_reuses_untouched_deep_values() {
+        let (space, sources, baseline) = setup();
+        BASE.store(space.base, Ordering::Release);
+        let refresh = shared_bonus_refresh();
+        observe_world_forwarder(true);
+        scalar::observe(
+            &space.memory(),
+            space.base,
+            sources[1].pointer(),
+            scalar::Field::AutoUpgraded,
+        );
+        assert_eq!(
+            drain(space.base, 7, &mut Vec::new()),
+            Err("variant scalar event capacity exhausted")
+        );
+        assert!(!SAVED_BASELINE.load(Ordering::Acquire));
+        assert!(
+            census().is_some(),
+            "a local refusal preserves independent proofs"
+        );
+        let revision = REVISION.load(Ordering::Acquire);
+        assert_eq!(unsafe { refresh(sources[0].pointer(), 0, 23, 0) }, 19);
+        assert!(REVISION.load(Ordering::Acquire) > revision);
+        let recovered = acquire(&space.memory(), space.base, &sources, true);
+        assert_eq!(recovered.definitions.rows[0].design.design_team_traits, 23);
+        assert!(Arc::ptr_eq(
+            &recovered.definitions.rows[2].design,
+            &baseline.definitions.rows[2].design,
+        ));
+        assert_eq!(
+            views(recovered),
+            views(acquire(&space.memory(), space.base, &sources, false))
+        );
+    }
+    #[test]
+    fn variant_recovery_never_carries_uncertified_dependencies_lifetimes_or_overlapping_writers() {
+        let (space, sources, _) = setup();
+        assert!(census().is_some());
+        CENSUS_REVISION.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            census().is_none(),
+            "a dependency write must revoke recovery carry"
+        );
+        let failing = Meter {
+            space: &space,
+            bytes: Cell::new(0),
+            unreadable: Some(sources[0].pointer() + native::AUTO_UPGRADED),
+        };
+        assert_eq!(
+            views(acquire(&failing, space.base, &sources, true)),
+            views(acquire(&failing, space.base, &sources, false))
+        );
+        CENSUS_BASELINE.store(CENSUS_REVISION.load(Ordering::Acquire), Ordering::Release);
+        ACTIVE.store(1, Ordering::SeqCst);
+        assert!(census().is_none());
+        ACTIVE.store(0, Ordering::SeqCst);
+        let proof = census().unwrap();
+        unobserved();
+        assert!(!proof.is_current());
+        drop(proof);
+        assert!(
+            census().is_none(),
+            "draining MISSED must not restore the lost proof"
+        );
+        MISSED.store(false, Ordering::Release);
+        assert!(census().is_none());
+        CENSUS_BASELINE.store(CENSUS_REVISION.load(Ordering::Acquire), Ordering::Release);
+        EPOCH.fetch_add(1, Ordering::AcqRel);
+        assert!(census().is_none());
+    }
+    #[test]
+    fn variant_recovery_reacquires_all_deep_values_when_its_certificate_changes_during_the_read() {
+        let (space, sources, _) = setup();
+        struct Invalidate<'a> {
+            space: &'a Space,
+            trigger: usize,
+            changed: Cell<bool>,
+        }
+        impl Memory for Invalidate<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == self.trigger && !self.changed.replace(true) {
+                    unobserved();
+                }
+                self.space.memory().copy(address, output)
+            }
+        }
+        let memory = Invalidate {
+            space: &space,
+            trigger: sources[0].pointer() + native::EQUIPMENT_TOKEN,
+            changed: Cell::new(false),
+        };
+        let reduced = acquire(&memory, space.base, &sources, true);
+        assert!(memory.changed.get());
+        assert!(
+            reduced
+                .definitions
+                .rows
+                .iter()
+                .all(|row| row.source_links.is_some()),
+            "an invalidated read must discard every carried value"
+        );
+        assert_eq!(
+            views(reduced),
+            views(acquire(&space.memory(), space.base, &sources, false))
+        );
+    }
+    #[test]
+    fn failed_variant_recovery_revokes_proofs_before_the_next_native_interval() {
+        let (space, sources, _) = setup();
+        scalar::observe(
+            &space.memory(),
+            space.base,
+            sources[0].pointer(),
+            scalar::Field::AutoUpgraded,
+        );
+        assert!(drain(space.base, 7, &mut Vec::new()).is_err());
+        let failing = Meter {
+            space: &space,
+            bytes: Cell::new(0),
+            unreadable: Some(sources[0].pointer() + native::AUTO_UPGRADED),
+        };
+        let mut variants = Variants::vacant();
+        variants.capture(
+            &failing,
+            space.base,
+            Sources {
+                rows: &sources,
+                outcome: Outcome::Rows { len: sources.len() },
+            },
+            7,
+            false,
+        );
+        assert!(matches!(
+            variants.definitions.outcome,
+            Outcome::Unavailable { .. }
+        ));
+        assert!(
+            !needs_full(),
+            "a failed recovery must not create hourly retries"
+        );
+        assert!(
+            census().is_none(),
+            "forwarding may be withdrawn until the daily retry"
+        );
+    }
+    #[test]
+    fn variant_interval_refusal_retains_the_origin_of_a_store_collision() {
+        let (space, sources, _) = setup();
+        let store = STORE.get().unwrap().lock().unwrap();
+        collector_test_support::with_allocations_denied(|| {
+            scalar::observe(
+                &space.memory(),
+                space.base,
+                sources[0].pointer(),
+                scalar::Field::AutoUpgraded,
+            );
+        });
+        drop(store);
+        assert!(drain(space.base, 7, &mut Vec::new()).is_err());
+        let status = status();
+        assert_eq!(status.missed_refusals, 1);
+        assert_eq!(status.running_refusals, 0);
+        let at = status.last_missed_at.unwrap();
+        assert!(at.file.ends_with("scalar.rs"));
+        assert!(at.line > 0);
+    }
+    #[test]
+    fn variant_unwatched_draft_collisions_do_not_refuse_the_saved_interval() {
+        let (space, sources, _) = setup();
+        BASE.store(space.base, Ordering::Release);
+        // The last registry row is deliberately outside the saved baseline.
+        // Keep an actual log owner inside its original while a second thread
+        // edits that draft, exercising the rejected callback admission path.
+        let draft = sources[7].pointer();
+        let pause = Barrier::new(2);
+        let pause_pointer = &pause as *const Barrier as usize;
+        let writer = std::thread::spawn(move || unsafe {
+            around::<0>([draft, pause_pointer, 23, 0], refresh_bonus)
+        });
+        pause.wait();
+        let result = collector_test_support::with_allocations_denied(|| unsafe {
+            around::<0>([draft, 0, 0, 0], rebuilt)
+        });
+        pause.wait();
+        assert_eq!(writer.join().unwrap(), 19);
+        assert_eq!(result, 19);
+        collector_test_support::with_allocations_denied(|| {
+            unrecorded_writer(Receiver::Removed, draft, None);
+        });
+        assert!(!MISSED.load(Ordering::Acquire));
+        assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(()));
+        assert!(!needs_full());
+        assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
+        // Publishing that same draft is different: it adds a saved member.
+        unrecorded_writer(Receiver::Published, sources[7].pointer(), None);
+        assert!(drain(space.base, 7, &mut Vec::new()).is_err());
+        let status = status();
+        assert_eq!(status.running_refusals, 0);
+        assert_eq!(status.missed_refusals, 1);
+        assert!(status.last_missed_at.is_some());
+    }
+    #[test]
+    fn variant_log_owner_collision_marks_known_receivers_without_revoking_unrelated_designs() {
+        let (space, sources, baseline) = setup();
+        collector_test_support::with_allocations_denied(|| {
+            unrecorded_writer(
+                Receiver::Variant,
+                sources[1].pointer(),
+                Some(sources[2].pointer()),
+            )
+        });
+        assert_eq!(
+            drain(space.base, 7, &mut Vec::new()),
+            Err("variant change interval has an unobserved or running writer")
+        );
+        let proof = census().unwrap();
+        assert!(proof.get(&sources[1]).is_none());
+        assert!(proof.get(&sources[2]).is_none());
+        assert!(Arc::ptr_eq(
+            &proof.get(&sources[0]).unwrap(),
+            &baseline.definitions.rows[0].design
+        ));
+        drop(proof);
+        collector_test_support::with_allocations_denied(|| {
+            unrecorded_writer(Receiver::Roster, 0, None)
+        });
+        assert!(
+            census().is_none(),
+            "an unknown receiver still revokes every value"
+        );
     }
 }

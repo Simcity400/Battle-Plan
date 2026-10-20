@@ -47,7 +47,10 @@ use engine_native::{
     modifier_accumulator::SnapshotArena, modifier_accumulator::SnapshotCapacity,
     modifier_accumulator::Value, walk::Outcome,
 };
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+};
 
 // Fixed-budget fixtures and the initial optional cache floor. Worker-owned
 // source/detail acquisition grows from original observations without these limits.
@@ -315,6 +318,7 @@ impl<M: Memory> Memory for BoundedMemory<'_, M> {
 struct ModifierMemory<'a, M> {
     inner: &'a M,
     arena: &'a RefCell<SnapshotArena>,
+    held_task: Option<(usize, &'a [[u8; 16]])>,
 }
 
 impl<M: Memory> Memory for ModifierMemory<'_, M> {
@@ -370,6 +374,17 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
         key: u32,
     ) -> Option<Result<Value, &'static str>> {
         let mut arena = self.arena.borrow_mut();
+        if let Some((held_address, entries)) = self.held_task
+            && address == held_address
+        {
+            if let Some(result) = arena.existing_at(address, key) {
+                return Some(result);
+            }
+            return Some(engine_native::modifier_accumulator::lookup_snapshot(
+                entries.as_flattened(),
+                key,
+            ));
+        }
         match arena.capture_at(self.inner, address, key) {
             Ok(observation) => Some(arena.value(observation)),
             Err(SNAPSHOT_NODE_CAPACITY | SNAPSHOT_ENTRY_CAPACITY) => None,
@@ -585,13 +600,11 @@ struct ShipStore {
     index: Vec<(usize, usize)>,
     tasks: Vec<HeldTask>,
     variants: Vec<Variant>,
-    entries: Vec<[u8; 16]>,
     next: Vec<Option<Box<Held>>>,
     next_hot: Vec<Hot>,
     next_tasks: Vec<HeldTask>,
     next_variants: Vec<Variant>,
     next_variant_index: Vec<(usize, usize)>,
-    next_entries: Vec<[u8; 16]>,
     quiet: Option<(u64, u64)>,
     generation: u64,
 }
@@ -748,20 +761,25 @@ impl ShipStore {
             .map(|at| &self.tasks[at])
     }
 
-    /// Keep a task force's terms, its modifier array copied, for the next
-    /// hour; `false` (and nothing kept) when storage cannot grow.
+    /// Keep a task force's terms for the next hour, sharing an equal modifier
+    /// array. A failed optional allocation leaves nothing held.
     fn keep_task(&mut self, mut held: HeldTask, modifiers: Option<&[[u8; 16]]>) -> bool {
-        let len = modifiers.map_or(0, <[_]>::len);
-        if reserve(&mut self.next_tasks, 1).is_err()
-            || reserve(&mut self.next_entries, len).is_err()
-        {
+        if reserve(&mut self.next_tasks, 1).is_err() {
             return false;
         }
-        held.modifiers = modifiers.map(|array| {
-            let start = self.next_entries.len();
-            self.next_entries.extend_from_slice(array);
-            (start, array.len())
-        });
+        if let Some(array) = modifiers {
+            if held.modifiers.as_deref().is_none_or(|kept| {
+                (kept.len() != array.len() || kept.as_ptr() != array.as_ptr())
+                    && kept.as_slice() != array
+            }) {
+                let Ok(entries) = copy_vec(array) else {
+                    return false;
+                };
+                held.modifiers = Some(Arc::new(entries));
+            }
+        } else {
+            held.modifiers = None;
+        }
         self.next_tasks.push(held);
         true
     }
@@ -798,18 +816,25 @@ impl ShipStore {
 
     /// The range completed: hold what it read and carried.
     fn hold(&mut self) -> bool {
+        let same_order = self.hot.len() == self.next_hot.len()
+            && self
+                .hot
+                .iter()
+                .zip(&self.next_hot)
+                .all(|(held, next)| held.pointer == next.pointer);
         self.next_tasks.sort_unstable_by_key(|held| held.pointer);
         std::mem::swap(&mut self.held, &mut self.next);
         std::mem::swap(&mut self.hot, &mut self.next_hot);
         std::mem::swap(&mut self.tasks, &mut self.next_tasks);
         std::mem::swap(&mut self.variants, &mut self.next_variants);
-        std::mem::swap(&mut self.entries, &mut self.next_entries);
         self.next.clear();
         self.next_hot.clear();
         self.next_tasks.clear();
         self.next_variants.clear();
         self.next_variant_index.clear();
-        self.next_entries.clear();
+        if same_order {
+            return true;
+        }
         self.index.clear();
         if reserve(&mut self.index, self.held.len()).is_err() {
             self.forget();
@@ -832,13 +857,11 @@ impl ShipStore {
         self.index.clear();
         self.tasks.clear();
         self.variants.clear();
-        self.entries.clear();
         self.next.clear();
         self.next_hot.clear();
         self.next_tasks.clear();
         self.next_variants.clear();
         self.next_variant_index.clear();
-        self.next_entries.clear();
         self.quiet = None;
         self.generation = 0;
     }
@@ -865,16 +888,22 @@ impl ShipStore {
             + (self.variants.capacity() + self.next_variants.capacity())
                 * std::mem::size_of::<Variant>()
             + (self.tasks.capacity() + self.next_tasks.capacity()) * std::mem::size_of::<HeldTask>()
-            + (self.entries.capacity() + self.next_entries.capacity()) * 16
+            + self
+                .tasks
+                .iter()
+                .chain(&self.next_tasks)
+                .filter_map(|task| task.modifiers.as_ref())
+                .map(|entries| size_of::<Vec<[u8; 16]>>() + entries.capacity() * 16)
+                .sum::<usize>()
     }
 }
 
 /// One task force's held terms: its handle and roster owner, the country that owner resolved to,
 /// its doctrine contribution with the certificate (doctrine tree writer, country tree) it was read
-/// under, its mine exposure with the modifier array (a span of the store's entries) hourly
+/// under, its mine exposure with the immutable modifier array the hourly
 /// task-force modifier rebuild built from it, and its location's weather terms with their
 /// certificate (region writer, country tree) and the province's applied night factor.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct HeldTask {
     pointer: usize,
     handle: u64,
@@ -885,7 +914,7 @@ struct HeldTask {
     country_terms: Option<((u64, u64), [i64; 4])>,
     doctrine: Option<HeldDoctrine>,
     mine_exposure: u64,
-    modifiers: Option<(usize, usize)>,
+    modifiers: Option<Arc<Vec<[u8; 16]>>>,
     weather: Option<HeldWeather>,
     terms: Option<(Terms, u64)>,
 }
@@ -900,7 +929,6 @@ type HeldWeather = (cship::OrganisationWeather, [(u64, u64); 2], u64);
 /// The task force a range is reading: its fields, its doctrine tree's
 /// sequence taken before its first ship's read, its held terms, and whether
 /// the hour's slice compares them instead of serving them.
-#[derive(Clone, Copy)]
 struct TaskState {
     fields: cship::TaskForceFields,
     sequence: Option<(u64, u64)>,
@@ -1299,7 +1327,7 @@ impl Captured {
     ) {
         self.finish_task(memory, carrying);
         let held =
-            self.store.task(task.pointer).copied().filter(|held| {
+            self.store.task(task.pointer).cloned().filter(|held| {
                 held.handle == task.handle && held.roster_owner == task.roster_owner
             });
         // The doctrine tree's certificate precedes the read it certifies.
@@ -1313,16 +1341,17 @@ impl Captured {
         // The applied night factor of the held location, which the reader's
         // province terms follow.
         let night_factor = held
+            .as_ref()
             .and_then(|held| held.weather)
             .and_then(|(weather, _, _)| engine_native::read::<u64>(memory, weather.night_factor()));
-        if let Some(held) = held
+        carrying.task_modifiers = None;
+        if let Some(held) = held.as_ref()
             && !covered
         {
-            if let Some(span) = held.modifiers
+            if let Some(entries) = held.modifiers.as_ref()
                 && held.mine_exposure == task.mine_exposure
             {
-                let entries = &self.store.entries[span.0..span.0 + span.1];
-                self.modifiers.get_mut().hold(task.modifiers, entries);
+                carrying.task_modifiers = Some((task.modifiers, Arc::clone(entries)));
                 carrying.counts.task_terms_carried += 1;
             }
             if let Some((certificate, terms)) = held.country_terms
@@ -1372,7 +1401,17 @@ impl Captured {
         };
         let doctrine = self.doctrine.doctrine(task.pointer);
         let modifiers = self.modifiers.borrow();
-        let observed = modifiers.observed(task.modifiers);
+        let observed = modifiers.observed(task.modifiers).or_else(|| {
+            // A current failed observation wins over a carried array too.
+            if modifiers.existing_at(task.modifiers, 1).is_some() {
+                return None;
+            }
+            carrying
+                .task_modifiers
+                .as_ref()
+                .filter(|(address, _)| *address == task.modifiers)
+                .map(|(_, entries)| entries.as_slice())
+        });
         let certificate = doctrine_certificate(carrying.changes, state.sequence, country);
         let country_terms = self
             .doctrine
@@ -1389,6 +1428,7 @@ impl Captured {
                     .filter(|_| {
                         state
                             .held
+                            .as_ref()
                             .and_then(|held| held.weather)
                             .is_some_and(|(held, _, _)| {
                                 held.night_factor() == weather.night_factor()
@@ -1398,12 +1438,9 @@ impl Captured {
                 let certificate = weather_certificate(carrying.changes, &weather, country)?;
                 Some((weather, certificate, factor))
             });
-        if let Some(held) = state.held.filter(|_| state.covered) {
+        if let Some(held) = state.held.as_ref().filter(|_| state.covered) {
             let modifiers_differ = held.mine_exposure == task.mine_exposure
-                && held
-                    .modifiers
-                    .map(|(start, len)| &self.store.entries[start..start + len])
-                    != observed;
+                && held.modifiers.as_ref().map(|entries| entries.as_slice()) != observed;
             let doctrine_differs = held.country == country
                 && held.doctrine.is_some_and(|(held, value)| {
                     Some(held) == certificate && Some(value) != doctrine
@@ -1437,7 +1474,7 @@ impl Captured {
             country_terms,
             doctrine: certificate.zip(doctrine),
             mine_exposure: task.mine_exposure,
-            modifiers: None,
+            modifiers: state.held.as_ref().and_then(|held| held.modifiers.clone()),
             weather,
             terms: carrying
                 .terms
@@ -1447,6 +1484,7 @@ impl Captured {
         if !self.store.keep_task(held, observed) {
             carrying.counts.uncertified += 1;
         }
+        carrying.task_modifiers = None;
     }
 
     fn set_terms(&mut self, carrying: &mut Carrying<'_>, terms: Option<(usize, Terms)>) {
@@ -1472,13 +1510,17 @@ impl Captured {
         let Some(task) = fields.task_force_at(memory, task_pointer) else {
             return;
         };
-        if carrying.task.map(|state| state.fields.pointer) != Some(task.pointer) {
+        if carrying.task.as_ref().map(|state| state.fields.pointer) != Some(task.pointer) {
             self.begin_task(memory, task, carrying);
         }
         let gathered = fields.memory(memory);
         let read = ModifierMemory {
             inner: &gathered,
             arena: &self.modifiers,
+            held_task: carrying
+                .task_modifiers
+                .as_ref()
+                .map(|(address, entries)| (*address, entries.as_slice())),
         };
         let started = qpc();
         let terms = cship::read_task_terms(&read, base, &task, &mut self.doctrine)
@@ -1555,6 +1597,10 @@ impl Captured {
             let read = ModifierMemory {
                 inner: memory,
                 arena: &self.modifiers,
+                held_task: carrying
+                    .task_modifiers
+                    .as_ref()
+                    .map(|(address, entries)| (*address, entries.as_slice())),
             };
             let organisation = match cship::read_maximum_organisation_from_terms(
                 &read,
@@ -1771,13 +1817,17 @@ impl Captured {
             && carrying.terms.map(|(task, _)| task) != Some(held.fields.task_force())
             && let Some(task) = fields.task_force_of(memory, &held.fields)
         {
-            if carrying.task.map(|state| state.fields.pointer) != Some(task.pointer) {
+            if carrying.task.as_ref().map(|state| state.fields.pointer) != Some(task.pointer) {
                 self.begin_task(memory, task, carrying);
             }
             let gathered = fields.memory(memory);
             let read = ModifierMemory {
                 inner: &gathered,
                 arena: &self.modifiers,
+                held_task: carrying
+                    .task_modifiers
+                    .as_ref()
+                    .map(|(address, entries)| (*address, entries.as_slice())),
             };
             let started = qpc();
             let terms = cship::read_task_terms(&read, base, &task, &mut self.doctrine)
@@ -2108,7 +2158,7 @@ impl Captured {
             }
             if carrying.store
                 && let Some(task) = fields.task_force()
-                && carrying.task.map(|state| state.fields.pointer) != Some(task.pointer)
+                && carrying.task.as_ref().map(|state| state.fields.pointer) != Some(task.pointer)
             {
                 this.begin_task(memory, task, carrying);
             }
@@ -2120,6 +2170,10 @@ impl Captured {
                 let memory = ModifierMemory {
                     inner: &gathered,
                     arena: &this.modifiers,
+                    held_task: carrying
+                        .task_modifiers
+                        .as_ref()
+                        .map(|(address, entries)| (*address, entries.as_slice())),
                 };
                 let doctrine = &mut this.doctrine;
                 let (mut row, selected) = match kept {
@@ -2345,6 +2399,7 @@ impl Captured {
             check,
             counts: Counts::default(),
             task: None,
+            task_modifiers: None,
             terms: None,
             terms_identity: 0,
             quiet: quiet.filter(|quiet| Some(*quiet) == self.store.quiet),
@@ -2356,7 +2411,6 @@ impl Captured {
         self.store.next_tasks.clear();
         self.store.next_variants.clear();
         self.store.next_variant_index.clear();
-        self.store.next_entries.clear();
         for variant in &mut self.store.variants {
             variant.unchanged = None;
             variant.next = None;
@@ -2635,6 +2689,7 @@ struct Carrying<'a> {
     check: Check,
     counts: Counts,
     task: Option<TaskState>,
+    task_modifiers: Option<(usize, Arc<Vec<[u8; 16]>>)>,
     /// The terms of the task force the range is reading, once one of its
     /// ships was read.
     terms: Option<(usize, Terms)>,

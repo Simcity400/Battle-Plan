@@ -183,12 +183,20 @@ function Log([string]$text) { Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:m
 
 # ---- game process, window, clock -------------------------------------------
 $script:game = $null; $script:window = [IntPtr]::Zero; $script:reader = $null; $script:rect = $null
+# A game launched straight into the save that has not run yet; the next reload uses it as it is.
+$script:freshLaunch = $false
+function Start-SaveLaunch {
+    $extra = @('-start_save=' + [string]$spec.save)
+    if ($spec.PSObject.Properties['launch_args'] -and $spec.launch_args) { $extra += @($spec.launch_args | ForEach-Object { [string]$_ }) }   # e.g. -debug_smooth=no
+    & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Launch -UserDirectory $userPath -ExtraArgs $extra -Foreground:(-not $Background)
+}
 function Connect-Game {
     $games = @(Get-Process -Name the game -ErrorAction SilentlyContinue)
     if ($games.Count -gt 1) { throw 'Two hoi4.exe processes; close one.' }
     if ($games.Count -eq 0) {
-        Log 'No game running; launching the continue selection.'
-        $launch = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Launch -UserDirectory $userPath -ContinueLastSave -Foreground:(-not $Background)
+        Log 'No game running; launching into the benchmark save.'
+        $null = Start-SaveLaunch
+        $script:freshLaunch = $true
         $limit = [DateTime]::UtcNow.AddSeconds(300)
         do {
             Start-Sleep -Seconds 2
@@ -451,23 +459,25 @@ function Wait-Quiet {
 }
 
 # ---- reload ------------------------------------------------------------------
-function Invoke-Relaunch([string]$runDir) {
+function Invoke-Relaunch([string]$runDir, [bool]$fresh = $false) {
     # Calibration lane: finish the previous screen's detach before the game is closed.
     Complete-Pending
     $script:game.Refresh()
-    if (-not $script:game.HasExited) {
-        # A recorder session must be detached first; a leftover ladder DLL dies with the process.
-        if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { throw 'Relaunch reload requested while the collector is attached.' }
-        if (@(Get-Process -Name recorder -ErrorAction SilentlyContinue).Count) { throw 'Relaunch reload requested while a recorder is running.' }
-        if ($script:reader) { $script:reader.Dispose(); $script:reader = $null }
-        $script:game.Kill(); if (-not $script:game.WaitForExit(300000)) { throw 'The game did not exit.' }
-        Start-Sleep -Seconds 2
-    }
     $started = [Diagnostics.Stopwatch]::StartNew()
-    $extra = @('-start_save=' + [string]$spec.save)
-    if ($spec.PSObject.Properties['launch_args'] -and $spec.launch_args) { $extra += @($spec.launch_args | ForEach-Object { [string]$_ }) }   # e.g. -debug_smooth=no
-    $launch = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Launch -UserDirectory $userPath -ExtraArgs $extra -Foreground:(-not $Background)
-    Connect-Game
+    $launch = $null
+    if (-not ($fresh -and -not $script:game.HasExited)) {
+        if (-not $script:game.HasExited) {
+            # A recorder session must be detached first; a leftover ladder DLL dies with the process.
+            if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { throw 'Relaunch reload requested while the collector is attached.' }
+            if (@(Get-Process -Name recorder -ErrorAction SilentlyContinue).Count) { throw 'Relaunch reload requested while a recorder is running.' }
+            if ($script:reader) { $script:reader.Dispose(); $script:reader = $null }
+            $script:game.Kill(); if (-not $script:game.WaitForExit(300000)) { throw 'The game did not exit.' }
+            Start-Sleep -Seconds 2
+        }
+        $started.Restart()
+        $launch = Start-SaveLaunch
+        Connect-Game
+    }
     $limit = [DateTime]::UtcNow.AddSeconds(240)
     do {
         $clock = $script:reader.Sample()
@@ -477,7 +487,8 @@ function Invoke-Relaunch([string]$runDir) {
     } while ($true)
     Start-Sleep -Seconds 3
     $clock = Read-Clock
-    Log ("Relaunched into {0} in {1:n1}s; pid {2}, load signal {3}, foreground pushes {4}" -f $spec.save, $started.Elapsed.TotalSeconds, $script:game.Id, $clock.play_session_started_at, $launch.ForegroundPushes)
+    $verb = $(if ($launch) { 'Relaunched into' } else { 'Using the fresh launch of' })
+    Log ("{0} {1} in {2:n1}s; pid {3}, load signal {4}, foreground pushes {5}" -f $verb, $spec.save, $started.Elapsed.TotalSeconds, $script:game.Id, $clock.play_session_started_at, $(if ($launch) { $launch.ForegroundPushes } else { 0 }))
     return $clock
 }
 function Test-PauseMenu([string]$runDir) {
@@ -513,10 +524,12 @@ function Open-PauseMenu([string]$runDir) {
     throw 'Pause menu did not open after six Escape presses.'
 }
 function Invoke-Reload([string]$runDir, [bool]$attached = $false) {
+    # Only the first reload after a launch into the save can use that game as it is.
+    $fresh = $script:freshLaunch; $script:freshLaunch = $false
     $mode = $ReloadMode
     if ($spec.PSObject.Properties['reload_mode'] -and $spec.reload_mode) { $mode = [string]$spec.reload_mode }
     if ($mode -eq 'auto') { $mode = $(if ($attached) { 'menu' } else { 'relaunch' }) }
-    if ($mode -eq 'relaunch') { return Invoke-Relaunch $runDir }
+    if ($mode -eq 'relaunch') { return Invoke-Relaunch $runDir $fresh }
     if ($mode -eq 'none') {
         # chain runs without reloading (state drifts forward; only for comparisons that tolerate it)
         $null = Set-Paused $true

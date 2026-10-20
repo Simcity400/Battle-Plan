@@ -71,6 +71,14 @@ static READS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
     "a carried DivisionTemplates name key differs from a fresh read",
 ]);
+static CORE_SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
+    "a carried DivisionTemplateIcons core or speed key differs from a fresh read",
+]);
+
+pub(crate) fn record_core_comparison(mismatch: bool) {
+    CORE_SAMPLED.record(1, u64::from(mismatch), 0);
+}
+
 /// Live sizing or captured template demand, for off-thread watch sizing.
 static TEMPLATES: AtomicUsize = AtomicUsize::new(0);
 static COUNTRIES: AtomicUsize = AtomicUsize::new(0);
@@ -130,6 +138,11 @@ pub(crate) trait Changes: Sync {
     fn deployment_reset_sequence(&self, status: usize) -> Option<(u64, u64)> {
         self.sequence(status)
     }
+    /// Local definition writers, including shared definition/content reloads.
+    /// Missing observation leaves the icon core on its original fresh path.
+    fn core_dependencies(&self) -> Option<(u64, u64)> {
+        None
+    }
     /// A fresh read disagreed with a carried key: disable reuse for the
     /// attachment.
     fn mismatch(&self);
@@ -167,6 +180,9 @@ impl Changes for Observer {
             &crate::local_subunit_changes::Observer,
             status,
         )
+    }
+    fn core_dependencies(&self) -> Option<(u64, u64)> {
+        crate::local_subunit_changes::Changes::quiet(&crate::local_subunit_changes::Observer)
     }
     fn mismatch(&self) {
         WATCHES.mismatch();
@@ -279,6 +295,9 @@ pub fn status() -> impl serde::Serialize {
         "configured": cfg!(feature = "template_changes"),
         "verify": VERIFY,
         "poisoned": WATCHES.registry.poisoned(),
+        "icon_core_verified": CORE_SAMPLED.verified(),
+        "icon_core_mismatches": CORE_SAMPLED.mismatches(),
+        "icon_core_last_mismatch": CORE_SAMPLED.last_mismatch(),
         "sampled_verified": SAMPLED.verified(),
         "sampled_mismatches": SAMPLED.mismatches(),
         "last_mismatch": SAMPLED.last_mismatch(),

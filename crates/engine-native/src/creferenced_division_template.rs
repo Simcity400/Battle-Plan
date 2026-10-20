@@ -906,6 +906,29 @@ pub trait DetailPolicy {
     fn before_country(&mut self, _country: u32) {}
     fn before_records(&mut self, _templates: &[usize]) {}
     fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> bool;
+    /// A complete, certified core, after the current fixed record was authenticated.
+    /// Roster and fixed-field acquisition and display names remain fresh.
+    fn core(&mut self, _record: &[u8]) -> Option<IconCore<'_>> {
+        None
+    }
+    fn remember_core(
+        &mut self,
+        _record: &[u8],
+        _row: &IconRow,
+        _bytes: &[u8],
+        _counts: &[SubunitCount],
+        _variants: &[u64],
+    ) {
+    }
+}
+
+/// Owned-core segments supplied by a caller that certified every followed input.
+/// Spans are relative to these slices; extensions and names are not carried here.
+pub struct IconCore<'a> {
+    pub row: IconRow,
+    pub bytes: &'a [u8],
+    pub counts: &'a [SubunitCount],
+    pub variants: &'a [u64],
 }
 impl<F: FnMut(u32, usize, u64, u32) -> bool> DetailPolicy for F {
     fn demand(&mut self, country: u32, pointer: usize, template: u64, ordinal: u32) -> bool {
@@ -963,7 +986,13 @@ fn visit_templates(
     mut country_visit: Option<&mut dyn FnMut(ccountry::Country)>,
     mut details: Option<&mut dyn DetailPolicy>,
     mut prepare: impl FnMut(&[u8], usize),
-    mut visit: impl FnMut(u32, usize, &[u8], bool, u32) -> Result<(), &'static str>,
+    mut visit: impl FnMut(
+        u32,
+        usize,
+        &[u8],
+        Option<&mut dyn DetailPolicy>,
+        u32,
+    ) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
     let vtable = base
@@ -1018,10 +1047,10 @@ fn visit_templates(
                     return Err("division template vtable or reference type mismatch");
                 }
                 let ordinal = first + index as u32;
-                let demanded = details
+                let policy = details
                     .as_mut()
-                    .is_none_or(|details| details.demand(country.id, at, word(record, 8), ordinal));
-                visit(country.id, at, record, demanded, ordinal)?;
+                    .map(|policy| &mut **policy as &mut dyn DetailPolicy);
+                visit(country.id, at, record, policy, ordinal)?;
             }
         }
     }
@@ -1559,7 +1588,9 @@ fn walk_icons_inner(
     let mut grouped_scratch = [0_u8; BATCH * SUBUNIT_COUNT_STRIDE];
     let mut cell_scratch = [0_u8; BATCH * 8];
     let mut excluded_scratch = [0_usize; BATCH];
-    let mut memo = Definitions::load(memory, base, slots, &mut result.required_database);
+    // A fully carried walk needs no definition database or scratch reset.
+    let mut slots = Some(slots);
+    let mut memo: Option<Definitions<'_>> = None;
     let mut subunit_names = SubunitNames::new();
     let hint = |records: &[u8], stride: usize| {
         for record in records.chunks_exact(stride) {
@@ -1588,7 +1619,79 @@ fn walk_icons_inner(
         country_visit,
         detail_policy,
         hint,
-        |country, at, record, mut details_fresh, roster_ordinal| {
+        |country, at, record, mut policy, roster_ordinal| {
+            let mut details_fresh = policy
+                .as_mut()
+                .is_none_or(|policy| policy.demand(country, at, word(record, 8), roster_ordinal));
+            if !details_fresh
+                && let Some(core) = policy.as_mut().and_then(|policy| policy.core(record))
+            {
+                let byte_start = result.bytes_len;
+                let count_start = result.counts_len;
+                let variant_start = result.variants_len;
+                let byte_end = byte_start
+                    .checked_add(core.bytes.len())
+                    .ok_or("template byte arena overflow")?;
+                let count_end = count_start
+                    .checked_add(core.counts.len())
+                    .ok_or("template grouped arena overflow")?;
+                let variant_end = variant_start
+                    .checked_add(core.variants.len())
+                    .ok_or("template variant arena overflow")?;
+                result.required_bytes = result
+                    .required_bytes
+                    .checked_add(core.bytes.len())
+                    .ok_or("template byte arena overflow")?;
+                result.required_counts = result
+                    .required_counts
+                    .checked_add(core.counts.len())
+                    .ok_or("template grouped arena overflow")?;
+                result.required_variants = result
+                    .required_variants
+                    .checked_add(core.variants.len())
+                    .ok_or("template variant arena overflow")?;
+                if !rows.ensure(len + 1)?
+                    || !bytes.ensure(byte_end)?
+                    || !counts.ensure(count_end)?
+                    || !variants.ensure(variant_end)?
+                {
+                    missing = missing
+                        .checked_add(1)
+                        .ok_or("template row count overflow")?;
+                    return Ok(());
+                }
+                bytes[byte_start..byte_end].copy_from_slice(core.bytes);
+                counts[count_start..count_end].copy_from_slice(core.counts);
+                variants[variant_start..variant_end].copy_from_slice(core.variants);
+                let mut row = core.row;
+                row.priority_unit_name.start += byte_start;
+                row.model_entity.start += byte_start;
+                row.counts.start += count_start;
+                for grid in &mut row.grids {
+                    grid.start += count_start;
+                }
+                row.excluded_variants.start += variant_start;
+                row.settings.roster_ordinal = roster_ordinal;
+                result.bytes_len = byte_end;
+                result.counts_len = count_end;
+                result.variants_len = variant_end;
+                if let Some(names) = display_bytes.as_mut() {
+                    row.display_name = display_name_buffer(
+                        memory,
+                        at,
+                        record[ICON_NAME..ICON_NAME + msvc_string::STRIDE]
+                            .try_into()
+                            .unwrap(),
+                        names,
+                        &mut result.name_bytes_len,
+                        &mut result.required_name_bytes,
+                    )
+                    .ok();
+                }
+                rows[len] = row;
+                len += 1;
+                return Ok(());
+            }
             let mut details_failure = None;
             let mut extension = [0_u8; ICON_NAMED_RECORD];
             extension[..record.len()].copy_from_slice(record);
@@ -1613,19 +1716,23 @@ fn walk_icons_inner(
                     extension[icon(UNIT_TYPE_OVERRIDE + 4)..ICON_RECORD].copy_from_slice(&tail);
                 }
             }
+            let fixed_record = record;
             let record = &extension[..record.len()];
+            let memo = memo.get_or_insert_with(|| {
+                Definitions::load(
+                    memory,
+                    base,
+                    slots.take().expect("first definition demand"),
+                    &mut result.required_database,
+                )
+            });
             if owner != Some(country) {
                 owner = Some(country);
                 memo.begin_country();
             }
             // Counter drawing operands; a failure here fails the hour's table.
-            let selected = selected_unit(
-                memory,
-                base,
-                &mut memo,
-                at,
-                word(record, icon(PRIORITY_UNIT)),
-            )?;
+            let selected =
+                selected_unit(memory, base, memo, at, word(record, icon(PRIORITY_UNIT)))?;
             let priority_unit = memo.token(memory, base, selected)?;
             // The dictionary's unit_type, as `walk` derives it.
             let unit_type = match dword(record, icon(UNIT_TYPE_OVERRIDE)) {
@@ -2081,12 +2188,15 @@ fn walk_icons_inner(
                 )
                 .ok();
             }
+            if let Some(policy) = policy.as_mut() {
+                policy.remember_core(fixed_record, &row, &bytes, &counts, &variants);
+            }
             rows[len] = row;
             len += 1;
             Ok(())
         },
     );
-    result.required_locals = memo.required_locals();
+    result.required_locals = memo.as_ref().map_or(0, Definitions::required_locals);
     result.outcome = match captured {
         Ok(()) => outcome(len, missing),
         Err(reason) => Outcome::Unavailable { reason },

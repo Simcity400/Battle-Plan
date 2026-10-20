@@ -41,7 +41,7 @@ pub(crate) fn speed_key_data() -> impl serde::Serialize {
     crate::status::status!({
         "reads": SPEED_KEY_COUNTS[0].load(Relaxed),
         "refusals": SPEED_KEY_COUNTS[1].load(Relaxed),
-        "scope": "cumulative DivisionTemplateIcons.speed_keys reads of the movement priority sub-unit's and its categories' modifier keys, one per walked template each hour; a refusal is that row's None",
+        "scope": "cumulative fresh DivisionTemplateIcons.speed_keys reads of the movement priority sub-unit's and its categories' modifier keys; certified icon cores reuse complete keys without native reads, and a refused fresh read is that row's None",
     })
 }
 
@@ -172,6 +172,7 @@ pub struct Captured {
     /// The dictionary's held name keys, kept across hours.
     keys: dictionary::KeyStore,
     held: held::Store,
+    core: core::Store,
     model_failures: ModelFailures,
     database: Arena<usize>,
     globals: Arena<native::GlobalSlot>,
@@ -192,6 +193,7 @@ impl Captured {
         self.model_failures = ModelFailures::default();
         self.keys.forget();
         self.held.forget();
+        self.core.forget();
         self.country_cache.forget();
         self.country_snapshot = None;
         self.country_rows.fail(Outcome::Unavailable { reason });
@@ -229,6 +231,7 @@ impl Captured {
             sample_hour: None,
             keys: dictionary::KeyStore::default(),
             held: held::Store::default(),
+            core: core::Store::default(),
             model_failures: ModelFailures::default(),
             database: Arena::new(capacity.database),
             globals: Arena::new(capacity.database),
@@ -267,6 +270,7 @@ impl Captured {
             + self.name_bytes.allocated_bytes()
             + self.keys.allocated_bytes()
             + self.held.allocated_bytes()
+            + self.core.allocated_bytes()
             + self.database.allocated_bytes()
             + self.globals.allocated_bytes()
             + self.locals.allocated_bytes()
@@ -407,6 +411,7 @@ impl Captured {
         self.reset();
         if force {
             self.held.forget();
+            self.core.forget();
             self.country_cache.forget();
             self.country_snapshot = None;
         }
@@ -444,7 +449,7 @@ impl Captured {
                 country_ticks += qpc().saturating_sub(start).max(0) as u64;
                 country_failure = result.err();
             };
-            let mut details = held::Demand::new(&mut self.held, changes);
+            let mut details = held::Demand::new(&mut self.held, &mut self.core, changes);
             let walk = native::walk_icons_with_selected_details_growing(
                 memory,
                 base,
@@ -481,9 +486,11 @@ impl Captured {
             self.database.required = walk.required_database;
             self.globals.required = walk.required_database;
             self.locals.required = walk.required_locals;
+            self.capture_speed_keys(memory, base, changes);
             if let Some(rows) = self.icon_rows.rows.get(..walk.outcome.len()) {
                 if matches!(walk.outcome, Outcome::Rows { .. }) {
                     self.held.prune(rows);
+                    self.core.prune(rows);
                 }
                 self.held.finish(
                     changes,
@@ -506,7 +513,6 @@ impl Captured {
                     }
                 }
             }
-            self.capture_speed_keys(memory, base);
             qpc().saturating_sub(start).max(0) as u64
         };
         let country_native_ticks = country_ticks;
@@ -564,7 +570,12 @@ impl Captured {
     }
     /// DivisionTemplateIcons.speed_keys of every walked template, read from
     /// its template object after the walk.
-    fn capture_speed_keys(&mut self, memory: &impl Memory, base: usize) {
+    fn capture_speed_keys(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        changes: &dyn crate::template_changes::Changes,
+    ) {
         self.speed_keys.clear();
         self.speed_spans.clear();
         let rows = self
@@ -579,15 +590,32 @@ impl Captured {
         } else {
             for row in rows {
                 let start = self.speed_keys.len();
-                let span = engine_native::carmy::movement_speed_keys(
-                    memory,
-                    base,
-                    row.pointer,
-                    &mut self.speed_keys,
-                )
-                .ok()
-                .map(|()| (start, self.speed_keys.len() - start));
-                counts[usize::from(span.is_none())] += 1;
+                let span = if let Some(keys) = self.core.speed(row.template, changes) {
+                    let span = engine_allocation::reserve(&mut self.speed_keys, keys.len())
+                        .ok()
+                        .map(|()| {
+                            self.speed_keys.extend_from_slice(keys);
+                            (start, keys.len())
+                        });
+                    counts[1] += u64::from(span.is_none());
+                    span
+                } else {
+                    let span = engine_native::carmy::movement_speed_keys(
+                        memory,
+                        base,
+                        row.pointer,
+                        &mut self.speed_keys,
+                    )
+                    .ok()
+                    .map(|()| (start, self.speed_keys.len() - start));
+                    counts[usize::from(span.is_none())] += 1;
+                    self.core.remember_speed(
+                        row.template,
+                        span.map(|(start, len)| &self.speed_keys[start..start + len]),
+                        changes,
+                    );
+                    span
+                };
                 self.speed_spans.push((row.template, span));
             }
             self.speed_spans.sort_unstable_by_key(|entry| entry.0);
@@ -838,6 +866,7 @@ fn span<T>(arena: &[T], range: native::Span) -> Option<&[T]> {
     arena.get(range.start..range.start.checked_add(range.len)?)
 }
 
+mod core;
 mod countries;
 mod dictionary;
 mod held;

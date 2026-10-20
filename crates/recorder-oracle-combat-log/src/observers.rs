@@ -59,55 +59,52 @@ fn decode(
         victory: None,
     };
     let mut begun = false;
-    for (ordinal, r) in rows.iter().enumerate() {
-        if r.ordinal != ordinal as u64 {
-            return Err(invalid("active combat log stream ordinal gap"));
-        }
+    for r in rows {
+        let (kind, item, [a, b, c, d, e]) = r.fact();
         let tag = |raw: u64| -> io::Result<Vec<u8>> {
             Ok(required_country_tag(raw as u32, links)?.to_vec())
         };
-        match r.kind as u64 {
+        match kind as u64 {
             kind::OBSERVER_STATE => {
                 if begun {
                     return Err(invalid("active observer header repeated"));
                 }
                 begun = true;
-                result.total_damage = (r.a as i64 > 0).then(|| decimal(r.a as i64)).transpose()?;
-                result.progress = (r.b as i64 > 0).then(|| decimal(r.b as i64)).transpose()?;
-                result.snow = (r.c & 1 != 0).then_some(true);
-                result.victory = (r.c & 2 != 0).then_some(true);
+                result.total_damage = (a as i64 > 0).then(|| decimal(a as i64)).transpose()?;
+                result.progress = (b as i64 > 0).then(|| decimal(b as i64)).transpose()?;
+                result.snow = (c & 1 != 0).then_some(true);
+                result.victory = (c & 2 != 0).then_some(true);
             }
             kind::OBSERVER_MODIFIERS => {
-                for (i, v) in [r.a, r.b, r.c, r.d, r.e].into_iter().enumerate() {
-                    append(&mut result.counters, r.item + i as u64, v as i32)?;
+                for (i, v) in [a, b, c, d, e].into_iter().enumerate() {
+                    append(&mut result.counters, item + i as u64, v as i32)?;
                 }
             }
             kind::SIDE => {
                 result.side.manpower = (manpower > 0).then_some(manpower);
-                result.side.air_factor =
-                    (r.b as i64 > 0).then(|| decimal(r.b as i64)).transpose()?;
-                result.side.leader = (r.c != 0).then_some(r.c);
+                result.side.air_factor = (b as i64 > 0).then(|| decimal(b as i64)).transpose()?;
+                result.side.leader = (c != 0).then_some(c);
             }
             kind::POOL => {
-                let pool = match r.item {
+                let pool = match item {
                     0 => &mut result.side.equipment,
                     1 => &mut result.side.captured_by_enemy,
                     2 => &mut result.side.recovered,
                     _ => return Err(invalid("active observer pool kind unsupported")),
                 };
-                *pool = if r.a != 0 {
+                *pool = if a != 0 {
                     Some(Pool {
                         equipment: Vec::new(),
-                        allow_zero_entries: Some(r.b != 0),
+                        allow_zero_entries: Some(b != 0),
                     })
                 } else {
                     None
                 };
-                if r.item == 0
+                if item == 0
                     && let Some(pool) = pool
                 {
                     for e in equipment {
-                        if r.b != 0 || e.amount_raw != 0 {
+                        if b != 0 || e.amount_raw != 0 {
                             pool.equipment.push(installed_content_save::production::Equipment {
                                 variant: e.variant,
                                 amount: decimal(e.amount_raw)?,
@@ -117,79 +114,79 @@ fn decode(
                 }
             }
             kind::EQUIPMENT => {
-                let pool = match r.item {
+                let pool = match item {
                     1 => result.side.captured_by_enemy.as_mut(),
                     2 => result.side.recovered.as_mut(),
                     _ => None,
                 }
                 .ok_or_else(|| invalid("active observer amount lacks serialized pool"))?;
-                if pool.allow_zero_entries == Some(true) || r.c != 0 {
+                if pool.allow_zero_entries == Some(true) || c != 0 {
                     pool.equipment.push(installed_content_save::production::Equipment {
-                        variant: r.b,
-                        amount: decimal(r.c as i64)?,
+                        variant: b,
+                        amount: decimal(c as i64)?,
                     });
                 }
             }
-            kind::MODIFIER => append(&mut result.side.modifiers, r.a, (r.b as i32, r.c as i32))?,
-            kind::COUNTRY => append(&mut result.side.tags, r.a, tag(r.b)?)?,
-            kind::OBSERVER_LEADER => append(&mut result.leaders, r.item, (r.a, r.b as i32))?,
+            kind::MODIFIER => append(&mut result.side.modifiers, a, (b as i32, c as i32))?,
+            kind::COUNTRY => append(&mut result.side.tags, a, tag(b)?)?,
+            kind::OBSERVER_LEADER => append(&mut result.leaders, item, (a, b as i32))?,
             kind::OBSERVER_DAMAGE => append(
                 &mut result.damage,
-                r.item,
+                item,
                 ObserverDamage {
-                    from: tag(r.a)?,
-                    receiver: tag(r.b)?,
-                    to: tag(r.c)?,
-                    value: decimal(r.d as i64)?,
+                    from: tag(a)?,
+                    receiver: tag(b)?,
+                    to: tag(c)?,
+                    value: decimal(d as i64)?,
                 },
             )?,
             kind::ACTIVITY => append(
                 &mut result.activities,
-                r.item,
+                item,
                 Activity {
-                    group: r.a,
+                    group: a,
                     templates: Vec::new(),
                     units: Vec::new(),
                     strength: Vec::new(),
                     equipment: None,
-                    dealer: if r.b == 0 { None } else { Some(tag(r.b)?) },
-                    taker: if r.c == 0 { None } else { Some(tag(r.c)?) },
+                    dealer: if b == 0 { None } else { Some(tag(b)?) },
+                    taker: if c == 0 { None } else { Some(tag(c)?) },
                 },
             )?,
             kind::ACTIVITY_TEMPLATE => {
                 let activity = result
                     .activities
-                    .get_mut(r.item as usize)
+                    .get_mut(item as usize)
                     .ok_or_else(|| invalid("active template lacks activity"))?;
-                append(&mut activity.templates, r.a, r.b)?;
+                append(&mut activity.templates, a, b)?;
             }
             kind::ACTIVITY_DAMAGE => {
                 let activity = result
                     .activities
-                    .get_mut(r.item as usize)
+                    .get_mut(item as usize)
                     .ok_or_else(|| invalid("active damage lacks activity"))?;
-                append(&mut activity.units, r.a, r.b)?;
-                append(&mut activity.strength, r.a, decimal(r.c as i64)?)?;
+                append(&mut activity.units, a, b)?;
+                append(&mut activity.strength, a, decimal(c as i64)?)?;
             }
             kind::ACTIVITY_EQUIPMENT => {
                 let activity = result
                     .activities
-                    .get_mut(r.item as usize)
+                    .get_mut(item as usize)
                     .ok_or_else(|| invalid("active equipment lacks activity"))?;
-                if r.a == u64::MAX {
-                    activity.equipment = (r.b != 0).then(|| Pool {
+                if a == u64::MAX {
+                    activity.equipment = (b != 0).then(|| Pool {
                         equipment: Vec::new(),
-                        allow_zero_entries: Some(r.c != 0),
+                        allow_zero_entries: Some(c != 0),
                     });
                 } else {
                     let pool = activity
                         .equipment
                         .as_mut()
                         .ok_or_else(|| invalid("active activity amount lacks pool"))?;
-                    if pool.allow_zero_entries == Some(true) || r.c != 0 {
+                    if pool.allow_zero_entries == Some(true) || c != 0 {
                         pool.equipment.push(installed_content_save::production::Equipment {
-                            variant: r.b,
-                            amount: decimal(r.c as i64)?,
+                            variant: b,
+                            amount: decimal(c as i64)?,
                         });
                     }
                 }
@@ -328,7 +325,7 @@ pub fn compare(
         for (side, saved_side) in combat.details.sides.iter().enumerate() {
             let key = (combat.id, side == 0);
             let mut rows = groups.remove(&key).unwrap_or_default();
-            rows.sort_by_key(|r| r.ordinal);
+            rows.sort_unstable_by_key(|r| r.logical_order());
             let p = progress
                 .iter()
                 .find(|r| r.combat == combat.id)

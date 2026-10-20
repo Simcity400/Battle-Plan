@@ -18,8 +18,28 @@ bindings by epoch and reseeds on the existing worker.
 
 The daily census reuses shared deep design values only under that complete
 certificate; its batches request deep native spans only for missing values.
+A local refused edit interval retains independent dirty bits on saved designs,
+source/provider bindings and demanded authors. Its recovery census still reads
+and authenticates all membership, prefixes, modules, stats and upgrades, but only
+marked, new or uncertified designs reacquire deep state. A refused occurrence log
+withdraws dependent availability but keeps shared writer observation live, so
+recovery can still reuse untouched values. Closing shared forwarding revokes all
+deep reuse until a fresh complete census. Lost receivers, lifetime or content
+epochs, failed recovery and conflicting writers also revoke reuse;
+explicit attach/refresh reads remain fully fresh. Recovery rechecks its proof
+after acquisition and falls back to the full reader if it changed. Observer status
+retains separate running/missed-writer refusal counts, the last missed source
+location and the last refusal even after recovery/detach. Competing edits to
+receivers unwatched both before and after their originals do not refuse the saved
+interval; saved receivers, publication and unknown receivers still do.
+Receiver-scoped claims let different threads edit different saved designs
+concurrently; overlapping writers of one receiver, including its consuming moves
+and its version owner, still refuse. No claim lock is held across an original.
+Status counts competing-writer, lock-contention, unknown-receiver and
+claim-capacity refusals separately.
 Daily projection compares borrowed headers, text and deep values before cloning
-changed rows. Owned definition rows sort only after acquisition, authentication
+changed rows. Unchanged source bindings and held design entries keep their
+allocations; country-demand rebuilding recycles its key scratch. Owned definition rows sort only after acquisition, authentication
 and coupled module/context visits finish. Reference save admission is
 independently checked for nonnull MIO handles.
 Applied direct and named source values share an immutable snapshot dictionary;

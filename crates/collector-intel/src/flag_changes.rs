@@ -27,7 +27,7 @@ static READS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
     "carried ScriptFlags rows differ from a fresh read",
 ]);
-/// Scopes the latest complete capture walked, for off-thread sizing.
+/// Scopes observed by the complete sizing census or capture, for off-thread sizing.
 static SCOPES: AtomicUsize = AtomicUsize::new(0);
 static EMBEDDED_SCOPES: AtomicUsize = AtomicUsize::new(0);
 
@@ -231,10 +231,18 @@ pub fn boundary(invalidate: bool) {
     WATCHES.structure.boundary(invalidate);
 }
 
-/// Off the game thread: size the watches for the scopes the latest capture
-/// walked. Nothing is offered before a capture walked them: a later larger
-/// table waits for an invalidating hour, while the first installs at once.
-/// Existing daily MIO sizing contributes embedded stores without an hourly scan.
+/// The existing pre-install sizing walk observed every ScriptFlags scope,
+/// including empty managers. Replace an embedded-only offer before the
+/// first boundary installs it: later growth waits for an invalidating hour.
+pub(crate) fn offer_scopes(scopes: usize) {
+    SCOPES.fetch_max(scopes, Ordering::Relaxed);
+    presize();
+}
+
+/// Off the game thread: size watches from the complete scope census plus
+/// embedded stores. A later larger table waits for an invalidating hour,
+/// while the first installs at once. Existing daily MIO sizing contributes
+/// embedded stores without an hourly scan.
 pub fn offer_embedded(scopes: usize) {
     EMBEDDED_SCOPES.fetch_max(scopes, Ordering::Relaxed);
     presize();

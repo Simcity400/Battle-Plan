@@ -1176,6 +1176,124 @@ fn a_frame_publishes_its_held_tables_without_rewriting_them() {
     assert_eq!(units, walked(&world).tables()[3]);
 }
 
+#[test]
+fn quiet_leader_comparison_grows_for_later_training() {
+    static WATCHES: Watches = Watches::new();
+    static DOMAIN: Isolated = Isolated::new();
+    static LEADERS: LeaderWatches = LeaderWatches::new();
+    let mut world = world();
+    let first = World::unit(5).unwrap();
+    world.patch(
+        first + cunit_leader::TRAIT_EXPERIENCE_COUNT,
+        &1_u32.to_le_bytes(),
+    );
+    WATCHES.enable(world.characters);
+    DOMAIN.enable();
+    LEADERS.enable(world.characters);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    settle_roster(&mut job, &world);
+    let mut frame = Captured::with_capacities(&capacities());
+    for _ in 0..2 {
+        roster_hour_into(&mut job, &world, &mut frame);
+    }
+    assert!(frame.held.units.is_some());
+    let id: u32 = 2_000_005;
+    job.unit_carry.set_check(Check::Slice {
+        hour: (id % 24) as i32,
+    });
+    // The next fresh leader's text fits, but only a prefix of its training
+    // fits in the scratch buffer left by the first leader.
+    let expected = walked(&world).tables();
+    assert_eq!(frame.tables()[3], expected[3]);
+    const MARK: u32 = 0x5eed;
+    frame.units.rows.rows[0].native.owner = MARK;
+    let held = frame.tables()[3].clone();
+    for _ in 0..2 {
+        let (_, units) = roster_hour_into(&mut job, &world, &mut frame);
+        assert_eq!(units, held, "rows republished in place");
+        assert_eq!(frame.tables()[5], expected[5]);
+        let counts = job.unit_carry.counts();
+        assert!(counts.read > 1);
+        assert_eq!(counts.verified, counts.read);
+        assert_eq!(counts.mismatches, 0);
+    }
+    assert!(!LEADERS.poisoned());
+}
+
+#[test]
+fn quiet_leader_comparison_preserves_training_refusals() {
+    static WATCHES: Watches = Watches::new();
+    static DOMAIN: Isolated = Isolated::new();
+    static LEADERS: LeaderWatches = LeaderWatches::new();
+    let mut world = world();
+    WATCHES.enable(world.characters);
+    DOMAIN.enable();
+    LEADERS.enable(world.characters);
+    let mut job = unit_job(&WATCHES, &DOMAIN, &LEADERS, Check::Nothing);
+    settle_roster(&mut job, &world);
+    let mut frame = Captured::with_capacities(&capacities());
+    for _ in 0..2 {
+        roster_hour_into(&mut job, &world, &mut frame);
+    }
+    let leader = World::unit(5).unwrap();
+    // Refuse the factors after the progress entries have already been copied.
+    world.patch(
+        leader + cunit_leader::TRAIT_EXPERIENCE_FACTORS + engine_native::cpdx_array::COUNT,
+        &3_u32.to_le_bytes(),
+    );
+    world.patch(leader + cunit_leader::EXPERIENCE, &i64::MIN.to_le_bytes());
+    drop(LEADERS.notify(leader, 30));
+    roster_hour_into(&mut job, &world, &mut frame);
+    let expected = walked(&world).tables();
+    assert_eq!(frame.tables()[3], expected[3]);
+    assert_eq!(frame.tables()[5], expected[5]);
+    assert!(matches!(frame.outcomes()[5], Outcome::Unavailable { .. }));
+    assert_eq!(job.unit_carry.counts().read, 1);
+    world.patch(
+        leader + cunit_leader::TRAIT_EXPERIENCE_FACTORS + engine_native::cpdx_array::COUNT,
+        &2_u32.to_le_bytes(),
+    );
+    roster_hour_into(&mut job, &world, &mut frame);
+    assert_eq!(frame.tables()[5], walked(&world).tables()[5]);
+    assert!(matches!(frame.outcomes()[5], Outcome::Rows { .. }));
+    assert_eq!(job.unit_carry.counts().read, 1);
+    assert!(!LEADERS.poisoned());
+}
+
+#[test]
+fn leader_carry_rejects_mismatched_trait_spans() {
+    static LEADERS: LeaderWatches = LeaderWatches::new();
+    LEADERS.enable(1);
+    let mut carry = TraitCarry::with(&LEADERS, leader_carry::TRAITS, Some(Check::Every));
+    let row = cunit_leader::TraitRow {
+        leader_id: 7,
+        token_len: 1,
+        ..Default::default()
+    };
+    let certify = |carry: &mut TraitCarry| {
+        carry.begin_hour();
+        assert!(!carry.certify(1, 1, || std::iter::once((0, 0x1000, 7))));
+    };
+    certify(&mut carry);
+    carry.rebuild(Outcome::Rows { len: 1 }, &[row], b"x", |_| Some((1, 7)));
+    certify(&mut carry);
+    assert!(carry.held_equals(0, &[row], b"x"));
+    for (token_start, token_len) in [(1, 1), (usize::MAX, 1), (0, usize::MAX)] {
+        let invalid = cunit_leader::TraitRow {
+            token_start,
+            token_len,
+            ..row
+        };
+        assert!(!carry.held_equals(0, &[invalid], b"x"));
+    }
+    let invalid = cunit_leader::TraitRow {
+        token_start: 1,
+        ..row
+    };
+    carry.rebuild(Outcome::Rows { len: 1 }, &[invalid], b"x", |_| Some((1, 7)));
+    assert!(!carry.held_equals(0, &[row], b"x"));
+}
+
 /// The traits job of a role hour decoded into `frame`, which keeps its
 /// buffers between hours as a pipeline frame does.
 fn trait_hour_into(

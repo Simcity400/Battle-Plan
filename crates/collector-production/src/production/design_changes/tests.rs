@@ -778,6 +778,7 @@ fn base_destruction_uses_only_the_prepared_binding_and_clock_without_shifting_or
                 id: index as u64,
                 pointer: index,
                 flags: [0; 3],
+                dirty: false,
             },
         );
     }
@@ -791,6 +792,7 @@ fn base_destruction_uses_only_the_prepared_binding_and_clock_without_shifting_or
                 id: 9_999,
                 pointer: 2_500,
                 flags: [0; 3],
+                dirty: false,
             },
         );
     });
@@ -806,3 +808,153 @@ fn base_destruction_uses_only_the_prepared_binding_and_clock_without_shifting_or
     assert!(output[0].removed && output[0].snapshot.is_none());
     rows::RowCodec::check_key_fields(&output[0]).unwrap();
 }
+
+#[test]
+fn variant_rejected_scalar_rechecks_saved_membership_after_an_admitted_move() {
+    use std::sync::Barrier;
+
+    unsafe extern "system-unwind" fn move_design(
+        destination: usize,
+        source: usize,
+        pause: usize,
+        _: usize,
+    ) -> usize {
+        let pause = unsafe { &*(pause as *const Barrier) };
+        pause.wait();
+        pause.wait();
+        unsafe {
+            std::ptr::copy_nonoverlapping(source as *const u8, destination as *mut u8, ROOT_BYTES);
+        }
+        19
+    }
+    unsafe extern "system-unwind" fn highlight(
+        pointer: usize,
+        pause: usize,
+        _: usize,
+        _: usize,
+    ) -> usize {
+        let pause = unsafe { &*(pause as *const Barrier) };
+        pause.wait();
+        pause.wait();
+        unsafe { std::ptr::write((pointer + native::HIGHLIGHT) as *mut u8, 1) };
+        23
+    }
+
+    let space = super::super::variant_scale_tests::space(1, 2);
+    let mut registry = Vec::new();
+    assert_eq!(
+        native::walk_registry(&space.memory(), space.base, space.game_state, &mut registry),
+        Outcome::Rows { len: 2 }
+    );
+    let mut variants = Variants::vacant();
+    variants.capture_state_carried(
+        &space.memory(),
+        space.base,
+        Sources {
+            rows: &registry,
+            outcome: Outcome::Rows { len: 2 },
+        },
+        7,
+        true,
+        false,
+    );
+    assert_eq!(variants.definitions.outcome, Outcome::Rows { len: 2 });
+    BASE.store(space.base, Ordering::Release);
+    ENABLED.store(true, Ordering::Release);
+    begin_read();
+    prepare(&registry, &variants);
+    assert!(baseline_admitted());
+
+    let destination = registry[0].pointer();
+    let source = registry[1].pointer();
+    let move_pause = Barrier::new(2);
+    let move_args = [
+        destination,
+        source,
+        &move_pause as *const Barrier as usize,
+        0,
+    ];
+    let moving = std::thread::spawn(move || {
+        collector_test_support::with_allocations_denied(|| unsafe {
+            around::<9>(move_args, move_design)
+        })
+    });
+    move_pause.wait();
+    let retired = !STORE
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .watched
+        .contains_key(&destination);
+
+    // The rejected scalar enters while the move has retired its receiver,
+    // then keeps its native store behind the move's completed snapshot.
+    let scalar_pause = Barrier::new(2);
+    let scalar_args = [destination, &scalar_pause as *const Barrier as usize, 0, 0];
+    let scalar = std::thread::spawn(move || {
+        collector_test_support::with_allocations_denied(|| unsafe {
+            around::<6>(scalar_args, highlight)
+        })
+    });
+    scalar_pause.wait();
+    let entry_missed = MISSED.load(Ordering::Acquire);
+    let overlapping = active();
+    move_pause.wait();
+    let move_result = moving.join().unwrap();
+    let rebound = STORE
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .watched
+        .contains_key(&destination);
+    let before_store_missed = MISSED.swap(false, Ordering::AcqRel);
+    // The admitted move also detects its latched receiver conflict after
+    // rebinding. Clear that verdict/mark to prove the rejected writer still
+    // performs its own saved-membership recheck after its original returns.
+    STORE
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .watched
+        .get_mut(&destination)
+        .unwrap()
+        .dirty = false;
+    scalar_pause.wait();
+    let scalar_result = scalar.join().unwrap();
+
+    assert!(retired && rebound);
+    assert_eq!(overlapping, 2);
+    assert!(!entry_missed && before_store_missed);
+    assert_eq!((move_result, scalar_result), (19, 23));
+    assert_eq!(active(), 0);
+    {
+        let store = STORE.get().unwrap().lock().unwrap();
+        assert_eq!(store.batch.failure, None);
+        assert_eq!(store.batch.events.len(), 3);
+        assert!(store.watched[&destination].dirty);
+        let event = store.batch.events.last().unwrap();
+        assert_eq!(event.pointer, destination);
+        assert!(!event.removed);
+        let snapshot =
+            crate::raw::Recorded::build_range(&store.batch.log, event.start..event.end).unwrap();
+        assert_eq!(
+            engine_native::read::<u8>(&snapshot, destination + native::HIGHLIGHT),
+            Some(0)
+        );
+        assert_eq!(
+            engine_native::read::<u8>(&space.memory(), destination + native::HIGHLIGHT),
+            Some(1)
+        );
+    }
+    assert_eq!(
+        drain(space.base, 7, &mut Vec::new()),
+        Err("variant change interval has an unobserved or running writer")
+    );
+    assert_eq!(status().missed_refusals, 1);
+    assert_eq!(status().running_refusals, 0);
+}
+
+mod concurrency;

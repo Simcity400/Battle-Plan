@@ -30,15 +30,23 @@ pub(crate) struct Demand {
     links: Result<usize, &'static str>,
     provinces: Result<usize, &'static str>,
     states: Result<usize, &'static str>,
-    state_names: Result<usize, &'static str>,
+    state_names: Option<Result<usize, &'static str>>,
     factions: Result<(usize, usize), &'static str>,
-    faction_members: Result<usize, &'static str>,
-    wars: Result<usize, &'static str>,
+    faction_members: Option<Result<usize, &'static str>>,
+    wars: Option<Result<usize, &'static str>>,
     groups: Result<usize, &'static str>,
 }
 
 impl Demand {
     pub(crate) fn observe(memory: &impl Memory, base: usize) -> Result<Option<Self>, &'static str> {
+        Self::observe_periodic(memory, base, true)
+    }
+
+    pub(crate) fn observe_periodic(
+        memory: &impl Memory,
+        base: usize,
+        capacity_census: bool,
+    ) -> Result<Option<Self>, &'static str> {
         let Some(state) = FAILURES[0].observe(demand_game_state(memory, base))? else {
             return Ok(None);
         };
@@ -58,6 +66,9 @@ impl Demand {
             .and_then(|address| Array::read(memory, address, 4))
             .map(|array| array.count as usize)
             .ok_or("source demand country links invalid");
+        // Faction names share the observer-owner census. Indexed registry
+        // floors and conflict groups still feed fixed consumers; keep these
+        // reads on the fast cadence, unlike the independent worker-only walks.
         let factions = engine_native::cfaction::walk(memory, base, state, &mut [], &mut []);
         let faction_rows =
             table_demand::rows(factions.outcome).map(|rows| (rows, factions.required_bytes));
@@ -75,19 +86,41 @@ impl Demand {
             links: FAILURES[2].observe(links),
             provinces: FAILURES[3].observe(indexed(cgame_state::PROVINCES, 8)),
             states: FAILURES[4].observe(indexed(cgame_state::STATES, 8)),
-            state_names: FAILURES[5]
-                .observe(engine_native::cstate::name_demand(memory, base, state)),
+            state_names: capacity_census.then(|| {
+                FAILURES[5].observe(engine_native::cstate::name_demand(memory, base, state))
+            }),
             factions: FAILURES[6].observe(faction_rows),
-            faction_members: FAILURES[7].observe(table_demand::rows(
-                engine_native::cfaction_system::walk_members(memory, base, state, &mut []),
-            )),
-            wars: FAILURES[8].observe(engine_native::cwar_relation::row_demand(
-                memory, base, state,
-            )),
+            faction_members: capacity_census.then(|| {
+                FAILURES[7].observe(table_demand::rows(
+                    engine_native::cfaction_system::walk_members(memory, base, state, &mut []),
+                ))
+            }),
+            wars: capacity_census.then(|| {
+                FAILURES[8].observe(engine_native::cwar_relation::row_demand(
+                    memory, base, state,
+                ))
+            }),
             groups: FAILURES[9].observe(engine_native::cprovince::conflict_group_demand(
                 memory, base, state,
             )),
         }))
+    }
+
+    pub(crate) fn refused(&self) -> bool {
+        [
+            self.countries,
+            self.links,
+            self.provinces,
+            self.states,
+            self.groups,
+        ]
+        .iter()
+        .any(Result::is_err)
+            || self.factions.is_err()
+            || [self.state_names, self.faction_members, self.wars]
+                .into_iter()
+                .flatten()
+                .any(|demand| demand.is_err())
     }
 
     pub(crate) fn apply(&self, sizing: &mut Sizing) {
@@ -100,13 +133,21 @@ impl Demand {
             (1, self.provinces),
             (2, self.links),
             (3, self.states),
-            (5, self.wars),
-            (7, self.faction_members),
             (9, self.provinces),
             (10, self.groups),
-            (11, self.state_names),
         ] {
             if let Ok(required) = demand {
+                raise(&mut core[index], required);
+            }
+        }
+        // These independent worker walks grow before publication. A skipped
+        // hint is not a failed observation and preserves its previous floor.
+        for (index, demand) in [
+            (5, self.wars),
+            (7, self.faction_members),
+            (11, self.state_names),
+        ] {
+            if let Some(Ok(required)) = demand {
                 raise(&mut core[index], required);
             }
         }
@@ -123,16 +164,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn periodic_source_sizing_skips_worker_walks_without_failures_or_lost_floors() {
+        struct Registry;
+        impl Memory for Registry {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                const STATE: usize = 0x1000;
+                if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+                    output.copy_from_slice(&(STATE as u64).to_le_bytes());
+                    return true;
+                }
+                if address == STATE + cgame_state::COUNTRIES && output.len() == 16 {
+                    output[..8].copy_from_slice(&0x3000u64.to_le_bytes());
+                    output[8..12].copy_from_slice(&2u32.to_le_bytes());
+                    output[12..].copy_from_slice(&2u32.to_le_bytes());
+                    return true;
+                }
+                false
+            }
+        }
+        let failures = || {
+            [5, 7, 8].map(|index| {
+                serde_json::to_value(FAILURES[index].diagnostics()).unwrap()["failed_observations"]
+                    .as_u64()
+                    .unwrap()
+            })
+        };
+        let before = failures();
+        let skipped = Demand::observe_periodic(&Registry, 0, false)
+            .unwrap()
+            .unwrap();
+        assert!(skipped.state_names.is_none());
+        assert!(skipped.faction_members.is_none());
+        assert!(skipped.wars.is_none());
+        assert_eq!(failures(), before);
+        // Unreadable prompt/fixed inputs still request the original retry rate.
+        assert!(skipped.refused());
+        let mut sizing = Sizing::for_slots(1);
+        let previous = sizing.core;
+        skipped.apply(&mut sizing);
+        assert_eq!(sizing.core, previous);
+        let attach = Demand::observe(&Registry, 0).unwrap().unwrap();
+        assert!(attach.state_names.unwrap().is_err());
+        assert!(attach.faction_members.unwrap().is_err());
+        assert!(attach.wars.unwrap().is_err());
+        assert_eq!(failures(), before.map(|count| count + 1));
+    }
+
+    #[test]
     fn live_source_demand_raises_five_thousand_country_and_mod_arenas() {
         let demand = Demand {
             countries: Ok(5_000),
             links: Ok(7_000),
             provinces: Ok(35_000),
             states: Ok(7_000),
-            state_names: Ok(350_000),
+            state_names: Some(Ok(350_000)),
             factions: Ok((512, 512 * 31)),
-            faction_members: Ok(5_000),
-            wars: Ok(25_000),
+            faction_members: Some(Ok(5_000)),
+            wars: Some(Ok(25_000)),
             groups: Ok(50_000),
         };
         let mut sizing = Sizing::for_slots(1);

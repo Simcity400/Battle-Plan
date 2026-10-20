@@ -538,10 +538,14 @@ impl Captured {
                         .ok(),
                 );
             }
+            // Career and stored XP consult the same independent writer
+            // domain within this quiescent pass. Observe it only once.
+            let experience_certificate = (career_ready || experience_ready)
+                .then(|| changes.experience_sequence(seed.pointer))
+                .flatten();
             if career_ready {
-                let certificate = changes
-                    .experience_sequence(seed.pointer)
-                    .and_then(|_| history_changes::sequence(seed.pointer));
+                let certificate =
+                    experience_certificate.and_then(|_| history_changes::sequence(seed.pointer));
                 self.career.push(
                     store
                         .career
@@ -571,7 +575,7 @@ impl Captured {
                 history_result = store.history.observe(memory, base, seed);
             }
             if experience_ready {
-                let certificate = changes.experience_sequence(seed.pointer);
+                let certificate = experience_certificate;
                 self.experience.push(
                     store
                         .experience

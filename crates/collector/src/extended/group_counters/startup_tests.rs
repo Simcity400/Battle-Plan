@@ -182,3 +182,21 @@ fn enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_co
         }
     }
 }
+
+#[test]
+fn group_sizing_prepares_retreat_ban_watches_before_the_first_capture() {
+    use crate::retreat_ban_changes::{Changes, Observer};
+    const COUNT: usize = 5_000;
+    let world = World::new(COUNT);
+    crate::retreat_ban_changes::forwarder(true);
+    assert!(Observer.sequence(GROUPS).is_none());
+    let mut capacity = Capacities::default();
+    capacity.presize(&world, 0, 0).unwrap();
+    crate::retreat_ban_changes::boundary(true);
+    for ordinal in 0..COUNT {
+        assert!(Observer.sequence(GROUPS + ordinal * GROUP_STRIDE).is_some());
+    }
+    let status = serde_json::to_value(crate::retreat_ban_changes::status()).unwrap();
+    assert_eq!(status["watches"]["refused_registrations"], 0);
+    assert_eq!(status["watches"]["registered"], COUNT);
+}

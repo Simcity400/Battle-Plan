@@ -125,6 +125,7 @@ struct Cache {
     failure: Option<&'static str>,
     last_refusal: Option<&'static str>,
     demand_bytes: usize,
+    spare_keys: Vec<u32>,
     owner_key_bytes: usize,
     published_bytes: usize,
 }
@@ -231,6 +232,7 @@ impl Cache {
         if let Some(old) = self.designs.get_mut(&id) {
             if old.country == country && old.keys == keys {
                 old.generation = self.generation;
+                self.spare_keys = keys;
                 return Ok(());
             }
             if old.country == country {
@@ -268,7 +270,7 @@ impl Cache {
                 }
                 self.demand_bytes -= old.keys.capacity() * size_of::<u32>();
                 self.demand_bytes += keys.capacity() * size_of::<u32>();
-                old.keys = keys;
+                self.spare_keys = std::mem::replace(&mut old.keys, keys);
                 old.generation = self.generation;
                 if added {
                     reserve(&mut self.dirty)?;
@@ -326,8 +328,10 @@ impl Cache {
         organisation_owner: Option<u32>,
     ) -> Result<(), &'static str> {
         let country = definition.identity.creator_link;
-        let mut keys = engine_allocation::copy_vec(&[COMMON_COST_FACTOR])
-            .map_err(|_| "design context allocation failed")?;
+        let mut keys = std::mem::take(&mut self.spare_keys);
+        keys.clear();
+        engine_allocation::reserve(&mut keys, 1).map_err(|_| "design context allocation failed")?;
+        keys.push(COMMON_COST_FACTOR);
         let currency = first_upgrade
             .map(|upgrade| {
                 immutable_key(
@@ -813,8 +817,8 @@ fn seed_demands(
         {
             upgrade_index += 1;
         }
-        if !full
-            && designs_observed
+        if designs_observed
+            && definition.source_links.is_none()
             && let Some(demand) = cache.designs.get_mut(&definition.identity.id)
         {
             demand.generation = generation;
@@ -981,6 +985,7 @@ pub(super) fn status() -> Status {
         failure: cache.failure,
         last_refusal: cache.last_refusal,
         allocated_bytes: cache.demand_bytes
+            + cache.spare_keys.capacity() * size_of::<u32>()
             + cache.owner_key_bytes
             + cache.published_bytes
             + cache.template_heap_bytes
@@ -1429,5 +1434,36 @@ mod tests {
         cache.remove(1).unwrap();
         assert!(cache.owners.aliases.is_empty());
         assert!(cache.owners.reverse.is_empty());
+    }
+    #[test]
+    fn unchanged_fresh_variant_context_reuses_key_scratch_and_existing_demand() {
+        use super::super::production_rest_test_kit as kit;
+        let bytes = kit::fixture();
+        let memory = engine_native::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
+        let definition = cequipment_variant::DefinitionRow {
+            identity: cequipment_variant::Row {
+                id: 70,
+                creator_link: 2,
+                archetype_token: 3,
+                ..Default::default()
+            },
+            archetype_pointer: kit::EQUIPMENT_TYPE,
+            design: Arc::new(rows::VariantDesignState::default()),
+            ..Default::default()
+        };
+        let mut cache = Cache::default();
+        cache.track(&memory, &definition, &[], None, None).unwrap();
+        cache.track(&memory, &definition, &[], None, None).unwrap();
+        let demand = cache.designs[&70].keys.as_ptr();
+        let scratch = cache.spare_keys.as_ptr();
+        collector_test_support::with_allocations_denied(|| {
+            cache.track(&memory, &definition, &[], None, None)
+        })
+        .unwrap();
+        assert_eq!(cache.designs[&70].keys.as_ptr(), demand);
+        assert_eq!(cache.spare_keys.as_ptr(), scratch);
     }
 }

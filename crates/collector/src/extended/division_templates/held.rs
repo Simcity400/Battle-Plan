@@ -237,14 +237,22 @@ fn certificate(changes: &dyn Changes, pointer: usize, owner: u32) -> Option<Cert
 pub(super) struct Demand<'a> {
     store: &'a mut Store,
     changes: &'a dyn Changes,
+    core: &'a mut super::core::Store,
+    dependencies: Option<Stamp>,
     owner: Option<(u64, u64)>,
     batch: [(usize, Option<Stamp>); native::READ_BATCH],
 }
 impl<'a> Demand<'a> {
-    pub fn new(store: &'a mut Store, changes: &'a dyn Changes) -> Self {
+    pub fn new(
+        store: &'a mut Store,
+        core: &'a mut super::core::Store,
+        changes: &'a dyn Changes,
+    ) -> Self {
         Self {
             store,
             changes,
+            core,
+            dependencies: None,
             owner: None,
             batch: [(0, None); native::READ_BATCH],
         }
@@ -255,6 +263,7 @@ impl native::DetailPolicy for Demand<'_> {
         self.owner = self.changes.sequence(country as usize);
     }
     fn before_records(&mut self, templates: &[usize]) {
+        self.dependencies = self.changes.core_dependencies();
         for (slot, &pointer) in self.batch.iter_mut().zip(templates) {
             *slot = (pointer, self.changes.sequence(pointer));
         }
@@ -264,6 +273,15 @@ impl native::DetailPolicy for Demand<'_> {
         let before = stamp
             .zip(self.owner)
             .map(|(template, owner)| [template, owner]);
+        self.core.prepare(
+            template,
+            pointer,
+            country,
+            before
+                .filter(|_| expected == pointer)
+                .zip(self.dependencies)
+                .map(|([template, owner], dependencies)| [template, owner, dependencies]),
+        );
         self.store.request_certified(
             country,
             pointer,
@@ -271,6 +289,20 @@ impl native::DetailPolicy for Demand<'_> {
             ordinal,
             (expected == pointer).then_some(before).flatten(),
         )
+    }
+    fn core(&mut self, record: &[u8]) -> Option<native::IconCore<'_>> {
+        self.core.carry(record, self.changes)
+    }
+    fn remember_core(
+        &mut self,
+        record: &[u8],
+        row: &native::IconRow,
+        bytes: &[u8],
+        counts: &[native::SubunitCount],
+        variants: &[u64],
+    ) {
+        self.core
+            .remember(self.changes, record, row, bytes, counts, variants);
     }
 }
 

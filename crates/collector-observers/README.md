@@ -212,3 +212,10 @@ both occur before acquisition. Missing births and unreadable selected holders
 still refuse; no census retry or quiet-hour native read is added.
 
 Occupation marker lists have four dedicated writer notifications: state rebuild and clear, core rebuild and holder clear. Core rebuild reads only its guarded parent pointer; a failed receiver resolution revokes the whole occupation domain. The existing template observer forwards occupation insertion, reset and destruction under its own publication gate. Notifications preserve original arguments and keep new-list writers uncertified across foreign unwind; no callback enumerates states or definitions.
+
+Retreat-ban watch demand includes every commander reached, including a refused
+certificate. The existing orders-group sizing census prepares watches before the
+first capture; its group count bounds distinct commanders without another native
+walk. Later attempted demand remains a high-water mark, so an unsized registry
+cannot prevent its own bootstrap. Quiet certified commanders carry their exact
+two-block bans, and forwarded writers still select fresh reads.

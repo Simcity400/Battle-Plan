@@ -635,10 +635,10 @@ impl Store {
         for (i, &domain) in DOMAINS.iter().enumerate() {
             stamps[i] = changes::token(domain).ok_or("doctrine writers are not observed")?;
         }
-        if (self.failed || self.projection.failed.load(Ordering::Acquire)) && !full {
-            return Err("doctrine capture requires a full refresh after lost observation");
-        }
-        if full || !self.ready || root != self.root {
+        // Lost observation or a failed conversion rebuilds the baseline at the
+        // next capture instead of refusing every hour until a forced refresh.
+        let lost = self.failed || self.projection.failed.load(Ordering::Acquire);
+        if full || lost || !self.ready || root != self.root {
             // Baseline/relocation only. The root is the same header already
             // read and authenticated by CountryTacticUnlocks, including empty slots.
             *self = Self::default();
@@ -1570,6 +1570,37 @@ mod tests {
                 .failed
                 .load(Ordering::Acquire)
         );
+    }
+
+    #[test]
+    fn doctrine_lost_observation_rebuilds_at_the_next_capture() {
+        let _guard = DENY_LOCK.lock().unwrap();
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("an empty doctrine root read native memory")
+            }
+        }
+        changes::enabled(true);
+        let mut store = Store {
+            ready: true,
+            failed: true,
+            ..Default::default()
+        };
+        let mut frame = Frame::default();
+        store
+            .capture(&NoReads, 0, (0, 0), false, &mut frame)
+            .unwrap();
+        assert!(frame.complete() && !store.failed);
+        let failed = Arc::clone(&store.projection);
+        failed.failed.store(true, Ordering::Release);
+        frame.reset();
+        store
+            .capture(&NoReads, 0, (0, 0), false, &mut frame)
+            .unwrap();
+        assert!(frame.complete());
+        assert!(!Arc::ptr_eq(&failed, &store.projection));
+        changes::enabled(false);
     }
 
     #[test]

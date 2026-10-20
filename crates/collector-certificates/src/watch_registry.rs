@@ -140,6 +140,17 @@ enum Lookup<'a> {
 
 const MARK_BITS: usize = u64::BITS as usize;
 
+#[inline]
+fn mark_slot(word: &AtomicU64, bit: u64) {
+    // A set bit represents this notification at the SeqCst load. A later
+    // take consumes it; an earlier take leaves it clear (forcing the OR)
+    // unless another writer has already reasserted it. The running count
+    // still brackets the native writer, so a redundant locked OR adds no mark.
+    if word.load(SeqCst) & bit == 0 {
+        word.fetch_or(bit, SeqCst);
+    }
+}
+
 impl Table {
     /// Off the hook path; `None` when the allocation fails.
     fn new(len: usize, marking: bool) -> Option<Box<Self>> {
@@ -152,6 +163,7 @@ impl Table {
         engine_allocation::boxed(Self { slots, marks }).ok()
     }
 
+    #[inline]
     fn find(&self, address: usize, register: bool) -> Lookup<'_> {
         if address == 0 {
             return Lookup::Unwatched;
@@ -185,6 +197,7 @@ impl Table {
     }
 
     /// The word and bit of slot `index`, in a marking table.
+    #[inline]
     fn mark_of(&self, index: usize) -> Option<(&AtomicU64, u64)> {
         self.marks
             .get(index / MARK_BITS)
@@ -301,12 +314,14 @@ impl WatchRegistry {
         }
     }
 
+    #[inline]
     fn table(&self) -> Option<&Table> {
         // SAFETY: a table is freed only after a boundary replaced it and saw
         // no notification running; captures run only after the boundary.
         unsafe { self.table.load(SeqCst).as_ref() }
     }
 
+    #[inline]
     fn increment(&self, value: &AtomicU64) {
         if value.fetch_add(1, SeqCst) == u64::MAX {
             self.poison();
@@ -322,6 +337,7 @@ impl WatchRegistry {
     /// fill the running field to [`RUNNING_LIMIT`] or pass [`LAST_REVISION`]
     /// sets [`UNTRUSTED`] instead and counts nothing; an untrusted word
     /// counts nothing more.
+    #[inline]
     fn admit(&self, writer: bool) -> bool {
         let mut current = self.state.0.load(Relaxed);
         loop {
@@ -350,12 +366,14 @@ impl WatchRegistry {
         }
     }
 
+    #[inline]
     fn enter(&self) -> bool {
         self.admit(true)
     }
 
     /// A writer, or a [`Running`] guard, ends; only a counted one is
     /// subtracted.
+    #[inline]
     fn leave(&self, counted: bool) {
         if counted {
             self.state.0.fetch_sub(RUNNING, SeqCst);
@@ -378,9 +396,10 @@ impl WatchRegistry {
 
     /// Hook path, allocation-free: a writer is about to change `receiver`.
     /// Dropping the guard notifies its return.
+    #[inline]
     pub fn notify(&self, receiver: usize) -> Notification<'_> {
         let counted = self.enter();
-        let (sequence, mark) = match self.table() {
+        let (sequence, mark) = match (receiver != 0).then(|| self.table()).flatten() {
             Some(table) => match table.find(receiver, false) {
                 Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
                 _ => (None, None),
@@ -391,7 +410,7 @@ impl WatchRegistry {
             self.increment(sequence);
         }
         if let Some((word, bit)) = mark {
-            word.fetch_or(bit, SeqCst);
+            mark_slot(word, bit);
         }
         Notification {
             registry: self,
@@ -404,6 +423,7 @@ impl WatchRegistry {
     /// Hook path, allocation-free: a writer whose receiver cannot be named
     /// is about to run. It starts an epoch on entry and on return, so no
     /// certificate taken before it, or while it runs, survives it.
+    #[inline]
     pub fn notify_every(&self) -> Notification<'_> {
         let counted = self.enter();
         self.new_epoch();
@@ -861,10 +881,11 @@ impl Drop for Running<'_> {
 }
 
 impl Drop for Notification<'_> {
+    #[inline]
     fn drop(&mut self) {
         // The entry bumped the sequence and the revision (module docs).
         if let Some((word, bit)) = self.mark {
-            word.fetch_or(bit, SeqCst);
+            mark_slot(word, bit);
         }
         if self.every {
             self.registry.new_epoch();
@@ -1463,6 +1484,83 @@ mod tests {
         // An invalidation moves the epoch.
         registry.boundary(true);
         assert_ne!(take(&registry).0, Some(epoch));
+    }
+
+    #[test]
+    fn repeated_marks_keep_both_writers_running_and_reassert_after_a_take() {
+        let registry = marking(64);
+        let receiver = 8;
+        let before = registry.sequence(receiver).unwrap();
+        let epoch = before.0;
+        let first = registry.notify(receiver);
+        let second = registry.notify(receiver);
+        assert_eq!(registry.active(), 2);
+        assert_eq!(registry.sequence(receiver), None);
+        assert_eq!(take(&registry), (None, vec![]));
+        drop(first);
+        assert_eq!(registry.active(), 1);
+        assert_eq!(take(&registry), (None, vec![]));
+        drop(second);
+        assert_eq!(registry.sequence(receiver), Some((epoch, before.1 + 2)));
+        assert_eq!(take(&registry), (Some(epoch), vec![receiver]));
+        let mut writer = None;
+        drop(registry.notify(receiver));
+        assert_eq!(
+            registry.take(|address| {
+                assert_eq!(address, receiver);
+                drop(registry.notify(receiver));
+                writer = Some(registry.notify(receiver));
+            }),
+            None
+        );
+        drop(writer);
+        assert_eq!(take(&registry), (Some(epoch), vec![receiver]));
+        assert_eq!(take(&registry), (Some(epoch), vec![]));
+    }
+
+    #[test]
+    fn receiver_zero_changes_only_the_domain_revision_and_running_count() {
+        let registry = registry(64);
+        let before = registry.sequence(8).unwrap();
+        let quiet = registry.quiet().unwrap();
+        let writer = registry.notify(0);
+        assert_eq!(registry.active(), 1);
+        assert_eq!(registry.sequence(8), None);
+        assert_eq!(registry.quiet(), None);
+        drop(writer);
+        assert_eq!(registry.sequence(8), Some(before));
+        assert_eq!(registry.quiet(), Some((quiet.0, quiet.1 + 1)));
+        assert_eq!(registry.registered(), 1);
+        assert_eq!(registry.register(0), None);
+    }
+
+    #[test]
+    #[ignore = "per-call bitmap mark microbenchmark; run only without a live game benchmark"]
+    fn hook_cost_repeated_marks() {
+        const CALLS: usize = 100_000;
+        let word = AtomicU64::new(1);
+        let unconditional = crate::test_support::per_call_ns(CALLS, || {
+            for _ in 0..CALLS {
+                std::hint::black_box(&word).fetch_or(1, SeqCst);
+                std::hint::black_box(&word).fetch_or(1, SeqCst);
+            }
+        });
+        let already_set = crate::test_support::per_call_ns(CALLS, || {
+            for _ in 0..CALLS {
+                mark_slot(std::hint::black_box(&word), 1);
+                mark_slot(std::hint::black_box(&word), 1);
+            }
+        });
+        let after_take = crate::test_support::per_call_ns(CALLS, || {
+            for _ in 0..CALLS {
+                word.swap(0, SeqCst);
+                mark_slot(std::hint::black_box(&word), 1);
+                mark_slot(std::hint::black_box(&word), 1);
+            }
+        });
+        println!(
+            "hook_cost mark entry+return: unconditional={unconditional:.1} ns, already_set={already_set:.1} ns, take+first_mark={after_take:.1} ns"
+        );
     }
 
     #[test]

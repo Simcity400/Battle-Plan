@@ -1711,6 +1711,7 @@ pub struct StatusPacket {
     capacities: StatusCapacities,
     required: StatusCapacities,
     units: Vec<StatusUnitInputs>,
+    organisation_memo: organisation_movement::OrganisationMemo,
     /// Each unit's supply footer, by unit index; the first `supply_len` are
     /// this hour's.
     supply: Vec<crate::cunit_supply_inputs::UnitCapture>,
@@ -1817,6 +1818,7 @@ impl StatusPacket {
             capacities,
             required: capacities,
             units: Vec::new(),
+            organisation_memo: organisation_movement::OrganisationMemo::vacant(),
             supply: Vec::new(),
             supply_len: 0,
             supply_origins: Vec::new(),
@@ -1868,6 +1870,8 @@ impl StatusPacket {
             capacities,
             required: capacities,
             units: crate::allocation::vec(capacities.units)?,
+            organisation_memo: organisation_movement::OrganisationMemo::new(capacities.units)
+                .unwrap_or_else(|_| organisation_movement::OrganisationMemo::vacant()),
             supply: crate::allocation::filled(
                 capacities.units,
                 crate::cunit_supply_inputs::UnitCapture::default(),
@@ -2050,6 +2054,7 @@ impl StatusPacket {
     pub fn allocated_bytes(&self) -> usize {
         use std::mem::size_of;
         self.units.capacity() * size_of::<StatusUnitInputs>()
+            + self.organisation_memo.allocated_bytes()
             + self.supply.capacity() * size_of::<crate::cunit_supply_inputs::UnitCapture>()
             + self.supply_origins.capacity() * size_of::<crate::cunit_supply_inputs::Origin>()
             + self.border_index.capacity() * size_of::<(u64, usize)>()

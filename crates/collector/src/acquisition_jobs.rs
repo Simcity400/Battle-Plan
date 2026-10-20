@@ -121,17 +121,18 @@ impl VariantsRequest {
         [0; production::N]
     }
 }
-/// A scheduled membership census does not revoke certified nested values.
+/// Membership/recovery admission is separate from an explicitly fresh read.
+/// Recovery retains only independently certified, untouched deep values.
 fn variant_read_plan(hour: i32, force_full: bool, recovery: bool) -> (bool, bool) {
-    let fresh = force_full || recovery;
     (
-        fresh
+        force_full
+            || recovery
             || replay_data::cadence::should_walk(
                 replay_data::rows::TableId::VariantDefinitions,
                 hour,
                 false,
             ),
-        fresh,
+        force_full,
     )
 }
 /// The governance family's hourly research tables, walked beside the rest
@@ -2617,7 +2618,7 @@ mod tests {
                 replay_data::cadence::should_walk(TableId::VariantDefinitions, hour, false);
             assert_eq!(variant_read_plan(hour, false, false), (scheduled, false));
             assert_eq!(variant_read_plan(hour, true, false), (true, true));
-            assert_eq!(variant_read_plan(hour, false, true), (true, true));
+            assert_eq!(variant_read_plan(hour, false, true), (true, false));
         }
     }
 

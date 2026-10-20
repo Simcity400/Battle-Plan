@@ -74,9 +74,23 @@ pub(crate) fn presize(
     map: &mut MapCapacities,
     extended: &mut extended::Capacities,
 ) -> Result<(), &'static str> {
+    presize_periodic(memory, base, map, extended, true)
+}
+
+pub(crate) fn presize_periodic(
+    memory: &impl Memory,
+    base: usize,
+    map: &mut MapCapacities,
+    extended: &mut extended::Capacities,
+    capacity_census: bool,
+) -> Result<(), &'static str> {
     // The dictionary is independent of the campaign root, including a failed
     // or racing world hint. Count both failures without withholding its floor.
-    let dictionary = FAILURES[8].observe(extended.lexical.presize(memory, base, 0));
+    let dictionary = if capacity_census {
+        FAILURES[8].observe(extended.lexical.presize(memory, base, 0))
+    } else {
+        Ok(())
+    };
     let Some(state) = FAILURES[0].observe(super::demand_game_state(memory, base))? else {
         return dictionary;
     };
@@ -86,23 +100,34 @@ pub(crate) fn presize(
             failure.get_or_insert(reason);
         }
     };
-    // These empty-output walks count every original occurrence while skipping
-    // body fields. Fleet members retain their stored order; the air pool
-    // census follows each country entry.
-    accept(
-        1,
-        rows(engine_native::cair_wing::walk(memory, base, state, &mut []))
-            .map(|count| map.raise_air_wings(count)),
-    );
-    let naval = engine_native::cfleet::walk(memory, base, state, &mut [], &mut [], &mut []);
-    for (index, outcome) in [naval.fleets, naval.task_forces, naval.ships]
-        .into_iter()
-        .enumerate()
-    {
-        accept(2, rows(outcome).map(|count| map.raise_naval(index, count)));
+    // These empty-output walks supply only worker-grown rows. No observer
+    // preparation depends on their census, including the physical navy pass.
+    if capacity_census {
+        accept(
+            1,
+            rows(engine_native::cair_wing::walk(memory, base, state, &mut []))
+                .map(|count| map.raise_air_wings(count)),
+        );
+        let naval = engine_native::cfleet::walk(memory, base, state, &mut [], &mut [], &mut []);
+        for (index, outcome) in [naval.fleets, naval.task_forces, naval.ships]
+            .into_iter()
+            .enumerate()
+        {
+            accept(2, rows(outcome).map(|count| map.raise_naval(index, count)));
+        }
+    }
+    // These mixed passes also prepare template/deployment, embedded variable/
+    // flag, fleet-region, army-stat, HQ-template and market observers. Keep
+    // them prompt; all other rows/arenas grow from current-boundary inputs.
+    macro_rules! accept_hint {
+        ($index:literal, $result:expr $(,)?) => {
+            if capacity_census || matches!($index, 9 | 10 | 13 | 16 | 33 | 40) {
+                accept($index, $result);
+            }
+        };
     }
     // The supply census uses every non-sentinel supply slot.
-    accept(
+    accept_hint!(
         3,
         rows(engine_railways::sprovince_supply_data::walk(
             memory,
@@ -112,85 +137,85 @@ pub(crate) fn presize(
         ))
         .map(|count| super::raise(&mut extended.economy.rows[2], super::rows(count, 1))),
     );
-    accept(4, extended.province_unit_order.presize(memory, base, state));
-    accept(5, extended.governance.presize(memory, base, state));
-    accept(6, extended.characters.presize(memory, base, state));
-    accept(7, extended.projects.presize(memory, base, state));
-    accept(9, extended.division_templates.presize(memory, base, state));
-    accept(
+    accept_hint!(4, extended.province_unit_order.presize(memory, base, state));
+    accept_hint!(5, extended.governance.presize(memory, base, state));
+    accept_hint!(6, extended.characters.presize(memory, base, state));
+    accept_hint!(7, extended.projects.presize(memory, base, state));
+    accept_hint!(9, extended.division_templates.presize(memory, base, state));
+    accept_hint!(
         10,
         extended
             .industrial_organisations
             .presize(memory, base, state),
     );
-    accept(11, extended.production.presize(memory, base, state));
-    accept(12, extended.model_inputs.presize(memory, base, state));
-    accept(13, extended.naval_counters.presize(memory, base, state));
-    accept(14, extended.intel.presize(memory, base, state));
-    accept(15, extended.country_stability.presize(memory, base, state));
-    accept(
+    accept_hint!(11, extended.production.presize(memory, base, state));
+    accept_hint!(12, extended.model_inputs.presize(memory, base, state));
+    accept_hint!(13, extended.naval_counters.presize(memory, base, state));
+    accept_hint!(14, extended.intel.presize(memory, base, state));
+    accept_hint!(15, extended.country_stability.presize(memory, base, state));
+    accept_hint!(
         16,
         extended
             .division_presentation
             .presize_names(memory, base, state),
     );
-    accept(17, extended.plans.presize_execution(memory, base, state));
-    accept(18, extended.weather.presize(memory, base, state));
-    accept(19, extended.combat_progress.presize(memory, base));
+    accept_hint!(17, extended.plans.presize_execution(memory, base, state));
+    accept_hint!(18, extended.weather.presize(memory, base, state));
+    accept_hint!(19, extended.combat_progress.presize(memory, base));
     extended
         .new_divisions
         .raise_for_equipment(extended.production.rows[2]);
-    accept(20, extended.map_names.presize(memory, base, state));
-    accept(
+    accept_hint!(20, extended.map_names.presize(memory, base, state));
+    accept_hint!(
         21,
         extended.modifier_definitions.presize(memory, base, state),
     );
-    accept(22, extended.naval_bases.presize(memory, base, state));
-    accept(23, extended.map_facilities.presize(memory, base, state));
-    accept(24, extended.raid_launch_inputs.presize(memory, base, state));
-    accept(25, extended.supply_trains.presize(memory, base, state));
-    accept(26, extended.active_abilities.presize(memory, base, state));
-    accept(27, extended.faction_theatres.presize(memory, base, state));
-    accept(28, extended.logistics.presize(memory, base, state));
-    accept(29, extended.hired_advisors.presize(memory, base, state));
-    accept(
+    accept_hint!(22, extended.naval_bases.presize(memory, base, state));
+    accept_hint!(23, extended.map_facilities.presize(memory, base, state));
+    accept_hint!(24, extended.raid_launch_inputs.presize(memory, base, state));
+    accept_hint!(25, extended.supply_trains.presize(memory, base, state));
+    accept_hint!(26, extended.active_abilities.presize(memory, base, state));
+    accept_hint!(27, extended.faction_theatres.presize(memory, base, state));
+    accept_hint!(28, extended.logistics.presize(memory, base, state));
+    accept_hint!(29, extended.hired_advisors.presize(memory, base, state));
+    accept_hint!(
         30,
         extended.raid_target_statuses.presize(memory, base, state),
     );
-    accept(31, extended.raid_state_inputs.presize(memory, base, state));
-    accept(32, extended.combat_log.presize(memory, base, state));
-    accept(33, extended.group_counters.presize(memory, base, state));
-    accept(34, extended.air.presize(memory, base, state));
-    accept(35, extended.naval_history.presize(memory, base, state));
-    accept(36, extended.visibility.presize(memory, base, state));
-    accept(37, extended.fog.presize(memory, base, state));
-    accept(
+    accept_hint!(31, extended.raid_state_inputs.presize(memory, base, state));
+    accept_hint!(32, extended.combat_log.presize(memory, base, state));
+    accept_hint!(33, extended.group_counters.presize(memory, base, state));
+    accept_hint!(34, extended.air.presize(memory, base, state));
+    accept_hint!(35, extended.naval_history.presize(memory, base, state));
+    accept_hint!(36, extended.visibility.presize(memory, base, state));
+    accept_hint!(37, extended.fog.presize(memory, base, state));
+    accept_hint!(
         38,
         extended.country_tactic_unlocks.presize(memory, base, state),
     );
-    accept(39, extended.construction.presize(memory, base, state));
-    accept(40, extended.economy.presize(memory, base, state));
-    accept(41, extended.session.presize(memory, base, state));
-    accept(
+    accept_hint!(39, extended.construction.presize(memory, base, state));
+    accept_hint!(40, extended.economy.presize(memory, base, state));
+    accept_hint!(41, extended.session.presize(memory, base, state));
+    accept_hint!(
         42,
         extended.naval_mission_inputs.presize(memory, base, state),
     );
-    accept(
+    accept_hint!(
         43,
         extended.character_portraits.presize(memory, base, state),
     );
-    accept(44, extended.army_icon_inputs.presize(memory, base, state));
-    accept(45, extended.leader_portraits.presize(memory, base));
-    accept(46, extended.leader_paths.presize(memory, base));
-    accept(
+    accept_hint!(44, extended.army_icon_inputs.presize(memory, base, state));
+    accept_hint!(45, extended.leader_portraits.presize(memory, base));
+    accept_hint!(46, extended.leader_paths.presize(memory, base));
+    accept_hint!(
         47,
         extended.naval_result_details.presize(memory, base, state),
     );
-    accept(
+    accept_hint!(
         48,
         extended.naval_combat_sources.presize(memory, base, state),
     );
-    accept(49, map.presize_combats(memory, base));
+    accept_hint!(49, map.presize_combats(memory, base));
     failure.map_or(Ok(()), Err)
 }
 
@@ -259,6 +284,40 @@ mod tests {
             }
             true
         }
+    }
+
+    #[test]
+    fn periodic_sizing_skips_capacity_censuses_but_keeps_observer_preparation() {
+        let memory = LargeMap {
+            slots: 2,
+            provinces: 9,
+        };
+        let mut sizing = super::super::Sizing::for_slots(1);
+        sizing.extended.economy.rows[2] = 0;
+        let failures = |index: usize| {
+            serde_json::to_value(FAILURES[index].diagnostics()).unwrap()["failed_observations"]
+                .as_u64()
+                .unwrap()
+        };
+        let before: Vec<_> = (0..NAMES.len()).map(failures).collect();
+        assert!(
+            presize_periodic(&memory, 0, &mut sizing.map, &mut sizing.extended, false).is_err()
+        );
+        for index in 1..NAMES.len() {
+            let prompt = matches!(index, 9 | 10 | 13 | 16 | 33 | 40);
+            if !prompt {
+                assert_eq!(failures(index), before[index], "{}", NAMES[index]);
+            }
+        }
+        assert_eq!(sizing.extended.economy.rows[2], 0);
+        assert!(failures(33) > before[33]);
+        // This fixture has no character manager: an admitted census must
+        // retain its ordinary named refusal, including the attach-time pass.
+        assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
+        for index in [6, 8] {
+            assert_eq!(failures(index), before[index] + 1, "{}", NAMES[index]);
+        }
+        assert!(sizing.extended.economy.rows[2] >= 8);
     }
 
     #[test]

@@ -1154,12 +1154,12 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
         crate::rows::compatibility::WIDGET_CAPTURE_FORMAT
     );
     let previous =
-        FormatVersion::read(crate::rows::compatibility::SCRIPT_EVENT_FORMAT - 1).unwrap();
+        FormatVersion::read(crate::rows::compatibility::EVENT_FEED_COLUMNS_FORMAT - 1).unwrap();
     assert_eq!(
         previous.table_refusal(TableId::EventFeedHistory),
         Some(format!(
             "EventFeedHistory layout or meaning changed at format {}; this recording is format {}",
-            crate::rows::compatibility::SCRIPT_EVENT_FORMAT,
+            crate::rows::compatibility::EVENT_FEED_COLUMNS_FORMAT,
             previous.version()
         ))
     );

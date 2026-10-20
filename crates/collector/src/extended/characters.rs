@@ -1640,7 +1640,7 @@ fn read_unit(
             training_reason = Some(reason);
         }
     }
-    let training = (training_start, names.len - training_start);
+    let mut training = (training_start, names.len - training_start);
     let factors_start = names.len;
     if matches!(
         native.kind,
@@ -1666,9 +1666,11 @@ fn read_unit(
     {
         training_reason.get_or_insert(reason);
     }
-    let training_factors = (factors_start, names.len - factors_start);
+    let mut training_factors = (factors_start, names.len - factors_start);
     if training_reason.is_some() {
         names.len = training_start;
+        training = (training_start, 0);
+        training_factors = (training_start, 0);
     }
     let fits = matches!(text.outcome, Outcome::Rows { len: 1 });
     let formation =

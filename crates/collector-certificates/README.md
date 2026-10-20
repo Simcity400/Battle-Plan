@@ -15,3 +15,10 @@ with dependent baselines. Both patch owners must be enabled; an absent receiver
 adds no native reads or allocation.
 Grouped comparisons can report every difference against the borrowed previous fixed-size entry before replacing it. Research retains separate list counts and per-kind counts/identity/value digests; the entry has 110 u64 groups (880 bytes per held country). The report callback runs only on a certified mismatch, without another snapshot allocation.
 A running hook can inspect a registered dependency stamp only while its guard is the sole active writer and the registry state stays stable across the lookup. This supports before/after change proofs without admitting native acquisitions while any writer runs.
+
+Bitmap notifications retain sequentially consistent entry/return marks and writer
+counts. An already-set bit needs only its sequentially consistent load: an
+earlier take needs the OR unless another writer already reasserted the bit,
+and a later take consumes the existing mark.
+Repeated writers therefore avoid redundant locked ORs without losing a return
+mark, a sibling bit, or the running-writer refusal.

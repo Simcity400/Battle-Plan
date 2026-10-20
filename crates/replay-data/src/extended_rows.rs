@@ -177,10 +177,10 @@ mod border_effect_tests;
 #[path = "extended_rows/wargoals.rs"]
 mod wargoals;
 pub use wargoals::*;
-#[path = "extended_rows/unit_history.rs"]
-mod unit_history;
 #[path = "extended_rows/faction_companions.rs"]
 mod faction_companions;
+#[path = "extended_rows/unit_history.rs"]
+mod unit_history;
 pub use faction_companions::*;
 #[path = "extended_rows/combat_log.rs"]
 mod combat_log;
