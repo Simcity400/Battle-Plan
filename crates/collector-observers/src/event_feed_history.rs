@@ -508,8 +508,9 @@ impl Store {
     /// Prepared alongside the decision index: every detour witness is a
     /// decision or activation one.
     pub(crate) fn prepare_staged(&mut self, capacity: usize) -> io::Result<()> {
-        if capacity > self.staged.len() {
-            allocation::reserve_exact(&mut self.staged, capacity - self.staged.len())?;
+        let len = self.staged.len();
+        if capacity > len {
+            allocation::reserve_exact(&mut self.staged, capacity - len)?;
             self.staged.resize(capacity, None);
         }
         Ok(())
