@@ -28,6 +28,8 @@ test('channels stack Ground, Air and Navy signed, and missing months are unknown
   assert.deepEqual(bars.parts.map(part => part.label), ['Ground', 'Air', 'Navy']);
   assert.equal(bars.periods.length, 4);
   assert.deepEqual(bars.periods[0].parts.map(part => part.value), [95, 20, 3], 'only counted armies; a negative correction is kept');
+  assert.deepEqual(bars.periods[0].values, [95, 20, 3], 'the column bands are the parts, in order');
+  assert.deepEqual(bars.periods[1].values, [], 'an unknown month has no bands');
   assert.equal(bars.periods[1].unknown, true, 'a month with no retained entry is never zero');
   assert.deepEqual(bars.periods[2].parts.map(part => part.value), [7, 0, 0]);
   assert.equal(bars.periods[3].unknown, true);

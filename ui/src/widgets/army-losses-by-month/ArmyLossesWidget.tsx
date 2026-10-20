@@ -6,7 +6,7 @@ import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import Legend from '../../charts/Legend';
 import { CATEGORY_LIMIT } from '../../charts/palette';
-import { periodAt, periodStops, stackedBarLayer } from '../../charts/stackedBars';
+import { columnAt, columnStops, columnsLayer } from '../../charts/columns';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf } from '../../charts/table/options';
@@ -27,6 +27,8 @@ import './armyLosses.css';
 
 const armyKey = (row: MonthArmy) => row.army.reference;
 const SORT = { column: 'army', direction: 'ascending' } as const;
+/** Monthly bars keep their wider gaps, and a month's small losses still show beside large ones. */
+const BAR_STYLE = { spacing: 'proportional', thinBands: true } as const;
 
 export default function ArmyLossesWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
@@ -55,7 +57,9 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
     const index = bars?.parts.findIndex(part => part.key === key) ?? -1;
     return tokens.categories[Math.max(0, index) % tokens.categories.length];
   }, [bars, tokens]);
-  const layers = useMemo(() => bars ? [stackedBarLayer(bars.periods, key => colour(key))] : [], [bars, colour]);
+  // Every month's bands are the parts in order, so each band's colour is its part's.
+  const layers = useMemo(() => bars ? [columnsLayer(bars.periods, bars.parts.map(part => colour(part.key)), BAR_STYLE)] : [], [bars, colour]);
+  const monthAt = (at: number) => bars?.periods[columnAt(bars.periods, Math.floor(at))] ?? null;
   const caption = measure === 'manpower' ? 'Manpower lost' : LEDGER_LABELS[ledger];
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const anchor = useRef<HTMLDivElement>(null);
@@ -93,11 +97,11 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   else main = <div className="army-losses-chart">
     <TimeChart label={`${caption} per month`} extent={[first, widget.time.mode === 'range' ? Math.floor(window.lastHour) : track.branch.lastHour]}
       branchStart={track.branch.firstHour} playhead={following ? hour : null} playback="cursor"
-      axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={periodStops(bars.periods)}
+      axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} keyHours={columnStops(bars.periods)}
       fitValues={shown => shown ? [Math.min(0, shown[0]), Math.max(0, shown[1])] : null}
       active={active} revision={`${data.hour}:${measure}:${stack}:${ledger}:${tokens.categories.join()}`}
-      tooltip={at => { const period = periodAt(bars.periods, Math.floor(at)); return period ? monthTooltip(period, bars.parts, measure, caption, following ? hour : null, colour) : null; }}
-      onPick={at => { const period = periodAt(bars.periods, Math.floor(at)); if (period && !period.unknown) pick(Math.floor(at)); }}
+      tooltip={at => { const period = monthAt(at); return period ? monthTooltip(period, bars.parts, measure, caption, following ? hour : null, colour) : null; }}
+      onPick={at => { const period = monthAt(at); if (period && !period.unknown) pick(Math.floor(at)); }}
       onContextMenu={(_at, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, Math.min(hour, data.hour))])} />
   </div>;
   const legend = bars && bars.parts.length > 1 ? bars.parts.map(part => ({ id: part.key, label: part.label, color: colour(part.key) })) : [];

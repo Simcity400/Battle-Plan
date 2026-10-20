@@ -1,5 +1,5 @@
 import { usNumber } from '../../charts/numberFormat.ts';
-import type { StackedPeriod } from '../../charts/stackedBars';
+import type { ColumnPeriod } from '../../charts/columns';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
 import { firstHourOfMonth, formatDate, formatDateTime, gameDate, monthAt, monthIndex, monthNames } from '../../dashboard/calendar.ts';
@@ -51,7 +51,8 @@ export interface Part { key: string; label: string }
 /** A part's exact amount (whole people, or the equipment's five-decimal fixed point as
  * stored) and the number it plots at. */
 export interface MonthPart { key: string; value: number; raw: bigint }
-export interface MonthPeriod extends StackedPeriod { parts: MonthPart[] }
+/** A month's column: its parts' plotted amounts as the column's bands, in part order. */
+export interface MonthPeriod extends ColumnPeriod { key: string; parts: MonthPart[] }
 export interface MonthBars { periods: MonthPeriod[]; parts: Part[]; first: number; last: number }
 
 /** The number an exact amount plots at. */
@@ -121,12 +122,12 @@ export function monthBars(reply: ArmyLossesReply, measure: Measure, stack: Manpo
   const periods: MonthPeriod[] = [];
   for (let month = first; month <= last; month++) {
     const firstOf = firstHourOfMonth(month), lastOf = firstHourOfMonth(month + 1) - 1;
-    if (!known.has(month) || unknown.has(month)) { periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], unknown: true }); continue; }
+    if (!known.has(month) || unknown.has(month)) { periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: [], values: [], unknown: true }); continue; }
     const shown = values.get(month) ?? new Map<string, bigint>();
     let other = 0n;
     for (const [key, value] of shown) if (folded.has(key)) other = sum(other, value);
-    periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf,
-      parts: [...kept.map(key => part(key, shown.get(key) ?? 0n)), ...(folded.size ? [part(OTHER, other)] : [])] });
+    const monthParts = [...kept.map(key => part(key, shown.get(key) ?? 0n)), ...(folded.size ? [part(OTHER, other)] : [])];
+    periods.push({ key: String(month), firstHour: firstOf, lastHour: lastOf, parts: monthParts, values: monthParts.map(item => item.value) });
   }
   return { periods, parts, first, last };
 }
