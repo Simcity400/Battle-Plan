@@ -285,6 +285,7 @@ impl RocketProduced {
                         ProductionSpendingUnknown::RocketInputInexact
                     },
                 )),
+                unproven_raw: 0,
             };
         }
         let mut unit_totals: HashMap<Identity, BTreeMap<(u64, bool), Total>> = HashMap::new();

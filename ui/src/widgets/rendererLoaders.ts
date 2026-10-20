@@ -33,6 +33,7 @@ export const rendererLoaders = {
   'equipment-losses': () => import('./equipment-losses'),
   'equipment-produced': () => import('./equipment-produced'),
   'production-spending': () => import('./production-spending'),
+  'dockyard-spending': () => import('./dockyard-spending'),
   'occupied-states': () => import('./occupied-states'),
   'occupation-trend': () => import('./occupation-trend'),
   'air-force-size': () => import('./air-force-size'),

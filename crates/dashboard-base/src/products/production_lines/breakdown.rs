@@ -2,6 +2,7 @@
 //! growth, switches and assignments; those remain a reconciled residual rather
 //! than attributing today's modifiers to yesterday's efficiency.
 use super::*;
+use engine_executable::modifier_keys as keys;
 use replay_data::{fixed_point::fixed5_to_q15, fixed_point::q15_to_fixed5};
 use replay_data::{
     rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow,
@@ -307,6 +308,47 @@ fn factory_speed(
         [country.factory_speed[0], country.factory_speed[1]]
     };
     Some(unpowered.wrapping_add(multiply(power, powered.wrapping_sub(unpowered), 100000)?))
+}
+/// Fixed5 daily IC one of `country`'s military factories (a dockyard when
+/// `naval`) applies before any line's own terms (organisation bonus,
+/// licence, resources, efficiency): the powered base rate with the
+/// country's factory or dockyard output modifiers, as the output factor
+/// applies them (the powered modifier only at full power, and a positive
+/// unpowered modifier reduced by the unpowered share). None when an
+/// operand was not read.
+pub fn factory_output(country: &CountryProductionModifiersRow, naval: bool) -> Option<i64> {
+    let power_modifier = value(country, keys::OUT_OF_POWER_IMPACT_FACTOR)?;
+    let base = factory_speed(country, power_modifier, naval)?;
+    let (output, powered) = if naval {
+        (
+            keys::INDUSTRIAL_CAPACITY_DOCKYARD,
+            keys::INDUSTRIAL_CAPACITY_DOCKYARD_POWERED,
+        )
+    } else {
+        (
+            keys::INDUSTRIAL_CAPACITY_FACTORY,
+            keys::INDUSTRIAL_CAPACITY_FACTORY_POWERED,
+        )
+    };
+    let modifier = value(country, output)?;
+    let mut total = base.wrapping_add(multiply(base, modifier, 100000)?);
+    if country.power_raw > 99999 {
+        total = total.wrapping_add(multiply(base, value(country, powered)?, 100000)?);
+    } else if modifier > 0 {
+        let power = multiply(
+            power_modifier.wrapping_add(100000),
+            country.power_raw,
+            100000,
+        )?
+        .max(0);
+        let adjustment = multiply(
+            100000_i64.wrapping_sub(power),
+            modifier.wrapping_neg(),
+            100000,
+        )?;
+        total = total.wrapping_add(multiply(base, adjustment, 100000)?);
+    }
+    Some(total)
 }
 fn output_base(
     country: &CountryProductionModifiersRow,
@@ -997,6 +1039,51 @@ mod tests {
         );
         assert!(projected.warnings.is_empty());
         assert_eq!(projected.last_hour, 23);
+    }
+    #[test]
+    fn factory_output_applies_power_and_output_modifiers_as_the_output_factor_does() {
+        use replay_data::rows::ModifierBreakdownNode as Node;
+        let country = |power_raw, values: &[(u32, i64)]| CountryProductionModifiersRow {
+            power_raw,
+            factory_speed: [200000, 400000, 600000, 1000000],
+            trees: values
+                .iter()
+                .map(|&(key, value)| ProductionModifierTree {
+                    key,
+                    failure: vec![],
+                    nodes: vec![Node {
+                        children: 0,
+                        value,
+                        name: b"Synthetic source".to_vec(),
+                    }],
+                })
+                .collect(),
+            ..Default::default()
+        };
+        // Half power: the base is halfway to the powered rate and a positive
+        // unpowered bonus keeps only its powered share, as the line output
+        // above reconciles with the recorded speed.
+        let half = country(50000, &[(0xa8, 0), (0xd4, 20000), (0xd6, 20000)]);
+        assert_eq!(factory_output(&half, false), Some(330000));
+        assert_eq!(factory_output(&half, true), Some(880000));
+        // A negative bonus is not reduced, and the powered bonus is unread.
+        let malus = country(50000, &[(0xa8, 0), (0xd6, -10000)]);
+        assert_eq!(factory_output(&malus, true), Some(720000));
+        // Full power adds the powered bonus at the powered rate.
+        let full = country(100000, &[(0xa8, 0), (0xd6, 10000), (0xd7, 5000)]);
+        assert_eq!(factory_output(&full, true), Some(1150000));
+        // The out-of-power factor scales the powered share.
+        let impact = country(50000, &[(0xa8, -50000), (0xd6, 0)]);
+        assert_eq!(factory_output(&impact, true), Some(700000));
+        // A failed or missing operand leaves the output unknown.
+        assert_eq!(
+            factory_output(&country(100000, &[(0xa8, 0), (0xd6, 0)]), true),
+            None
+        );
+        let mut failed = country(50000, &[(0xa8, 0), (0xd6, 0)]);
+        failed.trees[1].nodes.clear();
+        failed.trees[1].failure = b"unreadable".to_vec();
+        assert_eq!(factory_output(&failed, true), None);
     }
     #[test]
     fn military_and_naval_partial_power_remove_the_unpowered_bonus_without_a_residual() {

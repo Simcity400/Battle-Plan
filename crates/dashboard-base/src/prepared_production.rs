@@ -70,6 +70,8 @@ pub use dashboard_core::map_pairs;
 struct RowState {
     identity: Option<Identity>,
     entry: Entry,
+    /// A census listed its line, so its purpose is recorded.
+    proved: bool,
     units: i64,
     exact: bool,
     ended: bool,
@@ -148,6 +150,10 @@ pub struct ProductionAccumulator {
     pages_written: u64,
     spent: crate::prepared::series::Accumulator,
     spent_keys: BTreeMap<String, u64>,
+    /// Keys of each equipment entry's cumulative input from lines whose
+    /// purpose is not recorded, by (tag, variant, refit); only entries that
+    /// ever had such input.
+    unproven_keys: BTreeMap<String, u64>,
     spent_active: BTreeSet<u64>,
     #[serde(skip)]
     spent_holders: [BTreeMap<String, SpentHolder>; 2],
@@ -554,7 +560,11 @@ impl ProductionAccumulator {
                             continue;
                         }
                         let token = serde_json::to_string(&(tag, rocket, refits, variant))?;
-                        let next = (self.spent_keys.len() + self.classification_keys.len()) as u64;
+                        let next = next_key(
+                            &self.spent_keys,
+                            &self.classification_keys,
+                            &self.unproven_keys,
+                        );
                         let key = *self.spent_keys.entry(token).or_insert(next);
                         let mut amount = 0i128;
                         let mut reason = scope_reason;
@@ -571,19 +581,47 @@ impl ProductionAccumulator {
                             }
                         }
                         let value = reason.is_none().then_some(amount);
-                        if value.is_some() {
-                            observed.insert(key);
+                        if observe_known(
+                            &mut self.spent,
+                            &self.spent_active,
+                            &mut observed,
+                            (key, hour, value, starts),
+                        ) {
+                            #[cfg(any(test, feature = "test-support"))]
+                            {
+                                self.work.emitted += 1;
+                            }
                         }
-                        if value.is_some()
-                            && (starts
-                                || !self.spent_active.contains(&key)
-                                || self
-                                    .spent
-                                    .state(key)
-                                    .and_then(|state| state.last)
-                                    .is_none_or(|run| Some(run.value) != value))
-                        {
-                            self.spent.observe(key, hour, value, starts);
+                    }
+                    // Input whose purpose is not recorded, per purpose, for
+                    // entries that ever had it: ranges and months read its
+                    // change over their own interval.
+                    if rocket {
+                        continue;
+                    }
+                    for (refit, total) in amounts.iter().enumerate().filter_map(|(index, total)| {
+                        total.as_ref().map(|total| (index == 1, *total))
+                    }) {
+                        let token = serde_json::to_string(&(tag, variant, refit))?;
+                        if total.unproven_raw == 0 && !self.unproven_keys.contains_key(&token) {
+                            continue;
+                        }
+                        let next = next_key(
+                            &self.spent_keys,
+                            &self.classification_keys,
+                            &self.unproven_keys,
+                        );
+                        let key = *self.unproven_keys.entry(token).or_insert(next);
+                        let value = scope_reason
+                            .or(total.reason)
+                            .is_none()
+                            .then_some(total.unproven_raw);
+                        if observe_known(
+                            &mut self.spent,
+                            &self.spent_active,
+                            &mut observed,
+                            (key, hour, value, starts),
+                        ) {
                             #[cfg(any(test, feature = "test-support"))]
                             {
                                 self.work.emitted += 1;
@@ -892,6 +930,7 @@ impl ProductionAccumulator {
             }
             let key = (row.line, row.ordinal);
             seen.insert(key);
+            let proved = kinds.contains_key(&row.line);
             let refit = match kinds.get(&row.line) {
                 Some(kind) => *kind == engine_native::cequipment_production_line::KIND_SHIP_REFIT,
                 None => {
@@ -911,6 +950,7 @@ impl ProductionAccumulator {
                 RowState {
                     identity: producer,
                     entry: (row.variant, refit),
+                    proved,
                     units: 0,
                     exact: true,
                     ended: false,
@@ -1065,6 +1105,41 @@ impl ProductionAccumulator {
     }
 }
 
+/// The next series key: spent, classification and unproven keys share one
+/// numbering.
+fn next_key(
+    spent: &BTreeMap<String, u64>,
+    classifications: &BTreeMap<u64, u64>,
+    unproven: &BTreeMap<String, u64>,
+) -> u64 {
+    (spent.len() + classifications.len() + unproven.len()) as u64
+}
+
+/// Observes a known value of a holder's key when it is new or changed;
+/// true when it was observed. A known value keeps the key active.
+fn observe_known(
+    spent: &mut crate::prepared::series::Accumulator,
+    active: &BTreeSet<u64>,
+    observed: &mut BTreeSet<u64>,
+    (key, hour, value, starts): (u64, i32, Option<i128>, bool),
+) -> bool {
+    if value.is_none() {
+        return false;
+    }
+    observed.insert(key);
+    if starts
+        || !active.contains(&key)
+        || spent
+            .state(key)
+            .and_then(|state| state.last)
+            .is_none_or(|run| Some(run.value) != value)
+    {
+        spent.observe(key, hour, value, starts);
+        return true;
+    }
+    false
+}
+
 fn apply(
     totals: &mut HashMap<Identity, (u64, BTreeMap<Entry, Total>)>,
     version: &mut u64,
@@ -1109,6 +1184,13 @@ fn apply_cost(
             .raw
             .checked_add(delta)
             .ok_or_else(|| io::Error::other("Applied IC exceeds its exact integer range"))?;
+        // Magnitudes, so corrections between lines never cancel the evidence.
+        if !state.proved {
+            total.unproven_raw = delta
+                .checked_abs()
+                .and_then(|delta| total.unproven_raw.checked_add(delta))
+                .ok_or_else(|| io::Error::other("Applied IC exceeds its exact integer range"))?;
+        }
     }
     Ok(())
 }
@@ -1147,6 +1229,9 @@ pub struct Amount {
     pub units_exact: bool,
     pub spent: String,
     pub spending_reason: Option<ProductionSpendingUnknown>,
+    /// The magnitudes of the input of lines whose purpose is not recorded,
+    /// summed: dated evidence that grows and never cancels.
+    pub unproven: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1316,6 +1401,7 @@ fn snapshot(
                 units_exact: units.inexact == 0,
                 spent: spending.raw.to_string(),
                 spending_reason: spending.reason,
+                unproven: spending.unproven_raw.to_string(),
             }
         })
         .collect();
@@ -2567,6 +2653,7 @@ pub(crate) struct ProductionCatalogue {
     pub(crate) warnings: Vec<String>,
     pub(crate) spent_keys: BTreeMap<String, u64>,
     classification_keys: BTreeMap<u64, u64>,
+    pub(crate) unproven_keys: BTreeMap<String, u64>,
     pub(crate) spending: SpendingDiagnostics,
     pub(crate) variant_warnings: Vec<String>,
 }
@@ -2778,7 +2865,11 @@ pub fn publish_endpoint_to(
                 // its numeric run remains the already-computed combined amount.
                 let token =
                     serde_json::to_string(&(&row.tag, rocket, rocket || amount.refit, variant))?;
-                let next = (state.spent_keys.len() + state.classification_keys.len()) as u64;
+                let next = next_key(
+                    &state.spent_keys,
+                    &state.classification_keys,
+                    &state.unproven_keys,
+                );
                 let key = *state.spent_keys.entry(token).or_insert(next);
                 active.insert(key);
                 state.endpoint_event(key, page.first_hour, &LeafEndpoint { holder, amount })?;
@@ -2794,7 +2885,11 @@ pub fn publish_endpoint_to(
     }
     state.endpoint_active = active;
     for (variant, classification) in std::mem::take(&mut header.classifications) {
-        let next = (state.spent_keys.len() + state.classification_keys.len()) as u64;
+        let next = next_key(
+            &state.spent_keys,
+            &state.classification_keys,
+            &state.unproven_keys,
+        );
         let key = *state.classification_keys.entry(variant).or_insert(next);
         state.endpoint_event(key, page.first_hour, &classification)?;
     }
@@ -2853,6 +2948,7 @@ pub fn write_catalogue(
         warnings: state.warnings.clone(),
         spent_keys: state.spent_keys.clone(),
         classification_keys: state.classification_keys.clone(),
+        unproven_keys: state.unproven_keys.clone(),
         spending: {
             let mut diagnostics: SpendingDiagnostics = state.spending_scan().into();
             diagnostics.equipment_tags = state.first_equipment_holders.keys().cloned().collect();

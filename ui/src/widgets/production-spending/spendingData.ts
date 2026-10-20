@@ -1,4 +1,4 @@
-import type { ProductionSpendingReply, ProductionSpendingRun, ProductionSpendingUnknown } from '../../generated/dashboard';
+import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun, ProductionSpendingUnknown } from '../../generated/dashboard';
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import { runAt, sameStretch } from '../../charts/series.ts';
 import { formatIc } from '../../dashboard/icDecimals.ts';
@@ -53,7 +53,7 @@ const runs = (value: unknown): value is ProductionSpendingRun[] => Array.isArray
 export function validateProductionSpendingReply(data: unknown): ProductionSpendingReply {
   const reply = data as PreparedProductionSpendingReply;
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
-    && reply.decimals === 5 && hours(reply.reads) && hours(reply.observations) && runs(reply.total) && runs(reply.rocketTotal)
+    && reply.decimals === 5 && hours(reply.reads) && hours(reply.observations) && runs(reply.total) && runs(reply.equipmentTotal) && runs(reply.rocketTotal)
     && hours(reply.equipmentReads) && hours(reply.rocketReads) && hours(reply.equipmentObservations) && hours(reply.rocketObservations)
     && text(reply.rocketKey) && text(reply.rocketName)
     && Array.isArray(reply.production) && reply.production.every((run, index) => run != null
@@ -66,9 +66,10 @@ export function validateProductionSpendingReply(data: unknown): ProductionSpendi
     && Array.isArray(reply.leaves) && reply.leaves.every(leaf => typeof leaf === 'object' && leaf != null
       && typeof leaf.variant === 'string' && leaf.variant.length > 0 && typeof leaf.typeKey === 'string' && leaf.typeKey.length > 0 && text(leaf.name)
       && (leaf.domain === null || DOMAINS.includes(leaf.domain)) && typeof leaf.rocket === 'boolean' && runs(leaf.runs)
+      && (leaf.refit === null || typeof leaf.refit === 'boolean') && runs(leaf.unproven)
       && Array.isArray(leaf.names) && leaf.names.every((name, index) => typeof name === 'object' && name != null && int(name.firstHour)
         && text(name.name) && text(name.design) && typeof name.known === 'boolean' && (index === 0 || leaf.names[index - 1].firstHour < name.firstHour)))
-    && new Set(reply.leaves.map(leaf => JSON.stringify([leaf.variant, leaf.rocket]))).size === reply.leaves.length
+    && new Set(reply.leaves.map(leafKey)).size === reply.leaves.length
     && (reply.continuity === undefined || reply.continuity !== null && typeof reply.continuity === 'object'
       && Object.values(reply.continuity).every(pair => Array.isArray(pair) && pair.length === 2 && pair.every(value => typeof value === 'boolean')))
     && (reply.peaks === undefined || reply.peaks !== null && typeof reply.peaks === 'object'
@@ -78,6 +79,9 @@ export function validateProductionSpendingReply(data: unknown): ProductionSpendi
   preparedPrefix(reply);
   return reply;
 }
+
+/** A leaf's identity: its design and source, and its purpose in a reply split by purpose. */
+export const leafKey = (leaf: ProductionSpendingLeaf) => JSON.stringify([leaf.variant, leaf.rocket, leaf.refit]);
 
 export interface SpendingAmount { exact: bigint | null; reason: UnknownReason | null }
 
@@ -116,7 +120,9 @@ export function spendingEmptyLabel(reply: ProductionSpendingReply, hour: number,
     ? 'No factory IC spending recorded.' : 'No factory IC spent in this view.';
 }
 
-function amountIn(reply: ProductionSpendingReply, values: readonly ProductionSpendingRun[], from: number | null, hour: number,
+/** The amount `values` reached at `hour`, or spent since `from` within one
+ * uninterrupted observation; unknown otherwise. */
+export function amountIn(reply: ProductionSpendingReply, values: readonly ProductionSpendingRun[], from: number | null, hour: number,
   observations: readonly number[] = reply.observations, source: 'equipment' | 'rocket' | 'combined' = 'combined'): SpendingAmount {
   const amount = spendingAt(values, hour);
   if (from == null || amount.exact == null) return amount;
@@ -143,7 +149,8 @@ export function spendingFinals(reply: ProductionSpendingReply, from: number | nu
     if (amount.exact != null) return { exact: amount.exact, geometry: Number(amount.exact) };
     let maximum = 0n;
     const baseline = from == null || observations.includes(from) ? 0n : spendingAt(leaf.runs, from - 1).exact;
-    const peak = (reply as PreparedProductionSpendingReply).peaks?.[JSON.stringify([leaf.variant, leaf.rocket])];
+    // A reply split by purpose has new production's peaks only.
+    const peak = leaf.refit ? undefined : (reply as PreparedProductionSpendingReply).peaks?.[JSON.stringify([leaf.variant, leaf.rocket])];
     if (peak !== undefined) {
       const candidate = baseline === null ? 0n : BigInt(peak) - baseline;
       return { exact: null, geometry: Number(candidate > 0n ? candidate : 0n) };

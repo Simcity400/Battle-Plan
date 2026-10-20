@@ -204,6 +204,7 @@ const LANE_FAMILIES: &[&str] = &[
     "occupation",
     "casualties",
     "equipment_losses",
+    "repairs",
 ];
 
 /// Families observed by lane jobs whose observation needs no other family's

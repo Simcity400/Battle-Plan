@@ -295,6 +295,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<equipment_stockpile::artwork::StockpileArtwork>(),
     register::<equipment_produced::EquipmentProduced>(),
     register_prepared::<production_spending::ProductionSpending>(),
+    register_prepared::<dockyard_spending::DockyardSpending>(),
     register_prepared::<trade_flows::TradeFlows>(),
     register::<market_lendlease::MarketLendLease>(),
     register_prepared::<special_projects::SpecialProjects>(),

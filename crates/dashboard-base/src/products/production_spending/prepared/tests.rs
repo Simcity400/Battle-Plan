@@ -215,6 +215,7 @@ fn production_spending_reuses_endpoints_after_two_commits_resume_and_append_with
             &input,
             date,
             hour(3) + 23,
+            Purposes::New,
             &flag,
         )
         .unwrap()
@@ -489,6 +490,7 @@ fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_dist
             &input,
             hour(1) + 23,
             hour(1) + 23,
+            Purposes::counting(refits),
             &flag,
         )
         .unwrap()

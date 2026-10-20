@@ -168,6 +168,12 @@
       ]
     },
     {
+      "kind": "dockyard-spending",
+      "requests": [
+        {"product": "dockyard-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "view": "circle", "from": null, "hour": "$last", "end": "$last"}}
+      ]
+    },
+    {
       "kind": "occupied-states",
       "requests": [
         {"product": "occupied-states-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},

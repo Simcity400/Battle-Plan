@@ -1,16 +1,17 @@
-//! Country factories and nuclear stockpiles prepared on their own. Each is a
-//! census of one hourly country table (`CountryFactories`, `Nukes`) joined to
-//! the countries' keys and links: its observer acts when a joined key, link,
+//! Country factories, nuclear stockpiles and dockyard repairs prepared on
+//! their own. Each joins its hourly country table to the countries' keys
+//! and links: its observer acts when a joined key, link,
 //! availability or row of its table changes, or when the table's read flag
 //! does, and an hour between repeats the last read's counts and advances its
 //! series in constant time. So a block is read by its changes
-//! ([`prepass::Family`] fields: the countries' keys, every link, every field of
-//! the census table and, for the stockpiles, the name tokens): a pre-pass
+//! ([`prepass::Family`] fields: the countries' keys, every link, the census
+//! operands and, for the stockpiles, the name tokens): a pre-pass
 //! worker keeps the frames of the hours the census observes (countries
 //! reduced to the keys it reads), with a frame at each hour its table's read
 //! is due to begin or end by the recording's cadence (none for a table read
-//! every hour), and, for each hour between, whether the census table was
-//! read there (its slot read, from the hour's read evidence).
+//! every hour). Repairs also keep the daily production modifiers read
+//! and variant naming boundaries. Each hour between carries the supplying table's slot read
+//! from that hour's read evidence.
 //!
 //! The family's own thread folds each block in order: each kept hour is
 //! observed on the carried census as hourly preparation observes it, and each
@@ -31,7 +32,7 @@ use crate::{
         frame_changes::FrameChanges,
         prepass::{self, Extract, Folded},
     },
-    products::{country_factories, country_nukes},
+    products::{country_factories, country_nukes, dockyard_repairs},
 };
 use dashboard_base::prepared::kept::{Reduced, consecutive, kept_changes, observe_hours};
 use replay::{container::QuietHours, container::Replay, container::TableFields};
@@ -99,6 +100,38 @@ impl Census for country_factories::prepared::Prepared {
 impl Census for country_nukes::prepared::Prepared {
     fn family() -> &'static prepass::Family {
         &NUKES_FAMILY
+    }
+
+    fn observe(
+        &mut self,
+        frame: &DecodedFrame,
+        replay: &Replay,
+        changes: &FrameChanges,
+    ) -> io::Result<()> {
+        Self::observe(self, frame, replay, changes)
+    }
+
+    fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<bool> {
+        Self::advance_quiet(self, hour, read)
+    }
+
+    fn bytes(&self) -> usize {
+        Self::bytes(self)
+    }
+
+    fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        Self::flush(self, writer, branch, cancelled)
+    }
+}
+
+impl Census for dockyard_repairs::Prepared {
+    fn family() -> &'static prepass::Family {
+        &REPAIRS_FAMILY
     }
 
     fn observe(
@@ -208,6 +241,81 @@ fn nuke_start(format: FormatVersion) -> Box<dyn Extract> {
     CensusExtract::start(format, TableId::Nukes)
 }
 
+/// Hourly repair use with the production census's carried daily output.
+static REPAIRS_FAMILY: prepass::Family = prepass::Family {
+    name: "repairs",
+    extract: "repairs.extract",
+    sequential: "repairs.sequential",
+    fallback: "repairs.fallback",
+    tables: &[
+        TableId::Campaign,
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::NavalRepairCountries,
+        TableId::CountryProductionModifiers,
+        TableId::NavalRepairBases,
+        TableId::NavalRepairQueue,
+        TableId::NavalBases,
+        TableId::Ships,
+        TableId::ShipModels,
+        TableId::TaskForces,
+        TableId::Provinces,
+        TableId::RelationLinks,
+        TableId::FactionMembers,
+        TableId::Subjects,
+        TableId::WarRelations,
+        TableId::CountryAppearance,
+        TableId::LexicalTokens,
+        TableId::VariantDefinitions,
+        TableId::VariantModules,
+        TableId::VariantUpgrades,
+        TableId::VariantChanges,
+    ],
+    fields: Some(repair_fields),
+    start: repair_start,
+};
+
+fn repair_fields() -> io::Result<Vec<TableFields>> {
+    let mut fields = vec![
+        TableFields::named(TableId::Countries, &["canonical_slot", "tag"])?,
+        TableFields::named(TableId::NavalRepairCountries, &["num_used_dockyards"])?,
+        TableFields::named(
+            TableId::CountryProductionModifiers,
+            &["power_raw", "factory_speed", "trees"],
+        )?
+        .when_read(),
+    ];
+    for &(table, names) in dockyard_repairs::SELECTION_FIELDS {
+        fields.push(if names.is_empty() {
+            TableFields::all(table)
+        } else {
+            TableFields::named(table, names)?
+        });
+    }
+    for table in [
+        TableId::CountryAppearance,
+        TableId::LexicalTokens,
+        TableId::VariantDefinitions,
+        TableId::VariantModules,
+        TableId::VariantUpgrades,
+        TableId::VariantChanges,
+    ] {
+        let field = TableFields::all(table);
+        fields.push(if table == TableId::VariantDefinitions {
+            field.when_read()
+        } else {
+            field
+        });
+    }
+    Ok(fields)
+}
+
+fn repair_start(format: FormatVersion) -> Box<dyn Extract> {
+    let mut extract = CensusExtract::start(format, TableId::CountryProductionModifiers);
+    extract.boundaries = &[TableId::VariantDefinitions];
+    extract
+}
+
 // --- Extract and fold ------------------------------------------------------
 
 /// One hour of a census block's facts, in hour order.
@@ -236,6 +344,8 @@ struct CensusExtract {
     format: FormatVersion,
     /// The census table, whose read flag each quiet hour carries.
     table: TableId,
+    /// Additional daily reads which need a retained frame, not only a read bit.
+    boundaries: &'static [TableId],
     hours: Vec<Hour>,
     countries: Reduced<CountryRow>,
     /// The last hour given, observed or quiet, and whether its table was
@@ -246,10 +356,11 @@ struct CensusExtract {
 }
 
 impl CensusExtract {
-    fn start(format: FormatVersion, table: TableId) -> Box<dyn Extract> {
+    fn start(format: FormatVersion, table: TableId) -> Box<Self> {
         Box::new(Self {
             format,
             table,
+            boundaries: &[],
             hours: Vec::new(),
             countries: Reduced::new(TableId::Countries),
             last: None,
@@ -288,7 +399,11 @@ impl Extract for CensusExtract {
         {
             self.frames += 1;
         }
-        let read = crate::metadata::slot_read(self.format, &frame.metrics, self.table, frame.hour);
+        let read = std::iter::once(self.table)
+            .chain(self.boundaries.iter().copied())
+            .any(|table| {
+                crate::metadata::slot_read(self.format, &frame.metrics, table, frame.hour)
+            });
         self.last = Some((frame.hour, read));
         let mut kept = frame.clone();
         self.countries.countries(&mut kept);
@@ -309,12 +424,16 @@ impl Extract for CensusExtract {
         let (format, table) = (self.format, self.table);
         let reads: Vec<bool> = span
             .map(|position| {
-                crate::metadata::slot_read(
-                    format,
-                    &hours.metrics()[position],
-                    table,
-                    hours.hours()[position],
-                )
+                std::iter::once(table)
+                    .chain(self.boundaries.iter().copied())
+                    .any(|table| {
+                        crate::metadata::slot_read(
+                            format,
+                            &hours.metrics()[position],
+                            table,
+                            hours.hours()[position],
+                        )
+                    })
             })
             .collect();
         if let Some(&read) = reads.last() {
@@ -332,16 +451,20 @@ impl Extract for CensusExtract {
         Ok(())
     }
 
-    /// The next hour the census table's read is due to begin or end by its
+    /// The next hour the watched table's read is due to begin or end by its
     /// cadence in the recording's format (each hour of a table read daily in
     /// it, or never for one read every hour): observed with a frame, so the
     /// hours between share the read flag of the hour before them.
     fn deadline(&self) -> Option<i32> {
         let (hour, read) = self.last?;
-        let cadence = replay_data::cadence::cadence_in(self.table, self.format);
+        let due = |hour| {
+            std::iter::once(self.table)
+                .chain(self.boundaries.iter().copied())
+                .any(|table| replay_data::cadence::cadence_in(table, self.format).is_refresh(hour))
+        };
         (1..=replay_data::cadence::STAGGER_PERIOD)
             .filter_map(|ahead| hour.checked_add(ahead))
-            .find(|&next| cadence.is_refresh(next) != read)
+            .find(|&next| due(next) != read)
     }
 
     fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>> {
@@ -585,6 +708,25 @@ impl Own for Nukes {
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         CensusBranch::<country_nukes::prepared::Prepared>::load(load, branch)
+    }
+}
+
+/// Dockyard repair rates, joined with production by the spending query.
+pub(in crate::prepared::pipeline) struct Repairs;
+pub(in crate::prepared::pipeline) static REPAIRS: Repairs = Repairs;
+
+impl Own for Repairs {
+    fn family(&self) -> &'static prepass::Family {
+        &REPAIRS_FAMILY
+    }
+    fn timing(&self) -> &'static str {
+        "independent.repairs"
+    }
+    fn gates(&self) -> &'static [&'static str] {
+        &["dockyard-spending"]
+    }
+    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
+        CensusBranch::<dockyard_repairs::Prepared>::load(load, branch)
     }
 }
 

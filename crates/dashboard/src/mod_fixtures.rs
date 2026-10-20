@@ -2414,6 +2414,7 @@ fn corpus_checks_new_main_products_through_their_shared_preparation() {
             Some("VariantDefinitions"),
         ),
         ("production-spending", &equipment, &[], None, None),
+        ("dockyard-spending", &equipment, &[], None, None),
         (
             "equipment-losses",
             &[

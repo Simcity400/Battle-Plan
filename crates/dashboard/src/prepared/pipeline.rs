@@ -154,6 +154,7 @@ pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section>
         ("navy-size", "Navy size"),
         ("country-nukes", "Nuclear arsenal"),
         ("country-factories", "Factories"),
+        ("dockyard-repairs", "Dockyard repairs"),
         ("supply-health", "Supply health"),
         ("equipment-stockpile", "Equipment stockpile"),
         ("country-groups", "Country groups"),
@@ -241,7 +242,12 @@ const FAMILIES: &[Family] = &[
         name: "production",
         sections: &["production"],
         dependents: &[],
-        queries: &["production-select", "production-spending", "scoreboard"],
+        queries: &[
+            "production-select",
+            "production-spending",
+            "dockyard-spending",
+            "scoreboard",
+        ],
     },
     Family {
         name: "measure",
@@ -300,6 +306,12 @@ const FAMILIES: &[Family] = &[
         sections: &["country-factories"],
         dependents: &[],
         queries: &["country-factories", "scoreboard", "faction-totals"],
+    },
+    Family {
+        name: "repairs",
+        sections: &["dockyard-repairs"],
+        dependents: &[],
+        queries: &["dockyard-spending"],
     },
     Family {
         name: "supply",
@@ -781,6 +793,7 @@ unsaved_while_own!(
     own_projects => "projects",
     own_nukes => "nukes",
     own_factories => "factories",
+    own_repairs => "repairs",
     own_feed => "event_feed",
     own_naval => "naval",
     own_divisions => "divisions",
@@ -857,6 +870,8 @@ struct BranchState {
     nukes: Box<crate::products::country_nukes::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_factories")]
     factories: Box<crate::products::country_factories::prepared::Prepared>,
+    #[serde(default, skip_serializing_if = "own_repairs")]
+    repairs: Box<crate::products::dockyard_repairs::Prepared>,
     #[serde(default, skip_serializing_if = "own_supply")]
     supply: Box<crate::products::supply_health::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_construction")]
@@ -971,6 +986,7 @@ impl BranchState {
             navy: Default::default(),
             nukes: Default::default(),
             factories: Default::default(),
+            repairs: Default::default(),
             supply: Default::default(),
             construction: Default::default(),
             resources: Default::default(),
@@ -3011,6 +3027,7 @@ fn run_inner(
                         navy,
                         nukes,
                         factories,
+                        repairs,
                         supply,
                         construction,
                         resources,
@@ -3595,6 +3612,19 @@ fn run_inner(
                                 Ok(())
                             },
                         ),
+                        lanes::Job::new(
+                            &[("repairs", 48)],
+                            521,
+                            move |_family, frame, changes, mut family_timings| {
+                                time_family!(
+                                    family_timings,
+                                    "repairs",
+                                    observe,
+                                    repairs.observe(frame, replay, changes)
+                                )?;
+                                Ok(())
+                            },
+                        ),
                     ];
                     // A family whose block facts fold after the block is not
                     // observed hour by hour.
@@ -3855,8 +3885,9 @@ fn run_inner(
                                 changes,
                                 &mut family_timings,
                             )?;
+                            lanes.serial("repairs", frame, changes, &mut family_timings)?;
                             frame_count += 1;
-                            coordinator_order = 48;
+                            coordinator_order = 49;
                             time_family!(family_timings, "map", observe, {
                                 let position = dashboard_base::prepared_map::Position {
                                     block,
@@ -4239,6 +4270,7 @@ fn run_inner(
                         + branch.navy.bytes()
                         + branch.nukes.bytes()
                         + branch.factories.bytes()
+                        + branch.repairs.bytes()
                         + branch.supply.bytes()
                         + branch.stockpile.bytes()
                         + branch.stability.buffered_bytes()
@@ -4302,6 +4334,7 @@ fn run_inner(
                         wars,
                         army,
                         factories,
+                        repairs,
                         nukes,
                         navy,
                         air,
@@ -4933,6 +4966,17 @@ fn run_inner(
                                     "experience",
                                     flush,
                                     experience.flush(writer, branch, cancelled)
+                                )))
+                            },
+                        ),
+                        flush::Task::new(
+                            &[(49, "repairs")],
+                            move |_, writer, mut family_timings| {
+                                Ok(Some(time_family!(
+                                    family_timings,
+                                    "repairs",
+                                    flush,
+                                    repairs.flush(writer, branch, cancelled)
                                 )))
                             },
                         ),

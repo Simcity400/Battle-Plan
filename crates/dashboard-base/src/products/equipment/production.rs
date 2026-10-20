@@ -65,6 +65,10 @@ pub enum ProductionSpendingUnknown {
 pub(crate) struct CostTotal {
     pub raw: i128,
     pub reason: Option<ProductionSpendingUnknown>,
+    /// The input of lines no census listed, whose purpose (new or ship refit)
+    /// is not recorded and which counts as new in `raw`, as the sum of its
+    /// magnitudes: it grows with each such input and never cancels.
+    pub unproven_raw: i128,
 }
 
 /// One tag's reads of the output.
@@ -153,6 +157,8 @@ impl ScannedProduced {
 struct RowState {
     identity: Option<Identity>,
     entry: Entry,
+    /// A census listed its line, so its purpose is recorded.
+    proved: bool,
     units: i64,
     exact: bool,
     ended: bool,
@@ -204,6 +210,13 @@ fn apply_cost(
             .raw
             .checked_add(delta)
             .ok_or_else(|| io::Error::other("Applied IC exceeds its exact integer range"))?;
+        // Magnitudes, so corrections between lines never cancel the evidence.
+        if !state.proved {
+            total.unproven_raw = delta
+                .checked_abs()
+                .and_then(|delta| total.unproven_raw.checked_add(delta))
+                .ok_or_else(|| io::Error::other("Applied IC exceeds its exact integer range"))?;
+        }
     }
     Ok(())
 }
@@ -439,6 +452,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     for row in output {
                         let key = (row.line, row.ordinal);
                         seen.insert(key);
+                        let proved = kinds.contains_key(&row.line);
                         let refit = match kinds.get(&row.line) {
                             Some(kind) => {
                                 *kind == engine_native::cequipment_production_line::KIND_SHIP_REFIT
@@ -458,6 +472,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                             RowState {
                                 identity: producer,
                                 entry: (row.variant, refit),
+                                proved,
                                 units: 0,
                                 exact: true,
                                 ended: false,

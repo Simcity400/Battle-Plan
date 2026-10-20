@@ -21,7 +21,8 @@ Finalized stack-anchor lookup is shared by counter grids and selected movement p
 Synthetic GUI, table, raster, localisation and GPU fixtures used by other viewer crates are available through `test-support`. Follow the workspace [working rules](../../AGENTS.md).
 
 Stored modifier source labels recover through their recorded language's content keys in `recorded_labels`; combat and occupation hovers share the same display-language policy.
-Map visibility reuses replay's recorded country access and intel fractions,
+Map visibility re-exports replay-derive's country families, port relations and access links,
+and reuses its recorded country access and intel fractions,
 including the reserved-country packets, with equipment detail queries. Province
 fog geometry and map-specific admission remain in this crate.
 

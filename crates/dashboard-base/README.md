@@ -63,7 +63,7 @@ The interactive `faction-details` product selects one full faction handle at one
 | [read_runs.rs](src/read_runs.rs) | Read-derived value runs and known coverage. |
 | [research_dto.rs](src/research_dto.rs) | The research products' reply types, shared with the frontend. |
 | [products/product.rs](src/products/product.rs) | The `Product` trait, `ReplyWarnings` and the exported `reply_warnings!` macro, the shared parameter types and validators, and the reply budget check. |
-| [products/](src/products/mod.rs) | The shared products: country groups and history, country measure, experience and factories, equipment, equipment icons, produced equipment and production spending, faction totals, force census, territory and its breakdown, politics content, idea history and format, character portraits and production lines; and the small shared modules several product families name: artwork (focus, technology and equipment art with its research and resource titles), research, resources, place names, country styles, battles and fixed-point runs. |
+| [products/](src/products/mod.rs) | The shared products: country groups and history, country measure, experience and factories, prepared dockyard repair rates, sampled per-design/residual splits, dated raw design catalogues and per-tag integral/origin reads, equipment, equipment icons, produced equipment and production spending, faction totals, force census, territory and its breakdown, politics content, idea history and format, character portraits and production lines; and the small shared modules several product families name: artwork (focus, technology and equipment art with its research and resource titles), research, resources, place names, country styles, battles and fixed-point runs. |
 | [test_fixtures.rs](src/test_fixtures.rs) | Test sources and content options over dashboard-core's recording builders. |
 
 ## Prepared series
@@ -530,6 +530,21 @@ Removed holders close their own keys. The runtime projection rebuilds after
 restore and reconciles all saved active keys once; rockets without inventory
 versions project on every observation. Published values and continuation layouts
 use the same keys and series.
+
+A line that no census listed has no recorded purpose: its input counts as new,
+as Equipment produced counts it, and each entry also keeps the cumulative input
+of such lines (`unproven`). The production family publishes it as its own
+dated series per tag, design and purpose, beside the spent series, so a range
+or month reads whether such input joined it against its own baseline.
+
+Dockyard spending ([products/dockyard_spending.rs](src/products/dockyard_spending.rs))
+reads Production spending's prepared endpoints split by purpose (one leaf per
+design and purpose), keeping naval designs and those content cannot resolve.
+Its months view differences production's shared spent series at calendar-month
+ends: a design's new-production key and its combined key, inside one
+observation, from zero before its first input or at its observation's start.
+Repairs integrate the prepared repair rate over the same hours. Both answer
+through the hours the production and repair families have both prepared.
 
 ## Country identity history
 

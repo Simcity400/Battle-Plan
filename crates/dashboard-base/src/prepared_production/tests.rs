@@ -716,6 +716,7 @@ fn amount(variant: u64, units: i128, exact: bool, refit: bool) -> Amount {
         units_exact: exact,
         spent: units.to_string(),
         spending_reason: None,
+        unproven: "0".into(),
     }
 }
 fn source(read: i32, amounts: Vec<Amount>) -> SourceEndpoint {

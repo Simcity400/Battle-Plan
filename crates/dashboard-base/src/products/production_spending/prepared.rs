@@ -4,15 +4,16 @@ use crate::prepared::{prefix::Prefix, series::Reader};
 use crate::prepared_production::{self as pages, EndpointPage, SourceEndpoint};
 use serde_json::{Value, json};
 
+/// A prepared spending request: one country's amounts at its dates.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Params {
-    branch_id: String,
-    tag: String,
-    refits: bool,
-    from: Option<i32>,
-    hour: Option<i32>,
-    end: Option<i32>,
+pub(crate) struct Params {
+    pub branch_id: String,
+    pub tag: String,
+    pub refits: bool,
+    pub from: Option<i32>,
+    pub hour: Option<i32>,
+    pub end: Option<i32>,
 }
 
 pub fn query(
@@ -22,6 +23,40 @@ pub fn query(
     cancel: &AtomicBool,
 ) -> io::Result<Option<Value>> {
     let input: Params = serde_json::from_value(params)?;
+    let purposes = Purposes::counting(input.refits);
+    query_with(
+        source,
+        input,
+        content,
+        "production-spending",
+        purposes,
+        cancel,
+    )
+    .map(|(data, _)| Some(data))
+}
+
+/// The dates a prepared spending reply answers: those requested, or the
+/// prepared prefix's last hour before preparation reaches them.
+pub(crate) struct Answered {
+    pub branch: u64,
+    pub bounds: (i32, i32),
+    /// A range's first hour, when its baseline is prepared.
+    pub from: Option<i32>,
+    pub hour: i32,
+    pub end: i32,
+}
+
+/// [`query`] for a product gated as `gate`, counting `purposes`. A reply split
+/// by purpose has one leaf per design and purpose, and its `peaks` hold new
+/// production's only.
+pub(crate) fn query_with(
+    source: &Source,
+    input: Params,
+    content: Option<&super::super::ContentOptions>,
+    gate: &str,
+    purposes: Purposes,
+    cancel: &AtomicBool,
+) -> io::Result<(Value, Answered)> {
     let branch: u64 = input
         .branch_id
         .parse()
@@ -37,15 +72,9 @@ pub fn query(
         return Err(crate::invalid("Unknown production branch"));
     };
     // Production prepared on its own answers from its own coverage.
-    let coverage = crate::prepared::prefix::read_or_empty(
-        source,
-        content,
-        "production-spending",
-        branch,
-        None,
-        cancel,
-    )?
-    .coverage;
+    let coverage =
+        crate::prepared::prefix::read_or_empty(source, content, gate, branch, None, cancel)?
+            .coverage;
     let requested = (
         input.hour.unwrap_or(bounds.1),
         input.end.unwrap_or(bounds.1),
@@ -66,7 +95,9 @@ pub fn query(
         input.from = None;
     }
     let (store, key) = crate::prepared::files(source, content)?;
-    let mut data = match read_pages(&store, &key, branch, bounds, &input, hour, end, cancel)? {
+    let mut data = match read_pages(
+        &store, &key, branch, bounds, &input, hour, end, purposes, cancel,
+    )? {
         Some(data) => data,
         None => serde_json::to_value(ProductionSpendingReply {
             branch_id: input.branch_id.clone(),
@@ -107,11 +138,20 @@ pub fn query(
         .as_array_mut()
         .expect("spending warnings")
         .extend(warnings.into_iter().map(Value::String));
-    Ok(Some(data))
+    Ok((
+        data,
+        Answered {
+            branch,
+            bounds,
+            from: input.from,
+            hour,
+            end,
+        },
+    ))
 }
 
-/// Ends every run list of a prefix reply (each leaf's, the total and the
-/// Rocket total) with the pending hours, unknown with the reason
+/// Ends every run list of a prefix reply (each leaf's, the total, the
+/// equipment total and the Rocket total) with the pending hours, unknown with the reason
 /// `preparing`: later preparation answers them, so a reader at one of them
 /// finds no unread hour.
 fn pend(data: &mut Value, prefix: &Prefix) -> io::Result<()> {
@@ -145,8 +185,21 @@ fn pend(data: &mut Value, prefix: &Prefix) -> io::Result<()> {
         .ok_or_else(|| crate::invalid("Production spending leaves are not a list"))?
     {
         pending(&mut leaf["runs"])?;
+        if leaf["unproven"]
+            .as_array()
+            .is_some_and(|runs| !runs.is_empty())
+        {
+            pending(&mut leaf["unproven"])?;
+        }
     }
     pending(&mut data["total"])?;
+    // Only a reply split by purpose carries the equipment total.
+    if data["equipmentTotal"]
+        .as_array()
+        .is_some_and(|runs| !runs.is_empty())
+    {
+        pending(&mut data["equipmentTotal"])?;
+    }
     pending(&mut data["rocketTotal"])
 }
 
@@ -219,6 +272,7 @@ fn read_pages(
     input: &Params,
     hour: i32,
     end: i32,
+    purposes: Purposes,
     cancel: &AtomicBool,
 ) -> io::Result<Option<Value>> {
     // One reader serves the endpoint reads and the peaks; each endpoint read
@@ -233,8 +287,17 @@ fn read_pages(
     for (token, &id) in &catalogue.spent_keys {
         let (tag, rocket, refits, variant): (String, bool, bool, u64) =
             serde_json::from_str(token)?;
-        if tag == input.tag && refits == (rocket || input.refits) {
+        if tag != input.tag {
+            continue;
+        }
+        // The combined key lists every design; new production's lists those
+        // with a new-build entry.
+        if refits == (rocket || purposes != Purposes::New) {
             inventory.entry(rocket).or_default().insert(variant);
+        }
+        // A split reply's peaks are new production's: a refit-only maximum is
+        // no difference of two maxima.
+        if refits == (rocket || purposes == Purposes::Combined) {
             selected.push((rocket, variant, id));
         }
     }
@@ -343,6 +406,10 @@ fn read_pages(
                             .parse()
                             .map_err(|_| crate::invalid("Invalid production spending"))?,
                         reason: amount.spending_reason,
+                        unproven_raw: amount
+                            .unproven
+                            .parse()
+                            .map_err(|_| crate::invalid("Invalid unproven production spending"))?,
                     },
                 );
             }
@@ -379,6 +446,7 @@ fn read_pages(
         (&classes, &eq_scope, &ro_scope),
         variant_warnings,
         cancel,
+        purposes,
     )?;
     for run in &mut reply.production {
         if run.present == Some(false) {

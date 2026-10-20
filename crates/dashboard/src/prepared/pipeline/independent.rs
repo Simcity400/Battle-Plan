@@ -400,7 +400,7 @@ struct Groups;
 static GROUPS: Groups = Groups;
 
 /// Every family prepared on its own, in registry order.
-static REGISTRY: [&dyn Own; 43] = [
+static REGISTRY: [&dyn Own; 44] = [
     &GROUPS,
     &IDENTITIES,
     &WARS,
@@ -425,6 +425,7 @@ static REGISTRY: [&dyn Own; 43] = [
     &evaluated::OCCUPATION,
     &census::FACTORIES,
     &census::NUKES,
+    &census::REPAIRS,
     &event_feed::FEED,
     &windowed::DIVISIONS,
     &windowed::NAVAL,
@@ -478,7 +479,7 @@ pub(super) mod world_tension;
 /// Research, special projects and occupation.
 pub(super) mod evaluated;
 
-/// Country factories and nuclear stockpiles.
+/// Country factories, nuclear stockpiles and dockyard repairs.
 pub(super) mod census;
 
 /// The event feed, with its own read of the identity history.
@@ -1022,6 +1023,7 @@ const JOINT: &[(&str, &[&str])] = &[
         &["intelligence", "identities"],
     ),
     ("raids-tally", &["raids", "identities"]),
+    ("dockyard-spending", &["production", "repairs"]),
     // Named through the identity history up to their coverage.
     ("country-factories", &["factories", "identities"]),
     ("country-nukes", &["nukes", "identities"]),

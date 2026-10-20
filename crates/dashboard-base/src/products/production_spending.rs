@@ -56,6 +56,13 @@ pub struct ProductionSpendingLeaf {
     pub name: Option<String>,
     pub domain: Option<Domain>,
     pub rocket: bool,
+    /// In a reply split by purpose, whether ship refit lines applied this
+    /// input (one design can have both leaves); null otherwise.
+    pub refit: Option<bool>,
+    /// The summed magnitudes of the input of lines whose purpose (new or
+    /// ship refit) is not recorded, which counts as new in `runs`: dated
+    /// evidence that grows and never cancels; empty when there never was any.
+    pub unproven: Vec<ProductionSpendingRun>,
     pub names: Vec<StockVariantName>,
     pub runs: Vec<ProductionSpendingRun>,
 }
@@ -89,6 +96,9 @@ pub struct ProductionSpendingReply {
     pub leaves: Vec<ProductionSpendingLeaf>,
     /// The country's total is independent of unresolved type/domain membership.
     pub total: Vec<ProductionSpendingRun>,
+    /// The equipment source's own total, whatever Rocket coverage holds;
+    /// only in a reply split by purpose, empty otherwise.
+    pub equipment_total: Vec<ProductionSpendingRun>,
     pub rocket_total: Vec<ProductionSpendingRun>,
     pub production: Vec<ProductionPresenceRun>,
     pub warnings: Vec<String>,
@@ -124,14 +134,41 @@ fn append(runs: &mut Vec<ProductionSpendingRun>, run: ProductionSpendingRun) {
 /// Applied equipment-line IC at each read that changed it.
 type CostSeries = Vec<(u32, CostTotal)>;
 
+/// Which applied input a reply counts, and how it keys its leaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purposes {
+    /// New production only, one leaf per design.
+    New,
+    /// New production and ship refits, one leaf per design.
+    Combined,
+    /// New production and ship refits, one leaf per design and purpose.
+    Split,
+}
+
+impl Purposes {
+    /// What a reply counts with refits included or not.
+    fn counting(refits: bool) -> Self {
+        if refits { Self::Combined } else { Self::New }
+    }
+
+    /// The leaf an entry's input belongs to, if the reply counts it.
+    fn leaf(self, (variant, refit): Entry) -> Option<Entry> {
+        match self {
+            Self::New => (!refit).then_some((variant, false)),
+            Self::Combined => Some((variant, false)),
+            Self::Split => Some((variant, refit)),
+        }
+    }
+}
+
 /// Groups sparse entry changes; reads with no applied input carry exact zero.
 fn histories(
     track: &TagHistory,
-    refits: bool,
-) -> io::Result<(BTreeMap<u64, CostSeries>, CostSeries)> {
+    purposes: Purposes,
+) -> io::Result<(BTreeMap<Entry, CostSeries>, CostSeries)> {
     let mut events: BTreeMap<u32, Vec<(Entry, CostTotal)>> = BTreeMap::new();
     for (entry, list) in &track.cost_changes {
-        if !refits && entry.1 {
+        if purposes.leaf(*entry).is_none() {
             continue;
         }
         for &(sample, total) in list {
@@ -139,15 +176,16 @@ fn histories(
         }
     }
     let mut current = BTreeMap::new();
-    let mut variants: BTreeMap<u64, CostTotal> = BTreeMap::new();
-    let mut grouped: BTreeMap<u64, CostSeries> = BTreeMap::new();
+    let mut variants: BTreeMap<Entry, CostTotal> = BTreeMap::new();
+    let mut grouped: BTreeMap<Entry, CostSeries> = BTreeMap::new();
     let mut totals = Vec::new();
     let mut sum = CostTotal::default();
     for (sample, changed) in events {
         let mut touched = BTreeSet::new();
         for (entry, total) in changed {
             let before: CostTotal = current.insert(entry, total).unwrap_or_default();
-            let variant = variants.entry(entry.0).or_default();
+            let leaf = purposes.leaf(entry).expect("counted entry");
+            let variant = variants.entry(leaf).or_default();
             for value in [&mut sum, variant] {
                 value.raw = value
                     .raw
@@ -157,8 +195,15 @@ fn histories(
                         io::Error::other("Applied IC exceeds its exact integer range")
                     })?;
                 value.reason = value.reason.or(total.reason);
+                value.unproven_raw = value
+                    .unproven_raw
+                    .checked_sub(before.unproven_raw)
+                    .and_then(|sum| sum.checked_add(total.unproven_raw))
+                    .ok_or_else(|| {
+                        io::Error::other("Applied IC exceeds its exact integer range")
+                    })?;
             }
-            touched.insert(entry.0);
+            touched.insert(leaf);
         }
         for variant in touched {
             grouped
@@ -490,6 +535,32 @@ fn runs(
     Ok(result)
 }
 
+/// A leaf's input from lines whose purpose is not recorded, as runs over the
+/// same coverage as its amounts; none when it never had any.
+fn unproven_runs(
+    track: &TagHistory,
+    coverage: &[Coverage],
+    values: &[(u32, CostTotal)],
+    cancel: &AtomicBool,
+) -> io::Result<Vec<ProductionSpendingRun>> {
+    if values.iter().all(|(_, value)| value.unproven_raw == 0) {
+        return Ok(Vec::new());
+    }
+    let unproven: Vec<_> = values
+        .iter()
+        .map(|&(sample, value)| {
+            (
+                sample,
+                CostTotal {
+                    raw: value.unproven_raw,
+                    ..value
+                },
+            )
+        })
+        .collect();
+    runs(track, coverage, &unproven, cancel)
+}
+
 struct Counter<'a> {
     bytes: usize,
     cancel: &'a AtomicBool,
@@ -522,7 +593,15 @@ pub(crate) fn reply(
     warnings: Vec<String>,
     cancel: &AtomicBool,
 ) -> io::Result<ProductionSpendingReply> {
-    reply_inner(scanned, params, named, warnings, cancel, None)
+    reply_inner(
+        scanned,
+        params,
+        named,
+        warnings,
+        cancel,
+        None,
+        Purposes::counting(params.refits),
+    )
 }
 
 pub fn reply_prepared(
@@ -531,6 +610,7 @@ pub fn reply_prepared(
     operands: PreparedOperands<'_>,
     warnings: Vec<String>,
     cancel: &AtomicBool,
+    purposes: Purposes,
 ) -> io::Result<ProductionSpendingReply> {
     reply_inner(
         scanned,
@@ -539,6 +619,7 @@ pub fn reply_prepared(
         warnings,
         cancel,
         Some(operands),
+        purposes,
     )
 }
 
@@ -549,15 +630,16 @@ fn reply_inner(
     mut warnings: Vec<String>,
     cancel: &AtomicBool,
     prepared: Option<PreparedOperands<'_>>,
+    purposes: Purposes,
 ) -> io::Result<ProductionSpendingReply> {
     warnings.extend(scanned.variants.warnings());
     let track = scanned.tags.get(&params.tag);
-    let variants: BTreeSet<u64> = track
+    let entries: BTreeSet<Entry> = track
         .into_iter()
         .flat_map(|track| track.changes.keys().chain(track.cost_changes.keys()))
-        .filter(|(_, refit)| params.refits || !*refit)
-        .map(|(variant, _)| *variant)
+        .filter_map(|entry| purposes.leaf(*entry))
         .collect();
+    let variants: BTreeSet<u64> = entries.iter().map(|(variant, _)| *variant).collect();
     let classify = |variants: Vec<u64>| {
         if let Some((classes, _, _)) = prepared {
             let types = variants
@@ -663,35 +745,29 @@ fn reply_inner(
     let mut size = Counter { bytes: 0, cancel };
     if let Some(track) = track {
         let coverage = scope(track, false);
-        let (history, total_history) = histories(track, params.refits)?;
-        let mut variants: Vec<_> = variants.into_iter().collect();
-        variants.sort_by_key(|variant| {
-            types.get(variant).map(|kind| {
-                (
-                    kind.ordinal.unwrap_or(usize::MAX),
-                    kind.key.clone(),
-                    *variant,
-                )
-            })
+        let (history, total_history) = histories(track, purposes)?;
+        let mut entries: Vec<_> = entries.into_iter().collect();
+        entries.sort_by_key(|entry| {
+            types
+                .get(&entry.0)
+                .map(|kind| (kind.ordinal.unwrap_or(usize::MAX), kind.key.clone(), *entry))
         });
-        for variant in variants {
+        for entry @ (variant, refit) in entries {
             cancelled(cancel)?;
             let Some(kind) = types.get(&variant) else {
                 continue;
             };
+            let values = history.get(&entry).map(Vec::as_slice).unwrap_or(&[]);
             let leaf = ProductionSpendingLeaf {
                 variant: variant.to_string(),
                 type_key: kind.key.clone(),
                 name: type_name(variant, &kind.key),
                 domain: kind.domain,
                 rocket: false,
+                refit: (purposes == Purposes::Split).then_some(refit),
+                unproven: unproven_runs(track, &coverage, values, cancel)?,
                 names: names(variant),
-                runs: runs(
-                    track,
-                    &coverage,
-                    history.get(&variant).map(Vec::as_slice).unwrap_or(&[]),
-                    cancel,
-                )?,
+                runs: runs(track, &coverage, values, cancel)?,
             };
             serde_json::to_writer(&mut size, &leaf)
                 .map_err(|error| io::Error::other(error.to_string()))?;
@@ -707,7 +783,7 @@ fn reply_inner(
     let mut rocket_total = Vec::new();
     if let Some(rocket) = scanned.rocket.tags.get(&params.tag) {
         let coverage = scope(rocket, true);
-        let (history, totals) = histories(rocket, true)?;
+        let (history, totals) = histories(rocket, Purposes::Combined)?;
         let variants: Vec<_> = rocket
             .cost_changes
             .keys()
@@ -731,11 +807,16 @@ fn reply_inner(
                 name: type_name(variant, &kind.key),
                 domain: kind.domain,
                 rocket: true,
+                refit: None,
+                unproven: Vec::new(),
                 names: names(variant),
                 runs: runs(
                     rocket,
                     &coverage,
-                    history.get(&variant).map(Vec::as_slice).unwrap_or(&[]),
+                    history
+                        .get(&(variant, false))
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
                     cancel,
                 )?,
             };
@@ -762,6 +843,13 @@ fn reply_inner(
     if scanned.rocket.inconsistent > 0 {
         warnings.push(format!("{} retained Rocket rows regressed counters or changed amounts without new events; the affected scope's measure stays unknown.", scanned.rocket.inconsistent));
     }
+    // Only a reply split by purpose reads the equipment source on its own;
+    // the others keep their budget for the combined total.
+    let equipment_total = if purposes == Purposes::Split {
+        total.clone()
+    } else {
+        Vec::new()
+    };
     let total = combined(
         &total,
         &rocket_total,
@@ -798,6 +886,7 @@ fn reply_inner(
         rocket_name: None,
         leaves,
         total,
+        equipment_total,
         rocket_total,
         production: production_presence(track, scanned.rocket.tags.get(&params.tag)),
         warnings,

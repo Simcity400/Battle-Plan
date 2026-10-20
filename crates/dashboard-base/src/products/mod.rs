@@ -14,6 +14,8 @@ pub mod country_history;
 pub mod country_measure;
 pub mod country_people;
 pub mod country_styles;
+pub mod dockyard_repairs;
+pub mod dockyard_spending;
 pub mod equipment;
 pub mod equipment_icon;
 pub mod equipment_produced;

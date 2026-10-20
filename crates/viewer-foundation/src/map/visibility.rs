@@ -4,13 +4,16 @@
 
 use installed_content_core::{ResolvedLayers, map::MapData, map::ProvinceKind};
 use installed_content_save::naval_history::RailwayAdjacency;
+use replay_data::rows::tables;
 #[cfg(test)]
-use replay_data::rows::{CountryIntelRow, Recorded, ReservedCountryNamingRow, ZeroSubjectInputs};
-use replay_data::rows::{RelationLinkRow, tables};
+use replay_data::rows::{
+    CountryIntelRow, Recorded, RelationLinkRow, ReservedCountryNamingRow, ZeroSubjectInputs,
+};
 pub use replay_derive::visibility::event_shared;
 pub(crate) use replay_derive::visibility::owner_rows;
 #[cfg(test)]
 use replay_derive::visibility::*;
+pub use replay_derive::visibility::{AccessLinks, Families, ProvinceAccess, Relations};
 use replay_derive::visibility::{
     Intel, forward_zero_shared, intel_fraction, map_intel_equal, map_intel_slot, raw_references,
     reverse_zero_shared,
@@ -151,179 +154,6 @@ impl Defines {
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-
-/// Faction, subject and attache visibility inputs in canonical slots, without wars. Subjects use
-/// recorded installed typed pointers without retirement or date filtering; RelationLinks records
-/// attache membership. Callers with their own war census can read these inputs independently.
-#[derive(Clone, Default)]
-pub struct Families {
-    factions: BTreeMap<u32, u64>,
-    subjects: BTreeSet<(u32, u32)>,
-    attaches: BTreeSet<(u32, u32)>,
-}
-
-impl Families {
-    /// Faction and subject inputs for full-country visibility.
-    pub fn read(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> Result<Self, &'static str> {
-        let mut out = Self::default();
-        out.read_factions(frame, links)?;
-        out.read_subjects(frame, links)?;
-        Ok(out)
-    }
-
-    pub fn read_factions(
-        &mut self,
-        frame: &DecodedFrame,
-        links: &BTreeMap<u32, u32>,
-    ) -> Result<(), &'static str> {
-        for row in complete::<tables::FactionMembers>(frame, "FactionMembers")? {
-            // Faction rosters include genuine Country0 members. Recognize the literal only here; unknown
-            // positive links remain failures.
-            let country = if row.country == 0 {
-                0
-            } else {
-                link(links, row.country, "FactionMembers country")?
-            };
-            self.factions.insert(country, row.faction);
-        }
-        Ok(())
-    }
-
-    pub fn read_subjects(
-        &mut self,
-        frame: &DecodedFrame,
-        links: &BTreeMap<u32, u32>,
-    ) -> Result<(), &'static str> {
-        for row in complete::<tables::Subjects>(frame, "Subjects")? {
-            let (a, b) = (
-                link(links, row.overlord, "Subjects country")?,
-                link(links, row.subject, "Subjects country")?,
-            );
-            self.subjects.extend([(a, b), (b, a)]);
-        }
-        Ok(())
-    }
-
-    /// Relations where each pair shares a faction of its own.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn factions_for_tests(pairs: &[(u32, u32)]) -> Self {
-        let mut out = Self::default();
-        for (faction, &(a, b)) in (1..).zip(pairs) {
-            out.factions.extend([(a, faction), (b, faction)]);
-        }
-        out
-    }
-
-    /// Also admits recorded attache country slots.
-    pub fn with_attaches(
-        mut self,
-        frame: &DecodedFrame,
-        links: &BTreeMap<u32, u32>,
-    ) -> Result<Self, &'static str> {
-        for row in complete::<tables::RelationLinks>(frame, "RelationLinks")? {
-            if row.links & RelationLinkRow::ATTACHE != 0 {
-                let owner = *links.get(&row.country).ok_or("RelationLinks country")?;
-                self.attaches.insert((owner, row.target_index));
-            }
-        }
-        Ok(self)
-    }
-
-    /// The same country, a faction partner, an overlord or a subject, before the live-war veto.
-    pub fn family(&self, a: u32, b: u32) -> bool {
-        a == b || self.subjects.contains(&(a, b)) || self.same_faction(a, b)
-    }
-
-    /// one non-null faction.
-    pub fn same_faction(&self, a: u32, b: u32) -> bool {
-        self.factions
-            .get(&a)
-            .is_some_and(|&f| self.member_of_faction(b, f))
-    }
-
-    /// Scan the target's exact faction roster.
-    pub fn member_of_faction(&self, country: u32, faction: u64) -> bool {
-        self.factions.get(&country) == Some(&faction)
-    }
-
-    /// Attache sharing has no war veto and uses the source's directed attache slot toward the viewer.
-    pub fn allied_for_fog(&self, source: u32, viewer: u32) -> bool {
-        self.family(source, viewer) || self.attaches.contains(&(source, viewer))
-    }
-}
-
-/// [`Families`] with the recorded wars whose retired byte is zero.
-#[derive(Clone, Default)]
-pub struct Relations {
-    families: Families,
-    wars: BTreeSet<(u32, u32)>,
-}
-
-impl Relations {
-    /// Relations at peace where each pair shares a faction of its own.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn factions_for_tests(pairs: &[(u32, u32)]) -> Self {
-        Self {
-            families: Families::factions_for_tests(pairs),
-            wars: BTreeSet::new(),
-        }
-    }
-
-    /// Faction, war and subject inputs for full-country visibility.
-    pub fn read(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> Result<Self, &'static str> {
-        let mut out = Self::default();
-        out.families.read_factions(frame, links)?;
-        for row in complete::<tables::WarRelations>(frame, "WarRelations")? {
-            let (a, b) = (
-                link(links, row.first_country, "WarRelations country")?,
-                link(links, row.second_country, "WarRelations country")?,
-            );
-            out.wars.extend([(a, b), (b, a)]);
-        }
-        out.families.read_subjects(frame, links)?;
-        Ok(out)
-    }
-
-    /// Also admits recorded attache country slots.
-    pub fn with_attaches(
-        mut self,
-        frame: &DecodedFrame,
-        links: &BTreeMap<u32, u32>,
-    ) -> Result<Self, &'static str> {
-        self.families = self.families.with_attaches(frame, links)?;
-        Ok(self)
-    }
-
-    /// Distinct countries with an active war relation.
-    pub fn at_war(&self, a: u32, b: u32) -> bool {
-        a != b && self.wars.contains(&(a, b))
-    }
-
-    /// The countries in an active war relation with `a`.
-    pub fn enemies(&self, a: u32) -> impl Iterator<Item = u32> + '_ {
-        self.wars.range((a, 0)..=(a, u32::MAX)).map(|&(_, b)| b)
-    }
-
-    /// See [`Families::same_faction`].
-    pub fn same_faction(&self, a: u32, b: u32) -> bool {
-        self.families.same_faction(a, b)
-    }
-
-    /// Full visibility is vetoed by a live war; otherwise it admits the same country, a faction
-    /// partner, an overlord or a subject.
-    pub fn shared(&self, a: u32, b: u32) -> bool {
-        a == b || (!self.wars.contains(&(a, b)) && self.families.family(a, b))
-    }
-
-    /// See [`Families::allied_for_fog`].
-    pub fn allied_for_fog(&self, source: u32, viewer: u32) -> bool {
-        self.families.allied_for_fog(source, viewer)
-    }
-}
-
-fn link(links: &BTreeMap<u32, u32>, raw: u32, what: &'static str) -> Result<u32, &'static str> {
-    links.get(&raw).copied().ok_or(what)
 }
 
 fn complete<'a, T: replay_data::rows::TableSchema>(
@@ -469,92 +299,6 @@ impl NavalDefines {
     }
 }
 
-/// Directed military access and docking rights from `RelationLinks`, in canonical `(holder, target)`
-/// order.
-#[derive(Clone, Debug, Default)]
-pub struct AccessLinks {
-    military: BTreeSet<(u32, u32)>,
-    docking: BTreeSet<(u32, u32)>,
-}
-
-impl AccessLinks {
-    pub fn read(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> Result<Self, &'static str> {
-        let mut out = Self::default();
-        for row in complete::<tables::RelationLinks>(frame, "RelationLinks")? {
-            let holder = *links.get(&row.country).ok_or("RelationLinks country")?;
-            if row.links & RelationLinkRow::MILITARY_ACCESS != 0 {
-                out.military.insert((holder, row.target_index));
-            }
-            if row.links & RelationLinkRow::DOCKING_RIGHTS != 0 {
-                out.docking.insert((holder, row.target_index));
-            }
-        }
-        Ok(out)
-    }
-
-    pub fn military(&self, holder: u32, target: u32) -> bool {
-        self.military.contains(&(holder, target))
-    }
-
-    pub fn docking(&self, holder: u32, target: u32) -> bool {
-        self.docking.contains(&(holder, target))
-    }
-}
-
-impl Relations {
-    /// A live war vetoes visibility. Otherwise admit military access or docking rights from the viewer
-    /// toward the owner, faction membership, or overlord/subject relations.
-    pub fn known_port(&self, access: &AccessLinks, viewer: u32, owner: u32) -> bool {
-        viewer == owner
-            || (!self.wars.contains(&(viewer, owner))
-                && (access.military(viewer, owner)
-                    || access.docking(viewer, owner)
-                    || self.families.family(viewer, owner)))
-    }
-
-    /// Province access excludes lakes. It admits sea provinces; unowned states; the viewer's own states
-    /// or controlled provinces; war, military access or docking rights toward the controller; and
-    /// shared faction or direct subject relations with the controller.
-    pub fn province_access(
-        &self,
-        access: &AccessLinks,
-        viewer: u32,
-        province: ProvinceAccess,
-    ) -> bool {
-        let ProvinceAccess {
-            lake,
-            sea,
-            state_owner,
-            controller,
-        } = province;
-        if lake {
-            return false;
-        }
-        if state_owner.is_none_or(|owner| owner == viewer) || controller == Some(viewer) {
-            return true;
-        }
-        let Some(controller) = controller else {
-            return sea;
-        };
-        self.at_war(viewer, controller)
-            || access.military(viewer, controller)
-            || access.docking(viewer, controller)
-            || sea
-            || self.same_faction(viewer, controller)
-            || self.families.subjects.contains(&(viewer, controller))
-    }
-}
-
-/// Province access inputs: definition flags, state owner (`None` for no owner), and controller
-/// (`None` for none).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ProvinceAccess {
-    pub lake: bool,
-    pub sea: bool,
-    pub state_owner: Option<u32>,
-    pub controller: Option<u32>,
-}
-
 fn network_term(cutoff: i32, modifier: i64) -> i32 {
     (i64::from(cutoff.wrapping_add(255))
         .wrapping_mul(100_000)
@@ -594,10 +338,7 @@ pub fn counter_shared(
         return forward_zero_shared(frame, links, owner.slot()).map_err(str::to_owned);
     }
     let families = families.map_err(str::to_owned)?;
-    Ok(families.subjects.contains(&(owner.slot(), target))
-        || families.factions.get(&owner.slot()).is_some_and(|faction| {
-            *faction != 0 && families.factions.get(&target) == Some(faction)
-        }))
+    Ok(families.counter_shared(owner.slot(), target))
 }
 
 struct Rebuild<'a> {

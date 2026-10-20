@@ -2,7 +2,7 @@
 
 Playback calculations over recorded rows: air regions, attack, directed wars,
 movement and arrival times, naval missions and dominance, power balances, subject
-access and shared visibility branches.
+access, port relations, ordered naval repair selection and shared visibility branches.
 `fixed_layout` and `modifier_registry` bind the executable metadata those
 calculations require. Content facts remain supplied by the recorded stack's
 readers; this crate introduces no content defaults.
@@ -14,3 +14,8 @@ so calculations and recording I/O can compile independently.
 
 Run `cargo test -p replay-derive`; installation-dependent tests authenticate
 metadata from `BATTLE_PLAN_GAME_DIR`. Shared rules live in [AGENTS.md](../../AGENTS.md).
+
+`naval_repairs::Sources` shares demand/capacity and assigned-dockyard selection
+through one ordered eligibility traversal. Assigned selection preserves queue
+ordinals and full ship handles, including repeats, and stops before demanding
+an unused suffix. Text control markers remain with viewer presentation.

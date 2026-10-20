@@ -70,6 +70,7 @@ pub const UI_PREPARED_ROUTES: &[&str] = &[
     "resource-balance",
     "trade-flows",
     "production-spending",
+    "dockyard-spending",
     "casualty-breakdown",
     "equipment-stockpile",
     "series-next-change",

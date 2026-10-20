@@ -1103,6 +1103,13 @@ fn query_data(
             cancelled,
         )?
         .unwrap_or(Value::Null),
+        "dockyard-spending" => crate::products::dockyard_spending::prepared::query(
+            source,
+            request.params.clone(),
+            content,
+            cancelled,
+        )?
+        .unwrap_or(Value::Null),
 
         "casualty-breakdown" => {
             let params: crate::products::war_casualties::breakdown::CasualtyBreakdownParams =

@@ -26,34 +26,7 @@ pub fn naval_base_frame(known: bool, foreign: bool, disclosed: bool, ships: bool
     arm + u32::from(ships) + if foreign { 4 } else { 0 }
 }
 
-/// Country-list membership accepts raw equality (including zero) and nonzero
-/// aliases of the same canonical country. Missing alias evidence stays unknown.
-pub(super) fn country_list_contains(
-    list: &[u32],
-    raw: u32,
-    links: &BTreeMap<u32, u32>,
-) -> Result<bool, &'static str> {
-    if list.contains(&raw) {
-        return Ok(true);
-    }
-    if raw == 0 || list.iter().all(|&tag| tag == 0) {
-        return Ok(false);
-    }
-    let target = links.get(&raw).ok_or("country-list target is unresolved")?;
-    let mut unknown = false;
-    for tag in list.iter().filter(|&&tag| tag != 0) {
-        match links.get(tag) {
-            Some(slot) if slot == target => return Ok(true),
-            Some(_) => {}
-            None => unknown = true,
-        }
-    }
-    if unknown {
-        Err("country-list alias is unresolved")
-    } else {
-        Ok(false)
-    }
-}
+pub(super) use replay_derive::naval_repairs::country_list_contains;
 
 /// The ships glyph: a port occupant of any owner the viewer sees above 0x95, or any
 /// occupant when the viewer's port detail on the base's country is at least 2.

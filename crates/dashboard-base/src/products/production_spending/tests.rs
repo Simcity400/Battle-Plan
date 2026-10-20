@@ -1327,7 +1327,7 @@ fn production_spending_many_retired_designs_have_sparse_runs_over_long_history()
                 0,
                 CostTotal {
                     raw: 100_000,
-                    reason: None,
+                    ..Default::default()
                 },
             )],
         );
@@ -1365,7 +1365,7 @@ fn production_spending_keeps_more_than_300000_changes_and_runs_within_reply_budg
                         sample,
                         CostTotal {
                             raw: i128::from(sample + 1),
-                            reason: None,
+                            ..Default::default()
                         },
                     )
                 })
@@ -1405,4 +1405,87 @@ fn production_spending_refuses_complete_reply_past_byte_budget() {
             .to_string()
             .contains("reply exceeds its memory budget")
     );
+}
+
+#[test]
+fn input_of_unlisted_lines_counts_as_new_and_is_dated_by_non_cancelling_runs() {
+    use engine_native::cequipment_production_line::KIND_SHIP_REFIT;
+    let mut refit = line(5, 3, 100_000);
+    refit.kind = KIND_SHIP_REFIT;
+    let listed = vec![refit, line(6, 3, 100_000)];
+    // Day 0: line 7 has output but no census lists it. Day 1: line 7 is
+    // corrected down by as much as unlisted line 8 adds, so the signed
+    // unlisted input nets to nothing new.
+    let mut frames = day(
+        0,
+        listed.clone(),
+        Some(vec![
+            applied(5, 3, 0, 100_000),
+            applied(6, 3, 0, 200_000),
+            applied(7, 3, 0, 40_000),
+        ]),
+    );
+    frames.extend(day(
+        1,
+        listed,
+        Some(vec![
+            applied(5, 3, 0, 150_000),
+            applied(6, 3, 0, 300_000),
+            applied(7, 3, 0, 30_000),
+            applied(8, 3, 0, 10_000),
+        ]),
+    ));
+    let scanned = scan(frames);
+    assert_eq!(scanned.unlisted, 2);
+    let track = &scanned.tags["opaque|tag"];
+    assert_eq!(track.cost_current[&(3, true)].raw, 150_000);
+    assert_eq!(track.cost_current[&(3, true)].unproven_raw, 0);
+    // The unlisted line counts as new, and that part is kept apart.
+    assert_eq!(track.cost_current[&(3, false)].raw, 340_000);
+    // Magnitudes: 40000, then 10000 down and 10000 up, never cancelling.
+    assert_eq!(track.cost_current[&(3, false)].unproven_raw, 60_000);
+    let split = reply_inner(
+        &scanned,
+        &params(true),
+        Named::default(),
+        Vec::new(),
+        &AtomicBool::new(false),
+        None,
+        Purposes::Split,
+    )
+    .unwrap();
+    let new = split
+        .leaves
+        .iter()
+        .find(|leaf| leaf.refit == Some(false))
+        .unwrap();
+    let refits = split
+        .leaves
+        .iter()
+        .find(|leaf| leaf.refit == Some(true))
+        .unwrap();
+    assert!(
+        refits.unproven.is_empty(),
+        "a refit leaf with no unlisted input has none"
+    );
+    // Dated: a range over day 1 alone still holds unlisted input, although
+    // its signed amount cancels there.
+    let value = |runs: &[ProductionSpendingRun], at: i32| {
+        runs.iter()
+            .find(|run| run.first_hour <= at && at <= run.last_hour)
+            .and_then(|run| run.total_raw.clone())
+    };
+    assert_eq!(value(&new.unproven, hour(0)), Some("40000".into()));
+    assert_eq!(value(&new.unproven, hour(1)), Some("60000".into()));
+    assert_eq!(value(&new.runs, hour(1)), Some("340000".into()));
+    let unsplit = reply(
+        &scanned,
+        &params(true),
+        Named::default(),
+        Vec::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(unsplit.leaves.len(), 1);
+    assert_eq!(unsplit.leaves[0].refit, None);
 }

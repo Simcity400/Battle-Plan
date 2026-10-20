@@ -1116,3 +1116,490 @@ fn faction_factory_totals_at_a_reached_hour_answer_from_its_frames_as_prepared()
         clear(source);
     });
 }
+
+fn repair_frame(hour: i32) -> DecodedFrame {
+    use engine_executable::modifier_keys as keys;
+    use replay_data::rows::{
+        CountryProductionModifiersRow, ModifierBreakdownNode, NavalRepairCountryRow,
+        ProductionModifierTree,
+    };
+    let mut observed = frame(1, hour, 2);
+    // Every other table the family watches is recorded, as in a recording,
+    // and holds nothing: only the use and output inputs change.
+    for (table, _) in crate::products::dockyard_repairs::SELECTION_FIELDS {
+        if *table != TableId::CountryLinks {
+            *observed.tables[table.index()] = TableView::Complete(TableRows::empty(*table));
+        }
+    }
+    for table in [
+        TableId::CountryAppearance,
+        TableId::LexicalTokens,
+        TableId::VariantDefinitions,
+        TableId::VariantModules,
+        TableId::VariantUpgrades,
+        TableId::VariantChanges,
+    ] {
+        *observed.tables[table.index()] = TableView::Complete(TableRows::empty(table));
+    }
+    *observed.tables[TableId::NavalRepairCountries.index()] =
+        TableView::Complete(TableRows::NavalRepairCountries(vec![
+            NavalRepairCountryRow {
+                country: A,
+                num_used_dockyards: if hour < 12 { 2 } else { 3 },
+                max_factories_for_repair: i32::from(hour >= 24),
+                ..Default::default()
+            },
+            NavalRepairCountryRow {
+                country: B,
+                num_used_dockyards: 0,
+                ..Default::default()
+            },
+        ]));
+    // A complete synthetic request catalogue, independent of installed content.
+    let trees = [
+        keys::LINE_CHANGE_PRODUCTION_EFFICIENCY_FACTOR,
+        keys::OUT_OF_POWER_IMPACT_FACTOR,
+        keys::PRODUCTION_FACTORY_MAX_EFFICIENCY_FACTOR,
+        keys::PRODUCTION_FACTORY_EFFICIENCY_GAIN_FACTOR,
+        keys::PRODUCTION_FACTORY_START_EFFICIENCY_FACTOR,
+        keys::INDUSTRIAL_CAPACITY_FACTORY,
+        keys::INDUSTRIAL_CAPACITY_FACTORY_POWERED,
+        keys::INDUSTRIAL_CAPACITY_DOCKYARD,
+        keys::INDUSTRIAL_CAPACITY_DOCKYARD_POWERED,
+        keys::EQUIPMENT_CONVERSION_SPEED,
+        keys::REFIT_SPEED,
+    ]
+    .into_iter()
+    .map(|key| ProductionModifierTree {
+        key,
+        nodes: vec![ModifierBreakdownNode {
+            children: 0,
+            name: b"Synthetic source".to_vec(),
+            value: if hour >= 56 && key == keys::INDUSTRIAL_CAPACITY_DOCKYARD {
+                20_000
+            } else {
+                0
+            },
+        }],
+        failure: Vec::new(),
+    })
+    .collect();
+    *observed.tables[TableId::CountryProductionModifiers.index()] = if (32..56).contains(&hour) {
+        TableView::Unavailable {
+            reason: "Synthetic daily repair-output refusal".into(),
+        }
+    } else {
+        TableView::Complete(TableRows::CountryProductionModifiers(if hour < 8 {
+            Vec::new()
+        } else {
+            vec![CountryProductionModifiersRow {
+                country: A,
+                power_raw: if hour >= 56 { 50_000 } else { 100_000 },
+                factory_speed: [200_000, 400_000, 600_000, 1_000_000],
+                trees,
+                ..Default::default()
+            }]
+        }))
+    };
+    observed.metrics.table_ns[TableId::CountryProductionModifiers.index()] =
+        u64::from([8, 32, 56].contains(&hour));
+    if hour >= 65 {
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *observed.tables[TableId::Countries.index()]
+        {
+            rows[0].id = C;
+            rows.sort_by_key(|row| row.id);
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *observed.tables[TableId::CountryLinks.index()]
+        {
+            rows.push(replay_data::rows::CountryLinkRow {
+                id: C,
+                canonical_slot: 0,
+            });
+        }
+    }
+    observed
+}
+
+fn repair_recording(last: i32) -> Replay {
+    repair_recording_with(last, repair_frame)
+}
+
+fn repair_recording_with(last: i32, observed: fn(i32) -> DecodedFrame) -> Replay {
+    let hours: Vec<_> = (0..=last).filter(|hour| !(41..44).contains(hour)).collect();
+    let mut blocks = hours.chunks(13);
+    let mut replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            blocks
+                .next()
+                .unwrap()
+                .iter()
+                .copied()
+                .map(observed)
+                .collect(),
+        )],
+    )
+    .unwrap();
+    for block in blocks {
+        replay = replay
+            .append(&[continuation_records(
+                &replay,
+                1,
+                block.iter().copied().map(observed).collect(),
+            )])
+            .unwrap();
+    }
+    replay
+}
+
+#[test]
+fn dockyard_repairs_fold_matches_hourly_through_daily_reads_gaps_holders_resume_and_append() {
+    let first = repair_recording(38);
+    let grown = repair_recording(76);
+    let mut fixture = Fixture::new(&first);
+    for workers in [1, 3] {
+        let prepare = |fixture: &mut Fixture| {
+            fixture.replace(&first);
+            let source = fixture.source("repair-census");
+            measured(&source);
+            drop(source);
+            fixture.replace(&grown);
+            let source = fixture.source("repair-census");
+            measured(&source);
+            let payload = payloads(&source, None);
+            let (store, key) = super::super::super::files(&source, None).unwrap();
+            let flag = AtomicBool::new(false);
+            let mut reads =
+                crate::products::dockyard_repairs::RepairReads::new(&store, &key, 1, &flag)
+                    .unwrap();
+            let tag = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
+            assert_eq!(reads.origin(&tag).unwrap(), Some(8));
+            use crate::products::equipment::production::ProductionSpendingUnknown as Unknown;
+            assert_eq!(
+                reads
+                    .integrals(
+                        &tag,
+                        &[
+                            (0, 7),
+                            (8, 11),
+                            (12, 31),
+                            (32, 40),
+                            (40, 44),
+                            (56, 64),
+                            (64, 65)
+                        ]
+                    )
+                    .unwrap(),
+                [
+                    Err(Unknown::SpendingUnavailable),
+                    Ok(8_000_000),
+                    Ok(60_000_000),
+                    Err(Unknown::SpendingUnavailable),
+                    Err(Unknown::RecordingGap),
+                    Ok(23_760_000),
+                    Err(Unknown::CountryChanged)
+                ]
+            );
+            drop(reads);
+            clear(source);
+            payload
+        };
+        let hourly = independent::with_test_hourly(|| prepare(&mut fixture));
+        let before = (
+            counted("repairs"),
+            prepass::noted("repairs.fallback"),
+            prepass::noted("repairs.sequential"),
+        );
+        let own = prepass::with_test_prepass(workers, None, || {
+            independent::with_test_families(&[&independent::census::REPAIRS], || {
+                prepare(&mut fixture)
+            })
+        });
+        let pages = |payload: &Payloads| -> Payloads {
+            payload
+                .iter()
+                .filter(|((name, _), _)| name.starts_with("dockyard-repairs-"))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        };
+        assert_payloads_equal(&pages(&own), &pages(&hourly), "repairs hourly/fold");
+        let hourly_state = decoded(&hourly[&("preparation-branch-1".into(), 0)]);
+        assert_eq!(
+            decoded(&own[&("repairs-continuation-1".into(), 0)]),
+            hourly_state["repairs"]
+        );
+        assert_eq!(prepass::noted("repairs.fallback"), before.1);
+        assert_eq!(prepass::noted("repairs.sequential"), before.2);
+        let counts = counted("repairs");
+        assert!(
+            counts.1 - before.0.1 < 76 / 2,
+            "quiet repair spans should build no frames: {counts:?}"
+        );
+        assert_eq!(counts.0 - before.0.0, counts.1 - before.0.1);
+    }
+}
+
+#[test]
+fn dockyard_repairs_joint_gate_and_refusals_name_both_suppliers() {
+    assert_eq!(
+        independent::joint("dockyard-spending"),
+        Some(&["production", "repairs"][..])
+    );
+    assert_eq!(independent::census::REPAIRS.gates(), &["dockyard-spending"]);
+    let replay = repair_recording(12);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("repairs-refusal");
+    independent::with_test_families(&[&independent::census::REPAIRS], || {
+        lanes::with_test_refusals(&[("repairs", 8)], || measured(&source))
+    });
+    independent::with_test_families(&[&independent::census::REPAIRS], || {
+        let error = refusal(
+            &source,
+            None,
+            1,
+            "dockyard-spending",
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Injected refusal of repairs at hour 8");
+    });
+    assert!(
+        sections(State::Preparing, 0, None)
+            .iter()
+            .any(|section| section.id == "dockyard-repairs")
+    );
+}
+
+#[test]
+fn dockyard_repairs_equal_off_slot_modifier_reads_start_observation() {
+    for timed in [
+        TableId::CountryProductionModifiers,
+        TableId::ProductionLines,
+    ] {
+        let mut initial = repair_frame(8);
+        initial.hour = 0;
+        initial.metrics.table_ns[TableId::CountryProductionModifiers.index()] = 0;
+        let frames: Vec<_> = (0..4)
+            .map(|hour| {
+                let mut observed = initial.clone();
+                observed.hour = hour;
+                observed.metrics.table_ns[timed.index()] = u64::from(hour == 2);
+                observed
+            })
+            .collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        let mut fixture = Fixture::new(&replay);
+        let prepare = |fixture: &mut Fixture| {
+            let source = fixture.source("repair-off-slot");
+            plain(&source);
+            let (store, key) = super::super::super::files(&source, None).unwrap();
+            let flag = AtomicBool::new(false);
+            let mut reads =
+                crate::products::dockyard_repairs::RepairReads::new(&store, &key, 1, &flag)
+                    .unwrap();
+            let tag = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
+            assert_eq!(reads.origin(&tag).unwrap(), Some(2));
+            assert_eq!(reads.integrals(&tag, &[(2, 3)]).unwrap(), [Ok(4_000_000)]);
+            let result = payloads(&source, None);
+            drop(reads);
+            clear(source);
+            result
+                .into_iter()
+                .filter(|((name, _), _)| name.starts_with("dockyard-repairs-"))
+                .collect::<Payloads>()
+        };
+        let hourly = independent::with_test_hourly(|| prepare(&mut fixture));
+        let own = prepass::with_test_prepass(1, None, || {
+            independent::with_test_families(&[&independent::census::REPAIRS], || {
+                prepare(&mut fixture)
+            })
+        });
+        assert_payloads_equal(&own, &hourly, "equal off-slot repair output read");
+    }
+}
+
+fn repair_split_frame(hour: i32) -> DecodedFrame {
+    use replay_data::rows::*;
+    let mut observed = repair_frame(hour);
+    let mut put = |rows: TableRows| {
+        let index = rows.table().index();
+        observed.tables[index] = TableView::Complete(rows).into();
+    };
+    put(TableRows::NavalBases(vec![NavalBaseRow {
+        province: 7,
+        country: A,
+        level: 10,
+        ..Default::default()
+    }]));
+    // The base's assignment always reconciles with the country's use. Before
+    // hour 12 the second ship is whole, so one assigned dockyard finds no
+    // eligible ship (an allocation residual); from hour 12 it is damaged and
+    // selected twice.
+    put(TableRows::NavalRepairBases(vec![NavalRepairBaseRow {
+        province: 7,
+        allocated_dockyards: if hour < 12 { 2 } else { 3 },
+        ..Default::default()
+    }]));
+    put(TableRows::NavalRepairQueue(
+        [1, 2, 2]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, ship)| NavalRepairQueueRow {
+                province: 7,
+                ordinal: ordinal as u32,
+                ship,
+            })
+            .collect(),
+    ));
+    put(TableRows::Ships(
+        (1..=2)
+            .map(|id| ShipRow {
+                id,
+                task_force: 8,
+                strength: if id == 2 && hour < 12 { 100 } else { 50 },
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    put(TableRows::ShipModels(
+        (1..=2)
+            .map(|ship| ShipModelRow {
+                ship,
+                variant: if ship == 1 { 20 } else { 30 },
+                counter: Some(ShipCounterInputs {
+                    maximum_strength: 100,
+                    ..Default::default()
+                }),
+                has_criticals: Some(0_u32).into(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    put(TableRows::TaskForces(vec![TaskForceRow {
+        id: 8,
+        province: 7,
+        roster_owner: A,
+        ..Default::default()
+    }]));
+    put(TableRows::Provinces(vec![ProvinceRow {
+        id: 7,
+        controller: A,
+        ..Default::default()
+    }]));
+    put(TableRows::VariantDefinitions(
+        [20, 30, 99]
+            .into_iter()
+            .map(|id| VariantDefinitionRow {
+                id,
+                creator_link: A,
+                equipment_token: 1,
+                display_name: format!("Read at {}", if hour < 46 { 22 } else { 46 }).into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    put(TableRows::LexicalTokens(vec![LexicalTokenRow {
+        token: 1,
+        literal: b"synthetic_ship".to_vec(),
+    }]));
+    put(TableRows::VariantModules(vec![]));
+    put(TableRows::VariantUpgrades(vec![]));
+    put(TableRows::VariantChanges(vec![]));
+    observed.metrics.table_ns[TableId::VariantDefinitions.index()] =
+        u64::from(hour == 22 || hour == 46);
+    observed
+}
+
+#[test]
+fn repair_split_fold_matches_hourly_dated_catalogues_selection_changes_gaps_and_resume() {
+    use crate::products::dockyard_repairs::{RepairPart, RepairReads};
+    let first = repair_recording_with(38, repair_split_frame);
+    let grown = repair_recording_with(58, repair_split_frame);
+    let mut fixture = Fixture::new(&first);
+    for workers in [1, 3] {
+        let prepare = |fixture: &mut Fixture| {
+            fixture.replace(&first);
+            drop({
+                let source = fixture.source("repair-split");
+                measured(&source);
+                source
+            });
+            fixture.replace(&grown);
+            let source = fixture.source("repair-split");
+            measured(&source);
+            let (store, key) = super::super::super::files(&source, None).unwrap();
+            let flag = AtomicBool::new(false);
+            let mut reads = RepairReads::new(&store, &key, 1, &flag).unwrap();
+            let tag = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
+            assert_eq!(reads.origin(&tag).unwrap(), Some(8));
+            assert_eq!(
+                reads.parts(&tag).unwrap(),
+                [
+                    RepairPart::Unattributed,
+                    RepairPart::Design(20),
+                    RepairPart::Design(30)
+                ]
+            );
+            assert_eq!(
+                reads
+                    .variants()
+                    .versions
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                [20, 30]
+            );
+            assert_eq!(reads.variants().versions[&20][0].first_hour, 22);
+            assert_eq!(
+                reads
+                    .part_integrals(&tag, RepairPart::Design(30), &[(8, 11)])
+                    .unwrap(),
+                [Ok(0)]
+            );
+            for part in reads.parts(&tag).unwrap() {
+                assert_eq!(reads.part_integrals(&tag, part, &[(0, 7)]).unwrap(),
+                    [Err(crate::products::equipment::production::ProductionSpendingUnknown::SpendingUnavailable)]);
+            }
+            let spans = [(8, 11), (12, 31), (56, 58)];
+            let mut sums = vec![0; spans.len()];
+            for part in reads.parts(&tag).unwrap() {
+                for (sum, value) in sums
+                    .iter_mut()
+                    .zip(reads.part_integrals(&tag, part, &spans).unwrap())
+                {
+                    *sum += value.unwrap();
+                }
+            }
+            assert_eq!(
+                reads.integrals(&tag, &spans).unwrap(),
+                sums.into_iter().map(Ok).collect::<Vec<_>>()
+            );
+            let payload = payloads(&source, None);
+            drop(reads);
+            clear(source);
+            payload
+        };
+        let hourly = independent::with_test_hourly(|| prepare(&mut fixture));
+        let own = prepass::with_test_prepass(workers, None, || {
+            independent::with_test_families(&[&independent::census::REPAIRS], || {
+                prepare(&mut fixture)
+            })
+        });
+        let pages = |payload: &Payloads| {
+            payload
+                .iter()
+                .filter(|((name, _), _)| name.starts_with("dockyard-repairs-"))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<Payloads>()
+        };
+        assert_payloads_equal(&pages(&own), &pages(&hourly), "repair split hourly/fold");
+        let hourly_state = decoded(&hourly[&("preparation-branch-1".into(), 0)]);
+        assert_eq!(
+            decoded(&own[&("repairs-continuation-1".into(), 0)]),
+            hourly_state["repairs"]
+        );
+    }
+}

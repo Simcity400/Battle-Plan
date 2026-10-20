@@ -114,7 +114,7 @@ use ts_rs::TS;
 mod breakdown;
 mod saved;
 pub use breakdown::{
-    ProductionBreakdownParams, ProductionLineBreakdown, ProductionLineBreakdownReply,
+    ProductionBreakdownParams, factory_output, ProductionLineBreakdown, ProductionLineBreakdownReply,
     ProductionModifierGroup, ProductionModifierPart, ProductionModifierRun,
 };
 pub use saved::{SavedLines, SavedModifierRun};

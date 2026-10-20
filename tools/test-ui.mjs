@@ -12,6 +12,7 @@ const tabFullTest = 'ui/src/components/VirtualList.dom.test.ts';
 export const browserTests = [
   'ui/src/charts/shareDrawing.test.ts',
   'ui/src/charts/table/Table.dom.test.ts',
+  'ui/src/widgets/dockyardSizes.dom.test.ts',
   'ui/src/components/CountryFlag.dom.test.ts',
   'ui/src/components/GameWindow.dom.test.ts',
   'ui/src/components/GameWindow.keyboard.dom.test.ts',

@@ -8,6 +8,7 @@ pub mod fixed_layout;
 pub mod modifier_registry;
 pub mod naval_dominance_derive;
 pub mod naval_mission_derive;
+pub mod naval_repairs;
 pub mod power_balance_derive;
 pub mod transport_subject_access;
 pub mod visibility;

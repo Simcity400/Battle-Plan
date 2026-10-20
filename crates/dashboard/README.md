@@ -3887,3 +3887,32 @@ The focus-art runtime metadata and image parity test runs with the ordinary
 suite and initializes executable metadata from `BATTLE_PLAN_GAME_DIR`. Its fixture
 preserves unused singleton inputs as unavailable using the table registry, so new
 singleton tables cannot become invalid empty observations.
+
+## Prepared dockyard repairs
+
+The `repairs` family prepares hourly used dockyards times the country's carried
+production-census dockyard output as fixed5 daily IC rates. It shares the country
+census extract and fold; quiet hours visit no countries. Missing repair rows,
+negative counts and unavailable output stay unknown; observed zero use needs no
+output row. Daily refusals withdraw output until a successful read, and recording
+gaps never carry it. Native holder changes break the rate series.
+
+`dockyard_repairs::RepairReads` reads only a requested tag's runs and integrates
+inclusive hour spans with checked arithmetic; the caller divides by 24.
+`origin` supplies its first known rate hour, including zero. In-use opening hours
+before a valid modifiers read have no rate, not zero. The `dockyard-spending`
+query joins the `production` and `repairs` families' accepted coverage.
+
+Repair parts use the current selection at each supplying read, not an elapsed-hour
+repair-event ledger. Each selected queue occurrence contributes one dockyard,
+charged to the base holder even for allied recipients. Repeated occurrences stay
+separate; refused selection, missing design and unused allocation remain
+unattributed. Selection exceeding independent country use withdraws every part
+without withdrawing the total. Zero use needs no queue walk. Selection is cached
+apart from output changes; quiet steps visit neither countries nor bases.
+
+`RepairReads::parts` returns valued parts in series-key order; `part_integrals`
+shares total integration and validates the common split before treating a later
+selected design's earlier hours as zero. `variants` exposes only repaired designs'
+dated raw catalogue for query-time content classification. The pre-pass watches
+selection operands and preserves both output and variant census read boundaries.
