@@ -941,7 +941,7 @@ impl CounterAssets {
         });
         Ok(Self {
             layouts,
-            air_sortie_defines: viewer_foundation::map::aircraft_count::SortieDefines::load(
+            air_sortie_defines: viewer_foundation::map::aircraft_count::load_defines(
                 defines,
             )
             .map_err(|e| e.to_string()),

@@ -1,6 +1,7 @@
 //! Spool bytes of a fixed synthetic campaign driven through the spool path.
 //!
-//! `EXPECTED_DIGEST` covers format 105's record envelopes, 420 registered tables and
+//! `EXPECTED_DIGEST` covers format 107's record envelopes (Ships with its name and naming
+//! columns), the registered tables and
 //! unavailable faction-companion outcomes alongside the fixture's populated inputs.
 //! The campaign runs with
 //! no, one and two helpers. It mixes projected unchanged and changed rows,
@@ -19,7 +20,7 @@ use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
 const FIRST_HOUR: i32 = 100;
 const HOURS: i32 = 30;
 /// FNV-1a 64 over every spool segment's bytes in segment order.
-const EXPECTED_DIGEST: u64 = 0x2467_5731_aa29_1863;
+const EXPECTED_DIGEST: u64 = 0x5394_7cd9_850b_d2c5;
 
 fn text<const N: usize>(value: &[u8]) -> Text<N> {
     let mut result = Text {

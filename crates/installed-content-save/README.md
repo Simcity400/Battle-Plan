@@ -139,3 +139,9 @@ The retained raiding-grid save view binds its spotting and region keys through c
 Fleet counter projection retains the saved strategic-region identities and order so the oracle compares the captured membership multiset with every saved occurrence.
 
 Air bases preserve their ordered repeated countries containers, with exact fixed5 fuel_consumption and received values and zero omission. The saved tag stays separate from the native indexed country ordinal.
+
+`Ship.ship_name` preserves the optional saved naming wrapper. `ShipName` requires
+signed `type` and keeps optional signed `name_order`, both Boolean keys, the
+`override` key's missing-versus-emitted-empty bytes and full `equipment` reference.
+Every field and the wrapper reject duplicate keys. The outer ship equipment pool
+is unrelated to this retained naming-equipment identity.

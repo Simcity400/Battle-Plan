@@ -66,6 +66,19 @@ The interactive `faction-details` product selects one full faction handle at one
 | [products/](src/products/mod.rs) | The shared products: country groups and history, country measure, experience and factories, prepared dockyard repair rates, sampled per-design/residual splits, dated raw design catalogues and per-tag integral/origin reads, equipment, equipment icons, produced equipment and production spending, faction totals, force census, territory and its breakdown, politics content, idea history and format, character portraits and production lines; and the small shared modules several product families name: artwork (focus, technology and equipment art with its research and resource titles), research, resources, place names, country styles, battles and fixed-point runs. |
 | [test_fixtures.rs](src/test_fixtures.rs) | Test sources and content options over dashboard-core's recording builders. |
 
+Sprite artwork (`products::artwork::sprites::SpriteArtwork`, key `sprite-artwork`)
+draws frames of exact authored sprite keys a product returned, such as doctrine
+icons or one mission's frame of a mission strip: `{sprites:[{key, frame}]}` (frame
+zero-based) gives `{items:[{key, frame, icon}], warnings}`, each icon a PNG URL or
+null with a named, counted refusal. Frames past the authored strip keep their
+native offsets: the resolved effect and sampler decide the sample, without a
+frame clamp or bounds refusal. It uses the recorded content stack, the shared
+sprite renderer and texture decode settings, and infers no suffix,
+localisation or recorded hour. `icon_key` checks a key without decoding the
+image, so a product can return keys and the widget loads only the art it draws.
+Focus and technology artwork keep their own kinds: those read whole content
+databases, which an exact key does not need.
+
 ## Prepared series
 
 The prepared map's native selection includes naval repair task settings, fleet home-base

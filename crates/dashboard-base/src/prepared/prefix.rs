@@ -314,7 +314,9 @@ pub fn gaps_after(source: &Source, branch: u64, after: i32) -> Vec<HourSpan> {
     joined
 }
 
-fn recorded(source: &Source, branch: u64, first: i32, through: Option<i32>) -> Vec<HourSpan> {
+/// The branch's recorded hours from `first` through `through` (the branch's end
+/// when None), in order, without its gaps.
+pub fn recorded(source: &Source, branch: u64, first: i32, through: Option<i32>) -> Vec<HourSpan> {
     let mut windows = source.block_windows(branch).to_vec();
     windows.sort_unstable_by_key(|window| window.first_hour);
     let mut spans: Vec<HourSpan> = Vec::new();

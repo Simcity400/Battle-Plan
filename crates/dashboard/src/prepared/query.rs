@@ -127,6 +127,16 @@ fn cache_product(product: &str) -> Option<&'static str> {
         "military-air-ledger" => "queries:military-air-ledger",
         "special-projects" => "queries:special-projects",
         "resource-balance" => "queries:resource-balance",
+        "air-missions" => "queries:air-missions",
+        "air-statistics" => "queries:air-statistics",
+        "regional-weather" => "queries:regional-weather",
+        "minefields" => "queries:minefields",
+        "naval-supremacy" => "queries:naval-supremacy",
+        "doctrine-mastery" => "queries:doctrine-mastery",
+        "occupation-reserve-manpower" => "queries:occupation-reserve-manpower",
+        "intel-network-coverage" => "queries:intel-network-coverage",
+        "naval-repairs" => "queries:naval-repairs",
+        "naval-refits" => "queries:naval-refits",
         "faction-state" => "queries:faction-state",
         "diplomacy-state" => "queries:diplomacy-state",
         "fuel-branches" => "queries:fuel-branches",
@@ -275,6 +285,27 @@ fn casualty_reads_through(params: &Value, prefix: &super::prefix::Prefix) -> Val
         }
     }
     params
+}
+
+/// The query of a keyed family's product ([`dashboard_keyed`]).
+fn keyed_query(product: &str, query: &dashboard_keyed::query::Query<'_>) -> io::Result<Value> {
+    use crate::products::{
+        air_missions, air_statistics, doctrine_mastery, intel_coverage, minefields, naval_refits,
+        naval_repairs, naval_supremacy, occupation_reserve, regional_weather,
+    };
+    match product {
+        "air-missions" => air_missions::query(query),
+        "air-statistics" => air_statistics::query(query),
+        "regional-weather" => regional_weather::query(query),
+        "minefields" => minefields::query(query),
+        "naval-supremacy" => naval_supremacy::query(query),
+        "doctrine-mastery" => doctrine_mastery::query(query),
+        "occupation-reserve-manpower" => occupation_reserve::query(query),
+        "intel-network-coverage" => intel_coverage::query(query),
+        "naval-repairs" => naval_repairs::query(query),
+        "naval-refits" => naval_refits::query(query),
+        _ => Err(crate::invalid("Unknown keyed product")),
+    }
 }
 
 /// The economy families' whole-branch histories and ledger pages, through
@@ -1030,6 +1061,40 @@ fn query_data(
                 &key,
                 cancelled,
             )?
+        }
+        product @ ("air-missions"
+        | "air-statistics"
+        | "regional-weather"
+        | "minefields"
+        | "naval-supremacy"
+        | "doctrine-mastery"
+        | "occupation-reserve-manpower"
+        | "intel-network-coverage"
+        | "naval-repairs"
+        | "naval-refits") => {
+            let id = request
+                .params
+                .get("branchId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| crate::invalid("Missing prepared query branch"))?;
+            let branch = branch(source, id)?;
+            // Keyed families answer from their gate's accepted prefix; the hours
+            // after it are pending, never empty.
+            let prefix =
+                super::prefix::read_or_empty(source, content, product, branch, None, cancelled)?;
+            let query = dashboard_keyed::query::Query {
+                source,
+                params: &request.params,
+                content,
+                store: &store,
+                key: &key,
+                branch,
+                prefix: &prefix,
+                cancelled,
+            };
+            let mut data = keyed_query(product, &query)?;
+            prefix.mark(&mut data)?;
+            data
         }
         "air-superiority" => crate::products::air_superiority::prepared::query(
             source,

@@ -153,3 +153,10 @@ Active raiders share their original target-reference resolutions with the first-
 Movement-organisation branch reads share successfully authenticated province identities, definitions and terrain flags within one pass, and a route position reuses the id it authenticated. Failed reads are never retained; full or unavailable memo storage falls back to ordinary reads.
 
 The referenced-template walk accepts complete caller-certified icon-core segments after its ordinary roster and fixed-record authentication. Carried segments are relocated into the existing arenas; literal/fallback display operands remain fresh. Definition database/memo initialization is deferred until a fresh core actually demands it. Extension selection remains independent.
+
+The ship census can copy the retained name cache through `cship::cached_name_growing`
+and independently read raw saved name operands through `cship::naming_growing`.
+Both authenticate the full ship identity before following its member. Naming
+retains hidden programmatic overrides and authenticates a nonnull naming variant
+before copying its full identity. Worker arenas grow from original string
+descriptors; no generator, refresh, getter call or order allocation occurs.

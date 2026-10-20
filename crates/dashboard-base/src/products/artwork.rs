@@ -1,5 +1,8 @@
 //! Localised names, descriptions and sprite thumbnails for focus and technology
 //! tokens, read through the source's shared content catalogue.
+//! [`sprites`] draws exact authored sprite keys with the same renderer.
+
+pub mod sprites;
 
 use super::ContentOptions;
 use crate::{

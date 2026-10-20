@@ -1,7 +1,12 @@
 //! Regional Air mission entries. Registration determines membership; the selected
 //! mission mask counts the wing's aircraft once in each selected mission.
 use super::*;
-use replay_data::{rows::AirRegionalMissionRow, rows::AirWingRow};
+#[cfg(test)]
+use replay_data::rows::AirRegionalMissionRow;
+use replay_data::rows::AirWingRow;
+#[cfg(test)]
+use replay_derive::air_mission_counts::count;
+use replay_derive::air_mission_counts::{MISSIONS, RegionalWings, regional_counts};
 use std::collections::HashMap;
 use viewer_foundation::map::{
     gui_resources::{count_noted, count_refused, hit_rectangle},
@@ -14,8 +19,6 @@ use viewer_foundation::map::{
     native_windows::{AIR_MISSION_ENTRY_WINDOW as ENTRY, AIR_MISSION_WINDOW as WINDOW},
 };
 
-/// The game's mission enumeration, including mission kinds without a localised name.
-const MISSIONS: usize = 18;
 const AIR_SUPPLY: usize = 10;
 
 /// The native supply pass rebuilds its ordered consumer membership every hour.
@@ -83,52 +86,6 @@ fn ground(active: u32, power: Option<i64>, cost: i64) -> Result<Ground, String> 
             .ok_or("country command power is unavailable".into()),
         _ => Err("Ground Crews flag is outside its native boolean domain".into()),
     }
-}
-
-/// A registration with no enabled bit contributes nothing. A selected bit admits
-/// its entry even for a zero-plane wing; negative running sums restart at zero.
-fn count(counts: &mut [i32; MISSIONS], wing: &AirWingRow) {
-    if (wing.mission_mask as i32) <= 0 {
-        return;
-    }
-    for (bit, total) in counts.iter_mut().enumerate() {
-        if wing.mission_mask & (1 << bit) != 0 {
-            *total = (*total).max(0).wrapping_add(wing.planes);
-        }
-    }
-}
-
-type RegionalWings<'a> = BTreeMap<u32, Vec<&'a AirWingRow>>;
-
-fn regional_counts<'a>(
-    registrations: &[AirRegionalMissionRow],
-    wings: &'a [AirWingRow],
-    ours: u32,
-    slot: impl Fn(u32) -> Option<u32>,
-) -> Result<(BTreeMap<u32, [i32; MISSIONS]>, RegionalWings<'a>), String> {
-    let wings: HashMap<_, _> = wings.iter().map(|wing| (wing.id, wing)).collect();
-    let mut registrations = registrations.iter().collect::<Vec<_>>();
-    registrations.sort_by_key(|row| row.ordinal);
-    let mut regions = BTreeMap::new();
-    let mut regional_wings = RegionalWings::new();
-    for row in registrations {
-        let wing = wings
-            .get(&row.wing)
-            .ok_or_else(|| format!("registered wing {} has no AirWings row", row.wing))?;
-        // Registration belongs to the pool's owner, independently of the
-        // effective country used by sorties and air volunteers.
-        let owner = slot(wing.owner)
-            .ok_or_else(|| format!("registered wing {} has an unresolved owner", wing.id))?;
-        if owner != ours {
-            continue;
-        }
-        let region = wing
-            .mission_region
-            .ok_or_else(|| format!("registered wing {} has no mission region", wing.id))?;
-        count(regions.entry(region).or_insert([-1; MISSIONS]), wing);
-        regional_wings.entry(region).or_default().push(*wing);
-    }
-    Ok((regions, regional_wings))
 }
 
 fn interception_alert(
@@ -462,32 +419,12 @@ impl Prepared {
                             if wing.planes == 0 {
                                 return Ok(0);
                             }
-                            let base = registry
-                                .bases
-                                .get(&wing.air_base)
-                                .ok_or("wing pool base does not resolve")?;
-                            let input = sources
-                                .mission(wing.id)
-                                .ok_or("wing has no current sortie operands")?;
-                            let mission = countries
-                                .resolve(wing)
-                                .ok_or("wing's mission country is unresolved")?;
-                            let effective = if wing.country_override > 0 {
-                                wing.country_override as u32
-                            } else {
-                                wing.owner
-                            };
-                            let slot = *links
-                                .get(&effective)
-                                .ok_or("wing's effective country is unresolved")?;
                             sources
-                                .efficiency(
+                                .wing_efficiency(
                                     wing,
-                                    input,
-                                    base,
-                                    mission.slot,
-                                    (effective, slot),
-                                    defines,
+                                    &registry,
+                                    &countries,
+                                    defines.fuel_penalty_raw,
                                 )
                                 .map_err(str::to_owned)
                         })();

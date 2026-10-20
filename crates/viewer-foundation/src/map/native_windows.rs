@@ -16,7 +16,8 @@ pub const NAVAL_RESULT_WINDOW: &str = "naval_combat_results_mapicon";
 pub const AIR_BASE_WINDOW: &str = "air_base_mapicon";
 pub const AIR_WING_WINDOW: &str = "air_wing_counter";
 pub const AIR_MISSION_WINDOW: &str = "air_mission_mapicon";
-pub const AIR_MISSION_ENTRY_WINDOW: &str = "air_mission_mapicon_entry";
+pub const AIR_MISSION_ENTRY_WINDOW: &str =
+    replay_derive::air_mission_counts::MISSION_ENTRY_TEMPLATE;
 pub const ROCKET_SITE_WINDOW: &str = "rocket_site_mapicon";
 pub const GUN_EMPLACEMENT_WINDOW: &str = "gun_emplacement_mapicon";
 pub const RADAR_WINDOW: &str = "radar_mapicon";

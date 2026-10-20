@@ -1064,6 +1064,7 @@ mod tests {
         saved.ships.insert(
             ship,
             save::Ship {
+                ship_name: None,
                 manpower: None,
                 max_manpower: None,
                 has_criticals: false,

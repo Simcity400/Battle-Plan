@@ -46,7 +46,12 @@ pub(crate) fn table_inputs(
             projection.as_deref_mut(),
         ),
         task_forces(&captured.naval.task_forces, projection.as_deref_mut()),
-        ships(&captured.naval.ships, projection.as_deref_mut()),
+        ships(
+            &captured.naval.ships,
+            &captured.naval.ship_names,
+            &captured.naval.ship_overrides,
+            projection.as_deref_mut(),
+        ),
         naval_combats(&captured.naval_combats, projection.as_deref_mut()),
         naval_participants(
             &captured.naval_combat_participants,
@@ -281,14 +286,81 @@ fn task_forces(
 
 fn ships(
     captured: &CaptureRows<cship::Row>,
+    names: &[u8],
+    overrides: &[u8],
     projection: Option<&mut Projection<'_>>,
 ) -> TableInput {
-    scalar_table::<tables::Ships, _>(
+    let rows = match source(captured, captured.outcome) {
+        Ok(rows) => rows,
+        Err(failure) => return failure,
+    };
+    // Refuse only the affected name column; numeric ship state stays usable.
+    for row in rows {
+        if row
+            .name
+            .is_some_and(|(start, len)| range(names, start, len).is_none())
+        {
+            crate::map_capture::ship_name_span_refused(0);
+        }
+        if row.naming.is_some_and(|naming| {
+            range(overrides, naming.override_name.0, naming.override_name.1).is_none()
+        }) {
+            crate::map_capture::ship_name_span_refused(1);
+        }
+    }
+    let name = |row: &cship::Row| row.name.and_then(|(start, len)| range(names, start, len));
+    let naming = |row: &cship::Row| {
+        let raw = row.naming?;
+        Some((
+            raw,
+            range(overrides, raw.override_name.0, raw.override_name.1)?,
+        ))
+    };
+    let owned = |bytes: &[u8]| engine_allocation::owned_vec(engine_allocation::copy_vec(bytes));
+    project_table::<tables::Ships, _>(
         projection,
         captured.outcome,
-        &captured.rows,
+        rows,
         |row| u128::from(row.id),
+        |row, previous| {
+            row.id == previous.id
+                && row.task_force == previous.task_force
+                && row.strength == previous.strength
+                && row.organisation == previous.organisation
+                && ShipRow::EXPERIENCE_STEP.round(row.experience) == previous.experience
+                && row.category == previous.category
+                && row.sunk_convoys == previous.sunk_convoys
+                && row.class_id == previous.class_id
+                && replay_data::rows::Recorded::Value(row.acquired_manpower)
+                    == previous.acquired_manpower
+                && replay_data::rows::Recorded::Value(row.required_manpower)
+                    == previous.required_manpower
+                && matches!(&previous.name, replay_data::rows::Recorded::Value(value) if value.as_deref() == name(row))
+                && match (&previous.naming, naming(row)) {
+                    (replay_data::rows::Recorded::Value(None), None) => true,
+                    (replay_data::rows::Recorded::Value(Some(old)), Some((raw, bytes))) => {
+                        old.kind == raw.kind
+                            && old.order == raw.order
+                            && old.ordered == raw.ordered
+                            && old.programmatic == raw.programmatic
+                            && old.equipment == raw.equipment
+                            && old.override_name == bytes
+                    }
+                    _ => false,
+                }
+        },
         |row| ShipRow {
+            name: name(row).map(owned).into(),
+            naming: naming(row)
+                .map(|(raw, bytes)| replay_data::rows::ShipNamingOperands {
+                    kind: raw.kind,
+                    order: raw.order,
+                    ordered: raw.ordered,
+                    override_name: owned(bytes),
+                    programmatic: raw.programmatic,
+                    equipment: raw.equipment,
+                })
+                .into(),
             required_manpower: row.required_manpower.into(),
             id: row.id,
             task_force: row.task_force,
@@ -781,6 +853,8 @@ mod tests {
         set(
             &mut captured.naval.ships,
             vec![cship::Row {
+                name: None,
+                naming: None,
                 acquired_manpower: None,
                 required_manpower: None,
                 roster_ordinal: 0,
@@ -924,6 +998,8 @@ mod tests {
                 combat_references: i32::MIN,
             }]),
             TableRows::Ships(vec![ShipRow {
+                name: Default::default(),
+                naming: Default::default(),
                 acquired_manpower: Default::default(),
                 required_manpower: Default::default(),
 
@@ -1294,5 +1370,195 @@ mod tests {
             )),
             unavailable("walker produced duplicate engine ids")
         );
+    }
+}
+
+#[cfg(test)]
+mod ship_names_tests {
+    use super::*;
+    use engine_native::{
+        cequipment_variant, cname_group_member as member, memory::SliceMemory, msvc_string,
+    };
+    use replay_data::rows::{Recorded, ShipNamingOperands};
+    const SHIP: usize = 0x100;
+    const MEMBER: usize = 0xb00;
+    const EQUIPMENT: usize = 0xd00;
+    const HANDLE: u64 = (0x12345678_u64 << 32) | cship::HANDLE_TYPE as u64;
+    fn word(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    fn string(bytes: &mut Vec<u8>, at: usize, text: &[u8]) {
+        word(bytes, at + msvc_string::LENGTH, text.len() as u64);
+        if text.len() <= 15 {
+            bytes[at..at + text.len()].copy_from_slice(text);
+            word(bytes, at + msvc_string::CAPACITY, 15);
+        } else {
+            let heap = bytes.len();
+            bytes.extend_from_slice(text);
+            bytes.push(0);
+            word(bytes, at, heap as u64);
+            word(bytes, at + msvc_string::CAPACITY, text.len() as u64);
+        }
+    }
+    fn memory(cache: &[u8], override_name: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0; 0xf00];
+        word(&mut bytes, SHIP, cship::VTABLE_RVA as u64);
+        word(&mut bytes, SHIP + cship::HANDLE, HANDLE);
+        word(&mut bytes, SHIP + cship::NAME_MEMBER, MEMBER as u64);
+        word(&mut bytes, MEMBER, member::VTABLE_RVA as u64);
+        bytes[MEMBER + member::TYPE..MEMBER + member::TYPE + 4]
+            .copy_from_slice(&1_i32.to_le_bytes());
+        bytes[MEMBER + member::ORDER..MEMBER + member::ORDER + 4]
+            .copy_from_slice(&(-7_i32).to_le_bytes());
+        bytes[MEMBER + member::FLAG_A] = 0xfe;
+        bytes[MEMBER + member::FLAG_B] = 0xab;
+        word(
+            &mut bytes,
+            MEMBER + member::NAMING_EQUIPMENT,
+            EQUIPMENT as u64,
+        );
+        word(&mut bytes, EQUIPMENT, cequipment_variant::VTABLE_RVA as u64);
+        word(
+            &mut bytes,
+            EQUIPMENT + 8,
+            (u64::from(u32::MAX) << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),
+        );
+        string(&mut bytes, MEMBER + member::CACHED_NAME, cache);
+        string(&mut bytes, MEMBER + member::OVERRIDE_NAME, override_name);
+        bytes
+    }
+    fn capture(bytes: &[u8], handle: u64) -> (cship::Row, Vec<u8>, Vec<u8>) {
+        let memory = SliceMemory { base: 0, bytes };
+        let (mut names, mut overrides) = (Vec::new(), Vec::new());
+        let (mut len, mut required) = (0, 0);
+        let name = cship::cached_name_growing(
+            &memory,
+            0,
+            SHIP,
+            handle,
+            &mut names,
+            &mut len,
+            &mut required,
+        )
+        .ok()
+        .flatten();
+        let naming = cship::naming_growing(
+            &memory,
+            0,
+            SHIP,
+            handle,
+            &mut overrides,
+            &mut len,
+            &mut required,
+        )
+        .ok()
+        .flatten();
+        (
+            cship::Row {
+                id: handle,
+                name,
+                naming,
+                strength: -9,
+                ..Default::default()
+            },
+            names,
+            overrides,
+        )
+    }
+    fn projected(row: cship::Row, names: &[u8], overrides: &[u8]) -> TableView {
+        let mut captured = CaptureRows::new(0);
+        captured.rows.push(row);
+        captured.outcome = Outcome::Rows { len: 1 };
+        match ships(&captured, names, overrides, None) {
+            TableInput::Sampled(view) => view,
+            _ => panic!("expected owned sample"),
+        }
+    }
+    fn row(view: &TableView) -> &ShipRow {
+        let TableView::Complete(replay_data::rows::TableRows::Ships(rows)) = view else {
+            panic!("{view:?}")
+        };
+        &rows[0]
+    }
+    #[test]
+    fn ship_names_native_to_projection_preserves_long_empty_nul_and_hidden_override() {
+        for text in [
+            Vec::new(),
+            b"same-length A".to_vec(),
+            b"same-length B".to_vec(),
+            b"\0\xfftail".to_vec(),
+            vec![b'x'; 20_003],
+        ] {
+            let override_name = b"hidden\0\xffoverride";
+            let bytes = memory(&text, override_name);
+            let (native, names, overrides) = capture(&bytes, HANDLE);
+            let view = projected(native, &names, &overrides);
+            let row = row(&view);
+            assert_eq!(row.name, Recorded::Value(Some(text)));
+            assert_eq!(
+                row.naming,
+                Recorded::Value(Some(ShipNamingOperands {
+                    kind: 1,
+                    order: -7,
+                    ordered: 0xfe,
+                    override_name: override_name.to_vec(),
+                    programmatic: 0xab,
+                    equipment: Some((u64::from(u32::MAX) << 32) | 70),
+                }))
+            );
+            assert_eq!(row.strength, -9);
+            let rows = replay_data::rows::TableRows::Ships(vec![row.clone()]);
+            let mut wire = Vec::new();
+            rows.encode_rows(&mut wire).unwrap();
+            let mut input = replay_data::codec::Decoder::new(&wire);
+            assert_eq!(
+                replay_data::rows::TableId::Ships
+                    .decode_rows(1, &mut input)
+                    .unwrap(),
+                rows
+            );
+        }
+    }
+    #[test]
+    fn ship_names_cache_and_operands_refuse_independently_and_validate_spans() {
+        let mut bytes = memory(b"Cache", b"Raw");
+        word(
+            &mut bytes,
+            MEMBER + member::CACHED_NAME + msvc_string::CAPACITY,
+            0,
+        );
+        let (native, names, overrides) = capture(&bytes, HANDLE);
+        let view = projected(native, &names, &overrides);
+        assert_eq!(row(&view).name, None.into());
+        assert!(matches!(row(&view).naming, Recorded::Value(Some(_))));
+        let mut bytes = memory(b"Cache", b"Raw");
+        bytes[EQUIPMENT] ^= 1;
+        let (native, names, overrides) = capture(&bytes, HANDLE);
+        let view = projected(native, &names, &overrides);
+        assert_eq!(row(&view).name, Some(b"Cache".to_vec()).into());
+        assert_eq!(row(&view).naming, None.into());
+        word(&mut bytes, MEMBER + member::NAMING_EQUIPMENT, 0);
+        let (native, names, overrides) = capture(&bytes, HANDLE);
+        assert_eq!(native.naming.unwrap().equipment, None);
+        let mut invalid = native;
+        invalid.name = Some((usize::MAX, 1));
+        let invalid_view = projected(invalid, &names, &overrides);
+        assert_eq!(row(&invalid_view).name, None.into());
+        assert!(matches!(
+            row(&invalid_view).naming,
+            Recorded::Value(Some(_))
+        ));
+        assert_eq!(row(&invalid_view).strength, -9);
+        invalid = native;
+        invalid.naming.as_mut().unwrap().override_name = (0, usize::MAX);
+        let invalid_view = projected(invalid, &names, &overrides);
+        assert_eq!(row(&invalid_view).name, Some(b"Cache".to_vec()).into());
+        assert_eq!(row(&invalid_view).naming, None.into());
+        assert_eq!(row(&invalid_view).strength, -9);
+        for bad in [0, HANDLE ^ 1, HANDLE ^ (1_u64 << 32)] {
+            let (native, _, _) = capture(&bytes, bad);
+            assert!(native.name.is_none());
+            assert!(native.naming.is_none());
+        }
     }
 }

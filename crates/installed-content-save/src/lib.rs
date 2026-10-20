@@ -40,8 +40,9 @@ pub use countries::{
 
 pub use units::{
     Acclimatization, AirWing, ArmyOrder, Division, DivisionHistory, DivisionHistoryEntry,
-    DivisionName, DivisionPresentation, DivisionTemplate, DivisionTemplateSettings, Fleet, IntelEntry, LandCombat,
-    NavalCombat, NavalCombatParticipant, RailwayGun, Ship, TaskForce,
+    DivisionName, DivisionPresentation, DivisionTemplate, DivisionTemplateSettings, Fleet,
+    IntelEntry, LandCombat, NavalCombat, NavalCombatParticipant, RailwayGun, Ship, ShipName,
+    TaskForce,
 };
 use units::{
     parse_air_wings, parse_division, parse_division_templates, parse_fleet, parse_land_combat,

@@ -1060,6 +1060,14 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
     saved.ships.insert(
         15,
         installed_content_save::Ship {
+            ship_name: Some(installed_content_save::ShipName {
+                kind: 1,
+                name_order: None,
+                is_name_ordered: None,
+                override_name: None,
+                override_set_programmatically: None,
+                equipment: None,
+            }),
             manpower: None,
             max_manpower: None,
 
@@ -1123,6 +1131,12 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
         &mut frame,
         TableId::Ships,
         TableRows::Ships(vec![ShipRow {
+            naming: Some(replay_data::rows::ShipNamingOperands {
+                kind: 1,
+                ordered: 1,
+                ..Default::default()
+            })
+            .into(),
             id: 15,
             task_force: 14,
             strength: 1,
@@ -1276,6 +1290,14 @@ fn ship_experience_report(recorded: i64) -> Report {
     saved.ships.insert(
         15,
         installed_content_save::Ship {
+            ship_name: Some(installed_content_save::ShipName {
+                kind: 1,
+                name_order: None,
+                is_name_ordered: None,
+                override_name: None,
+                override_set_programmatically: None,
+                equipment: None,
+            }),
             manpower: None,
             max_manpower: None,
 
@@ -1317,6 +1339,12 @@ fn ship_experience_report(recorded: i64) -> Report {
         &mut frame,
         TableId::Ships,
         TableRows::Ships(vec![ShipRow {
+            naming: Some(replay_data::rows::ShipNamingOperands {
+                kind: 1,
+                ordered: 1,
+                ..Default::default()
+            })
+            .into(),
             id: 15,
             task_force: 14,
             experience: recorded,

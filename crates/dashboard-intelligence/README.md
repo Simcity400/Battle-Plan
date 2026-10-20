@@ -66,3 +66,8 @@ Player estimates are computed for the selected viewer/target from recorded game 
 Equal country and link acquisitions retain their shared identity join without
 comparing every link. Each product still receives its own supplying-read dates
 and accumulates membership and operation invalidation until its next read.
+
+Intel network coverage has a separate sparse keyed [summary module](src/products/intel_coverage/README.md); the five-product intelligence observer remains unchanged.
+Its windows carry dated membership and network-count ranking runs, not a
+final-hour roster. Sparse pair histories cover countries selected anywhere in
+the window, with unknown inventory excluded from ranking and absence proof.

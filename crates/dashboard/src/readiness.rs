@@ -87,6 +87,16 @@ pub const UI_PREPARED_ROUTES: &[&str] = &[
     "operatives-roster",
     "agency-comparison",
     "decryption",
+    "air-missions",
+    "air-statistics",
+    "regional-weather",
+    "minefields",
+    "naval-supremacy",
+    "doctrine-mastery",
+    "occupation-reserve-manpower",
+    "intel-network-coverage",
+    "naval-repairs",
+    "naval-refits",
 ];
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]

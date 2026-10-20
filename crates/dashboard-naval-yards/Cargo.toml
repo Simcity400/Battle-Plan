@@ -1,0 +1,33 @@
+[package]
+name = "dashboard-naval-yards"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+dashboard-base.workspace = true
+dashboard-core.workspace = true
+dashboard-text.workspace = true
+dashboard-forces = { path = "../dashboard-forces" }
+dashboard-keyed = { path = "../dashboard-keyed" }
+installed-content-core.workspace = true
+installed-content-division-names.workspace = true
+installed-content-country-names.workspace = true
+replay.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+store = { path = "../store" }
+ts-rs = "11.1"
+
+[dev-dependencies]
+engine-executable.workspace = true
+mimalloc.workspace = true
+dashboard-base = { workspace = true, features = ["test-support"] }
+store = { path = "../store", features = ["test-support"] }

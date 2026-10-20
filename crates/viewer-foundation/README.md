@@ -31,7 +31,7 @@ The [enemy-template ledger query](src/map/visibility/template_reveal.rs) derives
 
 The enemy-template query resolves each grouped display name through source-country, effective-country and target-country rosters in native roster order. Fuzzy counts use that resolved template identity, including localisation collisions supplied by mods.
 
-The current sortie-efficiency law is shared by aircraft scenarios and Air mission hovers. Ribbon content also resolves the radar symbol's runtime definition, texture and graphics defines, with per-item artwork fallback.
+The current sortie-efficiency law and its frame-only base/country joins live in replay-derive, re-exported here for aircraft scenarios and Air mission hovers; dashboard wing details use the same law. Content define loading remains here. Ribbon content also resolves the radar symbol's runtime definition, texture and graphics defines, with per-item artwork fallback.
 
 Building site content preserves the first listed province for every state/base kind independently of the position finder, which may skip that province. Only ambiguities that can change the first province refuse its answer.
 
@@ -60,3 +60,6 @@ Frame-backed ace lookups index full handles lazily once because AceRangeInputs o
 World-name draw operands retain optional connected strategic-area province membership beside cached glyphs for per-view pointer admission. Mode visibility retains political-mode identity separately from the reusable icon priority table, so port grids can choose their native comparator without guessing the current mode from artwork priorities. Neither value is recording data.
 
 Occupation markers use the ordinary native map-icon projection, pooled window lifecycle and control hit geometry. Their authored parent and modifier-row templates join the shared window asset demand. The type's pool begins with 96 windows and uses the common queued growth; the size is an initial allocation, not an admission cap.
+
+Frame-only regional mines, naval control/share, directed-war owners and naval
+fixed-point math live in replay-derive and are re-exported at their viewer paths.

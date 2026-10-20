@@ -208,6 +208,16 @@ pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section>
         ("special-projects", "Special projects"),
         ("war-casualties", "Casualties"),
         ("equipment-losses", "Equipment losses"),
+        ("air-missions", "Air missions"),
+        ("air-statistics", "Air statistics"),
+        ("regional-weather", "Regional weather"),
+        ("minefields", "Minefields"),
+        ("naval-supremacy", "Naval supremacy"),
+        ("doctrine-mastery", "Doctrine mastery"),
+        ("occupation-reserve", "Occupation reserve manpower"),
+        ("intel-network-coverage", "Intel network coverage"),
+        ("naval-repairs", "Naval repairs"),
+        ("naval-refits", "Refits"),
     ]
     .into_iter()
     .map(|(id, label)| Section {
@@ -235,6 +245,66 @@ struct Family {
 // The map and land-owner catalogue are recording-wide publication state, not
 // branch families: their errors still stop preparation.
 const FAMILIES: &[Family] = &[
+    Family {
+        name: "air-missions",
+        sections: &["air-missions"],
+        dependents: &[],
+        queries: &["air-missions"],
+    },
+    Family {
+        name: "air-statistics",
+        sections: &["air-statistics"],
+        dependents: &[],
+        queries: &["air-statistics"],
+    },
+    Family {
+        name: "regional-weather",
+        sections: &["regional-weather"],
+        dependents: &[],
+        queries: &["regional-weather"],
+    },
+    Family {
+        name: "minefields",
+        sections: &["minefields"],
+        dependents: &[],
+        queries: &["minefields"],
+    },
+    Family {
+        name: "naval-supremacy",
+        sections: &["naval-supremacy"],
+        dependents: &[],
+        queries: &["naval-supremacy"],
+    },
+    Family {
+        name: "doctrine-mastery",
+        sections: &["doctrine-mastery"],
+        dependents: &[],
+        queries: &["doctrine-mastery"],
+    },
+    Family {
+        name: "occupation-reserve",
+        sections: &["occupation-reserve"],
+        dependents: &[],
+        queries: &["occupation-reserve-manpower"],
+    },
+    Family {
+        name: "intel-network-coverage",
+        sections: &["intel-network-coverage"],
+        dependents: &[],
+        queries: &["intel-network-coverage"],
+    },
+    Family {
+        name: "naval-repairs",
+        sections: &["naval-repairs"],
+        dependents: &[],
+        queries: &["naval-repairs"],
+    },
+    Family {
+        name: "naval-refits",
+        sections: &["naval-refits"],
+        dependents: &[],
+        queries: &["naval-refits"],
+    },
     Family {
         name: "faction_state",
         sections: &["faction-state"],

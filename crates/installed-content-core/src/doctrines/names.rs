@@ -161,6 +161,31 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: 
     for item in &read.items {
         super::sources::append(&mut database.tactic_sources, item, kind, names);
     }
+    let presentations = match kind {
+        0 => &mut database.grand_presentations,
+        1 => &mut database.sub_presentations,
+        _ => &mut database.track_presentations,
+    };
+    for item in &read.items {
+        let authored = parser::c_string(item.key.as_deref().unwrap_or_default());
+        let presentation = presentations
+            .entry(Token::c_str(authored))
+            .or_insert_with(|| Presentation {
+                token: authored.to_vec(),
+                ..Default::default()
+            });
+        for field in item.value.items().unwrap_or_default() {
+            if field.keyword_is("icon") {
+                if let Some(value) = field.value.read_string() {
+                    presentation.icon = value.to_vec();
+                }
+            } else if kind == 0 && field.keyword_is("folder") {
+                if let Some(value) = field.value.scalar() {
+                    presentation.folder = Some(Token::c_str(value));
+                }
+            }
+        }
+    }
     let destination = match kind {
         0 => &mut database.grand,
         1 => &mut database.sub,

@@ -12,10 +12,12 @@
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod products {
+    pub mod occupation_reserve;
     pub mod occupation_trend;
     pub mod occupied_states;
 
     dashboard_base::reply_warnings!(
+        occupation_reserve::OccupationReserveReply,
         occupied_states::OccupiedStatesReply,
         occupied_states::OccupiedStatesManifestReply,
         occupation_trend::OccupationTrendReply,

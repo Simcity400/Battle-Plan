@@ -3228,6 +3228,7 @@ impl Processor {
             "selected_ordered_enemies":crate::extended::visibility::ordered_enemy_data(),
             "unit_combat_references":crate::extended::unit_combat_references::data(),
             "air_wing_names": crate::map_capture::air_wing_name_data(),
+            "ship_names": crate::map_capture::ship_name_data(),
             "railway_gun_names": crate::extended::railway_guns::name_data(),
             "railway_gun_eta": crate::extended::railway_guns::eta_data(),
             "railway_gun_owner_transport": crate::extended::railway_guns::transport_data(),

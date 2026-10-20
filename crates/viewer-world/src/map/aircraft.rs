@@ -1489,7 +1489,8 @@ impl AircraftAssets {
             region_draws,
             region_fractions,
             province_kinds,
-            sortie_defines: SortieDefines::load(defines).map_err(|error| error.to_string()),
+            sortie_defines: viewer_foundation::map::aircraft_count::load_defines(defines)
+                .map_err(|error| error.to_string()),
             flight_defines: layers
                 .graphics_define("aircraft flights", graphics, defines, FlightDefines::load)
                 .map_err(|error| error.to_string()),

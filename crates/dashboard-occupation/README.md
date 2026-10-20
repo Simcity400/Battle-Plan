@@ -29,3 +29,5 @@ Unprepared look-back windows carry held state spans through country balance chan
 Occupation fact markers carry equal authenticated values until publication.
 Their supplying events and the resistance and compliance read boundaries keep
 their recorded dates.
+
+Occupation reserve manpower is prepared separately by the keyed [reserve module](src/products/occupation_reserve/README.md), without changing the occupied-state observer or requiring law evaluation.

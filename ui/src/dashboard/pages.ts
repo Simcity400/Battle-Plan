@@ -55,6 +55,7 @@ export const PAGES = [
   { id: 'research', label: 'Research', icon: 'flask', panels: [
     ['active-research', 0, 0, 7, 9], ['research', 0, 9, 7, 13],
     ['special-projects', 7, 0, 5, 10], ['nuclear-arsenal', 7, 10, 5, 8],
+    ['doctrine-mastery', 0, 22, 12, 12],
   ] },
   { id: 'land', label: 'Army', icon: 'helmet', panels: [
     ['army-size', 0, 0, 6, 10], ['casualties', 6, 0, 6, 10],
@@ -72,22 +73,29 @@ export const PAGES = [
     ['air-superiority-region', 0, 10, 6, 11], ['air-superiority-timeline', 6, 10, 6, 11],
     ['bombing-damage', 0, 21, 6, 10], ['bombing-damage-breakdown', 6, 21, 6, 10],
     ['aces', 0, 31, 12, 10],
+    ['air-missions', 0, 41, 6, 10], ['air-statistics', 6, 41, 6, 10],
+    ['weather-by-region', 0, 51, 12, 9],
   ] },
   { id: 'navy', label: 'Navy', icon: 'anchor', panels: [
     ['navy-size', 0, 0, 6, 10], ['naval-losses', 6, 0, 6, 10],
     ['naval-battles', 0, 10, 12, 11],
     ['ships-sunk', 0, 21, 12, 10],
+    ['naval-supremacy', 0, 31, 12, 9],
+    ['minefields', 0, 40, 6, 9], ['dockyards-and-repairs', 6, 40, 6, 9],
+    ['refits', 0, 49, 6, 9],
   ] },
   { id: 'occupation', label: 'Occupation', icon: 'flag', panels: [
     ['territory', 0, 0, 6, 10], ['territory-breakdown', 6, 0, 6, 10],
     ['occupied-states', 0, 10, 12, 11],
     ['occupation-trend', 0, 21, 12, 10],
+    ['occupation-reserve-manpower', 0, 31, 12, 10],
   ] },
   { id: 'intelligence', label: 'Intelligence', icon: 'eye', panels: [
     ['agency-comparison', 0, 0, 6, 10], ['decryption', 6, 0, 6, 10],
     ['who-spies-on-whom', 0, 10, 7, 12], ['operatives-roster', 7, 10, 5, 12],
     ['espionage-log', 0, 22, 6, 10], ['raid-tally', 6, 22, 6, 10],
     ['raid-log', 0, 32, 12, 10],
+    ['intel-network-coverage', 0, 42, 6, 10],
   ] },
 ] as const satisfies readonly { id: string; label: string; icon: IconName; panels: readonly Panel[] }[];
 

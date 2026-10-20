@@ -58,6 +58,43 @@ pub(crate) fn observe_air_wing_name_failures(
     }
 }
 
+static SHIP_NAME_COUNTS: [std::sync::atomic::AtomicU64; 4] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+
+static SHIP_NAME_SPAN_REFUSALS: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+
+pub(crate) fn ship_name_span_refused(field: usize) {
+    SHIP_NAME_SPAN_REFUSALS[field].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn ship_name_result<T>(
+    counts: &mut [u64; 4],
+    field: usize,
+    result: Result<Option<T>, &'static str>,
+) -> Option<T> {
+    let value = result.ok().flatten();
+    counts[field * 2 + usize::from(value.is_none())] += 1;
+    value
+}
+
+pub(crate) fn ship_name_data() -> impl serde::Serialize {
+    let count = |at: usize| SHIP_NAME_COUNTS[at].load(std::sync::atomic::Ordering::Relaxed);
+    let span = |at: usize| SHIP_NAME_SPAN_REFUSALS[at].load(std::sync::atomic::Ordering::Relaxed);
+    crate::status::status!({
+        "cache_span_refused": span(0), "naming_span_refused": span(1),
+        "cache_captured": count(0), "cache_refused": count(1),
+        "naming_captured": count(2), "naming_refused": count(3),
+        "refusals": crate::status::map([
+            ("Ships.name guarded read or arena refusal", count(1)),
+            ("Ships.naming guarded read or arena refusal", count(3)),
+            ("Ships.name captured arena span invalid", span(0)),
+            ("Ships.naming captured override span invalid", span(1)),
+        ].into_iter().filter(|(_, count)| *count != 0)),
+        "scope": "hourly ship census; cache and raw saved naming operands refuse independently without erasing core ship values",
+    })
+}
+
 /// Inline source consumers own their state and validation. Return raw QPC ticks
 /// attributed to extension tables so the map buckets do not charge them twice.
 /// The begin/finish pair runs even for an empty or failed source census; every
@@ -200,6 +237,8 @@ pub struct ShipCensus {
     pub management: collector_naval_management::forces::Captured,
     pub fleets: CaptureRows<cfleet::Row>,
     pub fleet_names: Vec<u8>,
+    pub ship_names: Vec<u8>,
+    pub ship_overrides: Vec<u8>,
     pub task_forces: CaptureRows<ctask_force::Row>,
     pub ships: CaptureRows<cship::Row>,
     /// Fleet, task force and ship walk ticks.
@@ -213,6 +252,8 @@ impl ShipCensus {
             management: Default::default(),
             fleets: CaptureRows::new(rows[0]),
             fleet_names: Vec::new(),
+            ship_names: Vec::new(),
+            ship_overrides: Vec::new(),
             task_forces: CaptureRows::new(rows[1]),
             ships: CaptureRows::new(rows[2]),
             ticks: [0; 3],
@@ -226,6 +267,8 @@ impl ShipCensus {
         self.management = Default::default();
         self.fleets.reset();
         self.fleet_names.clear();
+        self.ship_names.clear();
+        self.ship_overrides.clear();
         self.task_forces.reset();
         self.ships.reset();
         self.ticks = [0; 3];
@@ -239,6 +282,8 @@ impl ShipCensus {
                 .filter_map(|table| table.as_ref().ok())
                 .map(|rows| rows.allocated_bytes())
                 .sum::<usize>()
+            + self.ship_names.capacity()
+            + self.ship_overrides.capacity()
             + self.fleet_names.capacity()
             + self.fleets.allocated_bytes()
             + self.task_forces.allocated_bytes()
@@ -259,6 +304,9 @@ impl ShipCensus {
         let management = std::cell::RefCell::new(
             collector_naval_management::forces::Session::begin(memory, base, state),
         );
+        let mut name_counts = [0; 4];
+        let (mut name_len, mut name_required) = (0, 0);
+        let (mut override_len, mut override_required) = (0, 0);
         let naval = cfleet::walk_timed_growing_with_management(
             memory,
             base,
@@ -271,6 +319,38 @@ impl ShipCensus {
                 qpc() as u64
             },
             |pointer, row| {
+                row.name = ship_name_result(
+                    &mut name_counts,
+                    0,
+                    cship::cached_name_growing(
+                        memory,
+                        base,
+                        pointer,
+                        row.id,
+                        &mut self.ship_names,
+                        &mut name_len,
+                        &mut name_required,
+                    ),
+                );
+                if let Some((_, len)) = row.name {
+                    name_len += len;
+                }
+                row.naming = ship_name_result(
+                    &mut name_counts,
+                    1,
+                    cship::naming_growing(
+                        memory,
+                        base,
+                        pointer,
+                        row.id,
+                        &mut self.ship_overrides,
+                        &mut override_len,
+                        &mut override_required,
+                    ),
+                );
+                if let Some(naming) = row.naming {
+                    override_len += naming.override_name.1;
+                }
                 let crew = self
                     .crew
                     .read(memory, pointer, row.id, cship::ACQUIRED_MANPOWER);
@@ -282,6 +362,13 @@ impl ShipCensus {
             &mut self.fleet_names,
             |visit| management.borrow_mut().visit(visit),
         );
+        for (total, count) in SHIP_NAME_COUNTS.iter().zip(name_counts) {
+            if count != 0 {
+                total.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        self.ship_names.truncate(name_len);
+        self.ship_overrides.truncate(override_len);
         self.crew.finish();
         self.management = management.into_inner().finish(naval.capture);
         models.finish_sources(naval.capture.ships);
@@ -294,6 +381,8 @@ impl ShipCensus {
             .saturating_sub(self.ticks[1]);
     }
     pub fn fail(&mut self, reason: &'static str) {
+        self.ship_names.clear();
+        self.ship_overrides.clear();
         self.management.tables = std::array::from_fn(|_| Err(reason));
         let outcome = Outcome::Unavailable { reason };
         self.fleets.outcome = outcome;
@@ -1705,6 +1794,27 @@ mod players_split_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ship_name_arenas_charge_capacity_and_clear_on_reset_and_failure() {
+        let mut census = ShipCensus::vacant();
+        let before = census.allocated_bytes();
+        census.ship_names.resize(8193, 0xff);
+        census.ship_overrides.resize(32769, 0);
+        let arenas = census.ship_names.capacity() + census.ship_overrides.capacity();
+        assert_eq!(census.allocated_bytes(), before + arenas);
+        census.reset();
+        assert!(census.ship_names.is_empty());
+        assert!(census.ship_overrides.is_empty());
+        assert_eq!(census.allocated_bytes(), before + arenas);
+        census.ship_names.extend_from_slice(b"Retained");
+        census.ship_overrides.extend_from_slice(b"Override");
+        census.fail("synthetic failed ship census");
+        assert!(census.ship_names.is_empty());
+        assert!(census.ship_overrides.is_empty());
+        assert_eq!(census.allocated_bytes(), before + arenas);
+        assert!(matches!(census.ships.outcome, Outcome::Unavailable { .. }));
+    }
 
     #[test]
     fn downstream_consumers_receive_one_census_and_failed_air_is_not_retried() {

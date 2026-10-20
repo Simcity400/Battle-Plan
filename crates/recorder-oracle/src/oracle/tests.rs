@@ -3887,6 +3887,14 @@ fn naval_fixture() -> (
     saved.ships.insert(
         ship,
         save::Ship {
+            ship_name: Some(save::ShipName {
+                kind: 1,
+                name_order: None,
+                is_name_ordered: None,
+                override_name: None,
+                override_set_programmatically: None,
+                equipment: None,
+            }),
             manpower: None,
             max_manpower: None,
             has_criticals: false,
@@ -3923,6 +3931,13 @@ fn naval_fixture() -> (
     ]));
     *frame.tables[TableId::Ships.index()] =
         TableView::Complete(TableRows::Ships(vec![replay_data::rows::ShipRow {
+            name: Default::default(),
+            naming: Some(replay_data::rows::ShipNamingOperands {
+                kind: 1,
+                ordered: 1,
+                ..Default::default()
+            })
+            .into(),
             acquired_manpower: Default::default(),
             required_manpower: Default::default(),
 

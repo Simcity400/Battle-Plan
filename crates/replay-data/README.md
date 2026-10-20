@@ -317,4 +317,13 @@ Equal entries remain separate occurrences. Independent full identities and signe
 avoid identity/amount mixing. `logical_order` and `fact` reconstruct the native
 ordered view for dashboard and save comparisons without losing a stored word.
 
+`Ships.name` preserves the hourly retained display-cache bytes, including empty,
+non-UTF-8 and embedded NUL bytes. `Ships.naming` independently retains signed kind
+and order, both raw flag bytes, the complete override byte vector (its encoded
+length is the stored length), and nullable full naming-equipment identity. Either
+optional acquisition may refuse without dropping core ship values. Format 107
+adds columns 9 and 10; ordinary deltas, prepared checkpoints, field sizes and
+column inspection share those declarations. The cache is unsaved; saved naming
+operands do not certify its freshness.
+
 Military-aid consumers share `military_aid` for alias-held volunteer-list validation, full-handle live resolution, logical-host attribution, signed-positive expeditionary source ownership and repeated-reference signed-wrapping manpower sums. These helpers consume recorded rows only; they introduce no air-volunteer classifier or content defaults.

@@ -18,12 +18,14 @@ pub mod technology_artwork;
 
 // The product contract and the shared products, at their old paths.
 pub use dashboard_air_aces::products::air_aces;
+pub use dashboard_air_operations::products::{air_missions, air_statistics};
 pub use dashboard_air_superiority::products::air_superiority;
 pub use dashboard_base::products::*;
 pub use dashboard_construction::products::construction_log;
 pub use dashboard_construction::products::construction_spending;
 pub use dashboard_country_fuel::products::country_fuel;
 pub use dashboard_country_nukes::products::country_nukes;
+pub use dashboard_doctrine_mastery::products::doctrine_mastery;
 pub use dashboard_diplomacy::products::diplomacy_state;
 pub use dashboard_equipment_losses::products::equipment_losses;
 pub use dashboard_equipment_stockpile::products::equipment_stockpile;
@@ -43,6 +45,7 @@ pub use dashboard_game_window::products::{game_window, game_window_artwork};
 pub use dashboard_intelligence::products::agency_comparison;
 pub use dashboard_intelligence::products::decryption;
 pub use dashboard_intelligence::products::espionage_log;
+pub use dashboard_intelligence::products::intel_coverage;
 pub use dashboard_intelligence::products::intel_details;
 pub use dashboard_intelligence::products::intelligence_content;
 pub use dashboard_intelligence::products::intelligence_prepared;
@@ -59,6 +62,9 @@ pub use dashboard_naval::products::naval_battles;
 pub use dashboard_naval::products::naval_losses;
 pub use dashboard_naval::products::ships_sunk;
 pub use dashboard_naval::products::sinkings;
+pub use dashboard_naval_regions::products::{minefields, naval_supremacy};
+pub use dashboard_naval_yards::products::{naval_refits, naval_repairs};
+pub use dashboard_occupation::products::occupation_reserve;
 pub use dashboard_occupation::products::{occupation_trend, occupied_states};
 pub use dashboard_party_history::products::party_history;
 pub use dashboard_peace_deals::products::peace_deals;
@@ -72,6 +78,7 @@ pub use dashboard_stability::products::{country_stability, stability_parts};
 pub use dashboard_subjects::products::{autonomy, subjects};
 pub use dashboard_unit_leaders::products::unit_leaders;
 pub use dashboard_wars::products::{war_casualties, wargoals, wars};
+pub use dashboard_weather::products::regional_weather;
 pub use dashboard_politics::products::politics_state;
 pub use dashboard_world_tension::products::world_tension;
 pub use dashboard_economy::products::{
@@ -331,6 +338,17 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<operatives_roster::OperativesRoster>(),
     register_prepared::<agency_comparison::AgencyComparison>(),
     register::<aircraft_catalogue::AircraftCatalogue>(),
+    register_prepared::<air_missions::AirMissions>(),
+    register_prepared::<air_statistics::AirStatistics>(),
+    register_prepared::<regional_weather::RegionalWeather>(),
+    register_prepared::<minefields::Minefields>(),
+    register_prepared::<naval_supremacy::NavalSupremacy>(),
+    register_prepared::<doctrine_mastery::DoctrineMastery>(),
+    register::<artwork::sprites::SpriteArtwork>(),
+    register_prepared::<occupation_reserve::OccupationReserve>(),
+    register_prepared::<intel_coverage::IntelCoverage>(),
+    register_prepared::<naval_repairs::NavalRepairs>(),
+    register_prepared::<naval_refits::NavalRefits>(),
 ];
 
 pub fn find(key: &str) -> Option<&'static Registered> {

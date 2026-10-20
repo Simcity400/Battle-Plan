@@ -862,6 +862,30 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             ));
             Ok("Static content diagnostics are reported separately by the existing focus, party, idea, project, subject, country-name and flag checks; the feed reuses their topic helpers without another content inventory. Feed transitions, row-hour presentation and the nuclear indicator remain offline coverage limits.".into())
         }
+        air_missions::AirMissions::KEY
+        | air_statistics::AirStatistics::KEY
+        | regional_weather::RegionalWeather::KEY
+        | minefields::Minefields::KEY
+        | naval_supremacy::NavalSupremacy::KEY => {
+            place_names_check(content, findings)?;
+            Ok("Strategic-region names checked through the shared region reader and plain localiser; mission, statistic, weather and control values, their owners and their reads require the recorded keyed tables.".into())
+        }
+        doctrine_mastery::DoctrineMastery::KEY => {
+            installed_content_core::doctrines::read(&content.resolved.layers)
+                .map_err(|error| error.to_string())?;
+            Ok("Doctrine folders, tracks, subdoctrines and reward thresholds read through the shared doctrine database; mastery, bank, gains and selections require the recorded doctrine tables.".into())
+        }
+        artwork::sprites::SpriteArtwork::KEY => {
+            content.catalogue()?;
+            Ok("Sprite declarations and texture decode settings load through the shared catalogue; the keys come from the products that return them, such as doctrine mastery, and are drawn on request.".into())
+        }
+        occupation_reserve::OccupationReserve::KEY | intel_coverage::IntelCoverage::KEY => {
+            Ok("No content dependency: holders, sources, owners and targets are recorded country identities named by the recorded country catalogue; amounts and network summaries come from the recorded tables.".into())
+        }
+        naval_repairs::NavalRepairs::KEY | naval_refits::NavalRefits::KEY => {
+            content.catalogue()?;
+            Ok("Ship, design and port names resolve through the shared catalogue and recorded tokens as the naval management product does; hulls, repairs and refit progress require the recorded naval tables.".into())
+        }
         event_feed::prepared::script::EventChoices::KEY
         | event_feed::prepared::script::Decisions::KEY => {
             findings.push(Finding::new(

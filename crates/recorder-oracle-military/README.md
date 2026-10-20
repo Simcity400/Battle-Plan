@@ -46,3 +46,12 @@ Pool-backed wings compare their certified raid non-resolution against the save's
 Template configuration census comparison follows the authenticated canonical country-emission projection. Reserved aliases retain their named uncaptured-operands refusal; absent canonical configuration remains a difference. Without admitted projection, the comparison keeps the full saved census.
 
 An encodable template-settings acquisition refusal still fails saved-settings comparison by name. It is never treated as default settings or skipped as a successful comparison.
+
+Ship naming compares every saved operand separately at the supplying ship hour:
+signed kind, nonzero-only order, clear-only ordered flag, stored-length-gated
+first-NUL override, nonzero-only programmatic truth, and nullable full naming
+variant. Missing wrappers and refused packets are differences, not defaults.
+Comparison counts name each operand. Raw non-Boolean bits and bytes after NUL
+have no independent save proof. `Ships.name` has an explicit unsaved limitation;
+matched native cache evidence at the same full identity/hour, fresh-save/load and
+smoke remain integration gates. Rebuilding from operands is not a cache oracle.

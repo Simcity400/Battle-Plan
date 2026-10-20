@@ -50,7 +50,13 @@ The unit-leader catalogue resolves trait training costs through the recorded sta
 
 The unit-medal reader preserves native definition order and duplicate identities, resolves variables through the recorded stack and reads the unit, leader and ship modifier domains and on-grant effects.
 The doctrine catalogue retains authored base costs, bound descriptions, reward
-requirements and milestone/reward benefits. Doctrine bonuses share the
+requirements and milestone/reward benefits. Its separate presentation projection
+keeps first-registered token spellings, folder tab sprites, definition icons and
+grand-folder membership without changing existing name/source lookups. Layered
+file overrides and replace_path use the ordinary recorded stack; repeated
+definitions keep omitted fields, replace supplied scalar fields and retain the
+source inventories' append rules. Grand choices enumerate unique final objects
+in registration order, independently of recorded selections. Doctrine bonuses share the
 technology reader's registered unit/category stat forms and the common modifier
 reader, preserving mod rosters, repeated definitions and native order.
 The special-project catalogue resolves generic and inline prototype rewards through one ordered occurrence catalogue and the global reward lookup, without a duplicate inline projection. It retains narrative keys, ordered options (including repeated tokens) and every authored iteration-output effect family, reusing the native content readers.

@@ -5244,6 +5244,119 @@ references: Array<AircraftReference>,
  */
 refusal: AircraftRefusal | null, };
 export type AircraftRefusalCount = { kind: AircraftRefusalKind, label: string, count: number, };
+export type AirMissionsParams = { branchId: string, tag: string, firstHour?: number, lastHour?: number, view: AirMissionsView, hour?: number,
+/**
+ * One strategic region for the reached-hour drill.
+ */
+region?: number, };
+export type AirMissionsReply = AirMissionsHistoryReply | AirMissionsWingsReply;
+export type AirMissionsHistoryReply = { window: KeyedWindow, missions: Array<AirMissionChoice>, regions: Array<KeyedChoice>, theatres?: Array<AirOperationTheatreChoice>, warnings: Array<string>, };
+export type AirMissionsWingsReply = { hour: number, readHour: number | null, region: number, wings: Array<AirMissionsWing>, warnings: Array<string>, };
+export type AirMissionsWing = { id: string, name: string | null, type: string | null, planes: number, missions: Array<string>,
+/**
+ * Raw fixed5 decimal text: 100,000 = one, not coverage or retained aircraft/count.
+ */
+efficiency: string | null, refusals: Array<string>, };
+export type AirMissionsView = "history" | "wings";
+export type AirMissionChoice = { id: string, name: string, icon: SpriteFrame | null, };
+export type SpriteFrame = {
+/**
+ * The exact sprite key (doctrine mastery's `icon`, for one).
+ */
+key: string,
+/**
+ * The zero-based native frame; offsets may continue past the authored strip.
+ */
+frame: number, };
+export type KeyedChoice = { id: string, name: string, };
+export type AirOperationTheatreChoice = { id: string, name: string, regions: Array<string>, };
+export type KeyedWindow = { firstHour: number, lastHour: number, known: Array<HourSpan>, reads: Array<[number, number, number]>, series: Array<KeyedSeries>, };
+export type KeyedSeries = { name: string, runs: Array<[number, number, string, boolean]>, };
+export type AirStatisticsParams = { branchId: string, tag: string,
+/**
+ * Pair index in recorded schema order, not the interface's button order.
+ */
+channel: number, firstHour?: number, lastHour?: number, };
+export type AirStatisticsReply = { window: KeyedWindow, channels: Array<AirStatisticsChannelChoice>, regions: Array<KeyedChoice>, theatres?: Array<AirOperationTheatreChoice>, warnings: Array<string>, };
+export type AirStatisticsChannelChoice = { id: string, ours: string, enemy: string, divisor: number, };
+export type RegionalWeatherParams = { branchId: string, firstHour: number | null, lastHour: number | null, regions: Array<string> | null, show: RegionalWeatherShow | null, modifier: string | null, daily: boolean | null, view: RegionalWeatherView, region?: string, hour?: number, };
+export type RegionalWeatherResponse = { "view": "history" } & RegionalWeatherReply | { "view": "provinces" } & RegionalWeatherProvincesReply;
+export type RegionalWeatherReply = { window: KeyedWindow, dayHours: number, regions: Array<RegionalWeatherChoice>, flags: Array<RegionalWeatherChoice>, modifiers: Array<RegionalWeatherChoice>, theatres?: Array<RegionalWeatherTheatre>,
+/**
+ * `available` when preparation bound the recorded temperature content.
+ * Missing/refused hours still have no temperature run.
+ */
+temperature: string, warnings: Array<string>, };
+export type RegionalWeatherProvincesReply = { hour: number, readHour: number | null, region: string, provinces: Array<RegionalWeatherProvince>, warnings: Array<string>, };
+export type RegionalWeatherProvince = { id: string, name: string | null,
+/**
+ * The stored snow word, fixed5; permanent snow is not added.
+ */
+snow: string | null,
+/**
+ * Whether the game shows mud: the raw mud byte is nonzero (the
+ * separate display mud byte never stands in).
+ */
+mud: boolean | null,
+/**
+ * Checksum-proven reconstructed fixed5 degrees Celsius.
+ */
+temperature: string | null, };
+export type RegionalWeatherView = "history" | "provinces";
+export type RegionalWeatherShow = "conditions" | "modifier" | "temperature";
+export type RegionalWeatherChoice = { id: string, name: string, };
+export type RegionalWeatherTheatre = { id: string, name: string,
+/**
+ * Decimal strategic-region ids, as in the region choices.
+ */
+regions: Array<string>, };
+export type MinefieldsParams = { branchId: string, tags?: Array<string>, firstHour?: number, lastHour?: number, view: MinefieldsView, region?: number, hour?: number, };
+export type MinefieldsReply = MinefieldsHistoryReply | MinefieldsReportsReply;
+export type MinefieldsView = "history" | "reports";
+export type MinefieldsHistoryReply = { window: KeyedWindow, regions: Array<KeyedChoice>, scale: number, warnings: Array<string>, };
+export type MinefieldsReportsReply = { hour: number, readHour: number | null, region: number, reports: Array<MinefieldReport>, warnings: Array<string>, };
+export type MinefieldReport = { kind: number, ordinal: number, victim: string | null, mineOwner: string | null, ship: string | null, equipment: string | null, damage: string, sunk: boolean, firstSeen: number | null, };
+export type NavalSupremacyParams = { branchId: string, tag: string, firstHour?: number, lastHour?: number, daily: boolean, };
+export type NavalSupremacyReply = { window: KeyedWindow, dayHours: number, regions: Array<KeyedChoice>, scale: number, warnings: Array<string>, };
+export type DoctrineMasteryParams = { branchId: string, tag: string, firstHour: number | null, lastHour: number | null,
+/**
+ * Selected transient description scope. Omit for prepared history; numbers
+ * retain the same window and names in either request.
+ */
+hour: number | null, };
+export type DoctrineMasteryReply = { window: KeyedWindow, folders: Array<DoctrineMasteryFolder>, tokens: { [key in string]?: string }, warnings: Array<string>, };
+export type DoctrineMasteryFolder = { id: string, name: string | null, icon: string | null, grand: Array<DoctrineMasteryGrand>, tracks: Array<DoctrineMasteryTrack>, };
+export type DoctrineMasteryGrand = { id: string,
+/**
+ * Recorded interned identity; absent for unwitnessed authored alternatives.
+ */
+tokenId: string | null, name: string | null, icon: string | null, };
+export type DoctrineMasteryTrack = { id: string, name: string | null, subdoctrines: Array<DoctrineMasterySubdoctrine>, };
+export type DoctrineMasterySubdoctrine = { id: string,
+/**
+ * Recorded interned identity; absent for unwitnessed authored alternatives.
+ */
+tokenId: string | null, name: string | null, icon: string | null, rewards: Array<DoctrineMasteryReward> | null, };
+export type DoctrineMasteryReward = { id: string, name: string | null, description: string | null, threshold: string | null, };
+export type SpriteArtworkParams = { sprites: Array<SpriteFrame>, };
+export type SpriteArtworkReply = { items: Array<SpriteImage>, warnings: Array<string>, };
+export type SpriteImage = { key: string, frame: number,
+/**
+ * A PNG data URL, or null with a named, counted refusal.
+ */
+icon: string | null, };
+export type OccupationReserveParams = { branchId: string, view: OccupationReserveView, tags: Array<string> | null, tag: string | null, firstHour: number | null, lastHour: number | null, top: number | null, };
+export type OccupationReserveReply = { window: KeyedWindow, holders: Array<ReserveHolder>, sources: { [key in string]?: string }, warnings: Array<string>, };
+export type OccupationReserveView = "race" | "holder";
+export type ReserveHolder = { tag: string, slot: number, };
+export type IntelCoverageParams = { branchId: string, view: IntelCoverageView, tags: Array<string> | null, shown: number, owner: string | null, target: string | null, firstHour: number | null, lastHour: number | null, };
+export type IntelCoverageReply = { window: KeyedWindow, warnings: Array<string>, };
+export type IntelCoverageView = "matrix" | "pair";
+export type NavalYardsParams = { branchId: string, tag: string, firstHour?: number, lastHour?: number, };
+export type YardChoice = { id: string, name: string, };
+export type YardGroup = { country: string, id: string, name: string, ships: Array<YardChoice>, };
+export type NavalRepairsReply = { window: KeyedWindow, ports: Array<YardGroup>, tokens: { [key in string]?: YardChoice }, warnings: Array<string>, };
+export type NavalRefitsReply = { window: KeyedWindow, lines: Array<YardGroup>, tokens: { [key in string]?: YardChoice }, warnings: Array<string>, };
 /** The native command byte budget, including its envelope. */
 export const MAX_MESSAGE_BYTES = 33554432;
 /** Refusals for want of room: a message starting with one may be tried again. */
@@ -5254,6 +5367,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue"] as const;
+export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue", "air-missions", "air-statistics", "regional-weather", "minefields", "naval-supremacy", "doctrine-mastery", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details"] as const;
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details", "sprite-artwork"] as const;

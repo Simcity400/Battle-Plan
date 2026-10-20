@@ -7,6 +7,8 @@ use crate::{
 };
 
 mod air_capacity;
+mod naming;
+pub use naming::{NamingOperands, naming_growing};
 mod gathered;
 mod hull_variant;
 mod naval_power;
@@ -188,6 +190,8 @@ pub fn cached_name_demand(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
+    pub name: Option<cname_group_member::Span>,
+    pub naming: Option<NamingOperands>,
     /// Full native reference, type in the low u32 and id in the high u32.
     pub id: u64,
     pub task_force: u64,
@@ -994,6 +998,8 @@ pub(crate) fn decode_row(
         return Err("ship parent differs from task force roster");
     }
     Ok(Row {
+        name: None,
+        naming: None,
         id,
         task_force,
         strength: word(16) as i64,
@@ -1087,6 +1093,8 @@ pub(crate) fn read_row(
         return Err("ship parent differs from task force roster");
     }
     Ok(Row {
+        name: None,
+        naming: None,
         id,
         task_force,
         strength: i64::from_le_bytes(scalars[0..8].try_into().expect("fixed span")),

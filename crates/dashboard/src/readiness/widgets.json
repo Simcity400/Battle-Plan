@@ -534,6 +534,76 @@
       ]
     },
     {
+      "kind": "air-missions",
+      "requests": [
+        {"product": "air-missions", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "view": "history"}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
+      "kind": "air-statistics",
+      "requests": [
+        {"product": "air-statistics", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "channel": 3}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
+      "kind": "weather-by-region",
+      "requests": [
+        {"product": "regional-weather", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
+      "kind": "minefields",
+      "requests": [
+        {"product": "minefields", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "history"}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
+      "kind": "naval-supremacy",
+      "requests": [
+        {"product": "naval-supremacy", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag"}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
+      "kind": "doctrine-mastery",
+      "requests": [
+        {"product": "doctrine-mastery", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag"}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
+      "kind": "occupation-reserve-manpower",
+      "requests": [
+        {"product": "occupation-reserve-manpower", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "race"}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
+      "kind": "intel-network-coverage",
+      "requests": [
+        {"product": "intel-network-coverage", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "view": "matrix", "shown": 12}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
+      "kind": "dockyards-and-repairs",
+      "requests": [
+        {"product": "naval-repairs", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag"}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
+      "kind": "refits",
+      "requests": [
+        {"product": "naval-refits", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag"}}
+      ],
+      "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
+    },
+    {
       "kind": "fuel-branches",
       "requests": [
         {"product": "fuel-branches", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tags": "$tags"}}

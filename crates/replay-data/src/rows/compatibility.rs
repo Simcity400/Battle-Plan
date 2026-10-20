@@ -3821,6 +3821,14 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             },
         ],
     );
+    declare_change(
+        &mut history[TableId::Ships.index()],
+        table(
+            TableId::Ships,
+            107,
+            "live ship cache and saved naming operands",
+        ),
+    );
     history[TableId::CountryStabilityInputs.index()] = appended_at(
         TableId::CountryStabilityInputs,
         104,

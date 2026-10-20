@@ -49,7 +49,9 @@ use {
 };
 
 pub struct AirSuperiority;
-const DAY_HOURS: i32 = 24;
+/// Hours in a game day: the recording's daily stagger period, the day boundary the keyed
+/// weather and naval supremacy families sample by too.
+const DAY_HOURS: i32 = replay_data::cadence::STAGGER_PERIOD;
 
 #[cfg(test)]
 type AnchorEntry = (

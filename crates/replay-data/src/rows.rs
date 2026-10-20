@@ -357,6 +357,10 @@ pub struct TaskForceRow {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ShipRow {
+    /// Exact retained display cache; None is an independent acquisition refusal.
+    pub name: Recorded<Option<Vec<u8>>>,
+    /// Raw saved naming state, independent of the unsaved display cache.
+    pub naming: Recorded<Option<ShipNamingOperands>>,
     pub required_manpower: Recorded<Option<i32>>,
     pub id: u64,
     pub task_force: u64,
@@ -372,6 +376,22 @@ pub struct ShipRow {
     pub class_id: i32,
     pub acquired_manpower: Recorded<Option<i32>>,
 }
+
+/// Ship name-member serialization operands, not a generated display name.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ShipNamingOperands {
+    pub kind: i32,
+    pub order: i32,
+    pub ordered: u8,
+    pub override_name: Vec<u8>,
+    pub programmatic: u8,
+    /// Full retained naming-variant identity; None is a known null pointer.
+    pub equipment: Option<u64>,
+}
+crate::value::value_struct!(ShipNamingOperands {
+    kind: i32, order: i32, ordered: u8, override_name: Vec<u8>,
+    programmatic: u8, equipment: Option<u64>,
+});
 
 impl ShipRow {
     /// `experience` at the game's finest display of it ([`crate::display`]). The game
@@ -2599,7 +2619,7 @@ row_codec!(HumanControllerRow, 32, |row| row.country as u128, |key| { country: k
 row_codec!(LandCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => duration: I32, 2 => day: I32, 3 => attackers: U64List, 4 => defenders: U64List, 5 => attacker_classes: U32List, 6 => defender_classes: U32List}, |_row| Ok(()));
 row_codec!(FleetRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => home_base: U32, 2 => name: Opaque, 3 => leader: OptionalU64}, |_row| Ok(()));
 row_codec!(TaskForceRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => fleet: U64, 1 => roster_owner: U32, 2 => logical_owner: U32, 3 => expeditionary_owner: U32, 4 => province: U32, 5 => mission: U32, 6 => route_count: I32, 7 => combat_references: I32}, |_row| Ok(()));
-row_codec!(ShipRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => task_force: U64, 1 => strength: I64, 2 => organisation: I64, 3 => experience: I64 @ Self::EXPERIENCE_STEP, 4 => category: U32, 5 => sunk_convoys: I32, 6 => class_id: I32, 7 => acquired_manpower: OptionalI32, 8 => required_manpower: OptionalI32}, |_row| Ok(()));
+row_codec!(ShipRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => task_force: U64, 1 => strength: I64, 2 => organisation: I64, 3 => experience: I64 @ Self::EXPERIENCE_STEP, 4 => category: U32, 5 => sunk_convoys: I32, 6 => class_id: I32, 7 => acquired_manpower: OptionalI32, 8 => required_manpower: OptionalI32, 9 => name: Opaque, 10 => naming: Opaque}, |_row| Ok(()));
 row_codec!(NavalCombatRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => province: U32, 1 => attacker_positioning: I64, 2 => defender_positioning: I64, 3 => attacker_anti_air: I64, 4 => defender_anti_air: I64, 5 => registry_ordinal: U32}, |_row| Ok(()));
 row_codec!(NavalCombatParticipantRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.battle_slot as u128, |key| { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, battle_slot: key as u32 }, {0 => ship: U64, 1 => owner: U32, 2 => state: U32}, |row| if row.side > 1 { Err(invalid("naval combat participant side exceeds one")) } else { Ok(()) });
 row_codec!(AirWingRow, 64, |row| row.id as u128, |key| { id: key as u64 }, {0 => owner: U32, 1 => air_base: U64, 2 => base_override: U64, 3 => country_override: I32, 4 => planes: I32, 5 => mission_mask: U32, 6 => mission_region: OptionalU32, 7 => base_range_raw: I64, 8 => ace: U64, 9 => mission_active: U8, 10 => eligibility_veto: U8, 11 => eligibility_counter: I32, 12 => eligibility_limit: I32, 13 => attached_orders_group: OptionalU64, 14 => pool_ordinal: U32, 15 => name: Opaque, 16 => pool_subunit: OptionalU32, 17 => raid_reference: Opaque, 18 => strategic_bombing_raw: OptionalI64, 19 => acquired_manpower: OptionalI32, 20 => exile_country: OptionalI32, 21 => replacement_setting: Opaque, 22 => map_flags: OptionalU32, 23 => fuel_base_raw: OptionalI64, 24 => fuel_current_type: OptionalI32, 25 => fuel_effective_aircraft: OptionalI32, 26 => fuel_context_mode: OptionalU32, 27 => fuel_capacity_class: OptionalI32, 28 => fuel_override_resolved: OptionalU32}, |_row| Ok(()));
@@ -3183,6 +3203,7 @@ macro_rules! opaque_value {
 
 opaque_value!(crate::event_feed_rows::EventFeedCoverage);
 opaque_value!(Option<crate::event_feed_rows::EventFeedCounts>);
+opaque_value!(Option<ShipNamingOperands>);
 opaque_value!(Vec<crate::event_feed_rows::EventFeedEvent>);
 opaque_value!(Vec<crate::event_feed_rows::EventFeedScope>);
 
@@ -4146,6 +4167,8 @@ mod tests {
         round_trip(
             TableId::Ships,
             ShipRow {
+                name: Default::default(),
+                naming: Default::default(),
                 acquired_manpower: Default::default(),
                 required_manpower: Default::default(),
 
@@ -5156,3 +5179,7 @@ mod political_runtime_tests;
 #[cfg(test)]
 #[path = "rows/intel_inputs/tests.rs"]
 pub(crate) mod intel_inputs_tests;
+
+#[cfg(test)]
+#[path = "rows/ship_names_tests.rs"]
+mod ship_names_tests;

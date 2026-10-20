@@ -24,7 +24,7 @@ pub(super) fn draw(
     frame: u32,
     max_edge: u32,
 ) -> io::Result<shader_pipeline::artwork::Draw> {
-    if plain.frames <= 0 || frame >= plain.frames as u32 || max_edge == 0 {
+    if plain.frames <= 0 || max_edge == 0 {
         return Err(invalid("invalid icon frame"));
     }
     let texture = load(layers, &plain.texture, decode)?;
@@ -48,9 +48,11 @@ pub(super) fn draw(
     let du = (size[0] as f32 * (1.0 / size[0] as f32)) * (1.0 / grid[0] as f32);
     let dv = (size[1] as f32 * (1.0 / size[1] as f32)) * v_scale * (1.0 / grid[1] as f32);
     let step = plain.draw_step([du, dv]);
-    let offset = |frame: u32| frame_offset(plain, step, frame);
-    let [ox, oy] = offset(frame);
-    let [nx, ny] = offset(frame + 1);
+    // Native positive frames keep their offset past the strip; the resolved
+    // program and sampler, not the declared frame count, decide the sample.
+    let offset = |frame: u64| frame_offset(plain, step, frame);
+    let [ox, oy] = offset(u64::from(frame));
+    let [nx, ny] = offset(u64::from(frame) + 1);
     let vertices = vertices(geometry, stretch, [du, dv], flip);
     // The 0x70-byte upload is pooled in a 256-byte buffer.
     let mut c0 = vec![0.0; 64];
@@ -70,9 +72,9 @@ pub(super) fn draw(
     // a NaN source operand.
     if let Some(animation) = animated {
         let native_frame = if animation.play_on_show {
-            frame as i32 + 1
+            i64::from(frame) + 1
         } else {
-            frame as i32
+            i64::from(frame)
         };
         c0[25] = ((0.0 - (native_frame - 1) as f32 * animation.seconds_per_frame)
             / animation.seconds_per_frame)
@@ -175,11 +177,11 @@ fn vertices(geometry: [f32; 2], stretch: f32, uv: [f32; 2], flip: bool) -> [[f32
 }
 
 /// Select integer frame coordinates before scaling the step.
-fn frame_offset(plain: &Plain, step: [f32; 2], frame: u32) -> [f32; 2] {
+fn frame_offset(plain: &Plain, step: [f32; 2], frame: u64) -> [f32; 2] {
     let [x, y] = match plain.frame_direction {
         0 => [frame, 0],
         1 => [0, frame],
-        2 => [frame % plain.frames as u32, frame / plain.frames as u32],
+        2 => [frame % plain.frames as u64, frame / plain.frames as u64],
         _ => [0, 0],
     };
     [x as f32 * step[0], y as f32 * step[1]]
@@ -300,6 +302,121 @@ fn at_rest(
 mod tests {
     use super::*;
     use installed_content_core::gui::native::sprites::AnimationData;
+
+    #[test]
+    fn s4_native_frames_keep_offsets_past_the_strip_in_every_direction() {
+        use super::super::texture_tests::png_bytes;
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let (_, folder) = super::super::tests::folder_catalogue(&[]);
+        let image = Rgba8Image {
+            width: 8,
+            height: 8,
+            pixels: [30, 80, 140, 255].repeat(64),
+        };
+        std::fs::write(folder.0.join("strip.png"), png_bytes(&image)).unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+        for (direction, frame, expected) in [
+            (0, 0, [0.0, 0.0, 0.5, 0.0]),
+            (0, 2, [1.0, 0.0, 1.5, 0.0]),
+            (0, 7, [3.5, 0.0, 4.0, 0.0]),
+            (1, 2, [0.0, 1.0, 0.0, 1.5]),
+            (1, 7, [0.0, 3.5, 0.0, 4.0]),
+            (2, 2, [0.0, 1.0, 0.5, 1.0]),
+            (2, 3, [0.5, 1.0, 0.0, 2.0]),
+            (7, 7, [0.0; 4]),
+            (0, u32::MAX, [2_147_483_648.0, 0.0, 2_147_483_648.0, 0.0]),
+        ] {
+            let plain = Plain {
+                texture: b"strip.png".to_vec(),
+                frames: 2,
+                frame_direction: direction,
+                ..Default::default()
+            };
+            for animated in [None, Some(false), Some(true)] {
+                let animation = animated.map(|play_on_show| FrameAnimation {
+                    play_on_show,
+                    ..Default::default()
+                });
+                let draw = draw(
+                    &layers,
+                    &plain,
+                    animation.as_ref(),
+                    Decode::default(),
+                    frame,
+                    96,
+                )
+                .unwrap();
+                assert_eq!(
+                    &draw.constants[0].1[20..24],
+                    &expected,
+                    "{direction}/{frame}"
+                );
+                assert_eq!(draw.size, if direction == 1 { [8, 4] } else { [4, 8] });
+                if frame > 0 && animation.is_some() {
+                    assert_eq!(draw.constants[0].1[25], 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires DXC and a GPU; synthetic content only"]
+    fn s4_native_frames_sample_the_resolved_effect_and_sampler_past_the_strip() {
+        use super::super::texture_tests::{ARTWORK_SHADER, png_bytes};
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let (_, folder) =
+            super::super::tests::folder_catalogue(&[("interface/art.gfx", "spriteTypes={}")]);
+        let image = Rgba8Image {
+            width: 8,
+            height: 8,
+            pixels: (0..8)
+                .flat_map(|y| (0..8).flat_map(move |x| [20 + 10 * x, 30 + 10 * y, 140, 255]))
+                .collect(),
+        };
+        std::fs::write(folder.0.join("strip.png"), png_bytes(&image)).unwrap();
+        for mode in ["clamp", "wrap", "mirror", "border"] {
+            let shader = ARTWORK_SHADER
+                .replace(
+                    "AddressU = clamp AddressV = clamp",
+                    &format!("AddressU = {mode} AddressV = {mode}"),
+                )
+                .replace("return color;", "color.b = 0.0; return color;");
+            std::fs::write(folder.0.join("gfx/FX/sample.shader"), shader).unwrap();
+            // Each stack reads its own program and retains its own rendered images.
+            let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+            for direction in [0, 1, 2] {
+                let plain = Plain {
+                    texture: b"strip.png".to_vec(),
+                    effect_file: b"gfx/FX/sample.lua".to_vec(),
+                    frames: 2,
+                    frame_direction: direction,
+                    ..Default::default()
+                };
+                let rendered = frame(&layers, &plain, None, Decode::default(), 2, 96).unwrap();
+                let [width, height] = if direction == 1 { [8, 4] } else { [4, 8] };
+                assert_eq!([rendered.width, rendered.height], [width, height]);
+                let expected: Vec<u8> = (0..height)
+                    .flat_map(|y| {
+                        (0..width).flat_map(move |x| {
+                            let (x, y) = match (mode, direction) {
+                                ("clamp", 0) => (7, y),
+                                ("clamp", _) => (x, 7),
+                                ("mirror", 0) => (7 - x, y),
+                                ("mirror", _) => (x, 7 - y),
+                                _ => (x, y),
+                            };
+                            if mode == "border" {
+                                [0; 4]
+                            } else {
+                                [20 + 10 * x as u8, 30 + 10 * y as u8, 0, 255]
+                            }
+                        })
+                    })
+                    .collect();
+                assert_eq!(rendered.pixels, expected, "{mode}/{direction}");
+            }
+        }
+    }
 
     #[test]
     fn artwork_loaders_admit_native_dimensions_above_the_former_texel_ceiling() {

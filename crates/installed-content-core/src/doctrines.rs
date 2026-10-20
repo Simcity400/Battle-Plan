@@ -1,4 +1,4 @@
-//! Doctrine names and tactic-source inventories, through the content stack.
+//! Doctrine names, authored presentation and tactic-source inventories, through the content stack.
 
 use crate::{
     ResolvedLayers,
@@ -22,6 +22,17 @@ pub struct Folder {
     pub refused: Option<String>,
 }
 
+/// Presentation fields use authored bytes, independently of folded lookup identity.
+/// Repeated declarations reuse the first token spelling and replace only supplied
+/// scalar fields; omitted fields keep the existing object, as the name reader does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Presentation {
+    pub token: Vec<u8>,
+    pub icon: Vec<u8>,
+    /// Grand-doctrine folder reference; absent for other definition kinds.
+    pub folder: Option<Token>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Database {
     pub entries: BTreeMap<Vec<u8>, Folder>,
@@ -29,6 +40,12 @@ pub struct Database {
     pub sub: BTreeMap<Token, Name>,
     pub tracks: BTreeMap<Token, Name>,
     pub tactic_sources: TacticSources,
+    /// Unique folders in native registration order.
+    pub folder_order: Vec<Token>,
+    pub folder_presentations: BTreeMap<Token, Presentation>,
+    pub grand_presentations: BTreeMap<Token, Presentation>,
+    pub sub_presentations: BTreeMap<Token, Presentation>,
+    pub track_presentations: BTreeMap<Token, Presentation>,
     /// Technology descriptions share this already cached family database.
     pub technologies: Option<crate::technology::Catalog>,
     pub notes: Vec<String>,
@@ -36,6 +53,45 @@ pub struct Database {
 }
 
 impl Database {
+    /// Same kind domain as `name`: grand, subdoctrine, then track.
+    /// Presentation does not depend on whether a bound name can be formatted.
+    pub fn presentation(&self, kind: u8, token: &[u8]) -> Result<Option<&Presentation>, String> {
+        if let Some(why) = &self.unread {
+            return Err(why.clone());
+        }
+        let entries = match kind {
+            0 => &self.grand_presentations,
+            1 => &self.sub_presentations,
+            _ => &self.track_presentations,
+        };
+        Ok(entries.get(&Token::c_str(token)))
+    }
+
+    pub fn folder_presentation(&self, token: &[u8]) -> Result<Option<&Presentation>, String> {
+        if let Some(why) = &self.unread {
+            return Err(why.clone());
+        }
+        Ok(self.folder_presentations.get(&Token::c_str(token)))
+    }
+
+    /// Every grand choice in the folder, in registration order. Repeated object
+    /// occurrences still remain in `tactic_sources.grand_order` for its callers.
+    pub fn grand_in_folder(&self, folder: &[u8]) -> Result<Vec<&Presentation>, String> {
+        if let Some(why) = &self.unread {
+            return Err(why.clone());
+        }
+        let folder = Token::c_str(folder);
+        let mut seen = std::collections::BTreeSet::new();
+        Ok(self
+            .tactic_sources
+            .grand_order
+            .iter()
+            .filter(|token| seen.insert(*token))
+            .filter_map(|token| self.grand_presentations.get(token))
+            .filter(|entry| entry.folder.as_ref() == Some(&folder))
+            .collect())
+    }
+
     pub fn name(&self, kind: u8, token: &[u8]) -> Result<Option<&Name>, String> {
         if let Some(why) = &self.unread {
             return Err(why.clone());
@@ -121,9 +177,25 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, names: &KeyNames)
             ));
             continue;
         };
+        let identity = Token::Name(token.clone());
+        let presentation = database
+            .folder_presentations
+            .entry(identity.clone())
+            .or_insert_with(|| {
+                database.folder_order.push(identity);
+                Presentation {
+                    token: parser::c_string(item.key.as_deref().unwrap_or_default()).to_vec(),
+                    ..Default::default()
+                }
+            });
         // Repeated tokens read into the existing object; omitted fields remain.
         let folder = database.entries.entry(token).or_default();
         for field in item.value.items().unwrap_or_default() {
+            if field.keyword_is("tab_gfx") {
+                if let Some(value) = field.value.read_string() {
+                    presentation.icon = value.to_vec();
+                }
+            }
             if field.keyword_is("name") {
                 if let Some(value) = field.value.scalar() {
                     folder.name = parser::c_string(value).to_vec();

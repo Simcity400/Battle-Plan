@@ -204,6 +204,7 @@ recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --bra
 {}
 {}
 {}
+{}
 Environment: BATTLE_PLAN_WORKER_SAMPLER (comma-separated off, interval_us=<n>)
   Forwarded verbatim to collector attach; a nonempty value requires collector feature worker_sampler.
 Environment: BATTLE_PLAN_MAP_EVENTS (comma-separated map event family names, or none)
@@ -211,6 +212,7 @@ Environment: BATTLE_PLAN_MAP_EVENTS (comma-separated map event family names, or 
         crate::metrics::USAGE,
         crate::oracle::USAGE,
         crate::movement_oracle::USAGE,
+        crate::ship_name_witness::USAGE,
         crate::sizes::USAGE,
         crate::derived::USAGE
     )
@@ -297,6 +299,9 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "movement-oracle" {
         return crate::movement_oracle::command(args);
+    }
+    if command == "ship-name-witness" {
+        return crate::ship_name_witness::command(args);
     }
     if command == "metrics" {
         return crate::metrics::command(args);

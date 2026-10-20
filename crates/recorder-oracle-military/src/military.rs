@@ -19,6 +19,7 @@ use super::{
 mod air_transport;
 mod division_history;
 mod movement_operands;
+mod ship_names;
 #[cfg(test)]
 mod tests;
 pub use air_transport::compare as compare_air_transport_inputs;
@@ -1864,6 +1865,7 @@ pub fn compare_naval_units(
             continue;
         };
         report.ships += 1;
+        ship_names::compare(&label, &actual.naming, expected.ship_name.as_ref(), report);
         for (field, actual, expected) in [
             ("manpower", &actual.acquired_manpower, expected.manpower),
             (
@@ -1918,6 +1920,8 @@ pub fn compare_naval_units(
     for id in ships.keys() {
         report.difference(format!("ship {id}"), "present", "absent");
     }
+    report.limitation("ship naming flags serialize Boolean meaning only; raw non-Boolean bits need matched native evidence", "Ships.naming.ordered and programmatic");
+    report.limitation("retained ship display cache is unsaved; matched native evidence at the same full reference and supplying hour is required", "Ships.name");
     report.limitation("ship category and numeric class id are not independently serialized; saved definition names are not substituted for native ids", "Ships");
     report.limitation("task-force serializer omits signed-nonpositive expeditionary references; absent fields verify the omission predicate, not those raw bits", "TaskForces");
     report.limitation("the task-force save record holds no combat-reference count; it needs a same-hour live comparison", "TaskForces.combat_references");

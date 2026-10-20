@@ -12,6 +12,7 @@
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod products {
+    pub mod intel_coverage;
     pub mod agency_comparison;
     mod country_name_cache;
     pub mod decryption;
@@ -29,6 +30,7 @@ pub mod products {
     pub mod operatives_roster;
 
     dashboard_base::reply_warnings!(
+        intel_coverage::IntelCoverageReply,
         agency_comparison::AgencyComparisonReply,
         intel_details::IntelDetailsReply,
         decryption::DecryptionReply,

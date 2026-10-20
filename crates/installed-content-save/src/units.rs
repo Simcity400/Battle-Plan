@@ -271,6 +271,7 @@ pub struct TaskForce {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ship {
+    pub ship_name: Option<ShipName>,
     pub manpower: Option<i32>,
     pub max_manpower: Option<i32>,
     /// The serializer emits this wrapper iff its critical array is nonempty,
@@ -823,8 +824,39 @@ pub(super) fn parse_task_force(owner: &[u8], fleet: u64, items: &[Item]) -> io::
     })
 }
 
+/// Saved ship-name wrapper. Optional operands retain omission independently
+/// of explicit empty, zero and false spellings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShipName {
+    pub kind: i32,
+    pub name_order: Option<i32>,
+    pub is_name_ordered: Option<bool>,
+    pub override_name: Option<Vec<u8>>,
+    pub override_set_programmatically: Option<bool>,
+    pub equipment: Option<u64>,
+}
+fn ship_name(items: &[Item]) -> io::Result<ShipName> {
+    Ok(ShipName {
+        kind: integer(&required_bytes(items, b"type")?)?,
+        name_order: field(items, b"name_order")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        is_name_ordered: field(items, b"is_name_ordered")?.map(boolean).transpose()?,
+        override_name: bytes(items, b"override")?,
+        override_set_programmatically: field(items, b"override_set_programmatically")?
+            .map(boolean)
+            .transpose()?,
+        equipment: field(items, b"equipment")?.map(typed_handle).transpose()?,
+    })
+}
+
 pub(super) fn parse_ship(task_force: u64, items: &[Item]) -> io::Result<Ship> {
     Ok(Ship {
+        ship_name: field(items, b"ship_name")?
+            .map(block)
+            .transpose()?
+            .map(ship_name)
+            .transpose()?,
         manpower: field(items, b"manpower")?
             .map(|value| integer(scalar(value)?))
             .transpose()?,
@@ -1102,4 +1134,66 @@ fn division_history(items: &[Item]) -> io::Result<DivisionHistory> {
         career: entries(items, b"army_history")?,
         awards: entries(medals, b"history")?,
     })
+}
+
+#[cfg(test)]
+mod ship_name_tests {
+    use super::*;
+    fn ship(text: &str) -> io::Result<Ship> {
+        let document = installed_content_core::parser::parse(
+            format!("id={{id=4 type=51}} strength=0 organisation=0 {text}").as_bytes(),
+        )?;
+        parse_ship(9, &document.items)
+    }
+    #[test]
+    fn ship_names_keep_missing_empty_signed_flags_and_full_equipment() {
+        assert!(ship("").unwrap().ship_name.is_none());
+        let missing = ship("ship_name={type=1}").unwrap().ship_name.unwrap();
+        assert_eq!(missing.override_name, None);
+        let name = ship(r#"ship_name={type=1 name_order=-7 is_name_ordered=no override="" override_set_programmatically=yes equipment={id=4294967295 type=70}}"#)
+            .unwrap().ship_name.unwrap();
+        assert_eq!(name.override_name, Some(Vec::new()));
+        assert_eq!(name.name_order, Some(-7));
+        assert_eq!(name.is_name_ordered, Some(false));
+        assert_eq!(name.override_set_programmatically, Some(true));
+        assert_eq!(name.equipment, Some((u64::from(u32::MAX) << 32) | 70));
+        let name = ship(
+            "ship_name={type=-1 name_order=0 is_name_ordered=yes override_set_programmatically=no}",
+        )
+        .unwrap()
+        .ship_name
+        .unwrap();
+        assert_eq!(name.kind, -1);
+        assert_eq!(name.name_order, Some(0));
+        assert_eq!(name.is_name_ordered, Some(true));
+        assert_eq!(name.override_set_programmatically, Some(false));
+    }
+    #[test]
+    fn ship_names_reject_missing_type_invalid_and_duplicate_fields() {
+        for text in [
+            "ship_name={}",
+            "ship_name={type=x}",
+            "ship_name={type=1 is_name_ordered=1}",
+            "ship_name={type=1 equipment={id=0 type=0}}",
+            "ship_name={type=1} ship_name={type=1}",
+        ] {
+            assert!(ship(text).is_err(), "{text}");
+        }
+        for field in [
+            "type=1",
+            "name_order=-1",
+            "is_name_ordered=no",
+            "override=\"\"",
+            "override_set_programmatically=yes",
+            "equipment={id=1 type=70}",
+        ] {
+            let prefix = if field.starts_with("type=") {
+                ""
+            } else {
+                "type=1"
+            };
+            let text = format!("ship_name={{{prefix} {field} {field}}}");
+            assert!(ship(&text).is_err(), "{text}");
+        }
+    }
 }

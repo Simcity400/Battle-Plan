@@ -23,6 +23,8 @@ pub const TYPE: usize = 0x08;
 pub const FIRST_NAME_TEXT: usize = 0x10;
 /// Type-zero template reference selects its resolved name group (`TEMPLATE_NAME_GROUP`).
 pub const TEMPLATE_REFERENCE: usize = 0x58;
+/// Nullable retained naming-equipment variant pointer of a ship member.
+pub const NAMING_EQUIPMENT: usize = 0x50;
 pub const TEMPLATE_NAME_GROUP: usize = 0x1d0;
 /// Name-group vtable and authored key string.
 pub const GROUP_VTABLE_RVA: usize = 0x0291_f568;
@@ -775,6 +777,31 @@ pub fn cached_name_from_member_growing(
         required: *required,
     };
     let result = copy_fitting_string(memory, header, &mut names, &CACHED);
+    *len = names.len;
+    *required = names.required;
+    result
+}
+
+/// Copy the raw override, including hidden programmatic text, from an
+/// authenticated member's original descriptor. No name selection is performed.
+pub fn raw_override_from_member_growing(
+    memory: &impl Memory,
+    member: &[u8; INPUT_SPAN],
+    bytes: &mut Vec<u8>,
+    len: &mut usize,
+    required: &mut usize,
+) -> Result<Option<Span>, &'static str> {
+    let mut names = NameArena {
+        bytes: crate::walk::Buffer::Growing(bytes),
+        len: *len,
+        required: *required,
+    };
+    let result = copy_fitting_string(
+        memory,
+        &member[OVERRIDE_NAME..OVERRIDE_NAME + msvc_string::STRIDE],
+        &mut names,
+        &CUSTOM,
+    );
     *len = names.len;
     *required = names.required;
     result

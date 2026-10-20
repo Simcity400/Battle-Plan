@@ -23,6 +23,8 @@ use std::{
 };
 use ts_rs::TS;
 
+pub mod projection;
+
 pub struct NavalManagement;
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -371,11 +373,12 @@ fn project(
         }
         for ship in ships.iter().filter(|ship| ship.task_force == task.id) {
             if let Some(link) = refits.iter().find(|row| row.ship == ship.id) {
-                let amount = link.resolve_line(progress);
+                let typed = projection::refit(link, progress_known.then_some(progress), Some(work));
+                let amount = typed.progress;
                 if progress_known && amount.is_none() {
                     continue;
                 }
-                let line = work.iter().find(|row| row.handle == link.line);
+                let line = typed.metadata;
                 lines.push(match amount {
                     Some(amount) => format!(
                         "Ship {} refit progress: {} IC",
@@ -420,17 +423,12 @@ fn project(
             base.allocated_dockyards
         )];
         for entry in queues.iter().filter(|row| row.province == base.province) {
-            let strength = ships
-                .iter()
-                .find(|row| row.id == entry.ship)
-                .map(|row| fixed(row.strength))
-                .unwrap_or_else(|| "Unavailable".into());
-            let maximum = models
-                .iter()
-                .find(|row| row.ship == entry.ship)
-                .and_then(|row| row.counter.as_ref())
-                .map(|row| fixed(row.maximum_strength))
-                .unwrap_or_else(|| "Unavailable".into());
+            let hull = projection::hull(
+                ships.iter().find(|row| row.id == entry.ship),
+                models.iter().find(|row| row.ship == entry.ship),
+            );
+            let strength = hull.current_raw.map(fixed).unwrap_or_else(|| "Unavailable".into());
+            let maximum = hull.maximum_raw.map(fixed).unwrap_or_else(|| "Unavailable".into());
             lines.push(format!(
                 "{}. Ship {} - hull HP {} / {}",
                 u64::from(entry.ordinal) + 1,

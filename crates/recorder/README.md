@@ -16,6 +16,7 @@ all potential states, as an absent selector does. Forced refreshes are event obs
 | File | Responsibility |
 |---|---|
 | [lib.rs](src/lib.rs), [main.rs](src/main.rs), [recording.rs](src/recording.rs) | CLI, process discovery, attach/refresh/detach, discard and completion. `recording::usage` owns options. |
+| [ship_name_witness.rs](src/ship_name_witness.rs) | Read-only retained ship-name census and strict same-supplying-hour replay comparison. |
 | [controller.rs](src/controller.rs) | The in-process capture API (stop/discard control, stages, outcome, admission per campaign and per load, and target folder), the read-only campaign probe (campaign, hour and load signal, and the game folder it runs from), a session's recorded content identity and plain problem text. |
 | [recorder-platform](../recorder-platform/README.md) | Windows process, memory, module and event operations. |
 | [recorder-replay](../recorder-replay/README.md) | Recovery, finalization (publishing only a Battle Plan Recorder session's admitted loads), the admission record, append and inspection. |
@@ -152,6 +153,59 @@ The [retained naval details oracle](../recorder-oracle-combat-details/src/combat
 - Only collector-verified sessions compare, including mods; there is no override. Unhashed content reads retain named uncovered-read notes.
 
 Saves hold no strike history, so NuclearStrikes has no save comparison. Saves hold no battle-sound list: the [battle sound self-check](../recorder-oracle-military/src/military.rs) requires `BattleSounds` to hold the list's places in order and name provinces of the verified map, and names the battles as a limitation: they are the recording client's runtime sound state, since a merge keeps the battle sounding for that client. Saves hold no map events either: the [map event self-check](../recorder-oracle-event-feed/src/map_events.rs) requires each `MapEvents` interval of the branch to continue the previous one or start a new epoch with unknown coverage, reports incomplete coverage as a named limitation (a failed comparison at the save hour) and requires the save hour's events to name recorded provinces, country references and building tokens. `inspect` lists every recorded map event and each family's intervals by coverage. A recorded event loss (a same-process reattach) makes the partial first interval after it a named limitation in the naval result source check instead of a difference, restarts the rocket output continuity check at it, stops peace finalizer completeness from crossing it (a named limitation), and leaves an air loss day window that includes it uncertified with that reason; a partial interval without a recorded loss stays a difference. `inspect` prints each event loss. The [Event feed](../recorder-oracle-event-feed/src/event_feed.rs) and [rocket output](../recorder-oracle-rocket-output/src/rocket_output.rs) self-checks validate recorded continuity/accounting; saves contain neither native actions, their causes nor historical applied IC/deliveries. After a world reset or load their coverage restarts at the next hourly boundary as a partial interval; integration needs matched native observations and the fresh-save/load and smoke workflows. Event feed partial or unavailable intervals are named coverage limitations, with an incomplete comparison at the selected save hour; a save cannot supply a complete-history expectation. Requested full refreshes preserve native event observation. Signed equipment gains and bombing corrections stay exact; air event dates can precede supplying reads.
+
+### Ship-name cache witness
+
+`ship-name-witness` is a separate, read-only diagnostic. It opens one supported
+running game, proves successful content mounts as `movement-oracle` does, and
+uses the existing fleet walk and authenticated `cship::cached_name_growing`
+descriptors to copy every ship's retained display bytes. It calls no getter,
+generator, refresh or setter, injects nothing and changes no production capture.
+
+Coordinate with the session owner. Fully load and pause at engine hour `H`;
+request/acknowledge the full refresh, set the intended speed and make the matched
+fresh save as above. **Before advancing**, take the witness, then leave names,
+orders and all other state unchanged through that hour's supplying callback:
+
+```powershell
+$witness = Join-Path $capture "ship-names-$branchId-$oracleHour.json"
+& $recorder ship-name-witness --paused --hour $oracleHour --branch $branchId --user-dir $userDirectory --report $witness
+```
+
+`--paused` is the operator's confirmation, not a native pause predicate. The
+command requires an idle, unchanged campaign/load/hour/tick state around content
+verification and the walk; those checks cannot prove that no same-hour UI command
+ran. The supplied branch must be the actual recording branch. A later same-hour
+observation is not a substitute for holding this matched state. Never relabel an
+hour or load to make evidence agree. Run outside timed capture.
+
+Reports retain process creation identity, before/after clocks, branch, successful
+mounts and per-ship full reference, containing task force and `read` bytes or a
+named `refused` status. `identity` holds the executable build/version/hash,
+recorded language, content policy and every ordered base/DLC/mod identity/hash;
+`recorder_version`, `recorder_hash`, `recorder_size` and `recorder_executable`
+identify the diagnostic binary. No collector build identity is inferred. Raw name bytes preserve empty strings, embedded
+NULs and invalid UTF-8. Refusals fail capture without discarding readable ships;
+existing report files are never overwritten. Without `--report`, output goes to
+`ship_name_witness` under the default capture directory.
+
+After the supplying hour is recorded, detach and wait for checked finalization.
+Compare offline against the actual emitted replay:
+
+```powershell
+& $recorder ship-name-witness --compare $witness $replayFile --hour $oracleHour --branch $branchId
+```
+
+The JSON result counts matching bytes, missing ships in either direction, native
+and replay refusals, byte/task-force mismatches and duplicate/invalid references.
+Any such failure, empty evidence, unverified/different content, process/load/hour
+mismatch, gap, incomplete Ships table or absent fresh Ships supplying read fails.
+Only end-of-hour recording sessions compare. Comparison reads only Clock and
+Ships; it never opens the game. Save naming-operand agreement cannot prove this
+unsaved cache. Repeat the matched witness for ordinary names, a distinctive
+rename on the same full reference, available historical/fallback names,
+repair/refit and transfer/load cases; explicitly list unavailable cases. Fresh
+save, native UI/smoke and performance evidence remain separate requirements.
 
 ### Movement load oracle
 

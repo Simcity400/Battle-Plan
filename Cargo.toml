@@ -141,6 +141,12 @@ dashboard-equipment-stockpile = { path = "crates/dashboard-equipment-stockpile" 
 dashboard-military-air-ledger = { path = "crates/dashboard-military-air-ledger" }
 dashboard-stability = { path = "crates/dashboard-stability" }
 dashboard-world-tension = { path = "crates/dashboard-world-tension" }
+dashboard-keyed = { path = "crates/dashboard-keyed" }
+dashboard-air-operations = { path = "crates/dashboard-air-operations" }
+dashboard-doctrine-mastery = { path = "crates/dashboard-doctrine-mastery" }
+dashboard-naval-regions = { path = "crates/dashboard-naval-regions" }
+dashboard-naval-yards = { path = "crates/dashboard-naval-yards" }
+dashboard-weather = { path = "crates/dashboard-weather" }
 dashboard-politics = { path = "crates/dashboard-politics" }
 dashboard-country-nukes = { path = "crates/dashboard-country-nukes" }
 dashboard-subjects = { path = "crates/dashboard-subjects" }

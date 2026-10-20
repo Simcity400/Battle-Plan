@@ -709,6 +709,8 @@ fn naval_graph_preserves_handles_aliases_and_full_signed_scalars() {
     assert_eq!(
         ships[0],
         cship::Row {
+            name: None,
+            naming: None,
             acquired_manpower: None,
             required_manpower: None,
             roster_ordinal: 0,

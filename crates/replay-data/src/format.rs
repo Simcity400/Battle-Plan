@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
-        assert_eq!(FORMAT_VERSION, 106);
+        assert_eq!(FORMAT_VERSION, 107);
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
                 assert!(FormatVersion::read(version).is_err());
@@ -261,6 +261,9 @@ mod tests {
             let format = FormatVersion::read(version).unwrap();
             // Retired tables are refused by name in every recording.
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version < 107 {
+                expected.push(TableId::Ships);
+            }
             if version < crate::rows::compatibility::COMBAT_LOG_OBSERVER_KEYS_FORMAT {
                 expected.push(TableId::CombatLogObservers);
             }

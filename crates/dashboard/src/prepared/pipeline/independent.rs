@@ -448,6 +448,16 @@ static REGISTRY: &[&dyn Own] = &[
     &sampled::POLITICS,
     &sampled::TRADE,
     &sampled::TERRITORY,
+    &keyed::AIR_MISSIONS,
+    &keyed::AIR_STATISTICS,
+    &keyed::WEATHER,
+    &keyed::MINEFIELDS,
+    &keyed::NAVAL_SUPREMACY,
+    &keyed::DOCTRINE_MASTERY,
+    &keyed::OCCUPATION_RESERVE,
+    &keyed::INTEL_COVERAGE,
+    &keyed::NAVAL_REPAIRS,
+    &keyed::NAVAL_REFITS,
 ];
 
 /// One read of each block for the families that observe every block hour by
@@ -479,6 +489,11 @@ pub(super) mod air_superiority;
 pub(super) mod diplomacy;
 /// World tension.
 pub(super) mod world_tension;
+
+/// The keyed families: air missions and statistics, regional weather,
+/// minefields, naval supremacy, doctrine mastery, occupation reserve
+/// manpower, intel network coverage, naval repairs and refits.
+pub(super) mod keyed;
 
 /// Shared faction account, selection and manpower histories.
 pub(super) mod factions;

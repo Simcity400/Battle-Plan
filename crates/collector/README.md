@@ -487,3 +487,12 @@ The hourly StateResistance worker captures map-marker identities beside its exis
 Quiet WingEquipment cache passes retain their whole owned row buffer, including equal sampled reads; only changed reads or withdrawals repack held ranges. The hourly census and sampled native verification are unchanged. State Air-base metadata indexes retain identical covering geometry but always resolve values and failures from the current owned log. Registration projection resolves each packet key once for its scalar columns and pool metadata.
 
 The template icon census still reads roster order, authenticated fixed records and literal names every hour. Complete model cores and movement speed keys reuse held segments only with matching template/owner certificates, the local-subunit/content quiet token and equal fixed bytes. Missing certificates or refused core operands retain the original fresh path; sampled hours read and compare the core and speed keys, publishing fresh values and poisoning reuse on a certified mismatch. Layout/settings and dictionary-key certificates remain independent.
+
+The ShipModels worker's existing hourly ship census also acquires independent
+retained-name and raw naming-state columns. Owned cache and override arenas grow
+from the original guarded descriptors; their capacities belong to the census's
+pool accounting and are cleared on reset/failure. Spool projection checks every
+span and copies exact bytes. `ship_names` status counts captured/refused cache
+and naming packets separately. Failed names remain optional refusals while crew,
+hull, parent and other ships survive; there is no name carry certificate or extra
+ship walk. Synthetic coverage is available with `cargo test -p collector ship`.

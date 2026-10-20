@@ -1,0 +1,33 @@
+[package]
+name = "dashboard-keyed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+# Test instrumentation of the shared prepared pages, for the crates above.
+test-support = ["dashboard-base/test-support"]
+
+[dependencies]
+replay.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
+installed-content-regions.workspace = true
+dashboard-base.workspace = true
+dashboard-core.workspace = true
+dashboard-text.workspace = true
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+store = { path = "../store" }
+ts-rs = "11.1"
+
+[dev-dependencies]
+mimalloc.workspace = true
+dashboard-base = { workspace = true, features = ["test-support"] }
+# Prepared files publish without disk flushes, which no test can observe.
+store = { path = "../store", features = ["test-support"] }

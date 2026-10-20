@@ -1,0 +1,6 @@
+.occupation-reserve { container-type: inline-size; }
+.occupation-holder { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.occupation-holder > :first-child { flex: 1 1 auto; min-height: 0; }
+.occupation-negative { margin: 4px 8px 0; font-size: var(--font-small, 12px); color: var(--text-muted); max-height: 30%; overflow: auto; }
+.occupation-negative dt { font-weight: 600; }
+.occupation-negative dd { margin: 0; display: flex; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; }

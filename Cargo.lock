@@ -2162,6 +2162,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "dashboard-air-aces",
+ "dashboard-air-operations",
  "dashboard-air-superiority",
  "dashboard-army",
  "dashboard-base",
@@ -2170,6 +2171,7 @@ dependencies = [
  "dashboard-country-fuel",
  "dashboard-country-nukes",
  "dashboard-diplomacy",
+ "dashboard-doctrine-mastery",
  "dashboard-economy",
  "dashboard-equipment-losses",
  "dashboard-equipment-stockpile",
@@ -2178,9 +2180,12 @@ dependencies = [
  "dashboard-game-score",
  "dashboard-game-window",
  "dashboard-intelligence",
+ "dashboard-keyed",
  "dashboard-land-battles",
  "dashboard-military-air-ledger",
  "dashboard-naval",
+ "dashboard-naval-regions",
+ "dashboard-naval-yards",
  "dashboard-occupation",
  "dashboard-party-history",
  "dashboard-peace-deals",
@@ -2194,6 +2199,7 @@ dependencies = [
  "dashboard-text",
  "dashboard-unit-leaders",
  "dashboard-wars",
+ "dashboard-weather",
  "dashboard-world-tension",
  "engine-allocation",
  "engine-executable",
@@ -2249,6 +2255,31 @@ dependencies = [
  "store",
  "ts-rs",
  "zstd",
+]
+
+[[package]]
+name = "dashboard-air-operations"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-keyed",
+ "dashboard-text",
+ "engine-air-history",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-localisation",
+ "installed-content-regions",
+ "mimalloc",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+ "viewer-foundation",
 ]
 
 [[package]]
@@ -2449,6 +2480,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-doctrine-mastery"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-keyed",
+ "dashboard-text",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-localisation",
+ "mimalloc",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+]
+
+[[package]]
 name = "dashboard-economy"
 version = "0.1.0"
 dependencies = [
@@ -2610,6 +2662,7 @@ version = "0.1.0"
 dependencies = [
  "dashboard-base",
  "dashboard-core",
+ "dashboard-keyed",
  "dashboard-text",
  "engine-executable",
  "engine-intelligence",
@@ -2629,6 +2682,24 @@ dependencies = [
  "ts-rs",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "dashboard-keyed"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-text",
+ "installed-content-regions",
+ "mimalloc",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
 ]
 
 [[package]]
@@ -2699,12 +2770,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashboard-naval-regions"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-keyed",
+ "dashboard-text",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-localisation",
+ "installed-content-regions",
+ "mimalloc",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+]
+
+[[package]]
+name = "dashboard-naval-yards"
+version = "0.1.0"
+dependencies = [
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-forces",
+ "dashboard-keyed",
+ "dashboard-text",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-country-names",
+ "installed-content-division-names",
+ "mimalloc",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
+]
+
+[[package]]
 name = "dashboard-occupation"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "dashboard-base",
  "dashboard-core",
+ "dashboard-keyed",
  "dashboard-text",
  "engine-executable",
  "installed-content-core",
@@ -3020,6 +3138,30 @@ dependencies = [
  "store",
  "ts-rs",
  "zstd",
+]
+
+[[package]]
+name = "dashboard-weather"
+version = "0.1.0"
+dependencies = [
+ "dashboard-air-operations",
+ "dashboard-base",
+ "dashboard-core",
+ "dashboard-keyed",
+ "dashboard-text",
+ "engine-executable",
+ "installed-content-core",
+ "installed-content-localisation",
+ "installed-content-regions",
+ "installed-content-weather",
+ "mimalloc",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "serde",
+ "serde_json",
+ "store",
+ "ts-rs",
 ]
 
 [[package]]
@@ -6732,6 +6874,7 @@ name = "recorder"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
+ "engine-dlc",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -6749,6 +6892,7 @@ dependencies = [
  "replay",
  "replay-data",
  "replay-frame",
+ "serde",
  "serde_json",
  "windows-sys 0.61.2",
  "zstd",

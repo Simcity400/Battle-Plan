@@ -21,8 +21,8 @@ use crate::{
         AirWingRaidReference, AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, ControllerAreaNode,
         CountryLinkRow, CountryRow, DivisionRow, FactionMemberRow, FactionRow, FleetRow,
         HumanControllerRow, LandCombatRow, NavalCombatParticipantRow, NavalCombatRow, PlayerRow,
-        ProvinceRow, Recorded, RowCodec, RowRef, ShipRow, StateRow, TableId, TableRows,
-        TableSchema, TaskForceRow, VariantChangeRow, VariantOrganisationChange,
+        ProvinceRow, Recorded, RowCodec, RowRef, ShipNamingOperands, ShipRow, StateRow, TableId,
+        TableRows, TableSchema, TaskForceRow, VariantChangeRow, VariantOrganisationChange,
         VariantScalarChange, VariantSourceReferences, WarCapturedProvinceRow, WarRelationRow,
         compatibility::RETIRED_FIELDS, tables,
     },
@@ -689,6 +689,20 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
         push_map::<tables::Ships>(
             tables,
             ShipRow {
+                name: Recorded::Value(match tick % 4 {
+                    0 => None,
+                    1 => Some(Vec::new()),
+                    2 => Some(format!("Synthetic ship {tick}").into_bytes()),
+                    _ => Some(vec![0xff, 0, tick as u8]),
+                }),
+                naming: Recorded::Value((tick % 3 != 0).then(|| ShipNamingOperands {
+                    kind: [i32::MIN, 1, i32::MAX][tick % 3],
+                    order: [0, -7, i32::MAX][tick % 3],
+                    ordered: RAW_FLAG_CASES[tick % RAW_FLAG_CASES.len()],
+                    override_name: vec![tick as u8, 0, 0xff],
+                    programmatic: RAW_FLAG_CASES[(tick + 1) % RAW_FLAG_CASES.len()],
+                    equipment: (tick % 2 == 0).then_some(u64::MAX),
+                })),
                 id,
                 task_force: [0, u64::MAX, FACTION_A][tick % 3],
                 strength: scalar(0),

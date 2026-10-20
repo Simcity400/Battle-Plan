@@ -13,20 +13,23 @@ use std::{
 
 use engine_native::cbuilding_template;
 use installed_content_core::map::ProvinceKind;
+#[cfg(test)]
+use replay_data::rows::AirBaseRow;
 use replay_data::rows::{
     AIR_MISSION_BASE_EQUIPMENT_FLAGS, AIR_MISSION_FOREIGN_TARGET_FLAG, AIR_MISSION_LAY_MINES,
-    AirBaseRow, AirWingRow, BuildingRow, DivisionMovementRow, DivisionRow, LandCombatRow,
-    LandCombatSideRow, NavalBaseRow, NavalCombatDetailsRow, NavalCombatRow, ProvinceRow,
-    ProvinceUnitOrderRow, StateRow, TableSchema, TaskForceRow, tables,
+    AirWingRow, BuildingRow, DivisionMovementRow, DivisionRow, LandCombatRow, LandCombatSideRow,
+    NavalBaseRow, NavalCombatDetailsRow, NavalCombatRow, ProvinceRow, ProvinceUnitOrderRow,
+    StateRow, TableSchema, TaskForceRow, tables,
 };
+pub use replay_derive::air_mission_sources::{MissionCountry, MissionCountrySources};
+use replay_derive::air_mission_sources::{canonical, effective_raw};
 use replay_frame::frame::DecodedFrame;
 
-use {
-    super::air_registry_sources::AirRegistrySources,
-    crate::map::{
-        tables::{Available, rows},
-        visibility::Families,
-    },
+#[cfg(test)]
+use super::air_registry_sources::AirRegistrySources;
+use crate::map::{
+    tables::{Available, rows},
+    visibility::Families,
 };
 
 /// The destination array selects. The base-equipment branch builds
@@ -348,118 +351,8 @@ fn find<R, K: Ord>(rows: &[R], key: K, by: impl FnMut(&R) -> K) -> Option<&R> {
         .map(|index| &rows[index])
 }
 
-fn canonical(raw: u32, links: &BTreeMap<u32, u32>) -> Option<u32> {
-    if raw == 0 {
-        Some(0)
-    } else {
-        links.get(&raw).copied()
-    }
-}
-
-/// The wing's raw effective country: a positive override, else its owner.
-fn effective_raw(wing: &AirWingRow) -> u32 {
-    if wing.country_override > 0 {
-        wing.country_override as u32
-    } else {
-        wing.owner
-    }
-}
-
 fn war_pair(first: u32, second: u32) -> (u32, u32) {
     (first.min(second), first.max(second))
-}
-
-/// A mission country's canonical slot, the key of every same-hour join.
-/// Native signed gates test the country's own reference ([`Wars`]) or the
-/// candidate's raw one ([`MissionCountrySources::resolve`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MissionCountry {
-    pub slot: u32,
-}
-
-/// Effective mission-country sources, shared by sortie counts and target scans. These sources read no
-/// port or naval target table.
-pub struct MissionCountrySources<'a> {
-    registry: &'a AirRegistrySources,
-    provinces: Option<&'a [ProvinceRow]>,
-    volunteer_hosts: Option<BTreeMap<u32, BTreeSet<u32>>>,
-    links: &'a BTreeMap<u32, u32>,
-}
-
-impl<'a> MissionCountrySources<'a> {
-    pub fn read(
-        frame: &'a DecodedFrame,
-        links: &'a BTreeMap<u32, u32>,
-        registry: &'a AirRegistrySources,
-    ) -> io::Result<Self> {
-        let volunteer_hosts = complete::<tables::VolunteerHosts>(frame)?.and_then(|hosts| {
-            let mut by_country = BTreeMap::<u32, BTreeSet<u32>>::new();
-            for row in hosts {
-                let country = canonical(row.country, links)?;
-                // Match by raw reference or canonical country identity. An unlinked host never
-                // matches; a zero host matches a null controller by raw equality, stopping the base
-                // search there.
-                if let Some(host) = canonical(row.host, links) {
-                    by_country.entry(country).or_default().insert(host);
-                }
-            }
-            Some(by_country)
-        });
-        Ok(Self {
-            registry,
-            provinces: complete::<tables::Provinces>(frame)?,
-            volunteer_hosts,
-            links,
-        })
-    }
-
-    /// Try the pool-base controller, then the transfer-base controller, stopping at the first
-    /// volunteer host of the effective country. Use that host only when its raw reference is signed-
-    /// positive; otherwise use the effective country.
-    pub fn resolve(&self, wing: &AirWingRow) -> Option<MissionCountry> {
-        let hosts = self.volunteer_hosts.as_ref()?;
-        let fallback = MissionCountry {
-            slot: canonical(effective_raw(wing), self.links)?,
-        };
-        let Some(hosts) = hosts.get(&fallback.slot).filter(|hosts| !hosts.is_empty()) else {
-            return Some(fallback);
-        };
-        for handle in [wing.air_base, wing.base_override] {
-            if handle == 0 {
-                continue;
-            }
-            // A handle the complete registry does not resolve is a native miss.
-            let Some(base) = self.registry.bases.get(&handle) else {
-                continue;
-            };
-            let controller_raw = self.base_controller(base)?;
-            let controller = canonical(controller_raw, self.links)?;
-            if hosts.contains(&controller) {
-                // No other base is tried after the first eligible one.
-                return Some(if (controller_raw as i32) > 0 {
-                    MissionCountry { slot: controller }
-                } else {
-                    fallback
-                });
-            }
-        }
-        Some(fallback)
-    }
-
-    /// Air-base controller: a state base's province controller, with refusal for a state base lacking a
-    /// province; a stateless base's host task-force owner, or zero when the host is null or unresolved.
-    /// A null task-force result is refused.
-    fn base_controller(&self, base: &AirBaseRow) -> Option<u32> {
-        let Some(state) = base.state else {
-            return if base.host == 0 {
-                Some(0)
-            } else {
-                self.registry.host_owner(base.id)
-            };
-        };
-        let province = find(self.provinces?, base.province?, |row| row.id)?;
-        (province.state == state).then_some(province.controller)
-    }
 }
 
 /// Tests war from a mission country toward a raw reference, using canonical active-war pairs.
