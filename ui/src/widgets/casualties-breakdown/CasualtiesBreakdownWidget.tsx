@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { narrowTableOf } from '../../charts/table/options.ts';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel, drawBands } from '../../charts/draw';
@@ -40,7 +41,7 @@ const TEXT: SunburstText = { format: (value, exact) => exactLosses(exact ?? BigI
 const SORT = { column: 'losses', direction: 'descending' } as const;
 const rowKey = (row: LossRow) => row.id;
 // Columns that name no country keep their accessors: arriving names and flags never re-sort by them.
-const WAR: TableColumn<LossRow> = { key: 'war', header: 'War', label: 'War', value: row => row.war };
+const WAR: TableColumn<LossRow> = { key: 'war', header: 'War', label: 'War', priority: 1, inTooltip: true, value: row => row.war };
 const LOSSES: TableColumn<LossRow> = { key: 'losses', header: 'Losses taken', label: 'Losses taken', numeric: true, width: 'max-content', value: row => row.value, render: lossText };
 
 export default function CasualtiesBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
@@ -154,7 +155,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
           ? 'No casualty relations were recorded for this country' : 'Casualty counters were not recorded'} at {dayLabel(detailHour)}.</p>
           : <>{summary(details)}<div className="casualty-breakdown-table"><Table label="Recorded casualty lifetimes" rows={details.rows}
             columns={columns} rowKey={rowKey} sort={SORT}
-            cellBars={false} rankMarkers={false} hoursPerSecond={speed} onVisibleRows={setVisible}
+            cellBars={false} rankMarkers={false} hoursPerSecond={speed} onVisibleRows={setVisible} narrow={narrowTableOf(options)}
             menu={row => [jumpItem(runtime, track.id, row.readHour)]}
             tooltip={row => fitTooltip([{ title: `${row.war} › ${enemyName(row)}`, rows: [
               { label: 'Losses taken', value: lossText(row), strong: true },

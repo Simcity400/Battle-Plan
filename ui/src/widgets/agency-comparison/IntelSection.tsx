@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { narrowTableOf } from '../../charts/table/options.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { resolveWindow } from '../../dashboard/model';
@@ -48,8 +49,8 @@ export default function IntelSection({ widget, runtime, active }: WidgetProps) {
   const rows = useMemo(() => data?.entries.filter(entry => group === 'All intel' || entry.group === group) ?? [], [data, group]);
   const groups = useMemo(() => ['All intel', ...new Set([...(data?.entries.map(entry => entry.group) ?? []), ...(group === 'All intel' ? [] : [group])])], [data, group]);
   const columns = useMemo<readonly TableColumn<IntelDetail>[]>(() => [
-    { key: 'group', header: 'Intel', label: 'Intel', width: 'max-content', value: row => row.group },
-    { key: 'pair', header: 'Viewer / target', label: 'Viewer / target', width: 'max-content', value: row => `${labels.get(row.viewer) ?? row.viewer} / ${row.target === null ? '—' : labels.get(row.target) ?? row.target}` },
+    { key: 'group', header: 'Intel', label: 'Intel', width: 'max-content', priority: 2, value: row => row.group },
+    { key: 'pair', header: 'Viewer / target', label: 'Viewer / target', width: 'max-content', priority: 1, value: row => `${labels.get(row.viewer) ?? row.viewer} / ${row.target === null ? '—' : labels.get(row.target) ?? row.target}` },
     { key: 'entry', header: 'Entry', label: 'Entry', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.label },
     { key: 'value', header: 'Recorded values', label: 'Recorded values', width: 'minmax(var(--table-name-min), 3fr)', value: row => intelValues(row).map(value => `${value.name}: ${value.value}`).join(' · ') || 'Observed empty extent', sortable: false },
   ], [labels]);
@@ -64,7 +65,7 @@ export default function IntelSection({ widget, runtime, active }: WidgetProps) {
     </div>
     {current?.error ? <WidgetState kind="error" detail={current.error} onRetry={() => retry(value => value + 1)} /> : !data ? <WidgetState kind="loading" label="Loading country intel…" /> : <>
       {data.warnings.length > 0 && <details className="agency-unknown"><summary>Unavailable intel inputs ({data.warnings.length})</summary>{data.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}
-      <Table label="Country intel" rows={rows} rowKey={keyOf} columns={columns} sort={{ column: 'group', direction: 'ascending' }} density="compact" tooltip={intelTooltip} parity={{ complete: true, item: row => row }} />
+      <Table label="Country intel" rows={rows} rowKey={keyOf} columns={columns} sort={{ column: 'group', direction: 'ascending' }} density="compact" narrow={narrowTableOf(widget.options)} tooltip={intelTooltip} parity={{ complete: true, item: row => row }} />
     </>}
   </section>;
 }

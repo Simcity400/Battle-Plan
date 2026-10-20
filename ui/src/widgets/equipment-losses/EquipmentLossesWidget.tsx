@@ -1,4 +1,5 @@
 import CombatLogDetails from '../land-battles/CombatLogDetails';
+import { narrowTableOf } from '../../charts/table/options.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import DatedCountryChip from '../../dashboard/DatedCountryChip';
@@ -139,8 +140,8 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   const text = useMemo<SunburstText>(() => ({ format: (value, exact) => formatLosses(value, exact, scale), unit: 'units', valueLabel: 'Losses', shares: !total.incomplete }), [scale, total.incomplete]);
   const rowText = (row: LossRow) => row.exact === null ? 'Not known' : `${row.incomplete ? 'Subtotal: ' : ''}${formatLosses(Number(row.exact), row.exact, scale)}`;
   const columns = useMemo<TableColumn<LossRow>[]>(() => [
-    { key: 'cause', header: 'Cause', label: 'Cause', value: row => row.cause },
-    { key: 'type', header: 'Equipment type', label: 'Equipment type', value: row => row.type },
+    { key: 'cause', header: 'Cause', label: 'Cause', priority: 1, inTooltip: true, value: row => row.cause },
+    { key: 'type', header: 'Equipment type', label: 'Equipment type', priority: 2, inTooltip: true, value: row => row.type },
     { key: 'design', header: 'Design', label: 'Design', value: row => row.design },
     { key: 'amount', header: 'Losses', label: 'Losses', numeric: true, width: 'max-content', value: row => row.exact, render: rowText },
   ], [scale]);
@@ -202,7 +203,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
     {selected && <button type="button" className="button small" onClick={() => setPicked(null)}>View all losses</button>}
     <DrillParts parts={parts} format={value => formatLosses(value * scale, null, scale)} positiveBars virtual active={active && open}
       showShares={!rows.some(row => row.incomplete || row.exact === null || row.exact < 0n)} onPick={id => { const part = parts.find(part => part.id === id); if (part) setPicked(part.keys); }} />
-    <div className="equipment-losses-table"><Table label="Equipment losses" rows={rows} columns={columns} rowKey={rowKey}
+    <div className="equipment-losses-table"><Table label="Equipment losses" rows={rows} columns={columns} rowKey={rowKey} narrow={narrowTableOf(options)}
       sort={{ column: 'amount', direction: 'descending' }} cellBars={false} rankMarkers={false} hoursPerSecond={speed} onRowClick={row => setPicked([row.id])}
       menu={row => row.readHour === null ? [] : [jumpItem(runtime, track.id, row.readHour)]}
       tooltip={row => fitTooltip([{ title: `${row.cause} / ${row.type} / ${row.design}`, rows: [{ label: 'Losses', value: rowText(row) }], note: row.note }], height)} /></div>

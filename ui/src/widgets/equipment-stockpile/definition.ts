@@ -2,6 +2,7 @@ import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION, choiceVariants } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { NARROW_TABLE_OPTION } from '../../charts/table/options.ts';
 
 export const BREAKDOWN = { id: 'stockpile', label: 'Stockpile breakdown' };
 
@@ -18,6 +19,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'count', section: 'options', label: 'Count', kind: 'choice', default: 'units',
     hint: 'IC shows output as the IC its lines put in a day. Stock and surplus stay in units: the game gives stock no IC value.',
     choices: [{ value: 'units', label: 'Units' }, { value: 'ic', label: 'IC' }], visibleWhen: options => !overTime(options) },
+  { ...NARROW_TABLE_OPTION, visibleWhen: options => !overTime(options) },
   { key: 'included', section: 'options', label: 'Included types', kind: 'content-set',
     automatic: 'All types', default: '' },
   { key: 'chosen', section: 'options', label: 'Types shown over time', kind: 'content-set',

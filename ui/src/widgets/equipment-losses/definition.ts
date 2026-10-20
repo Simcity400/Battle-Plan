@@ -1,4 +1,5 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
+import { NARROW_TABLE_OPTION } from '../../charts/table/options.ts';
 import type { OptionField } from '../../dashboard/options';
 import { breakdownOption, DRILL_OPTION, breakdownVariants } from '../../charts/drill/drillState.ts';
 import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOptions.ts';
@@ -11,8 +12,7 @@ export const OPTIONS: readonly OptionField[] = [
   levelOption('causeLevel', 'Cause'),
   levelOption('typeLevel', 'Equipment type'),
   levelOption('designLevel', 'Exact design'),
-  ...SUNBURST_OPTIONS, DRILL_OPTION, breakdownOption([DETAIL], 'Sunburst'),
-];
+  ...SUNBURST_OPTIONS, DRILL_OPTION, breakdownOption([DETAIL], 'Sunburst'), NARROW_TABLE_OPTION];
 
 export const definition = {
   kind: 'equipment-losses', version: 1, title: 'Equipment losses', icon: 'sunburst',

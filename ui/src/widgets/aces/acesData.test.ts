@@ -163,7 +163,7 @@ test('roster lookup is reused across reads of one reply and isolated between rep
 });
 test('the approved kit sort choices and every recorded country remain available', () => {
   assert.deepEqual(DEFAULT_SORT, { column: 'date', direction: 'descending' });
-  assert.equal(OPTIONS.length, 1);
+  assert.deepEqual(OPTIONS.map(option => option.key), ['tableSort', 'narrowTable'], 'a narrow card can still keep every column');
   const sort = OPTIONS[0];
   assert.ok(sort.kind === 'choice');
   assert.deepEqual(sort.choices.map(choice => choice.label), ['Newest first', 'Name']);

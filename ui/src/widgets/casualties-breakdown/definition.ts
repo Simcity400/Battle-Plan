@@ -1,11 +1,12 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
+import { NARROW_TABLE_OPTION } from '../../charts/table/options.ts';
 import type { OptionField } from '../../dashboard/options';
 import { breakdownOption, breakdownVariants, DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import { SUNBURST_OPTIONS, levelOption } from '../../charts/sunburst/sunburstOptions.ts';
 
 export const DETAIL = { id: 'details', label: 'Recorded losses' };
 export const OPTIONS: readonly OptionField[] = [levelOption('warLevel', 'War'), levelOption('enemyLevel', 'Enemy country'),
-  ...SUNBURST_OPTIONS, DRILL_OPTION, breakdownOption([DETAIL], 'Sunburst')];
+  ...SUNBURST_OPTIONS, DRILL_OPTION, breakdownOption([DETAIL], 'Sunburst'), NARROW_TABLE_OPTION];
 export const definition = {
   kind: 'casualties-breakdown', version: 1, title: 'Casualties breakdown', icon: 'sunburst',
   description: 'A country’s losses by war and enemy.',

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { narrowTableOf } from '../charts/table/options.ts';
 import { ChipSet } from '../components/ChipSet';
 import ArtFallback from '../components/ArtFallback';
 import WidgetState from '../components/WidgetState';
@@ -87,7 +88,7 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
   const artwork = options.artwork !== false;
   const icon = currency === 'Political' ? 'sparkle' : 'target';
   const columns = useMemo<readonly TableColumn<SpendingTableRow>[]>(() => [
-    { key: 'date', header: 'Date', label: 'Date', width: 'max-content', value: row => row.order,
+    { key: 'date', header: 'Date', label: 'Date', width: 'max-content', priority: 1, value: row => row.order,
       render: row => row.month === null ? dayLabel(row.hour) : monthLabel(row.month) },
     ...(compare ? [{ key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-name-min), 1fr)',
       value: (row: SpendingTableRow) => countryName(row), render: (row: SpendingTableRow) => <CountryCell {...labelAt(row.hour)(row.tag)} name={countryName(row)} /> }] : []),
@@ -96,7 +97,7 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
         {artwork && (row.icon ? <img src={row.icon} alt="" /> : <ArtFallback icon={row.month === null ? icon : 'history'} className="spending-item-art" />)}
         <span>{row.label}</span>{row.days > 0 && <small>{row.days === 1 ? '1 day' : `${row.days} days`}</small>}
       </span> },
-    { key: 'category', header: 'Category', label: 'Category', width: 'minmax(7em, 1fr)', value: row => row.categoryName,
+    { key: 'category', header: 'Category', label: 'Category', width: 'minmax(7em, 1fr)', priority: 2, value: row => row.categoryName,
       render: row => <span className="spending-category" title={row.categoryName}>
         <i style={{ background: colours.get(setToken(row.category)) ?? tokens.muted }} />
         <span>{row.categoryName}</span></span> },
@@ -173,7 +174,7 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
     {rows.length ? <div className="politics-spending-table">
       <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label={currency === 'Political' ? 'Political power spending' : 'Command power spending'}
         rows={rows} columns={columns} rowKey={rowKey} sort={spendingSort(widget.options)} setOption={setOption}
-        cellBars={options.cellBars !== false} density={options.density === 'compact' ? 'compact' : 'comfortable'}
+        cellBars={options.cellBars !== false} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
         tooltip={tooltip} menu={row => [jumpItem(runtime, track.id, row.hour)]} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />
     </div> : <p className="politics-spending-empty">{chosen.length ? 'Nothing spent in these categories in this period.' : `No ${noun} spent in this period.`}</p>}
   </div>;

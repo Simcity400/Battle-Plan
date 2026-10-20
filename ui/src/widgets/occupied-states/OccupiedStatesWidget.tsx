@@ -6,7 +6,7 @@ import { useCallback, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CellBar, CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
-import { tableSortOf } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { jumpItem } from '../../charts/jump';
 import { fitTooltip } from '../../charts/tooltip';
@@ -90,19 +90,20 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   // hold, which the manifest published so far may not list yet.
   const laws = useMemo(() => new Map([...manifest?.laws ?? [], ...display?.data.laws ?? []].map(law => [law.token, law])), [manifest, display?.data]);
   const columns = useMemo<readonly TableColumn<OccupiedRow>[]>(() => {
-    const country = (role: 'owner' | 'occupier', label: string): TableColumn<OccupiedRow> => ({ key: role, header: label, label, renderMissing: true, width: 'minmax(150px, 1fr)',
+    const country = (role: 'owner' | 'occupier', label: string, priority?: number): TableColumn<OccupiedRow> => ({ key: role, header: label, label, renderMissing: true, width: 'minmax(150px, 1fr)', priority,
       value: row => { const tag = row.value[role]; return tag === null ? null : names.get(nameKey(countryHour(row, role, shown), tag)) ?? 'Country name unavailable'; },
       render: row => { const tag = row.value[role]; return tag === null ? 'Unknown' : <CountryCell {...labelAt(countryHour(row, role, shown))(tag)} />; } });
     return [
       { key: 'state', header: 'State', label: 'State', renderMissing: true, width: 'minmax(160px, 1.2fr)', value: row => row.value.name ?? null, render: stateName },
-      country('owner', 'Owner'), country('occupier', 'Occupier'),
+      country('owner', 'Owner', 1), country('occupier', 'Occupier'),
       { key: 'resistance', header: 'Resistance', label: 'Resistance', numeric: true, bar: 10000000n, width: '150px', value: row => BigInt(row.value.resistanceRaw), render: row => percentCell(row.value.resistanceRaw) },
-      { key: 'compliance', header: 'Compliance', label: 'Compliance', numeric: true, bar: 10000000n, width: '150px', value: row => BigInt(row.value.complianceRaw), render: row => percentCell(row.value.complianceRaw) },
-      { key: 'garrison', header: 'Garrison', label: 'Garrison', numeric: true, renderMissing: true, width: '175px',
+      { key: 'compliance', header: 'Compliance', label: 'Compliance', numeric: true, bar: 10000000n, width: '150px', priority: 2, text: row => percentCell(row.value.complianceRaw), value: row => BigInt(row.value.complianceRaw), render: row => percentCell(row.value.complianceRaw) },
+      { key: 'garrison', header: 'Garrison', label: 'Garrison', numeric: true, renderMissing: true, width: '175px', priority: 3, text: row => garrisonCell(row.value, false).text,
         value: row => row.value.garrisonRequiredRaw === null ? null : BigInt(row.value.garrisonRequiredRaw),
         render: row => { const cell = garrisonCell(row.value, options.cellBars === true);
           return <CellBar value={cell.bar} maximum={100000n}><span className={cell.red ? 'occupation-garrison-alert' : undefined}>{cell.text}</span></CellBar>; } },
-      { key: 'law', header: 'Occupation law', label: 'Occupation law', renderMissing: true, width: 'minmax(200px, 1.2fr)', value: row => row.value.law === null ? null : contentTitle(laws.get(row.value.law)?.name, row.value.law, 'Occupation law name unavailable'),
+      { key: 'law', header: 'Occupation law', label: 'Occupation law', renderMissing: true, width: 'minmax(200px, 1.2fr)', priority: 4,
+        text: row => row.value.law === null ? 'Not in this recording' : contentTitle(laws.get(row.value.law)?.name, row.value.law, 'Occupation law name unavailable'), value: row => row.value.law === null ? null : contentTitle(laws.get(row.value.law)?.name, row.value.law, 'Occupation law name unavailable'),
         render: row => { const token = row.value.law; const law = token === null ? undefined : laws.get(token);
           return <span className="occupation-law" data-tooltip={contentTitleHint(token, law?.missing)}>{law?.icon ? <img src={law.icon} alt="" /> : null}<span>{token === null ? 'Not in this recording' : contentTitle(law?.name, token, 'Occupation law name unavailable')}</span></span>; } },
     ];
@@ -132,7 +133,7 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
     {!view.observation.complete && <p className="occupation-note">Some occupied states are missing.</p>}
     {view.selectionUnknown && <p className="occupation-note">Some states couldn’t be matched to these countries.</p>}
     <Table label="Occupied states" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
-      cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
+      cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond} />
   </div>;
 }

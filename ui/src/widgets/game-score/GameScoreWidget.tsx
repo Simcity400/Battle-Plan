@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
-import { tableSortOf, tableSortToken } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import { useCountryColours } from '../../charts/race/countryColours';
@@ -76,7 +76,8 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
         const cell = gameScoreCountryCell(row, (tag, at) => flagReads.get(nameKey(at, tag)));
         return cell ? <CountryCell {...cell} /> : row.identity.name ?? 'Country name unavailable';
       } },
-    ...SCORE_PARTS.map(part => ({ key: part, header: gameScoreLabel(data.labels, part), label: gameScoreLabel(data.labels, part), numeric: true, width: 'max-content', bar: 'visible' as const,
+    ...SCORE_PARTS.map((part, index) => ({ key: part, header: gameScoreLabel(data.labels, part), label: gameScoreLabel(data.labels, part), numeric: true, width: 'max-content', bar: 'visible' as const,
+      priority: index + 1, inTooltip: true,
       hint: data.hints[part],
       value: (row: ScoreRow) => scoreValue(row, part), render: (row: ScoreRow) => formatScore(row.cells[part].raw) })),
   ] : [], [data, flagReads]);
@@ -118,6 +119,6 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   return <div ref={parityRoot} style={{ display: 'contents' }}><Table key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
     rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} groupBy={options.factions === true ? gameScoreFaction : undefined}
     cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
-    density={options.density === 'compact' ? 'compact' : 'comfortable'} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond}
+    density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond}
     menu={row => [jumpItem(runtime, track!.id, row.hour)]} /></div>;
 }

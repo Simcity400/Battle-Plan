@@ -2,11 +2,19 @@ import type { OptionField } from '../../dashboard/options';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import type { Sort, SortDirection } from './logic';
 
+/** A narrow table hides its less important columns (their values move into the row
+ * tooltip) or keeps every column and scrolls sideways. */
+export const NARROW_TABLE_OPTION: OptionField = { key: 'narrowTable', section: 'options', label: 'When narrow', kind: 'choice', default: 'hide',
+  choices: [{ value: 'hide', label: 'Hide less important columns' }, { value: 'scroll', label: 'Scroll sideways' }] };
+export type NarrowTable = 'hide' | 'scroll';
+export const narrowTableOf = (options: Readonly<Record<string, unknown>> | undefined): NarrowTable => options?.narrowTable === 'scroll' ? 'scroll' : 'hide';
+
 export const TABLE_OPTIONS: readonly OptionField[] = [
   { key: 'cellBars', section: 'options', label: 'Cell bars', kind: 'toggle', default: true },
   { key: 'rankMarkers', section: 'options', label: 'Rank change markers', kind: 'toggle', default: true },
   { key: 'density', section: 'options', label: 'Density', kind: 'choice', default: 'comfortable',
     choices: [{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }] },
+  NARROW_TABLE_OPTION,
 ];
 
 /** Persist both parts through the widget's normal option contract. */

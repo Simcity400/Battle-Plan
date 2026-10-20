@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { NarrowTable } from '../../charts/table/options';
 import ArtFallback from '../../components/ArtFallback';
 import { Segmented } from '../../components/Segmented';
 import { dayLabel } from '../../charts/draw';
@@ -32,8 +33,8 @@ const COUNTS: readonly { value: StockCount; label: string; tooltip: string }[] =
  * the game's surplus or shortage (shortages first), with its models and output a day.
  * For an AI-controlled country, for which the game computes none, what it holds. Rows
  * open the type's breakdown; the rest of the types are counted, not listed. */
-export default function StockpileTable({ data, hour, included, count, setCount, active, runtime, track, viewport, onDiagnostics, onPick }: {
-  data: EquipmentStockpileReply; hour: number; included: readonly string[]; count: StockCount; setCount?: (count: StockCount) => void;
+export default function StockpileTable({ data, hour, included, count, setCount, narrow, active, runtime, track, viewport, onDiagnostics, onPick }: {
+  data: EquipmentStockpileReply; hour: number; included: readonly string[]; count: StockCount; setCount?: (count: StockCount) => void; narrow: NarrowTable;
   active: boolean; runtime: WidgetProps['runtime']; track: BoundTrack; viewport: number; onDiagnostics: WidgetProps['onDiagnostics'];
   onPick: (group: StockGroup, hour: number, mode: StockpileMode) => void;
 }) {
@@ -66,7 +67,8 @@ export default function StockpileTable({ data, hour, included, count, setCount, 
           </span> }
       : { key: 'stock', header: 'In stock', label: 'In stock', numeric: true, width: 'max-content', value: row => row.stock, renderMissing: true,
         render: row => row.stock == null ? <span className="stockpile-missing">Not recorded</span> : formatAmount(row.stock, data.decimals, 0) },
-    { key: 'output', header: count === 'ic' ? 'IC / day' : 'Output / day', label: count === 'ic' ? 'IC a day' : 'Output a day', numeric: true, width: 'max-content',
+    { key: 'output', header: count === 'ic' ? 'IC / day' : 'Output / day', label: count === 'ic' ? 'IC a day' : 'Output a day', numeric: true, width: 'max-content', priority: 1,
+      text: row => row.output == null ? 'Not recorded' : formatRate(row.output, data.decimals),
       value: row => row.output, renderMissing: true,
       render: row => row.output == null ? <span className="stockpile-missing">Not recorded</span>
         : <span className={row.output === 0n ? 'stockpile-zero-output' : undefined}>{formatRate(row.output, data.decimals)}</span> },
@@ -80,7 +82,7 @@ export default function StockpileTable({ data, hour, included, count, setCount, 
     </div>
     {rows.length === 0 ? <p className="stockpile-empty">Nothing of the included types was recorded on {date}.</p>
       : <div className="stockpile-table-rows" style={{ height: Math.min(rows.length * ROW_HEIGHT + 28, Math.max(160, viewport)) }}>
-        <Table label={`Equipment stockpile on ${date}`} rows={rows} columns={columns} rowKey={row => row.group.key} rowHeight={ROW_HEIGHT}
+        <Table label={`Equipment stockpile on ${date}`} rows={rows} columns={columns} rowKey={row => row.group.key} rowHeight={ROW_HEIGHT} narrow={narrow}
           sort={player ? { column: 'surplus', direction: 'ascending' } : { column: 'stock', direction: 'descending' }}
           onRowClick={row => onPick(row.group, hour, player ? 'balance' : 'stock')}
           tooltip={row => groupTooltip(data, row.group, 'type', hour, { title: row.group.label, subtitle: date,

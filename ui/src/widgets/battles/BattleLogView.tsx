@@ -4,7 +4,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { ComponentType } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { logSettings } from '../../charts/log/logOptions';
-import { tableSortOf } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { jumpItem } from '../../charts/jump';
 import type { TooltipRow } from '../../charts/tooltip';
@@ -228,7 +228,7 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
     {(() => {
       const props: BattleLogProps<Row> = { rows: named, label: adapter.definition.title, labels: adapter.labels, country, live: live && shownHour === hour, view,
         log: logSettings(options), measures: adapter.measures, sort: sort.column === 'measure' ? { ...sort, column: rankedMeasure } : sort,
-        setOption, cellBars: options.cellBars === true, rankMarkers: options.rankMarkers === true, hoursPerSecond,
+        setOption, cellBars: options.cellBars === true, rankMarkers: options.rankMarkers === true, narrow: narrowTableOf(options), hoursPerSecond,
         menu: row => [jumpItem(runtime, track.id, battleJumpHour(row))], empty: `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`,
         note: adapter.note, formatLoss: adapter.formatLoss, compactSides: adapter.compactSides, resultMeasure: adapter.resultMeasure,
         description: adapter.description, tooltipRows: adapter.tooltipRows, onVisibleRows, placePending,

@@ -6,7 +6,7 @@ import { jumpItem } from '../../charts/jump';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
-import { tableSortOf } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { runAt } from '../../charts/series';
 import { fitTooltip } from '../../charts/tooltip';
@@ -104,14 +104,14 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
           </span>
         </span>;
       } },
-    { key: 'skill', header: 'Skill', label: 'Skill', numeric: true, bar: 'visible',
+    { key: 'skill', header: 'Skill', label: 'Skill', numeric: true, bar: 'visible', priority: 2,
       width: 'minmax(calc(var(--space-6) * 3), 1fr)', value: row => row.run.value.skill },
-    { key: 'experience', header: 'Experience', label: 'Experience', numeric: true, renderMissing: true,
+    { key: 'experience', header: 'Experience', label: 'Experience', numeric: true, renderMissing: true, priority: 3, text: row => row.run.value.experienceText ?? 'Unknown',
       width: 'minmax(calc(var(--space-6) * 5), 1fr)', value: row => BigInt(row.run.value.experienceRaw),
       render: row => <span className="operative-experience"><span>{row.run.value.experienceText ?? 'Unknown'}</span>
         {options.cellBars === true && row.run.value.experienceRatio !== null && <ProgressMeter value={row.run.value.experienceRatio} state={row.departed ? 'idle' : 'live'} label="Operative experience" />}
       </span> },
-    { key: 'assignment', header: 'Assignment', label: 'Assignment', renderMissing: true,
+    { key: 'assignment', header: 'Assignment', label: 'Assignment', renderMissing: true, priority: 1, text: row => row.run.value.assignmentName ?? 'Unknown',
       width: 'minmax(calc(var(--space-6) * 9), 2fr)', value: row => row.run.value.assignmentName,
       render: row => {
         const value = row.run.value;
@@ -123,7 +123,10 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
           </span>
         </span>;
       } },
-    { key: 'captured', header: 'Captured', label: 'Captured', renderMissing: true,
+    { key: 'captured', header: 'Captured', label: 'Captured', renderMissing: true, priority: 4,
+      text: row => { const value = row.run.value; return value.captured !== true ? value.captured === null ? 'Unknown' : 'No'
+        : [value.capturerTag === null ? 'Yes · capturer unknown' : labelAt(operativeLabelHour(row, hour))(value.capturerTag).name,
+          value.capturedHour === null ? 'Capture date unknown' : formatDateTime(value.capturedHour)].join(' · '); },
       width: 'minmax(calc(var(--space-6) * 8), 2fr)', value: row => row.run.value.captured === null ? null : Number(row.run.value.captured),
       render: row => {
         const value = row.run.value;
@@ -158,7 +161,7 @@ export default function OperativesRosterWidget({ widget, runtime, active, setOpt
   else body = <Table label="Operatives roster" rows={rows} columns={columns} rowKey={rowKey}
       sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}
       cellBars={options.cellBars === true} rank={options.showRank === true} rankMarkers={options.rankMarkers === true}
-      density={options.density === 'compact' ? 'compact' : 'comfortable'} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} muted={muted}
+      density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} muted={muted}
       menu={row => operativeMoments(row).map(moment => ({ ...jumpItem(runtime, track.id, moment.hour), label: moment.label }))}
       tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
   return <div ref={root} className="operatives-roster">

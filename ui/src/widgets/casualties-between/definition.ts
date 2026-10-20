@@ -1,4 +1,5 @@
 import { breakdownOption, breakdownVariants, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+import { NARROW_TABLE_OPTION } from '../../charts/table/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
 
@@ -10,7 +11,7 @@ export const OPTIONS: readonly OptionField[] = [{ key: 'mostCountries', section:
     choices: [{ value: 'touching', label: 'Their casualties with anyone' }, { value: 'between', label: 'Only casualties between them' }] }, DRILL_OPTION,
   breakdownOption([DETAIL], 'Chord'),
   { key: 'pairSelection', section: 'options', label: 'Pair selection', kind: 'content-choice', automatic: 'All recorded pairs',
-    default: '', visibleWhen: () => false }];
+    default: '', visibleWhen: () => false }, NARROW_TABLE_OPTION];
 export const definition = {
   kind: 'casualties-between', version: 1, title: 'Casualties between countries', icon: 'target',
   description: 'Recorded casualties dealt from each country to each enemy country.',

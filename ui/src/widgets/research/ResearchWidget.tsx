@@ -1,4 +1,5 @@
 import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { NarrowTable } from '../../charts/table/options';
 import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
@@ -17,7 +18,7 @@ import Table from '../../charts/table/Table';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import type { TableColumn } from '../../charts/table/Table';
-import { tableSortOf } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { hideTooltip, showTooltip } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
@@ -217,7 +218,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
     {view === 'columns'
       ? <ResearchColumns lanes={lanes} slots={slots} coverage={coverage} hour={hour} moment={moment} text={text} dimmed={dimmed} tip={tip} untip={untip} jump={jump} onOpen={open} data={data} />
       : <ResearchList lanes={lanes} slots={slots} coverage={coverage} held={held} text={text} chosen={chosen} looks={looks}
-        sort={tableSortOf(options.tableSort, DEFAULT_SORT)} density={options.density === 'compact' ? 'compact' : 'comfortable'}
+        sort={tableSortOf(options.tableSort, DEFAULT_SORT)} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
         setOption={setOption} menu={row => row.kind === 'gap' ? [] : [jumpItem(runtime, track.id, row.kind === 'held' ? row.run.endedByHour ?? row.run.lastHour : row.hour)]}
         onOpen={open} />}
     <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} />
@@ -273,10 +274,10 @@ function ResearchColumns({ lanes, slots, coverage, hour, moment, text, dimmed, t
 
 /** Every completed technology (or what an older recording's slots held) as one
  * table row; the recording's gaps keep their place while sorted by date. */
-function ResearchList({ lanes, slots, coverage, held, text, chosen, looks, sort, density, setOption, menu, onOpen }: {
+function ResearchList({ lanes, slots, coverage, held, text, chosen, looks, sort, density, narrow, setOption, menu, onOpen }: {
   lanes: readonly ResearchLane[]; slots: readonly ResearchSlotHistory[]; coverage: readonly ResearchCoverage[]; held: boolean; text: ResearchText;
   chosen: ReadonlySet<string>; looks: ReadonlyMap<string, ResearchFolderLook>; sort: { column: string; direction: 'ascending' | 'descending' };
-  density: 'comfortable' | 'compact'; setOption: WidgetProps['setOption'];
+  density: 'comfortable' | 'compact'; narrow: NarrowTable; setOption: WidgetProps['setOption'];
   menu: (row: ResearchRow) => ReturnType<typeof jumpItem>[]; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
 }) {
   const pointer = useRef<{ x: number; y: number } | null>(null);
@@ -292,13 +293,14 @@ function ResearchList({ lanes, slots, coverage, held, text, chosen, looks, sort,
       value: row => row.kind === 'gap' ? null : text.name(row.token), renderMissing: true,
       render: row => row.kind === 'gap' ? <span className="research-list-gap">{researchDateRange(row.hour, row.lastHour)}</span>
         : <span className="research-list-tech"><Art icon={text.icon(row.token)} className="research-list-art" /><span>{text.name(row.token)}</span></span> },
-    { key: 'folder', label: 'Folder', header: 'Folder', width: 'minmax(6em, 0.6fr)',
+    { key: 'folder', label: 'Folder', header: 'Folder', width: 'minmax(6em, 0.6fr)', priority: 2,
       value: row => row.kind === 'gap' ? null : looks.get(row.token)?.name ?? null, renderMissing: true,
       render: row => { const look = row.kind === 'gap' ? undefined : looks.get(row.token);
         return look ? <span className="research-list-folder"><i style={{ background: look.colour }} />{look.name}</span> : null; } },
-    { key: 'slot', label: 'Slot', header: 'Slot', numeric: true, width: 'max-content', value: row => row.kind === 'gap' ? null : row.slot.index + 1, renderMissing: true,
+    { key: 'slot', label: 'Slot', header: 'Slot', numeric: true, width: 'max-content', priority: 3, value: row => row.kind === 'gap' ? null : row.slot.index + 1, renderMissing: true,
       render: row => row.kind === 'gap' ? null : row.slot.index + 1 },
-    { key: 'took', label: held ? 'Held' : 'Took', header: held ? 'Held' : 'Took', numeric: true, width: 'max-content',
+    { key: 'took', label: held ? 'Held' : 'Took', header: held ? 'Held' : 'Took', numeric: true, width: 'max-content', priority: 1,
+      text: row => { if (row.kind === 'gap') return null; const hours = row.kind === 'completed' ? row.tookHours : row.heldHours; return hours === null ? null : researchDays(hours); },
       value: row => row.kind === 'completed' ? row.tookHours : row.kind === 'held' ? row.heldHours : null, renderMissing: true,
       render: row => { if (row.kind === 'gap') return null; const hours = row.kind === 'completed' ? row.tookHours : row.heldHours;
         return hours === null ? <span className="research-list-missing">—</span> : researchDays(hours); } },
@@ -313,7 +315,7 @@ function ResearchList({ lanes, slots, coverage, held, text, chosen, looks, sort,
     onOpen({ slotIndex: row.slot.index, entry: row.entry }, () => box);
   };
   const body: ReactNode = rows.length
-    ? <Table label="Research history" rows={rows} columns={columns} rowKey={row => row.key} sort={sort} setOption={setOption}
+    ? <Table label="Research history" rows={rows} columns={columns} rowKey={row => row.key} sort={sort} setOption={setOption} narrow={narrow}
       {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, item: (row: ResearchRow) => {
         if (row.kind === 'gap') return row;
         const { slot, ...item } = row;

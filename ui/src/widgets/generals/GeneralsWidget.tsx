@@ -6,7 +6,7 @@ import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import { jumpItem } from '../../charts/jump';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
-import { tableSortOf } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
@@ -79,20 +79,20 @@ export default function GeneralsWidget(props: WidgetProps) {
         renderMissing: true, render: r => <SkillStars level={r.value.skill} maximum={r.value.maximumSkill} /> },
       { key: 'attributes', header: <AttributesHeader names={attributeMaxima.map((_, i) =>
           [...new Set(rows.map(row => attributeNames(row.value)[i]))].join(' / ') || 'Name not recorded')} />,
-        label: 'Attributes', sortable: false, width: '150px', value: () => null, renderMissing: true,
+        label: 'Attributes', sortable: false, width: '150px', priority: 4, inTooltip: true, value: () => null, renderMissing: true,
         render: row => <Attributes values={row.value.components} maxima={attributeMaxima} names={attributeNames(row.value)} bars={options.cellBars === true} /> },
-      { key: 'traits', header: 'Traits', label: 'Traits', sortable: false, width: '1.1fr', value: r => r.value.traits?.length,
+      { key: 'traits', header: 'Traits', label: 'Traits', sortable: false, width: '1.1fr', priority: 5, inTooltip: true, value: r => r.value.traits?.length,
         renderMissing: true, render: r => <span className="leader-traits">{r.value.traits == null ? <span className="leader-missing">Not recorded</span> : r.value.traits.map(token => {
           const trait = r.traitCatalogue[token]; const name = contentTitle(trait?.name, trait?.token ?? token, 'Trait name unavailable');
           return trait?.icon ? <img key={token} src={trait.icon} alt={name} /> : <span className="leader-trait-chip" key={token}>{name}</span>;
         })}</span> },
       { key: 'won', header: 'Won', label: 'Battles won', numeric: true, width: '64px', value: wonValue, renderMissing: true,
         render: r => r.won ?? <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : "Result not recorded"}>—</span> },
-      { key: 'lost', header: 'Lost', label: 'Battles lost', numeric: true, width: '64px', value: lostValue, renderMissing: true,
+      { key: 'lost', header: 'Lost', label: 'Battles lost', numeric: true, width: '64px', priority: 1, inTooltip: true, value: lostValue, renderMissing: true,
         render: r => r.lost ?? <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : "Result not recorded"}>—</span> },
-      { key: 'unresolved', header: 'Unresolved', label: 'Unresolved battles', numeric: true, width: '88px', value: unresolvedValue, renderMissing: true,
+      { key: 'unresolved', header: 'Unresolved', label: 'Unresolved battles', numeric: true, width: '88px', priority: 3, inTooltip: true, value: unresolvedValue, renderMissing: true,
         render: r => <span className={r.preparing ? "leader-missing" : undefined} data-tooltip={r.preparing ? "Still being prepared" : "Battles with no known result."}>{r.unresolved ?? "\u2014"}</span> },
-      { key: 'fought', header: 'Fought', label: 'Fought', sortable: false, numeric: true, width: '64px', value: r => r.fought, renderMissing: true,
+      { key: 'fought', header: 'Fought', label: 'Fought', sortable: false, numeric: true, width: '64px', priority: 2, inTooltip: true, value: r => r.fought, renderMissing: true,
         render: r => <span className={r.preparing ? "leader-missing" : undefined} data-tooltip={r.preparing ? "Still being prepared" : recordedSince(r.career, data!.firstHour)}>{r.fought ?? "\u2014"}</span> },
       { key: 'winRate', header: 'Win %', label: 'Win rate among decided battles', numeric: true, width: '56px', value: winRateValue, renderMissing: true,
         render: r => r.winRate == null ? <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : r.won == null ? "Result not recorded" : "No battles with known results."}>—</span> : <span data-tooltip="Win rate among decided battles">{Math.round(r.winRate)}%</span> },
@@ -114,7 +114,7 @@ export default function GeneralsWidget(props: WidgetProps) {
     : !rows.length ? <WidgetState kind="empty" message="No leaders for these countries at this time." />
     : <div className="leader-table">{preparing && <p className="chart-line-key" role="status">Battle counts and earlier leaders are still being prepared.</p>}<Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Generals leaderboard" rows={rows} columns={columns} rowKey={rowKey} rowHeight={48} rank
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
-      density={options.density === 'compact' ? 'compact' : 'comfortable'} onRowClick={open} tooltip={tooltip} onVisibleRows={setVisible}
+      density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip} onVisibleRows={setVisible}
       {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, reads: { traitCatalogue: data.traits },
         item: ({ traitCatalogue: _catalogue, ...row }: LeaderRow) => row } } : {})}
       menu={r => r.preparing ? [] : [{ ...jumpItem(runtime, track.id, r.career.runs[0].firstHour), label: `Jump to first seen ${formatDateTime(r.career.runs[0].firstHour)}` }, { label: 'Open career', run: () => open(r) }]}

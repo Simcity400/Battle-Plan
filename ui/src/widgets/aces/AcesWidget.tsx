@@ -4,7 +4,7 @@ import WidgetState from '../../components/WidgetState';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import Table from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
-import { tableSortOf } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
@@ -87,9 +87,9 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
           : <span className="aces-flag aces-country-missing" role="img" aria-label="Country not recorded" data-tooltip="Country not recorded" />}
         {aceCallsign(row) ? `“${aceCallsign(row)}”` : ''}
       </small></div>; } },
-    { key: 'wing', header: 'Wing · aircraft', label: 'Wing and aircraft', sortable: false, width: 'minmax(var(--table-name-min), 1fr)', value: () => null, renderMissing: true,
+    { key: 'wing', header: 'Wing · aircraft', label: 'Wing and aircraft', sortable: false, width: 'minmax(var(--table-name-min), 1fr)', priority: 2, inTooltip: true, value: () => null, renderMissing: true,
       render: row => <div className="aces-wing"><span title={wingName(row)}>{wingName(row)}</span><small title={aircraftName(row)}>{aircraftName(row)}</small></div> },
-    { ...SORT_CHOICES[0], label: 'Status', header: 'Status', width: 'var(--military-status-column)', value: row => row.ace.firstSeen, renderMissing: true,
+    { ...SORT_CHOICES[0], label: 'Status', header: 'Status', width: 'var(--military-status-column)', priority: 1, inTooltip: true, value: row => row.ace.firstSeen, renderMissing: true,
       render: row => <small className="aces-status">{aceStatus(row)}</small> },
   ], [portraits, labelAt]);
   const tooltip = useCallback((row: AceRow) => fitTooltip([aceTooltip(row, tag => labelAt(row.hour)(tag).name)], viewport), [labelAt, viewport]);
@@ -111,7 +111,7 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   if (!display) return <WidgetState kind="loading" label="Loading aces..." />;
   if (!rows.length) return <WidgetState kind="empty" icon="star" message="No aces match these settings." />;
   return <div ref={root} className="aces-widget">{preparing && <p className="chart-line-key" role="status">Ace and death dates are still being prepared. Current roster sorted by name.</p>}{(pending || loaded.error) && <div className="aces-loading" role="status">{loaded.error ? 'Couldn’t load aces.' : 'Updating…'}{loaded.error && <button onClick={loaded.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
-    rowHeight={50} cellBars={false} rankMarkers={false} density="comfortable"
+    rowHeight={50} cellBars={false} rankMarkers={false} density="comfortable" narrow={narrowTableOf(options)}
     muted={row => !row.run.alive} menu={row => row.preparing ? [] : [jumpItem(runtime, track.id, aceJump(row))]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={speed}
     {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, item: aceRowModel } } : {})} /></div>;
 }

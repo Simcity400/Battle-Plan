@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { narrowTableOf } from '../../charts/table/options.ts';
 import WidgetState from '../../components/WidgetState';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { Segmented } from '../../components/Segmented';
@@ -237,7 +238,7 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     validate={validateProducedReply} decode={decodeDrill} numbers={producedDrillNumbers} defaultTag={mixTag} pickTag={pickDrillTag}
     title="Equipment types" measure={measureLabel} positiveGeometry warnings={warnings} state={state}
     resetKey={JSON.stringify([track?.source.id, track?.branch.id, measure, count, included, refits, widget.countries])}
-    details={({ tag, hour, tagAt, key }) => track && <ProducedDrillTable runtime={runtime} track={track} active={active} tag={tag} hour={hour} tagAt={tagAt}
+    details={({ tag, hour, tagAt, key }) => track && <ProducedDrillTable runtime={runtime} track={track} active={active} tag={tag} hour={hour} tagAt={tagAt} narrow={narrowTableOf(options)}
       measure={measure} refits={refits} count={count} chartType={chartSpec.type} chartKey={key}
       chartTitle={chartSpec.type == null ? `IC put into equipment ${measureLabel.toLowerCase()}, by type`
         : `${typeName(chartSpec.type)}: ${count === 'ic' ? 'IC put in' : 'units delivered'} ${measureLabel.toLowerCase()}, by model`}

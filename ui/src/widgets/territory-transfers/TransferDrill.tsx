@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { NarrowTable } from '../../charts/table/options';
 import { CountryCell } from '../../charts/table/Table';
 import { usNumber } from '../../charts/numberFormat';
 import { formatSigned } from '../../charts/valueAxis';
@@ -18,7 +19,7 @@ export default function TransferDrill({ rows, focus, labels, named, outside, ...
   rows: readonly TransferOccurrence[]; focus: string | null; labels: TransferLabels;
   /** A pinned breakdown names its country; the drill's header already does. */
   named: boolean; outside: boolean;
-  sort: Sort; setOption?: WidgetProps['setOption']; cellBars: boolean; density: 'comfortable' | 'compact'; hoursPerSecond: number;
+  sort: Sort; setOption?: WidgetProps['setOption']; cellBars: boolean; density: 'comfortable' | 'compact'; narrow: NarrowTable; hoursPerSecond: number;
   tooltip: (row: TransferOccurrence) => TooltipContent; menu: (row: TransferOccurrence) => MenuItem[];
   onVisibleRows: (rows: readonly TransferOccurrence[]) => void;
 }) {

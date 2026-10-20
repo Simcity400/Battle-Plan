@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { commitRows, EMPTY_HISTORY, shownRows } from '../rowMotion.ts';
-import { barFraction, barMaximum, groupedRows, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
+import { FULL_FIT, barFraction, barMaximum, fitColumns, groupedRows, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
 import { sortKey, tableSortOf, tableSortOptions, TABLE_OPTIONS } from './options.ts';
 import { resolveOptions, setOption } from '../../dashboard/options.ts';
 
@@ -182,4 +182,21 @@ test('wrapped-row geometry follows measured identities across reorder and suppor
   const [start, end] = visibleRange(offsets, offsets[4900], 500);
   assert.ok(start <= 4900 && end > 4900 && end - start < 30);
   assert.deepEqual(measuredRowOffsets(['a', 'unknown'], new Map([['a', 4]]), 34), [0, 34, 68]);
+});
+
+test('narrow tables hide one prioritised column per pass and restore it once its width returns', () => {
+  const order = ['third', 'second', 'first'];
+  let fit = FULL_FIT;
+  fit = fitColumns(fit, order, 300, 520);
+  assert.deepEqual(fit, { hidden: ['third'], needs: [520] });
+  fit = fitColumns(fit, order, 300, 410);
+  assert.deepEqual(fit, { hidden: ['third', 'second'], needs: [520, 410] });
+  assert.equal(fitColumns(fit, order, 300, 300.6), fit, 'sub-pixel rounding is not overflow');
+  assert.equal(fitColumns(fit, order, 409, 300), fit, 'a column returns only once the width it needed is back');
+  fit = fitColumns(fit, order, 410, 300);
+  assert.deepEqual(fit, { hidden: ['third'], needs: [520] });
+  const all = fitColumns(fitColumns(fitColumns(FULL_FIT, order, 100, 900), order, 100, 800), order, 100, 700);
+  assert.equal(fitColumns(all, order, 100, 600), all, 'nothing left to hide keeps sideways scroll');
+  assert.deepEqual(fitColumns(fit, ['second', 'first'], 300, 300), FULL_FIT, 'a changed order drops hidden columns it no longer starts with');
+  assert.equal(fitColumns(fit, order, 0, 0), fit, 'an unmeasured table changes nothing');
 });

@@ -136,3 +136,21 @@ export function scrollToShow(offsets: readonly number[], index: number, top: num
   if (end > top + height) return end - height;
   return top;
 }
+
+/** Which prioritised columns a narrow table hides, and the width each needed while shown. */
+export interface ColumnFit { readonly hidden: readonly string[]; readonly needs: readonly number[] }
+export const FULL_FIT: ColumnFit = { hidden: [], needs: [] };
+/** One step towards a table that fits: hide the next column while the content is wider
+ * than the table, or show the last hidden one again once the width it needed is back.
+ * `required` is the content's scroll width and `available` the table's client width. */
+export function fitColumns(fit: ColumnFit, order: readonly string[], available: number, required: number): ColumnFit {
+  let kept = 0;
+  while (kept < fit.hidden.length && fit.hidden[kept] === order[kept]) kept++;
+  const held = kept === fit.hidden.length ? fit : { hidden: fit.hidden.slice(0, kept), needs: fit.needs.slice(0, kept) };
+  if (!(available > 0)) return held;
+  if (required > available + 1) return held.hidden.length < order.length
+    ? { hidden: [...held.hidden, order[held.hidden.length]], needs: [...held.needs, required] } : held;
+  if (held.hidden.length && available >= held.needs[held.needs.length - 1])
+    return { hidden: held.hidden.slice(0, -1), needs: held.needs.slice(0, -1) };
+  return held;
+}

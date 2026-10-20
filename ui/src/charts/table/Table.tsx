@@ -5,16 +5,17 @@ import { useContextMenu } from '../../components/ContextMenu';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MenuItem } from '../../components/ContextMenu';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { hideTooltip, refreshTooltip, showTooltip, tooltipText } from '../tooltip';
+import { hideTooltip, refreshTooltip, scrollTooltip, showTooltip, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { movingRowClass, useRowMotion } from '../useRowMotion';
-import { useChartTokens } from '../useChartTokens';
+import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { easeTau } from '../easing';
-import { barFraction, barMaximum, densityRowHeight, groupedRows, isMissing, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
-import type { RankChange, Sort, TableGroup } from './logic';
-import { cellContent, columnAlign, growColumnWidths, tableGrid } from './columns.ts';
+import { FULL_FIT, barFraction, barMaximum, densityRowHeight, fitColumns, groupedRows, isMissing, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
+import type { ColumnFit, RankChange, Sort, TableGroup } from './logic';
+import { cellContent, columnAlign, growColumnWidths, hideOrder, tableGrid, withHidden } from './columns.ts';
 import type { TableColumn } from './columns';
 import { sortKey } from './options.ts';
+import type { NarrowTable } from './options';
 import { useParityRows } from '../../dashboard/parityRows';
 import type { ParityPreparation } from '../../dashboard/parityRows';
 import '../charts.css';
@@ -23,6 +24,7 @@ import './table.css';
 export type { TableColumn } from './columns';
 const WINDOWING_THRESHOLD = 120;
 const NO_KEYS: ReadonlySet<string> = new Set();
+const NO_COLUMNS: readonly TableColumn<never>[] = [];
 /** Unchanged markers keep their state, so new row objects in the same order do not re-render the table. */
 const sameRanks = (before: ReadonlyMap<string, RankChange>, next: ReadonlyMap<string, RankChange>) => before.size === next.size
   && [...next].every(([key, change]) => { const held = before.get(key); return held?.rank === change.rank && held.delta === change.delta && held.until === change.until; });
@@ -47,21 +49,25 @@ export interface TableProps<T> {
   /** Complete recording operands, with optional history preparation. */
   parity?: { complete: boolean; preparation?: ParityPreparation; item?: (row: T) => unknown; reads?: unknown };
   hoursPerSecond?: number;
+  /** Narrow tables hide prioritised columns into the row tooltip, or scroll sideways. */
+  narrow?: NarrowTable;
 }
 
 /** style-5 Scoreboard: real table semantics, only the viewport's rows mounted. */
 export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey, groupBy, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
   rank = false, rankMarkers = true, density = 'comfortable', rowHeight, onRowClick, muted, menu: rowMenu,
-  tooltip, onVisibleRows, parity, hoursPerSecond = 1 }: TableProps<T>) {
+  tooltip, onVisibleRows, parity, hoursPerSecond = 1, narrow = 'hide' }: TableProps<T>) {
   const owner = useId();
   const tokens = useChartTokens();
+  const viewportHeight = useViewportHeight();
   const keyboardMenu = useRef(false);
   const contextMenu = useContextMenu(`${label} actions`);
   const scroll = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ top: 0, height: 0, width: 0, rowHeight: 0, headerHeight: 0 });
   const [focusedKey, setFocusedKey] = useState<string | null>(null);
   const [description, setDescription] = useState<{ key: string; text: string } | null>(null);
-  const tipCache = useRef<{ row: T; build: NonNullable<TableProps<T>['tooltip']>; content: TooltipContent } | null>(null);
+  const tipCache = useRef<{ row: T; build: TableProps<T>['tooltip']; hidden: readonly TableColumn<T>[]; shown: readonly TableColumn<T>[];
+    key: string; viewport: number; content: TooltipContent | null } | null>(null);
   const activeTip = useRef<{ key: string; origin: 'pointer' | 'keyboard'; x: number; y: number } | null>(null);
   const [localSort, setLocalSort] = useState<Sort | null>(null);
   const { tableSize, tableFont, wrapping } = useMemo(() => {
@@ -80,6 +86,21 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const sortedColumn = columns.find(column => column.key === requestedSort.column && column.sortable !== false)
     ?? columns.find(column => column.sortable !== false);
   const sort = { column: sortedColumn?.key ?? '', direction: sortedColumn?.direction ?? requestedSort.direction };
+  // The row's identity (the first column) and the column it is sorted by never hide.
+  const order = useMemo(() => narrow === 'hide' ? hideOrder(columns).filter(key => key !== sort.column && key !== columns[0]?.key) : [],
+    [narrow, columns, sort.column]);
+  const [fit, setFit] = useState<{ scope: string; fit: ColumnFit }>({ scope: '', fit: FULL_FIT });
+  // Widths each column needed hold only for the same tracks and typography.
+  // The rank track takes width from the other columns too.
+  const fitScope = JSON.stringify([order, widthScope, rank]);
+  const columnFit = fit.scope === fitScope ? fit.fit : FULL_FIT;
+  const shownColumns = useMemo(() => {
+    if (!columnFit.hidden.length) return columns;
+    const hidden = new Set(columnFit.hidden);
+    return columns.filter(column => !hidden.has(column.key));
+  }, [columns, columnFit]);
+  const hiddenColumns = useMemo(() => columnFit.hidden.length
+    ? columns.filter(column => columnFit.hidden.includes(column.key) && !column.inTooltip) : NO_COLUMNS as readonly TableColumn<T>[], [columns, columnFit]);
   // Rebuilt column objects with the same accessor (such as new labels for another column) keep the order.
   const sortValue = sortedColumn?.value;
   const ordered = useMemo(() => {
@@ -228,7 +249,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     for (const element of scroll.current?.querySelectorAll('[data-table-natural]') ?? []) {
       if (!observed.has(element)) { observed.add(element); observer.observe(element); }
     }
-  }, [columns, visible, widthScope]);
+  }, [columns, shownColumns, visible, widthScope]);
   const measuredRows = useRef<{ observer: ResizeObserver; observed: Set<Element> } | null>(null);
   // Measure only mounted rows. Prefix geometry uses the last measured height of
   // each identity; new rows use the minimum until they enter the viewport.
@@ -279,12 +300,29 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const maxima = useMemo(() => new Map(columns.filter(column => column.bar != null).map(column => [column.key,
     column.bar === 'visible' ? barMaximum(ordered, column.value) : column.bar as number | bigint])), [columns, ordered]);
   useEffect(() => () => hideTooltip(owner), [owner]);
+  // A scrollable tooltip this table owns takes the wheel, as the chart kits' do; the layer
+  // itself ignores the pointer. Registered natively so the page scroll can be prevented.
+  useEffect(() => {
+    const element = scroll.current;
+    if (!element) return;
+    const wheel = (event: WheelEvent) => {
+      const delta = event.deltaY * (event.deltaMode === 1 ? tableSize * 1.4 : 1);
+      if (scrollTooltip(owner, delta, event.deltaMode === 2)) event.preventDefault();
+    };
+    element.addEventListener('wheel', wheel, { passive: false });
+    return () => element.removeEventListener('wheel', wheel);
+  }, [owner, tableSize]);
   const pointAt = (element: HTMLElement) => { const rect = element.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; };
   const contentFor = useCallback((row: T) => {
-    if (!tooltip) return null;
-    if (tipCache.current?.row !== row || tipCache.current.build !== tooltip) tipCache.current = { row, build: tooltip, content: tooltip(row) };
-    return tipCache.current.content;
-  }, [tooltip]);
+    if (!tooltip && !hiddenColumns.length) return null;
+    const held = tipCache.current, key = rowKey(row);
+    // Every input of the combined content: the row, the widget's builder, the hidden and shown
+    // columns, the row's key and the window height that decides whether it scrolls.
+    if (held?.row !== row || held.build !== tooltip || held.hidden !== hiddenColumns || held.shown !== shownColumns || held.key !== key || held.viewport !== viewportHeight)
+      tipCache.current = { row, build: tooltip, hidden: hiddenColumns, shown: shownColumns, key, viewport: viewportHeight,
+        content: withHidden(tooltip?.(row) ?? null, row, hiddenColumns, shownColumns, key, viewportHeight) };
+    return tipCache.current!.content;
+  }, [tooltip, hiddenColumns, shownColumns, rowKey, viewportHeight]);
   const clearTip = () => { activeTip.current = null; hideTooltip(owner); };
   const show = (key: string, row: T, origin: 'pointer' | 'keyboard', x: number, y: number) => {
     const content = contentFor(row);
@@ -312,7 +350,17 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     clearTip(); contextMenu.open(x, y, items);
     return true;
   };
-  const grid = tableGrid(columns, rank, natural.scope === widthScope ? natural.widths : new Map());
+  const grid = tableGrid(shownColumns, rank, natural.scope === widthScope ? natural.widths : new Map());
+  // Hide or restore one prioritised column per pass before paint, until the content fits.
+  useLayoutEffect(() => {
+    const element = scroll.current;
+    if (!element || !order.length) return;
+    setFit(before => {
+      const held = before.scope === fitScope ? before.fit : FULL_FIT;
+      const next = fitColumns(held, order, element.clientWidth, element.scrollWidth);
+      return next === held && before.scope === fitScope ? before : { scope: fitScope, fit: next };
+    });
+  }, [order, fitScope, fit, grid, view.width]);
   const naturalContent = (column: TableColumn<T>, content: ReactNode) => column.width === 'max-content'
     ? <span className="table-natural" data-table-natural={column.key}>{content}</span> : content;
   return <div ref={scroll} className={`chart-table${density === 'compact' ? ' is-compact' : ''}${wrapping ? ' is-wrapped' : ''}${measuring ? ' is-measuring' : ''}`}
@@ -321,7 +369,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     onWheel={() => { focusAnchor.current = false; }} onPointerDown={() => { focusAnchor.current = false; }}
     onScroll={event => { const element = event.currentTarget; const top = element.scrollTop; bottomAnchor.current = element.scrollHeight - element.clientHeight - top < 1; setView(before => before.top === top ? before : { ...before, top }); }} onPointerLeave={() => { if (activeTip.current?.origin === 'pointer') clearTip(); }}>
     <table aria-label={label} aria-rowcount={ordered.length + 1}>
-      <thead><tr>{rank && <th scope="col" className="table-rank">#</th>}{columns.map(column => <th key={column.key} scope="col"
+      <thead><tr>{rank && <th scope="col" className="table-rank">#</th>}{shownColumns.map(column => <th key={column.key} scope="col"
         className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`} aria-label={column.label} data-tooltip={column.hint}
         aria-sort={column.sortable === false ? undefined : sort.column === column.key ? sort.direction : 'none'}>
         {column.sortable === false ? naturalContent(column, column.header) : <button type="button" aria-label={column.label} onClick={() => {
@@ -351,6 +399,9 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
           }}
           onKeyDown={event => {
             if (event.target !== event.currentTarget) return;
+            if ((event.key === 'PageUp' || event.key === 'PageDown') && scrollTooltip(owner, event.key === 'PageUp' ? -1 : 1, true)) {
+              event.preventDefault(); return;
+            }
             if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
               const point = pointAt(event.currentTarget);
               if (open(row.item.value, point.x, point.y)) { event.preventDefault(); keyboardMenu.current = true; }
@@ -370,7 +421,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
             }
           }} onPointerDown={() => { keyboardMenu.current = false; }}>
           {rank && <td className="table-rank">{row.item.rank}{rankMarkers && change !== 0 && <span className={`table-delta ${change > 0 ? 'is-positive' : 'is-negative'}`}>{change > 0 ? '▲' : '▼'}{Math.abs(change)}</span>}</td>}
-          {columns.map(column => {
+          {shownColumns.map(column => {
             const value = column.value(row.item.value);
             const missing = isMissing(value);
             const content = cellContent(column, row.item.value, value);

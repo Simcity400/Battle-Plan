@@ -1,4 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import type { NarrowTable } from '../../charts/table/options';
+import { narrowTableOf } from '../../charts/table/options.ts';
 import WidgetState from '../../components/WidgetState';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -52,10 +54,10 @@ const AMOUNT: TableColumn<PairFlow> = { key: 'value', header: 'Casualties', labe
 
 /** The selected pairs' exact signed rows. Built only once the breakdown mounts,
  * and again only when the rows, their labels or colours change. */
-const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, speed, height, onPick, runtime, trackId }: {
+const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, speed, height, onPick, runtime, trackId, narrow }: {
   rows: readonly PairFlow[]; label: CountryLabel; hour: number; colors: ReadonlyMap<string, string>;
   columns: readonly TableColumn<PairFlow>[]; speed: number; height: number; onPick: (hour: number) => void;
-  runtime: WidgetProps['runtime']; trackId: string;
+  runtime: WidgetProps['runtime']; trackId: string; narrow: NarrowTable;
 }) {
   const subtotal = rows.some(row => row.incomplete);
   const total = useMemo(() => exactCount(rows.reduce((sum, row) => sum + row.value, 0n)), [rows]);
@@ -63,7 +65,7 @@ const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, sp
     const positive = rows.reduce((sum, row) => sum + (row.value > 0n ? row.value : 0n), 0n);
     return [...columns.map(column => column.key === 'value' ? { ...column,
       render: (flow: PairFlow) => <span><i className="casualty-pair-swatch" style={{ background: colors.get(flow.id) }} aria-hidden="true" />{pairAmount(flow)}</span>,
-    } : column), { key: 'share', label: 'Share', header: 'Share', numeric: true, width: 'max-content',
+    } : column), { key: 'share', label: 'Share', header: 'Share', numeric: true, width: 'max-content', priority: 1,
       value: (flow: PairFlow) => subtotal || positive === 0n || flow.value <= 0n ? null : Number(flow.value * 1000n / positive) / 10,
       render: (flow: PairFlow) => subtotal || positive === 0n || flow.value <= 0n ? '—' : `${Number(flow.value * 1000n / positive) / 10}%`,
     }];
@@ -73,7 +75,7 @@ const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, sp
   const tooltip = useCallback((flow: PairFlow) => fitTooltip([pairTooltip([flow], label, hour)], height), [label, hour, height]);
   return <><p className="casualty-breakdown-total">{subtotal ? 'Recorded subtotal' : 'Signed total'}: <b>{total}</b></p>
     <div className="casualty-pair-table"><Table label="Casualty pairs" rows={rows} rowKey={pairKey}
-      sort={SORT} hoursPerSecond={speed} cellBars={false} rankMarkers={false} menu={menu} tooltip={tooltip} columns={tableColumns} /></div></>;
+      sort={SORT} hoursPerSecond={speed} cellBars={false} rankMarkers={false} menu={menu} tooltip={tooltip} columns={tableColumns} narrow={narrow} /></div></>;
 });
 
 export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
@@ -231,7 +233,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
         : !detailData.observed.some(span => span.firstHour <= detailThrough && detailThrough <= span.lastHour)
           ? <p className="drill-empty">Casualty pairs were not recorded at {dayLabel(detailHour)}.</p>
           : !rows.length ? <p className="drill-empty">No selected casualty pairs at this time.</p>
-            : <PairRows rows={rows} label={detailLabel} hour={detailThrough} colors={colorById} columns={columns} speed={speed}
+            : <PairRows rows={rows} label={detailLabel} hour={detailThrough} colors={colorById} columns={columns} speed={speed} narrow={narrowTableOf(options)}
               height={height} onPick={pickDay} runtime={runtime} trackId={track.id} />}
     <div className="casualty-pair-history"><TimeChart label="Positive recorded casualties by directed pair over time"
       extent={[track.branch.firstHour, track.branch.lastHour]} branchStart={track.branch.firstHour}

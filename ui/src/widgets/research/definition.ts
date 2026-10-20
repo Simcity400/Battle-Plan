@@ -15,7 +15,7 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'columns', choices: VIEWS },
   { key: 'folders', section: 'options', label: 'Research folders', kind: 'content-set', automatic: 'All folders', default: '', catalogue: true },
   ...tableSortOptions(SORT_COLUMNS, DEFAULT_SORT).map(field => ({ ...field, visibleWhen: inList })),
-  ...TABLE_OPTIONS.filter(field => field.key === 'density').map(field => ({ ...field, visibleWhen: inList })),
+  ...TABLE_OPTIONS.filter(field => field.key === 'density' || field.key === 'narrowTable').map(field => ({ ...field, visibleWhen: inList })),
 ];
 
 export const definition = {

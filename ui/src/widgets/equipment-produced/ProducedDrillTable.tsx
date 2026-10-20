@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { NarrowTable } from '../../charts/table/options';
 import ArtFallback from '../../components/ArtFallback';
 import Legend from '../../charts/Legend';
 import { dayLabel } from '../../charts/draw';
@@ -22,8 +23,8 @@ const ROW_HEIGHT = 40;
  * and IC put in. Only IC is one currency, so only it has bars, shares and a total;
  * units of different types are never added up. A row picks the type the chart below
  * stacks by model. */
-export default function ProducedDrillTable({ runtime, track, active, tag, hour, tagAt, measure, refits, count, chartType, chartTitle, chartKey, onChart }: {
-  runtime: WidgetRuntime; track: BoundTrack; active: boolean; tag: string; hour: number; tagAt: (hour: number) => string | null;
+export default function ProducedDrillTable({ runtime, track, active, tag, hour, tagAt, measure, refits, count, chartType, chartTitle, chartKey, onChart, narrow }: {
+  runtime: WidgetRuntime; track: BoundTrack; active: boolean; tag: string; hour: number; tagAt: (hour: number) => string | null; narrow: NarrowTable;
   measure: Measure; refits: boolean; count: Count; chartType: string | null; onChart: (type: string) => void;
   /** The chart below: what it stacks, and its parts with their colours and exact values. */
   chartTitle: string; chartKey: readonly { id: string; label: string; color?: string; value: number | null }[];
@@ -51,7 +52,8 @@ export default function ProducedDrillTable({ runtime, track, active, tag, hour, 
           <span><b>{row.label}</b>{row.models && <small>{row.models}</small>}</span>
         </span>;
       } },
-    { key: 'units', header: 'Units', label: 'Units delivered', numeric: true, width: 'max-content', value: row => row.units,
+    { key: 'units', header: 'Units', label: 'Units delivered', numeric: true, width: 'max-content', priority: 1, value: row => row.units,
+      text: row => !row.recorded.units ? 'Not recorded' : row.units == null ? 'Not known' : formatRaw(row.units, 0),
       render: row => !row.recorded.units ? 'Not recorded' : row.units == null ? 'Not known' : formatRaw(row.units, 0), renderMissing: true },
     ...(icModel ? [{ key: 'ic', header: 'IC', label: 'IC put in', numeric: true, width: 'max-content', bar: 'visible' as const, value: (row: TypeRow) => row.ic,
       render: (row: TypeRow) => !row.recorded.ic ? 'Not recorded' : row.ic == null ? 'Not known' : <>{formatRaw(row.ic, icDecimals)} <small className="produced-share">{row.share}</small></>,
@@ -74,7 +76,7 @@ export default function ProducedDrillTable({ runtime, track, active, tag, hour, 
           {!rows ? <p className="drill-empty">{producedWindowUnavailable(measure)}</p>
             : rows.length === 0 ? <p className="drill-empty">Nothing delivered {window}.</p>
             : <div className="produced-table" style={{ height: Math.min(rows.length * ROW_HEIGHT + 28, 320) }}>
-              <Table label="Equipment produced by type" rows={rows} columns={columns} rowKey={row => row.type} rowHeight={ROW_HEIGHT}
+              <Table label="Equipment produced by type" rows={rows} columns={columns} rowKey={row => row.type} rowHeight={ROW_HEIGHT} narrow={narrow}
                 sort={{ column: count === 'ic' && icModel ? 'ic' : 'units', direction: 'descending' }} onRowClick={row => onChart(row.type)} />
             </div>}
         </>;

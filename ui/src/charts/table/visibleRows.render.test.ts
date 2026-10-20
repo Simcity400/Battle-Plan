@@ -78,7 +78,7 @@ test('a parent that rebuilds its column accessors on every render does not loop 
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'table-visible-rows-fixture', enforce: 'pre',
       transform(_source, id) {
         const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/charts/useChartTokens.ts')) return `export const useChartTokens = () => (${JSON.stringify(tokens)});`;
+        if (path.endsWith('/charts/useChartTokens.ts')) return `export const useChartTokens = () => (${JSON.stringify(tokens)}); export const useViewportHeight = () => 800;`;
         if (path.endsWith('/components/ContextMenu.tsx')) return 'export const useContextMenu = () => ({ open() {}, menu: null });';
       },
     }] });

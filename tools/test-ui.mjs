@@ -11,6 +11,7 @@ const tabFullTest = 'ui/src/components/VirtualList.dom.test.ts';
 // Add every browser fixture here. The dependency check below refuses omissions.
 export const browserTests = [
   'ui/src/charts/shareDrawing.test.ts',
+  'ui/src/charts/table/Table.dom.test.ts',
   'ui/src/components/CountryFlag.dom.test.ts',
   'ui/src/components/Select.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',

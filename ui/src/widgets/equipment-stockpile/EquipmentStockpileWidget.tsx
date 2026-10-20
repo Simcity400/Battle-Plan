@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { narrowTableOf } from '../../charts/table/options.ts';
 import { Select } from '../../components/Select';
 import { createPortal } from 'react-dom';
 import ContentSetPicker from '../../components/ContentSetPicker';
@@ -163,7 +164,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
       ? <OverTime data={data} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track} extent={extent} playhead={playhead}
         within={within} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
         onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
-      : <StockpileTable data={data} hour={head} included={included} count={count} setCount={setOption ? value => setOption('count', value) : undefined}
+      : <StockpileTable data={data} hour={head} included={included} count={count} setCount={setOption ? value => setOption('count', value) : undefined} narrow={narrowTableOf(options)}
         active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
         runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
   </div> : null;

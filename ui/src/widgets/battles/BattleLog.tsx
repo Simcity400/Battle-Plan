@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react';
+import type { NarrowTable } from '../../charts/table/options';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MenuItem } from '../../components/ContextMenu';
 import LogList from '../../charts/log/LogList';
@@ -43,6 +44,7 @@ export interface BattleLogProps<T extends BattleRow> {
   setOption?: WidgetProps['setOption'];
   cellBars: boolean;
   rankMarkers: boolean;
+  narrow?: NarrowTable;
   hoursPerSecond: number;
   menu: (row: T) => MenuItem[];
   empty: string;
@@ -72,7 +74,7 @@ function Side<T extends BattleRow>({ row, index, country, formatLoss }: { row: T
 
 /** The caller supplies every measure and word; no battle-domain facts live here. */
 export default function BattleLog<T extends BattleRow>({ rows, label, labels, country, live, view, log, measures, resultMeasure, sort,
-  setOption, cellBars, rankMarkers, hoursPerSecond, menu, empty, note, formatLoss, compactSides, description, tooltipRows, onVisibleRows, placePending, paritySemantic }: BattleLogProps<T>) {
+  setOption, cellBars, rankMarkers, narrow, hoursPerSecond, menu, empty, note, formatLoss, compactSides, description, tooltipRows, onVisibleRows, placePending, paritySemantic }: BattleLogProps<T>) {
   const viewportHeight = useViewportHeight();
   const logs = useMemo(() => view === 'log' ? battleLogRows(rows, live) : [], [rows, live, view]);
   const tooltip = useCallback((row: T) => {
@@ -91,16 +93,18 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
   const columns = useMemo<readonly TableColumn<T>[]>(() => [
     { key: 'place', header: labels.place, label: labels.place, value: row => row.place.name,
       renderMissing: true, sortable: false, width: 'minmax(160px, 1fr)', render: row => place(row, false) },
-    { key: 'date', header: labels.date, label: labels.date, value: row => battleDateMoment(row)?.hour ?? null, width: 'max-content', renderMissing: true,
+    { key: 'date', header: labels.date, label: labels.date, value: row => battleDateMoment(row)?.hour ?? null, width: 'max-content', renderMissing: true, priority: 1,
+      text: row => battleShortDate(row, labels.unknownStart),
       render: row => <span className="battle-table-date" title={battleDate(battleDateMoment(row), labels.unknownStart)}>
         {live && row.end === null && <i className="live-dot" aria-label={labels.ongoing} />}{battleShortDate(row, labels.unknownStart)}</span> },
-    ...measures.map(measure => ({ key: measure.label, header: measure.title, label: measure.title, hint: measure.hint, numeric: true, width: 'max-content',
+    ...measures.map((measure, index) => ({ key: measure.label, header: measure.title, label: measure.title, hint: measure.hint, numeric: true, width: 'max-content',
+      priority: 3 + index, text: (row: T) => { const value = measure.value(row); return value.value === null ? '—' : (measure.format ?? battleValueText)(value, row); },
       renderMissing: true, value: (row: T) => measure.value(row).value, bar: 'visible' as const,
       render: (row: T) => { const value = measure.value(row); return <span title={(measure.tooltipFormat ?? measure.format ?? battleValueText)(value, row)}>
         {value.value === null ? '—' : (measure.format ?? battleValueText)(value, row)}</span>; } })),
     { key: 'sides', header: compactSides?.label ?? '', label: compactSides?.label ?? label, value: row => row.id, sortable: false,
       width: compactSides ? 'calc(var(--space-6) * 7)' : 'minmax(160px, 2fr)', render: sides },
-    { key: 'winner', header: labels.winner, label: labels.winner, value: row => 'unknown' in row.winner ? null : battleWinner(row), width: 'max-content',
+    { key: 'winner', header: labels.winner, label: labels.winner, value: row => 'unknown' in row.winner ? null : battleWinner(row), width: 'max-content', priority: 2,
       renderMissing: true, render: row => <span title={battleWinner(row)}>{'unknown' in row.winner ? '—' : battleWinner(row)}</span> },
   ], [labels, measures, country, label, compactSides, view, live, formatLoss, description]);
   let tableParity: TableProps<T>['parity'];
@@ -113,7 +117,7 @@ export default function BattleLog<T extends BattleRow>({ rows, label, labels, co
     }
   }
   if (view === 'biggest') return <div className="battle-view"><Table label={label} rows={rows} columns={columns} rowKey={rowKey}
-    sort={sort} setOption={setOption} cellBars={cellBars} rank rankMarkers={rankMarkers} density={log.density}
+    sort={sort} setOption={setOption} cellBars={cellBars} rank rankMarkers={rankMarkers} narrow={narrow} density={log.density}
     menu={menu} tooltip={row => fitTooltip([tooltip(row)], viewportHeight)} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond}
     {...(import.meta.env.MODE === 'parity' ? { parity: tableParity } : {})} /></div>;
   return <div className="battle-view"><LogList anchorRows rows={logs} label={label} density={log.density} months={log.months} animate={live && log.animate}

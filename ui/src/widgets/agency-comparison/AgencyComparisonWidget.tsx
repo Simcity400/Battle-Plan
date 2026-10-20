@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CellBar, CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
-import { tableSortOf } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { jumpItem } from '../../charts/jump';
 import { runAt } from '../../charts/series';
@@ -73,14 +73,14 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
     { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-name-min), 2fr)',
       value: row => names.get(nameKey(row.hour, row.tag)) ?? 'Country name unavailable',
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
-    { key: 'agency', header: 'Agency', label: 'Agency', renderMissing: true, width: 'minmax(var(--table-name-min), 2fr)',
+    { key: 'agency', header: 'Agency', label: 'Agency', renderMissing: true, width: 'minmax(var(--table-name-min), 2fr)', priority: 3, text: row => row.value.name ?? 'Unknown',
       value: row => row.value.name, render: row => <span title={row.value.name ?? 'Unknown'}>{row.value.name ?? 'Unknown'}</span> },
-    { key: 'upgrades', header: 'Agency upgrades', label: 'Agency upgrades', numeric: true, renderMissing: true, width: 'max-content',
+    { key: 'upgrades', header: 'Agency upgrades', label: 'Agency upgrades', numeric: true, renderMissing: true, width: 'max-content', priority: 2, inTooltip: true,
       value: row => row.value.upgrades.nonnegativeLevelSum === null ? null : BigInt(row.value.upgrades.nonnegativeLevelSum),
       render: row => <span className={row.value.upgrades.nonnegativeLevelSum === null ? 'agency-unknown' : undefined}>{upgradesCell(row.value)}</span> },
     { key: 'defense', header: data?.defenseLabel ?? 'Defence', label: data?.defenseLabel ?? 'Defence', numeric: true, bar: 'visible', width: 'max-content',
       value: row => BigInt(row.value.defenseRaw), render: row => row.value.defenseValue ?? 'Unknown' },
-    { key: 'active', header: 'Operatives active / maximum', label: 'Operatives active / maximum', numeric: true, width: 'max-content',
+    { key: 'active', header: 'Operatives active / maximum', label: 'Operatives active / maximum', numeric: true, width: 'max-content', priority: 1, inTooltip: true,
       value: row => row.value.activeCount,
       render: row => <CellBar value={options.cellBars === true && row.value.maximum > 0 ? row.value.activeCount : null} maximum={row.value.maximum}>{operativesCell(row.value)}</CellBar> },
   ], [names, labelAt, options.cellBars, data?.defenseLabel]);
@@ -104,7 +104,7 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
   return <div ref={root} className="agency-comparison">
     <Table key={`${track.source.id}:${track.branch.id}`} label="Intelligence agencies" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
       cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
-      density={options.density === 'compact' ? 'compact' : 'comfortable'} muted={row => !row.value.created}
+      density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} muted={row => !row.value.created}
       menu={row => [jumpItem(runtime, track.id, row.hour)]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond} />
   </div>;
 }

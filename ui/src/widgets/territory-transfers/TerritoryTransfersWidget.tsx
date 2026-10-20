@@ -6,7 +6,7 @@ import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
 import { jumpItem } from '../../charts/jump';
 import { usNumber } from '../../charts/numberFormat';
-import { tableSortOf } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
@@ -153,7 +153,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillCountry(null); }, [track?.source.id, track?.branch.id, scope, selectedToken]);
   const transferSetOption = useMemo(() => setOption && ((key: string, value: OptionValue) =>
     setOption(key === 'tableSort' ? TRANSFER_SORT_KEY : key, value)), [setOption]);
-  const tables = { labels, cellBars: options.cellBars !== false, density: options.density === 'compact' ? 'compact' as const : 'comfortable' as const,
+  const tables = { labels, cellBars: options.cellBars !== false, density: options.density === 'compact' ? 'compact' as const : 'comfortable' as const, narrow: narrowTableOf(options),
     hoursPerSecond: runtime.clock.getSnapshot().hoursPerSecond };
   const transferSort = tableSortOf(options[TRANSFER_SORT_KEY], TRANSFER_SORT);
 

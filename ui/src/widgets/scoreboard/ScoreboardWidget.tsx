@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
-import { tableSortOf, tableSortToken } from '../../charts/table/options';
+import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
@@ -73,7 +73,8 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
       hint: resolved.top != null ? 'Top countries, sorted by name.' : undefined,
       value: row => names.get(nameKey(row.hour, row.tag)) ?? null, renderMissing: true,
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
-    ...shown.map(column => ({ key: column.key, header: column.label, label: column.label, numeric: true, renderMissing: true, width: 'max-content', bar: BigInt(result.index?.maxima[column.key] ?? '0'),
+    ...shown.map((column, index) => ({ key: column.key, header: column.label, label: column.label, numeric: true, renderMissing: true, width: 'max-content',
+      priority: index + 1, inTooltip: true, bar: BigInt(result.index?.maxima[column.key] ?? '0'),
       hint: scoreboardColumnNote(column), value: (row: ScoreboardRow) => row.cells.get(column.key)?.amount,
       render: (row: ScoreboardRow) => {
         const cell = row.cells.get(column.key);
@@ -118,7 +119,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
     <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Scoreboard" rows={rows} columns={columns}
       rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption ? setTableOption : undefined} sortOptionValue={tableSortToken}
       cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
-      density={options.density === 'compact' ? 'compact' : 'comfortable'} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond}
+      density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond}
       parity={{ complete: result.complete && !result.pending, item: row => ({ key: row.key, tag: row.tag, hour: row.hour, cells: [...row.cells].map(([key, cell]) => [key, { ...cell, amount: cell.amount?.toString() ?? null }]) }),
         preparation: { prepare: result.prepare, ready: () => result.complete && !result.pending, error: () => result.error ?? null } }} />
   </div>;

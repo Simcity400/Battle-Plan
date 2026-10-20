@@ -14,7 +14,7 @@ const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery
   server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'territory-tables-fixture', enforce: 'pre',
     transform(_source, id) {
       const path = id.replaceAll('\\', '/');
-      if (path.endsWith('/charts/useChartTokens.ts')) return `export const useChartTokens = () => (${JSON.stringify(tokens)});`;
+      if (path.endsWith('/charts/useChartTokens.ts')) return `export const useChartTokens = () => (${JSON.stringify(tokens)}); export const useViewportHeight = () => 800;`;
       if (path.endsWith('/components/ContextMenu.tsx')) return 'export const useContextMenu = () => ({ open() {}, menu: null });';
     },
   }] });
@@ -29,7 +29,7 @@ const labels: TransferLabels = {
 const move = (state: number, from: Move['from'], to: Move['to'], extra: Partial<Move> = {}): Move => ({ state, from, to, before: 100, after: 101, ...extra });
 const los = holder(1, 'LOS', 100), win = holder(2, 'WIN', 101), free = holder(3, 'NEW', 101);
 const data = decodeTransfers(reply([deal('peace', [move(1, los, win, { vp: '5' }), move(2, los, win, { vp: '4' }), move(3, los, free, { vp: null, released: true })])]));
-const shared = { labels, cellBars: true, density: 'comfortable' as const, hoursPerSecond: 1, menu: () => [], onVisibleRows() {} };
+const shared = { labels, cellBars: true, density: 'comfortable' as const, narrow: 'hide' as const, hoursPerSecond: 1, menu: () => [], onVisibleRows() {} };
 const cells = (html: string) => [...html.matchAll(/<td[^>]*>(.*?)<\/td>/g)].map(match => match[1].replace(/<[^>]+>/g, '').trim());
 
 test('the actual Countries table nets each holder, colours signed values and leaves an unknown VP blank', () => {

@@ -1,4 +1,5 @@
 import { TOP_COUNTRIES, raceViewVariants } from '../../charts/race/options.ts';
+import { NARROW_TABLE_OPTION } from '../../charts/table/options.ts';
 import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { REFITS_OPTION } from '../../dashboard/equipment.ts';
@@ -26,8 +27,7 @@ export const OPTIONS: readonly OptionField[] = [
     choices: MEASURES.map(item => ({ value: item.value, label: item.label })) },
   { key: 'included', section: 'options', label: 'Equipment', hint: 'Units count one type, the one delivered most until you choose; IC counts all equipment until you choose. Several types add up.',
     kind: 'content-set', automatic: 'Most delivered, or all equipment in IC', default: '' },
-  REFITS_OPTION,
-];
+  REFITS_OPTION, NARROW_TABLE_OPTION];
 
 export const definition = {
   kind: 'equipment-produced', version: 1, title: 'Equipment produced', icon: 'layers',

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createElement, isValidElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { cellContent, columnAlign, growColumnWidths, tableGrid } from './columns.ts';
+import { cellContent, cellText, columnAlign, growColumnWidths, hideOrder, tableGrid } from './columns.ts';
 import type { TableColumn } from './columns';
 import { densityRowHeight, rowOffsets, sortRows, visibleRange } from './logic.ts';
 import { acesFixture, generalsFixture } from './military.fixture.ts';
@@ -69,4 +69,18 @@ test('Military story: muted aces retain their rank; custom row heights scale for
   const offsets = rowOffsets(5000, compact, 26);
   assert.equal(offsets[101], 26 + 101 * compact);
   assert.deepEqual(visibleRange(offsets, offsets[100], compact * 4.5, 0), [100, 105]);
+});
+
+test('hidden columns hide largest priority first and give the tooltip their cell text', () => {
+  const columns: TableColumn<{ name: string; amount: number | null }>[] = [
+    { key: 'name', header: 'Name', label: 'Name', value: row => row.name },
+    { key: 'a', header: 'A', label: 'A', priority: 1, value: row => row.amount },
+    { key: 'b', header: 'B', label: 'B', priority: 2, value: row => row.amount, render: row => `${row.amount} units` },
+    { key: 'c', header: 'C', label: 'C', priority: 2, value: row => row.amount, render: () => createElement('b'), text: row => `text ${row.amount}` },
+    { key: 'd', header: 'D', label: 'D', priority: Number.NaN, value: () => 'x' },
+  ];
+  assert.deepEqual(hideOrder(columns), ['c', 'b', 'a']);
+  const row = { name: 'Recorded', amount: 12345 };
+  assert.deepEqual(columns.map(column => cellText(column, row)), ['Recorded', '12,345', '12345 units', 'text 12345', 'x']);
+  assert.deepEqual(columns.slice(1, 3).map(column => cellText(column, { name: '', amount: null })), ['—', '—'], 'missing stays a dash');
 });

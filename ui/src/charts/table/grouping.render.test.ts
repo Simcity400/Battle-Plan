@@ -12,7 +12,7 @@ const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery
   server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'table-grouping-fixture', enforce: 'pre',
     transform(_source, id) {
       const path = id.replaceAll('\\', '/');
-      if (path.endsWith('/charts/useChartTokens.ts')) return `export const useChartTokens = () => (${JSON.stringify(tokens)});`;
+      if (path.endsWith('/charts/useChartTokens.ts')) return `export const useChartTokens = () => (${JSON.stringify(tokens)}); export const useViewportHeight = () => 800;`;
       if (path.endsWith('/components/ContextMenu.tsx')) return 'export const useContextMenu = () => ({ open() {}, menu: null });';
     },
   }] });
