@@ -496,3 +496,323 @@ fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() 
         );
     });
 }
+
+/// A frame of the carrier fixture at `hour` whose organisations' details are `sizes` (none: the
+/// table unavailable), with a third organisation of the same definition held by country 102 and
+/// owned by country 104.
+fn sized(hour: i32, sizes: Option<&[(u64, i32)]>) -> DecodedFrame {
+    let mut f = fixture();
+    f.hour = hour;
+    let TableView::Complete(TableRows::IndustrialOrganisations(organisations)) =
+        &mut *f.tables[TableId::IndustrialOrganisations.index()]
+    else {
+        unreachable!("the fixture holds its organisations");
+    };
+    organisations.push(IndustrialOrganisationRow {
+        country: 102,
+        owner: 104,
+        ordinal: 0,
+        token: 11,
+        organisation: HELD,
+        ..Default::default()
+    });
+    *f.tables[TableId::IndustrialOrganisationDetails.index()] = match sizes {
+        Some(sizes) => TableView::Complete(TableRows::IndustrialOrganisationDetails(
+            sizes
+                .iter()
+                .map(|&(organisation, size)| {
+                    let mut row = IndustrialOrganisationDetailsRow {
+                        organisation,
+                        country: 101,
+                        ..Default::default()
+                    };
+                    row.state.size = size;
+                    row
+                })
+                .collect(),
+        )),
+        None => TableView::Unavailable {
+            reason: "not recorded".into(),
+        },
+    };
+    f
+}
+
+/// The fixture's second organisation, of the same holder and definition as [`MIO`].
+const OTHER: u64 = MIO + (1 << 32);
+/// An organisation of the same definition held by another country.
+const HELD: u64 = MIO + (3 << 32);
+/// The sizes the size tests start from.
+const SIZES: &[(u64, i32)] = &[(MIO, 6), (OTHER, 5), (HELD, 8)];
+
+fn in_organisation(world: &World, organisation: u64, trigger: &str) -> Eval {
+    world.evaluate(
+        &items(trigger),
+        Scopes::of(Scope::IndustrialOrganisation(organisation)),
+    )
+}
+
+/// `has_mio_size` reads THIS organisation's recorded size by its full reference and compares
+/// it as an integer trigger does: `>` and `<` are strict and `=` is equality, below, at and above
+/// the size. A missing details row or table leaves it undecided.
+#[test]
+fn organisation_size_compares_as_an_integer_trigger() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let f = sized(1, Some(SIZES));
+    with_world(&f, "", Err("none"), |world| {
+        // Size 6 against 5, 6 and 7 with every operator.
+        for (operator, below, equal, above) in [
+            (">", Eval::True, Eval::False, Eval::False),
+            ("<", Eval::False, Eval::False, Eval::True),
+            ("=", Eval::False, Eval::True, Eval::False),
+        ] {
+            for (operand, expected) in [(5, &below), (6, &equal), (7, &above)] {
+                let trigger = format!("has_mio_size {operator} {operand}");
+                assert_eq!(
+                    &in_organisation(world, MIO, &trigger),
+                    expected,
+                    "{trigger}"
+                );
+            }
+        }
+        assert_eq!(
+            in_organisation(world, OTHER, "has_mio_size > 5"),
+            Eval::False
+        );
+        assert_eq!(
+            in_organisation(world, OTHER, "has_mio_size = 5"),
+            Eval::True
+        );
+        assert_eq!(
+            in_organisation(world, MIO, "NOT = { has_mio_size > 5 }"),
+            Eval::False
+        );
+        assert!(matches!(
+            in_organisation(world, MIO + (2 << 32), "has_mio_size > 5"),
+            Eval::Unknown(_)
+        ));
+        // A proved false decides a conjunction whatever else is undecided.
+        assert_eq!(
+            in_organisation(world, OTHER, "has_mio_size > 5 has_mio_size > unknown_size"),
+            Eval::False
+        );
+    });
+    with_world(&sized(1, None), "", Err("none"), |world| {
+        assert!(matches!(
+            in_organisation(world, MIO, "has_mio_size > 5"),
+            Eval::Unknown(_)
+        ));
+    });
+}
+
+/// Operands read as an integer trigger reads them: a number token as a whole number (the
+/// fraction dropped), a quoted number as a constant truncated to whole units, a negative number
+/// as itself, and a variable resolved in the trigger's evaluation truncated to whole units. A
+/// variable the organisation's scope cannot resolve leaves the trigger undecided.
+#[test]
+fn organisation_size_operands_are_whole_units() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let f = sized(1, Some(SIZES));
+    with_world(&f, "", Err("none"), |world| {
+        for (trigger, expected) in [
+            ("has_mio_size > 5.9", Eval::True),
+            ("has_mio_size > 6.9", Eval::False),
+            ("has_mio_size = 6.9", Eval::True),
+            ("has_mio_size > \"5\"", Eval::True),
+            ("has_mio_size = \"6.7\"", Eval::True),
+            ("has_mio_size < \"6.7\"", Eval::False),
+            ("has_mio_size > -1", Eval::True),
+            ("has_mio_size < -1", Eval::False),
+            ("has_mio_size = -6", Eval::False),
+        ] {
+            assert_eq!(in_organisation(world, MIO, trigger), expected, "{trigger}");
+        }
+        let evaluator = Evaluator::new(world, None);
+        let scope = Scopes::of(Scope::IndustrialOrganisation(MIO));
+        for (raw, trigger, expected) in [
+            // 5.5 is 5 whole units: 6 is above it and not equal to it.
+            (550_000, "has_mio_size > size_limit", Eval::True),
+            (550_000, "has_mio_size = size_limit", Eval::False),
+            // 6.7 is 6 whole units.
+            (670_000, "has_mio_size = size_limit", Eval::True),
+            (670_000, "has_mio_size < size_limit", Eval::False),
+            (700_000, "has_mio_size < size_limit", Eval::True),
+        ] {
+            assert_eq!(
+                evaluator.evaluate_seeded(
+                    &items(trigger),
+                    scope,
+                    &[(b"size_limit".as_slice(), raw)]
+                ),
+                expected,
+                "{trigger} with {raw}"
+            );
+        }
+        // On its own, an operand the organisation's scope cannot resolve is undecided.
+        assert!(matches!(
+            in_organisation(world, MIO, "has_mio_size > unknown_size"),
+            Eval::Unknown(_)
+        ));
+    });
+}
+
+/// A named organisation resolves in the country that holds it, by definition and roster order,
+/// and its size is its own: two holders of one definition read different organisations, each
+/// with its own owner.
+#[test]
+fn named_organisations_read_their_own_size() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let f = sized(1, Some(SIZES));
+    with_world(&f, "", Err("none"), |world| {
+        let evaluator = Evaluator::new(world, None);
+        let named = |slot: u32| {
+            evaluator
+                .enter(
+                    &installed_content_core::scope::parse("mio:SYNTHETIC_MIO", false, world.recorded()),
+                    Scopes::of(Scope::Country(slot)),
+                )
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(named(1), Scope::IndustrialOrganisation(MIO));
+        assert_eq!(named(2), Scope::IndustrialOrganisation(HELD));
+        let owner = |scope: Scope| {
+            evaluator.enter(
+                &installed_content_core::scope::Scope::Keyword(installed_content_core::scope::Keyword::Owner),
+                Scopes::of(scope),
+            )
+        };
+        assert_eq!(owner(named(1)), Ok(Some(Scope::Country(3))));
+        assert_eq!(owner(named(2)), Ok(Some(Scope::Country(4))));
+        for (slot, size) in [(1, 6), (2, 8)] {
+            let scope = Scopes::of(named(slot));
+            assert_eq!(
+                world.evaluate(&items(&format!("has_mio_size = {size}")), scope),
+                Eval::True
+            );
+            assert_eq!(
+                world.evaluate(&items(&format!("has_mio_size > {size}")), scope),
+                Eval::False
+            );
+        }
+    });
+}
+
+/// What changed in the details table between two hours; every other table is the same.
+struct DetailsChanged<'a>(crate::triggers::inputs::TableChange<'a>);
+
+impl crate::triggers::inputs::TableChanges for DetailsChanged<'_> {
+    fn table(&self, table: TableId) -> crate::triggers::inputs::TableChange<'_> {
+        if table == TableId::IndustrialOrganisationDetails {
+            self.0
+        } else {
+            crate::triggers::inputs::TableChange::Same
+        }
+    }
+}
+
+/// The evaluation's one input is that organisation's size field. Confirmed at the next hour it
+/// is reused when another organisation's size changed, and read again (no longer confirming)
+/// when its own size changed, its row went or its table became unavailable.
+#[test]
+fn organisation_size_inputs_follow_that_organisation_s_size() {
+    use crate::triggers::inputs::{Key, Since, TableChange, TableRead, capture};
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let size = (0..64)
+        .find(|&field| {
+            TableId::IndustrialOrganisationDetails.field_name(field) == Some("state.size")
+        })
+        .expect("the details table names its size field");
+    let first = sized(1, Some(SIZES));
+    let (value, inputs) = with_world(&first, "", Err("none"), |world| {
+        capture(&first, || in_organisation(world, MIO, "has_mio_size > 5"))
+    });
+    assert_eq!(value, Eval::True);
+    let reads: Vec<TableRead> = inputs
+        .keys()
+        .filter_map(|key| key.dependence())
+        .flatten()
+        .filter(|read| read.table == TableId::IndustrialOrganisationDetails)
+        .collect();
+    assert_eq!(
+        reads,
+        [
+            TableRead::fields(TableId::IndustrialOrganisationDetails, &["state.size"])
+                .row(u128::from(MIO))
+        ]
+    );
+    assert_eq!(reads[0].fields, 1 << size);
+    // Confirms `inputs` at `frame` since the hour before, given the details' change: whether
+    // nothing it read changed, whether it confirms, and how many times it read the size again.
+    fn confirm(
+        inputs: &crate::triggers::inputs::Inputs,
+        frame: &DecodedFrame,
+        change: TableChange<'_>,
+    ) -> (bool, bool, usize) {
+        let changes = DetailsChanged(change);
+        let since = Since::hour_before(frame, &changes).unwrap();
+        let unchanged = inputs.unchanged(&since);
+        let mut rereads = 0;
+        // As preparation confirms: check mode would read every reused input again.
+        let confirmed = crate::triggers::inputs::reusing(|| {
+            with_world(frame, "", Err("none"), |world| {
+                inputs
+                    .clone()
+                    .confirm_since(frame, Some(&since), |key| match key {
+                        Key::World(query) => {
+                            if matches!(
+                                query,
+                                crate::triggers::world::Query::IndustrialOrganisationSize(_)
+                            ) {
+                                rereads += 1;
+                            }
+                            Some(world.reread(query))
+                        }
+                        _ => None,
+                    })
+            })
+        });
+        (unchanged, confirmed, rereads)
+    }
+    let changed = |key: u64| DeltaRow {
+        format: 0,
+        key: u128::from(key),
+        mask: 1 << size,
+        recorded_fields: TableId::IndustrialOrganisationDetails.schema().len(),
+        values: Vec::new(),
+    };
+    // Another organisation's size changed: reused, the size not read again.
+    let other = sized(2, Some(&[(MIO, 6), (OTHER, 7), (HELD, 8)]));
+    let rows = [changed(OTHER)];
+    assert_eq!(
+        confirm(&inputs, &other, TableChange::Rows(&rows, &[])),
+        (true, true, 0)
+    );
+    // Its own size changed 6 to 5: read again, and the result flips.
+    let shrunk = sized(2, Some(&[(MIO, 5), (OTHER, 5), (HELD, 8)]));
+    let rows = [changed(MIO)];
+    assert_eq!(
+        confirm(&inputs, &shrunk, TableChange::Rows(&rows, &[])),
+        (false, false, 1)
+    );
+    with_world(&shrunk, "", Err("none"), |world| {
+        assert_eq!(in_organisation(world, MIO, "has_mio_size > 5"), Eval::False);
+    });
+    // Its row went: read again, now undecided.
+    let gone = sized(2, Some(&[(OTHER, 5), (HELD, 8)]));
+    let deleted = [u128::from(MIO)];
+    assert_eq!(
+        confirm(&inputs, &gone, TableChange::Rows(&[], &deleted)),
+        (false, false, 1)
+    );
+    // The table became unavailable: read again, now undecided.
+    let unavailable = sized(2, None);
+    assert_eq!(
+        confirm(&inputs, &unavailable, TableChange::Any),
+        (false, false, 1)
+    );
+}

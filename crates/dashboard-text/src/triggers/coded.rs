@@ -316,6 +316,33 @@ impl Evaluator<'_, '_> {
         })
     }
 
+    /// A coded trigger in an industrial organisation's scope.
+    pub(super) fn organisation_trigger(
+        &self,
+        name: &str,
+        item: &Item,
+        reference: u64,
+        scopes: Scopes,
+    ) -> Result<Option<Eval>, Failure> {
+        match name {
+            // The organisation's size, compared as an integer trigger compares (the class of
+            // the controlled-state count): `=` is equality, and a variable operand is
+            // truncated to whole units.
+            "has_mio_size" => {
+                let actual = self.world().industrial_organisation_size(reference)?;
+                let bytes = item.value.scalar().unwrap_or_default();
+                let wanted = self.required(bytes, item.quoted(), false, scopes)?;
+                Ok(Some(Eval::from_bool(compare(
+                    i64::from(actual) * ONE,
+                    wanted,
+                    item.operator,
+                    false,
+                ))))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// The state-scope triggers (accepted scope 2)
     /// this evaluator reproduces; `None` for any
     /// other. The null state holds no state: every class with a nonzero mask

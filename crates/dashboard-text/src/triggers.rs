@@ -100,6 +100,7 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::AdvisorRoles,
     replay_data::rows::TableId::HiredAdvisors,
     replay_data::rows::TableId::HumanControllers,
+    replay_data::rows::TableId::IndustrialOrganisationDetails,
     replay_data::rows::TableId::IndustrialOrganisations,
     replay_data::rows::TableId::IntelligenceAgencies,
     replay_data::rows::TableId::InvasionPreparations,

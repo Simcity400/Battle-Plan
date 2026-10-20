@@ -743,6 +743,7 @@ pub enum Query {
     UnitStatus(u64),
     RaidWingName(u64),
     IndustrialOrganisation(u64),
+    IndustrialOrganisationSize(u64),
     Slot(u32),
     Tag(u32),
     StateRow(u32),
@@ -834,6 +835,9 @@ impl World<'_> {
             Query::IndustrialOrganisation(reference) => {
                 super::inputs::digest_debug(&self.industrial_organisation_unrecorded(*reference))
             }
+            Query::IndustrialOrganisationSize(reference) => super::inputs::digest_debug(
+                &self.industrial_organisation_size_unrecorded(*reference),
+            ),
             Query::Slot(raw) => super::inputs::digest(&self.slot_unrecorded(*raw)),
             Query::Tag(slot) => super::inputs::digest(&self.tag_unrecorded(*slot)),
             Query::StateRow(state) => super::inputs::digest(&self.state_row_unrecorded(*state)),
@@ -1534,6 +1538,24 @@ impl<'a> World<'a> {
             .find(|row| row.organisation == reference)
             .ok_or_else(|| -> Failure {
                 super::refusal::missing_reference(tables::IndustrialOrganisations::ID, None)
+            })
+    }
+
+    /// An organisation's size as its details record it, by its full reference.
+    pub(crate) fn industrial_organisation_size(&self, reference: u64) -> Result<i32, Failure> {
+        super::inputs::query_debug_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationSize(reference)),
+            || self.industrial_organisation_size_unrecorded(reference),
+        )
+    }
+
+    fn industrial_organisation_size_unrecorded(&self, reference: u64) -> Result<i32, Failure> {
+        let details = table::<tables::IndustrialOrganisationDetails>(self.frame)?;
+        details
+            .binary_search_by_key(&reference, |row| row.organisation)
+            .map(|index| details[index].state.size)
+            .map_err(|_| -> Failure {
+                super::refusal::missing_reference(tables::IndustrialOrganisationDetails::ID, None)
             })
     }
 

@@ -659,11 +659,12 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             },
             Scope::State(state) => self.state_trigger(name, item, state, scopes),
             Scope::Character(_) | Scope::Leader(_) => self.character_trigger(name, item, scopes),
-            Scope::Province(_)
-            | Scope::IndustrialOrganisation(_)
-            | Scope::Project { .. }
-            | Scope::Raid(_)
-            | Scope::Unit(_) => Ok(None),
+            Scope::IndustrialOrganisation(reference) => {
+                self.organisation_trigger(name, item, reference, scopes)
+            }
+            Scope::Province(_) | Scope::Project { .. } | Scope::Raid(_) | Scope::Unit(_) => {
+                Ok(None)
+            }
         };
         match scoped {
             Ok(Some(value)) => value,

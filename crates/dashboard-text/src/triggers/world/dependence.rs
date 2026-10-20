@@ -172,6 +172,10 @@ impl Query {
             &Query::IndustrialOrganisation(reference) => {
                 vec![TableRead::all(T::IndustrialOrganisations).row(reference.into())]
             }
+            &Query::IndustrialOrganisationSize(reference) => vec![
+                TableRead::fields(T::IndustrialOrganisationDetails, &["state.size"])
+                    .row(reference.into()),
+            ],
             &Query::Slot(raw) => vec![links().row(raw.into())],
             Query::Tag(_) => vec![TableRead::fields(T::Countries, &["canonical_slot", "tag"])],
             Query::RawCountry(_) => vec![raw_ids()],

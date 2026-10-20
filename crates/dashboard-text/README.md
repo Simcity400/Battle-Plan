@@ -30,6 +30,8 @@ The metadata helpers can date every table's supplying read together
 one hour with the same timed tables reuse its flags. CountryIntel's measured
 walk dates only itself. Individual `slot_read` calls follow the same rule.
 
+In an industrial organisation's scope, `has_mio_size` reads that organisation's recorded size (`IndustrialOrganisationDetails`, by its full reference) and compares it as the game's integer comparison triggers do, the class `num_of_controlled_states` belongs to: `<` and `>` are strict, `=` is equality, and a variable operand is truncated to whole units. Its input declares that one row's size field. Every other trigger in an organisation's scope is still refused by name.
+
 ## Own refusals
 
 The catalogue's text refusal tally (`Catalogue::refusal_lines`) is shared by
