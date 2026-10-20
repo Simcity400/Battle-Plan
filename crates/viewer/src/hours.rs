@@ -1537,6 +1537,7 @@ impl Coordinator {
                         ui_scale,
                         &tables,
                         &overlay_counters,
+                        &Default::default(),
                     )?;
                     Ok(Box::new((overlay, tables)))
                 })())

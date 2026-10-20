@@ -3225,6 +3225,47 @@ impl PreparedCounters {
             })
     }
 
+    /// A detached flag adapter lets another owner read the same countries while the
+    /// counter batches and reports are mutably drawn. Atlas calls still follow draw order.
+    pub fn detached_flag_source<'a>(
+        &self,
+        assets: &'a CounterAssets,
+    ) -> Option<impl viewer_foundation::map::native_flags::FlagSource + Send + Sync + 'a + use<'a>>
+    {
+        use viewer_foundation::map::native_flags::{FlagRecord, FlagSource};
+        struct Flags<'a> {
+            countries: Arc<Countries>,
+            assets: &'a CounterAssets,
+        }
+        impl Flags<'_> {
+            fn borrowed(&self) -> gui_windows::WindowFlags<'_> {
+                gui_windows::WindowFlags {
+                    countries: &self.countries,
+                    small: &self.assets.flags,
+                    large: &self.assets.large_flags,
+                }
+            }
+        }
+        impl FlagSource for Flags<'_> {
+            fn tag_slot(&self, tag: &[u8]) -> Result<Option<u32>, String> {
+                self.borrowed().tag_slot(tag)
+            }
+            fn first_tag_slot(&self) -> Result<u32, String> {
+                self.borrowed().first_tag_slot()
+            }
+            fn atlas_len(&self, small: bool) -> Result<i32, String> {
+                self.borrowed().atlas_len(small)
+            }
+            fn atlas_record(&self, small: bool, index: i32) -> Result<FlagRecord, String> {
+                self.borrowed().atlas_record(small, index)
+            }
+        }
+        self.fixed.naval.countries.as_ref().map(|countries| Flags {
+            countries: Arc::clone(countries),
+            assets,
+        })
+    }
+
     /// Lays out the counters for this fraction, presented at `time` seconds on the view's own
     /// presentation clock (the one the view's other animated content runs on: the window's clock,
     /// a capture's `--animation-time` and `--animation-step`, a dump's `--presentation-time`),

@@ -617,6 +617,7 @@ impl DumpOverlay<'_> {
                 self.ui_scale,
                 &self.tables,
                 &self.prepared.counter_view,
+                &Default::default(),
             )?;
         }
     }
@@ -658,6 +659,7 @@ impl PreparedOverlay {
             ui_scale,
             layers,
             time,
+            &Default::default(),
             &mut batch,
             &mut report,
         )?;
@@ -670,8 +672,9 @@ impl PreparedOverlay {
     }
 
     /// [`PreparedOverlay::draw`] into the caller's batch and counter report, reusing their
-    /// storage, so the window's per-fraction redraw allocates nothing. On an error both are
-    /// left as they were.
+    /// storage, so the window's per-fraction redraw allocates nothing, with the counters
+    /// drawn beside the other owners on `workers`' turns. On an error both are left as they
+    /// were.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_into(
         &mut self,
@@ -681,114 +684,172 @@ impl PreparedOverlay {
         ui_scale: f32,
         layers: &OverlayLayers,
         time: f32,
+        workers: &viewer_foundation::parallel::Workers,
         batch: &mut Batch,
         report: &mut CounterReport,
     ) -> io::Result<()> {
         let display = &layers.counters;
-        let (labels, label_report, raid_quads, mode_icons) = hour.with_gui_context(
-            gui_resources_viewport(viewport, ui_scale),
-            Some(time),
-            |windows| {
-                let inputs = CounterInputs {
-                    content: &hour.counters,
-                    equipment: Ok(hour.unit_models.sub_units.equipment_content()),
-                    assets: &hour.icons.counters,
-                    windows,
-                    fonts: &hour.icons.fonts,
-                    localisation: &hour.names.localisation,
-                    recorded_language: &hour.counter_content.recorded_language,
-                    map: &hour.map,
-                    camera,
-                    viewport,
-                    ui_scale,
-                    movement: hour.movement.as_deref(),
-                    heights: hour.heights(),
-                    settings: self.counter_view.settings,
-                    display,
-                    selected: &self.counter_view.selected,
-                    selected_air: &self.counter_view.air_selected,
-                    selected_air_bases: &self.counter_view.air_bases,
-                    selected_fleets: &self.counter_view.fleets_selected,
-                    hovered: self.counter_view.hovered,
-                    schedule: self.counter_view.presentation.schedule(),
-                    visibility: self.counter_view.visibility,
-                };
-                // Advance the province schedule before any native map-icon consumer reads its dirty bits.
-                inputs
-                    .schedule
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .present(&inputs.content.bounds, inputs.camera, inputs.viewport, time);
-                {
-                    let mut views = self
-                        .counter_view
-                        .presentation
-                        .windows
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    let Views {
-                        naval,
-                        pings,
-                        bases,
-                        land_combats,
-                        ..
-                    } = &mut *views;
-                    let _span = viewer_foundation::profiling::span("d_counters");
-                    self.icons
-                        .draw(&inputs, time, naval, pings, bases, land_combats)?;
-                }
-                Ok(self.icons.flag_source(&hour.icons.counters))
+        let logical = gui_resources_viewport(viewport, ui_scale);
+        let windows = hour
+            .icons
+            .counters
+            .window_cache
+            .at(logical.map(|v| v as u32))?;
+        let inputs = CounterInputs {
+            content: &hour.counters,
+            equipment: Ok(hour.unit_models.sub_units.equipment_content()),
+            assets: &hour.icons.counters,
+            windows: &windows,
+            fonts: &hour.icons.fonts,
+            localisation: &hour.names.localisation,
+            recorded_language: &hour.counter_content.recorded_language,
+            map: &hour.map,
+            camera,
+            viewport,
+            ui_scale,
+            movement: hour.movement.as_deref(),
+            heights: hour.heights(),
+            settings: self.counter_view.settings,
+            display,
+            selected: &self.counter_view.selected,
+            selected_air: &self.counter_view.air_selected,
+            selected_air_bases: &self.counter_view.air_bases,
+            selected_fleets: &self.counter_view.fleets_selected,
+            hovered: self.counter_view.hovered,
+            schedule: self.counter_view.presentation.schedule(),
+            visibility: self.counter_view.visibility,
+        };
+        // One advance before forking. Workers snapshot/read it, never advance it.
+        inputs
+            .schedule
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .present(&inputs.content.bounds, camera, viewport, time);
+        let dirty = self
+            .labels
+            .dirty(&inputs.schedule.lock().unwrap_or_else(|p| p.into_inner()));
+        let flags = self.icons.detached_flag_source(inputs.assets);
+        let assets = inputs.assets;
+        let localisation = inputs.localisation;
+        let raid_priority = hour.icons.raids.priority;
+        let intel_assets = &hour.icons.intel;
+        let native_raids = &self.native_raids;
+        let native_intel = &self.native_intel;
+        let labels = &self.labels;
+        let resource_icons = &self.resource_icons;
+        let occupation_icons = &self.occupation_icons;
+        let adjacency_icons = &self.adjacency_icons;
+        let adjacency_priority = self.adjacency_priority;
+        let occupation_hits = &mut self.occupation_hits;
+        let icons = &mut self.icons;
+        let order = crate::map_views::ResourceOrder::default();
+        let mut views = self
+            .counter_view
+            .presentation
+            .windows
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Views {
+            naval,
+            pings,
+            bases,
+            land_combats,
+            labels: label_view,
+            raids: raid_view,
+            intel: intel_view,
+            resources,
+            occupation,
+            adjacency_rules,
+        } = &mut *views;
+        let (counters, (labels, label_report, raid_quads, mode_icons)) = crate::map_views::join(
+            workers,
+            || {
+                let _finish = order.finishing();
+                let _span = viewer_foundation::profiling::span("d_counters");
+                icons.draw(&inputs, time, naval, pings, bases, land_combats)
             },
-            |context| {
-                let mut views = self
-                    .counter_view
-                    .presentation
-                    .windows
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let mut labels = Batch::default();
+            || {
+                // GUI walkers and their RefCells are task-local. Only immutable content
+                // is shared. A flag/portrait request waits for counters to finish so atlas
+                // packing retains serial order, including on a cold modded view.
+                let wait = || order.wait();
+                let portrait_textures = |name: &[u8]| assets.operative_portrait_texture(name);
+                let gui = GuiAssets {
+                    gui: &assets.gui,
+                    windows: &windows,
+                    localisation,
+                    flags: flags.as_ref().map(|source| GuiFlags {
+                        source,
+                        small: &assets.flags,
+                        large: &assets.large_flags,
+                    }),
+                    physical_viewport: Some(logical),
+                    portrait_textures: Some(&portrait_textures),
+                    before_dynamic: Some(&wait),
+                };
+                let context = &Context {
+                    resources: &gui,
+                    windows: &windows,
+                    viewport: logical,
+                    time: Some(time),
+                };
+                let mut label_batch = Batch::default();
                 let span = viewer_foundation::profiling::span("d_labels");
-                let report = self.labels.draw(
-                    context,
-                    &self
-                        .counter_view
-                        .presentation
-                        .schedule()
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                    &mut views.labels,
-                    &mut labels,
-                );
+                let report = labels.draw_scheduled(context, &dirty, label_view, &mut label_batch);
                 drop(span);
-                let raids = hour.raid_quads(context, &self.native_raids, &mut views.raids);
-                let intel = hour.intel_quads(context, &self.native_intel, &mut views.intel);
-                let mut mode_icons = Batch::default();
-                let resources =
-                    self.resource_icons
-                        .draw(context, &mut views.resources, &mut mode_icons);
-                let mut refused = resources.refused;
-                let occupation = self.occupation_icons.draw(
+                let mut raid_batch = Batch::default();
+                let mut raid_hits = Vec::new();
+                let mut raid_report = native_raids.report.clone();
+                native_raids.draw(
                     context,
-                    &mut views.occupation,
-                    &mut mode_icons,
-                    &mut self.occupation_hits,
+                    raid_priority,
+                    raid_view,
+                    &mut raid_batch,
+                    &mut raid_hits,
+                    &mut raid_report,
                 );
-                for (reason, count) in occupation.refused {
+                let mut intel_batch = Batch::default();
+                let mut intel_hits = Vec::new();
+                let mut intel_report = native_intel.report.clone();
+                native_intel.draw(
+                    intel_assets,
+                    context,
+                    raid_priority,
+                    intel_view,
+                    &mut intel_batch,
+                    &mut intel_hits,
+                    &mut intel_report,
+                );
+                let mut mode_icons = Batch::default();
+                let resource_report = resource_icons.draw(context, resources, &mut mode_icons);
+                let mut refused = resource_report.refused;
+                let occupation_report =
+                    occupation_icons.draw(context, occupation, &mut mode_icons, occupation_hits);
+                for (reason, count) in occupation_report.refused {
                     *refused.entry(reason).or_default() += count;
                 }
-                for (reason, count) in &self.adjacency_icons.report {
+                for (reason, count) in &adjacency_icons.report {
                     *refused.entry(reason.clone()).or_default() += count;
                 }
-                self.adjacency_icons.draw(
+                adjacency_icons.draw(
                     context,
-                    self.adjacency_priority,
-                    &mut views.adjacency_rules,
+                    adjacency_priority,
+                    adjacency_rules,
                     &mut mode_icons,
                     &mut refused,
                 );
-                (labels, report, (raids, intel), (mode_icons, refused))
+                (
+                    label_batch,
+                    report,
+                    (
+                        (raid_batch, raid_hits, raid_report),
+                        (intel_batch, intel_hits, intel_report),
+                    ),
+                    (mode_icons, refused),
+                )
             },
-        )?;
+        );
+        counters?;
         self.label_report = label_report;
         let (raid_quads, intel_quads) = raid_quads;
         (self.mode_icons, self.mode_icon_refused) = mode_icons;
@@ -4089,7 +4150,8 @@ impl<'a> Hour<'a> {
     /// with the hour and the window reuses them for every camera.
     ///
     /// `view` is the map view's counter options and memory: the window's, a dashboard map's,
-    /// or a fresh one for a dump.
+    /// or a fresh one for a dump. The counters lay out beside the other owners on `workers`'
+    /// turns: the window lends the hour builders', and builders and exports pass none.
     pub fn prepare_overlay_cached(
         &self,
         camera: Camera,
@@ -4097,6 +4159,7 @@ impl<'a> Hour<'a> {
         ui_scale: f32,
         tables: &OverlayTables,
         view: &CounterView,
+        workers: &viewer_foundation::parallel::Workers,
     ) -> io::Result<PreparedOverlay> {
         let lazy_version = self.icons.lazy.version();
         let frame = self.frame;
@@ -4105,174 +4168,210 @@ impl<'a> Hour<'a> {
             .counters
             .window_cache
             .at(native_shader_draw::gui_viewport(viewport, ui_scale))?;
-        let span = viewer_foundation::profiling::span("p_counters");
-        let icons = counters::prepare_cached(
-            &CounterInputs {
-                content: &self.counters,
-                equipment: Ok(self.unit_models.sub_units.equipment_content()),
-                assets: &self.icons.counters,
-                windows: &windows,
-                fonts: &self.icons.fonts,
-                localisation: &self.names.localisation,
-                recorded_language: &self.counter_content.recorded_language,
-                map: &self.map,
-                camera,
-                viewport,
-                ui_scale,
-                movement: self.movement.as_deref(),
-                heights: self.heights(),
-                settings: view.settings,
-                display: &counters::CounterDisplay::default(),
-                selected: &view.selected,
-                selected_air: &view.air_selected,
-                selected_air_bases: &view.air_bases,
-                selected_fleets: &view.fleets_selected,
-                hovered: view.hovered,
-                schedule: view.presentation.schedule(),
-                visibility: view.visibility,
-            },
-            frame,
-            &tables.counters,
-        )?;
-        drop(span);
-        // Raid icons sort above the labels and the counters by their layer.
-        let native_raids = self.raid_owners(
+        let counter_inputs = CounterInputs {
+            content: &self.counters,
+            equipment: Ok(self.unit_models.sub_units.equipment_content()),
+            assets: &self.icons.counters,
+            windows: &windows,
+            fonts: &self.icons.fonts,
+            localisation: &self.names.localisation,
+            recorded_language: &self.counter_content.recorded_language,
+            map: &self.map,
             camera,
             viewport,
             ui_scale,
-            view.visibility.raid_icons,
-            &tables.raids,
-        );
-        let raid_report = tables.raids.report.clone();
-        // Labels set their layer before every push, so they lay out alike
-        // after the raid icons or on their own.
-        let span = viewer_foundation::profiling::span("p_labels");
-        let labels = labels::prepare(
-            &labels::LabelInputs {
-                content: &self.labels,
-                localisation: &self.names.localisation,
-                map: &self.map,
-                camera,
-                viewport,
-                ui_scale,
-                visibility: view.visibility,
+            movement: self.movement.as_deref(),
+            heights: self.heights(),
+            settings: view.settings,
+            display: &counters::CounterDisplay::default(),
+            selected: &view.selected,
+            selected_air: &view.air_selected,
+            selected_air_bases: &view.air_bases,
+            selected_fleets: &view.fleets_selected,
+            hovered: view.hovered,
+            schedule: view.presentation.schedule(),
+            visibility: view.visibility,
+        };
+        let label_inputs = labels::LabelInputs {
+            content: &self.labels,
+            localisation: &self.names.localisation,
+            map: &self.map,
+            camera,
+            viewport,
+            ui_scale,
+            visibility: view.visibility,
+        };
+        // A worker owns its Hour wrapper (and its RefCells); only immutable content
+        // and the completed hour tables cross the fork.
+        let content = self.content;
+        let fraction = self.hour_fraction;
+        let (icons, other) = crate::map_views::join(
+            workers,
+            || {
+                let _span = viewer_foundation::profiling::span("p_counters");
+                counters::prepare_cached(&counter_inputs, frame, &tables.counters)
             },
-            frame,
-            &tables.labels,
-        )?;
-        drop(span);
-        let label_report = labels.report.clone();
-        let label_anchor = |province| self.labels.anchors.get(&province).copied();
-        let native_intel = intel_icons::prepare(
-            &self.icons.intel,
-            &intel_icons::IntelInputs {
-                anchor: &label_anchor,
-                camera,
-                viewport,
-                ui_scale,
-                operatives: view.operatives,
+            || {
+                let hour = Hour::new(content, frame, fraction);
+                // Raid icons sort above the labels and the counters by their layer.
+                let native_raids = hour.raid_owners(
+                    camera,
+                    viewport,
+                    ui_scale,
+                    view.visibility.raid_icons,
+                    &tables.raids,
+                );
+                let raid_report = tables.raids.report.clone();
+                let labels = {
+                    let _span = viewer_foundation::profiling::span("p_labels");
+                    labels::prepare(&label_inputs, frame, &tables.labels)?
+                };
+                let label_report = labels.report.clone();
+                let label_anchor = |province| hour.labels.anchors.get(&province).copied();
+                let native_intel = intel_icons::prepare(
+                    &hour.icons.intel,
+                    &intel_icons::IntelInputs {
+                        anchor: &label_anchor,
+                        camera,
+                        viewport,
+                        ui_scale,
+                        operatives: view.operatives,
+                    },
+                    &tables.intel,
+                );
+                let intel_report = native_intel.report.clone();
+                // The resource icons' content failure is a document warning; they draw nothing then.
+                let resource_icons = match &hour.resource_icons {
+                    Ok(content) => viewer_world::map::resource_icons::prepare(
+                        &viewer_world::map::resource_icons::ResourceIconInputs {
+                            content,
+                            localisation: &hour.names.localisation,
+                            state_provinces: &hour.icons.raids.trigger_content.state_provinces,
+                            centroid: &|province| {
+                                let (_, geography) = hour.icons.raids.mission_topology().ok()?;
+                                let [x, z] = *geography.centroids.get(&province)?;
+                                let (x, z) = (x as f32, z as f32);
+                                Some([x, hour.heights().surface_height(x, z), z])
+                            },
+                            camera,
+                            viewport,
+                            ui_scale,
+                            visibility: view.visibility,
+                        },
+                        frame,
+                    ),
+                    Err(_) => Default::default(),
+                };
+                let occupation_icons = match &hour.icons.occupation {
+                    Ok(content) => viewer_world::map::occupation_icons::prepare(
+                        &viewer_world::map::occupation_icons::Inputs {
+                            content,
+                            mode: view.occupation,
+                            country: tables.ours(),
+                            state_provinces: &hour.icons.raids.trigger_content.state_provinces,
+                            centroid: &|province| {
+                                let (_, geography) = hour.icons.raids.mission_topology().ok()?;
+                                let [x, z] = *geography.centroids.get(&province)?;
+                                let (x, z) = (x as f32, z as f32);
+                                Some([x, hour.heights().surface_height(x, z), z])
+                            },
+                            camera,
+                            viewport,
+                            ui_scale,
+                        },
+                        frame,
+                    ),
+                    Err(_) => Default::default(),
+                };
+                let counters = &hour.counters;
+                let anchor = |province| {
+                    counters.anchor(province, viewer_foundation::map::unit_rules::STANDSTILL)
+                };
+                let adjacency_icons =
+                    hour.adjacency_icons
+                        .prepare(&viewer_world::map::adjacency_icons::Inputs {
+                            anchor: &anchor,
+                            camera,
+                            viewport,
+                            ui_scale,
+                            visibility: view.visibility,
+                        });
+                let adjacency_priority = viewer_world::map::adjacency_icons::priority(
+                    &hour.counters.defines.priorities,
+                    &view.visibility,
+                );
+                let air_assignment = if view.visibility.priorities
+                    == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
+                {
+                    let defines = &hour.icons.raids.defines;
+                    viewer_world::map::air_assignment::read(
+                        frame,
+                        &view.air_selected,
+                        tables.ours(),
+                        viewer_foundation::map::air_range::Defines {
+                            map_scale: defines.map_scale,
+                            ace_wing_size: defines.ace_wing_size,
+                            ace_wing_size_max_bonus: defines.ace_wing_size_max_bonus,
+                        },
+                        viewer_world::map::air_assignment::Content {
+                            geometry: &hour.icons.raids.geometry,
+                            states: &hour.icons.raids.trigger_content.state_provinces,
+                            regions: &hour.icons.raids.region_provinces,
+                            colors: hour
+                                .air_assignment_colors
+                                .as_ref()
+                                .copied()
+                                .map_err(String::as_str),
+                        },
+                    )
+                } else {
+                    Default::default()
+                };
+                let (air_orders, air_ranges) = {
+                    let mut air = tables
+                        .air
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    air.for_selection(&view.air_selected, || {
+                        (
+                            hour.air_orders(tables.ours(), &[], &view.air_selected),
+                            hour.air_ranges(tables.ours(), &view.air_selected),
+                        )
+                    })
+                };
+                Ok::<_, io::Error>((
+                    labels,
+                    label_report,
+                    native_raids,
+                    raid_report,
+                    native_intel,
+                    intel_report,
+                    resource_icons,
+                    occupation_icons,
+                    adjacency_icons,
+                    adjacency_priority,
+                    air_assignment,
+                    air_orders,
+                    air_ranges,
+                ))
             },
-            &tables.intel,
         );
-        let intel_report = native_intel.report.clone();
-        // The resource icons' content failure is a document warning; they draw nothing then.
-        let resource_icons = match &self.resource_icons {
-            Ok(content) => viewer_world::map::resource_icons::prepare(
-                &viewer_world::map::resource_icons::ResourceIconInputs {
-                    content,
-                    localisation: &self.names.localisation,
-                    state_provinces: &self.icons.raids.trigger_content.state_provinces,
-                    centroid: &|province| {
-                        let (_, geography) = self.icons.raids.mission_topology().ok()?;
-                        let [x, z] = *geography.centroids.get(&province)?;
-                        let (x, z) = (x as f32, z as f32);
-                        Some([x, self.heights().surface_height(x, z), z])
-                    },
-                    camera,
-                    viewport,
-                    ui_scale,
-                    visibility: view.visibility,
-                },
-                frame,
-            ),
-            Err(_) => Default::default(),
-        };
-        let occupation_icons = match &self.icons.occupation {
-            Ok(content) => viewer_world::map::occupation_icons::prepare(
-                &viewer_world::map::occupation_icons::Inputs {
-                    content,
-                    mode: view.occupation,
-                    country: tables.ours(),
-                    state_provinces: &self.icons.raids.trigger_content.state_provinces,
-                    centroid: &|province| {
-                        let (_, geography) = self.icons.raids.mission_topology().ok()?;
-                        let [x, z] = *geography.centroids.get(&province)?;
-                        let (x, z) = (x as f32, z as f32);
-                        Some([x, self.heights().surface_height(x, z), z])
-                    },
-                    camera,
-                    viewport,
-                    ui_scale,
-                },
-                frame,
-            ),
-            Err(_) => Default::default(),
-        };
-        let counters = &self.counters;
-        let anchor =
-            |province| counters.anchor(province, viewer_foundation::map::unit_rules::STANDSTILL);
-        let adjacency_icons =
-            self.adjacency_icons
-                .prepare(&viewer_world::map::adjacency_icons::Inputs {
-                    anchor: &anchor,
-                    camera,
-                    viewport,
-                    ui_scale,
-                    visibility: view.visibility,
-                });
-        let adjacency_priority = viewer_world::map::adjacency_icons::priority(
-            &self.counters.defines.priorities,
-            &view.visibility,
-        );
-        let air_assignment = if view.visibility.priorities
-            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
-        {
-            let defines = &self.icons.raids.defines;
-            viewer_world::map::air_assignment::read(
-                frame,
-                &view.air_selected,
-                tables.ours(),
-                viewer_foundation::map::air_range::Defines {
-                    map_scale: defines.map_scale,
-                    ace_wing_size: defines.ace_wing_size,
-                    ace_wing_size_max_bonus: defines.ace_wing_size_max_bonus,
-                },
-                viewer_world::map::air_assignment::Content {
-                    geometry: &self.icons.raids.geometry,
-                    states: &self.icons.raids.trigger_content.state_provinces,
-                    regions: &self.icons.raids.region_provinces,
-                    colors: self
-                        .air_assignment_colors
-                        .as_ref()
-                        .copied()
-                        .map_err(String::as_str),
-                },
-            )
-        } else {
-            Default::default()
-        };
-        let (air_orders, air_ranges) = {
-            let mut air = tables
-                .air
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            air.for_selection(&view.air_selected, || {
-                (
-                    self.air_orders(tables.ours(), &[], &view.air_selected),
-                    self.air_ranges(tables.ours(), &view.air_selected),
-                )
-            })
-        };
+        let icons = icons?;
+        let (
+            labels,
+            label_report,
+            native_raids,
+            raid_report,
+            native_intel,
+            intel_report,
+            resource_icons,
+            occupation_icons,
+            adjacency_icons,
+            adjacency_priority,
+            air_assignment,
+            air_orders,
+            air_ranges,
+        ) = other?;
         Ok(PreparedOverlay {
             air_orders,
             air_assignment,
@@ -4389,6 +4488,7 @@ impl<'a> Hour<'a> {
             }),
             physical_viewport: Some(viewport),
             portrait_textures: Some(&portrait_textures),
+            before_dynamic: None,
         };
         Ok(draw(&Context {
             resources: &resources,
@@ -4419,28 +4519,6 @@ impl<'a> Hour<'a> {
         (batch, hits, report)
     }
 
-    /// Draws the prepared intel containers through the view's retained windows.
-    fn intel_quads(
-        &self,
-        context: &Context<'_, GuiAssets<'_>>,
-        intel: &intel_icons::PreparedIntel,
-        view: &mut intel_icons::IntelView,
-    ) -> (Batch, Vec<intel_icons::IntelHit>, intel_icons::IntelReport) {
-        let mut batch = Batch::default();
-        let mut hits = Vec::new();
-        let mut report = intel.report.clone();
-        intel.draw(
-            &self.icons.intel,
-            context,
-            self.icons.raids.priority,
-            view,
-            &mut batch,
-            &mut hits,
-            &mut report,
-        );
-        (batch, hits, report)
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn dump_overlay(
         self,
@@ -4457,7 +4535,14 @@ impl<'a> Hour<'a> {
         tables.warm_counter_flags(&self.icons.counters);
         let mut view = CounterView::new(counter_settings);
         view.set_mode(mode);
-        let prepared = self.prepare_overlay_cached(camera, viewport, ui_scale, &tables, &view)?;
+        let prepared = self.prepare_overlay_cached(
+            camera,
+            viewport,
+            ui_scale,
+            &tables,
+            &view,
+            &Default::default(),
+        )?;
         Ok(DumpOverlay {
             hour: self,
             prepared,

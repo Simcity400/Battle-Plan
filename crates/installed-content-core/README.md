@@ -75,3 +75,9 @@ Sub-unit carrier admission resolves the first equipment requirement's carrier_ca
 Province geometry exports its native fixed5 square-root helper for simulation consumers. Small/large scaling, Newton tolerance and signed wrapping remain shared, so Navy Air disruption and geometry keep the same integer rounding.
 
 Occupation modifier definitions read the recorded stack's direct resistance/compliance modifier files with exact name identity and whole-object duplicate replacement. The catalogue retains definition kind, authored large sprite/frame, threshold and margin, tooltip key, modifier fields and the separate visible, enabled, enable-effect and disable-effect bodies. Invalid types remain unregistered; unread suffixes produce named, counted refusals until a later definition establishes the requested name. Active membership comes from recorded retained identities.
+
+Mesh animation frames can stream joint records into retained sampling storage.
+`mesh::PoseBinding` retains a mesh/animation name join for repeated sampled poses,
+including last supplied duplicate animation names, first skeleton-index matches,
+partial animations, bind fallbacks and the existing bounded parent walk. It changes
+neither sample arithmetic nor skeleton order.

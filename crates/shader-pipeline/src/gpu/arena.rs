@@ -163,13 +163,17 @@ impl Arena {
         let chunk = &mut inner.chunks[inner.current];
         for (&(bytes, size), slot) in blocks.iter().zip(offsets) {
             let reserved = reserved(bytes, size);
-            let found = inner.recent.iter().find(|recent| {
+            let found = inner.recent.iter().position(|recent| {
                 recent.length == bytes.len()
                     && recent.reserved >= reserved
                     && chunk.staged[recent.offset..recent.offset + recent.length] == *bytes
             });
             let offset = match found {
-                Some(recent) => recent.offset,
+                Some(index) => {
+                    let recent = inner.recent[index];
+                    inner.recent[index..].rotate_left(1);
+                    recent.offset
+                }
                 None => {
                     let offset = align(chunk.staged.len(), alignment);
                     chunk.staged.resize(offset, 0);
@@ -329,6 +333,24 @@ mod tests {
         let again = arena.constants(&[(&[3; 4], 4)], &mut offsets[..1]).unwrap();
         assert_eq!((offsets[0], again), (0, first));
     }
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn reused_constants_stay_recent_among_changing_object_blocks() {
+        let (device, _) = crate::tests::device();
+        let arena = Arena::new(&device);
+        let scene = [1; 32];
+        let mut offsets = [0; 2];
+        for value in 2..32 {
+            arena
+                .constants(&[(&scene, 32), (&[value; 16], 16)], &mut offsets)
+                .unwrap();
+            assert_eq!(
+                offsets[0], 0,
+                "a used scene block must not be evicted by object blocks"
+            );
+        }
+    }
+
     #[test]
     #[ignore = "requires a GPU"]
     fn identical_vertices_reuse_bytes_until_a_chunk_change_or_reset() {

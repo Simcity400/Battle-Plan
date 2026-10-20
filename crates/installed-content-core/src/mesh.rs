@@ -570,6 +570,111 @@ impl Mesh {
     }
 }
 
+/// A mesh/animation name join, retained while both immutable inputs are in use.
+/// Duplicate animation names retain their last supplied local; duplicate skeleton
+/// indices resolve to the first skeleton record, as the ordinary pose query does.
+#[derive(Debug)]
+pub struct PoseBinding {
+    joints: Vec<BoundJoint>,
+    slots: Vec<Option<usize>>,
+}
+
+#[derive(Debug)]
+struct BoundJoint {
+    parent: Option<usize>,
+    locals: Vec<usize>,
+    bind: Option<Transform>,
+}
+
+impl PoseBinding {
+    pub fn new(mesh: &Mesh, animation: &Animation) -> Self {
+        let count = mesh
+            .skeleton
+            .iter()
+            .map(|j| j.index as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let mut slots = vec![None; count];
+        for (at, joint) in mesh.skeleton.iter().enumerate() {
+            slots[joint.index as usize].get_or_insert(at);
+        }
+        let joints = mesh
+            .skeleton
+            .iter()
+            .map(|joint| {
+                let parent = joint
+                    .parent
+                    .filter(|parent| *parent != joint.index)
+                    .and_then(|parent| slots.get(parent as usize).copied().flatten());
+                let bind = joint
+                    .inverse_bind
+                    .and_then(|inverse| inverse.inverse())
+                    .and_then(|world| match parent {
+                        Some(at) => Some(mesh.skeleton[at].inverse_bind?.compose(&world)),
+                        None => Some(world),
+                    });
+                BoundJoint {
+                    parent,
+                    locals: animation
+                        .joints
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(at, local)| (local.name == joint.name).then_some(at))
+                        .collect(),
+                    bind,
+                }
+            })
+            .collect();
+        Self { joints, slots }
+    }
+
+    /// The same parent walk and composition order as [`Mesh::sampled_pose`],
+    /// with its name and index joins already resolved and its buffers reused.
+    pub fn sample_into(
+        &self,
+        locals: &[JointPose],
+        out: &mut Vec<Transform>,
+        memo: &mut Vec<Option<Option<Transform>>>,
+    ) {
+        memo.clear();
+        memo.resize(self.joints.len(), None);
+        out.clear();
+        out.extend(self.slots.iter().map(|at| {
+            at.and_then(|at| self.world(locals, at, memo, 0))
+                .unwrap_or(Transform::IDENTITY)
+        }));
+    }
+
+    fn world(
+        &self,
+        locals: &[JointPose],
+        at: usize,
+        memo: &mut [Option<Option<Transform>>],
+        depth: usize,
+    ) -> Option<Transform> {
+        if let Some(held) = memo[at] {
+            return held;
+        }
+        if depth > self.joints.len() {
+            return None;
+        }
+        let joint = &self.joints[at];
+        let local = joint
+            .locals
+            .iter()
+            .rev()
+            .find_map(|&at| locals.get(at))
+            .map(JointPose::transform)
+            .or(joint.bind);
+        let out = local.and_then(|local| match joint.parent {
+            Some(parent) => Some(self.world(locals, parent, memo, depth + 1)?.compose(&local)),
+            None => Some(local),
+        });
+        memo[at] = Some(out);
+        out
+    }
+}
+
 /// One frame of an animation, keyed by joint name.
 ///
 /// The skeleton and the animation are two files and are joined by name.

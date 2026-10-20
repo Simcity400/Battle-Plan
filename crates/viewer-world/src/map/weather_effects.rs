@@ -1674,6 +1674,7 @@ impl Pass {
                     .or_default() += packet.instances.len();
             }
         }
+        native::order(&mut packets);
         Packets(packets)
     }
 

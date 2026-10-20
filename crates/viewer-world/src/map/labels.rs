@@ -606,6 +606,26 @@ impl PreparedLabels {
         view: &mut LabelView,
         batch: &mut Batch,
     ) -> LabelReport {
+        self.draw_scheduled(context, &self.dirty(schedule), view, batch)
+    }
+
+    /// Snapshot just this layer's dirty bits before borrowed workers read the schedule.
+    /// No worker keeps the shared schedule locked through GUI layout or resource requests.
+    pub fn dirty(&self, schedule: &Schedule) -> Vec<bool> {
+        self.placed
+            .iter()
+            .map(|label| schedule.dirty(label.province))
+            .collect()
+    }
+
+    pub fn draw_scheduled(
+        &self,
+        context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,
+        dirty: &[bool],
+        view: &mut LabelView,
+        batch: &mut Batch,
+    ) -> LabelReport {
+        assert_eq!(dirty.len(), self.placed.len());
         use viewer_foundation::map::icon_windows::{Owner, Plan};
         let mut report = self.report.clone();
         let mut drawn = Vec::with_capacity(self.placed.len());
@@ -629,7 +649,7 @@ impl PreparedLabels {
                 view.owners.push(Owner {
                     id: label.province,
                     screen: label.screen,
-                    dirty: schedule.dirty(label.province),
+                    dirty: dirty[at],
                 });
             }
             let controls = context.windows.gui_type(name.as_bytes()).map(|root| {
@@ -1047,6 +1067,34 @@ pub(crate) mod tests {
             [[100., 90.], [120., 90.], [120., 100.], [100., 100.]]
         );
         assert!(batch.quads[0].layer < batch.quads[1].layer);
+
+        // The borrowed-worker path snapshots dirty bits before any GUI/resource work.
+        // Compare complete batches/reports from independent retained pools, not a redraw
+        // of one already-mutated view.
+        let workers = viewer_foundation::parallel::Workers::new(Arc::new(
+            viewer_foundation::builder_pool::Pool::new(1).unwrap(),
+        ));
+        let dirty = labels.dirty(&Schedule::default());
+        let outputs: [_; 2] = std::array::from_fn(|_| std::sync::Mutex::new(None));
+        workers.run(2, &|index| {
+            let mut view = LabelView::default();
+            let mut batch = Batch::default();
+            let report = if index == 0 {
+                labels.draw(&context, &Schedule::default(), &mut view, &mut batch)
+            } else {
+                labels.draw_scheduled(&context, &dirty, &mut view, &mut batch)
+            };
+            *outputs[index].lock().unwrap() = Some((batch, report));
+        });
+        let [
+            (serial_batch, serial_report),
+            (parallel_batch, parallel_report),
+        ] = outputs.map(|output| output.into_inner().unwrap().unwrap());
+        assert_eq!(serial_report, parallel_report);
+        assert_eq!(
+            format!("{:?}", serial_batch.quads),
+            format!("{:?}", parallel_batch.quads)
+        );
     }
 
     #[test]

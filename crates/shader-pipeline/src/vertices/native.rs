@@ -68,6 +68,17 @@ pub fn pack_native(
                     .map(|a| a.offset + a.format.size())
                     .max()
                     .unwrap_or(0);
+                // A contiguous declaration copies one known span per record, without copying
+                // native stride padding or the packed format's zero-filled alignment bytes.
+                let contiguous =
+                    layout
+                        .attributes
+                        .iter()
+                        .zip(&packed.attributes)
+                        .all(|(input, output)| {
+                            input.offset == first + output.offset
+                                && input.format.size().is_multiple_of(4)
+                        });
                 for index in 0..u64::from(count) {
                     let base = index
                         .checked_mul(layout.stride)
@@ -77,6 +88,13 @@ pub fn pack_native(
                         .checked_add(last)
                         .filter(|end| *end <= buffer.size)
                         .is_some_and(|end| covered(buffer.known, base + first, end));
+                    if span && contiguous {
+                        let from = (base + first) as usize;
+                        let target = (index * stride) as usize;
+                        bytes[target..target + stride as usize]
+                            .copy_from_slice(&buffer.bytes[from..from + stride as usize]);
+                        continue;
+                    }
                     for (input, output) in layout.attributes.iter().zip(&packed.attributes) {
                         let from = base
                             .checked_add(input.offset)
@@ -123,6 +141,68 @@ fn covered(known: &[std::ops::Range<u64>], from: u64, end: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contiguous_records_copy_only_authored_bytes_and_keep_partial_fetch_rules() {
+        let layouts = [VertexLayout {
+            stride: 20,
+            step: wgpu::VertexStepMode::Instance,
+            attributes: vec![
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Uint8x4,
+                    offset: 12,
+                    shader_location: 1,
+                },
+            ],
+        }];
+        let bytes: Vec<u8> = (0..40).collect();
+        let known = [0..16, 20..36];
+        let sources = BTreeMap::from([(
+            0,
+            Some(NativeBuffer {
+                bytes: &bytes,
+                size: 40,
+                offset: 0,
+                known: &known,
+            }),
+        )]);
+        let out = pack_native(&layouts, &sources, 1, 2).unwrap();
+        assert_eq!(out.layouts[0].stride, 16);
+        assert_eq!(out.bytes[0], [&bytes[..16], &bytes[20..36]].concat());
+        // A record straddling the physical end still copies its in-range attribute and zeros the other.
+        let known = 20..32;
+        let sources = BTreeMap::from([(
+            0,
+            Some(NativeBuffer {
+                bytes: &bytes,
+                size: 32,
+                offset: 20,
+                known: std::slice::from_ref(&known),
+            }),
+        )]);
+        let out = pack_native(&layouts, &sources, 1, 1).unwrap();
+        assert_eq!(out.bytes[0], [&bytes[20..32], &[0; 4]].concat());
+        let sources = BTreeMap::from([(
+            0,
+            Some(NativeBuffer {
+                bytes: &bytes,
+                size: 40,
+                offset: 20,
+                known: std::slice::from_ref(&known),
+            }),
+        )]);
+        assert!(
+            pack_native(&layouts, &sources, 1, 1)
+                .err()
+                .unwrap()
+                .contains("unavailable bytes 32..36")
+        );
+    }
 
     #[test]
     fn overlapping_fetches_preserve_formats_offsets_nulls_and_unknown_bytes() {

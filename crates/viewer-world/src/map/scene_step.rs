@@ -42,6 +42,8 @@ pub(super) struct Presentation<'a> {
     pub map_frame: Option<&'a mut ModelPass>,
     pub ambient: Option<&'a mut crate::map::mapframe::Presentation>,
     pub last_animation_time: Option<f32>,
+    /// The hour builders' threads the step may lend its independent work.
+    pub workers: &'a viewer_foundation::parallel::Workers,
 }
 
 impl Presentation<'_> {
@@ -76,6 +78,7 @@ impl Presentation<'_> {
             map_frame,
             ambient,
             last_animation_time,
+            workers,
         } = self;
         let visible = camera.visible_ground(size, MARGIN);
         let animation_offsets = wrap_offsets(visible, camera.map.x());
@@ -90,14 +93,14 @@ impl Presentation<'_> {
             );
             pass.replace_field(&assets.library(), &mut field);
             pass.set_hidden(hidden);
-            pass.animate(animation_time, None, &[0.]);
+            pass.animate_with_workers(animation_time, None, &[0.], workers);
         }
         // Trains run below the railway fade, whether or not the display shows them.
         if let Some((pass, assets, plan)) = trains
             && rails_shown
         {
             pass.replace_field(&assets.library, plan.field(assets, animation_time));
-            pass.animate(animation_time, visible, &animation_offsets);
+            pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
         }
         // City actors are precreated outside the dynamic mesh creation budget. Each province's
         // damage inputs select their states.
@@ -111,7 +114,7 @@ impl Presentation<'_> {
                 pass.update_placed(placed, crate::map::sprawl::SPRAWL_TILE);
             }
             pass.set_clocks(presentation.clocks(animation_time));
-            pass.animate(animation_time, None, &[0.0]);
+            pass.animate_with_workers(animation_time, None, &[0.0], workers);
         }
         let mut gates = unit_gates.unwrap_or(UnitGates::OFF);
         if let Some(arrows) = &movement_arrows {
@@ -144,14 +147,14 @@ impl Presentation<'_> {
             if let Some(placed) = models.buildings {
                 pass.update_placed(placed, BUILDING_TILE);
             }
-            pass.animate(animation_time, visible, &animation_offsets);
+            pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
         }
         if let Some(pass) = unit_models {
             pass.update_placed(models.units, crate::map::unit_models::UNIT_TILE);
             pass.set_clocks(unit_history.combat_clocks());
             // Advance hidden entities too. History retires their players independently of
             // render culling.
-            pass.animate(animation_time, None, &[0.0]);
+            pass.animate_with_workers(animation_time, None, &[0.0], workers);
         }
         // Missile scenarios finished since the last frame start their explosions on the clock
         // the flying aircraft share. Their own clock mark moves with the start, so a frame that
@@ -187,7 +190,7 @@ impl Presentation<'_> {
             pass.update_placed(placed, 256.);
             struck.extend(clocks.keys().copied());
             pass.set_clocks(clocks);
-            pass.animate(animation_time, None, &[0.]);
+            pass.animate_with_workers(animation_time, None, &[0.], workers);
         }
         struck
     }
@@ -333,6 +336,7 @@ mod tests {
                 map_frame: None,
                 ambient: None,
                 last_animation_time: self.last,
+                workers: &Default::default(),
             }
             .step(camera, [1024, 768], time, true);
             self.last = Some(time);

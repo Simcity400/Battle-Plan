@@ -1571,3 +1571,93 @@ fn a_joint_with_an_unusable_inverse_bind_takes_the_identity() {
     let palette = mesh.palette(&Animation::default(), FIRST_FRAME);
     assert_eq!(palette, vec![Transform::IDENTITY; 2]);
 }
+
+#[test]
+fn bound_sampled_pose_matches_name_join_for_reordered_partial_and_duplicate_joints() {
+    let translated = |x| Some(Transform::from_trs([x, 0.25, -0.5], [0., 0., 0., 1.], 1.));
+    let mut mesh = Mesh {
+        skeleton: vec![
+            Joint {
+                name: "tip".into(),
+                index: 5,
+                parent: Some(2),
+                inverse_bind: translated(-2.),
+            },
+            Joint {
+                name: "root".into(),
+                index: 2,
+                parent: None,
+                inverse_bind: translated(-1.),
+            },
+            Joint {
+                name: "unanimated".into(),
+                index: 7,
+                parent: Some(2),
+                inverse_bind: translated(-3.),
+            },
+            Joint {
+                name: "ignored duplicate index".into(),
+                index: 5,
+                parent: None,
+                inverse_bind: None,
+            },
+            Joint {
+                name: "absent bind".into(),
+                index: 8,
+                parent: Some(7),
+                inverse_bind: None,
+            },
+        ],
+        ..Default::default()
+    };
+    let animation = Animation {
+        fps: 7.5,
+        samples: 9,
+        joints: ["extra", "tip", "root", "tip"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| AnimationJoint {
+                name: name.into(),
+                channels: "tqs".into(),
+                translation: [i as f32, -0.0, 0.2],
+                rotation: [0., 0.1, 0., 0.9],
+                scale: 1.25,
+            })
+            .collect(),
+        translations: (0..9 * 4 * 3).map(|i| (i as f32 * 0.37).sin()).collect(),
+        rotations: (0..9 * 4)
+            .flat_map(|i| [0., (i as f32 * 0.1).sin(), 0., 0.8])
+            .collect(),
+        scales: (0..9 * 4).map(|i| 0.2 + i as f32 * 0.03).collect(),
+    };
+    let bits = |pose: &[Transform]| {
+        pose.iter()
+            .map(|pose| {
+                (
+                    pose.basis.map(|column| column.map(f32::to_bits)),
+                    pose.translation.map(f32::to_bits),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    for cyclic in [false, true] {
+        if cyclic {
+            mesh.skeleton[1].parent = Some(5);
+        }
+        let binding = PoseBinding::new(&mesh, &animation);
+        let (mut pose, mut memo) = (Vec::new(), Vec::new());
+        for time in [-0.4, 0., 0.01, 0.125, 0.7, 1.1, 15.] {
+            for looping in [false, true] {
+                let locals = animation.sample(time, looping);
+                for count in 0..=locals.len() {
+                    binding.sample_into(&locals[..count], &mut pose, &mut memo);
+                    assert_eq!(
+                        bits(&pose),
+                        bits(&mesh.sampled_pose(&animation, &locals[..count])),
+                        "cyclic={cyclic} time={time} looping={looping} locals={count}"
+                    );
+                }
+            }
+        }
+    }
+}

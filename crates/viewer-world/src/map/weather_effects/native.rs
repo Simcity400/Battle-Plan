@@ -294,13 +294,22 @@ impl EntitySimulations {
     }
 }
 
+fn order_key(packet: &DrawPacket) -> (usize, [usize; 4], bool) {
+    (packet.registration, packet.actor, packet.descriptor.trail)
+}
+
+pub(super) fn order(packets: &mut [DrawPacket]) {
+    packets.sort_by_key(order_key);
+}
+
+#[cfg(test)]
 fn submission_order(packets: &[DrawPacket], view: usize) -> Vec<&DrawPacket> {
     let mut ordered: Vec<_> = packets
         .iter()
         .filter(|packet| packet.views.contains(view))
         .collect();
     // Submit each actor's ordinary packets before that actor's trails.
-    ordered.sort_by_key(|packet| (packet.registration, packet.actor, packet.descriptor.trail));
+    ordered.sort_by_key(|packet| order_key(packet));
     ordered
 }
 
@@ -379,6 +388,7 @@ pub(super) struct Renderer {
     pages: Vec<wgpu::TextureView>,
     samples: u32,
     indices: wgpu::Buffer,
+    quad: Arc<[u8]>,
     retained: crate::map::shader_scene::State,
     max_particles: usize,
     /// Per technique name and trail flag; `None` is the missing technique.
@@ -415,6 +425,7 @@ impl Renderer {
             max_particles,
             retained: Default::default(),
             programs: BTreeMap::new(),
+            quad: bytemuck::cast_slice(&particle_shader::QUAD).into(),
             indices: buffer(
                 "native particle indices",
                 bytemuck::cast_slice(&particle_shader::INDICES),
@@ -445,7 +456,10 @@ impl Renderer {
         // Walk registered type buckets, then each actor's packets.
         // Stable grouping preserves this viewer's actor/packet enqueue order;
         // historical cross-producer actor order remains unrecorded.
-        let ordered = submission_order(packets, view);
+        let ordered: Vec<_> = packets
+            .iter()
+            .filter(|packet| packet.views.contains(view))
+            .collect();
         let mut actor = None;
         let mut ordinary_offset = 0;
         let mut ring = InstanceRing::new(allocation_size(self.max_particles, 48)?);
@@ -501,7 +515,7 @@ impl Renderer {
                 );
             }
         }
-        let quad: Arc<[u8]> = bytemuck::cast_slice(&particle_shader::QUAD).into();
+        let quad = &self.quad;
         let mut previous: Option<(Arc<gpu::Pipeline>, gpu::Bindings)> = None;
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
         for (index, packet) in ordered.iter().enumerate() {
@@ -580,7 +594,7 @@ impl Renderer {
             let stream = &mut self.retained.stream;
             match program {
                 Some(program) => {
-                    stream.bind_program(Some(program.selection.clone()), program.layouts.clone());
+                    stream.select_program(&program.selection, &program.layouts);
                     stream.bind_blend(program.state.blend, program.state.write_mask);
                     stream.bind_rasterizer(program.raster.clone());
                 }
@@ -895,6 +909,46 @@ mod tests {
         );
         drop(wrapped);
         assert!(ring.append([instance(5.); 5].iter()).is_err());
+    }
+
+    #[test]
+    fn sorting_once_then_filtering_matches_each_views_native_stable_order() {
+        let mut emitter = super::super::tests::activation_test_emitter();
+        let mut packets = Vec::new();
+        for (index, (registration, actor, trail)) in [
+            (2, 1, true),
+            (0, 2, false),
+            (2, 1, false),
+            (0, 2, false),
+            (1, 0, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            emitter.registration = registration;
+            emitter.render.trail = trail;
+            let mut packet = DrawPacket::new(&emitter, 1., Transform::IDENTITY, index as f32);
+            packet.actor = [0, actor, 0, 0];
+            packet.views = ViewMask::Some((0..12).map(|view| (index + view) % 3 != 0).collect());
+            packets.push(packet);
+        }
+        let before: Vec<Vec<_>> = (0..13)
+            .map(|view| {
+                submission_order(&packets, view)
+                    .iter()
+                    .map(|packet| packet.constants.time.to_bits())
+                    .collect()
+            })
+            .collect();
+        order(&mut packets);
+        for (view, expected) in before.iter().enumerate() {
+            let actual: Vec<_> = packets
+                .iter()
+                .filter(|packet| packet.views.contains(view))
+                .map(|packet| packet.constants.time.to_bits())
+                .collect();
+            assert_eq!(&actual, expected);
+        }
     }
 
     #[test]

@@ -233,3 +233,72 @@ Effect Test {{ VertexShader = V PixelShader = P }}
         "{error}"
     );
 }
+
+/// A pipeline-resolution hit must not reuse a preceding draw's resource validity.
+#[test]
+#[ignore = "requires a shader compiler and GPU"]
+fn resolved_stream_pass_still_checks_changed_constant_ranges_and_missing_views() {
+    crate::tests::initialize_runtime_tables();
+    let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
+    let program = program(
+        r#"VertexStruct I { float3 position : POSITION;
+};
+VertexStruct O { float4 position : SV_POSITION;
+};
+VertexShader = { MainCode V [[ O main(I v) { O o; o.position = float4(v.position, 1); return o; } ]] }
+PixelShader = {
+ConstantBuffer(2,0) { float4 Tint;
+};
+Samplers = { Colour = { Index = 0 MagFilter = Point MinFilter = Point MipFilter = Point } }
+MainCode P [[ float4 main(O v) : SV_TARGET { return Colour_Texture.SampleLevel(Colour_Sampler, float2(0.5, 0.5), 0) * Tint; } ]]
+}
+Effect Test { VertexShader = V PixelShader = P }
+"#,
+    );
+    let compiled = Compiler::discover()
+        .unwrap()
+        .compile(&program, &program.techniques[0], &[])
+        .unwrap();
+    let state = gpu::State::authored(&program, &program.techniques[0]).unwrap();
+    let pass = gpu::Pass::packed(&compiled, &state, wgpu::TextureFormat::Rgba8Unorm, 1);
+    let effect = library::Effect::from_compiled(
+        std::sync::Arc::new(program),
+        vec![],
+        vec![Ok(std::sync::Arc::new(compiled))],
+    );
+    let selection = effect.select("Test").unwrap().unwrap();
+    let (device, queue) = device();
+    let arena = gpu::Arena::new(&device);
+    let mut stream = stream::Stream::default();
+    stream.select_program(&selection, &pass.vertices);
+    stream.bind_texture(
+        0,
+        Stage::Pixel,
+        Some(texel(&device, &queue, [255; 4])),
+        state.samplers.get(&binding(0, Stage::Pixel)),
+    );
+    stream.bind_constants(2, Stage::Pixel, Some(&[0; 16]));
+    stream.prepare_pass(&arena, "valid", &pass).unwrap();
+    stream.bind_partial_constants(
+        2,
+        Stage::Pixel,
+        Some(&[0; 16]),
+        std::slice::from_ref(&(0..4)),
+    );
+    let reason = stream
+        .prepare_pass(&arena, "unknown bytes", &pass)
+        .err()
+        .unwrap();
+    assert!(reason.contains("unavailable bytes"), "{reason}");
+    stream.bind_constants(2, Stage::Pixel, Some(&[0; 16]));
+    stream.forget_texture(0, Stage::Pixel, None);
+    let reason = stream
+        .prepare_pass(&arena, "missing texture", &pass)
+        .err()
+        .unwrap();
+    assert!(reason.contains("has not been supplied"), "{reason}");
+    assert_eq!(
+        stream.cache.created, 1,
+        "resource changes do not rebuild a pipeline"
+    );
+}

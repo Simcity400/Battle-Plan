@@ -1361,3 +1361,67 @@ fn a_floating_harbour_takes_the_first_record_of_its_controllers_system() {
         Some(false)
     );
 }
+
+#[test]
+fn settled_groups_match_full_reapplication_through_camera_hour_and_budget_changes() {
+    let (mut cached, mut reference) = (
+        budget_buildings(&[(1, 2), (2, 3)]),
+        budget_buildings(&[(1, 2), (2, 3)]),
+    );
+    for frame in 0..160 {
+        let time = frame as f32 / 60.;
+        if frame == 70 {
+            for history in [&mut cached, &mut reference] {
+                let mut next = history.prepared.as_ref().unwrap().clone();
+                next.hour += 1;
+                next.slots[1].entity.as_mut().unwrap().damaged = true;
+                next.slots[3].entity = None;
+                history.set(next, true);
+            }
+        }
+        let camera = camera(
+            [frame as f32 * 0.01, 0.],
+            if (90..110).contains(&frame) {
+                200.
+            } else {
+                50.
+            },
+        );
+        let mut left = super::super::mesh_budget::Budget::new(if frame < 4 { 1 } else { 7 }, false);
+        let mut right =
+            super::super::mesh_budget::Budget::new(if frame < 4 { 1 } else { 7 }, false);
+        reference.settled.fill(false);
+        cached
+            .frame(camera, [1024, 768], time, true, false)
+            .finish(&mut left);
+        reference
+            .frame(camera, [1024, 768], time, true, false)
+            .finish(&mut right);
+        assert_eq!(
+            cached.collect(None, 0.),
+            reference.collect(None, 0.),
+            "frame {frame}"
+        );
+        assert_eq!(left.remaining(), right.remaining(), "frame {frame}");
+        assert_eq!(cached.near, reference.near, "frame {frame}");
+    }
+    assert!(cached.settled.iter().all(|settled| *settled));
+    for history in [&mut cached, &mut reference] {
+        let mut next = history.prepared.as_ref().unwrap().clone();
+        next.hour += 1;
+        next.popup_speed = -1.;
+        history.set(next, true);
+    }
+    // A negative authored speed can leave full scale at zero delta, then shrink.
+    for frame in 160..164 {
+        let camera = camera([frame as f32 * 0.01, 0.], 50.);
+        let time = (frame - 1) as f32 / 60.;
+        reference.settled.fill(false);
+        for history in [&mut cached, &mut reference] {
+            history
+                .frame(camera, [1024, 768], time, true, false)
+                .finish(&mut super::super::mesh_budget::Budget::new(7, false));
+        }
+        assert_eq!(cached.collect(None, 0.), reference.collect(None, 0.));
+    }
+}

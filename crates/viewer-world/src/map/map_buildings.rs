@@ -284,6 +284,9 @@ pub struct BuildingHistory {
     /// Provinces (groups) updated near since their last far step: the
     /// province byte's `0x10`.
     near: BTreeSet<usize>,
+    /// Near groups already applied at full scale for the installed hour.
+    settled: Vec<bool>,
+    settled_steady: Option<bool>,
     last_time: Option<f32>,
     last_view: Option<(Camera, [u32; 2])>,
     /// The rectangle last collected; `Some(None)` collected every tile.
@@ -307,6 +310,8 @@ impl BuildingHistory {
             self.last_time = None;
             self.last_view = None;
         }
+        self.settled.clear();
+        self.settled.resize(prepared.groups.len(), false);
         self.prepared = Some(prepared);
         self.dirty = true;
         reset
@@ -320,6 +325,7 @@ impl BuildingHistory {
         });
         if let (true, Some((camera, viewport))) = (continues, self.last_view) {
             self.apply(prepared, camera, viewport, 0.0, false);
+            self.settled.fill(false);
         }
     }
 
@@ -334,6 +340,8 @@ impl BuildingHistory {
         self.slots.clear();
         self.tiles.clear();
         self.near.clear();
+        self.settled.fill(false);
+        self.settled_steady = None;
         self.changed = true;
     }
 
@@ -357,6 +365,13 @@ impl BuildingHistory {
         if enabled {
             self.last_view = Some((camera, viewport));
             self.dirty = false;
+        }
+        if self.settled_steady != Some(steady) {
+            self.settled.fill(false);
+            self.settled_steady = Some(steady);
+        }
+        if let Some(prepared) = &self.prepared {
+            self.settled.resize(prepared.groups.len(), false);
         }
         let prepared = self.prepared.take();
         BuildingFrame {
@@ -435,6 +450,9 @@ impl BuildingHistory {
         delta: f32,
         steady: bool,
     ) {
+        self.settled.clear();
+        self.settled.resize(prepared.groups.len(), false);
+        self.settled_steady = Some(steady);
         let admission = Admission::new(camera, viewport);
         let mut budget = super::mesh_budget::Budget::new(0, steady);
         for (index, group) in prepared.groups.iter().enumerate() {
@@ -458,6 +476,7 @@ impl BuildingHistory {
             if !self.near.remove(&index) {
                 return;
             }
+            self.settled[index] = false;
             for &id in &group.slots {
                 let Some(state) = self.slots.get_mut(&id) else {
                     continue;
@@ -474,7 +493,11 @@ impl BuildingHistory {
             }
             return;
         }
+        if self.settled[index] {
+            return;
+        }
         self.near.insert(index);
+        let mut settled = true;
         for &id in &group.slots {
             let Some(slot) = prepared.slots.get(id as usize) else {
                 continue;
@@ -512,6 +535,7 @@ impl BuildingHistory {
                 state.variant = selection.variant;
                 if !budget.take() {
                     self.dirty = true;
+                    settled = false;
                     continue;
                 }
                 state.generation = state.generation.wrapping_add(1);
@@ -529,6 +553,7 @@ impl BuildingHistory {
                 let previous = state.entity.map_or(0.0, |(_, old)| old.scale);
                 instance.scale = (previous + delta * prepared.popup_speed).min(1.0);
                 self.dirty |= instance.scale < 1.0;
+                settled &= instance.scale >= 1.0 && prepared.popup_speed >= 0.0;
             }
             place(
                 &mut self.tiles,
@@ -537,7 +562,9 @@ impl BuildingHistory {
                 state,
                 Some((mesh, instance)),
             );
+            settled &= state.entity == Some((mesh, instance));
         }
+        self.settled[index] = settled;
     }
 
     /// The drawn entities in the tiles `rect` reaches in any map copy, or all.

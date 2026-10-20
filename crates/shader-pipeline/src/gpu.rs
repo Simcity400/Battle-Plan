@@ -222,7 +222,7 @@ struct PipelineKey {
     pass: Pass,
 }
 
-fn sampler_key(sampler: &Sampler) -> [u32; 10] {
+pub(crate) fn sampler_key(sampler: &Sampler) -> [u32; 10] {
     [
         sampler.mag as u32,
         sampler.min as u32,

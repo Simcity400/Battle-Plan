@@ -68,11 +68,15 @@ impl Animation {
 
     /// Authored channel values before quaternion-to-matrix conversion.
     pub fn frame_trs(&self, frame: u32) -> Vec<JointPose> {
+        self.frame_trs_iter(frame).collect()
+    }
+
+    /// Streams one frame in joint order without allocating an intermediate pose.
+    pub fn frame_trs_iter(&self, frame: u32) -> impl Iterator<Item = JointPose> + '_ {
         let [strides_t, strides_q, strides_s] = self.channel_joints();
         let frame = frame as usize;
         let (mut slot_t, mut slot_q, mut slot_s) = (0usize, 0usize, 0usize);
-        let mut out = Vec::with_capacity(self.joints.len());
-        for joint in &self.joints {
+        self.joints.iter().map(move |joint| {
             let mut translation = joint.translation;
             let mut rotation = joint.rotation;
             let mut scale = joint.scale;
@@ -97,13 +101,12 @@ impl Animation {
                 }
                 slot_s += 1;
             }
-            out.push(JointPose {
+            JointPose {
                 translation,
                 rotation,
                 scale,
-            });
-        }
-        out
+            }
+        })
     }
 
     /// The loop period is the last sample's time, (samples - 1) / fps;
@@ -117,6 +120,13 @@ impl Animation {
     }
 
     pub fn sample(&self, seconds: f32, looping: bool) -> Vec<JointPose> {
+        let mut out = Vec::new();
+        self.sample_into(seconds, looping, &mut out);
+        out
+    }
+
+    /// Samples into retained storage; the two source frames are streamed in joint order.
+    pub fn sample_into(&self, seconds: f32, looping: bool, out: &mut Vec<JointPose>) {
         let duration = self.duration();
         let time = if looping && duration > 0.0 {
             seconds.rem_euclid(duration)
@@ -127,11 +137,12 @@ impl Animation {
         let a = (frame.floor() as u32).min(self.samples.saturating_sub(1));
         let b = (a + 1).min(self.samples.saturating_sub(1));
         let weight = frame.fract();
-        self.frame_trs(a)
-            .into_iter()
-            .zip(self.frame_trs(b))
-            .map(|(a, b)| a.blend(b, weight))
-            .collect()
+        out.clear();
+        out.extend(
+            self.frame_trs_iter(a)
+                .zip(self.frame_trs_iter(b))
+                .map(|(a, b)| a.blend(b, weight)),
+        );
     }
 
     /// One joint's transform in its parent's space at one frame.

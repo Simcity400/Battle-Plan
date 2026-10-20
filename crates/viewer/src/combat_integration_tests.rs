@@ -276,6 +276,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         flags: None,
         physical_viewport: None,
         portrait_textures: None,
+        before_dynamic: None,
     };
     let mut batch = Batch::default();
     let refused = tooltip_painter::draw(

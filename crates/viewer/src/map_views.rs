@@ -1,8 +1,9 @@
 //! Per-view composition of counter options, icon histories and the shared schedule.
 
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::{collections::BTreeSet, sync::Arc};
 use viewer_foundation::map::province_schedule::Shared;
+use viewer_foundation::parallel::Workers;
 use viewer_foundation::unit_handle::Unit;
 use {
     viewer_counters::map::counters::{CounterSettings, naval_windows},
@@ -296,6 +297,60 @@ impl PartialEq for CounterView {
     }
 }
 
+/// Fork two disjoint overlay owners on the existing pool, or run them in order when busy.
+/// Each closure and result has one owner; the mutexes only transfer them to that owner.
+pub(crate) fn join<A: Send, B: Send>(
+    workers: &Workers,
+    left: impl FnOnce() -> A + Send,
+    right: impl FnOnce() -> B + Send,
+) -> (A, B) {
+    if workers.threads() == 1 {
+        return (left(), right());
+    }
+    let left = Mutex::new(Some(left));
+    let right = Mutex::new(Some(right));
+    let a = Mutex::new(None);
+    let b = Mutex::new(None);
+    workers.run(2, &|at| match at {
+        0 => *a.lock().unwrap() = Some(left.lock().unwrap().take().unwrap()()),
+        1 => *b.lock().unwrap() = Some(right.lock().unwrap().take().unwrap()()),
+        _ => unreachable!(),
+    });
+    (
+        a.into_inner().unwrap().unwrap(),
+        b.into_inner().unwrap().unwrap(),
+    )
+}
+
+/// Stateful resource requests retain the preceding owner's allocation order, without
+/// serialising ordinary layout, glyphs, sprites or hit geometry. Never wait holding the
+/// province schedule or a GUI resource lock. Completion also releases waiters on unwind.
+#[derive(Default)]
+pub(crate) struct ResourceOrder {
+    complete: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl ResourceOrder {
+    pub(crate) fn wait(&self) {
+        let mut done = self.complete.lock().unwrap_or_else(|p| p.into_inner());
+        while !*done {
+            done = self.changed.wait(done).unwrap_or_else(|p| p.into_inner());
+        }
+    }
+
+    pub(crate) fn finishing(&self) -> impl Drop + '_ {
+        struct Finish<'a>(&'a ResourceOrder);
+        impl Drop for Finish<'_> {
+            fn drop(&mut self) {
+                *self.0.complete.lock().unwrap_or_else(|p| p.into_inner()) = true;
+                self.0.changed.notify_all();
+            }
+        }
+        Finish(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,5 +465,156 @@ mod tests {
             None
         );
         assert_eq!(reads, 4);
+    }
+}
+
+#[cfg(test)]
+mod parallel_tests {
+    use super::*;
+    use std::sync::{
+        Barrier,
+        atomic::{AtomicBool, Ordering},
+    };
+    use viewer_foundation::{builder_pool::Pool, parallel::Spawn};
+
+    #[test]
+    fn borrowed_overlay_owners_finish_before_join_and_stateful_reads_keep_order() {
+        let workers = Workers::new(Arc::new(Pool::new(1).unwrap()));
+        let order = ResourceOrder::default();
+        let wrote = AtomicBool::new(false);
+        let (left, right) = join(
+            &workers,
+            || {
+                let _finish = order.finishing();
+                wrote.store(true, Ordering::Relaxed);
+                vec![3, 2, 1]
+            },
+            || {
+                order.wait();
+                assert!(wrote.load(Ordering::Relaxed));
+                vec![7, 6]
+            },
+        );
+        assert_eq!([left, right].concat(), [3, 2, 1, 7, 6]);
+    }
+
+    #[test]
+    fn busy_builders_leave_the_ordered_overlay_on_the_caller() {
+        struct Busy;
+        impl Spawn for Busy {
+            fn try_spawn(
+                &self,
+                job: Box<dyn FnOnce() + Send>,
+            ) -> Result<(), Box<dyn FnOnce() + Send>> {
+                Err(job)
+            }
+            fn threads(&self) -> usize {
+                2
+            }
+        }
+        let workers = Workers::new(Arc::new(Busy));
+        let caller = std::thread::current().id();
+        let order = ResourceOrder::default();
+        let values = join(
+            &workers,
+            || {
+                let _finish = order.finishing();
+                assert_eq!(std::thread::current().id(), caller);
+                4
+            },
+            || {
+                order.wait();
+                assert_eq!(std::thread::current().id(), caller);
+                5
+            },
+        );
+        assert_eq!(values, (4, 5));
+    }
+
+    #[test]
+    fn occupied_builders_do_not_make_the_caller_wait_for_a_queued_turn() {
+        let pool = Arc::new(Pool::new(1).unwrap());
+        let (started, running) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        pool.submit(Box::new(move || {
+            started.send(()).unwrap();
+            let _ = blocked.recv();
+        }));
+        running.recv().unwrap();
+        let workers = Workers::new(pool.clone());
+        let caller = std::thread::current().id();
+        let order = ResourceOrder::default();
+        let values = join(
+            &workers,
+            || {
+                let _finish = order.finishing();
+                assert_eq!(std::thread::current().id(), caller);
+                4
+            },
+            || {
+                order.wait();
+                assert_eq!(std::thread::current().id(), caller);
+                5
+            },
+        );
+        assert_eq!(values, (4, 5));
+        // Only now may the builder finish and consume the already-closed borrowed turn.
+        release.send(()).unwrap();
+    }
+
+    #[test]
+    fn a_panicking_predecessor_releases_the_resource_waiter_before_join_unwinds() {
+        let workers = Workers::new(Arc::new(Pool::new(1).unwrap()));
+        let order = ResourceOrder::default();
+        let waited = AtomicBool::new(false);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            join(
+                &workers,
+                || {
+                    let _finish = order.finishing();
+                    panic!("counter failure");
+                },
+                || {
+                    order.wait();
+                    waited.store(true, Ordering::Relaxed);
+                },
+            );
+        }));
+        assert!(result.is_err());
+        // A worker is not required to take the second task before the panic.
+        order.wait();
+    }
+
+    #[test]
+    #[ignore = "borrowed-thread fork/join latency measurement"]
+    fn overlay_fork_join_latency() {
+        use std::time::Instant;
+        let workers = Workers::new(Arc::new(Pool::new(1).unwrap()));
+        if workers.threads() < 2 {
+            return;
+        }
+        let barrier = Barrier::new(2);
+        // Both tasks have to run on distinct threads, so this includes a real wake/join.
+        let mut samples = Vec::with_capacity(10_000);
+        for index in 0..10_100 {
+            let start = Instant::now();
+            join(
+                &workers,
+                || {
+                    barrier.wait();
+                },
+                || {
+                    barrier.wait();
+                },
+            );
+            if index >= 100 {
+                samples.push(start.elapsed().as_nanos());
+            }
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "overlay fork/join real handoff: p10={}ns median={}ns p90={}ns",
+            samples[1000], samples[5000], samples[9000]
+        );
     }
 }

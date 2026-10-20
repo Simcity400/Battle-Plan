@@ -65,3 +65,15 @@ Resistance and Compliance country stripes follow the viewing country's recorded 
 
 Resistance and Compliance draw state percentage labels and active definition badges through occupation_icons and the shared native GUI pool. The graphical-state anchor shares resource_icons' integer centroid selection, with native wrapping, integer mean conversion, signed distance arithmetic and authored-order ties. Admission uses canonical controller identity, the recorded occupied reference and the cached-target zero-level edge; neither active byte nor reconstructed thresholds substitute. Content defines supply strict parent/badge cutoffs, TOP_MAP_ICON priority and level gradients. Labels truncate whole percentages, preserve resistance trend icons and use the gradient's RGB with opaque text; badges stably sort retained occurrences by definition threshold before the authored grid admits them. Hover geometry belongs independently to the text and each badge icon.
 A free view presents occupation markers through the existing world-icon scale, sight and hit transformations, with their anchor distance replacing the game camera height.
+
+Model presentation borrows idle hour-builder turns for independent players. Clock callbacks
+that register named states stay in placement order, repeated actor keys keep one serial
+player, and palettes and event packets merge in the original placement order. Native-only
+passes advance the same players and events without computing the unused name-joined
+palette; native source-order actor matrices serve both event resolution and draws and stay
+retained while their pose inputs are unchanged. Playerless and frozen actor-local results
+are shared per immutable rig and frozen-animation choice; instance transforms stay separate,
+and installing meshes clears those results. Other palette consumers retain indexed
+mesh/animation name joins and reuse their sampling buffers. Building groups already applied
+at full scale do no slot work on camera moves inside the near cutoff; hour changes,
+near/far transitions, growth and held mesh-budget creations still run in province order.

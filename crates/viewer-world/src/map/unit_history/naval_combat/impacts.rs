@@ -59,7 +59,7 @@ pub struct Tracker {
     info: Arc<Info>,
     player: Player,
     palette: Vec<PaletteJoint>,
-    actors: Vec<Actor>,
+    actors: Arc<[Actor]>,
     events: Vec<Event>,
     previous: f64,
 }
@@ -70,7 +70,7 @@ impl Tracker {
             player: Player::new(&info.rig),
             palette: (*info.palette).clone(),
             info,
-            actors: Vec::new(),
+            actors: Arc::from([]),
             events: Vec::new(),
             previous: 0.0,
         }
@@ -584,10 +584,10 @@ mod tests {
             "attack",
         ));
         let mut tracker = Tracker::new(info);
-        tracker.actors = vec![Actor {
+        tracker.actors = Arc::from([Actor {
             world: Ok(mesh_pose::scale(2.0)),
             pose: Ok(mesh_pose::Pose::default()),
-        }];
+        }]);
         let targets = [(3, 999.0), (1, 10.0), (2, 20.0)].map(|(status, x)| TargetView {
             status,
             instance: ModelInstance {

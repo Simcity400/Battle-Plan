@@ -88,7 +88,7 @@ impl Program {
 
     pub fn select(&self, retained: &mut State) {
         let stream = &mut retained.stream;
-        stream.bind_program(Some(self.selection.clone()), self.layouts.clone());
+        stream.select_program(&self.selection, &self.layouts);
         stream.bind_blend(self.state.blend, self.state.write_mask);
         stream.bind_rasterizer(self.raster.clone());
         stream.bind_depth_stencil(self.depth.clone());

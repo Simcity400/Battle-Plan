@@ -104,6 +104,17 @@ pub fn actors(
     rig: &super::entity_animation::Rig,
     player: Option<&super::entity_animation::Player>,
     frozen_animation: bool,
+) -> Arc<[Actor]> {
+    match player {
+        Some(player) => player.native_actors(rig),
+        None => actors_uncached(rig, None, frozen_animation).into(),
+    }
+}
+
+pub(super) fn actors_uncached(
+    rig: &super::entity_animation::Rig,
+    player: Option<&super::entity_animation::Player>,
+    frozen_animation: bool,
 ) -> Vec<Actor> {
     let mut actors: Vec<Actor> = Vec::with_capacity(rig.nodes.len());
     for (index, node) in rig.nodes.iter().enumerate() {
@@ -208,10 +219,9 @@ pub fn sample(animation: &Animation, seconds: f32, looping: bool) -> io::Result<
     } else {
         first + 1
     };
-    let a = animation.frame_trs(first);
-    let b = animation.frame_trs(next);
-    Ok(a.into_iter()
-        .zip(b)
+    Ok(animation
+        .frame_trs_iter(first)
+        .zip(animation.frame_trs_iter(next))
         .zip(&animation.joints)
         .map(|((a, b), joint)| {
             let mut result = a;

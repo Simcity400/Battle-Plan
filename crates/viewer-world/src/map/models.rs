@@ -1169,7 +1169,7 @@ impl ModelLibrary {
                 })
                 .collect();
             let actors = if attachments.is_empty() {
-                Vec::new()
+                Arc::from([])
             } else {
                 super::mesh_pose::actors(&out.rig, None, true)
             };
@@ -1641,6 +1641,7 @@ pub struct ModelFrame<'a> {
 
 /// One frame's refused actors by instance and node, with the reason.
 type ActorRefusals = BTreeSet<(usize, usize, String)>;
+type ActorPoses = Arc<[super::mesh_pose::Actor]>;
 
 pub struct ModelPass {
     native: RefCell<Option<native::Renderer>>,
@@ -1661,7 +1662,10 @@ pub struct ModelPass {
     refusals: RefCell<(u64, ActorRefusals)>,
     /// Actor poses by instance for one arena frame: animation happens before encoding, so
     /// the caster, regular and alternate queues and every wrap view share them.
-    poses: RefCell<(u64, Vec<Option<Vec<super::mesh_pose::Actor>>>)>,
+    poses: RefCell<(u64, Vec<Option<ActorPoses>>)>,
+    /// Actor-local results for an immutable rig without a live player, keyed by
+    /// mesh slot and whether its frozen animation is played. Placements are separate.
+    static_actors: RefCell<BTreeMap<(usize, bool), ActorPoses>>,
     label: &'static str,
     rigs: Vec<Arc<Rig>>,
     default_palette: Vec<PaletteJoint>,
@@ -1704,6 +1708,24 @@ impl ModelPass {
         self.players.get(&(self.drawn_slot(mesh), seed, identity))
     }
 
+    fn actors(
+        &self,
+        mesh: usize,
+        rig: &Rig,
+        player: Option<&entity_animation::Player>,
+        frozen_animation: bool,
+    ) -> ActorPoses {
+        if player.is_some() {
+            return super::mesh_pose::actors(rig, player, frozen_animation);
+        }
+        Arc::clone(
+            self.static_actors
+                .borrow_mut()
+                .entry((mesh, frozen_animation))
+                .or_insert_with(|| super::mesh_pose::actors(rig, None, frozen_animation)),
+        )
+    }
+
     /// Which of the renderer's shader libraries the entity in `mesh` draws with: 1, the
     /// recording's own, for a visual mod entity's recorded counterpart, so it draws as the
     /// recording draws it; 0, the stack it was baked from, for every other.
@@ -1739,6 +1761,18 @@ impl ModelPass {
 
     /// Samples visible entity palettes; meshes and material buffers are immutable.
     pub fn animate(&mut self, time: f32, rectangle: Option<[f32; 4]>, offsets: &[f32]) {
+        self.animate_with_workers(time, rectangle, offsets, &Default::default());
+    }
+
+    /// Independent players borrow the hour builders' idle turns; placements,
+    /// event packets and palette ranges retain their original traversal order.
+    pub fn animate_with_workers(
+        &mut self,
+        time: f32,
+        rectangle: Option<[f32; 4]>,
+        offsets: &[f32],
+        workers: &viewer_foundation::parallel::Workers,
+    ) {
         self.fall_back();
         static PROFILE: OnceLock<bool> = OnceLock::new();
         let profile = *PROFILE.get_or_init(|| std::env::var_os("BATTLE_PLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some());
@@ -1758,7 +1792,7 @@ impl ModelPass {
             return;
         }
         self.field.default_states = self.prepare_default_states(time);
-        let palette = animate_players(
+        let palette = animate_players_with_workers(
             &mut self.players,
             &self.rigs,
             &self.default_palette,
@@ -1770,6 +1804,8 @@ impl ModelPass {
                     .any(|offset| visible(group, *offset, rectangle))
             },
             &mut self.events,
+            workers,
+            true,
         );
         for event in &mut self.events {
             event.key.pass = self.event_namespace;
@@ -1936,6 +1972,7 @@ impl ModelPass {
             drawn: Cell::new(0),
             refusals: Default::default(),
             poses: Default::default(),
+            static_actors: Default::default(),
             label,
             alternatives: library.alternatives.clone(),
             redirects: BTreeMap::new(),
@@ -1999,6 +2036,7 @@ impl ModelPass {
         // Recorded before the mesh arrays are extended below.
         let known_meshes = self.meshes.len();
         if self.meshes.len() < library.meshes.len() {
+            self.static_actors.get_mut().clear();
             self.meshes
                 .extend_from_slice(&library.meshes[self.meshes.len()..]);
             self.rigs
@@ -2306,6 +2344,49 @@ pub fn animate_players(
     shown: &dyn Fn(&ModelGroup) -> bool,
     events: &mut Vec<entity_animation::Event>,
 ) -> Vec<PaletteJoint> {
+    animate_players_with_workers(
+        players,
+        rigs,
+        default_palette,
+        field,
+        time,
+        shown,
+        events,
+        &Default::default(),
+        false,
+    )
+}
+
+/// [`animate_players`] with independent players on borrowed turns (serial `workers` run
+/// them in place), and, when `native_only`, without sampling the name-joined palette of
+/// a rig every node of which draws natively.
+#[allow(clippy::too_many_arguments)]
+fn animate_players_with_workers(
+    players: &mut BTreeMap<(usize, u32, u32), entity_animation::Player>,
+    rigs: &[Arc<Rig>],
+    default_palette: &[PaletteJoint],
+    field: &mut ModelField,
+    time: f32,
+    shown: &dyn Fn(&ModelGroup) -> bool,
+    events: &mut Vec<entity_animation::Event>,
+    workers: &viewer_foundation::parallel::Workers,
+    native_only: bool,
+) -> Vec<PaletteJoint> {
+    struct Call<'a> {
+        key: (usize, u32, u32),
+        rig: &'a Rig,
+        instance: ModelInstance,
+        count: usize,
+        clocked: bool,
+        events: Vec<entity_animation::Event>,
+    }
+    struct Work<'a> {
+        rig: &'a Rig,
+        instance: ModelInstance,
+        palette: &'a mut [PaletteJoint],
+        events: &'a mut Vec<entity_animation::Event>,
+    }
+    let mut calls = Vec::new();
     let mut palette = default_palette.to_vec();
     let phase_only = time <= 0.0 && field.clocks.values().any(|clock| clock.phase.is_some());
     let mut alive = BTreeSet::new();
@@ -2354,20 +2435,76 @@ pub fn animate_players(
             let start = palette.len();
             palette.extend_from_slice(&default_palette[rig.start..rig.end]);
             instance.palette_offset = (start - rig.start) as u32;
-            let event_start = events.len();
             let playing = ModelInstance {
                 animation: request.unwrap_or(instance.animation),
                 ..*instance
             };
-            if let Some(clock) = field.clocks.get(&key) {
-                player.evaluate_clock(rig, playing, clock, &mut palette[start..], events);
-            } else {
-                player.evaluate(rig, playing, time, &mut palette[start..], events);
+            let mut emitted = Vec::new();
+            let clock = field.clocks.get(&key);
+            // Clock callbacks intern content-named states. Keep those callbacks
+            // in placement order; ordinary players only read registered names.
+            if let Some(clock) = clock {
+                let palette = if native_only && rig.nodes.iter().all(|node| node.native.is_some()) {
+                    &mut []
+                } else {
+                    &mut palette[start..]
+                };
+                player.evaluate_clock(rig, playing, clock, palette, &mut emitted);
             }
-            for event in &mut events[event_start..] {
-                event.key.model = group.mesh;
+            calls.push(Call {
+                key,
+                rig,
+                instance: playing,
+                count: rig.end - rig.start,
+                clocked: clock.is_some(),
+                events: emitted,
+            });
+        }
+    }
+    {
+        let mut by_player = BTreeMap::<_, Vec<Work<'_>>>::new();
+        let mut tail = &mut palette[default_palette.len()..];
+        for call in &mut calls {
+            let (palette, rest) = tail.split_at_mut(call.count);
+            tail = rest;
+            if !call.clocked {
+                by_player.entry(call.key).or_default().push(Work {
+                    rig: call.rig,
+                    instance: call.instance,
+                    palette,
+                    events: &mut call.events,
+                });
             }
         }
+        // A repeated animation key shares one player: its calls remain serial
+        // in their original order, even when other players run on pool turns.
+        let tasks: Vec<_> = players
+            .iter_mut()
+            .filter_map(|(key, player)| {
+                by_player
+                    .remove(key)
+                    .map(|work| std::sync::Mutex::new((player, work)))
+            })
+            .collect();
+        workers.run(tasks.len(), &|at| {
+            let mut task = tasks[at].lock().unwrap_or_else(|error| error.into_inner());
+            let (player, work) = &mut *task;
+            for work in work {
+                let palette =
+                    if native_only && work.rig.nodes.iter().all(|node| node.native.is_some()) {
+                        &mut []
+                    } else {
+                        &mut *work.palette
+                    };
+                player.evaluate(work.rig, work.instance, time, palette, work.events);
+            }
+        });
+    }
+    for call in calls {
+        events.extend(call.events.into_iter().map(|mut event| {
+            event.key.model = call.key.0;
+            event
+        }));
     }
     // A deactivated shared naval wrapper is absent from placements but keeps
     // its producer-owned clock. Initialize even an actor hidden before its
@@ -2431,3 +2568,254 @@ fn drawn_variants(rig: &entity_animation::Rig) -> Option<(usize, String, usize)>
 mod naval_composition_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod parallel_animation_tests {
+    use super::*;
+    use viewer_foundation::parallel::{Spawn, Workers};
+
+    struct Pool(std::sync::Mutex<std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>>);
+    impl Spawn for Pool {
+        fn try_spawn(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), Box<dyn FnOnce() + Send>> {
+            self.0.lock().unwrap().send(job).map_err(|error| error.0)
+        }
+        fn threads(&self) -> usize {
+            3
+        }
+    }
+    fn workers() -> Workers {
+        let (sender, receiver) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        let receiver = Arc::new(std::sync::Mutex::new(receiver));
+        for _ in 0..3 {
+            let receiver = Arc::clone(&receiver);
+            std::thread::spawn(move || {
+                loop {
+                    let job = receiver.lock().unwrap().recv();
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => return,
+                    }
+                }
+            });
+        }
+        Workers::new(Arc::new(Pool(std::sync::Mutex::new(sender))))
+    }
+
+    #[test]
+    fn frozen_and_playerless_actors_are_placement_independent_and_reset_on_mesh_install() {
+        use super::super::mesh_pose;
+        let mut rig = entity_animation::pose_tests::rig(0.7, true, true);
+        for node in &mut rig.nodes {
+            Arc::make_mut(node.native.as_mut().unwrap()).frozen = node.clips[0].animation.clone();
+        }
+        let mut library = ModelLibrary {
+            rigs: vec![Arc::new(rig)],
+            meshes: vec![ModelMesh {
+                name: "synthetic".into(),
+                path: String::new(),
+                scale: 1.,
+                lod_distances: Vec::new(),
+                native: Vec::new(),
+                radius: 1.,
+                height: 1.,
+                visual: false,
+                own_radius: 1.,
+                bound: 1.,
+                convoy_radius: None,
+                attachments: 1,
+            }],
+            ..Default::default()
+        };
+        let mut pass = ModelPass::new(&library, "static actor parity");
+        let bits = |actors: &[mesh_pose::Actor]| {
+            let matrix = |value: mesh_pose::Matrix| value.map(|column| column.map(f32::to_bits));
+            actors
+                .iter()
+                .map(|actor| {
+                    (
+                        actor
+                            .world
+                            .as_ref()
+                            .map(|world| matrix(*world))
+                            .map_err(Clone::clone),
+                        actor
+                            .pose
+                            .as_ref()
+                            .map(|pose| {
+                                (
+                                    pose.joints.iter().copied().map(matrix).collect::<Vec<_>>(),
+                                    pose.bones.iter().copied().map(matrix).collect::<Vec<_>>(),
+                                )
+                            })
+                            .map_err(Clone::clone),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut retained = Vec::new();
+        for instance in [
+            ModelInstance {
+                position: [1., 2., 3.],
+                scale: 0.3,
+                animation: entity_animation::STOPPED,
+                ..Default::default()
+            },
+            ModelInstance {
+                position: [700., -4., 90.],
+                scale: 2.1,
+                rotation: 0.7,
+                pitch: -0.2,
+                animation: entity_animation::IDLE,
+                animation_seed: 81,
+                animation_identity: 9,
+                ..Default::default()
+            },
+        ] {
+            pass.update_placed(vec![(0, instance)], 256.);
+            let instance = &pass.field.instances[0];
+            let rig = &pass.rigs[0];
+            for frozen in [false, true] {
+                let cached = pass.actors(0, rig, pass.player(0, instance), frozen);
+                let fresh = mesh_pose::actors(rig, None, frozen);
+                assert_eq!(bits(&cached), bits(&fresh));
+                let transform = instance.native_transform().unwrap();
+                let [a, b, c] = transform.basis;
+                let t = transform.translation;
+                let world = [
+                    [a[0], a[1], a[2], 0.],
+                    [b[0], b[1], b[2], 0.],
+                    [c[0], c[1], c[2], 0.],
+                    [t[0], t[1], t[2], 1.],
+                ];
+                let placed = |actor: &mesh_pose::Actor| {
+                    actor
+                        .world
+                        .as_ref()
+                        .map(|local| {
+                            mesh_pose::multiply(world, *local)
+                                .map(|column| column.map(f32::to_bits))
+                        })
+                        .map_err(Clone::clone)
+                };
+                assert_eq!(
+                    cached.iter().map(placed).collect::<Vec<_>>(),
+                    fresh.iter().map(placed).collect::<Vec<_>>(),
+                );
+                retained.push(cached);
+            }
+        }
+        assert!(Arc::ptr_eq(&retained[0], &retained[2]));
+        assert!(Arc::ptr_eq(&retained[1], &retained[3]));
+        assert_ne!(bits(&retained[0]), bits(&retained[1]));
+        library.meshes.push(library.meshes[0].clone());
+        library.rigs.push(Arc::clone(&library.rigs[0]));
+        pass.sync(&library);
+        assert!(pass.static_actors.borrow().is_empty());
+        let installed = pass.actors(0, &pass.rigs[0], None, true);
+        assert!(!Arc::ptr_eq(&retained[1], &installed));
+        assert_eq!(bits(&retained[1]), bits(&installed));
+    }
+
+    #[test]
+    fn borrowed_player_batches_match_serial_palettes_packets_and_lifetimes() {
+        let rigs: Vec<_> = [false, true, true]
+            .into_iter()
+            .map(|native| Arc::new(entity_animation::pose_tests::rig(0.7, true, native)))
+            .collect();
+        let default = vec![PaletteJoint::IDENTITY; rigs[0].end];
+        let (mut expected, mut parallel) = (BTreeMap::new(), BTreeMap::new());
+        let workers = workers();
+        for frame in 0..32 {
+            let time = frame as f32 * 0.13;
+            let mut field = ModelField::default();
+            for mesh in [2, 0, 1] {
+                let start = field.instances.len() as u32;
+                for ordinal in 0..20 {
+                    // Repeated keys must step the same player twice, not fork it.
+                    let seed = (ordinal % 17) as u32;
+                    field.instances.push(ModelInstance {
+                        scale: 1.,
+                        animation_seed: seed,
+                        animation: match frame % 13 {
+                            0..=3 => entity_animation::IDLE,
+                            4..=8 => entity_animation::MOVE,
+                            _ => entity_animation::ATTACK,
+                        },
+                        ..Default::default()
+                    });
+                }
+                field.groups.push(ModelGroup {
+                    mesh,
+                    range: start..field.instances.len() as u32,
+                    bounds: [0.; 4],
+                    centroid: [0.; 3],
+                });
+            }
+            field.clocks.insert(
+                (2, 0, 0),
+                entity_animation::Clock {
+                    time,
+                    phase: None,
+                    requests: Arc::new(vec![entity_animation::Request {
+                        time: 0.,
+                        phase_time: None,
+                        state: "move".into(),
+                    }]),
+                },
+            );
+            if frame == 15 {
+                field.groups.remove(1);
+            }
+            let mut other = field.clone();
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            let a_palette = animate_players(
+                &mut expected,
+                &rigs,
+                &default,
+                &mut field,
+                time,
+                &|_| true,
+                &mut a,
+            );
+            let b_palette = animate_players_with_workers(
+                &mut parallel,
+                &rigs,
+                &default,
+                &mut other,
+                time,
+                &|_| true,
+                &mut b,
+                &workers,
+                false,
+            );
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&a_palette),
+                bytemuck::cast_slice::<_, u8>(&b_palette)
+            );
+            assert_eq!(field, other);
+            assert_eq!(
+                expected.keys().collect::<Vec<_>>(),
+                parallel.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(a.len(), b.len());
+            for (a, b) in a.iter().zip(&b) {
+                assert_eq!(a.definition, b.definition);
+                assert_eq!(
+                    bytemuck::bytes_of(&PaletteJoint::from_transform(&a.transform)),
+                    bytemuck::bytes_of(&PaletteJoint::from_transform(&b.transform)),
+                );
+                assert_eq!(
+                    (a.age.to_bits(), a.seed, a.key, a.state),
+                    (b.age.to_bits(), b.seed, b.key, b.state)
+                );
+            }
+            for (key, player) in &expected {
+                assert_eq!(player.root_entry(), parallel[key].root_entry());
+                assert_eq!(
+                    player.root_play_position(&rigs[key.0]),
+                    parallel[key].root_play_position(&rigs[key.0])
+                );
+            }
+        }
+    }
+}

@@ -255,6 +255,31 @@ pub struct Player {
     /// States are chosen by the game's own rule, which takes a state's only
     /// variant whatever its chance ([`Player::native_choice`]).
     native_choice: bool,
+    scratch: EvaluationScratch,
+    native_actors: std::cell::RefCell<Option<NativeActors>>,
+}
+
+#[derive(Default)]
+struct EvaluationScratch {
+    worlds: Vec<Vec<Transform>>,
+    placements: Vec<Transform>,
+    states: Vec<Option<(usize, f32, u64, bool)>>,
+    nodes: Vec<NodeScratch>,
+    memo: Vec<Option<Option<Transform>>>,
+}
+
+#[derive(Default)]
+struct NodeScratch {
+    bindings: Vec<Option<mesh::PoseBinding>>,
+    crossfades: BTreeMap<(usize, usize), Vec<Option<usize>>>,
+    locals: Vec<JointPose>,
+    previous: Vec<JointPose>,
+}
+
+struct NativeActors {
+    rig: usize,
+    samples: Vec<Option<NativeSample>>,
+    actors: Arc<[super::mesh_pose::Actor]>,
 }
 
 struct Kept {
@@ -509,13 +534,15 @@ fn advance_sample(node: &Node, mut sample: NativeSample, time: f32) -> NativeSam
     sample.time = time;
     sample
 }
-fn sample(clip: &Clip, age: f32) -> Vec<JointPose> {
-    clip.animation.as_ref().map_or_else(Vec::new, |a| {
-        a.sample(
+fn sample(clip: &Clip, age: f32, out: &mut Vec<JointPose>) {
+    out.clear();
+    if let Some(animation) = &clip.animation {
+        animation.sample_into(
             age * clip.state.speed + clip.state.start,
             clip.state.looping,
-        )
-    })
+            out,
+        );
+    }
 }
 
 impl Player {
@@ -530,6 +557,19 @@ impl Player {
             kept: Vec::new(),
             event_refusals: BTreeMap::new(),
             native_choice: false,
+            scratch: EvaluationScratch {
+                worlds: vec![Vec::new(); rig.nodes.len()],
+                nodes: rig
+                    .nodes
+                    .iter()
+                    .map(|node| NodeScratch {
+                        bindings: (0..node.clips.len()).map(|_| None).collect(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            native_actors: Default::default(),
         }
     }
 
@@ -775,6 +815,69 @@ impl Player {
         }
     }
 
+    /// The actor-local native matrices shared by events and every draw queue.
+    /// Only the immutable rig and played pose inputs participate in this cache.
+    pub(super) fn native_actors(&self, rig: &Rig) -> Arc<[super::mesh_pose::Actor]> {
+        fn same_sample(node: &Node, a: Option<NativeSample>, b: Option<NativeSample>) -> bool {
+            if node
+                .native
+                .as_ref()
+                .is_none_or(|source| source.skeleton.is_empty())
+            {
+                return true;
+            }
+            let same_age = |clip: usize, a: f32, b: f32| {
+                a.to_bits() == b.to_bits()
+                    || node.clips[clip].animation.as_ref().is_none_or(|animation| {
+                        (a * node.clips[clip].state.speed + node.clips[clip].state.start)
+                            .is_finite()
+                            && (b * node.clips[clip].state.speed + node.clips[clip].state.start)
+                                .is_finite()
+                            && animation
+                                .joints
+                                .iter()
+                                .all(|joint| joint.channels.is_empty())
+                    })
+            };
+            match (a, b) {
+                (None, None) => true,
+                (Some(a), Some(b)) if a.clip == b.clip && same_age(a.clip, a.age, b.age) => {
+                    match (a.previous, b.previous) {
+                        (None, None) => true,
+                        (Some((ac, aa, aw)), Some((bc, ba, bw))) => {
+                            ac == bc && same_age(ac, aa, ba) && aw.to_bits() == bw.to_bits()
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        }
+        let mut cache = self.native_actors.borrow_mut();
+        let rig_key = std::ptr::from_ref(rig) as usize;
+        if let Some(held) = cache.as_ref()
+            && held.rig == rig_key
+            && held
+                .samples
+                .iter()
+                .zip(&self.native_samples)
+                .zip(&rig.nodes)
+                .all(|((&a, &b), node)| same_sample(node, a, b))
+        {
+            return Arc::clone(&held.actors);
+        }
+        let actors = super::mesh_pose::actors_uncached(rig, Some(self), false).into();
+        let held = cache.get_or_insert_with(|| NativeActors {
+            rig: rig_key,
+            samples: Vec::new(),
+            actors: Arc::clone(&actors),
+        });
+        held.rig = rig_key;
+        held.samples.clone_from(&self.native_samples);
+        held.actors = Arc::clone(&actors);
+        actors
+    }
+
     pub fn native_locals(
         &self,
         rig: &Rig,
@@ -873,14 +976,25 @@ impl Player {
         admitted: bool,
     ) {
         let event_start = events.len();
+        // Native draws and native event packets use their source-order actors,
+        // not the optional name-joined palette returned to other consumers.
+        let pose_required =
+            !palette.is_empty() || rig.nodes.iter().any(|node| node.native.is_none());
         if time < self.last {
             self.nodes.iter_mut().for_each(|n| *n = None);
             self.native_samples.fill(None);
         }
         self.last = time;
-        let mut worlds: Vec<Vec<Transform>> = Vec::with_capacity(rig.nodes.len());
-        let mut placements = Vec::<Transform>::with_capacity(rig.nodes.len());
-        let mut states: Vec<Option<(usize, f32, u64, bool)>> = Vec::with_capacity(rig.nodes.len());
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let EvaluationScratch {
+            worlds,
+            placements,
+            states,
+            nodes,
+            memo,
+        } = &mut scratch;
+        placements.clear();
+        states.clear();
         for (index, node) in rig.nodes.iter().enumerate() {
             let timeline = self.phase.map_or(time, |(_, phase)| phase);
             if node.native.as_ref().is_some_and(|source| source.pdxmesh)
@@ -1071,7 +1185,8 @@ impl Player {
                 });
             }
             let mut state_info = None;
-            let mut pose = Vec::new();
+            let mut pose = std::mem::take(&mut worlds[index]);
+            pose.clear();
             if let Some(playing) = &mut self.nodes[index] {
                 let entered = std::mem::take(&mut playing.propagate);
                 let mut age = time - playing.start + playing.phase_offset;
@@ -1190,26 +1305,41 @@ impl Player {
                     continue;
                 }
                 let played = &node.clips[native.clip];
-                let mut locals = sample(played, native.age);
-                if let Some((old, old_age, t)) = native.previous
-                    && let (Some(old_animation), Some(animation)) =
-                        (&node.clips[old].animation, &played.animation)
-                {
-                    let old_values = sample(&node.clips[old], old_age);
-                    let old_by_name: BTreeMap<_, _> = old_animation
-                        .joints
-                        .iter()
-                        .zip(old_values)
-                        .map(|(j, v)| (j.name.as_str(), v))
-                        .collect();
-                    for (joint, value) in animation.joints.iter().zip(&mut locals) {
-                        if let Some(old) = old_by_name.get(joint.name.as_str()) {
-                            *value = old.blend(*value, t);
+                if pose_required {
+                    let scratch = &mut nodes[index];
+                    sample(played, native.age, &mut scratch.locals);
+                    if let Some((old, old_age, t)) = native.previous
+                        && let (Some(old_animation), Some(animation)) =
+                            (&node.clips[old].animation, &played.animation)
+                    {
+                        sample(&node.clips[old], old_age, &mut scratch.previous);
+                        let join =
+                            scratch
+                                .crossfades
+                                .entry((old, native.clip))
+                                .or_insert_with(|| {
+                                    animation
+                                        .joints
+                                        .iter()
+                                        .map(|joint| {
+                                            old_animation
+                                                .joints
+                                                .iter()
+                                                .rposition(|old| old.name == joint.name)
+                                        })
+                                        .collect()
+                                });
+                        for (old, value) in join.iter().zip(&mut scratch.locals) {
+                            if let Some(old) = old.and_then(|at| scratch.previous.get(at)) {
+                                *value = old.blend(*value, t);
+                            }
                         }
                     }
-                }
-                if let Some(animation) = &played.animation {
-                    pose = node.mesh.sampled_pose(animation, &locals);
+                    if let Some(animation) = &played.animation {
+                        let binding = scratch.bindings[native.clip]
+                            .get_or_insert_with(|| mesh::PoseBinding::new(&node.mesh, animation));
+                        binding.sample_into(&scratch.locals, &mut pose, memo);
+                    }
                 }
                 state_info = Some((playing.clip, local_age, cycle, entered));
             } else {
@@ -1219,58 +1349,65 @@ impl Player {
                 states.push(None);
                 continue;
             }
-            if pose.is_empty() {
-                let count = node
-                    .mesh
-                    .skeleton
-                    .iter()
-                    .map(|j| j.index as usize + 1)
-                    .max()
-                    .unwrap_or(0);
-                pose = vec![Transform::IDENTITY; count];
-                for joint in &node.mesh.skeleton {
-                    pose[joint.index as usize] = node
+            let own = if pose_required {
+                if pose.is_empty() {
+                    let count = node
                         .mesh
-                        .bind_pose(&joint.name)
-                        .unwrap_or(Transform::IDENTITY);
+                        .skeleton
+                        .iter()
+                        .map(|j| j.index as usize + 1)
+                        .max()
+                        .unwrap_or(0);
+                    pose.resize(count, Transform::IDENTITY);
+                    for joint in &node.mesh.skeleton {
+                        pose[joint.index as usize] = node
+                            .mesh
+                            .bind_pose(&joint.name)
+                            .unwrap_or(Transform::IDENTITY);
+                    }
                 }
-            }
-            let parent = node
-                .parent
-                .as_ref()
-                .map_or(Transform::IDENTITY, |(parent, joint, _)| {
-                    let joint = rig.nodes[*parent]
-                        .mesh
-                        .joint(joint)
-                        .and_then(|j| worlds[*parent].get(j.index as usize))
-                        .copied()
-                        .or_else(|| {
-                            // A meshless parent's locator still places children.
-                            rig.nodes[*parent]
-                                .locators
-                                .get(joint)
-                                .map(|(local, _)| *local)
-                        })
-                        .unwrap_or(Transform::IDENTITY);
-                    placements[*parent].compose(&joint)
-                });
-            let own = parent.compose(&Transform::from_trs(
-                [0.0; 3],
-                [0.0, 0.0, 0.0, 1.0],
-                node.scale,
-            ));
-            palette[node.rigid as usize - rig.start] = PaletteJoint::from_transform(&own);
-            if let Some(base) = node.skin_base {
-                for joint in &node.mesh.skeleton {
-                    let matrix = joint
-                        .inverse_bind
-                        .map(|inverse| pose[joint.index as usize].compose(&inverse))
-                        .filter(Transform::is_finite)
-                        .unwrap_or(Transform::IDENTITY);
-                    palette[base as usize + joint.index as usize - rig.start] =
-                        PaletteJoint::from_transform(&own.compose(&matrix));
+                let parent =
+                    node.parent
+                        .as_ref()
+                        .map_or(Transform::IDENTITY, |(parent, joint, _)| {
+                            let joint = rig.nodes[*parent]
+                                .mesh
+                                .joint(joint)
+                                .and_then(|j| worlds[*parent].get(j.index as usize))
+                                .copied()
+                                .or_else(|| {
+                                    // A meshless parent's locator still places children.
+                                    rig.nodes[*parent]
+                                        .locators
+                                        .get(joint)
+                                        .map(|(local, _)| *local)
+                                })
+                                .unwrap_or(Transform::IDENTITY);
+                            placements[*parent].compose(&joint)
+                        });
+                let own = parent.compose(&Transform::from_trs(
+                    [0.0; 3],
+                    [0.0, 0.0, 0.0, 1.0],
+                    node.scale,
+                ));
+                if !palette.is_empty() {
+                    palette[node.rigid as usize - rig.start] = PaletteJoint::from_transform(&own);
                 }
-            }
+                if let Some(base) = node.skin_base.filter(|_| !palette.is_empty()) {
+                    for joint in &node.mesh.skeleton {
+                        let matrix = joint
+                            .inverse_bind
+                            .map(|inverse| pose[joint.index as usize].compose(&inverse))
+                            .filter(Transform::is_finite)
+                            .unwrap_or(Transform::IDENTITY);
+                        palette[base as usize + joint.index as usize - rig.start] =
+                            PaletteJoint::from_transform(&own.compose(&matrix));
+                    }
+                }
+                own
+            } else {
+                Transform::IDENTITY
+            };
             if let Some((clip, age, _cycle, _entered)) = state_info {
                 let mut authored = node.clips[clip]
                     .state
@@ -1395,8 +1532,9 @@ impl Player {
             }
             states.push(state_info);
             placements.push(own);
-            worlds.push(pose);
+            worlds[index] = pose;
         }
+        self.scratch = scratch;
         if admitted
             && events[event_start..]
                 .iter()
@@ -1947,3 +2085,6 @@ mod tests {
         assert_eq!(stage_intro(IDLE), None);
     }
 }
+
+#[cfg(test)]
+pub(crate) mod pose_tests;

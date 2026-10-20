@@ -1222,7 +1222,14 @@ impl Viewer {
             return Ok(());
         };
         let mut full = now
-            .prepare_overlay_cached(camera, pixels, ui_scale, tables, &self.counter_view)
+            .prepare_overlay_cached(
+                camera,
+                pixels,
+                ui_scale,
+                tables,
+                &self.counter_view,
+                &Default::default(),
+            )
             .map_err(|error| error.to_string())?;
         let (mut batch, mut report) = (Batch::default(), CounterReport::default());
         full.draw_into(
@@ -1232,6 +1239,7 @@ impl Viewer {
             ui_scale,
             &self.overlay_layers,
             time,
+            &Default::default(),
             &mut batch,
             &mut report,
         )
@@ -4026,9 +4034,18 @@ impl Viewer {
             // The raid lane's icons for the hour on screen replace the hour's
             // when they are newer; a paused frame asks the lane for one batch.
             let ctx = ui.ctx().clone();
-            // Its batches borrow the hour builders' threads.
+            // Its batches borrow the hour builders' threads, as do the icon layer's owners
+            // below. A view's counters ride in builder jobs, so they hold no handle to the pool.
+            let overlay_workers = self
+                .hours
+                .as_ref()
+                .map(|hours| hours.workers())
+                .unwrap_or_default();
             if let Some(hours) = &self.hours {
                 self.raid_lane.use_workers(hours.workers());
+                if let Some(scene) = self.scene.as_mut() {
+                    scene.use_workers(hours.workers());
+                }
             }
             self.raid_lane.show(
                 &document.content,
@@ -4108,6 +4125,7 @@ impl Viewer {
                         ui_scale,
                         tables,
                         &self.counter_view,
+                        &overlay_workers,
                     )
                     .map_err(|error| error.to_string())?,
                 );
@@ -4151,6 +4169,7 @@ impl Viewer {
                         ui_scale,
                         &self.overlay_layers,
                         animation_time,
+                        &overlay_workers,
                         self.overlay.get_or_insert_with(Batch::default),
                         &mut self.counter_report,
                     )

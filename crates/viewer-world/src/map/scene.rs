@@ -222,6 +222,9 @@ pub struct Scene {
     render_laps: [f64; 4],
     /// Per-pass GPU timestamps under `BATTLE_PLAN_VIEWER_GPU_PASSES`.
     pass_timer: Option<PassTimer>,
+    /// The hour builders' threads a frame's presentation step may lend its work;
+    /// the calling thread alone until the window lends them ([`Scene::use_workers`]).
+    workers: viewer_foundation::parallel::Workers,
     pub pass_diagnostics: passes::Diagnostics,
     /// CPU laps inside the animate step, under `BATTLE_PLAN_VIEWER_PROFILE`.
     detail_laps: CpuLaps,
@@ -719,6 +722,7 @@ impl Scene {
             rail_fade: RailFade::default(),
             render_laps: [0.0; 4],
             pass_timer: PassTimer::new(device, queue),
+            workers: Default::default(),
             pass_diagnostics: Default::default(),
             detail_laps: Default::default(),
             targets: None,
@@ -1922,6 +1926,7 @@ impl Scene {
             map_frame: self.native_map_frame.as_mut(),
             ambient: self.ambient.as_mut(),
             last_animation_time: self.last_animation_time,
+            workers: &self.workers,
         }
         .step(camera, size, animation_time, rails_shown);
         if let Some(player) = &mut self.player {
@@ -3312,6 +3317,11 @@ impl Scene {
             ];
         }
         Ok(())
+    }
+
+    /// Lends a frame's presentation step the hour builders' threads.
+    pub fn use_workers(&mut self, workers: viewer_foundation::parallel::Workers) {
+        self.workers = workers;
     }
 
     /// Milliseconds the last frame spent animating, uploading the overlay,

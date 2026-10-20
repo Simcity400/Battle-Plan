@@ -27,14 +27,103 @@ pub struct Stream {
     known_constants: BTreeMap<u32, Vec<std::ops::Range<u32>>>,
     textures: BTreeMap<u32, Option<wgpu::TextureView>>,
     null_textures: BTreeMap<super::TextureKind, wgpu::TextureView>,
+    last_pass: Option<ResolvedPass>,
     pub cache: gpu::Cache,
     pub refused: BTreeMap<String, u64>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum Layout {
     Packed(Declaration),
     Native(Vec<gpu::VertexLayout>),
+}
+
+/// Pipeline inputs only: constant bytes, views and native allocations are still read for every draw.
+struct PassInputs {
+    effect: uuid::Uuid,
+    technique: usize,
+    layout: Layout,
+    strides: BTreeMap<u32, u64>,
+    blend: Option<wgpu::BlendState>,
+    write_mask: wgpu::ColorWrites,
+    samplers: Vec<(u32, [u32; 10])>,
+    depth: Option<DepthStencilState>,
+    raster: Option<[u32; 8]>,
+    template: gpu::Pass,
+    vertices: Option<Vec<gpu::VertexLayout>>,
+}
+
+fn raster_key(state: &RasterizerState) -> [u32; 8] {
+    [
+        state.fill_mode,
+        state.cull_mode,
+        u32::from(state.front_ccw),
+        state.depth_bias as u32,
+        state.depth_bias_clamp.to_bits(),
+        state.slope_scaled_depth_bias.to_bits(),
+        u32::from(state.scissor),
+        u32::from(state.multisample),
+    ]
+}
+
+impl PassInputs {
+    fn new(stream: &Stream, template: &gpu::Pass, vertices: Option<&[gpu::VertexLayout]>) -> Self {
+        let (selection, layout) = stream.program.as_ref().expect("selected pass");
+        Self {
+            effect: selection.effect.id,
+            technique: selection.index,
+            layout: layout.clone(),
+            strides: stream.vertex_strides.clone(),
+            blend: stream.state.blend,
+            write_mask: stream.state.write_mask,
+            samplers: stream
+                .state
+                .samplers
+                .iter()
+                .map(|(key, sampler)| (*key, gpu::sampler_key(sampler)))
+                .collect(),
+            depth: stream.depth_stencil.clone(),
+            raster: stream.rasterizer.as_ref().map(raster_key),
+            template: template.clone(),
+            vertices: vertices.map(<[_]>::to_vec),
+        }
+    }
+
+    fn matches(
+        &self,
+        stream: &Stream,
+        template: &gpu::Pass,
+        vertices: Option<&[gpu::VertexLayout]>,
+    ) -> bool {
+        let Some((selection, layout)) = &stream.program else {
+            return false;
+        };
+        self.effect == selection.effect.id
+            && self.technique == selection.index
+            && self.layout == *layout
+            && self.strides == stream.vertex_strides
+            && self.blend == stream.state.blend
+            && self.write_mask == stream.state.write_mask
+            && self.samplers.iter().copied().eq(stream
+                .state
+                .samplers
+                .iter()
+                .map(|(key, sampler)| (*key, gpu::sampler_key(sampler))))
+            && self.depth == stream.depth_stencil
+            && self.raster == stream.rasterizer.as_ref().map(raster_key)
+            && self.template == *template
+            && self.vertices.as_deref() == vertices
+    }
+}
+
+type PipelineResolution = (Arc<gpu::Pipeline>, Selection, Option<u32>, Option<bool>);
+
+struct ResolvedPass {
+    inputs: PassInputs,
+    pipeline: Arc<gpu::Pipeline>,
+    selection: Selection,
+    stencil_reference: Option<u32>,
+    scissor_enabled: Option<bool>,
 }
 
 impl Default for Stream {
@@ -53,6 +142,7 @@ impl Default for Stream {
             known_constants: BTreeMap::new(),
             textures: BTreeMap::new(),
             null_textures: BTreeMap::new(),
+            last_pass: None,
             cache: gpu::Cache::default(),
             refused: BTreeMap::new(),
         }
@@ -118,6 +208,18 @@ impl Stream {
         if let Some(selection) = selection {
             self.program = Some((selection, Layout::Native(vertices)));
         }
+    }
+
+    /// Select an immutable native declaration without cloning an unchanged program/layout.
+    pub fn select_program(&mut self, selection: &Selection, vertices: &[gpu::VertexLayout]) {
+        if self.program.as_ref().is_some_and(|(bound, layout)| {
+            bound.effect.id == selection.effect.id
+                && bound.index == selection.index
+                && matches!(layout, Layout::Native(bound) if bound == vertices)
+        }) {
+            return;
+        }
+        self.bind_program(Some(selection.clone()), vertices.to_vec());
     }
 
     /// IA buffer strides are independent of the program/input declaration. A trail draw can
@@ -508,6 +610,58 @@ impl Stream {
         template: &gpu::Pass,
         vertices: Option<Vec<gpu::VertexLayout>>,
     ) -> Result<(PassSubmission, Selection), String> {
+        let (pipeline, selection, stencil_reference, scissor_enabled) =
+            self.resolve_pass(arena, template, vertices)?;
+        let compiled = selection.effect.compiled(selection.index)?;
+        let kinds = || {
+            compiled
+                .vertex
+                .textures
+                .iter()
+                .chain(&compiled.pixel.textures)
+        };
+        self.null_textures(arena.device(), &selection, kinds())?;
+        self.check_constants(&pipeline)?;
+        let bindings = pipeline
+            .bind_with(
+                arena,
+                |binding| self.constants.get(&binding).map(Vec::as_slice),
+                |binding| match self.textures.get(&binding)? {
+                    Some(view) => Some(view),
+                    None => {
+                        let (_, kind) = kinds().find(|(key, _)| *key == binding)?;
+                        self.null_textures.get(kind)
+                    }
+                },
+            )
+            .map_err(|reason| format!("effect {:?}: {reason}", selection.effect.source.effect))?;
+        Ok((
+            PassSubmission {
+                pipeline,
+                bindings,
+                stencil_reference,
+                scissor_enabled,
+            },
+            selection,
+        ))
+    }
+
+    fn resolve_pass(
+        &mut self,
+        arena: &gpu::Arena,
+        template: &gpu::Pass,
+        vertices: Option<Vec<gpu::VertexLayout>>,
+    ) -> Result<PipelineResolution, String> {
+        if let Some(cached) = &self.last_pass
+            && cached.inputs.matches(self, template, vertices.as_deref())
+        {
+            return Ok((
+                cached.pipeline.clone(),
+                cached.selection.clone(),
+                cached.stencil_reference,
+                cached.scissor_enabled,
+            ));
+        }
         let (selection, layout) = self.program.as_ref().ok_or(
             "null technique needs the preceding native program, which has not been supplied",
         )?;
@@ -550,38 +704,19 @@ impl Stream {
                 pipeline
             }
         };
-        let compiled = selection.effect.compiled(selection.index)?;
-        let kinds = || {
-            compiled
-                .vertex
-                .textures
-                .iter()
-                .chain(&compiled.pixel.textures)
-        };
-        self.null_textures(arena.device(), &selection, kinds())?;
-        self.check_constants(&pipeline)?;
-        let bindings = pipeline
-            .bind_with(
-                arena,
-                |binding| self.constants.get(&binding).map(Vec::as_slice),
-                |binding| match self.textures.get(&binding)? {
-                    Some(view) => Some(view),
-                    None => {
-                        let (_, kind) = kinds().find(|(key, _)| *key == binding)?;
-                        self.null_textures.get(kind)
-                    }
-                },
-            )
-            .map_err(|reason| format!("effect {:?}: {reason}", selection.effect.source.effect))?;
-        Ok((
-            PassSubmission {
-                pipeline,
-                bindings,
+        // A failed replacement still takes its ordinary refusal/fallback path on each draw.
+        if self.program.as_ref().is_some_and(|(requested, _)| {
+            requested.effect.id == selection.effect.id && requested.index == selection.index
+        }) {
+            self.last_pass = Some(ResolvedPass {
+                inputs: PassInputs::new(self, template, vertices.as_deref()),
+                pipeline: pipeline.clone(),
+                selection: selection.clone(),
                 stencil_reference,
                 scissor_enabled,
-            },
-            selection,
-        ))
+            });
+        }
+        Ok((pipeline, selection, stencil_reference, scissor_enabled))
     }
 
     fn pass_state(&self, template: &gpu::Pass) -> (gpu::Pass, Option<u32>, Option<bool>) {
@@ -675,6 +810,136 @@ mod tests {
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }
+    }
+
+    #[test]
+    fn resolved_pass_key_covers_pipeline_inputs_but_not_draw_resources() {
+        crate::tests::initialize_runtime_tables();
+        let source = installed_content_core::pdxshader::program::read_with(b"key.shader", &|path| {
+            Some(if path == b"key.shader" {
+                b"Effect Draw { }".to_vec()
+            } else {
+                Vec::new()
+            })
+        })
+        .unwrap();
+        let selection = Selection {
+            effect: super::super::library::Effect::from_compiled(
+                Arc::new(source),
+                Vec::new(),
+                vec![],
+            ),
+            index: 0,
+        };
+        let layouts = vec![gpu::VertexLayout {
+            stride: 16,
+            step: wgpu::VertexStepMode::Vertex,
+            attributes: vec![wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 0,
+                shader_location: 0,
+            }],
+        }];
+        let mut stream = Stream::default();
+        stream.select_program(&selection, &layouts);
+        let Layout::Native(bound) = &stream.program.as_ref().unwrap().1 else {
+            unreachable!()
+        };
+        let allocation = bound.as_ptr();
+        stream.select_program(&selection, &layouts);
+        let Layout::Native(bound) = &stream.program.as_ref().unwrap().1 else {
+            unreachable!()
+        };
+        assert_eq!(
+            bound.as_ptr(),
+            allocation,
+            "unchanged selection retains its declaration allocation"
+        );
+        stream.bind_vertex_stride(0, 16);
+        stream.bind_depth_stencil(Default::default());
+        stream.bind_rasterizer(Default::default());
+        stream.bind_texture(0, Stage::Vertex, None, None);
+        let template = template();
+        let key = PassInputs::new(&stream, &template, Some(&layouts));
+        assert!(key.matches(&stream, &template, Some(&layouts)));
+        let changes: &[fn(&mut Stream)] = &[
+            |s| s.program.as_mut().unwrap().0.index += 1,
+            |s| {
+                let selection = &mut s.program.as_mut().unwrap().0;
+                selection.effect = super::super::library::Effect::from_compiled(
+                    selection.effect.source.clone(),
+                    Vec::new(),
+                    vec![],
+                );
+            },
+            |s| s.program.as_mut().unwrap().1 = Layout::Packed(Declaration::Sprite),
+            |s| {
+                let Layout::Native(v) = &mut s.program.as_mut().unwrap().1 else {
+                    unreachable!()
+                };
+                v[0].attributes[0].offset = 4;
+            },
+            |s| s.bind_vertex_stride(0, 20),
+            |s| {
+                s.bind_blend(
+                    Some(wgpu::BlendState::ALPHA_BLENDING),
+                    wgpu::ColorWrites::ALL,
+                )
+            },
+            |s| s.bind_blend(None, wgpu::ColorWrites::RED),
+            |s| s.depth_stencil.as_mut().unwrap().stencil_ref = 3,
+            |s| s.rasterizer.as_mut().unwrap().scissor = true,
+            |s| s.rasterizer.as_mut().unwrap().slope_scaled_depth_bias = -0.,
+            |s| {
+                s.state
+                    .samplers
+                    .get_mut(&binding(0, Stage::Vertex))
+                    .unwrap()
+                    .lod_bias = -0.
+            },
+            |s| {
+                s.state
+                    .samplers
+                    .get_mut(&binding(0, Stage::Vertex))
+                    .unwrap()
+                    .max_lod = 3
+            },
+            |s| s.invalidate_bindings(),
+        ];
+        for (index, change) in changes.iter().enumerate() {
+            let mut changed = Stream::default();
+            changed.inherit_bindings(&stream);
+            change(&mut changed);
+            assert!(
+                !key.matches(&changed, &template, Some(&layouts)),
+                "changed pipeline input {index}"
+            );
+        }
+        let mut changed = template.clone();
+        changed.multisample.count = 1;
+        assert!(!key.matches(&stream, &changed, Some(&layouts)));
+        changed = template.clone();
+        changed.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+        assert!(!key.matches(&stream, &changed, Some(&layouts)));
+        changed = template.clone();
+        changed.targets[0].as_mut().unwrap().format = wgpu::TextureFormat::Rgba8Unorm;
+        assert!(!key.matches(&stream, &changed, Some(&layouts)));
+        assert!(!key.matches(&stream, &template, None));
+        let mut repacked = layouts.clone();
+        repacked[0].stride = 20;
+        assert!(!key.matches(&stream, &template, Some(&repacked)));
+        stream.bind_constants(0, Stage::Vertex, Some(&[9; 16]));
+        stream.bind_partial_constants(
+            0,
+            Stage::Pixel,
+            Some(&[7; 16]),
+            std::slice::from_ref(&(0..8)),
+        );
+        stream.bind_texture(0, Stage::Pixel, None, None);
+        assert!(
+            key.matches(&stream, &template, Some(&layouts)),
+            "resources are checked afresh, not cached with a pipeline"
+        );
     }
 
     #[test]

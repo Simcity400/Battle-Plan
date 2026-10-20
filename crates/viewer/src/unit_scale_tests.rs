@@ -211,6 +211,7 @@ fn unit_scale_replay_layers() {
                             1.0,
                             &tables,
                             &Default::default(),
+                            &Default::default(),
                         )
                     })
             });
