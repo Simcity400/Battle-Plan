@@ -448,8 +448,8 @@ impl std::ops::Deref for Hour<'_> {
 /// layers are their depth order among themselves, and no other part of the
 /// overlay reads them.
 pub struct PreparedOverlay {
-    pub radar: viewer_world::map::radar_symbols::Field,
-    pub air_ranges: viewer_world::map::air_ranges::Fields,
+    pub radar: Arc<viewer_world::map::radar_symbols::Field>,
+    pub air_ranges: Arc<viewer_world::map::air_ranges::Fields>,
     pub air_assignment: viewer_world::map::air_assignment::Field,
     pub occupation_stripes: viewer_world::map::air_assignment::Field,
     pub naval_selection: viewer_world::map::naval_selection::Field,
@@ -733,6 +733,7 @@ impl PreparedOverlay {
                         land_combats,
                         ..
                     } = &mut *views;
+                    let _span = viewer_foundation::profiling::span("d_counters");
                     self.icons
                         .draw(&inputs, time, naval, pings, bases, land_combats)?;
                 }
@@ -746,6 +747,7 @@ impl PreparedOverlay {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let mut labels = Batch::default();
+                let span = viewer_foundation::profiling::span("d_labels");
                 let report = self.labels.draw(
                     context,
                     &self
@@ -757,6 +759,7 @@ impl PreparedOverlay {
                     &mut views.labels,
                     &mut labels,
                 );
+                drop(span);
                 let raids = hour.raid_quads(context, &self.native_raids, &mut views.raids);
                 let intel = hour.intel_quads(context, &self.native_intel, &mut views.intel);
                 let mut mode_icons = Batch::default();
@@ -2787,6 +2790,8 @@ impl Document {
 pub(crate) struct OverlayTables {
     counters: counters::HourTables,
     labels: labels::LabelTables,
+    radar: Arc<viewer_world::map::radar_symbols::Field>,
+    air: Arc<std::sync::Mutex<OverlayAir>>,
     /// The engaged-flag index covered this hour when these were built.
     pub(crate) engaged_covered: bool,
     /// Built with the rest on the hour builders only: raid offer evaluation
@@ -2798,7 +2803,43 @@ pub(crate) struct OverlayTables {
     built_for: (replay_data::BranchId, replay_data::Hour, u32),
 }
 
+/// Selection is viewer-local, while camera changes reuse the same Air products.
+struct OverlayAir {
+    selected: Arc<Vec<u64>>,
+    orders: Arc<viewer_world::map::air_orders::Prepared>,
+    ranges: Arc<viewer_world::map::air_ranges::Fields>,
+}
+
+impl OverlayAir {
+    fn for_selection(
+        &mut self,
+        selected: &Arc<Vec<u64>>,
+        build: impl FnOnce() -> (
+            viewer_world::map::air_orders::Prepared,
+            viewer_world::map::air_ranges::Fields,
+        ),
+    ) -> (
+        Arc<viewer_world::map::air_orders::Prepared>,
+        Arc<viewer_world::map::air_ranges::Fields>,
+    ) {
+        if self.selected != *selected {
+            let (orders, ranges) = build();
+            *self = Self {
+                selected: Arc::clone(selected),
+                orders: Arc::new(orders),
+                ranges: Arc::new(ranges),
+            };
+        }
+        (Arc::clone(&self.orders), Arc::clone(&self.ranges))
+    }
+}
+
 impl OverlayTables {
+    /// Worker/export preparation only; refreshing tables on a frame does no warming.
+    pub(crate) fn warm_counter_flags(&self, assets: &counters::CounterAssets) {
+        self.counters.warm_flags(assets);
+    }
+
     pub(crate) fn naval_dominance_sources(
         &self,
     ) -> Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap> {
@@ -3987,18 +4028,32 @@ impl<'a> Hour<'a> {
         // lines read the same cached one.
         let vision = self.vision(perspective)?;
         let ours = vision.ours();
-        let labels = labels::LabelTables::read(self.frame, ours)?;
+        let labels = labels::LabelTables::read(self.frame, ours, &self.names.localisation)?;
         // Checked first: coverage that arrives during the build costs one
         // rebuild, never a stale flag.
         let engaged_covered =
             engaged.is_some_and(|index| index.shared.covers(self.frame.branch, self.frame.hour));
         Ok(OverlayTables {
             engaged_covered,
+            radar: Arc::new(viewer_world::map::radar_symbols::Field::read(
+                self.frame,
+                ours,
+                self.heights(),
+                &self.radar_centers,
+            )),
+            air: Arc::new(std::sync::Mutex::new(OverlayAir {
+                selected: Arc::new(Vec::new()),
+                orders: Arc::new(self.air_orders(ours, &[], &[])),
+                ranges: Arc::new(self.air_ranges(ours, &[])),
+            })),
             counters: counters::hour_tables(
                 self.frame,
                 &self.map,
                 vision,
                 &self.counters,
+                &self.icons.counters,
+                Ok(self.unit_models.sub_units.equipment_content()),
+                &self.names.localisation,
                 &etas,
                 self.movement.as_deref(),
                 engaged.map(|index| index.shared.as_ref()),
@@ -4050,6 +4105,7 @@ impl<'a> Hour<'a> {
             .counters
             .window_cache
             .at(native_shader_draw::gui_viewport(viewport, ui_scale))?;
+        let span = viewer_foundation::profiling::span("p_counters");
         let icons = counters::prepare_cached(
             &CounterInputs {
                 content: &self.counters,
@@ -4078,6 +4134,7 @@ impl<'a> Hour<'a> {
             frame,
             &tables.counters,
         )?;
+        drop(span);
         // Raid icons sort above the labels and the counters by their layer.
         let native_raids = self.raid_owners(
             camera,
@@ -4089,6 +4146,7 @@ impl<'a> Hour<'a> {
         let raid_report = tables.raids.report.clone();
         // Labels set their layer before every push, so they lay out alike
         // after the raid icons or on their own.
+        let span = viewer_foundation::profiling::span("p_labels");
         let labels = labels::prepare(
             &labels::LabelInputs {
                 content: &self.labels,
@@ -4102,6 +4160,7 @@ impl<'a> Hour<'a> {
             frame,
             &tables.labels,
         )?;
+        drop(span);
         let label_report = labels.report.clone();
         let label_anchor = |province| self.labels.anchors.get(&province).copied();
         let native_intel = intel_icons::prepare(
@@ -4202,8 +4261,20 @@ impl<'a> Hour<'a> {
         } else {
             Default::default()
         };
+        let (air_orders, air_ranges) = {
+            let mut air = tables
+                .air
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            air.for_selection(&view.air_selected, || {
+                (
+                    self.air_orders(tables.ours(), &[], &view.air_selected),
+                    self.air_ranges(tables.ours(), &view.air_selected),
+                )
+            })
+        };
         Ok(PreparedOverlay {
-            air_orders: Arc::new(self.air_orders(tables.ours(), &[], &view.air_selected)),
+            air_orders,
             air_assignment,
             occupation_stripes: if view.visibility.priorities
                 == viewer_foundation::map::mode_visibility::PriorityTable::Resistance
@@ -4239,13 +4310,8 @@ impl<'a> Hour<'a> {
             } else {
                 Default::default()
             },
-            air_ranges: self.air_ranges(tables.ours(), &view.air_selected),
-            radar: viewer_world::map::radar_symbols::Field::read(
-                frame,
-                tables.ours(),
-                self.heights(),
-                &self.radar_centers,
-            ),
+            air_ranges,
+            radar: Arc::clone(&tables.radar),
             resource_icons,
             occupation_icons,
             occupation_hits: Vec::new(),
@@ -4388,6 +4454,7 @@ impl<'a> Hour<'a> {
     ) -> io::Result<DumpOverlay<'a>> {
         let layers = OverlayLayers::omitting(omitted);
         let tables = self.hour_tables(perspective, None)?;
+        tables.warm_counter_flags(&self.icons.counters);
         let mut view = CounterView::new(counter_settings);
         view.set_mode(mode);
         let prepared = self.prepare_overlay_cached(camera, viewport, ui_scale, &tables, &view)?;
@@ -4658,6 +4725,36 @@ fn audio_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_air_reuses_camera_independent_products_for_the_exact_selection() {
+        let mut cached = OverlayAir {
+            selected: Arc::new(Vec::new()),
+            orders: Arc::default(),
+            ranges: Arc::default(),
+        };
+        let initial = Arc::clone(&cached.orders);
+        let (empty, _) =
+            cached.for_selection(&Arc::new(Vec::new()), || panic!("unchanged selection"));
+        assert!(Arc::ptr_eq(&initial, &empty));
+        let selected = Arc::new((0..5000).collect());
+        let mut builds = 0;
+        let mut build = || {
+            builds += 1;
+            (Default::default(), Default::default())
+        };
+        let (first, first_ranges) = cached.for_selection(&selected, &mut build);
+        let (same, same_ranges) = cached.for_selection(&Arc::new((*selected).clone()), &mut build);
+        assert!(Arc::ptr_eq(&first, &same));
+        assert!(Arc::ptr_eq(&first_ranges, &same_ranges));
+        let mut reordered = (*selected).clone();
+        reordered.swap(0, 1);
+        let (changed, _) = cached.for_selection(&Arc::new(reordered), &mut build);
+        assert!(!Arc::ptr_eq(&first, &changed));
+        let (cleared, _) = cached.for_selection(&Arc::new(Vec::new()), &mut build);
+        assert!(!Arc::ptr_eq(&changed, &cleared));
+        assert_eq!(builds, 3);
+    }
 
     /// City sprawl keeps the recording's placement but draws its buildings' artwork from the
     /// visual mods, through the artwork fallback: a mod that replaces only a city house's mesh

@@ -29,7 +29,7 @@ pub struct Pipeline {
     /// Texture bindings with a filtering image/sampler pair.
     filtered: Vec<u32>,
     fallback: Option<Fallback>,
-    inputs: Vec<super::VertexInput>,
+    packed_inputs: [super::vertices::Packing; 3],
     groups: Mutex<Groups>,
 }
 
@@ -264,10 +264,20 @@ impl PipelineKey {
 
 type Cached = Result<Arc<Pipeline>, String>;
 
+type PackedKey = (
+    uuid::Uuid,
+    usize,
+    wgpu::TextureFormat,
+    u32,
+    wgpu::PrimitiveTopology,
+);
+
 /// Device-scoped pipelines, including validation failures, keyed by effect, technique, sampler
 /// state and the complete pass. One cache belongs to one device. A hit clones no key.
 #[derive(Default)]
 pub struct Cache {
+    /// Packed passes derive their complete vertex layout only on a state-cache miss.
+    packed: HashMap<PackedKey, Vec<(State, Cached)>>,
     entries: HashMap<u64, Vec<(PipelineKey, Cached)>>,
     pub refused: BTreeMap<String, u64>,
     pub created: usize,
@@ -314,10 +324,40 @@ impl Cache {
         samples: u32,
         topology: wgpu::PrimitiveTopology,
     ) -> Result<Arc<Pipeline>, String> {
+        let key = (
+            selection.effect.id,
+            selection.index,
+            format,
+            samples,
+            topology,
+        );
+        let entries = self.packed.entry(key).or_default();
+        if let Some((_, result)) = entries.iter().find(|(cached, _)| {
+            cached.blend == state.blend
+                && cached.write_mask == state.write_mask
+                && cached
+                    .samplers
+                    .iter()
+                    .map(|(slot, sampler)| (*slot, sampler_key(sampler)))
+                    .eq(state
+                        .samplers
+                        .iter()
+                        .map(|(slot, sampler)| (*slot, sampler_key(sampler))))
+        }) {
+            if let Err(reason) = result {
+                *self.refused.entry(reason.clone()).or_default() += 1;
+            }
+            return result.clone();
+        }
         let compiled = selection.effect.compiled(selection.index)?;
         let mut pass = Pass::packed(&compiled, state, format, samples);
         pass.primitive.topology = topology;
-        self.get_pass(device, selection, state, &pass)
+        let result = self.get_pass(device, selection, state, &pass);
+        self.packed
+            .entry(key)
+            .or_default()
+            .push((state.clone(), result.clone()));
+        result
     }
 
     pub fn get_pass(
@@ -715,7 +755,9 @@ impl Pipeline {
                 .filter(filterable)
                 .collect(),
             textures,
-            inputs: compiled.vertex.inputs.clone(),
+            packed_inputs: super::vertices::Declaration::ALL.map(|declaration| {
+                super::vertices::Packing::new(declaration, &compiled.vertex.inputs)
+            }),
             groups: Mutex::default(),
             fallback: None,
         })
@@ -730,11 +772,28 @@ impl Pipeline {
         textures: &BTreeMap<u32, wgpu::TextureView>,
         vertices: &super::vertices::Vertices<'_>,
     ) -> Result<Draw, String> {
-        let bindings = self.bindings(arena, constants, textures)?;
-        let data = vertices.pack(&self.inputs)?;
+        self.prepare_with(
+            arena,
+            |binding| constants.get(&binding).map(AsRef::as_ref),
+            |binding| textures.get(&binding),
+            vertices,
+        )
+    }
+
+    /// Packed geometry with borrowed resource lookups, without building per-draw maps.
+    pub(crate) fn prepare_with<'a>(
+        &'a self,
+        arena: &Arena,
+        constants: impl Fn(u32) -> Option<&'a [u8]>,
+        textures: impl Fn(u32) -> Option<&'a wgpu::TextureView>,
+        vertices: &super::vertices::Vertices<'_>,
+    ) -> Result<Draw, String> {
+        let bindings = self.bind_with(arena, constants, textures)?;
+        let packed =
+            arena.packed_vertices(&self.packed_inputs[vertices.declaration as usize], vertices)?;
         Ok(Draw {
             bindings,
-            vertices: arena.vertices(bytemuck::cast_slice(&data))?,
+            vertices: packed,
             count: vertices.count as u32,
         })
     }
@@ -977,10 +1036,30 @@ impl Pipeline {
     }
 
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, draw: &Draw) {
+        self.draw_after(pass, draw, None);
+    }
+
+    /// Draw after another packed submission in the same pass, without redundant binds.
+    /// Callers forget the previous draw whenever any other path changes render state.
+    pub fn draw_after(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw: &Draw,
+        previous: Option<&Draw>,
+    ) {
         // A null blend-factor pointer gives D3D11's all-ones blend constant.
-        pass.set_blend_constant(wgpu::Color::WHITE);
-        draw.bindings.bind(pass);
-        pass.set_vertex_buffer(0, draw.vertices.slice());
+        if previous.is_none() {
+            pass.set_blend_constant(wgpu::Color::WHITE);
+        }
+        draw.bindings
+            .bind_after(pass, previous.map(|draw| &draw.bindings));
+        if previous.is_none_or(|previous| {
+            previous.vertices.buffer != draw.vertices.buffer
+                || previous.vertices.offset != draw.vertices.offset
+                || previous.vertices.size != draw.vertices.size
+        }) {
+            pass.set_vertex_buffer(0, draw.vertices.slice());
+        }
         pass.draw(0..draw.count, 0..1);
     }
 }

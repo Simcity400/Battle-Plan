@@ -190,6 +190,8 @@ struct Province {
     /// The arrow flag of its last update.
     arrows: bool,
     entities: BTreeMap<Slot, Entity>,
+    /// Hourly land targets in visual-slot order, with identity ties.
+    lands: Vec<(u32, Slot)>,
     /// The round-robin cursor: the visual slot
     /// ([`Target::order`]) it last visited, not its successor, whichever
     /// representative holds it now. Recreating units does not reset it.
@@ -220,13 +222,7 @@ impl Province {
         let was = self.shown;
         let mut queued = Vec::new();
         if frame.shown[Kind::Land as usize] {
-            let mut lands: Vec<_> = targets
-                .into_iter()
-                .flatten()
-                .filter(|(slot, _)| slot.0 == Kind::Land)
-                .map(|(slot, parts)| (parts.first_key_value().unwrap().1.order, *slot))
-                .collect();
-            lands.sort_unstable();
+            let lands = &self.lands;
             let start = lands.partition_point(|&(order, _)| order < self.land_cursor);
             for &(order, slot) in lands[start..].iter().chain(&lands[..start]) {
                 if queued.len() >= budget.remaining() {
@@ -428,6 +424,12 @@ pub struct History {
     naval: naval::History,
     combats: naval_combat::History,
     provinces: BTreeMap<u32, Province>,
+    /// Provinces with retained unit entities, in placement order.
+    populated: BTreeSet<u32>,
+    /// The shared schedule's reached updates in native province order.
+    updates: Vec<(u32, Update)>,
+    /// Admission operands in province order, refreshed only when the hour installs a roster.
+    province_bounds: Vec<(u32, Option<[f32; 4]>)>,
     /// Province boxes for camera admission.
     bounds: Arc<BTreeMap<u32, [f32; 4]>>,
     /// The previous frame's animation clock.
@@ -476,6 +478,16 @@ impl History {
         for &id in self.bounds.keys() {
             self.provinces.entry(id).or_default();
         }
+        self.prepare_province_bounds();
+    }
+
+    fn prepare_province_bounds(&mut self) {
+        self.province_bounds.clear();
+        self.province_bounds.extend(
+            self.provinces
+                .keys()
+                .map(|&id| (id, self.bounds.get(&id).copied())),
+        );
     }
 
     pub fn select_provinces(&mut self, provinces: BTreeSet<u32>) {
@@ -499,6 +511,7 @@ impl History {
             self.provinces.entry(candidate.province).or_default();
         }
         self.naval.install(sources);
+        self.prepare_province_bounds();
     }
     /// Installs an hour's targets. Entities carry over; the next frame
     /// admits, grows or retires them.
@@ -526,7 +539,20 @@ impl History {
                 .or_default()
                 .insert(target.part, target);
         }
+        for (&id, province) in &mut self.provinces {
+            province.lands.clear();
+            province.lands.extend(
+                self.targets
+                    .get(&id)
+                    .into_iter()
+                    .flatten()
+                    .filter(|(slot, _)| slot.0 == Kind::Land)
+                    .map(|(slot, parts)| (parts.first_key_value().unwrap().1.order, *slot)),
+            );
+            province.lands.sort_unstable();
+        }
         self.steady = steady;
+        self.prepare_province_bounds();
     }
 
     /// The raid units to stand this frame: the hour's placement, or a
@@ -575,8 +601,10 @@ impl History {
             if provinces.is_none_or(|provinces| provinces.contains(id)) {
                 *province = Province {
                     land_cursor: province.land_cursor,
+                    lands: std::mem::take(&mut province.lands),
                     ..Province::default()
                 };
+                self.populated.remove(id);
             }
         }
     }
@@ -599,13 +627,7 @@ impl History {
             .schedule
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        schedule.advance_frame(
-            &self.bounds,
-            self.provinces.keys().copied(),
-            camera,
-            viewport,
-            self.steady,
-        );
+        schedule.advance_frame_boxes(&self.province_bounds, camera, viewport, self.steady);
     }
 
     /// The scene's single frame walk: buildings then units per province,
@@ -621,7 +643,7 @@ impl History {
         buildings: &mut BuildingHistory,
         buildings_enabled: bool,
     ) -> FrameModels {
-        let admission = Admission::new(camera, viewport);
+        let admission = std::cell::LazyCell::new(|| Admission::new(camera, viewport));
         let bounds = Arc::clone(&self.bounds);
         let mut buildings = buildings.frame(camera, viewport, time, buildings_enabled, self.steady);
         let mut budget = Budget::new(limit, self.steady);
@@ -714,12 +736,20 @@ impl History {
             schedule.advance(self.provinces.keys().copied(), &in_view, self.steady);
             schedule.take_pending();
         }
-        // The frame's update list, the one the map icons' owners read.
+        // The frame's update list, the one the map icons' owners read. Buildings consume
+        // every group through each reached province, so omitted unit visits leave their
+        // order and shared budget unchanged.
         let mut queued = Vec::new();
-        for (&id, province) in &mut self.provinces {
+        self.updates.clear();
+        self.updates.extend(schedule.updates());
+        self.updates.sort_unstable_by_key(|&(id, _)| id);
+        for &(id, update) in &self.updates {
+            let Some(province) = self.provinces.get_mut(&id) else {
+                continue;
+            };
             buildings(id, budget);
-            match schedule.update(id) {
-                Some(Update::InView) => {
+            match update {
+                Update::InView => {
                     let land_was_shown = province.shown[Kind::Land as usize];
                     queued.extend(
                         province
@@ -743,17 +773,22 @@ impl History {
                     );
                     province.finalize_shown(frame, budget);
                 }
-                Some(Update::OffScreen) => {
+                Update::OffScreen => {
                     self.combats
                         .leave(id, province.shown[Kind::Land as usize], self.steady);
                     province.leave(self.steady);
                 }
-                None => {}
+            }
+            if province.entities.is_empty() {
+                self.populated.remove(&id);
+            } else {
+                self.populated.insert(id);
             }
         }
         buildings(u32::MAX, budget);
         for (id, slot, shown) in queued {
-            self.provinces.get_mut(&id).unwrap().create_land(
+            let province = self.provinces.get_mut(&id).unwrap();
+            province.create_land(
                 slot,
                 &self.targets[&id][&slot],
                 shown,
@@ -761,15 +796,23 @@ impl History {
                 &mut self.epoch,
                 budget,
             );
+            if !province.entities.is_empty() {
+                self.populated.insert(id);
+            }
         }
         // Graphical province setters and probes run before idle updates
         // dispatches the animation manager. Admit each private combat player
         // once here, after this frame's callbacks and before its rendered pose.
         self.combats.advance(frame.delta);
         let raid_epoch = self.raid_epoch;
-        self.provinces
-            .values()
-            .flat_map(|province| province.entities.values().flat_map(Entity::placed))
+        self.populated
+            .iter()
+            .flat_map(|id| {
+                self.provinces[id]
+                    .entities
+                    .values()
+                    .flat_map(Entity::placed)
+            })
             .chain(self.combats.placed())
             .chain(self.raids.iter().map(|&(mesh, instance)| {
                 (
@@ -853,6 +896,124 @@ pub mod tests {
             &mut Budget::new(limit, h.steady),
             |_, _| {},
         )
+    }
+
+    #[test]
+    fn skipped_unit_visits_keep_buildings_before_hulls_and_deferred_land() {
+        for limit in 1..=4 {
+            let mut h = history(
+                vec![
+                    Target {
+                        mesh: 2,
+                        ..target(2, Kind::Land)
+                    },
+                    Target {
+                        mesh: 4,
+                        ..target(4, Kind::Ship)
+                    },
+                ],
+                false,
+            );
+            for id in [1, 3, 5] {
+                h.provinces.entry(id).or_default();
+            }
+            let mut budget = Budget::new(limit, false);
+            let mut remaining = [1, 3, 5].into_iter().peekable();
+            let mut buildings = Vec::new();
+            let placed = h.step_with(
+                0.0,
+                GATES,
+                [true; 2],
+                true,
+                |id| id == 2 || id == 4,
+                &mut budget,
+                |id, budget| {
+                    while remaining.peek().is_some_and(|next| *next <= id) {
+                        let building = remaining.next().unwrap();
+                        if budget.take() {
+                            buildings.push(building);
+                        }
+                    }
+                },
+            );
+            let expected_buildings = match limit {
+                1 => vec![1],
+                2 | 3 => vec![1, 3],
+                _ => vec![1, 3, 5],
+            };
+            assert_eq!(buildings, expected_buildings);
+            assert_eq!(placed.iter().any(|(mesh, _)| *mesh == 2), limit >= 2);
+            assert_eq!(placed.iter().any(|(mesh, _)| *mesh == 4), limit >= 3);
+            assert_eq!(budget.remaining(), 0);
+        }
+    }
+
+    #[test]
+    fn reached_updates_and_populated_provinces_keep_the_full_placement_walk() {
+        let mut h = history(Vec::new(), false);
+        for frame in 0..350u32 {
+            if frame % 23 == 0 {
+                h.set(
+                    (1..=300)
+                        .filter(|id| (id + frame / 23) % 17 == 0)
+                        .map(|id| target(id, if id % 2 == 0 { Kind::Land } else { Kind::Ship }))
+                        .collect(),
+                    Arc::default(),
+                    false,
+                );
+            }
+            if frame % 41 == 0 {
+                h.reset(Some(&BTreeSet::from([17, 34, 51])));
+            }
+            h.select_provinces(if frame % 13 < 7 {
+                BTreeSet::from([17, 34])
+            } else {
+                BTreeSet::new()
+            });
+            let placed = h.step(
+                frame as f32 / 120.0,
+                GATES,
+                [frame % 37 < 25, frame % 31 < 20],
+                frame % 19 < 10,
+                |id| (id + frame / 11) % 3 == 0,
+            );
+            let full: Vec<_> = h
+                .provinces
+                .values()
+                .flat_map(|province| province.entities.values().flat_map(Entity::placed))
+                .collect();
+            assert_eq!(placed, full, "frame {frame}");
+            assert_eq!(
+                h.populated,
+                h.provinces
+                    .iter()
+                    .filter_map(|(&id, province)| (!province.entities.is_empty()).then_some(id))
+                    .collect(),
+                "frame {frame}"
+            );
+        }
+        h.reset(None);
+        assert!(h.populated.is_empty());
+    }
+
+    #[test]
+    fn retained_admission_operands_follow_roster_and_box_replacement() {
+        let mut h = history(vec![target(88, Kind::Land)], false);
+        assert_eq!(h.province_bounds, [(88, None)]);
+        let bounds = Arc::new(BTreeMap::from([(1, [0., 0., 2., 2.])]));
+        h.set(vec![target(99, Kind::Land)], bounds, false);
+        assert_eq!(
+            h.province_bounds,
+            [(1, Some([0., 0., 2., 2.])), (88, None), (99, None)]
+        );
+        let bounds = Arc::new(BTreeMap::from([(88, [4., 4., 6., 6.])]));
+        h.set(Vec::new(), bounds, false);
+        assert_eq!(
+            h.province_bounds,
+            [(1, None), (88, Some([4., 4., 6., 6.])), (99, None)]
+        );
+        h.set_naval(NavalSources::default());
+        assert_eq!(h.province_bounds.len(), 3);
     }
 
     #[test]

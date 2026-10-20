@@ -1568,6 +1568,7 @@ mod tests {
         let names = installed_content_division_names::division_names::Database::default();
         run(&Context {
             nato,
+            diagnostics: true,
             content: None,
             reads: None,
             dig_in_factor: Err("unreached".into()),
@@ -1596,6 +1597,7 @@ mod tests {
 
     #[test]
     fn state_fuel_emits_empty_registered_subtypes_and_full_header_without_wing_operands() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let mut frame = fixture();
         put(
             &mut frame,
@@ -1634,6 +1636,7 @@ mod tests {
 
     #[test]
     fn state_idle_current_fuel_is_known_zero_when_cached_maximum_operands_are_refused() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
         let mut frame = fixture();
         put(
             &mut frame,

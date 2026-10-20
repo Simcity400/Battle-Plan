@@ -40,6 +40,10 @@ impl native_gui::Resources for GuiAssets<'_> {
         self.gui.sprite(name)
     }
 
+    fn sprite_info(&self, name: &[u8]) -> Option<std::borrow::Cow<'_, SpriteInfo>> {
+        self.gui.sprite_info(name).map(std::borrow::Cow::Borrowed)
+    }
+
     fn portrait_texture(&self, name: &[u8]) -> Option<Texture> {
         self.portrait_textures.and_then(|resolve| resolve(name))
     }

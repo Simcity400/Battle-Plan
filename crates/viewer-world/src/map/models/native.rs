@@ -654,6 +654,10 @@ fn userdata(
 }
 
 impl ModelPass {
+    pub(crate) fn has_placements(&self) -> bool {
+        !self.field.native_order.is_empty()
+    }
+
     pub fn reset_drawn(&self) {
         self.drawn.set(0);
     }
@@ -669,6 +673,9 @@ impl ModelPass {
         queue: Queue,
         object: &mut ObjectConstants,
     ) -> io::Result<()> {
+        if self.field.native_order.is_empty() {
+            return Ok(());
+        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(self.label),
             color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
@@ -681,7 +688,7 @@ impl ModelPass {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn record_native(
+    pub(crate) fn record_native(
         &self,
         arena: &shader_pipeline::gpu::Arena,
         pass: &mut wgpu::RenderPass<'_>,

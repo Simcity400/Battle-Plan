@@ -35,24 +35,23 @@ fn custom_sea_declarations_follow_effective_strategic_templates() {
 fn combat_native_assets_follow_global_templates_and_scrollbars() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let windows = NativeWindows::of(gui::native::Guis {
-        files: vec![
-            (
-                "first.gui".into(),
-                gui::native::read(
-                    br#"guiTypes = {
+    let windows = NativeWindows::of(gui::native::Guis::new(vec![
+        (
+            "first.gui".into(),
+            gui::native::read(
+                br#"guiTypes = {
                         containerWindowType = { name = "unit_counter_navy" }
                         containerWindowType = { name = "naval_combat_mapicon" }
                         containerWindowType = { name = "landcombatview"
                             iconType = { name = "old" spriteType = "GFX_old" }
                         }
                     }"#,
-                ),
             ),
-            (
-                "mod.gui".into(),
-                gui::native::read(
-                    br#"@art = "GFX_mod"
+        ),
+        (
+            "mod.gui".into(),
+            gui::native::read(
+                br#"@art = "GFX_mod"
                     guiTypes = {
                         containerWindowType = { name = "landcombatview"
                             verticalScrollbar = "mod_scroll"
@@ -62,10 +61,9 @@ fn combat_native_assets_follow_global_templates_and_scrollbars() {
                             slider = { name = "s" spriteType = "GFX_mod_slider" }
                         }
                     }"#,
-                ),
             ),
-        ],
-    })
+        ),
+    ]))
     .unwrap();
     let assets = native_window_assets(&windows, &Default::default());
     assert!(assets.sprites.contains(b"GFX_mod".as_slice()));

@@ -14,7 +14,7 @@
 //! pools read its list and bits.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -36,11 +36,11 @@ pub struct Schedule {
     /// The retained off-screen update cursor.
     phase: u32,
     /// The provinces whose bit `0x2` is clear; every other is set, as the constructor leaves it.
-    clean: BTreeSet<u32>,
+    clean: HashSet<u32>,
     /// This frame's provinces updated with the native in-view flag 1.
-    in_view: BTreeSet<u32>,
+    in_view: HashSet<u32>,
     /// This frame's provinces updated out of view.
-    off_screen: BTreeSet<u32>,
+    off_screen: HashSet<u32>,
     /// The frame's advance was made and its unit walk has not yet read it.
     pending: bool,
     /// The presentation clock of the last advance the view's counters made themselves
@@ -96,6 +96,31 @@ impl Schedule {
         in_view: impl Fn(u32) -> bool,
         steady: bool,
     ) {
+        self.advance_admitted(provinces.into_iter().map(|id| (id, in_view(id))), steady);
+    }
+
+    /// Advance over retained province boxes without looking each one up in a tree.
+    /// The caller refreshes this list whenever its province roster or boxes change.
+    pub fn advance_frame_boxes(
+        &mut self,
+        provinces: &[(u32, Option<[f32; 4]>)],
+        camera: Camera,
+        viewport: [u32; 2],
+        steady: bool,
+    ) {
+        if self.pending {
+            return;
+        }
+        let admission = Admission::new(camera, viewport);
+        self.advance_admitted(
+            provinces
+                .iter()
+                .map(|&(id, bounds)| (id, bounds.is_some_and(|bounds| admission.admits(bounds)))),
+            steady,
+        );
+    }
+
+    fn advance_admitted(&mut self, provinces: impl IntoIterator<Item = (u32, bool)>, steady: bool) {
         // Direct callers finish the previous list before asking for another frame.
         // A scene instead retains it through advance_frame until its unit walk.
         self.take_pending();
@@ -105,13 +130,17 @@ impl Schedule {
         for &id in &self.selected {
             self.forced.insert(id, 2);
         }
-        for id in provinces {
-            if in_view(id) || (self.dirty(id) && self.forced.contains_key(&id)) {
+        for (id, admitted) in provinces {
+            if admitted {
                 self.in_view.insert(id);
                 self.clean.remove(&id);
-            } else if self.dirty(id) && (steady || id % 100 == self.phase) {
-                self.off_screen.insert(id);
-                self.clean.insert(id);
+            } else if self.dirty(id) {
+                if self.forced.contains_key(&id) {
+                    self.in_view.insert(id);
+                } else if steady || id % 100 == self.phase {
+                    self.off_screen.insert(id);
+                    self.clean.insert(id);
+                }
             }
         }
         self.pending = true;
@@ -148,7 +177,13 @@ impl Schedule {
         if self.pending || self.presented == Some(time) {
             return;
         }
-        self.advance_view(bounds, bounds.keys().copied(), camera, viewport, false);
+        let admission = Admission::new(camera, viewport);
+        self.advance_admitted(
+            bounds
+                .iter()
+                .map(|(&id, &bounds)| (id, admission.admits(bounds))),
+            false,
+        );
         self.take_pending();
         self.presented = Some(time);
     }
@@ -162,6 +197,15 @@ impl Schedule {
         } else {
             None
         }
+    }
+
+    /// This frame's reached updates. Owners that share native province order sort by ID
+    /// before walking; dirty provinces waiting for their phase are not reached updates.
+    pub fn updates(&self) -> impl Iterator<Item = (u32, Update)> + '_ {
+        self.in_view
+            .iter()
+            .map(|&id| (id, Update::InView))
+            .chain(self.off_screen.iter().map(|&id| (id, Update::OffScreen)))
     }
 
     /// Whether `province` is in this frame's update list: in view, or out of view with its dirty bit
@@ -225,6 +269,90 @@ impl Schedule {
 mod tests {
     use super::*;
     use crate::map::camera::Pose;
+
+    #[test]
+    fn retained_boxes_match_tree_admission_across_selection_reset_and_pending_frames() {
+        use crate::map::camera::{MapDefines, MapSize, Placement};
+        let bounds = super::super::province_admission::edge_boxes();
+        let mut boxes: Vec<_> = bounds
+            .iter()
+            .map(|(&id, &bounds)| (id, Some(bounds)))
+            .collect();
+        boxes.extend([(0, None), (u32::MAX, None)]);
+        let mut retained = Schedule::default();
+        let mut tree = Schedule::default();
+        for frame in 0..350 {
+            let camera = Placement {
+                center: [3000. + (frame % 30) as f32 * 3., 1000.],
+                height: if frame % 37 == 0 { 900. } else { 50. },
+                pose: Pose::Map,
+            }
+            .on(MapSize::TEST, MapDefines::test());
+            let selected = if frame % 13 < 7 {
+                BTreeSet::from([3, u32::MAX])
+            } else {
+                BTreeSet::new()
+            };
+            for schedule in [&mut retained, &mut tree] {
+                schedule.set_selected(selected.clone());
+                if frame % 31 == 0 {
+                    schedule.reset(Some(&BTreeSet::from([0, 1, 3, u32::MAX])));
+                }
+                if frame % 19 == 0 {
+                    schedule.cancel_pending();
+                }
+            }
+            let steady = frame % 29 == 0;
+            retained.advance_frame_boxes(&boxes, camera, [1024, 768], steady);
+            tree.advance_frame(
+                &bounds,
+                boxes.iter().map(|&(id, _)| id),
+                camera,
+                [1024, 768],
+                steady,
+            );
+            for &(id, _) in &boxes {
+                assert_eq!(
+                    retained.update(id),
+                    tree.update(id),
+                    "frame {frame}, province {id}"
+                );
+                assert_eq!(retained.dirty(id), tree.dirty(id));
+                assert_eq!(retained.listed(id), tree.listed(id));
+            }
+            assert_eq!(retained.phase, tree.phase);
+            assert_eq!(retained.forced, tree.forced);
+            if frame % 7 != 0 {
+                assert_eq!(retained.take_pending(), tree.take_pending());
+            }
+        }
+    }
+
+    #[test]
+    fn reached_updates_exclude_dirty_waiters_and_follow_pending_selection() {
+        let mut schedule = Schedule::default();
+        schedule.advance([103, 101, 102], |id| id == 103, false);
+        let updates = |schedule: &Schedule| schedule.updates().collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            updates(&schedule),
+            BTreeMap::from([(101, Update::OffScreen), (103, Update::InView),])
+        );
+        assert!(schedule.listed(102));
+        schedule.set_selected(BTreeSet::from([101, 102]));
+        assert_eq!(
+            updates(&schedule),
+            BTreeMap::from([
+                (101, Update::InView),
+                (102, Update::InView),
+                (103, Update::InView),
+            ])
+        );
+        schedule.take_pending();
+        assert_eq!(updates(&schedule).len(), 3);
+        schedule.cancel_pending();
+        schedule.advance([103, 101, 102], |_| false, true);
+        assert_eq!(updates(&schedule).len(), 3);
+    }
 
     #[test]
     fn selected_province_bypasses_phase_even_after_a_pending_advance() {

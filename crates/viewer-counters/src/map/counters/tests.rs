@@ -262,9 +262,7 @@ fn window_size_applies_native_bounds_and_names_unsupported_constraints() {
 }
 
 fn layout_gui(bytes: &[u8]) -> native::Guis {
-    native::Guis {
-        files: vec![(MAPICONS_GUI.to_owned(), native::read(bytes))],
-    }
+    native::Guis::new(vec![(MAPICONS_GUI.to_owned(), native::read(bytes))])
 }
 
 #[test]
@@ -2853,12 +2851,12 @@ fn naval_context<'a>(
         native,
         ship_inputs: None,
         aggression: &[],
-        ship_task_forces: BTreeMap::new(),
+        ship_task_forces: Arc::new(BTreeMap::new()),
         ships_complete: true,
-        ships: BTreeMap::new(),
+        ships: Arc::new(BTreeMap::new()),
         country_ids: Box::leak(Box::default()),
         ideology: &|_| Ok(None),
-        missions,
+        missions: Arc::new(missions),
         forces: &[],
         mission_skips: Default::default(),
         forces_complete: true,
@@ -3212,21 +3210,20 @@ fn a_port_counter_sums_capitals_over_every_member_and_selects_its_hull() {
         counter_order::Hull { strength, model }
     }
     let inputs = ShipInputs {
-        rosters: [
-            (10, vec![hull(&models[0], 50), hull(&models[1], 90)]),
-            (
-                11,
-                vec![
-                    hull(&models[2], 60),
-                    hull(&models[3], 90),
-                    hull(&models[4], 50),
-                ],
-            ),
-        ]
-        .into(),
-        ratios: BTreeMap::new(),
-        base_kinds: BTreeMap::new(),
-        viewer_wings: None,
+        tables: super::naval::ShipTables::from_rosters(
+            [
+                (10, vec![hull(&models[0], 50), hull(&models[1], 90)]),
+                (
+                    11,
+                    vec![
+                        hull(&models[2], 60),
+                        hull(&models[3], 90),
+                        hull(&models[4], 50),
+                    ],
+                ),
+            ]
+            .into(),
+        ),
         equipment: Err("unreached equipment content"),
     };
     let cells = inputs.cells(&[10, 11], true);
@@ -3243,10 +3240,7 @@ fn a_port_counter_sums_capitals_over_every_member_and_selects_its_hull() {
     let mut legacy = models[1].clone();
     legacy.counter = None;
     let inputs = ShipInputs {
-        rosters: [(10, vec![hull(&legacy, 90)])].into(),
-        ratios: BTreeMap::new(),
-        base_kinds: BTreeMap::new(),
-        viewer_wings: None,
+        tables: super::naval::ShipTables::from_rosters([(10, vec![hull(&legacy, 90)])].into()),
         equipment: Err("unreached equipment content"),
     };
     let cells = inputs.cells(&[10], false);
@@ -4862,6 +4856,89 @@ fn flag_fixture<const N: usize>(names: [&str; N]) -> Arc<LazyFlags> {
         })
     });
     LazyFlags::new(index, pages, read, &textures)
+}
+
+#[test]
+fn hour_flag_warming_uses_recorded_candidates_at_all_three_sizes() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+    with_counter_inputs_fixture(
+        action_gui(false),
+        |assets| {
+            for (flags, cell) in [
+                (&mut assets.flags, [10, 7]),
+                (&mut assets.medium_flags, [41, 26]),
+                (&mut assets.large_flags, [82, 52]),
+            ] {
+                let calls = Arc::clone(&reads);
+                let read: FlagReader = Arc::new(move |key| {
+                    calls.lock().unwrap().push((cell, key.to_owned()));
+                    (key != "COS_group").then(|| installed_content_image::Rgba8Image {
+                        width: cell[0],
+                        height: cell[1],
+                        pixels: vec![7; (cell[0] * cell[1] * 4) as usize],
+                    })
+                });
+                let index = [
+                    "COS_group",
+                    "COS",
+                    "ORI_group",
+                    "ORI",
+                    "D01",
+                    "BAD",
+                    "UNREC",
+                ]
+                .map(|key| (key.to_owned(), key.to_owned()))
+                .into();
+                *flags = LazyFlags::new(
+                    index,
+                    atlas_pages::CellPages::plan(cell, 8192, "flags").unwrap(),
+                    read,
+                    &LazyTextures::new(),
+                );
+            }
+        },
+        |_| {},
+        |inputs| {
+            let countries = Countries {
+                tags: [(1, "D01".into()), (2, "BAD".into())].into(),
+                flag_tags: [
+                    (1, (Ok("COS".into()), Ok("ORI".into()))),
+                    (
+                        2,
+                        (Err("cosmetic tag is not UTF-8".into()), Ok("BAD".into())),
+                    ),
+                    (3, (Ok(String::new()), Ok("UNREC".into()))),
+                ]
+                .into(),
+                groups: [(1, Ok(Some("group".into()))), (2, Ok(None)), (3, Ok(None))].into(),
+                ..Default::default()
+            };
+            countries.warm_flags(inputs.assets);
+            countries.warm_flags(inputs.assets);
+            let before: BTreeSet<_> = reads.lock().unwrap().iter().cloned().collect();
+            let expected: BTreeSet<_> = [[10, 7], [41, 26], [82, 52]]
+                .into_iter()
+                .flat_map(|cell| {
+                    ["COS_group", "COS", "ORI_group", "ORI"].map(|key| (cell, key.to_owned()))
+                })
+                .collect();
+            assert_eq!(before, expected);
+            assert_eq!(reads.lock().unwrap().len(), 12);
+            for flags in [
+                &inputs.assets.flags,
+                &inputs.assets.medium_flags,
+                &inputs.assets.large_flags,
+            ] {
+                assert_eq!(flags.loaded(), 0);
+                let (page, uv) = countries.flag_now(flags, 1).unwrap();
+                assert_eq!(flags.key_at(page, uv).as_deref(), Some("COS"));
+                assert_eq!(countries.flag_now(flags, 2), None);
+            }
+            assert_eq!(reads.lock().unwrap().len(), 12);
+        },
+    );
 }
 
 #[test]

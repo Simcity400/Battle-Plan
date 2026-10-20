@@ -312,8 +312,7 @@ impl<'a> Census<'a> {
 fn carrier_bases(ships: &super::super::naval::ShipInputs<'_>, members: &[u64]) -> Vec<u64> {
     members
         .iter()
-        .filter_map(|member| ships.rosters.get(member))
-        .flatten()
+        .flat_map(|member| ships.hulls(*member))
         .filter_map(|ship| ship.model.counter.as_ref())
         .map(|counter| counter.carrier_air_base)
         .filter(|base| *base != 0)
@@ -745,26 +744,25 @@ mod tests {
             .collect();
         let ships = super::super::super::naval::ShipInputs {
             equipment: Err("unreached"),
-            rosters: [
-                (
-                    4,
-                    vec![Hull {
-                        strength: 0,
-                        model: &models[3],
-                    }],
-                ),
-                (
-                    8,
-                    models[..3]
-                        .iter()
-                        .map(|model| Hull { strength: 0, model })
-                        .collect(),
-                ),
-            ]
-            .into(),
-            ratios: Default::default(),
-            base_kinds: Default::default(),
-            viewer_wings: None,
+            tables: super::super::super::naval::ShipTables::from_rosters(
+                [
+                    (
+                        4,
+                        vec![Hull {
+                            strength: 0,
+                            model: &models[3],
+                        }],
+                    ),
+                    (
+                        8,
+                        models[..3]
+                            .iter()
+                            .map(|model| Hull { strength: 0, model })
+                            .collect(),
+                    ),
+                ]
+                .into(),
+            ),
         };
         assert_eq!(carrier_bases(&ships, &[8, 4, 8]), [91, 92, 93, 91, 92]);
         assert!(carrier_bases(&ships, &[]).is_empty());

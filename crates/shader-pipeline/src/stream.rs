@@ -360,13 +360,27 @@ impl Stream {
                     pipeline
                 }
             };
-        let textures = self.resolve_textures(arena.device(), &selection)?;
+        let compiled = selection.effect.compiled(selection.index)?;
+        let kinds = || {
+            compiled
+                .vertex
+                .textures
+                .iter()
+                .chain(&compiled.pixel.textures)
+        };
+        self.null_textures(arena.device(), &selection, kinds())?;
         self.check_constants(&pipeline)?;
         let draw = pipeline
-            .prepare(
+            .prepare_with(
                 arena,
-                &self.constants,
-                &textures,
+                |binding| self.constants.get(&binding).map(Vec::as_slice),
+                |binding| match self.textures.get(&binding)? {
+                    Some(view) => Some(view),
+                    None => {
+                        let (_, kind) = kinds().find(|(key, _)| *key == binding)?;
+                        self.null_textures.get(kind)
+                    }
+                },
                 &Vertices {
                     declaration,
                     bytes,
@@ -602,31 +616,6 @@ impl Stream {
             }
         }
         (pass, reference, scissor)
-    }
-
-    fn resolve_textures(
-        &mut self,
-        device: &wgpu::Device,
-        selection: &Selection,
-    ) -> Result<BTreeMap<u32, wgpu::TextureView>, String> {
-        let compiled = selection.effect.compiled(selection.index)?;
-        let kinds = || {
-            compiled
-                .vertex
-                .textures
-                .iter()
-                .chain(&compiled.pixel.textures)
-        };
-        self.null_textures(device, selection, kinds())?;
-        Ok(kinds()
-            .map(|(key, kind)| {
-                let view = match &self.textures[key] {
-                    Some(view) => view,
-                    None => &self.null_textures[kind],
-                };
-                (*key, view.clone())
-            })
-            .collect())
     }
 
     /// Create the zero textures explicit null binds need; refuse slots never bound.

@@ -14,6 +14,8 @@ pub struct Arena {
     device: wgpu::Device,
     alignment: u64,
     inner: RefCell<Inner>,
+    /// Native packed geometry is copied into staging before the next draw reuses this storage.
+    packed: RefCell<Vec<f32>>,
 }
 
 #[derive(Default)]
@@ -22,6 +24,8 @@ struct Inner {
     current: usize,
     frame: u64,
     recent: Vec<Recent>,
+    /// Packed quads commonly share geometry while their constant blocks place them.
+    vertices: Vec<Recent>,
     /// Writes to caller-owned buffers, kept until a flush, even across an unsubmitted frame.
     writes: Vec<(wgpu::Buffer, u64, Vec<u8>)>,
     /// Every draw refused through this arena ([`Arena::refuse`]).
@@ -76,7 +80,18 @@ impl Arena {
             device: device.clone(),
             alignment: u64::from(device.limits().min_uniform_buffer_offset_alignment),
             inner: RefCell::default(),
+            packed: RefCell::default(),
         }
+    }
+
+    pub(crate) fn packed_vertices(
+        &self,
+        packing: &crate::vertices::Packing,
+        vertices: &crate::vertices::Vertices<'_>,
+    ) -> Result<Slice, String> {
+        let mut packed = self.packed.borrow_mut();
+        packing.pack_into(vertices, &mut packed)?;
+        self.vertices(bytemuck::cast_slice(&packed))
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -97,6 +112,7 @@ impl Arena {
         inner.current = 0;
         inner.frame += 1;
         inner.recent.clear();
+        inner.vertices.clear();
     }
 
     /// Frames started so far, which identifies the frame being encoded.
@@ -142,6 +158,7 @@ impl Arena {
         let inner = &mut *inner;
         if inner.room(&self.device, total + alignment)? {
             inner.recent.clear();
+            inner.vertices.clear();
         }
         let chunk = &mut inner.chunks[inner.current];
         for (&(bytes, size), slot) in blocks.iter().zip(offsets) {
@@ -188,14 +205,35 @@ impl Arena {
         let size = align(bytes.len().max(4), 4);
         let mut inner = self.inner.borrow_mut();
         let inner = &mut *inner;
+        if let Some(chunk) = inner.chunks.get(inner.current)
+            && let Some(recent) = inner.vertices.iter().find(|recent| {
+                recent.length == bytes.len()
+                    && chunk.staged[recent.offset..recent.offset + recent.length] == *bytes
+            })
+        {
+            return Ok(Slice {
+                buffer: chunk.buffer.clone(),
+                offset: recent.offset as u64,
+                size: size as u64,
+            });
+        }
         if inner.room(&self.device, size + 4)? {
             inner.recent.clear();
+            inner.vertices.clear();
         }
         let chunk = &mut inner.chunks[inner.current];
         let offset = align(chunk.staged.len(), 4);
         chunk.staged.resize(offset, 0);
         chunk.staged.extend_from_slice(bytes);
         chunk.staged.resize(offset + size, 0);
+        if inner.vertices.len() == RECENT {
+            inner.vertices.remove(0);
+        }
+        inner.vertices.push(Recent {
+            offset,
+            length: bytes.len(),
+            reserved: size,
+        });
         Ok(Slice {
             buffer: chunk.buffer.clone(),
             offset: offset as u64,
@@ -290,5 +328,56 @@ mod tests {
         assert_eq!(arena.frame(), frame + 1);
         let again = arena.constants(&[(&[3; 4], 4)], &mut offsets[..1]).unwrap();
         assert_eq!((offsets[0], again), (0, first));
+    }
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn identical_vertices_reuse_bytes_until_a_chunk_change_or_reset() {
+        let (device, queue) = crate::tests::device();
+        let arena = Arena::new(&device);
+        let bytes = [1, 2, 3, 4, 5, 6];
+        let first = arena.vertices(&bytes).unwrap();
+        let check = |slice: Slice| {
+            assert_eq!(slice.buffer, first.buffer);
+            assert_eq!(slice.offset, first.offset);
+            assert_eq!(slice.size, first.size);
+        };
+        check(arena.vertices(&bytes).unwrap());
+        assert_eq!(arena.inner.borrow().chunks[0].staged.len(), 8);
+        let mut offsets = [0];
+        arena.constants(&[(&[7; 4], 4)], &mut offsets).unwrap();
+        arena.flush(&queue);
+        check(arena.vertices(&bytes).unwrap());
+        assert_ne!(
+            arena.vertices(&[1, 2, 3, 4, 5, 7]).unwrap().offset,
+            first.offset
+        );
+        // Equal float values are insufficient: signed zero and NaN payload bytes survive.
+        let zero = arena.vertices(&0_f32.to_ne_bytes()).unwrap();
+        assert_ne!(
+            zero.offset,
+            arena.vertices(&(-0_f32).to_ne_bytes()).unwrap().offset
+        );
+        let nan = arena
+            .vertices(&f32::from_bits(0x7fc0_0001).to_ne_bytes())
+            .unwrap();
+        assert_ne!(
+            nan.offset,
+            arena
+                .vertices(&f32::from_bits(0x7fc0_0002).to_ne_bytes())
+                .unwrap()
+                .offset
+        );
+        arena.vertices(&vec![9; CHUNK as usize + 1]).unwrap();
+        assert_ne!(arena.vertices(&bytes).unwrap().buffer, first.buffer);
+        arena.reset();
+        let changed = arena.vertices(&[8; 6]).unwrap();
+        assert_eq!(changed.offset, 0);
+        let again = arena.vertices(&bytes).unwrap();
+        assert_ne!(again.offset, changed.offset);
+        let inner = arena.inner.borrow();
+        assert_eq!(
+            &inner.chunks[0].staged[again.offset as usize..][..6],
+            &bytes
+        );
     }
 }

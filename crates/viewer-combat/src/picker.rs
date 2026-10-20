@@ -169,6 +169,9 @@ pub struct Picker {
     /// Bumps when what the windows show changes, so they bind again.
     generation: u64,
     last: Option<u64>,
+    root_generation: Option<u64>,
+    values: Values,
+    controls: BTreeMap<String, Control>,
 }
 
 fn hover(text: &str) -> Option<HoverText> {
@@ -197,6 +200,21 @@ pub fn button_of_slot(slot: usize, four_buttons: bool) -> Option<usize> {
 const BUTTONS: usize = 12;
 
 impl Picker {
+    fn refresh_values(&mut self, state: &State<'_>, root: &installed_content_core::gui::native::Element) {
+        if self.root_generation == Some(self.generation) {
+            return;
+        }
+        self.values = picker_values(state, root);
+        self.controls = gui::elements(root)
+            .into_iter()
+            .filter_map(|(path, element)| {
+                let leaf = path.rsplit('/').next().unwrap_or(&path);
+                picker_control(leaf, state).map(|control| (element.path.clone(), control))
+            })
+            .collect();
+        self.root_generation = Some(self.generation);
+    }
+
     /// Lays out and draws the picker for `state`; `fingerprint` changes whenever `state` does.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
@@ -241,7 +259,8 @@ impl Picker {
             controls: Vec::new(),
         };
         let root = gui::template(&windows, PICKER_WINDOW).map_err(super::invalid)?;
-        let values = picker_values(state, root);
+        self.refresh_values(state, root);
+        let values = &self.values;
         let generation = self.generation;
         let retained = gui::ensure(&mut self.root, PICKER_WINDOW, root, viewport, &resources)
             .map_err(super::invalid)?;
@@ -252,7 +271,7 @@ impl Picker {
             .map_err(super::invalid)?;
         let Some(prepared) = retained.prepare(
             root,
-            &values,
+            values,
             Vec::new(),
             &windows,
             &resources,
@@ -275,20 +294,12 @@ impl Picker {
         ) {
             return Ok(out);
         }
-        let named: BTreeMap<_, _> = gui::elements(root)
-            .into_iter()
-            .map(|(path, element)| (element.path.clone(), path))
-            .collect();
         for region in &prepared.layout.regions {
             let Some(rect) = gui::region_rect(region, origin) else {
                 continue;
             };
-            let Some(path) = named.get(&region.path) else {
-                continue;
-            };
-            let leaf = path.rsplit('/').next().unwrap_or(path);
-            if let Some(control) = picker_control(leaf, state) {
-                out.controls.push((rect, control));
+            if let Some(control) = self.controls.get(&region.path) {
+                out.controls.push((rect, control.clone()));
             }
         }
         if hovers {
@@ -984,6 +995,47 @@ mod tests {
             all_tooltip: String::new(),
             default_tooltip: String::new(),
         };
+        let mut picker = Picker::default();
+        picker.refresh_values(&state, root);
+        let cached = &picker.values["day_night_toggle"] as *const Widget;
+        picker.refresh_values(&state, root);
+        assert_eq!(&picker.values["day_night_toggle"] as *const Widget, cached);
+        let snapshot = |values: &Values| {
+            values
+                .iter()
+                .map(|(path, widget)| {
+                    (
+                        path.clone(),
+                        widget.frame,
+                        widget.hidden,
+                        widget.enabled,
+                        widget.text.clone(),
+                        widget.sprite.clone(),
+                        widget.tooltip.clone(),
+                        widget.tooltip_description.clone(),
+                        widget.tooltip_shortcut.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            snapshot(&picker.values),
+            snapshot(&picker_values(&state, root))
+        );
+        picker.generation += 1;
+        let changed = State {
+            toggles: Toggles {
+                day_night: Some(true),
+                ..Toggles::default()
+            },
+            ..state
+        };
+        picker.refresh_values(&changed, root);
+        assert_eq!(
+            snapshot(&picker.values),
+            snapshot(&picker_values(&changed, root))
+        );
+        let state = changed;
         let values = picker_values(&state, root);
         let frame = |button, selected| {
             values[&format!("{}/{}", layout_name(false), button_name(button, selected))].frame

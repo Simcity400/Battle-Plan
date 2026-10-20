@@ -1043,7 +1043,7 @@ pub struct Viewer {
     /// Frees the hours the window let go of off the frame path.
     dropper: Option<Arc<Dropper>>,
     // close zoom
-    unit_models: Option<viewer_world::map::unit_models::PreparedModels>,
+    unit_models: Option<Arc<viewer_world::map::unit_models::PreparedModels>>,
     /// Whether the scene holds `unit_models`' field. It does not move within
     /// the hour, so each installed hour uploads it once.
     unit_field_uploaded: bool,
@@ -1780,6 +1780,21 @@ impl Viewer {
         {
             self.rendered_sequence = target.sequence;
         }
+    }
+
+    /// The map mode of the hour on screen: the chosen one ([`Self::map_mode`]) once an hour
+    /// built for it is installed, the previous one while that hour is being built.
+    fn shown_mode(&self) -> &viewer_world::map::map_mode::MapMode {
+        self.placements_at
+            .as_ref()
+            .map_or(&self.map_mode, |(_, _, mode)| mode)
+    }
+
+    /// A previous epoch's picture stays visible while its replacement is built.
+    fn picture_ready(&self) -> bool {
+        self.shown
+            .as_ref()
+            .is_some_and(|shown| shown.error.is_none())
     }
 
     /// Whether the frame drawn answers `target` with a built hour of this
@@ -2732,6 +2747,15 @@ impl Viewer {
         Ok(())
     }
 
+    /// How this view's hovers read: its counter naming, and the recorded sections only its
+    /// diagnostics show.
+    fn hover_style(&self) -> viewer_counter_products::map::counter_tooltips::Style {
+        viewer_counter_products::map::counter_tooltips::Style {
+            nato: self.counter_view.settings.nato,
+            diagnostics: self.diagnostics,
+        }
+    }
+
     fn map_tooltip(
         &mut self,
         document: &Document,
@@ -2851,7 +2875,7 @@ impl Viewer {
                 document.icons.raids.movement_reads(),
                 frame,
                 vision,
-                self.counter_view.settings.nato,
+                self.hover_style(),
             )
             .build_air_base(province, kind, self.air_selection.wings());
             return Some((
@@ -3012,7 +3036,7 @@ impl Viewer {
                 frame,
                 hit,
                 vision,
-                self.counter_view.settings.nato,
+                self.hover_style(),
             );
             let text = if hit.ours
                 && !hit.hidden
@@ -3050,7 +3074,7 @@ impl Viewer {
                 frame,
                 hit,
                 vision,
-                self.counter_view.settings.nato,
+                self.hover_style(),
             );
             return Some((text, self.shown_rect(layer, hit.rect), None));
         }
@@ -3063,7 +3087,7 @@ impl Viewer {
         {
             if !hit.supported { return None; }
             let vision = self.overlay_tables.as_ref()?.3.vision();
-            let text = self.counter_tooltips.request_task_force_port(&document.counter_content, document.icons.raids.movement_reads(), frame, hit, vision, self.counter_view.settings.nato);
+            let text = self.counter_tooltips.request_task_force_port(&document.counter_content, document.icons.raids.movement_reads(), frame, hit, vision, self.hover_style());
             return Some((text, self.shown_rect(layer, hit.rect), None));
         }
         if target.is_some() {
@@ -3103,7 +3127,7 @@ impl Viewer {
             }
         };
         let vision = self.overlay_tables.as_ref()?.3.vision();
-        if self.map_mode
+        if *self.shown_mode()
             == viewer_world::map::map_mode::MapMode::Stock(
                 viewer_world::map::map_mode::Stock::Terrain,
             )
@@ -3114,7 +3138,7 @@ impl Viewer {
             return Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)));
         }
         let mut mode_hover = picker::mode_hover(
-            &self.map_mode,
+            self.shown_mode(),
             document.map_modes.defines.opinion_thresholds(),
             || {
                 document
@@ -3196,18 +3220,47 @@ impl Viewer {
             });
             return Ok(());
         }
-        if self
-            .shown
-            .as_ref()
-            .is_none_or(|shown| shown.epoch != self.epoch)
-        {
-            // The first hour is still being built; keep polling for it.
+        if !self.picture_ready() {
+            // No picture has been built yet; keep polling for it.
+            if profiling() {
+                profile_print(format!(
+                    "PROFILE no_map frame {} epoch {} shown {:?}",
+                    self.profile_frame,
+                    self.epoch,
+                    self.shown.as_ref().map(|shown| shown.epoch),
+                ));
+            }
             self.rendered = None;
             ui.ctx().request_repaint();
             ui.centered_and_justified(|ui| {
                 ui.spinner();
             });
             return Ok(());
+        }
+        let stale_hour = self
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.epoch != self.epoch);
+        let perspective = if stale_hour {
+            self.overlay_tables
+                .as_ref()
+                .expect("installed with the hour")
+                .2
+                .clone()
+        } else {
+            self.perspective.clone()
+        };
+        if stale_hour && profiling() {
+            profile_print(format!(
+                "PROFILE stale_hour frame {} epoch {}",
+                self.profile_frame, self.epoch
+            ));
+        }
+        // What the frame shows of the map mode's layers (counters, convoys, fog, models) is the
+        // mode of the hour on screen, until an hour built for a newly chosen mode replaces it;
+        // the builders were told the chosen one.
+        if let Some((_, _, mode)) = &self.placements_at {
+            self.counter_view.set_mode(mode);
         }
         laps.lap("hour_misc");
         // The screen-space interface's scale. A capture keeps the dump's, 1.0
@@ -3331,7 +3384,7 @@ impl Viewer {
         let engaged = self
             .hours
             .as_ref()
-            .map(|hours| hours.engaged(&self.perspective.country))
+            .map(|hours| hours.engaged(&perspective.country))
             .transpose()
             .map_err(|error| error.to_string())?;
         let animation_time = self
@@ -3348,7 +3401,7 @@ impl Viewer {
                 document.playback.hour(),
                 document.frame(),
                 extent,
-                &self.perspective,
+                &perspective,
                 engaged.as_ref().map(|index| index.shared.as_ref()),
                 self.counter_view.settings.nato,
                 false,
@@ -3706,11 +3759,11 @@ impl Viewer {
                         let key = (
                             document.playback.branch(),
                             document.playback.hour(),
-                            self.perspective.clone(),
+                            perspective.clone(),
                         );
                         if self.walk.stale(&key) {
                             let figure = document
-                                .vision(&self.perspective)
+                                .vision(&perspective)
                                 .and_then(|vision| Ok((document.frame()?, vision.ours())))
                                 .map_err(|error| error.to_string())
                                 .and_then(|(frame, ours)| {
@@ -3837,8 +3890,8 @@ impl Viewer {
         let now = document.hour().map_err(|error| error.to_string())?;
         self.unit_selection.observe(
             document.playback.branch(),
-            &self.perspective.country,
-            now.vision(&self.perspective)
+            &perspective.country,
+            now.vision(&perspective)
                 .map_err(|error| error.to_string())?
                 .ours(),
             now.frame,
@@ -3846,8 +3899,8 @@ impl Viewer {
         self.counter_view.selected = Arc::clone(self.unit_selection.units());
         self.air_selection.observe(
             document.playback.branch(),
-            &self.perspective.country,
-            now.vision(&self.perspective)
+            &perspective.country,
+            now.vision(&perspective)
                 .map_err(|error| error.to_string())?
                 .ours(),
             now.frame,
@@ -3856,8 +3909,8 @@ impl Viewer {
         self.counter_view.air_bases = Arc::clone(self.air_selection.bases());
         self.fleet_selection.observe(
             document.playback.branch(),
-            &self.perspective.country,
-            now.vision(&self.perspective)
+            &perspective.country,
+            now.vision(&perspective)
                 .map_err(|error| error.to_string())?
                 .ours(),
             now.frame,
@@ -3892,8 +3945,13 @@ impl Viewer {
             });
         let hovered_name_region = hovered_name_province
             .map(|province| document.content.counters.region(province).unwrap_or(0));
+        let names_mode = &self
+            .placements_at
+            .as_ref()
+            .expect("installed with the hour")
+            .2;
         let strategic_names = matches!(
-            self.map_mode,
+            names_mode,
             viewer_world::map::map_mode::MapMode::Stock(
                 viewer_world::map::map_mode::Stock::StrategicAir
                     | viewer_world::map::map_mode::Stock::StrategicNavy
@@ -3908,25 +3966,9 @@ impl Viewer {
         );
         self.fade = Some(name_fade);
         self.hovered_name_region = hovered_name_region;
-        // The map mode's layers choose whose names the map writes.
-        let names_key = (
-            document.playback.branch(),
-            document.playback.hour(),
-            self.map_mode.clone(),
-        );
-        if self.placements_at.as_ref() != Some(&names_key) {
-            match now.place_names(&self.map_mode) {
-                Ok(placements) => {
-                    self.placements = Some(Arc::new(placements));
-                    self.placements_at = Some(names_key);
-                }
-                Err(error) => return Err(error.to_string()),
-            }
-        }
         laps.lap("names");
         // counters: one batch carries the bases, the labels, the counters and
         // the combat icons in the map mode's `<table>_PRIORITY_*` order.
-        self.counter_view.set_mode(&self.map_mode);
         let overlay_key = OverlayKey {
             occupation: self.counter_view.occupation,
             operatives: self.counter_view.operatives,
@@ -3935,7 +3977,7 @@ impl Viewer {
             camera: overlay_camera,
             pixels,
             ui_scale,
-            perspective: self.perspective.clone(),
+            perspective: perspective.clone(),
             counter_settings: self.counter_view.settings,
             selected: Arc::clone(self.unit_selection.units()),
             air_selected: Arc::clone(self.air_selection.wings()),
@@ -3964,7 +4006,7 @@ impl Viewer {
             let engaged = self
                 .hours
                 .as_ref()
-                .map(|hours| hours.engaged(&self.perspective.country))
+                .map(|hours| hours.engaged(&perspective.country))
                 .transpose()
                 .map_err(|error| error.to_string())?;
             // An overlay laid out before the engaged index reached its hour, by the
@@ -3990,7 +4032,7 @@ impl Viewer {
             }
             self.raid_lane.show(
                 &document.content,
-                &self.perspective,
+                &perspective,
                 (document.playback.branch(), document.playback.hour()),
                 self.playing,
                 move || ctx.request_repaint(),
@@ -4031,22 +4073,22 @@ impl Viewer {
                 let tables_key = (
                     document.playback.branch(),
                     document.playback.hour(),
-                    self.perspective.clone(),
+                    perspective.clone(),
                 );
-                if engaged_arrived
-                    || self
-                        .overlay_tables
-                        .as_ref()
-                        .is_none_or(|(branch, hour, perspective, _)| {
-                            (*branch, *hour, perspective)
-                                != (tables_key.0, tables_key.1, &tables_key.2)
-                        })
+                if !stale_hour
+                    && (engaged_arrived
+                        || self.overlay_tables.as_ref().is_none_or(
+                            |(branch, hour, perspective, _)| {
+                                (*branch, *hour, perspective)
+                                    != (tables_key.0, tables_key.1, &tables_key.2)
+                            },
+                        ))
                 {
                     // Raid offers are only evaluated on the raid lane: until it
                     // delivers this hour's for this view, no raid icon draws
                     // (`RaidIcons::carried`).
                     let ours = now
-                        .vision(&self.perspective)
+                        .vision(&perspective)
                         .map_err(|error| error.to_string())?
                         .ours();
                     let raids = self
@@ -4054,7 +4096,7 @@ impl Viewer {
                         .icons(tables_key.0, tables_key.1, ours)
                         .unwrap_or_default();
                     let tables = now
-                        .hour_tables_with_raids(&self.perspective, raids, engaged.as_deref())
+                        .hour_tables_with_raids(&perspective, raids, engaged.as_deref())
                         .map_err(|error| error.to_string())?;
                     self.overlay_tables = Some((tables_key.0, tables_key.1, tables_key.2, tables));
                 }
@@ -4147,13 +4189,13 @@ impl Viewer {
             }
             // An explicit fleet choice remains separate from a task-force plate
             // click. Its roster also reaches empty fleets with no map plate.
-            if self.map_mode
+            if *self.shown_mode()
                 == viewer_world::map::map_mode::MapMode::Stock(
                     viewer_world::map::map_mode::Stock::StrategicNavy,
                 )
             {
                 response.context_menu(|ui| {
-                    let choices = now.vision(&self.perspective).and_then(|vision| {
+                    let choices = now.vision(&perspective).and_then(|vision| {
                         viewer_counters::map::naval_selection::fleet_choices(
                             now.frame,
                             vision.ours(),
@@ -4205,7 +4247,7 @@ impl Viewer {
                     {
                         let hit = &self.counter_report.naval_mission_hits[index];
                         let viewer = now
-                            .vision(&self.perspective)
+                            .vision(&perspective)
                             .map_err(|error| error.to_string())?
                             .ours();
                         let members = viewer_counters::map::naval_selection::mission_members(
@@ -4256,7 +4298,7 @@ impl Viewer {
                     {
                         let (province, kind) = self.counter_report.air_base_hits[&index];
                         let viewer = now
-                            .vision(&self.perspective)
+                            .vision(&perspective)
                             .map_err(|error| error.to_string())?
                             .ours();
                         let shift = ui.input(|input| input.modifiers.shift);
@@ -4284,7 +4326,7 @@ impl Viewer {
                     {
                         let hit = &self.counter_report.air_mission_hits[index];
                         let viewer = now
-                            .vision(&self.perspective)
+                            .vision(&perspective)
                             .map_err(|error| error.to_string())?
                             .ours();
                         let members = viewer_counters::map::air_selection::mission_members(
@@ -4343,7 +4385,7 @@ impl Viewer {
             let engaged = self
                 .hours
                 .as_ref()
-                .map(|hours| hours.engaged(&self.perspective.country))
+                .map(|hours| hours.engaged(&perspective.country))
                 .transpose()
                 .map_err(|error| error.to_string())?;
             self.combat.set_playing(self.playing);
@@ -4355,7 +4397,7 @@ impl Viewer {
                     document.playback.hour(),
                     document.frame(),
                     extent,
-                    &self.perspective,
+                    &perspective,
                     engaged.as_ref().map(|index| index.shared.as_ref()),
                     self.counter_view.settings.nato,
                     true,
@@ -4428,8 +4470,12 @@ impl Viewer {
                     *tooltip_refused.entry(reason).or_default() += count;
                 }
             }
-            // Captures inventory reachable counter hovers even when the pointer left the plate.
-            if self.capture.is_some()
+            // Captures inventory reachable counter hovers even when the pointer left the plate,
+            // on the frames they write; a profiled sweep's other frames are the window's own.
+            if self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.remaining == 0)
                 && let crate::playback::Current::Frame(frame) = document.playback.current()
             {
                 let batch = viewer_counter_products::map::counter_tooltips::Batch::new(
@@ -4437,7 +4483,7 @@ impl Viewer {
                     document.icons.raids.movement_reads(),
                     frame,
                     &self.counter_report.perspective,
-                    self.counter_view.settings.nato,
+                    self.hover_style(),
                 );
                 let tooltips = self
                     .counter_report
@@ -4700,7 +4746,7 @@ impl Viewer {
         laps.lap("render");
         if profiling() {
             profile_print(format!(
-                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {}",
+                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {} spans {}",
                 self.profile_frame,
                 document.hour_fraction,
                 camera.height,
@@ -4718,7 +4764,8 @@ impl Viewer {
                 laps.line(),
                 self.scene
                     .as_ref()
-                    .map_or_else(String::new, |scene| scene.detail_laps())
+                    .map_or_else(String::new, |scene| scene.detail_laps()),
+                viewer_foundation::profiling::take_spans(),
             ));
         }
         // A capture waits until every flag and portrait its frame asked for
@@ -5172,6 +5219,23 @@ impl eframe::App for Viewer {
                 {
                     camera.center[0] += dx;
                     camera.height = (camera.height * zoom).clamp(40.0, 900.0);
+                }
+                // `mode:<token>`: the picker's choice of that map mode at the
+                // sweep's start, the switch being measured.
+                if self.profile_frame == sweep_frames.start
+                    && let Some(next) = mode
+                        .strip_prefix("mode:")
+                        .and_then(viewer_world::map::map_mode::MapMode::parse)
+                {
+                    self.choose_map_mode(next);
+                }
+                // `fly`: a `--fly` dump's flight steps by the profiled pace over the
+                // sweep's frames, as a window's clock would run.
+                if mode == "fly"
+                    && profiling_sweep().contains(&self.profile_frame)
+                    && let Some(capture) = self.capture.as_mut()
+                {
+                    capture.time = capture.time.map(|time| time + (1.0 / hz()) as f32);
                 }
             }
             self.lap("profile_sweep");
@@ -6199,6 +6263,57 @@ pub(crate) mod tests {
                 reason: String::new(),
             },
         }
+    }
+
+    #[test]
+    fn a_stale_picture_keeps_drawing_without_claiming_the_new_epoch_is_ready() {
+        let mut viewer = Viewer::create(
+            Config::default(),
+            Options::default(),
+            None,
+            Arc::new(Mutex::new(None)),
+            None,
+            None,
+        );
+        assert!(!viewer.picture_ready());
+        let target = Playhead {
+            branch: 1,
+            hour: 10,
+            fraction: 0.0,
+        };
+        viewer.rendered = Some(target);
+        viewer.shown = Some(ShownHour {
+            epoch: 0,
+            branch: 1,
+            hour: 10,
+            error: None,
+            political_warnings: Vec::new(),
+            plan_warnings: Vec::new(),
+            building_warnings: Vec::new(),
+            model_warnings: Vec::new(),
+            political_summary: (0, 0),
+            political_build: Duration::ZERO,
+            limitations: Default::default(),
+            snow: Default::default(),
+            header: Default::default(),
+            borders: None,
+        });
+        assert!(viewer.picture_ready());
+        assert!(viewer.hour_ready(1, 10));
+        assert!(viewer.presentation_ready(target, false));
+        viewer.epoch = 1;
+        assert!(viewer.picture_ready());
+        assert!(!viewer.hour_ready(1, 10));
+        assert!(!viewer.presentation_ready(target, false));
+        viewer.shown.as_mut().unwrap().epoch = 1;
+        assert!(viewer.picture_ready());
+        assert!(viewer.hour_ready(1, 10));
+        assert!(viewer.presentation_ready(target, false));
+        viewer.animation_seek = true;
+        assert!(viewer.picture_ready());
+        assert!(!viewer.presentation_ready(target, false));
+        viewer.shown.as_mut().unwrap().error = Some("unavailable".into());
+        assert!(!viewer.picture_ready());
     }
 
     /// A capture that waits on the builders for its hour feeds every hour it

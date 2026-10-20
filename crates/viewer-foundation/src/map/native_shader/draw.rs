@@ -355,16 +355,17 @@ pub fn emit(
     // After the 16-float world matrix: `Color`, the offsets, then `Time` and `AnimationTime`
     // ([`SPRITE_TIME`], [`SPRITE_ANIMATION_TIME`]).
     let sprite_tail = |offsets: [f32; 4]| {
-        let mut tail = part.color.to_vec();
-        tail.extend(offsets);
-        tail.extend([part.shading.time, part.shading.animation]);
+        let mut tail = [0.; 10];
+        tail[..4].copy_from_slice(&part.color);
+        tail[4..8].copy_from_slice(&offsets);
+        tail[8..].copy_from_slice(&[part.shading.time, part.shading.animation]);
         debug_assert_eq!(16 + tail.len(), SPRITE_ANIMATION_TIME as usize / 4 + 1);
         tail
     };
     let mut push = |positions: [[f32; 3]; 4],
                     coordinates: [[f32; 2]; 4],
                     matrix: Matrix,
-                    tail: Vec<f32>,
+                    tail: &[f32],
                     colors: Option<([f32; 4], u32)>,
                     textures: Vec<(u32, Option<usize>)>,
                     order: Order| {
@@ -397,11 +398,12 @@ pub fn emit(
                 -(m[1] * x + m[5] * y + m[9] * z + m[13]),
             ]
         });
-        let mut constants = world.to_cols_array().to_vec();
-        constants.extend(tail);
+        let allocation = constant_allocation(kind, part.shading.clocked);
+        let mut constants = Vec::with_capacity(allocation.visible as usize / 4);
+        constants.extend_from_slice(&world.to_cols_array());
+        constants.extend_from_slice(tail);
         // What the draw writes, then the rest of the native allocation, unwritten.
         let known = (constants.len() * 4) as u32;
-        let allocation = constant_allocation(kind, part.shading.clocked);
         debug_assert!(known <= allocation.upload, "{known} > {allocation:?}");
         constants.resize(allocation.visible as usize / 4, 0.);
         let primary = textures
@@ -505,7 +507,7 @@ pub fn emit(
                     [[0.; 3]; 4],
                     [[0.; 2]; 4],
                     translation(*centre, 0.),
-                    vec![],
+                    &[],
                     None,
                     // Bind at most two textures, limited by the technique's sampler-slot count.
                     // An undeclared technique has none.
@@ -561,7 +563,7 @@ pub fn emit(
                 positions,
                 uv(*coordinates),
                 matrix,
-                sprite_tail(*offsets),
+                &sprite_tail(*offsets),
                 None,
                 textures,
                 SPRITE_STRIP,
@@ -595,7 +597,7 @@ pub fn emit(
                 positions,
                 uv(*coordinates),
                 matrix,
-                sprite_tail([0.; 4]),
+                &sprite_tail([0.; 4]),
                 None,
                 textures,
                 SPRITE_STRIP,
@@ -620,10 +622,12 @@ pub fn emit(
             } else {
                 vec![(0, None), (1, None)]
             };
-            let mut tail = colors.concat();
-            tail.push(*state);
+            let mut tail = [0.; 9];
+            tail[..4].copy_from_slice(&colors[0]);
+            tail[4..8].copy_from_slice(&colors[1]);
+            tail[8] = *state;
             let (positions, matrix) = geometry(g);
-            push(positions, *uv, matrix, tail, None, textures, SPRITE_STRIP);
+            push(positions, *uv, matrix, &tail, None, textures, SPRITE_STRIP);
         }
         PartKind::Tiles {
             sprite,
@@ -638,7 +642,7 @@ pub fn emit(
                     points(local, 1.),
                     uv(*coordinates),
                     translation(*native_origin, -1.),
-                    sprite_tail([0.; 4]),
+                    &sprite_tail([0.; 4]),
                     None,
                     vec![(0, Some(texture))],
                     if *cornered {
@@ -671,7 +675,16 @@ pub fn emit(
                 uv([0., 0., 1., 1.]),
                 translation(*native_origin, -1.),
                 // `FlagCoords` followed by 16 zero bytes: all 96 bytes are written.
-                [flag_coords.as_slice(), &[0.; 4]].concat(),
+                &[
+                    flag_coords[0],
+                    flag_coords[1],
+                    flag_coords[2],
+                    flag_coords[3],
+                    0.,
+                    0.,
+                    0.,
+                    0.,
+                ],
                 None,
                 vec![(0, Some(*flag)), (1, Some(mask.texture))],
                 SPRITE_STRIP,
@@ -693,7 +706,7 @@ pub fn emit(
                 points([*x, -y - h, *w, *h], 0.),
                 uv(*coordinates),
                 Matrix::IDENTITY,
-                modulate.to_vec(),
+                modulate,
                 Some(([1.; 4], 0)),
                 vec![(0, Some(texture))],
                 INLINE_STRIP,
@@ -715,7 +728,7 @@ pub fn emit(
                     points([x, -y - height, width, height], 0.),
                     uv(glyph.uv),
                     Matrix::IDENTITY,
-                    modulate.to_vec(),
+                    modulate,
                     Some((glyph.color, *border_color)),
                     vec![(0, Some(glyph.texture))],
                     QUAD_LIST,

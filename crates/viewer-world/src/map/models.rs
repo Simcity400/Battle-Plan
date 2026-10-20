@@ -1547,7 +1547,7 @@ impl ModelField {
                     )
                 }),
         );
-        keyed.sort_by_key(|entry| entry.0);
+        keyed.sort_unstable_by_key(|entry| (entry.0, entry.2));
         let field = self;
         field.instances.clear();
         field.groups.clear();
@@ -1654,6 +1654,9 @@ pub struct ModelPass {
     material_refusals: BTreeMap<usize, String>,
     meshes: Vec<ModelMesh>,
     field: ModelField,
+    /// Placement and live-player keys, rebuilt in retained storage each frame.
+    keyed: Vec<KeyedInstance>,
+    alive: Vec<(usize, u32, u32)>,
     drawn: Cell<u32>,
     refusals: RefCell<(u64, ActorRefusals)>,
     /// Actor poses by instance for one arena frame: animation happens before encoding, so
@@ -1870,20 +1873,18 @@ impl ModelPass {
     }
 
     /// Replaces placements while preserving the players of surviving actors.
-    pub fn update_placed(&mut self, placed: Vec<(usize, ModelInstance)>, tile: f32) {
-        let placed: Vec<_> = placed
-            .into_iter()
-            .map(|(mesh, instance)| (self.drawn_slot(mesh), instance))
-            .collect();
-        let alive: BTreeSet<_> = placed
-            .iter()
-            .map(|(mesh, instance)| {
-                let (seed, identity) = instance.animation_key();
-                (*mesh, seed, identity)
-            })
-            .collect();
+    pub fn update_placed(&mut self, mut placed: Vec<(usize, ModelInstance)>, tile: f32) {
+        for (mesh, _) in &mut placed {
+            *mesh = self.drawn_slot(*mesh);
+        }
+        self.alive.clear();
+        self.alive.extend(placed.iter().map(|(mesh, instance)| {
+            let (seed, identity) = instance.animation_key();
+            (*mesh, seed, identity)
+        }));
+        self.alive.sort_unstable();
         self.players.retain(|key, _| {
-            alive.contains(key)
+            self.alive.binary_search(key).is_ok()
                 || self
                     .field
                     .clocks
@@ -1891,7 +1892,9 @@ impl ModelPass {
                     .is_some_and(|clock| clock.phase.is_some())
         });
         self.events.clear();
-        self.field = ModelField::build_meshes(&self.meshes, placed, tile);
+        self.field.default_states.clear();
+        self.field
+            .rebuild_meshes(&self.meshes, &mut placed, &mut self.keyed, tile);
     }
 
     /// Installs a producer's whole field, which needs no GPU; `field` receives the previous one,
@@ -1928,6 +1931,8 @@ impl ModelPass {
             material_refusals: BTreeMap::new(),
             meshes: library.meshes.clone(),
             field: ModelField::default(),
+            keyed: Vec::new(),
+            alive: Vec::new(),
             drawn: Cell::new(0),
             refusals: Default::default(),
             poses: Default::default(),

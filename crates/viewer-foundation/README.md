@@ -12,6 +12,8 @@ The crate also owns shared engagement and retained-icon history reads, shared re
 
 Content comes from installed-content and recorded tables from replay. The crate has no dependency on viewer or its feature implementations. The host owns ordered asset loading, aggregate view state, documents and control of the recording-wide engagement pass.
 
+Flag candidates can be warmed on hour workers through `LazyFlags::warm`, including unreadable-file decisions. Warming caches images without allocating atlas cells; draw requests still pack the same sorted batches, preserving cell positions and UV rounding. `acquire` consumes warmed images or synchronously decides any unwarmed candidates before resolving, so a counter never draws a stand-in for undecoded artwork. Cached images move into atlas pages on demand; storage follows the candidates of built recording hours, not every installed flag.
+
 [Resource origins](src/resource_origins.rs) answer what the resources map mode reads of an hour: which states carry a resource icon, whose origin each resource reads under resource rights, and each resource's nominal and delivered amounts from the recorded origins, rights, oil factors, temporary resources and the shared state resource operands; the resource icons and the resources mode's hover both use them.
 
 Finalized stack-anchor lookup is shared by counter grids and selected movement products, preserving authored slots, victory-point inheritance and seeded defaults.

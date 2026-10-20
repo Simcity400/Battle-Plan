@@ -45,17 +45,26 @@ use {
     viewer_foundation::map::perspective::Vision, viewer_foundation::tooltip_text::Tooltip,
 };
 
+/// How a hover reads: the counters' NATO naming, and whether the map's diagnostics add the
+/// recorded template, garrison, HQ deployment and naval management sections, which the game's
+/// own hover does not show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Style {
+    pub nato: bool,
+    pub diagnostics: bool,
+}
+
 #[derive(Default)]
 pub struct Cache {
-    held: Option<(CounterHover, bool, Arc<Tooltip>)>,
+    held: Option<(CounterHover, Style, Arc<Tooltip>)>,
     naval: Option<(
         viewer_foundation::map::counter_hovers::task_force::Hover,
-        bool,
+        Style,
         Arc<Tooltip>,
     )>,
     port: Option<(
         viewer_foundation::map::counter_hovers::task_force_port::Hover,
-        bool,
+        Style,
         Arc<Tooltip>,
     )>,
     source: Option<(
@@ -73,14 +82,14 @@ impl Cache {
         frame: &Arc<DecodedFrame>,
         hover: &CounterHover,
         vision: &Arc<Vision>,
-        nato: bool,
+        style: Style,
     ) -> Arc<Tooltip> {
         if let Some((held_content, held_frame, held_vision)) = &self.source
             && Arc::ptr_eq(content, held_content)
             && Arc::ptr_eq(frame, held_frame)
             && Arc::ptr_eq(vision, held_vision)
-            && let Some((held, held_nato, text)) = &self.held
-            && *held_nato == nato
+            && let Some((held, held_style, text)) = &self.held
+            && *held_style == style
             && held.control == hover.control
             && held.members == hover.members
             && held.timing == hover.timing
@@ -93,11 +102,11 @@ impl Cache {
         {
             return Arc::clone(text);
         }
-        let text = Arc::new(build(content, reads, frame, hover, vision, nato));
+        let text = Arc::new(build(content, reads, frame, hover, vision, style));
         self.naval = None;
         self.port = None;
         self.source = Some((Arc::clone(content), Arc::clone(frame), Arc::clone(vision)));
-        self.held = Some((hover.clone(), nato, Arc::clone(&text)));
+        self.held = Some((hover.clone(), style, Arc::clone(&text)));
         text
     }
 
@@ -108,14 +117,14 @@ impl Cache {
         frame: &Arc<DecodedFrame>,
         hover: &viewer_foundation::map::counter_hovers::task_force::Hover,
         vision: &Arc<Vision>,
-        nato: bool,
+        style: Style,
     ) -> Arc<Tooltip> {
         if let Some((held_content, held_frame, held_vision)) = &self.source
             && Arc::ptr_eq(content, held_content)
             && Arc::ptr_eq(frame, held_frame)
             && Arc::ptr_eq(vision, held_vision)
-            && let Some((held, held_nato, text)) = &self.naval
-            && *held_nato == nato
+            && let Some((held, held_style, text)) = &self.naval
+            && *held_style == style
             && held.control == hover.control
             && held.members == hover.members
             && held.coarse == hover.coarse
@@ -126,11 +135,11 @@ impl Cache {
             return Arc::clone(text);
         }
         let text =
-            Arc::new(Batch::new(content, reads, frame, vision, nato).build_task_force(hover));
+            Arc::new(Batch::new(content, reads, frame, vision, style).build_task_force(hover));
         self.held = None;
         self.port = None;
         self.source = Some((Arc::clone(content), Arc::clone(frame), Arc::clone(vision)));
-        self.naval = Some((hover.clone(), nato, Arc::clone(&text)));
+        self.naval = Some((hover.clone(), style, Arc::clone(&text)));
         text
     }
 
@@ -141,14 +150,14 @@ impl Cache {
         frame: &Arc<DecodedFrame>,
         hover: &viewer_foundation::map::counter_hovers::task_force_port::Hover,
         vision: &Arc<Vision>,
-        nato: bool,
+        style: Style,
     ) -> Arc<Tooltip> {
         if let Some((held_content, held_frame, held_vision)) = &self.source
             && Arc::ptr_eq(content, held_content)
             && Arc::ptr_eq(frame, held_frame)
             && Arc::ptr_eq(vision, held_vision)
-            && let Some((held, held_nato, text)) = &self.port
-            && *held_nato == nato
+            && let Some((held, held_style, text)) = &self.port
+            && *held_style == style
             && held.control == hover.control
             && held.members == hover.members
             && held.metadata == hover.metadata
@@ -157,11 +166,11 @@ impl Cache {
             return Arc::clone(text);
         }
         let text =
-            Arc::new(Batch::new(content, reads, frame, vision, nato).build_task_force_port(hover));
+            Arc::new(Batch::new(content, reads, frame, vision, style).build_task_force_port(hover));
         self.held = None;
         self.naval = None;
         self.source = Some((Arc::clone(content), Arc::clone(frame), Arc::clone(vision)));
-        self.port = Some((hover.clone(), nato, Arc::clone(&text)));
+        self.port = Some((hover.clone(), style, Arc::clone(&text)));
         text
     }
 }
@@ -214,6 +223,8 @@ fn append_facts(
 
 struct Context<'a> {
     nato: bool,
+    /// Whether the recorded sections the game's hover lacks are shown ([`Style::diagnostics`]).
+    diagnostics: bool,
     content: Option<&'a counter_content::Content>,
     reads: Option<viewer_foundation::map::movement_reads::ReadOperands<'a>>,
     dig_in_factor: Result<i64, String>,
@@ -842,9 +853,9 @@ pub fn build(
     frame: &DecodedFrame,
     input: &CounterHover,
     vision: &Vision,
-    nato: bool,
+    style: Style,
 ) -> Tooltip {
-    Batch::new(content, reads, frame, vision, nato).build(input)
+    Batch::new(content, reads, frame, vision, style).build(input)
 }
 
 /// Counter inventory shares lazy arrival indexes for its immutable frame.
@@ -859,10 +870,11 @@ impl<'a> Batch<'a> {
         reads: viewer_foundation::map::movement_reads::ReadOperands<'a>,
         frame: &'a DecodedFrame,
         vision: &'a Vision,
-        nato: bool,
+        style: Style,
     ) -> Self {
         let context = Context {
-            nato,
+            nato: style.nato,
+            diagnostics: style.diagnostics,
             content: Some(content),
             reads: Some(reads),
             dig_in_factor: content.dig_in_factor.clone(),
@@ -1264,7 +1276,9 @@ fn build_divisions(
         Err(reason) => refuse(&mut out, "intel header/stat eligibility", reason),
     }
     context.hq(&mut out, &[first]);
-    context.template_sections(&mut out, &members);
+    if context.diagnostics {
+        context.template_sections(&mut out, &members);
+    }
     children::append(context, input, &mut out);
     // Header fragments terminate their lines; the painter supplies the newline before its divider.
     if !out.body.is_empty() && out.title.ends_with('\n') {
@@ -1322,6 +1336,32 @@ mod tests {
             "HQ target template: 52",
         ] {
             assert!(tooltip.body.contains(fact), "{}", tooltip.body);
+        }
+    }
+
+    #[test]
+    fn division_hover_shows_recorded_template_facts_only_with_diagnostics() {
+        let frame = template_facts::fixture();
+        let loc = loc();
+        let names = installed_content_division_names::division_names::Database::default();
+        let units = Err("not needed for shared template facts".to_owned());
+        let vision = Vision::sharing(1, []);
+        let context = Context {
+            diagnostics: false,
+            ..context(&frame, &loc, &vision, &names, &units)
+        };
+        let tooltip = template_hover(&context);
+        for section in [
+            "Template settings and layout",
+            "Garrison and staff templates",
+            "HQ deployment",
+        ] {
+            assert!(!tooltip.body.contains(section), "{}", tooltip.body);
+            assert!(
+                tooltip.refused.keys().all(|line| !line.contains(section)),
+                "{:?}",
+                tooltip.refused
+            );
         }
     }
 
@@ -1870,6 +1910,7 @@ mod tests {
     ) -> Context<'a> {
         Context {
             nato: false,
+            diagnostics: true,
             content: None,
             reads: None,
             dig_in_factor: Err("unused".into()),

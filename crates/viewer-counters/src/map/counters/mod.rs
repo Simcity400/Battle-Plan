@@ -32,7 +32,6 @@
 //! columns ([`crate::map::counter_groups`]); source and pool history belongs to each view.
 
 use std::cell::RefCell;
-use std::sync::Mutex;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -2588,7 +2587,7 @@ pub struct CounterFrame {
     /// Base, naval-HQ and facility glyphs, drawn before the victory-point labels.
     pub bases: Batch,
     native_bases: base_windows::PreparedBases,
-    native_air: air_missions::Prepared,
+    native_air: Option<Arc<air_missions::Prepared>>,
     /// Priority 3 port items; the columns of priority-10 counters are laid out per frame by
     /// [`PreparedCounters::draw`].
     pub counters: Batch,
@@ -2689,13 +2688,46 @@ pub struct HourTables {
     /// `ArmyIconInputs` by division.
     icon_inputs: BTreeMap<u64, replay_data::rows::ArmyIconInputRow>,
     task_forces: TaskForceMotions,
+    divisions: DivisionCounters,
     base_icons: BaseIcons,
+    bases: BaseTables,
+    naval: NavalTables,
+    ports: PortTables,
+    ideologies: BTreeMap<u32, Result<Option<i32>, String>>,
+    air_missions: Arc<air_missions::Prepared>,
     missions: Arc<MissionIcons>,
     /// Each owner's type-icon relation to the viewing country.
     type_tints: Arc<type_tint::Index>,
 }
 
 impl HourTables {
+    /// Decides every counter-size flag candidate on the caller's hour worker.
+    /// Drawing still acquires any candidate that has not been warmed.
+    pub fn warm_flags(&self, assets: &CounterAssets) {
+        self.countries.warm_flags(assets);
+    }
+
+    fn land(&self) -> CounterTables<'_> {
+        CounterTables {
+            type_tints: &self.type_tints,
+            countries: &self.countries,
+            icons: &self.icons,
+            status: &self.status,
+            movement: &self.movement,
+            actions: &self.actions,
+            vision: &self.vision,
+            order: self.order.as_ref(),
+            native: &self.native,
+            orders: &self.orders,
+            guns: &self.guns,
+            abilities: &self.abilities,
+            hq_providers: &self.hq_providers,
+            portraits: &self.portraits,
+            icon_inputs: &self.icon_inputs,
+            task_forces: &self.task_forces,
+        }
+    }
+
     /// Camera-independent regional source products, with complete ledger coverage.
     pub fn naval_dominance_sources(
         &self,
@@ -2737,8 +2769,11 @@ pub fn hour_tables(
     map: &MapData,
     vision: Arc<Vision>,
     content: &CounterContent,
+    assets: &CounterAssets,
+    equipment: Result<&installed_content_core::equipment::Database, &str>,
+    localisation: &installed_content_localisation::localisation::Localisation,
     etas: &Etas,
-    movement: Option<&MovementContent>,
+    movement_content: Option<&MovementContent>,
     engaged: Option<&History>,
     type_tints: &type_tint::Memo,
     mission_memo: &MissionMemo,
@@ -2823,7 +2858,7 @@ pub fn hour_tables(
         &hostility,
         content.subunit_tokens.as_ref().map_err(String::as_str),
     )?;
-    let movement = Movements::read(frame, etas, movement, content)?;
+    let movement = Movements::read(frame, etas, movement_content, content)?;
     let actions = counter_action::Actions::read(frame, &hostility, Some(vision.ours()))?;
     let index = engaged;
     let engaged = CombatFlags::read(
@@ -2919,7 +2954,33 @@ pub fn hour_tables(
         .map(|group| group.hq_provider)
         .collect();
     let type_tints = type_tint::Index::read(type_tints, frame, &links, vision.ours());
-    Ok(HourTables {
+    let mut tables = HourTables {
+        divisions: BTreeMap::new(),
+        ports: PortTables::default(),
+        naval: NavalTables::read(frame, &vision)?,
+        ideologies: rows::<tables::TaskForces>(frame)?
+            .rows()
+            .iter()
+            .filter_map(|force| links.get(&force.logical_owner).copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|slot| {
+                (
+                    slot,
+                    naval::ideology_frame(frame, &content.ideologies, &country_ids, slot),
+                )
+            })
+            .collect(),
+        bases: BaseTables::read(frame, &vision, content)?,
+        air_missions: Arc::new(air_missions::Prepared::read(
+            &air_missions::HourInputs {
+                content,
+                assets,
+                localisation,
+            },
+            frame,
+            &vision,
+        )?),
         base_icons,
         missions,
         portraits: hq_portraits(frame, &native)?,
@@ -2952,7 +3013,32 @@ pub fn hour_tables(
         abilities,
         task_forces: TaskForceMotions::read(frame)?,
         type_tints,
-    })
+    };
+    tables.divisions = division_counters(
+        frame,
+        &|raw| tables.links.get(&raw).copied(),
+        &tables.land(),
+    )?;
+    let ideology = |slot: u32| tables.ideologies[&slot].clone();
+    let sources = NavalSources {
+        type_tints: &tables.type_tints,
+        equipment,
+        vision: &tables.vision,
+        native: &tables.native,
+        country_ids: &tables.country_ids,
+        aggression: &content.aggression,
+        ideology: &ideology,
+    };
+    tables.ports = PortTables::read(
+        frame,
+        content,
+        map,
+        movement_content,
+        &tables.land(),
+        &NavalContext::cached(frame, sources, &tables.naval)?,
+        &|raw| tables.links.get(&raw).copied(),
+    )?;
+    Ok(tables)
 }
 
 pub fn prepare_cached(
@@ -2986,40 +3072,18 @@ pub fn prepare_cached(
         extents: &tables.extents,
     };
 
-    let land = CounterTables {
-        type_tints: &tables.type_tints,
-        countries: &tables.countries,
-        icons: &tables.icons,
-        status: &tables.status,
-        movement: &tables.movement,
-        actions: &tables.actions,
-        vision: &tables.vision,
-        order: tables.order.as_ref(),
-        native: &tables.native,
-        orders: &tables.orders,
-        guns: &tables.guns,
-        abilities: &tables.abilities,
-        hq_providers: &tables.hq_providers,
-        portraits: &tables.portraits,
-        icon_inputs: &tables.icon_inputs,
-        task_forces: &tables.task_forces,
-    };
+    let land = tables.land();
 
     faction_pings(inputs, &tables.pings, &mut out);
+    let span = viewer_foundation::profiling::span("pc_bases");
     bases(inputs, frame, tables, &mut out)?;
-    out.native_air = air_missions::Prepared::read(inputs, frame, &tables.vision)?;
-    // `counter_ideology`'s frame per logical owner, decided once an hour.
-    let ideologies = Mutex::new(BTreeMap::new());
-    let ideology = |slot: u32| {
-        ideologies
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(slot)
-            .or_insert_with(|| {
-                naval::ideology_frame(frame, &inputs.content.ideologies, &tables.country_ids, slot)
-            })
-            .clone()
-    };
+    drop(span);
+    let span = viewer_foundation::profiling::span("pc_air");
+    if inputs.visibility.priorities == PriorityTable::StrategicAir {
+        out.native_air = Some(Arc::clone(&tables.air_missions));
+    }
+    drop(span);
+    let ideology = |slot: u32| tables.ideologies[&slot].clone();
     let sources = NavalSources {
         type_tints: &tables.type_tints,
         equipment: inputs.equipment,
@@ -3029,7 +3093,10 @@ pub fn prepare_cached(
         aggression: &inputs.content.aggression,
         ideology: &ideology,
     };
-    let naval = NavalContext::read(units_shown(inputs, tables.peace_conference), frame, sources)?;
+    let span = viewer_foundation::profiling::span("pc_naval_context");
+    let context = NavalContext::cached(frame, sources, &tables.naval)?;
+    let naval = units_shown(inputs, tables.peace_conference).then_some(&context);
+    drop(span);
     // The naval map-icon windows' plan names every task force the hour holds: a counter at sea
     // whose source is gone is destroyed by the presented frame, never here.
     if let Some(naval) = &naval {
@@ -3039,12 +3106,21 @@ pub fn prepare_cached(
         });
     }
     out.naval.countries = Some(Arc::clone(&tables.countries));
+    let span = viewer_foundation::profiling::span("pc_land");
     let prepared_land = match &naval {
         Some(naval) => Some(land_counters(
-            inputs, frame, &owner, &land, naval, &geography, &friendly, &mut out,
+            inputs,
+            &tables.divisions,
+            &owner,
+            &land,
+            naval,
+            &geography,
+            &friendly,
+            &mut out,
         )?),
         None => None,
     };
+    drop(span);
     if inputs.visibility.priorities == PriorityTable::StrategicAir
         && let (Some(land), Some(naval)) = (&prepared_land, &naval)
     {
@@ -3066,15 +3142,18 @@ pub fn prepare_cached(
         }
     }
     out.report.grouping_gaps = grouping_gaps.into_inner();
+    let span = viewer_foundation::profiling::span("pc_ports");
     port_counters(
         inputs,
         frame,
         &owner,
         &land,
-        naval.as_ref(),
+        naval,
         &tables.base_icons.naval,
+        &tables.ports,
         &mut out,
     )?;
+    drop(span);
     land_combats(inputs, &tables.land_combats, &mut out)?;
     // Combat and result passes use their own presentation flags and do not read the
     // peace-conference flag, so they remain outside the unit-source gate.
@@ -3084,7 +3163,7 @@ pub fn prepare_cached(
         &MarkerContext {
             vision: &tables.vision,
             owner: &owner,
-            naval: naval.as_ref().ok_or(sources),
+            naval: Ok(&context),
             countries: &tables.countries,
             flags: &tables.engaged,
         },
@@ -3097,7 +3176,7 @@ pub fn prepare_cached(
         frame,
         &tables.vision,
         &owner,
-        naval.as_ref().ok_or(sources),
+        Ok(&context),
         &tables.countries,
         &mut out,
     )?;
@@ -3175,6 +3254,7 @@ impl PreparedCounters {
         combats.clear();
         report.assign_all_but_flags(&fixed.report);
         missing_owners.clear();
+        let span = viewer_foundation::profiling::span("dc_pings");
         fixed.native_pings.draw(
             inputs,
             pings,
@@ -3183,6 +3263,8 @@ impl PreparedCounters {
             &mut fixed.pings,
             report,
         );
+        drop(span);
+        let span = viewer_foundation::profiling::span("dc_bases");
         fixed.native_bases.draw(
             inputs,
             bases,
@@ -3191,7 +3273,9 @@ impl PreparedCounters {
             &mut fixed.bases,
             report,
         );
+        drop(span);
         let mut at_sea = Vec::new();
+        let span = viewer_foundation::profiling::span("dc_land_combats");
         fixed.native_land_combats.draw(
             inputs,
             land_combats,
@@ -3200,12 +3284,16 @@ impl PreparedCounters {
             &mut fixed.combats,
             report,
         );
+        drop(span);
+        let span = viewer_foundation::profiling::span("dc_land");
         let columns = match land.as_mut() {
             Some(land) => land.draw(inputs, batch, report, missing_owners, &mut at_sea)?,
             None => Vec::new(),
         };
+        drop(span);
         // The presented frame runs the naval windows' lifecycle once, on this view's windows.
         {
+            let _span = viewer_foundation::profiling::span("dc_naval");
             let plates: Vec<_> = at_sea
                 .iter()
                 .filter_map(|plate| {
@@ -3231,9 +3319,16 @@ impl PreparedCounters {
             )?;
         }
         batch.quads.extend_from_slice(&fixed.counters.quads);
-        fixed
-            .native_air
-            .draw(inputs, time, &mut naval.air_missions, combats, report);
+        let span = viewer_foundation::profiling::span("dc_air");
+        let empty_air = air_missions::Prepared::default();
+        fixed.native_air.as_deref().unwrap_or(&empty_air).draw(
+            inputs,
+            time,
+            &mut naval.air_missions,
+            combats,
+            report,
+        );
+        drop(span);
         missing_owners.sort_unstable();
         missing_owners.dedup();
         let tags = land.as_ref().map(|land| &land.countries.tags);
@@ -3439,6 +3534,19 @@ impl Countries {
                 colors.gap
             )
         })
+    }
+
+    /// Decide the hour's candidates at every counter size, off the frame path.
+    fn warm_flags(&self, assets: &CounterAssets) {
+        let keys: BTreeSet<String> = self
+            .tags
+            .keys()
+            .filter_map(|&slot| self.flag_keys(slot))
+            .flatten()
+            .collect();
+        for flags in [&assets.flags, &assets.medium_flags, &assets.large_flags] {
+            flags.warm(keys.iter().map(String::as_str));
+        }
     }
 
     /// Decide every candidate before its first frame draws.

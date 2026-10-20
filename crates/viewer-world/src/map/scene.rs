@@ -3064,6 +3064,25 @@ impl Scene {
                     object.forget_pixel_snapshot();
                 }
                 object.begin();
+                // These layers share attachments and never sample the scene between them.
+                // Each layer still applies its own complete draw state and retained binds.
+                let mut mesh_pass = mesh_layers
+                    .iter()
+                    .any(|(model, enabled, _, _)| {
+                        *enabled && model.is_some_and(ModelPass::has_placements)
+                    })
+                    .then(|| {
+                        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("model layers"),
+                            color_attachments: &[Some(
+                                targets.scene_attachment(wgpu::LoadOp::Load),
+                            )],
+                            depth_stencil_attachment: Some(
+                                targets.depth_attachment(wgpu::LoadOp::Load),
+                            ),
+                            ..Default::default()
+                        })
+                    });
                 for (model, enabled, alpha, label) in mesh_layers {
                     if let Some(model) = model.filter(|_| enabled) {
                         let frame = ModelFrame {
@@ -3072,31 +3091,33 @@ impl Scene {
                             visible: actor_visible,
                             alpha,
                         };
-                        model.draw_native(
-                            arena,
-                            &mut encoder,
-                            targets,
-                            ModelFrame {
-                                offsets: &actor_offsets[view..view + 1],
-                                visible: if label == "map_frame_mesh" {
-                                    None
-                                } else {
-                                    frame.visible
+                        if let Some(pass) = &mut mesh_pass {
+                            model.record_native(
+                                arena,
+                                pass,
+                                ModelFrame {
+                                    offsets: &actor_offsets[view..view + 1],
+                                    visible: if label == "map_frame_mesh" {
+                                        None
+                                    } else {
+                                        frame.visible
+                                    },
+                                    ..frame
                                 },
-                                ..frame
-                            },
-                            crate::map::models::NativeInputs {
-                                frames: &actor_frame_bytes[view..view + 1],
-                                ..native_mesh_inputs
-                            },
-                            native_queue,
-                            &mut object,
-                        )?;
+                                crate::map::models::NativeInputs {
+                                    frames: &actor_frame_bytes[view..view + 1],
+                                    ..native_mesh_inputs
+                                },
+                                native_queue,
+                                &mut object,
+                            )?;
+                        }
                         #[cfg(any(test, feature = "test-support"))]
                         faults.after(failure_tests::Point::Models)?;
                     }
-                    mark(&mut encoder, label);
                 }
+                drop(mesh_pass);
+                mark(&mut encoder, "model_layers");
                 if native_queue == crate::map::models::NativeQueue::Alternate {
                     // In each admitted view the native order is meshes, then
                     // animated world text, then particles.

@@ -43,7 +43,7 @@ For Air/Navy name comparisons, `--province-hover <id>` also supplies the dump's 
 
 ### Diagnostics
 
-Diagnostics default off. The host owns the choice: Ctrl+F3 in a map asks the host to toggle it (F3 alone selects the air map mode, as in the game), and the host sends the result to every map; `--diagnostics` enables one run. Hidden diagnostics build no frame text. Dumps, window dumps, host exports, `--counters-json` and on-demand `MapDetails` always report limitations, lazy uncovered reads and reachable counter-hover refusals; dump warnings use stderr.
+Diagnostics default off. The host owns the choice: Ctrl+F3 in a map asks the host to toggle it (F3 alone selects the air map mode, as in the game), and the host sends the result to every map; `--diagnostics` enables one run. Hidden diagnostics build no frame text, and hovers show only what the game's do: the recorded template, garrison, HQ deployment and naval management sections division and task-force hovers add appear only with diagnostics on. Dumps, window dumps, host exports, `--counters-json` and on-demand `MapDetails` always report limitations, lazy uncovered reads and reachable counter-hover refusals; dump warnings use stderr.
 
 Partial recordings play verified prefixes with always-visible failure status; only known failed hours become gaps. The host's diagnostics list recorded event losses (a same-process reattach) over the interval leading to their second read, whose recorded events are incomplete, and the gaps. Unavailable recording inputs remain distinct from zero/empty and refuse only dependent features.
 
@@ -176,6 +176,8 @@ and index/branch/session/gap metadata without rereading compressed block bytes.
 
 [hours.rs](src/hours.rs) builds simulation layers off frames, with read-ahead Campaign map/source-shared widget decoding and one bounded pool per native root. Views cancel independently. [parallel.rs](../viewer-foundation/src/parallel.rs) preserves input order at process parallelism; raid batches borrow idle builder turns.
 
+Before publishing an hour, its overlay worker warms the recorded countries' counter flag candidates at all three sizes. Exports warm the same candidates before laying out their frame; UI table refreshes do not warm. Decoding is cached separately from draw-request atlas packing, preserving cell positions while pans and coarse-plate changes consume already decoded artwork. Drawing still synchronously decides any unwarmed request, so a frame never draws an undecoded flag's stand-in.
+
 Playback keeps speed when builders lag. Show the playhead hour if ready, otherwise the newest built hour before it, all layers/date together. Finish in-flight hours at/before the playhead. Paused seeks, captures and exports await the exact hour. Coalescing preserves playing state/seek counter; hour distance cannot identify a seek.
 
 [presentation.rs](../viewer-foundation/src/map/presentation.rs) separates continuity from unit recreation:
@@ -302,7 +304,7 @@ CPU GUI checks use synthetic technique, sampler, blend and clock metadata. Insta
 
 | Profiling switch | Use |
 |---|---|
-| `BATTLE_PLAN_VIEWER_PROFILE` | CPU laps; `--window-dump` sweeps: `play:<hours/s>`, `pan:<units/s>`, `zoom:<factor/s>`, `hours`, `seek_end`. |
+| `BATTLE_PLAN_VIEWER_PROFILE` | CPU laps and the icon layer's layout (`p_*`, `pc_*`) and draw (`d_*`, `dc_*`) spans; `--window-dump` sweeps: `play:<hours/s>`, `pan:<units/s>`, `zoom:<factor/s>`, `mode:<token>` (the picker's switch at the sweep's start), `fly` (a `--fly` dump's flight at the profiled pace), `hours`, `seek_end`. |
 | `BATTLE_PLAN_VIEWER_PROFILE_HZ`, `BATTLE_PLAN_VIEWER_PROFILE_SWEEP` | Sweep pace/length. |
 | `BATTLE_PLAN_VIEWER_NO_VSYNC`, `BATTLE_PLAN_VIEWER_GPU_WAIT` | Uncapped presentation; GPU drain. |
 | `BATTLE_PLAN_VIEWER_GPU_PASSES` | Frame-correlated pass timestamps; measure frames separately because collection waits. |

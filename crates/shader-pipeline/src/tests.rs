@@ -657,6 +657,65 @@ Effect Mod { VertexShader = V PixelShader = P }
         .unwrap();
     assert!(std::sync::Arc::ptr_eq(&pipeline, &second));
     assert_eq!(cache.created, 1);
+    // Packed state hits must agree with the complete-pass cache, including sampler bits.
+    for variant in 0..6 {
+        let mut changed = state.clone();
+        let mut format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut samples = 1;
+        let mut topology = wgpu::PrimitiveTopology::TriangleList;
+        match variant {
+            0 => changed.write_mask = wgpu::ColorWrites::RED,
+            1 => changed.blend = Some(wgpu::BlendState::ALPHA_BLENDING),
+            2 => format = wgpu::TextureFormat::Rgba8UnormSrgb,
+            3 => samples = 4,
+            4 => topology = wgpu::PrimitiveTopology::TriangleStrip,
+            _ => {
+                changed.samplers.insert(
+                    0,
+                    installed_content_core::pdxshader::program::Sampler {
+                        name: "unused".into(),
+                        index: 0,
+                        cube: false,
+                        mag: installed_content_core::pdxshader::program::Filter::Point,
+                        min: installed_content_core::pdxshader::program::Filter::Point,
+                        mip: installed_content_core::pdxshader::program::Filter::Point,
+                        u: installed_content_core::pdxshader::Address::Clamp,
+                        v: installed_content_core::pdxshader::Address::Clamp,
+                        w: installed_content_core::pdxshader::Address::Wrap,
+                        lod_bias: -0.0,
+                        min_lod: 0,
+                        max_lod: 1000,
+                    },
+                );
+            }
+        }
+        let selected = cache
+            .get(&device, &selection, &changed, format, samples, topology)
+            .unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&pipeline, &selected));
+        let compiled = selection.effect.compiled(selection.index).unwrap();
+        let mut pass = gpu::Pass::packed(&compiled, &changed, format, samples);
+        pass.primitive.topology = topology;
+        assert!(std::sync::Arc::ptr_eq(
+            &selected,
+            &cache
+                .get_pass(&device, &selection, &changed, &pass)
+                .unwrap()
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            &pipeline,
+            &cache
+                .get(
+                    &device,
+                    &selection,
+                    &state,
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    1,
+                    wgpu::PrimitiveTopology::TriangleList
+                )
+                .unwrap()
+        ));
+    }
     let mut c0 = vec![0_f32; 20];
     for i in [0, 5, 10, 15] {
         c0[i] = 1.0;

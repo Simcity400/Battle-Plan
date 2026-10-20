@@ -32,7 +32,7 @@
 //! [`Calls::apply`]. Background jobs never share an instance.
 
 use super::*;
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 /// One presented frame of the view.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -339,7 +339,7 @@ impl Runtime {
 /// setter calls it is (from 1).
 #[derive(Clone, Debug, PartialEq)]
 struct Made {
-    sprite: Vec<u8>,
+    sprite: Arc<[u8]>,
     setter: SpriteSetter,
     made: u32,
 }
@@ -506,6 +506,8 @@ struct Node {
     made: Option<Made>,
     made_count: u32,
     events: Vec<Event>,
+    /// Whether this frame's ordered calls played the current drawable.
+    played: bool,
     /// What the game keeps on the drawable it shows ([`Runtime`]).
     runtime: Option<Runtime>,
 }
@@ -531,6 +533,7 @@ impl Node {
             made: None,
             made_count: 0,
             events: Vec::new(),
+            played: false,
             runtime: None,
         }
     }
@@ -578,6 +581,13 @@ pub struct Instance {
     /// The template's root path and element count: the instance answers only its own template.
     template: String,
     count: usize,
+    /// The immutable template's authored traversal and element lookup.
+    tree: Arc<Tree>,
+    /// Text boxes whose scrollbar must observe every text write in order.
+    text_boxes: Vec<usize>,
+    /// Drawables whose frame clock or pulse can advance, including text-only buttons
+    /// whose current text decides whether they have a fallback drawable.
+    clock_nodes: Vec<usize>,
     /// The GUI viewport (`graphics state`).
     viewport: [i32; 2],
     nodes: Vec<Node>,
@@ -599,20 +609,150 @@ pub struct Instance {
     held: Vec<Held>,
 }
 
-/// Every element of `root`, in pre-order over [`Element::nested`]: the element, its parent's
-/// index and whether it is a child of it.
+/// The authored parts followed by ordinary children, in `Element::nested` order without
+/// building a temporary collection for each element.
+fn nested(element: &Element) -> impl DoubleEndedIterator<Item = (&Element, bool)> {
+    let backgrounds = match &element.fields {
+        Fields::Container(container) => container.backgrounds.as_slice(),
+        _ => &[],
+    };
+    let mut parts = [None; 5];
+    match &element.fields {
+        Fields::Grid(grid) => parts[0] = grid.background.as_deref(),
+        Fields::ExtendedScrollbar(bar) => {
+            parts = [
+                bar.background.as_deref(),
+                bar.track.as_deref(),
+                bar.slider.as_deref(),
+                bar.increase_button.as_deref(),
+                bar.decrease_button.as_deref(),
+            ];
+        }
+        Fields::DropDown(drop) => {
+            parts[0] = drop.expand_button.as_deref();
+            parts[1] = drop.expanded_window.as_deref();
+            parts[2] = Some(&drop.inner);
+        }
+        _ => {}
+    }
+    backgrounds
+        .iter()
+        .chain(parts.into_iter().flatten())
+        .map(|element| (element, false))
+        .chain(element.children.iter().map(|element| (element, true)))
+}
+
+/// The route's authored slot, without visiting preceding ordinary children.
+fn nested_at(element: &Element, mut slot: usize) -> &Element {
+    if let Fields::Container(container) = &element.fields {
+        if let Some(background) = container.backgrounds.get(slot) {
+            return background;
+        }
+        slot -= container.backgrounds.len();
+    }
+    let parts = match &element.fields {
+        Fields::Grid(grid) => [grid.background.as_deref(), None, None, None, None],
+        Fields::ExtendedScrollbar(bar) => [
+            bar.background.as_deref(),
+            bar.track.as_deref(),
+            bar.slider.as_deref(),
+            bar.increase_button.as_deref(),
+            bar.decrease_button.as_deref(),
+        ],
+        Fields::DropDown(drop) => [
+            drop.expand_button.as_deref(),
+            drop.expanded_window.as_deref(),
+            Some(&drop.inner),
+            None,
+            None,
+        ],
+        _ => [None; 5],
+    };
+    for part in parts.into_iter().flatten() {
+        if slot == 0 {
+            return part;
+        }
+        slot -= 1;
+    }
+    &element.children[slot]
+}
+
+/// Every element of `root`, in pre-order over its authored parts and children.
 fn elements(root: &Element) -> Vec<(&Element, Option<usize>, bool)> {
     let mut out = Vec::new();
     let mut stack = vec![(root, None, true)];
     while let Some((element, parent, child)) = stack.pop() {
         let index = out.len();
         out.push((element, parent, child));
-        for nested in element.nested().into_iter().rev() {
-            let is_child = element.children.iter().any(|own| std::ptr::eq(own, nested));
-            stack.push((nested, Some(index), is_child));
+        for (nested, child) in nested(element).rev() {
+            stack.push((nested, Some(index), child));
         }
     }
     out
+}
+
+/// Routes into the immutable template, retained without borrowing it. A copied template can
+/// still be supplied; its traversal is checked separately, as at construction.
+#[derive(Debug)]
+struct Tree {
+    root: usize,
+    routes: Vec<(Option<usize>, usize, bool)>,
+    indices: HashMap<usize, usize>,
+}
+
+impl Tree {
+    fn new(elements: &[(&Element, Option<usize>, bool)]) -> Self {
+        Self {
+            root: elements[0].0 as *const Element as usize,
+            routes: elements
+                .iter()
+                .map(|&(element, parent, child)| {
+                    let slot = parent.map_or(0, |parent| {
+                        nested(elements[parent].0)
+                            .position(|(own, _)| std::ptr::eq(own, element))
+                            .expect("the authored parent's part")
+                    });
+                    (parent, slot, child)
+                })
+                .collect(),
+            indices: elements
+                .iter()
+                .enumerate()
+                .map(|(index, (element, ..))| (*element as *const Element as usize, index))
+                .collect(),
+        }
+    }
+
+    fn same(&self, root: &Element) -> bool {
+        root as *const Element as usize == self.root
+    }
+
+    fn objects<'a>(&self, root: &'a Element, nodes: &[Node]) -> Vec<Object<'a>> {
+        let mut out: Vec<Object> = Vec::with_capacity(self.routes.len());
+        for (&(parent, slot, child), node) in self.routes.iter().zip(nodes) {
+            let element = parent.map_or(root, |parent| nested_at(out[parent].element, slot));
+            out.push(Object {
+                element,
+                parent,
+                child,
+                part: node.part,
+                built: None,
+            });
+        }
+        out
+    }
+
+    fn elements<'a>(&self, root: &'a Element) -> Vec<(&'a Element, Option<usize>, bool)> {
+        if !self.same(root) {
+            return elements(root);
+        }
+        let mut out: Vec<(&Element, Option<usize>, bool)> = Vec::with_capacity(self.routes.len());
+        for &(parent, slot, child) in &self.routes {
+            let element = parent.map_or(root, |parent| nested_at(out[parent].0, slot));
+            out.push((element, parent, child));
+        }
+        out
+    }
 }
 
 /// One object of a window's construction ([`graph`]).
@@ -749,35 +889,64 @@ fn graph<'a>(
 
 /// The current drawable or fallback ([`drawn_sprite`]); `None` when absent. A text-only button
 /// uses its text object ([`text_only`]), with the last code-written text.
-fn drawn(
-    element: &Element,
-    made: Option<&Made>,
+fn drawn<'a>(
+    element: &'a Element,
+    made: Option<&'a Made>,
     text: Option<&str>,
-    resources: &dyn Resources,
-) -> Option<(Vec<u8>, SpriteInfo)> {
-    let lookup = |name: &[u8]| resources.sprite(name);
+    resources: &'a dyn Resources,
+) -> Option<(&'a [u8], Cow<'a, SpriteInfo>)> {
+    let lookup = |name: &'a [u8]| resources.sprite_info(name).map(|info| (name, info));
+    let fallback = |name: &'a [u8]| [name, FALLBACK_SPRITE].into_iter().find_map(lookup);
     match made {
-        Some(made) => drawn_sprite(&made.sprite, lookup),
+        Some(made) => fallback(&made.sprite),
         None => {
             if let Some(button) = element.button()
                 && element.kind != Kind::Checkbox
+                && button.sprite.is_empty()
+                && !button.font.is_empty()
             {
+                let translated;
                 let shown = match text {
-                    Some(text) => Some(text.to_owned()),
-                    None => localised(resources, &button.text),
+                    Some(text) => Some(text),
+                    None => {
+                        translated = localised(resources, &button.text);
+                        translated.as_deref()
+                    }
                 };
-                if text_only(button, &button.sprite, shown.as_deref()) {
+                if text_only(button, &button.sprite, shown) {
                     return None;
                 }
             }
-            let (name, fallback) = own_sprite(element)?;
-            if fallback {
-                drawn_sprite(name, lookup)
+            let (name, use_fallback) = own_sprite(element)?;
+            if use_fallback {
+                fallback(name)
             } else {
-                lookup(name).map(|info| (name.to_vec(), info))
+                lookup(name)
             }
         }
     }
+}
+
+/// Only these drawable types have an updater before the window transitions.
+fn clock_candidate(element: &Element, made: Option<&Made>, resources: &dyn Resources) -> bool {
+    if made.is_none()
+        && element.button().is_some_and(|button| {
+            element.kind != Kind::Checkbox && button.sprite.is_empty() && !button.font.is_empty()
+        })
+    {
+        return true;
+    }
+    drawn(element, made, None, resources).is_some_and(|(_, info)| {
+        matches!(
+            info.kind,
+            SpriteKind::FrameAnimated { .. }
+                | SpriteKind::CorneredTile {
+                    looping: true,
+                    rate: Some(_),
+                    ..
+                }
+        )
+    })
 }
 
 /// The technique selected for state `state`.
@@ -827,7 +996,8 @@ fn extended_button(holder: &Element, element: &Element) -> bool {
 impl Instance {
     /// Constructs `root` with no parent object. Its size and position use the GUI viewport,
     /// the device size divided by interface scale. Additional templates resolve through
-    /// `resources` ([`graph`]). Fading windows and their descendants start transparent. All
+    /// `resources` ([`graph`]). The template and its template registry remain immutable for
+    /// the instance's lifetime. Fading windows and their descendants start transparent. All
     /// Windows and controls start hidden until shown. A `windowType` root represents a fixed
     /// window and retains no container fade or movement. Errors describe frame-evaluation
     /// failures.
@@ -857,7 +1027,9 @@ impl Instance {
             ..Bindings::default()
         };
         let objects = graph(root, resources, &empty);
-        let authored = elements(root).len();
+        let authored_elements = elements(root);
+        let authored = authored_elements.len();
+        let tree = Arc::new(Tree::new(&authored_elements));
         let mut nodes: Vec<Node> = Vec::with_capacity(objects.len());
         // The content size each container's children are evaluated in, and each window's frame.
         let mut content: Vec<Option<[i32; 2]>> = Vec::with_capacity(objects.len());
@@ -1138,6 +1310,22 @@ impl Instance {
         let mut instance = Self {
             template: root.path.clone(),
             count: authored,
+            tree,
+            text_boxes: nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, node)| {
+                    matches!(node.drawables, Drawables::TextBox { .. }).then_some(index)
+                })
+                .collect(),
+            clock_nodes: objects
+                .iter()
+                .enumerate()
+                .filter_map(|(index, object)| {
+                    clock_candidate(object.element, nodes[index].made.as_ref(), resources)
+                        .then_some(index)
+                })
+                .collect(),
             viewport,
             nodes,
             registered,
@@ -1163,7 +1351,9 @@ impl Instance {
     }
 
     fn check(&self, root: &Element) -> Result<(), String> {
-        if root.path != self.template || elements(root).len() != self.count {
+        if root.path != self.template
+            || (!self.tree.same(root) && elements(root).len() != self.count)
+        {
             return Err(format!(
                 "the lifecycle of {} was asked about {}",
                 self.template, root.path
@@ -1181,22 +1371,27 @@ impl Instance {
         empty: &'a Bindings,
     ) -> Result<Vec<Object<'a>>, String> {
         self.check(root)?;
-        let objects = graph(root, resources, empty);
-        let same = objects.len() == self.nodes.len()
-            && objects
-                .iter()
-                .zip(&self.nodes)
-                .all(|(object, node)| object.built == node.built && object.parent == node.parent);
-        if !same {
-            return Err(format!(
-                "the lifecycle of {} was built against other templates: the objects its \
-                 construction builds from the registry differ",
-                self.template
-            ));
-        }
+        let objects = if self.nodes.len() == self.count && self.tree.same(root) {
+            self.tree.objects(root, &self.nodes)
+        } else {
+            let objects = graph(root, resources, empty);
+            let same = objects.len() == self.nodes.len()
+                && objects.iter().zip(&self.nodes).all(|(object, node)| {
+                    object.built == node.built && object.parent == node.parent
+                });
+            if !same {
+                return Err(format!(
+                    "the lifecycle of {} was built against other templates: the objects its \
+                     construction builds from the registry differ",
+                    self.template
+                ));
+            }
+            objects
+        };
         // A text box whose scrollbar refreshes on each write takes its texts through
         // `set_text`, in order with the code's other calls.
-        for (node, object) in self.nodes.iter().zip(&objects) {
+        for &index in &self.text_boxes {
+            let node = &self.nodes[index];
             if let Drawables::TextBox { written, .. } = &node.drawables
                 && node.control.text != *written
             {
@@ -1204,7 +1399,7 @@ impl Instance {
                     "{} was given a text through Instance::control: its scrollbar refreshes on \
                      every write, in order with the code's other calls, so its code writes it \
                      through Instance::set_text or Call::SetText",
-                    object.element.path
+                    objects[index].element.path
                 ));
             }
         }
@@ -1214,10 +1409,17 @@ impl Instance {
     /// `element`'s index in `root`'s pre-order.
     fn index(&self, root: &Element, element: &Element) -> Result<usize, String> {
         self.check(root)?;
-        elements(root)
-            .iter()
-            .position(|(own, ..)| std::ptr::eq(*own, element))
-            .ok_or_else(|| format!("{} is not an element of {}", element.path, root.path))
+        let index = if self.tree.same(root) {
+            self.tree
+                .indices
+                .get(&(element as *const Element as usize))
+                .copied()
+        } else {
+            elements(root)
+                .iter()
+                .position(|(own, ..)| std::ptr::eq(*own, element))
+        };
+        index.ok_or_else(|| format!("{} is not an element of {}", element.path, root.path))
     }
 
     /// The GUI viewport the instance was built against.
@@ -1372,7 +1574,7 @@ impl Instance {
     /// Show.
     pub fn show(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         let index = self.index(root, element)?;
-        let elements = elements(root);
+        let elements = self.tree.elements(root);
         if self.nodes[index].kind == Kind::Window {
             return self.fixed_show(&elements, index);
         }
@@ -1402,7 +1604,7 @@ impl Instance {
     /// guards apply to each object. Map icons and list/grid items use this operation.
     pub fn gui_show(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         let index = self.index(root, element)?;
-        let elements = elements(root);
+        let elements = self.tree.elements(root);
         self.gui_show_at(&elements, index)
     }
 
@@ -1445,7 +1647,7 @@ impl Instance {
     /// or fade completes. Controls use their own Hide.
     pub fn hide(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         let index = self.index(root, element)?;
-        let elements = elements(root);
+        let elements = self.tree.elements(root);
         self.hide_at(&elements, index)
     }
 
@@ -1493,7 +1695,7 @@ impl Instance {
     #[cfg(any(test, feature = "test-support"))]
     pub fn hide_window(&mut self, root: &Element, element: &Element) -> Result<(), String> {
         let index = self.index(root, element)?;
-        let elements = elements(root);
+        let elements = self.tree.elements(root);
         let Some(window) = self.nodes[index].window else {
             return Err(format!("{} is not a containerWindowType", element.path));
         };
@@ -1914,7 +2116,7 @@ impl Instance {
             scroll,
             written: Some(text.to_owned()),
         };
-        let elements = elements(root);
+        let elements = self.tree.elements(root);
         match refreshed {
             Refreshed::Above { flagged } if flagged || self.nodes[bar].shown.visible => {
                 self.gui_show_at(&elements, bar)
@@ -2034,11 +2236,11 @@ impl Instance {
                     let current = kept
                         .made
                         .as_ref()
-                        .map_or(authored, |made| made.sprite.as_slice());
+                        .map_or(authored, |made| made.sprite.as_ref());
                     if setter_replaces(current, name, resources) {
                         kept.count += 1;
                         kept.made = Some(Made {
-                            sprite: name.clone(),
+                            sprite: name.as_slice().into(),
                             setter: *setter,
                             made: kept.count,
                         });
@@ -2587,20 +2789,64 @@ impl Instance {
             viewport: Some(self.viewport),
             ..Bindings::default()
         };
-        let objects = self.objects(root, resources, &empty)?;
+        self.check(root)?;
+        let sprite_calls = self.nodes.iter().take(self.count).any(|node| {
+            node.control.sprite.is_some()
+                || node
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, Event::Sprite(..)))
+        });
+        let invalid_text = self.text_boxes.iter().any(|&index| {
+            let node = &self.nodes[index];
+            matches!(&node.drawables, Drawables::TextBox { written, .. }
+                if node.control.text != *written)
+        });
+        let objects = if sprite_calls
+            || invalid_text
+            || !self.clock_nodes.is_empty()
+            || self.nodes.len() != self.count
+            || !self.tree.same(root)
+        {
+            self.objects(root, resources, &empty)?
+        } else {
+            Vec::new()
+        };
         let Tick { time, dt } = tick;
         self.time = time;
         self.dt = dt;
         // The code's calls on each drawable, in order, and which drawables a `Play` reached.
-        let mut played = vec![false; objects.len()];
+        for node in &mut self.nodes {
+            node.played = false;
+            if objects.is_empty() {
+                // Without sprite replacements or drawable clocks these calls need no
+                // template traversal or resource lookup, but still apply in order.
+                for event in node.events.drain(..) {
+                    match event {
+                        Event::Frame(frame) => {
+                            node.control.progress_float = None;
+                            node.control.frame = Some(frame);
+                        }
+                        Event::ProgressFloat(value) => node.control.progress_float = Some(value),
+                        #[cfg(any(test, feature = "test-support"))]
+                        Event::Play => node.played = true,
+                        Event::Sprite(..) => {
+                            unreachable!("sprite calls resolve their template objects")
+                        }
+                    }
+                }
+            }
+        }
         for (index, object) in objects.iter().enumerate().take(self.count) {
             let node = &self.nodes[index];
             if node.events.is_empty() && node.control.sprite.is_none() {
                 continue;
             }
             let kept = self.retained(index, object.element, resources);
-            played[index] = kept.played;
+            let played = kept.played;
+            let replaced = kept.made != node.made;
             let node = &mut self.nodes[index];
+            node.played = played;
             node.made = kept.made;
             node.made_count = kept.count;
             node.control.frame = kept.frame;
@@ -2614,6 +2860,18 @@ impl Instance {
                     .and_then(|runtime| runtime.clock.as_mut())
             {
                 clock.clock.frame = None;
+            }
+            if replaced {
+                // A successful replacement resets even a hidden drawable's old clocks.
+                node.runtime = None;
+                let candidate = clock_candidate(object.element, node.made.as_ref(), resources);
+                if candidate {
+                    if !self.clock_nodes.contains(&index) {
+                        self.clock_nodes.push(index);
+                    }
+                } else {
+                    self.clock_nodes.retain(|&own| own != index);
+                }
             }
         }
         // Update each shown smooth scrollbar. A missing slider is a null read refused by the
@@ -2631,28 +2889,37 @@ impl Instance {
                 self.nodes[index].smooth[at].update(slider);
             }
         }
-        for (index, object) in objects.iter().enumerate() {
-            let made = self.nodes[index].made.clone();
+        // A copied template is resolved afresh; only the retained immutable template
+        // shares the drawable kinds discovered at construction.
+        let retained = self.tree.same(root);
+        let clocks = if retained {
+            self.clock_nodes.len()
+        } else {
+            objects.len()
+        };
+        for at in 0..clocks {
+            let index = if retained { self.clock_nodes[at] } else { at };
+            let object = &objects[index];
+            let shown = self.drawable_shown(index);
+            let node = &mut self.nodes[index];
             let Some((sprite, info)) = drawn(
                 object.element,
-                made.as_ref(),
-                self.nodes[index].control.text.as_deref(),
+                node.made.as_ref(),
+                node.control.text.as_deref(),
                 resources,
             ) else {
-                self.nodes[index].runtime = None;
+                node.runtime = None;
                 continue;
             };
-            let shown = self.drawable_shown(index);
-            let made = made.map_or(0, |made| made.made);
-            let node = &mut self.nodes[index];
-            let runtime = Self::runtime(node, sprite, made);
+            let made = node.made.as_ref().map_or(0, |made| made.made);
+            let runtime = Self::runtime(&mut node.runtime, sprite, made);
             if matches!(info.kind, SpriteKind::FrameAnimated { .. }) {
                 let clock = runtime.clock.get_or_insert_with(|| Clock {
                     clock: FrameClock::new(),
                     kind: info.kind.clone(),
                 });
                 clock.kind = info.kind.clone();
-                if played[index] {
+                if node.played {
                     clock.clock.playing = true;
                 }
                 if shown
@@ -2687,15 +2954,14 @@ impl Instance {
 
     /// The runtime of `node`'s drawable, built from `sprite` by setter call `made`: its own, or,
     /// for a drawable other than the one it kept, a new one as the constructor leaves it.
-    fn runtime(node: &mut Node, sprite: Vec<u8>, made: u32) -> &mut Runtime {
-        if !node
-            .runtime
+    fn runtime<'a>(current: &'a mut Option<Runtime>, sprite: &[u8], made: u32) -> &'a mut Runtime {
+        if !current
             .as_ref()
-            .is_some_and(|runtime| runtime.is(&sprite, made))
+            .is_some_and(|runtime| runtime.is(sprite, made))
         {
-            node.runtime = Some(Runtime::new(sprite, made));
+            *current = Some(Runtime::new(sprite.to_vec(), made));
         }
-        node.runtime.as_mut().expect("set above")
+        current.as_mut().expect("set above")
     }
 
     /// The frame's second phase follows every instance's clocks ([`Self::tick_clocks`]).
@@ -2712,9 +2978,17 @@ impl Instance {
                 self.template
             ));
         }
-        let elements = elements(root);
+        if self.registered.iter().all(|&index| {
+            let window = self.nodes[index].window.expect("a window node");
+            window.fade == 0 && window.done && window.mode == 0
+        }) {
+            self.phase = Phase::Moved;
+            return Ok(());
+        }
+        let elements = self.tree.elements(root);
         let dt = self.dt;
-        for index in self.registered.clone().into_iter().rev() {
+        for at in (0..self.registered.len()).rev() {
+            let index = self.registered[at];
             self.update_fade(&elements, index, dt)?;
             self.update_movement(&elements, index, dt)?;
         }
@@ -2745,19 +3019,19 @@ impl Instance {
             if !self.reached(index) {
                 continue;
             }
-            let made = self.nodes[index].made.clone();
+            let state = self.state(object.element, index);
+            let node = &mut self.nodes[index];
             let Some((sprite, info)) = drawn(
                 object.element,
-                made.as_ref(),
-                self.nodes[index].control.text.as_deref(),
+                node.made.as_ref(),
+                node.control.text.as_deref(),
                 resources,
             ) else {
                 continue;
             };
-            let made = made.map_or(0, |made| made.made);
-            let state = self.state(object.element, index);
+            let made = node.made.as_ref().map_or(0, |made| made.made);
             let records = if info.animated {
-                resources.sprite_animations(&sprite).unwrap_or_default()
+                resources.sprite_animations(sprite).unwrap_or_default()
             } else {
                 Vec::new()
             };
@@ -2766,7 +3040,7 @@ impl Instance {
                 Ok(effect) => effect.settles(technique(state)),
                 Err(_) => Settles::Program(Some(0.0)),
             };
-            let runtime = Self::runtime(&mut self.nodes[index], sprite, made);
+            let runtime = Self::runtime(&mut node.runtime, sprite, made);
             let first = *runtime.first_draw.get_or_insert(time);
             // A marked state change restarts the clock.
             match runtime.effect.as_mut() {
@@ -2857,7 +3131,7 @@ impl Instance {
     /// registered windows.
     pub fn longest_transition(&self, root: &Element) -> Result<f32, String> {
         self.check(root)?;
-        let elements = elements(root);
+        let elements = self.tree.elements(root);
         Ok(self
             .registered
             .iter()
@@ -2945,6 +3219,7 @@ impl Instance {
         };
         let objects = self.objects(root, resources, &empty)?;
         let mut bindings = Bindings {
+            bound: HashMap::with_capacity(objects.len()),
             viewport: Some(self.viewport),
             time: self.time,
             ..Bindings::default()
@@ -3123,7 +3398,11 @@ fn anchored(
     size: [i32; 2],
     what: &str,
 ) -> Result<[i32; 2], String> {
-    let at = evaluate_position(position, Some(parent), &format!("{}.{what}", window.path))?;
+    let at = evaluate_position(
+        position,
+        Some(parent),
+        format_args!("{}.{what}", window.path),
+    )?;
     let anchor = compute_anchor(container.orientation, container.origo, parent, size);
     Ok([at[0] + anchor[0], at[1] + anchor[1]])
 }
@@ -3147,6 +3426,8 @@ pub struct Pool<K> {
     cursor: usize,
     /// The live list in the manager's order, with each icon's owner.
     live: Vec<(SlotId, K)>,
+    /// The update's original extent, whose tail survives live-prefix compaction.
+    update_buffer: Vec<(SlotId, K)>,
     /// A growth task was started by an exhausted request.
     growing: bool,
     missed: usize,
@@ -3286,6 +3567,7 @@ impl<K: Clone + Eq> Pool<K> {
             slots: Vec::new(),
             cursor: 0,
             live: Vec::new(),
+            update_buffer: Vec::new(),
             growing: false,
             missed: 0,
             retrying: 0,
@@ -3389,7 +3671,8 @@ impl<K: Clone + Eq> Pool<K> {
         };
         // The array's storage as the pass reads it: erasing compacts the live prefix and leaves
         // the entries past it in place.
-        let mut buffer = self.live.clone();
+        let mut buffer = std::mem::take(&mut self.update_buffer);
+        buffer.clone_from(&self.live);
         for index in 0..buffer.len() {
             let (slot, owner) = buffer[index].clone();
             match test(&owner, &self.slots[slot.0].instance) {
@@ -3411,6 +3694,7 @@ impl<K: Clone + Eq> Pool<K> {
                 }
             }
         }
+        self.update_buffer = buffer;
         Ok(pass)
     }
 
@@ -3899,5 +4183,291 @@ mod frame_clock_tests {
         assert!(clock.elapsed > 0.0);
         clock.update(&kind, -1, 0.02).unwrap();
         assert_eq!(clock.frame, Some(1));
+    }
+}
+
+#[cfg(test)]
+mod traversal_tests {
+    use super::*;
+
+    #[test]
+    fn retained_routes_keep_parts_children_and_copied_templates_in_order() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let gui = native::read(
+            br#"guiTypes={containerWindowType={name=root
+            background={name=back}
+            gridBoxType={name=grid background={name=grid_back}}
+            extendedScrollbarType={name=bar
+                background={name=bar_back}
+                track={name=track}
+                slider={name=slider}
+                increaseButton={name=increase}
+                decreaseButton={name=decrease}}
+            dropDownBoxType={name=drop
+                buttonType={name=expand}
+                containerWindowType={name=expanded}}
+            containerWindowType={name=child iconType={name=icon}}
+        }}"#,
+        );
+        let root = gui.template("root").unwrap();
+        let authored = elements(root);
+        assert!(authored.iter().any(|(_, _, child)| !child));
+        let tree = Tree::new(&authored);
+        let mut pending = vec![root];
+        let mut expected = Vec::new();
+        while let Some(element) = pending.pop() {
+            expected.push(element as *const Element);
+            pending.extend(element.nested().into_iter().rev());
+        }
+        assert_eq!(
+            authored
+                .iter()
+                .map(|(element, ..)| *element as *const Element)
+                .collect::<Vec<_>>(),
+            expected,
+        );
+        let retained = tree.elements(root);
+        for (actual, expected) in retained.iter().zip(&authored) {
+            assert!(std::ptr::eq(actual.0, expected.0));
+            assert_eq!((actual.1, actual.2), (expected.1, expected.2));
+        }
+        let copied = root.clone();
+        assert_eq!(tree.elements(&copied), elements(&copied));
+        for (index, (element, ..)) in authored.iter().enumerate() {
+            assert_eq!(
+                tree.indices.get(&(*element as *const Element as usize)),
+                Some(&index)
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod clock_pruning_tests {
+    use super::*;
+    use crate::map::test_support::gui::{Fixture, fixture};
+    use std::cell::Cell;
+
+    struct Metadata<'a> {
+        fixture: &'a Fixture,
+        borrowed: bool,
+        lookups: Cell<usize>,
+    }
+
+    impl Resources for Metadata<'_> {
+        fn sprite(&self, name: &[u8]) -> Option<SpriteInfo> {
+            self.fixture.sprite(name)
+        }
+        fn sprite_info(&self, name: &[u8]) -> Option<Cow<'_, SpriteInfo>> {
+            self.lookups.set(self.lookups.get() + 1);
+            let info = self.fixture.sprites.get(std::str::from_utf8(name).ok()?)?;
+            Some(if self.borrowed {
+                Cow::Borrowed(info)
+            } else {
+                Cow::Owned(info.clone())
+            })
+        }
+        fn font(&self, name: &[u8]) -> Option<&native_text::Font> {
+            self.fixture.font(name)
+        }
+        fn localisation(&self) -> &Localisation {
+            self.fixture.localisation()
+        }
+        fn text_colors(&self) -> &TextColors {
+            self.fixture.text_colors()
+        }
+        fn text_effect(&self) -> Result<Effect, String> {
+            self.fixture.text_effect()
+        }
+        fn effect(&self, file: &str) -> Result<Effect, String> {
+            self.fixture.effect(file)
+        }
+        fn shield_flag(
+            &self,
+            small: bool,
+            index: i32,
+        ) -> Result<Option<(Texture, [f32; 4])>, String> {
+            self.fixture.shield_flag(small, index)
+        }
+        fn text_flag(&self, tag: &str) -> Result<Option<Texture>, String> {
+            self.fixture.text_flag(tag)
+        }
+        fn gui_type(&self, name: &[u8]) -> Option<&Element> {
+            self.fixture.gui_type(name)
+        }
+    }
+
+    #[test]
+    fn windows_without_drawable_clocks_do_not_resolve_sprites_in_the_clock_phase() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let fixture = fixture();
+        let resources = Metadata {
+            fixture: &fixture,
+            borrowed: true,
+            lookups: Cell::new(0),
+        };
+        let gui = native::read(
+            br#"guiTypes={containerWindowType={name=root
+            size={width=100 height=50} iconType={name=icon spriteType=GFX_even}}}"#,
+        );
+        let root = gui.template("root").unwrap();
+        let mut instance = Instance::construct(root, [800, 600], &resources).unwrap();
+        assert!(instance.clock_nodes.is_empty());
+        for shown in [false, true] {
+            if shown {
+                instance.gui_show(root, root).unwrap();
+            }
+            let icon = root.path_named("icon").unwrap();
+            instance.set_progress_float_value(root, icon, 19).unwrap();
+            instance.set_frame(root, icon, 2).unwrap();
+            resources.lookups.set(0);
+            instance
+                .tick_clocks(root, &resources, Tick { time: 1.0, dt: 0.1 })
+                .unwrap();
+            assert_eq!(resources.lookups.get(), 0);
+            assert_eq!(instance.nodes[1].control.frame, Some(2));
+            assert_eq!(instance.nodes[1].control.progress_float, None);
+            instance.tick_transitions(root).unwrap();
+            instance.tick_draws(root, &resources).unwrap();
+        }
+    }
+
+    #[test]
+    fn copied_templates_resolve_their_own_drawable_clock_kinds() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let resources = fixture();
+        let gui = native::read(
+            br#"guiTypes={containerWindowType={name=root size={width=100 height=50}
+                iconType={name=icon spriteType=GFX_even}}}"#,
+        );
+        let root = gui.template("root").unwrap();
+        let mut copied = root.clone();
+        let Fields::Icon(icon) = &mut copied.children[0].fields else {
+            panic!("the copied icon");
+        };
+        icon.sprite = b"GFX_animated".to_vec();
+        let mut instance = Instance::construct(root, [800, 600], &resources).unwrap();
+        let mut fresh = Instance::construct(&copied, [800, 600], &resources).unwrap();
+        instance.gui_show(&copied, &copied).unwrap();
+        fresh.gui_show(&copied, &copied).unwrap();
+        for frame in 0..4 {
+            let tick = Tick {
+                time: frame as f32 * 0.125,
+                dt: 0.125,
+            };
+            instance.tick(&copied, &resources, tick).unwrap();
+            fresh.tick(&copied, &resources, tick).unwrap();
+            assert_eq!(
+                instance.bindings(&copied, &resources).unwrap().bound,
+                fresh.bindings(&copied, &resources).unwrap().bound,
+            );
+            assert_eq!(
+                instance
+                    .layout_with_regions(&copied, &resources, None, true)
+                    .unwrap(),
+                fresh
+                    .layout_with_regions(&copied, &resources, None, true)
+                    .unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn pruned_clocks_and_borrowed_metadata_equal_a_full_drawable_tick() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let mut fixture = fixture();
+        let mut pulse = fixture.sprite(b"GFX_cornered").unwrap();
+        if let SpriteKind::CorneredTile { looping, rate, .. } = &mut pulse.kind {
+            *looping = true;
+            *rate = Some(0.75);
+        }
+        fixture.sprites.insert("GFX_pulse", pulse);
+        let animated = fixture.sprite(b"GFX_animated").unwrap();
+        fixture
+            .sprites
+            .insert("GFX_default_fallback_texture", animated);
+        let borrowed = Metadata {
+            fixture: &fixture,
+            borrowed: true,
+            lookups: Cell::new(0),
+        };
+        let owned = Metadata {
+            fixture: &fixture,
+            borrowed: false,
+            lookups: Cell::new(0),
+        };
+        let gui = native::read(
+            br#"guiTypes={containerWindowType={name=root
+            size={width=100 height=50}
+            fade_type=linear fade_time=300
+            iconType={name=icon spriteType=GFX_even}
+            buttonType={name=text buttonFont=Main_14 text=""}
+        }}"#,
+        );
+        let root = gui.template("root").unwrap();
+        let icon = root.path_named("icon").unwrap();
+        let text = root.path_named("text").unwrap();
+        let mut pruned = Instance::construct(root, [800, 600], &borrowed).unwrap();
+        let mut full = Instance::construct(root, [800, 600], &owned).unwrap();
+        let copied = root.clone();
+        for frame in 0..20 {
+            for instance in [&mut pruned, &mut full] {
+                match frame {
+                    0 => instance.gui_show(root, root).unwrap(),
+                    1 => instance
+                        .set_sprite(root, icon, b"GFX_animated", SpriteSetter::Icon)
+                        .unwrap(),
+                    2 => instance.set_frame(root, icon, 3).unwrap(),
+                    3 => instance
+                        .set_sprite(root, icon, b"undefined", SpriteSetter::Icon)
+                        .unwrap(),
+                    4 => instance.hide(root, icon).unwrap(),
+                    5 => instance
+                        .set_sprite(root, icon, b"GFX_pulse", SpriteSetter::Icon)
+                        .unwrap(),
+                    6 => instance.show(root, icon).unwrap(),
+                    7 => instance
+                        .set_sprite(root, icon, b"GFX_pulse", SpriteSetter::Icon)
+                        .unwrap(),
+                    8 => instance.control(root, text).unwrap().text = Some("visible text".into()),
+                    9 => instance.hide(root, root).unwrap(),
+                    10 => instance
+                        .set_sprite(root, icon, b"GFX_even", SpriteSetter::Icon)
+                        .unwrap(),
+                    11 => instance.gui_show(root, root).unwrap(),
+                    12 => instance.control(root, text).unwrap().text = Some(String::new()),
+                    13 => instance.control(root, text).unwrap().enabled = Some(false),
+                    14 => instance
+                        .set_sprite(root, icon, b"GFX_animated", SpriteSetter::Icon)
+                        .unwrap(),
+                    _ => {}
+                }
+            }
+            // A copied template's updater visits every constructed drawable in native order.
+            let tick = Tick {
+                time: frame as f32 * 0.125,
+                dt: 0.125,
+            };
+            pruned.tick(root, &borrowed, tick).unwrap();
+            full.tick(&copied, &owned, tick).unwrap();
+            assert_eq!(pruned.active(), full.active(), "frame {frame}");
+            assert_eq!(pruned.take_held(), full.take_held(), "frame {frame}");
+            assert_eq!(
+                pruned.bindings(root, &borrowed).unwrap().bound,
+                full.bindings(root, &owned).unwrap().bound,
+                "frame {frame}"
+            );
+            assert_eq!(
+                pruned
+                    .layout_with_regions(root, &borrowed, None, true)
+                    .unwrap(),
+                full.layout_with_regions(root, &owned, None, true).unwrap(),
+                "frame {frame}"
+            );
+        }
     }
 }

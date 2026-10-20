@@ -19,7 +19,7 @@
 use crate::map::native_windows::NativeWindows;
 use std::sync::Arc;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
 };
 
@@ -122,14 +122,14 @@ pub struct GuiResources {
     touched: Vec<Vec<u8>>,
     /// The client state every texture decodes under ([`Decode`]).
     decode: Decode,
-    sprites: BTreeMap<Vec<u8>, Prepared>,
+    sprites: HashMap<Vec<u8>, Prepared>,
     /// Shared CPU masks, built only for textures used by transparency-checked sprites.
     alpha: BTreeMap<usize, AlphaMask>,
     /// Each loaded font, by the index of the registered font it is.
     fonts: BTreeMap<usize, native_text::Font>,
     /// The registered font each asked name resolves to.
     font_names: BTreeMap<Vec<u8>, usize>,
-    effects: BTreeMap<(Vec<u8>, bool), Result<Effect, String>>,
+    effects: [BTreeMap<Vec<u8>, Result<Effect, String>>; 2],
     compiler: Option<super::native_shader::library::Library>,
     /// The renderer's global defines every effect compiles with (`library::globals`).
     globals: Vec<String>,
@@ -161,11 +161,11 @@ impl GuiResources {
             textures: BTreeMap::new(),
             touched: Vec::new(),
             decode,
-            sprites: BTreeMap::new(),
+            sprites: HashMap::new(),
             alpha: BTreeMap::new(),
             fonts: BTreeMap::new(),
             font_names: BTreeMap::new(),
-            effects: BTreeMap::new(),
+            effects: std::array::from_fn(|_| BTreeMap::new()),
             compiler: None,
             globals: super::native_shader::library::globals(map_size, decode),
             uncovered: BTreeSet::new(),
@@ -273,8 +273,8 @@ impl GuiResources {
             super::native_shader::library::Library::new(Arc::new(layers.clone()))
                 .with_globals(globals.clone())
         });
-        self.effects
-            .entry((file.to_vec(), masked))
+        self.effects[usize::from(masked)]
+            .entry(file.to_vec())
             .or_insert_with(|| {
                 // The name to its C string's end, opened by its bytes.
                 let file = installed_content_core::parser::c_string(file);
@@ -818,6 +818,11 @@ impl GuiResources {
         self.sprites.get(name).map(|prepared| prepared.info.clone())
     }
 
+    /// Immutable loaded metadata shared by every drawable of this sprite.
+    pub fn sprite_info(&self, name: &[u8]) -> Option<&SpriteInfo> {
+        self.sprites.get(name).map(|prepared| &prepared.info)
+    }
+
     /// The texture's mip-0 CPU mask shared by all drawables using it, if it has one.
     pub fn sprite_alpha(&self, name: &[u8]) -> Option<AlphaMask> {
         self.alpha
@@ -860,8 +865,8 @@ impl GuiResources {
     /// An effect the game's code names itself, loaded by [`GuiResources::load`]
     /// ([`TEXT_EFFECT`], [`SHIELD_OVERLAY_EFFECT`]).
     pub fn effect(&self, file: &str) -> Result<Effect, String> {
-        self.effects
-            .get(&(file.as_bytes().to_vec(), false))
+        self.effects[0]
+            .get(file.as_bytes())
             .cloned()
             .unwrap_or_else(|| Err(format!("effect {file} was not loaded")))
     }

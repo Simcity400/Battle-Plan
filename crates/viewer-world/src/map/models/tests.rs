@@ -1437,3 +1437,36 @@ fn convoy_collision_radius_is_the_runtime_bounds_three_dimensional_half_diagonal
     reach.attachments = 1;
     assert_eq!(reach.collision_radius(), None); // Attached entity sphere unions need their own proof.
 }
+
+#[test]
+fn retained_placement_storage_keeps_group_ties_order_and_replacement_state() {
+    let library = library_with_one_mesh(2.0);
+    let mut pass = ModelPass::new(&library, "retained placements");
+    let placed = vec![
+        (0, at(300.0, 10.0)),
+        (0, at(20.0, 10.0)),
+        (0, at(310.0, 10.0)),
+        (0, at(10.0, 10.0)),
+        (0, at(20.0, 10.0)),
+    ];
+    pass.update_placed(placed.clone(), 256.0);
+    let storage = (
+        pass.field.instances.as_ptr(),
+        pass.field.native_order.as_ptr(),
+        pass.keyed.as_ptr(),
+    );
+    for placements in [placed[..3].to_vec(), Vec::new(), placed] {
+        pass.field.default_states.insert((0, 1, 2), 3);
+        let expected = ModelField::build_meshes(&pass.meshes, placements.clone(), 256.0);
+        pass.update_placed(placements, 256.0);
+        assert_eq!(pass.field, expected);
+        assert_eq!(
+            storage,
+            (
+                pass.field.instances.as_ptr(),
+                pass.field.native_order.as_ptr(),
+                pass.keyed.as_ptr()
+            )
+        );
+    }
+}

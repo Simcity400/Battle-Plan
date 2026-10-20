@@ -13,10 +13,10 @@
 //! [`Refusal`] reasons. Cases that draw nothing without failing produce counted [`Diagnostic`]
 //! entries.
 
-use std::cell::RefCell;
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
 use std::collections::{BTreeSet, HashMap};
+use std::{borrow::Cow, cell::RefCell};
 
 use installed_content_core::{
     gui::native, gui::native::Animation, gui::native::Coordinate, gui::native::Element,
@@ -395,6 +395,11 @@ pub trait Resources {
     }
     /// The sprite the content defines under `name`, if any.
     fn sprite(&self, name: &[u8]) -> Option<SpriteInfo>;
+
+    /// Borrow immutable loaded metadata when the resource store retains it.
+    fn sprite_info(&self, name: &[u8]) -> Option<std::borrow::Cow<'_, SpriteInfo>> {
+        self.sprite(name).map(std::borrow::Cow::Owned)
+    }
     /// A recorded portrait sprite resolved to its texture, without replacing the icon's mask.
     fn portrait_texture(&self, _name: &[u8]) -> Option<Texture> {
         None
@@ -480,7 +485,17 @@ fn looked_up(
     name: &[u8],
     creates_text_box: bool,
 ) -> Option<SpriteInfo> {
-    let info = resources.sprite(name);
+    looked_up_info(resources, refused, path, name, creates_text_box).map(Cow::into_owned)
+}
+
+fn looked_up_info<'a>(
+    resources: &'a dyn Resources,
+    refused: &RefCell<Refusals>,
+    path: &str,
+    name: &[u8],
+    creates_text_box: bool,
+) -> Option<Cow<'a, SpriteInfo>> {
+    let info = resources.sprite_info(name);
     if info.is_none() && resources.unloaded_sprite(name) {
         let refusal = Refusal::new(
             path,
@@ -697,7 +712,7 @@ enum Drawn {
     #[default]
     Written,
     /// Its instance's: the authored drawable (`None`), or the one a setter made and how.
-    Kept(Option<(Vec<u8>, SpriteSetter)>),
+    Kept(Option<(std::sync::Arc<[u8]>, SpriteSetter)>),
 }
 
 /// The drawable `element` shows through `bound`, when a setter made it: its sprite and the
@@ -714,7 +729,7 @@ fn made<'a>(
     match &bound.drawn {
         Drawn::Kept(kept) => kept
             .as_ref()
-            .map(|(sprite, setter)| (sprite.as_slice(), *setter)),
+            .map(|(sprite, setter)| (sprite.as_ref(), *setter)),
         Drawn::Written => {
             let name = bound.sprite.as_deref()?;
             setter_replaces(authored, name, resources).then_some((name, bound.setter))
@@ -732,7 +747,7 @@ pub(super) fn setter_replaces(current: &[u8], name: &[u8], resources: &dyn Resou
 
 /// Icon replacement also resolves session text sprites.
 pub fn sprite_resolves(name: &[u8], resources: &dyn Resources) -> bool {
-    resources.sprite(name).is_some() || resources.session_text_sprite(name)
+    resources.sprite_info(name).is_some() || resources.session_text_sprite(name)
 }
 
 /// A construction step the game takes from outside a window's own template: the object it builds
@@ -1151,7 +1166,7 @@ fn percent(coordinate: Coordinate, parent: i32) -> i32 {
 }
 
 /// Why a percentage cannot be evaluated: the parent's size is not given.
-fn no_parent(what: &str) -> String {
+fn no_parent(what: impl std::fmt::Display) -> String {
     format!(
         "{what} is a percentage or measures from the parent's far edge, and the parent's size \
          is not given: a root with no parent object is sized in the GUI viewport, the device \
@@ -1164,7 +1179,7 @@ fn no_parent(what: &str) -> String {
 pub fn evaluate_position(
     position: &native::Position,
     parent: Option<[i32; 2]>,
-    what: &str,
+    what: impl std::fmt::Display,
 ) -> Result<[i32; 2], String> {
     let mut out = [0; 2];
     for (axis, coordinate) in [position.x, position.y].into_iter().enumerate() {
@@ -1195,7 +1210,7 @@ pub fn evaluate_size(
     block: &native::Size,
     parent: Option<[i32; 2]>,
     position: [i32; 2],
-    what: &str,
+    what: impl std::fmt::Display,
 ) -> Result<[i32; 2], String> {
     let coordinates = || {
         block.size.iter().chain(
@@ -1348,13 +1363,13 @@ pub fn container_frame(window: &Element, parent: Option<[i32; 2]>) -> Result<Fra
     let show = evaluate_position(
         &container.show_position,
         parent,
-        &format!("{}.show_position", window.path),
+        format_args!("{}.show_position", window.path),
     )?;
     let size = evaluate_size(
         &container.size,
         parent,
         show,
-        &format!("{}.size", window.path),
+        format_args!("{}.size", window.path),
     )?;
     frame_from_extent(window, container, parent, size)
 }
@@ -1370,7 +1385,7 @@ fn frame_from_extent(
             let position = evaluate_position(
                 &container.position,
                 Some(parent),
-                &format!("{}.position", window.path),
+                format_args!("{}.position", window.path),
             )?;
             let anchor = compute_anchor(container.orientation, container.origo, parent, size);
             [position[0] + anchor[0], position[1] + anchor[1]]
@@ -1882,7 +1897,7 @@ impl<'a> Walk<'a> {
     }
 }
 
-impl Walk<'_> {
+impl<'a> Walk<'a> {
     /// The drawable's state-effect restart timestamp used as `AnimationTime`, derived from
     /// view time less the bound `effect_since`. The restart occurs at the first draw after a
     /// state change. A drawable never drawn keeps zero.
@@ -2359,7 +2374,11 @@ impl Walk<'_> {
     /// The sprite `name` for `path`, as [`Resources::sprite`] gives it, its refusals noted
     /// ([`noted`]): every lookup of the walk goes through this.
     pub(super) fn info(&self, path: &str, name: &[u8]) -> Option<SpriteInfo> {
-        looked_up(self.resources, &self.refused, path, name, false)
+        self.info_ref(path, name).map(Cow::into_owned)
+    }
+
+    fn info_ref(&self, path: &str, name: &[u8]) -> Option<Cow<'a, SpriteInfo>> {
+        looked_up_info(self.resources, &self.refused, path, name, false)
     }
 
     /// An element the walk builds from outside the subtree it was given (a registry template by
@@ -2380,8 +2399,10 @@ impl Walk<'_> {
     /// The sprite drawn under `name`: its own, else the fallback texture; `None` when neither is
     /// defined ("Fatal Error! No [GFX_default_fallback_texture] defined.": no drawable), which
     /// is noted for `path`.
-    fn sprite(&mut self, path: &str, name: &[u8]) -> Option<(Vec<u8>, SpriteInfo)> {
-        let found = drawn_sprite(name, |name| self.info(path, name));
+    fn sprite(&mut self, path: &str, name: &[u8]) -> Option<(Vec<u8>, Cow<'a, SpriteInfo>)> {
+        let found = drawn_sprite(name, |name| {
+            looked_up_info(self.resources, &self.refused, path, name, false)
+        });
         if found.is_none() {
             self.diagnostics.push(Diagnostic {
                 path: path.to_owned(),
@@ -2457,11 +2478,9 @@ impl Walk<'_> {
         centre: Centre,
         clip: Option<Clip>,
     ) -> Result<Option<(usize, Hit)>, Refusal> {
-        let path = element.path.clone();
+        let path = &element.path;
         let bound = self.bound(element);
-        let name = made(bound, name, self.resources)
-            .map_or(name, |(sprite, _)| sprite)
-            .to_vec();
+        let name = made(bound, name, self.resources).map_or(name, |(sprite, _)| sprite);
         let texture = bound.and_then(|bound| bound.texture);
         let stretch = bound.and_then(|bound| bound.stretch);
         let bound_frame = bound.and_then(|bound| bound.frame);
@@ -2471,7 +2490,7 @@ impl Walk<'_> {
         let bound_pulse = bound.and_then(|bound| bound.pulse);
         let bound_shield = bound.and_then(|bound| bound.shield);
         let tint = bound.and_then(|bound| bound.color);
-        let Some((sprite, info)) = self.sprite(&path, &name) else {
+        let Some((sprite, info)) = self.sprite(path, name) else {
             return Ok(None);
         };
         // A text sprite made with no font (an icon's, a
@@ -2494,7 +2513,7 @@ impl Walk<'_> {
         let effect = info
             .effect
             .clone()
-            .map_err(|why| Refusal::new(&path, RefusalKind::CustomEffect, why))?;
+            .map_err(|why| Refusal::new(path, RefusalKind::CustomEffect, why))?;
         // An eagerly loaded sprite's active animation records; with none active it draws with
         // its plain technique.
         let records = if info.animated && texture.is_none() {
@@ -2522,13 +2541,13 @@ impl Walk<'_> {
         }
         // A bound texture takes the frame's place; the sprite keeps its anchor and effect.
         let info = match texture {
-            Some(texture) => SpriteInfo {
+            Some(texture) => Cow::Owned(SpriteInfo {
                 texture: texture.size,
                 frames: 1,
                 vertical: false,
                 kind: SpriteKind::Plain,
-                ..info
-            },
+                ..info.into_owned()
+            }),
             None => info,
         };
         let extent = info.scaled_extent(scale);
@@ -2734,7 +2753,7 @@ impl Walk<'_> {
                 // written.
                 if looping && rate.is_none() {
                     return Err(Refusal::new(
-                        &path,
+                        path,
                         RefusalKind::UndefinedRead,
                         format!(
                             "shows {}, a looping cornered tile with no animation rate, which \
@@ -2745,12 +2764,12 @@ impl Walk<'_> {
                     ));
                 }
                 if let Some(why) = bound.and_then(|bound| bound.hang.as_ref()) {
-                    return Err(Refusal::new(&path, RefusalKind::Hang, why.clone()));
+                    return Err(Refusal::new(path, RefusalKind::Hang, why.clone()));
                 }
                 let alpha = if looping {
                     bound_pulse.ok_or_else(|| {
                         Refusal::new(
-                            &path,
+                            path,
                             RefusalKind::MissingInput,
                             format!(
                                 "shows {}, a looping cornered tile whose alpha pulses on its \
@@ -2824,7 +2843,7 @@ impl Walk<'_> {
                 // that plays on show animates on its instance's clock, unless its wrap never
                 // ended there.
                 if let Some(why) = bound.and_then(|bound| bound.hang.as_ref()) {
-                    return Err(Refusal::new(&path, RefusalKind::Hang, why.clone()));
+                    return Err(Refusal::new(path, RefusalKind::Hang, why.clone()));
                 }
                 let own = match frame {
                     FrameSource::Own(frame) | FrameSource::State(frame) => frame,
@@ -2833,7 +2852,7 @@ impl Walk<'_> {
                     Some(clock) => clock,
                     None if play_on_show => {
                         return Err(Refusal::new(
-                            &path,
+                            path,
                             RefusalKind::MissingInput,
                             format!(
                                 "shows {}, a frameAnimatedSpriteType that plays when shown \
@@ -2890,7 +2909,7 @@ impl Walk<'_> {
                 if let Some((flag, coords)) = self
                     .resources
                     .shield_flag(small, index)
-                    .map_err(|why| Refusal::new(&path, RefusalKind::MissingInput, why))?
+                    .map_err(|why| Refusal::new(path, RefusalKind::MissingInput, why))?
                 {
                     self.parts.push(Part {
                         path: path.clone(),
@@ -2915,7 +2934,7 @@ impl Walk<'_> {
                 let overlay = self
                     .resources
                     .effect(super::native_resources::SHIELD_OVERLAY_EFFECT)
-                    .map_err(|why| Refusal::new(&path, RefusalKind::CustomEffect, why))?;
+                    .map_err(|why| Refusal::new(path, RefusalKind::CustomEffect, why))?;
                 (
                     PartKind::Tiles {
                         sprite,
@@ -2931,7 +2950,7 @@ impl Walk<'_> {
             }
             SpriteKind::PieChart { size: None } => {
                 return Err(Refusal::new(
-                    &path,
+                    path,
                     RefusalKind::UndefinedRead,
                     format!(
                         "shows {}, a PieChartType without size, which its constructor leaves \
@@ -2996,7 +3015,7 @@ impl Walk<'_> {
             });
         }
         self.parts.push(Part {
-            path,
+            path: path.clone(),
             child: self.top,
             kind,
             clip,
@@ -3078,8 +3097,8 @@ impl Walk<'_> {
         // `parent` is already resolved: the reader's post-load pass copies the parent's sprite
         // before any button is constructed.
         let sprite = match made(bound, &button.sprite, self.resources) {
-            Some((sprite, _)) => sprite.to_vec(),
-            None => button.sprite.clone(),
+            Some((sprite, _)) => sprite,
+            None => button.sprite.as_slice(),
         };
         // Code-written text replaces the authored localisation. Undecodable bytes produce no
         // text draw.
@@ -3116,20 +3135,20 @@ impl Walk<'_> {
             State::Up
         };
         // A text the object cannot decode is still a text: its object draws nothing.
-        let text_only = text_only(button, &sprite, text.as_deref());
+        let text_only = text_only(button, sprite, text.as_deref());
         // The text technique of the state, when the sprite's effect declares it.
-        let technique = [sprite.as_slice(), FALLBACK_SPRITE]
+        let technique = [sprite, FALLBACK_SPRITE]
             .into_iter()
-            .find_map(|name| self.info(path, name))
-            .and_then(|info| info.effect.ok())
-            .and_then(|effect| {
+            .find_map(|name| self.info_ref(path, name))
+            .and_then(|info| {
+                let effect = info.effect.as_ref().ok()?;
                 let name = match state {
                     State::Up => "TextUp",
                     State::Over(_) => "TextOver",
                     State::Disable => "TextDisable",
                     State::Down(_) => "TextDown",
                 };
-                effect.has_technique(name).then_some((effect, name))
+                effect.has_technique(name).then(|| (effect.clone(), name))
             });
         // Button sprite replacement prepares text with format 2 when text and font are
         // present, otherwise resolving an ordinary drawable with fallback. It then restores a
@@ -3158,7 +3177,7 @@ impl Walk<'_> {
         // `centerPosition` centres it on its text's measure.
         if has_font
             && let Some(info) = self
-                .info(path, &sprite)
+                .info_ref(path, sprite)
                 .filter(|info| matches!(info.kind, SpriteKind::Text { .. }))
         {
             let Some(text) = text else {
@@ -3178,7 +3197,7 @@ impl Walk<'_> {
             let frame = bound.and_then(|bound| bound.frame).unwrap_or(own_frame);
             if let Some(part) = self.text_sprite(
                 element,
-                &sprite,
+                sprite,
                 &info,
                 Some(button_bake(button, &text, format)),
                 frame,
@@ -3201,9 +3220,9 @@ impl Walk<'_> {
         let mut frame_size = None;
         if !text_only {
             // An empty sprite with a font draws the fallback.
-            let drawn = [sprite.as_slice(), FALLBACK_SPRITE]
+            let drawn = [sprite, FALLBACK_SPRITE]
                 .into_iter()
-                .find_map(|name| self.info(path, name));
+                .find_map(|name| self.info_ref(path, name));
             // A fallback `textSpriteType` with a font: bakes an empty text into it (format 2,
             // no box, no border), its texture alone; the text object follows as for any sprite.
             // Its measured extent before that bake is 0 by 0.
@@ -3247,7 +3266,7 @@ impl Walk<'_> {
             };
             if let Some((part, hit)) = self.state_part(
                 element,
-                &sprite,
+                sprite,
                 frame,
                 state,
                 bound.and_then(|bound| bound.scale).unwrap_or(button.scale),
@@ -3268,9 +3287,9 @@ impl Walk<'_> {
         let Some(text) = text.filter(|text| has_font && !text.is_empty()) else {
             return Ok(());
         };
-        let font = button.font.clone();
+        let font = &button.font;
         let common = |size: [i32; 2], border: [i32; 2], orientation: Orientation| TextSpec {
-            font: &font,
+            font,
             text: &text,
             position: at,
             size: size.map(|value| if value == 0 { 200 } else { value }),
@@ -4424,12 +4443,12 @@ fn text_font<'r>(
 }
 
 /// `info`, the sprite `name` for `path`, its refusals noted once in `refused`.
-fn noted(
+fn noted<'a>(
     refused: &RefCell<Refusals>,
     path: &str,
     name: &[u8],
-    info: Option<SpriteInfo>,
-) -> Option<SpriteInfo> {
+    info: Option<Cow<'a, SpriteInfo>>,
+) -> Option<Cow<'a, SpriteInfo>> {
     if let Some(info) = &info {
         let mut refused = refused.borrow_mut();
         for (kind, why) in &info.refusals {
@@ -4838,14 +4857,23 @@ pub fn grid_geometry(
     parent: [i32; 2],
 ) -> Result<GridGeometry, String> {
     let path = &element.path;
-    let position = evaluate_position(&grid.position, Some(parent), &format!("{path}.position"))?;
-    let size = evaluate_size(&grid.size, Some(parent), position, &format!("{path}.size"))?;
-    let own = evaluate_position(&grid.position, Some(size), &format!("{path}.position"))?;
+    let position = evaluate_position(
+        &grid.position,
+        Some(parent),
+        format_args!("{path}.position"),
+    )?;
+    let size = evaluate_size(
+        &grid.size,
+        Some(parent),
+        position,
+        format_args!("{path}.size"),
+    )?;
+    let own = evaluate_position(&grid.position, Some(size), format_args!("{path}.position"))?;
     let cell = evaluate_size(
         &grid.slot_size,
         Some(size),
         own,
-        &format!("{path}.slotsize"),
+        format_args!("{path}.slotsize"),
     )?;
     Ok((position, size, cell))
 }
@@ -5017,7 +5045,7 @@ fn grid_origin(
     let position = evaluate_position(
         &grid.position,
         Some(parent),
-        &format!("{}.position", element.path),
+        format_args!("{}.position", element.path),
     )?;
     let [pw, ph] = parent;
     let anchor = match grid.orientation {

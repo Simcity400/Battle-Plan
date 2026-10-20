@@ -92,33 +92,61 @@ Effect Test { VertexShader = V PixelShader = P }
     ];
     let opaque = [1_f32; 4];
     let black = [0., 0., 0., 1_f32];
-    let frame = |draws: [(&wgpu::TextureView, [f32; 4]); 3]| {
-        let prepared: Vec<_> = draws
-            .iter()
-            .zip(&shapes)
-            .map(|((view, tint), shape)| {
-                let bindings = pipeline
-                    .bindings(
-                        &arena,
-                        &BTreeMap::from([(binding(2, Stage::Pixel), bytemuck::bytes_of(tint))]),
-                        &BTreeMap::from([(binding(0, Stage::Pixel), (*view).clone())]),
-                    )
-                    .unwrap();
-                let vertices = arena.vertices(bytemuck::cast_slice(shape)).unwrap();
-                (bindings, vertices)
+    let frame =
+        |draws: [(&wgpu::TextureView, [f32; 4]); 3], packed: Option<bool>, repeated: bool| {
+            let prepared: Vec<_> = draws
+                .iter()
+                .zip(if repeated {
+                    [&shapes[0]; 3]
+                } else {
+                    [&shapes[0], &shapes[1], &shapes[2]]
+                })
+                .map(|((view, tint), shape)| {
+                    let bindings = pipeline
+                        .bindings(
+                            &arena,
+                            &BTreeMap::from([(binding(2, Stage::Pixel), bytemuck::bytes_of(tint))]),
+                            &BTreeMap::from([(binding(0, Stage::Pixel), (*view).clone())]),
+                        )
+                        .unwrap();
+                    let vertices = arena.vertices(bytemuck::cast_slice(shape)).unwrap();
+                    let draw = pipeline
+                        .prepare(
+                            &arena,
+                            &BTreeMap::from([(binding(2, Stage::Pixel), bytemuck::bytes_of(tint))]),
+                            &BTreeMap::from([(binding(0, Stage::Pixel), (*view).clone())]),
+                            &crate::vertices::Vertices {
+                                declaration: crate::vertices::Declaration::Sprite,
+                                bytes: bytemuck::cast_slice(shape),
+                                stride: 12,
+                                count: 6,
+                            },
+                        )
+                        .unwrap();
+                    (bindings, vertices, draw)
+                })
+                .collect();
+            render_with(&device, &queue, &arena, |pass| {
+                pass.set_pipeline(&pipeline.pipeline);
+                let mut previous = None;
+                let mut previous_draw = None;
+                for (bindings, vertices, draw) in &prepared {
+                    if let Some(incremental) = packed {
+                        if incremental {
+                            pipeline.draw_after(pass, draw, previous_draw);
+                        } else {
+                            pipeline.draw(pass, draw);
+                        }
+                        previous_draw = Some(draw);
+                    } else {
+                        bindings.bind_after(pass, previous);
+                        pass.set_vertex_buffer(0, vertices.slice());
+                        pass.draw(0..6, 0..1);
+                        previous = Some(bindings);
+                    }
+                }
             })
-            .collect();
-        render_with(&device, &queue, &arena, |pass| {
-            pass.set_pipeline(&pipeline.pipeline);
-            let mut previous = None;
-            for (bindings, vertices) in &prepared {
-                bindings.bind_after(pass, previous);
-                pass.set_vertex_buffer(0, vertices.slice());
-                pass.draw(0..6, 0..1);
-                previous = Some(bindings);
-            }
-        })
-    };
+        };
     let pixel = |pixels: &[u8], x: usize, y: usize| -> [u8; 4] {
         pixels[(y * 16 + x) * 4..][..4].try_into().unwrap()
     };
@@ -132,10 +160,19 @@ Effect Test { VertexShader = V PixelShader = P }
         }
     };
     // The first two draws share a constant block, the last two a texture group.
-    let first = frame([(&red, opaque), (&green, opaque), (&green, black)]);
+    let inputs = [(&red, opaque), (&green, opaque), (&green, black)];
+    let first = frame(inputs, None, false);
+    assert_eq!(frame(inputs, Some(false), false), first);
+    assert_eq!(frame(inputs, Some(true), false), first);
     check(&first, [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 0, 255]]);
+    let repeated = frame(inputs, Some(false), true);
+    assert_eq!(frame(inputs, Some(true), true), repeated);
+    assert_eq!(pixel(&repeated, 2, 8), [0, 0, 0, 255]);
     // After a reset the same arena buffer and cached groups carry other bytes and views.
-    let second = frame([(&green, opaque), (&red, black), (&red, opaque)]);
+    let inputs = [(&green, opaque), (&red, black), (&red, opaque)];
+    let second = frame(inputs, None, false);
+    assert_eq!(frame(inputs, Some(false), false), second);
+    assert_eq!(frame(inputs, Some(true), false), second);
     check(
         &second,
         [[0, 255, 0, 255], [0, 0, 0, 255], [255, 0, 0, 255]],

@@ -137,11 +137,19 @@ impl Want {
         // Selection and the active GUI object are viewer-local overlay inputs.
         // Their prepared snapshot is checked when installed; pointer motion
         // must not cancel simulation-hour builders or restart their epoch.
+        self.map_mode != next.map_mode || self.invalidates_parts(next)
+    }
+
+    /// Whether mode-independent parts must also be rebuilt.
+    fn invalidates_parts(&self, next: &Want) -> bool {
         self.perspective != next.perspective
-            || self.map_mode != next.map_mode
             || self.show_allied_plans != next.show_allied_plans
             || self.counters.settings != next.counters.settings
             || !Arc::ptr_eq(&self.counters.presentation, &next.counters.presentation)
+    }
+
+    fn keeps_reusable(&self, (branch, hour): (BranchId, Hour)) -> bool {
+        branch == self.branch && (self.hour - self.behind..=self.hour + self.ahead).contains(&hour)
     }
 
     /// Whether an hour in flight is still worth finishing: one of `keep`, or,
@@ -150,7 +158,7 @@ impl Want {
         keep.contains(&key) || (self.playing && key.0 == self.branch && key.1 <= self.hour)
     }
 
-    /// Old-generation hours cannot satisfy a changed perspective.
+    /// Old-generation hours cannot satisfy a changed mode or perspective.
     fn discard_stale_have(&mut self, previous: Option<&Self>) -> bool {
         let invalidates = previous.is_some_and(|old| old.invalidates(self));
         if invalidates {
@@ -229,7 +237,7 @@ pub struct Layers {
     pub building_warnings: Vec<String>,
     pub trains: TrainPlan,
     pub aircraft: AircraftPlan,
-    pub units: PreparedModels,
+    pub units: Arc<PreparedModels>,
     /// Shared by the hours whose plan tables are the same
     /// ([`viewer_counter_products::map::orders::TABLES`]), so the window uploads it once.
     pub orders: Arc<OrderField>,
@@ -279,11 +287,12 @@ enum Part {
     Overlay(io::Result<Box<(PreparedOverlay, OverlayTables)>>),
     Rails(io::Result<Arc<Rails>>),
     Buildings(io::Result<(Arc<Shared<PreparedBuildings>>, Vec<String>)>),
-    Movers(io::Result<Box<Movers>>),
-    Fog(io::Result<Box<FogPart>>),
+    Movers(io::Result<Arc<Movers>>),
+    Fog(io::Result<Arc<FogPart>>),
     Snow(io::Result<Arc<SnowMud>>),
 }
 
+#[derive(Clone)]
 struct FogPart {
     intel: Arc<IntelMap>,
     limitations: Limitations,
@@ -294,13 +303,23 @@ struct FogPart {
     battles: Option<Arc<viewer_audio::Battles>>,
 }
 
+#[derive(Clone)]
 struct Movers {
     trains: TrainPlan,
     aircraft: AircraftPlan,
-    units: PreparedModels,
+    units: Arc<PreparedModels>,
     orders: Arc<OrderField>,
     effects: weather_effects::Prepared,
     impacts: Arc<viewer_world::map::strike_effects::Impacts>,
+}
+
+/// Mode-independent results of a built hour, retained only inside the wanted window.
+struct Reusable {
+    rails: Arc<Rails>,
+    buildings: (Arc<Shared<PreparedBuildings>>, Vec<String>),
+    movers: Arc<Movers>,
+    fog: Arc<FogPart>,
+    snow: Arc<SnowMud>,
 }
 
 impl Part {
@@ -558,8 +577,8 @@ struct Pending {
     overlay: Option<(PreparedOverlay, OverlayTables)>,
     rails: Option<Arc<Rails>>,
     buildings: Option<(Arc<Shared<PreparedBuildings>>, Vec<String>)>,
-    movers: Option<Movers>,
-    fog: Option<FogPart>,
+    movers: Option<Arc<Movers>>,
+    fog: Option<Arc<FogPart>>,
     snow: Option<Arc<SnowMud>>,
     received: usize,
     error: Option<String>,
@@ -642,11 +661,11 @@ impl Pending {
                 Err(error) => self.fail_part(name, rank, error),
             },
             Part::Movers(result) => match result {
-                Ok(value) => self.movers = Some(*value),
+                Ok(value) => self.movers = Some(value),
                 Err(error) => self.fail_part(name, rank, error),
             },
             Part::Fog(result) => match result {
-                Ok(value) => self.fog = Some(*value),
+                Ok(value) => self.fog = Some(value),
                 Err(error) => self.fail_part(name, rank, error),
             },
             Part::Snow(result) => match result {
@@ -658,13 +677,38 @@ impl Pending {
         self.received == PARTS
     }
 
+    fn reusable(&self) -> Option<Arc<Reusable>> {
+        if self.error.is_some() {
+            return None;
+        }
+        Some(Arc::new(Reusable {
+            rails: Arc::clone(self.rails.as_ref()?),
+            buildings: self.buildings.as_ref()?.clone(),
+            movers: Arc::clone(self.movers.as_ref()?),
+            fog: Arc::clone(self.fog.as_ref()?),
+            snow: Arc::clone(self.snow.as_ref()?),
+        }))
+    }
+
+    fn reuse(&mut self, parts: &Reusable) {
+        for (name, part) in [
+            ("rails", Part::Rails(Ok(Arc::clone(&parts.rails)))),
+            ("buildings", Part::Buildings(Ok(parts.buildings.clone()))),
+            ("movers", Part::Movers(Ok(Arc::clone(&parts.movers)))),
+            ("fog", Part::Fog(Ok(Arc::clone(&parts.fog)))),
+            ("snow", Part::Snow(Ok(Arc::clone(&parts.snow)))),
+        ] {
+            self.take(self.ticket, name, 0.0, part);
+        }
+    }
+
     fn layers(self) -> Result<Layers, String> {
         if let Some(error) = self.error {
             return Err(error);
         }
         let missing = || "an hour part did not arrive".to_owned();
         let (political, borders) = self.political.ok_or_else(missing)?;
-        let movers = self.movers.ok_or_else(missing)?;
+        let movers = (*self.movers.ok_or_else(missing)?).clone();
         let FogPart {
             intel,
             limitations,
@@ -672,7 +716,7 @@ impl Pending {
             map_text,
             music,
             battles,
-        } = self.fog.ok_or_else(missing)?;
+        } = (*self.fog.ok_or_else(missing)?).clone();
         let (overlay, overlay_tables) = self.overlay.ok_or_else(missing)?;
         let (buildings, building_warnings) = self.buildings.ok_or_else(missing)?;
         Ok(Layers {
@@ -1084,6 +1128,7 @@ struct Coordinator {
     /// hours' parts compare with.
     slots: BTreeMap<(BranchId, Hour), Slots>,
     memos: Arc<Memos>,
+    reusable: BTreeMap<(BranchId, Hour), Arc<Reusable>>,
     pool: Arc<Pool>,
     parallel: usize,
     events: Sender<Event>,
@@ -1139,15 +1184,27 @@ impl Coordinator {
                         // part order so the profile reads the same.
                         let mut laps = pending.laps.clone();
                         laps.sort_by_key(|(name, _)| lap_rank(name));
+                        if let Some(parts) = pending.reusable()
+                            && self
+                                .want
+                                .as_ref()
+                                .is_some_and(|want| want.keeps_reusable((branch, hour)))
+                        {
+                            self.reusable.insert((branch, hour), parts);
+                        }
+                        let view = pending.view;
+                        let current = pending.current.clone();
+                        let started = pending.started;
+                        let layers = pending.layers();
                         let built = Built {
                             epoch,
                             branch,
                             hour,
-                            view: pending.view,
-                            current: pending.current.clone(),
-                            wall: pending.started.elapsed().as_secs_f64() * 1000.0,
+                            view,
+                            current,
+                            wall: started.elapsed().as_secs_f64() * 1000.0,
                             laps,
-                            layers: pending.layers(),
+                            layers,
                         };
                         if !self.send(built) {
                             return;
@@ -1166,7 +1223,7 @@ impl Coordinator {
         }
     }
 
-    /// Starts a new epoch: every hour built or in flight is forgotten.
+    /// Starts a new epoch; mode-independent results may still serve its hours.
     fn invalidate(&mut self) {
         self.epoch += 1;
         for pending in self.pending.values() {
@@ -1178,6 +1235,13 @@ impl Coordinator {
     }
 
     fn set_want(&mut self, epoch: u64, mut want: Want) {
+        if self
+            .want
+            .as_ref()
+            .is_some_and(|previous| previous.invalidates_parts(&want))
+        {
+            self.reusable.clear();
+        }
         want.discard_stale_have(self.want.as_ref());
         if self.epoch != epoch {
             self.invalidate();
@@ -1192,6 +1256,7 @@ impl Coordinator {
             .into_iter()
             .map(|hour| (want.branch, hour))
             .collect();
+        self.reusable.retain(|key, _| want.keeps_reusable(*key));
         self.pending.retain(|key, pending| {
             let wanted = want.keeps_pending(*key, &keep);
             if !wanted {
@@ -1281,7 +1346,8 @@ impl Coordinator {
         let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let alive = Arc::new(AtomicBool::new(true));
         let ticket = next_id();
-        let pending = Pending {
+        let reusable = self.reusable.get(&(branch, hour)).cloned();
+        let mut pending = Pending {
             ticket,
             current: current.clone(),
             alive: Arc::clone(&alive),
@@ -1300,8 +1366,15 @@ impl Coordinator {
             laps: vec![("decode", decode_ms)],
             view: want.view,
         };
+        if let Some(parts) = &reusable {
+            pending.reuse(parts);
+        }
         self.pending.insert((branch, hour), pending);
         let slots = Slots::new();
+        if let Some(parts) = &reusable {
+            Fill(Arc::clone(&slots.rails)).set(Some(Arc::clone(&parts.rails)));
+            Fill(Arc::clone(&slots.buildings)).set(Some(Arc::clone(&parts.buildings.0)));
+        }
         // A part waits only for the neighbours' slots present now. Each of
         // those belongs to an hour dispatched before this one, whose jobs the
         // pool therefore took first; a cancelled or panicked part still fills
@@ -1457,6 +1530,7 @@ impl Coordinator {
                         Arc::default(),
                         overlay_engaged.as_deref(),
                     )?;
+                    tables.warm_counter_flags(&view.icons.counters);
                     let overlay = view.prepare_overlay_cached(
                         camera,
                         viewport,
@@ -1468,6 +1542,9 @@ impl Coordinator {
                 })())
             }),
         );
+        if reusable.is_some() {
+            return true;
+        }
         {
             let fill = Fill(Arc::clone(&slots.rails));
             let near = slots_of(&neighbours, |slots| &slots.rails);
@@ -1518,10 +1595,10 @@ impl Coordinator {
                     if let Ok(defines) = &view.trade_routes {
                         units.add_convoys(convoys, defines.convoys);
                     }
-                    Ok(Box::new(Movers {
+                    Ok(Arc::new(Movers {
                         trains: view.train_plan(&movers_perspective)?,
                         aircraft: view.aircraft_plan(&movers_perspective)?,
-                        units,
+                        units: Arc::new(units),
                         orders,
                         effects: weather_effects::prepare(
                             &view.weather_effects,
@@ -1548,7 +1625,7 @@ impl Coordinator {
                     let limitations = view.limitations_with(&fog_perspective, Some(&intel))?;
                     let music = view.music_chances(vision.ours()).map(Arc::new);
                     let battles = view.battle_sounds().map(Arc::new);
-                    Ok(Box::new(FogPart {
+                    Ok(Arc::new(FogPart {
                         intel,
                         limitations,
                         header: Arc::new(Header {
@@ -1695,6 +1772,7 @@ impl Pipeline {
             sends: 0,
             slots: BTreeMap::new(),
             memos: Arc::new(Memos::new()),
+            reusable: BTreeMap::new(),
             pool: Arc::clone(&pool),
             parallel,
             events: events.clone(),
@@ -1820,3 +1898,130 @@ pub use viewer_foundation::retirement::Dropper;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    fn want() -> Want {
+        Want {
+            branch: 1,
+            hour: 10,
+            ahead: 2,
+            behind: 2,
+            playing: false,
+            perspective: Default::default(),
+            map_mode: Default::default(),
+            show_allied_plans: false,
+            counters: Default::default(),
+            view: View {
+                camera: Camera::fit(
+                    viewer_foundation::map::camera::MapSize {
+                        width: 100,
+                        height: 100,
+                    },
+                    viewer_foundation::map::camera::MapDefines::test(),
+                    [100, 100],
+                ),
+                viewport: [100, 100],
+                ui_scale: 1.0,
+            },
+            have: vec![10, 11],
+            received: 2,
+        }
+    }
+
+    #[test]
+    fn a_mode_change_rebuilds_the_hour_but_keeps_its_independent_parts() {
+        use viewer_world::map::map_mode::{MapMode, Stock};
+        let old = want();
+        for stock in [Stock::States, Stock::Terrain, Stock::StrategicAir] {
+            let mut next = old.clone();
+            next.map_mode = MapMode::Stock(stock);
+            next.counters.set_mode(&next.map_mode);
+            assert!(old.invalidates(&next));
+            assert!(!old.invalidates_parts(&next));
+            assert!(next.discard_stale_have(Some(&old)));
+            assert!(next.have.is_empty());
+        }
+        let mut next = old.clone();
+        next.perspective.fog = !next.perspective.fog;
+        assert!(old.invalidates_parts(&next));
+        next = old.clone();
+        next.perspective.country = perspective::Country::Tag("test".into());
+        assert!(old.invalidates_parts(&next));
+        next = old.clone();
+        next.show_allied_plans = !next.show_allied_plans;
+        assert!(old.invalidates_parts(&next));
+        next = old.clone();
+        next.counters.settings.nato = !next.counters.settings.nato;
+        assert!(old.invalidates_parts(&next));
+        next = old.clone();
+        next.counters = CounterView::default();
+        assert!(old.invalidates_parts(&next));
+    }
+
+    #[test]
+    fn reusable_parts_follow_the_wants_window_and_branch_without_a_count_cap() {
+        let mut want = want();
+        for hour in 0..20 {
+            assert_eq!(want.keeps_reusable((1, hour)), (8..=12).contains(&hour));
+            assert!(!want.keeps_reusable((2, hour)));
+        }
+        want.ahead = 5_000;
+        assert!((10..=5_010).all(|hour| want.keeps_reusable((1, hour))));
+        let mut kept: BTreeMap<_, _> = (8..=5_010).map(|hour| ((1, hour), ())).collect();
+        want.hour = 5_010;
+        want.ahead = 0;
+        kept.retain(|key, _| want.keeps_reusable(*key));
+        assert_eq!(
+            kept.keys().copied().collect::<Vec<_>>(),
+            [(1, 5_008), (1, 5_009), (1, 5_010)]
+        );
+        want.branch = 2;
+        kept.retain(|key, _| want.keeps_reusable(*key));
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn reused_part_deliveries_preserve_identity_and_wait_for_the_three_mode_parts() {
+        let mut pending = Pending {
+            ticket: 7,
+            current: Current::Gap {
+                branch: 1,
+                hour: 10,
+                reason: String::new(),
+            },
+            alive: Arc::new(AtomicBool::new(true)),
+            started: Instant::now(),
+            political: None,
+            names: None,
+            overlay: None,
+            rails: None,
+            buildings: None,
+            movers: None,
+            fog: None,
+            snow: None,
+            received: 0,
+            error: None,
+            error_rank: None,
+            laps: Vec::new(),
+            view: want().view,
+        };
+        let rails = Arc::new(Rails {
+            id: next_id(),
+            value: Default::default(),
+        });
+        assert!(!pending.take(7, "rails", 0.0, Part::Rails(Ok(Arc::clone(&rails)))));
+        for name in ["buildings", "movers", "fog", "snow"] {
+            assert!(!pending.take(7, name, 0.0, Part::failed(name)));
+        }
+        assert!(Arc::ptr_eq(pending.rails.as_ref().unwrap(), &rails));
+        assert_eq!(pending.received, 5);
+        for name in ["political", "names"] {
+            assert!(!pending.take(7, name, 1.0, Part::failed(name)));
+        }
+        assert!(pending.take(7, "overlay", 1.0, Part::failed("overlay")));
+        assert_eq!(pending.received, PARTS);
+    }
+}

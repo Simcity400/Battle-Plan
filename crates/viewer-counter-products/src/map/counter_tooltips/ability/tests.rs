@@ -32,6 +32,7 @@ fn with_context<R>(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>) -> R) ->
     let units = Err("unused".into());
     run(&Context {
         nato: false,
+        diagnostics: true,
         content: None,
         reads: None,
         dig_in_factor: Err("unused".into()),

@@ -118,9 +118,10 @@ pub(super) fn build(context: &Context<'_>, input: &Hover) -> Tooltip {
         &mut out,
     );
     super::task_force_summary::append(context, &members, false, &mut out);
-    if context
-        .slot(input.metadata.country)
-        .is_ok_and(|slot| slot == context.vision.ours())
+    if context.diagnostics
+        && context
+            .slot(input.metadata.country)
+            .is_ok_and(|slot| slot == context.vision.ours())
     {
         super::naval_management::append(context, &members, &mut out);
     }

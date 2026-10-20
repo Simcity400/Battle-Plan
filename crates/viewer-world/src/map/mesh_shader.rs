@@ -209,8 +209,8 @@ impl Pass {
         })
     }
 
+    /// Dynamic mesh state; resource bindings select the executable pipeline.
     pub fn begin(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_pipeline(&self.pipeline.pipeline);
         pass.set_stencil_reference(self.reference);
         pass.set_blend_constant(wgpu::Color::WHITE);
     }

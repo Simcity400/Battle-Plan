@@ -1638,14 +1638,14 @@ impl<'a> Walk<'a> {
             let position = evaluate_position(
                 &bar.position,
                 Some(frame.size),
-                &format!("{}.position", template.path),
+                format_args!("{}.position", template.path),
             )
             .map_err(no_parent)?;
             let evaluated = evaluate_size(
                 &bar.size,
                 Some(frame.size),
                 position,
-                &format!("{}.size", template.path),
+                format_args!("{}.size", template.path),
             )
             .map_err(no_parent)?;
             let size = if vertical {
@@ -2022,8 +2022,13 @@ fn extended_frame(
     parent: [i32; 2],
 ) -> Result<([i32; 2], [i32; 2]), String> {
     let path = &element.path;
-    let position = evaluate_position(&bar.position, Some(parent), &format!("{path}.position"))?;
-    let size = evaluate_size(&bar.size, Some(parent), position, &format!("{path}.size"))?;
+    let position = evaluate_position(&bar.position, Some(parent), format_args!("{path}.position"))?;
+    let size = evaluate_size(
+        &bar.size,
+        Some(parent),
+        position,
+        format_args!("{path}.size"),
+    )?;
     let anchor = compute_anchor(bar.orientation, bar.origo, parent, size);
     Ok(([position[0] + anchor[0], position[1] + anchor[1]], size))
 }

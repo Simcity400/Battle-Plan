@@ -57,6 +57,46 @@ pub fn laps_line(laps: &[(&'static str, f64)], min_ms: f64) -> String {
         .join(" ")
 }
 
+std::thread_local! {
+    static SPANS: std::cell::RefCell<Vec<(&'static str, f64)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Part of a frame on this thread, timed from [`span`] until it drops while profiling
+/// (`BATTLE_PLAN_VIEWER_PROFILE`); [`take_spans`] reports each name's total.
+pub struct Span {
+    name: &'static str,
+    start: Option<Instant>,
+}
+
+pub fn span(name: &'static str) -> Span {
+    Span {
+        name,
+        start: crate::profile_writer::profiling().then(Instant::now),
+    }
+}
+
+impl Drop for Span {
+    fn drop(&mut self) {
+        let Some(start) = self.start else {
+            return;
+        };
+        let ms = start.elapsed().as_secs_f64() * 1000.0;
+        SPANS.with(|spans| {
+            let mut spans = spans.borrow_mut();
+            match spans.iter_mut().find(|(span, _)| *span == self.name) {
+                Some((_, total)) => *total += ms,
+                None => spans.push((self.name, ms)),
+            }
+        });
+    }
+}
+
+/// This thread's spans since the last call, at least 0.05 ms each.
+pub fn take_spans() -> String {
+    SPANS.with(|spans| laps_line(&std::mem::take(&mut *spans.borrow_mut()), 0.05))
+}
+
 /// Named CPU laps of one frame, recorded only while `start` was given a clock.
 #[derive(Default)]
 pub struct CpuLaps {

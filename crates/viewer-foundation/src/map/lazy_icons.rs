@@ -14,6 +14,10 @@
 //! lays the frame out again. Every change bumps [`LazyTextures::version`], so
 //! a window that laid a frame out before the load lays it out again.
 //!
+//! Counter hour workers instead warm their flag candidates before publishing.
+//! [`LazyFlags::acquire`] packs those decoded images on request and synchronously
+//! decides any unwarmed candidates, so counters never draw a temporary stand-in.
+//!
 //! Texture ids of lazy textures start at [`DYNAMIC_BASE`], above every static
 //! icon page, and are never reused, so a quad laid out against an id that has
 //! since been evicted draws nothing rather than another texture.
@@ -278,6 +282,8 @@ pub type FlagReader = Arc<dyn Fn(&str) -> Option<Rgba8Image> + Send + Sync>;
 struct FlagState {
     /// Decided keys: their cell, or `None` for a file the reader refused.
     cells: HashMap<String, Option<u32>>,
+    /// Readable images or refusals decided ahead of drawing, not yet packed.
+    decoded: HashMap<String, Option<Rgba8Image>>,
     /// The key of every cell, in cell order.
     keys: Vec<String>,
     pending: BTreeSet<String>,
@@ -294,6 +300,8 @@ pub struct LazyFlags {
     read: FlagReader,
     state: Mutex<FlagState>,
     loading: Mutex<()>,
+    /// Serializes hour warm-ups without holding up already warmed draw requests.
+    warming: Mutex<()>,
     textures: Arc<LazyTextures>,
 }
 
@@ -310,6 +318,7 @@ impl LazyFlags {
             read,
             state: Mutex::default(),
             loading: Mutex::default(),
+            warming: Mutex::default(),
             textures: Arc::clone(textures),
         });
         let weak: Weak<dyn PendingLoad> = Arc::downgrade(&flags) as Weak<dyn PendingLoad>;
@@ -331,12 +340,12 @@ impl LazyFlags {
         self.pages.cell
     }
 
-    /// Files the reader has refused so far.
+    /// Requested files the reader has refused.
     pub fn rejected(&self) -> usize {
         lock(&self.state).rejected
     }
 
-    /// Cells decoded so far.
+    /// Cells packed so far.
     pub fn loaded(&self) -> usize {
         lock(&self.state).keys.len()
     }
@@ -403,10 +412,42 @@ impl LazyFlags {
         found
     }
 
-    /// [`Self::resolve`] with every candidate decided first, on this thread: the flag the
-    /// candidates resolve to as it would be had the set been built whole at load, as the
-    /// engine builds its flag atlases, so a frame
-    /// never draws a stand-in for a flag that is not decoded yet.
+    /// Decides indexed keys on the calling worker, without requesting atlas cells.
+    ///
+    /// Hour preparation warms only its countries' candidates. Packing still follows
+    /// draw requests, so warming changes neither cell order nor UV rounding. Images
+    /// move into their pages when requested; unreadable files are remembered too.
+    pub fn warm<'a>(&self, keys: impl IntoIterator<Item = &'a str>) {
+        let _serial = lock(&self.warming);
+        let keys: Vec<String> = {
+            let state = lock(&self.state);
+            keys.into_iter()
+                .filter(|key| {
+                    self.index.contains_key(*key)
+                        && !state.cells.contains_key(*key)
+                        && !state.decoded.contains_key(*key)
+                })
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        let images = crate::parallel::map(&keys, |key| {
+            self.index.get(key).and_then(|path| (self.read)(path))
+        });
+        let mut state = lock(&self.state);
+        for (key, image) in keys.into_iter().zip(images) {
+            // A cold acquisition may have decided this key while the worker read it.
+            if !state.cells.contains_key(&key) {
+                state.decoded.insert(key, image);
+            }
+        }
+    }
+
+    /// [`Self::resolve`] with every candidate decided first: warmed images are packed
+    /// on request, and unwarmed candidates decode synchronously. This resolves as if
+    /// the set had been built whole at load, as the engine builds its flag atlases,
+    /// so a frame never draws a stand-in for a flag that is not decoded yet.
     pub fn acquire(&self, candidates: &[&str]) -> Option<(usize, [f32; 4])> {
         let queued = {
             let mut state = lock(&self.state);
@@ -451,24 +492,35 @@ impl PendingLoad for LazyFlags {
 
     fn load_pending(&self) -> bool {
         let _serial = lock(&self.loading);
-        let keys: Vec<String> = {
+        let (mut images, keys) = {
             let mut state = lock(&self.state);
             let pending = std::mem::take(&mut state.pending);
-            pending
-                .into_iter()
-                .filter(|key| !state.cells.contains_key(key))
-                .collect()
+            let mut images = BTreeMap::new();
+            let mut keys = Vec::new();
+            for key in pending {
+                if state.cells.contains_key(&key) {
+                    continue;
+                }
+                if let Some(image) = state.decoded.remove(&key) {
+                    images.insert(key, image);
+                } else {
+                    keys.push(key);
+                }
+            }
+            (images, keys)
         };
-        if keys.is_empty() {
+        if images.is_empty() && keys.is_empty() {
             return false;
         }
-        // Requests decode on the bounded pool and are packed in key order, so
-        // one set of requests always lands in the same cells.
-        let images = crate::parallel::map(&keys, |key| {
+        // Only unwarmed requests decode on the bounded pool. Both paths pack
+        // in key order, so one set of requests always lands in the same cells.
+        let decoded = crate::parallel::map(&keys, |key| {
             self.index.get(key).and_then(|path| (self.read)(path))
         });
+        images.extend(keys.into_iter().zip(decoded));
         let mut state = lock(&self.state);
-        for (key, image) in keys.into_iter().zip(images) {
+        for (key, image) in images {
+            state.decoded.remove(&key);
             let Some(image) = image else {
                 eprintln!(
                     "Warning: flag {} is not an uncompressed 24/32-bit {} x {} Targa; the next candidate flag is drawn instead.",
@@ -843,6 +895,132 @@ mod tests {
         textures.settle();
         assert_eq!(flags.loaded(), 1_400);
         assert_eq!(textures.snapshot().len(), 2);
+    }
+
+    #[test]
+    fn warming_decides_candidates_without_changing_request_cells_or_reading_again() {
+        for cell in [[10, 7], [41, 26], [82, 52]] {
+            let textures = foreground();
+            let reads = Arc::new(Mutex::new(Vec::new()));
+            let calls = Arc::clone(&reads);
+            let caller = std::thread::current().id();
+            let read: FlagReader = Arc::new(move |path| {
+                assert_ne!(std::thread::current().id(), caller);
+                lock(&calls).push(path.to_owned());
+                (!path.contains("T0013")).then(|| cell_image(cell, path.len() as u8))
+            });
+            let cold_textures = foreground();
+            let cold = flag_set(&cold_textures, cell);
+            let flags = LazyFlags::new(cold.index.clone(), cold.pages, read, &textures);
+            let candidates = [
+                vec!["T0002_fascism", "T0002"],
+                vec!["not indexed", "T0001_fascism", "T0001"],
+                vec!["T0013_fascism", "T0004"],
+                vec!["T0013_fascism", "T0013"],
+            ];
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    flags.warm(candidates.iter().rev().flatten().copied());
+                    // Shared candidates and repeated hours decode only once.
+                    flags.warm(candidates.iter().flatten().copied());
+                });
+            });
+            let before = lock(&reads).clone();
+            assert_eq!(before.len(), 7);
+            assert_eq!(flags.loaded(), 0);
+            assert_eq!(textures.version(), 0);
+            assert!(!textures.has_pending());
+            assert!(textures.snapshot().is_empty());
+            for keys in candidates {
+                // Any additional reader call, even on a pool thread, fails this count.
+                assert_eq!(flags.acquire(&keys), cold.acquire(&keys));
+                assert_eq!(*lock(&reads), before);
+                assert_eq!(flags.rejected(), cold.rejected());
+                assert_eq!(flags.loaded(), cold.loaded());
+                let warmed = textures.snapshot();
+                let reference = cold_textures.snapshot();
+                assert_eq!(warmed.len(), reference.len());
+                for ((id, image), (cold_id, cold_image)) in warmed.iter().zip(&reference) {
+                    assert_eq!(id, cold_id);
+                    assert_eq!(image.revision, cold_image.revision);
+                    assert_eq!(
+                        image.texture.mips[0][0].data,
+                        cold_image.texture.mips[0][0].data
+                    );
+                }
+            }
+            assert!(lock(&flags.state).decoded.is_empty());
+            // Correctness does not require a warm-up: an unprepared key still decodes.
+            assert!(cold.acquire(&["T0005"]).is_some());
+        }
+    }
+
+    #[test]
+    fn warming_five_thousand_countries_keeps_only_their_candidates() {
+        let textures = foreground();
+        let flags = flag_set(&textures, [2, 2]);
+        let keys: Vec<String> = (0..5_000)
+            .flat_map(|tag| [format!("T{tag:04}_fascism"), format!("T{tag:04}")])
+            .collect();
+        flags.warm(keys.iter().map(String::as_str));
+        assert_eq!(lock(&flags.state).decoded.len(), 10_000);
+        assert_eq!(flags.loaded(), 0);
+        assert_eq!(textures.resident_bytes(), 0);
+        for keys in keys.chunks_exact(2).rev() {
+            flags.acquire(&keys.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+        assert_eq!(flags.loaded(), 9_998);
+        assert_eq!(flags.rejected(), 2);
+        assert!(lock(&flags.state).decoded.is_empty());
+        assert_eq!(
+            textures.snapshot().len(),
+            flags.pages.pages_for(flags.loaded() as u32) as usize
+        );
+        // A mixed warm/cold batch preserves key-order packing too.
+        let cold_textures = foreground();
+        let cold = flag_set(&cold_textures, [2, 2]);
+        let mixed_textures = foreground();
+        let mixed = flag_set(&mixed_textures, [2, 2]);
+        mixed.warm(["T0002_fascism"]);
+        assert_eq!(
+            mixed.acquire(&["T0002_fascism", "T0002"]),
+            cold.acquire(&["T0002_fascism", "T0002"])
+        );
+    }
+
+    #[test]
+    fn acquisition_does_not_wait_for_warming_and_still_decides_cold_candidates() {
+        let textures = foreground();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let resume = Mutex::new(resume);
+        let later_reads = std::sync::atomic::AtomicUsize::new(0);
+        let read: FlagReader = Arc::new(move |key| {
+            if key == "later" && later_reads.fetch_add(1, Ordering::Relaxed) == 0 {
+                started.send(()).unwrap();
+                lock(&resume).recv_timeout(TEST_HANG_GUARD).unwrap();
+            }
+            Some(cell_image([2, 2], 7))
+        });
+        let flags = LazyFlags::new(
+            ["ready", "later"]
+                .map(|key| (key.to_owned(), key.to_owned()))
+                .into(),
+            CellPages::plan([2, 2], 8192, "flags").unwrap(),
+            read,
+            &textures,
+        );
+        flags.warm(["ready"]);
+        std::thread::scope(|scope| {
+            scope.spawn(|| flags.warm(["later"]));
+            waiting.recv_timeout(TEST_HANG_GUARD).unwrap();
+            assert!(flags.acquire(&["ready"]).is_some());
+            // The in-flight candidate is not ready: acquire still decides it now.
+            assert!(flags.acquire(&["later"]).is_some());
+            release.send(()).unwrap();
+        });
+        assert_eq!(flags.loaded(), 2);
+        assert!(lock(&flags.state).decoded.is_empty());
     }
 
     #[test]

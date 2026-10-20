@@ -350,6 +350,7 @@ mod tests {
         let vision = Vision::sharing(1, []);
         let context = Context {
             nato: false,
+            diagnostics: true,
             content: None,
             reads: None,
             dig_in_factor: Err("unused".into()),

@@ -15,6 +15,10 @@ pub enum Declaration {
     Circular,
 }
 
+impl Declaration {
+    pub(super) const ALL: [Self; 3] = [Self::Sprite, Self::Text, Self::Circular];
+}
+
 /// The declaration belongs to the retained program; bytes/stride/count belong to this draw.
 pub struct Vertices<'a> {
     pub declaration: Declaration,
@@ -23,47 +27,82 @@ pub struct Vertices<'a> {
     pub count: usize,
 }
 
-impl Vertices<'_> {
-    pub(super) fn pack(&self, inputs: &[VertexInput]) -> Result<Vec<f32>, String> {
-        let mut packed = Vec::new();
-        for vertex in 0..self.count {
-            let base = vertex
-                .checked_mul(self.stride)
-                .ok_or("vertex offset overflow")?;
-            for input in inputs {
+/// A pipeline's native fetch conversion for one retained declaration. Errors are kept at
+/// their input position, so a short buffer still refuses at the first read it cannot supply.
+pub(super) struct Packing {
+    inputs: Vec<Result<Input, String>>,
+    components: usize,
+}
+
+struct Input {
+    semantic: String,
+    offset: usize,
+    components: usize,
+    output: usize,
+    bgra: bool,
+}
+
+impl Packing {
+    pub(super) fn new(declaration: Declaration, inputs: &[VertexInput]) -> Self {
+        Self {
+            components: inputs.iter().map(|input| input.components as usize).sum(),
+            inputs: inputs.iter().map(|input| {
                 if input.kind != ScalarKind::Float {
                     return Err(format!(
-                        "native {:?} declaration supplies floats for {:?}, shader expects {:?}",
-                        self.declaration, input.semantic, input.kind
+                        "native {declaration:?} declaration supplies floats for {:?}, shader expects {:?}",
+                        input.semantic, input.kind
                     ));
                 }
                 let semantic = input.semantic.to_ascii_uppercase();
-                let (offset, components, bgra) = match (self.declaration, semantic.as_str()) {
-                    (Declaration::Sprite | Declaration::Text, "POSITION" | "POSITION0") => {
-                        (0, 3, false)
-                    }
-                    (Declaration::Sprite | Declaration::Text, "TEXCOORD" | "TEXCOORD0") => {
-                        (12, 2, false)
-                    }
+                let (offset, components, bgra) = match (declaration, semantic.as_str()) {
+                    (Declaration::Sprite | Declaration::Text, "POSITION" | "POSITION0") => (0, 3, false),
+                    (Declaration::Sprite | Declaration::Text, "TEXCOORD" | "TEXCOORD0") => (12, 2, false),
                     (Declaration::Text, "COLOR" | "COLOR0") => (20, 4, true),
                     (Declaration::Text, "COLOR1") => (24, 4, true),
                     (Declaration::Circular, "POSITION" | "POSITION0") => (0, 2, false),
                     (Declaration::Circular, "TEXCOORD" | "TEXCOORD0") => (8, 2, false),
                     (Declaration::Circular, "TEXCOORD1") => (16, 2, false),
-                    _ => {
-                        return Err(format!(
-                            "native {:?} declaration has no {:?} input",
-                            self.declaration, input.semantic
-                        ));
-                    }
+                    _ => return Err(format!("native {declaration:?} declaration has no {:?} input", input.semantic)),
                 };
-                let from = base.checked_add(offset).ok_or("vertex offset overflow")?;
-                let size = if bgra { 4 } else { components * 4 };
+                Ok(Input {
+                    semantic: input.semantic.clone(), offset, components,
+                    output: input.components as usize, bgra,
+                })
+            }).collect(),
+        }
+    }
+
+    pub(super) fn pack_into(
+        &self,
+        vertices: &Vertices<'_>,
+        packed: &mut Vec<f32>,
+    ) -> Result<(), String> {
+        packed.clear();
+        // A short supplied buffer must refuse at its first missing fetch, not reserve for
+        // vertices it cannot supply. Zero-stride fetches still repeat their current bytes.
+        let reserve = vertices
+            .count
+            .min(vertices.bytes.len() / vertices.stride.max(1));
+        packed.reserve(
+            reserve
+                .checked_mul(self.components)
+                .ok_or("vertex size overflow")?,
+        );
+        for vertex in 0..vertices.count {
+            let base = vertex
+                .checked_mul(vertices.stride)
+                .ok_or("vertex offset overflow")?;
+            for input in &self.inputs {
+                let input = input.as_ref().map_err(Clone::clone)?;
+                let from = base
+                    .checked_add(input.offset)
+                    .ok_or("vertex offset overflow")?;
+                let size = if input.bgra { 4 } else { input.components * 4 };
                 let end = from.checked_add(size).ok_or("vertex offset overflow")?;
-                let bytes = self.bytes.get(from..end).ok_or_else(|| format!("native {:?} input {:?} at vertex {vertex} reads beyond supplied buffer ({} bytes)", self.declaration, input.semantic, self.bytes.len()))?;
+                let bytes = vertices.bytes.get(from..end).ok_or_else(|| format!("native {:?} input {:?} at vertex {vertex} reads beyond supplied buffer ({} bytes)", vertices.declaration, input.semantic, vertices.bytes.len()))?;
                 // D3D's input conversion fills missing x/y/z with zero and w with one.
                 let mut value = [0.0, 0.0, 0.0, 1.0];
-                if bgra {
+                if input.bgra {
                     for (dst, src) in [2, 1, 0, 3].into_iter().enumerate() {
                         value[dst] = f32::from(bytes[src]) / 255.0;
                     }
@@ -72,9 +111,17 @@ impl Vertices<'_> {
                         value[dst] = f32::from_le_bytes(bytes.try_into().unwrap());
                     }
                 }
-                packed.extend_from_slice(&value[..input.components as usize]);
+                packed.extend_from_slice(&value[..input.output]);
             }
         }
+        Ok(())
+    }
+}
+
+impl Vertices<'_> {
+    pub(super) fn pack(&self, inputs: &[VertexInput]) -> Result<Vec<f32>, String> {
+        let mut packed = Vec::new();
+        Packing::new(self.declaration, inputs).pack_into(self, &mut packed)?;
         Ok(packed)
     }
 }
@@ -82,6 +129,91 @@ impl Vertices<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl Packing {
+        fn pack(&self, vertices: &Vertices<'_>) -> Result<Vec<f32>, String> {
+            let mut packed = Vec::new();
+            self.pack_into(vertices, &mut packed)?;
+            Ok(packed)
+        }
+    }
+
+    #[test]
+    fn prepared_fetches_keep_read_failure_order_and_current_bytes() {
+        let inputs = [
+            VertexInput {
+                kind: ScalarKind::Float,
+                location: 0,
+                semantic: "position0".into(),
+                components: 4,
+            },
+            VertexInput {
+                kind: ScalarKind::Uint,
+                location: 1,
+                semantic: "COLOR0".into(),
+                components: 4,
+            },
+        ];
+        let plan = Packing::new(Declaration::Sprite, &inputs);
+        let vertices = Vertices {
+            declaration: Declaration::Sprite,
+            bytes: &[],
+            stride: 12,
+            count: 1,
+        };
+        assert!(
+            plan.pack(&vertices)
+                .unwrap_err()
+                .contains("reads beyond supplied buffer")
+        );
+        assert!(
+            plan.pack(&Vertices {
+                count: usize::MAX,
+                ..vertices
+            })
+            .unwrap_err()
+            .contains("reads beyond supplied buffer")
+        );
+        let bytes = [2_f32, 3., 4.];
+        let vertices = Vertices {
+            bytes: bytemuck::cast_slice(&bytes),
+            ..vertices
+        };
+        assert!(
+            plan.pack(&vertices)
+                .unwrap_err()
+                .contains("shader expects Uint")
+        );
+        let plan = Packing::new(Declaration::Sprite, &inputs[..1]);
+        assert_eq!(plan.pack(&vertices).unwrap(), [2., 3., 4., 1.]);
+        let mut scratch = Vec::new();
+        plan.pack_into(&vertices, &mut scratch).unwrap();
+        let allocation = scratch.as_ptr();
+        plan.pack_into(&vertices, &mut scratch).unwrap();
+        assert_eq!(
+            scratch.as_ptr(),
+            allocation,
+            "equal-sized draws reuse packed storage"
+        );
+        let changed = [-2_f32, -3., -4.];
+        assert_eq!(
+            plan.pack(&Vertices {
+                bytes: bytemuck::cast_slice(&changed),
+                ..vertices
+            })
+            .unwrap(),
+            [-2., -3., -4., 1.]
+        );
+        assert!(
+            Packing::new(Declaration::Sprite, &inputs)
+                .pack(&Vertices {
+                    count: 0,
+                    ..vertices
+                })
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn retained_declaration_reads_current_buffer_stride_and_bgra_channels() {

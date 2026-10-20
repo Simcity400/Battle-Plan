@@ -254,7 +254,7 @@ fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
     let mut sailing = fleet();
     assert_eq!(sailing.advance(&defines, 120.0, &height), initial);
     *previous.convoys.as_mut().unwrap().2.get_mut().unwrap() = Some(sailing);
-    let mut next = make();
+    let next = Arc::new(make());
     next.inherit_convoys(&previous);
     next.field(&assets);
     next.convoy_units(&assets, 121.0, &height, |_| true, &mut BTreeMap::new());
@@ -269,6 +269,10 @@ fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
         .unwrap()
         .advance(&defines, 121.0, &height);
     assert_eq!(actual, expected, "hour upload must not replay elapsed time");
+    let reused = Arc::clone(&next);
+    assert!(Arc::ptr_eq(&next, &reused));
+    reused.reset_convoys();
+    assert!(next.convoys.as_ref().unwrap().2.lock().unwrap().is_none());
     // Mesh upload must also leave a new fleet uninitialized.
     let fresh = make();
     fresh.field(&assets);

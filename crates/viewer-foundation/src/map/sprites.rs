@@ -712,6 +712,7 @@ pub struct SpritePass {
 /// and the free eye's icons.
 #[derive(Default)]
 struct Scratch {
+    order: Vec<usize>,
     frame: Vec<Vertex>,
     pages: Vec<Vertex>,
     composites: Vec<fade::CompositeVertex>,
@@ -1067,7 +1068,15 @@ impl SpritePass {
             self.fade.fit(device, &[]);
             return;
         }
-        let mut order: Vec<usize> = (0..batch.quads.len()).collect();
+        let Scratch {
+            mut order,
+            mut frame,
+            mut pages,
+            mut composites,
+            mut icons,
+        } = std::mem::take(&mut self.scratch);
+        order.clear();
+        order.extend(0..batch.quads.len());
         // counters: `(layer, texture)`, so a page batch never overtakes an
         // icon child that has to draw under or over another. An exact quad keeps its push
         // order in its layer: the game's GUI draws in attach order, whatever the texture.
@@ -1086,12 +1095,6 @@ impl SpritePass {
                 },
             )
         });
-        let Scratch {
-            mut frame,
-            mut pages,
-            mut composites,
-            mut icons,
-        } = std::mem::take(&mut self.scratch);
         frame.clear();
         pages.clear();
         composites.clear();
@@ -1244,6 +1247,7 @@ impl SpritePass {
             &composites,
         );
         self.scratch = Scratch {
+            order,
             frame,
             pages,
             composites,
@@ -1474,19 +1478,30 @@ impl SpritePass {
                 multiview_mask: None,
             });
             let mut bound = false;
+            let mut previous_native = None;
+            let mut scissor = None;
             for run in self.fade_runs.get(index).into_iter().flatten() {
                 let [x, y, w, h] = run.scissor.unwrap_or([0, 0, page.size[0], page.size[1]]);
-                pass.set_scissor_rect(x, y, w, h);
+                if scissor != Some([x, y, w, h]) {
+                    pass.set_scissor_rect(x, y, w, h);
+                    scissor = Some([x, y, w, h]);
+                }
                 match run.pipe {
                     Pipe::Native(draw) => {
                         let submission = &self.fade_draws[draw];
-                        submission.pipeline.draw(&mut pass, &submission.draw);
+                        submission.pipeline.draw_after(
+                            &mut pass,
+                            &submission.draw,
+                            previous_native,
+                        );
+                        previous_native = Some(&submission.draw);
                         bound = false;
                     }
                     Pipe::Legacy => {
                         let Some(group) = self.group(run.texture) else {
                             continue;
                         };
+                        previous_native = None;
                         if !bound {
                             pass.set_pipeline(&self.fade_legacy);
                             pass.set_vertex_buffer(0, self.fade_vertices.slice(..));
@@ -1503,15 +1518,24 @@ impl SpritePass {
 
     fn draw_runs(&self, pass: &mut wgpu::RenderPass<'_>, [width, height]: [u32; 2]) {
         let mut bound = None;
+        let mut previous_native = None;
+        let mut scissor = None;
         for run in &self.runs {
             let [x, y, w, h] = run.scissor.unwrap_or([0, 0, width, height]);
-            pass.set_scissor_rect(x, y, w, h);
+            if scissor != Some([x, y, w, h]) {
+                pass.set_scissor_rect(x, y, w, h);
+                scissor = Some([x, y, w, h]);
+            }
             if let Pipe::Native(index) = run.pipe {
                 let submission = &self.native_draws[index];
-                submission.pipeline.draw(pass, &submission.draw);
+                submission
+                    .pipeline
+                    .draw_after(pass, &submission.draw, previous_native);
+                previous_native = Some(&submission.draw);
                 bound = None;
                 continue;
             }
+            previous_native = None;
             if let Pipe::Composite(page) = run.pipe {
                 if bound != Some(Pipe::Composite(0)) {
                     pass.set_pipeline(&self.fade.composite);
@@ -1532,8 +1556,6 @@ impl SpritePass {
                 }
                 bound = Some(run.pipe);
             }
-            let [x, y, w, h] = run.scissor.unwrap_or([0, 0, width, height]);
-            pass.set_scissor_rect(x, y, w, h);
             let group = match run.pipe {
                 Pipe::Legacy => self.group(run.texture),
                 Pipe::Native(_) | Pipe::Composite(_) => unreachable!(),

@@ -241,7 +241,12 @@ impl PreparedLand {
         // Land and naval plates share one column and one running icon ordinal.
         let mut ordinal = 0;
         let navy_size = inputs.navy_size();
-        let mut placed_columns = Vec::new();
+        let mut placed_columns = Vec::with_capacity(self.groups.len());
+        let roots = [LAND_WINDOW, GUN_WINDOW, NAVY_WINDOW]
+            .map(|name| window(&inputs.windows.guis, name).map_err(|why| why.to_string()));
+        let mut plates = Vec::new();
+        let mut sizes = Vec::new();
+        let mut items = Vec::new();
         for position in 0..self.order.len() {
             let index = self.order[position];
             let world = self.groups[index].anchor;
@@ -262,51 +267,50 @@ impl PreparedLand {
                 inputs.content.defines.icons_cutoff,
             );
             // Sum every item: an unknown size refuses the whole column.
-            let plates: Result<Vec<(Plate, [f32; 2])>, String> = self.items[index]
-                .iter()
-                .map(|plate| {
-                    let size = match plate {
-                        Plate::Land(member) => plate_size(inputs, &self.stacks[*member]),
-                        Plate::Naval(_) => navy_size
-                            .clone()
-                            .map_err(|why| format!("{NAVY_WINDOW}: {why}")),
-                    }?;
-                    Ok((*plate, size))
-                })
-                .collect();
-            let plates = match plates {
-                Ok(plates) => plates,
-                Err(why) => {
-                    refuse_column(
-                        self.items[index].iter().copied(),
-                        &self.flotillas,
-                        report,
-                        &why,
-                    );
-                    continue;
-                }
-            };
-            let sizes: Vec<[f32; 2]> = plates.iter().map(|(_, size)| *size).collect();
+            plates.clear();
+            sizes.clear();
+            items.clear();
+            let collected = self.items[index].iter().try_for_each(|plate| {
+                let size = match plate {
+                    Plate::Land(member) => plate_size(inputs, &self.stacks[*member]),
+                    Plate::Naval(_) => navy_size
+                        .clone()
+                        .map_err(|why| format!("{NAVY_WINDOW}: {why}")),
+                }?;
+                plates.push((*plate, size));
+                sizes.push(size);
+                Ok::<_, String>(())
+            });
+            if let Err(why) = collected {
+                refuse_column(
+                    self.items[index].iter().copied(),
+                    &self.flotillas,
+                    report,
+                    &why,
+                );
+                continue;
+            }
             let mut below = 0i32;
-            let items: Result<Vec<_>, _> = plates
-                .iter()
-                .map(|(plate, size)| {
-                    let name = match plate {
-                        Plate::Land(member) if self.stacks[*member].gun.is_some() => GUN_WINDOW,
-                        Plate::Land(_) => LAND_WINDOW,
-                        Plate::Naval(_) => NAVY_WINDOW,
-                    };
-                    // Add the new item's own height first.
-                    below = below.wrapping_add(size[1] as i32);
-                    window(&inputs.windows.guis, name).map(|item| (item, [0, below]))
-                })
-                .collect();
-            let layout = items.map_err(|why| why.to_string()).and_then(|items| {
+            let collected = plates.iter().try_for_each(|(plate, size)| {
+                let root = match plate {
+                    Plate::Land(member) if self.stacks[*member].gun.is_some() => &roots[1],
+                    Plate::Land(_) => &roots[0],
+                    Plate::Naval(_) => &roots[2],
+                }
+                .as_ref()
+                .copied()
+                .map_err(Clone::clone)?;
+                // Add the new item's own height first.
+                below = below.wrapping_add(size[1] as i32);
+                items.push((root, [0, below]));
+                Ok::<_, String>(())
+            });
+            let layout = collected.and_then(|()| {
                 native_gui::finalize_grid_positions(
                     grid,
                     holder.content,
                     viewport,
-                    items,
+                    items.iter().copied(),
                     holder.position,
                 )
                 .map_err(|refusal| refused_cause(STACK_WINDOW, &refusal))
@@ -759,6 +763,7 @@ pub(super) type StackKey = (u32, u32);
 
 /// One admitted unit, retained until the geographic group's first-fit rebuild. Its route is
 /// borrowed from the hour's [`Movements`].
+#[derive(Clone)]
 pub(super) struct LandUnit<'m> {
     /// The ordinal in the province's recorded unit order; zero without a recorded order.
     pub(super) ordinal: u32,
@@ -1640,6 +1645,7 @@ fn add_railway_guns(
 pub(super) const LAND_KIND: u32 = 0;
 
 /// Only camera-admitted provinces offer division sources.
+#[cfg(test)]
 pub(super) fn admitted_divisions<'a>(
     bounds: &'a BTreeMap<u32, Bounds>,
     admission: &'a Admission,
@@ -1650,36 +1656,23 @@ pub(super) fn admitted_divisions<'a>(
         .filter(move |division| admission.admits_province(bounds, division.province))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn land_counters<'a>(
-    inputs: &CounterInputs<'_>,
+/// Division operands in province and visual-slot order. Movement stays in the hour's
+/// shared movement table and is borrowed only by camera-admitted sources.
+pub(super) type DivisionCounters = BTreeMap<StackKey, Vec<LandUnit<'static>>>;
+
+pub(super) fn division_counters(
     frame: &DecodedFrame,
     owner: &impl Fn(u32) -> Option<u32>,
-    land: &CounterTables<'a>,
-    naval: &NavalContext<'a>,
-    geography: &Geography,
-    friendly: &impl Fn(u32, u32) -> bool,
-    out: &mut CounterFrame,
-) -> io::Result<PreparedLand> {
-    // Division sources follow the recorded province occupant order. Units absent
-    // from that array do not contribute to the source.
-    let mut sources: BTreeMap<StackKey, Source<'a>> = BTreeMap::new();
+    land: &CounterTables<'_>,
+) -> io::Result<DivisionCounters> {
+    let mut sources = DivisionCounters::new();
     let hq_providers = land.hq_providers;
     let commanders: BTreeMap<u64, u64> = rows::<tables::OrdersGroups>(frame)?
         .rows()
         .iter()
         .map(|group| (group.handle, group.leader))
         .collect();
-    // A cold source array activates the camera-admitted sources in (province, visual slot)
-    // order; see `counter_groups`. A division in a province the camera does not admit builds
-    // nothing.
-    let admission = Admission::new(inputs.camera, inputs.viewport);
-    // Armies and railway guns have counters only in the map modes that show every unit kind.
-    let armies = inputs.visibility.unit_kinds == UnitKinds::All;
-    let divisions = rows::<tables::Divisions>(frame)?;
-    for division in
-        admitted_divisions(&inputs.content.bounds, &admission, divisions.rows()).filter(|_| armies)
-    {
+    for division in rows::<tables::Divisions>(frame)?.rows() {
         let Some(slot) = owner(division.roster_owner) else {
             continue;
         };
@@ -1716,8 +1709,7 @@ pub(super) fn land_counters<'a>(
         sources
             .entry((division.province, kind))
             .or_default()
-            .units
-            .push(SourceUnit::Land(LandUnit {
+            .push(LandUnit {
                 ordinal,
                 id: division.id,
                 type_tint: land
@@ -1751,7 +1743,7 @@ pub(super) fn land_counters<'a>(
                     has_order: status.has_order,
                     invalid_orders: status.invalid_orders,
                 },
-                movement,
+                movement: None,
                 action: land.actions.get(division.id),
                 group_parent: land
                     .orders
@@ -1777,7 +1769,41 @@ pub(super) fn land_counters<'a>(
                         .map(|&leader| (leader != 0).then_some(leader))
                 },
                 gun: None,
+            });
+    }
+    Ok(sources)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn land_counters<'a>(
+    inputs: &CounterInputs<'_>,
+    divisions: &DivisionCounters,
+    owner: &impl Fn(u32) -> Option<u32>,
+    land: &CounterTables<'a>,
+    naval: &NavalContext<'a>,
+    geography: &Geography,
+    friendly: &impl Fn(u32, u32) -> bool,
+    out: &mut CounterFrame,
+) -> io::Result<PreparedLand> {
+    // Division sources follow the recorded province occupant order. Units absent
+    // from that array do not contribute to the source.
+    let mut sources: BTreeMap<StackKey, Source<'a>> = BTreeMap::new();
+    let admission = Admission::new(inputs.camera, inputs.viewport);
+    let armies = inputs.visibility.unit_kinds == UnitKinds::All;
+    if armies {
+        for (&key, units) in divisions {
+            if !admission.admits_province(&inputs.content.bounds, key.0) {
+                continue;
+            }
+            let source = sources.entry(key).or_default();
+            source.units.extend(units.iter().map(|unit| {
+                let unit = unit.clone();
+                // The cached member owns every other operand; admitted sources borrow
+                // their movement from the same hour that supplied those operands.
+                let movement = land.movement.get(unit.id);
+                SourceUnit::Land(LandUnit { movement, ..unit })
             }));
+        }
     }
     let unavailable = out.report.unavailable_railway_guns;
     // Unknown gun geometry still occupies its source: the game refuses the column.
@@ -2891,5 +2917,87 @@ mod tests {
             );
             assert_eq!(report.land_counter_gaps[why.as_str()], 2);
         }
+    }
+}
+
+#[cfg(test)]
+mod cached_division_tests {
+    use super::*;
+    use replay_data::rows::{DivisionRow, OrdersGroupRow, TableRows};
+
+    #[test]
+    fn cached_divisions_keep_hour_operands_and_do_not_admit_provinces() {
+        let mut frame = test_frame(1);
+        test_put(
+            &mut frame,
+            TableRows::OrdersGroups(vec![OrdersGroupRow {
+                handle: 7,
+                leader: 91,
+                hq_provider: 2,
+                ..Default::default()
+            }]),
+        );
+        test_put(
+            &mut frame,
+            TableRows::Divisions(
+                (1..=5000)
+                    .map(|id| DivisionRow {
+                        id,
+                        province: if id == 1 { 11 } else { 22 },
+                        roster_owner: 1,
+                        logical_owner: 1,
+                        orders_group: if id == 2 { 7 } else { 0 },
+                        template: 83,
+                        hit_points: 55,
+                        organisation: 66,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        let vision = Arc::new(Vision::sharing(1, []));
+        let tables = CounterTables {
+            type_tints: &Default::default(),
+            countries: &Arc::default(),
+            icons: &Arc::default(),
+            status: &Default::default(),
+            movement: &Default::default(),
+            actions: &Default::default(),
+            vision: &vision,
+            order: None,
+            native: &Default::default(),
+            orders: &Default::default(),
+            guns: &Default::default(),
+            abilities: &Default::default(),
+            task_forces: &Default::default(),
+            hq_providers: &BTreeSet::from([2]),
+            portraits: &Default::default(),
+            icon_inputs: &Default::default(),
+        };
+        let cached = division_counters(&frame, &Some, &tables).unwrap();
+        assert_eq!(cached[&(11, STANDSTILL)].len(), 1);
+        let units = &cached[&(22, STANDSTILL)];
+        assert_eq!(units.len(), 4999);
+        assert_eq!(units[0].id, 2);
+        assert_eq!(units[0].commander, Some(Some(91)));
+        assert_eq!(units[1].commander, Some(None));
+        assert!(units[0].hq && units[0].separate);
+        assert!(units.iter().all(|unit| unit.movement.is_none()));
+        let fresh = division_counters(&frame, &Some, &tables).unwrap();
+        let signature = |sources: &DivisionCounters| {
+            sources
+                .iter()
+                .map(|(&key, units)| {
+                    (
+                        key,
+                        units
+                            .iter()
+                            .map(|unit| (unit.id, unit.ordinal, unit.commander, unit.hp, unit.org))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(signature(&cached), signature(&fresh));
     }
 }

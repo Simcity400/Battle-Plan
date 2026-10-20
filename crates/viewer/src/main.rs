@@ -1547,7 +1547,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.icons.raids.movement_reads(),
             frame,
             &counter_report.perspective,
-            options.counter_settings(document.game_counters).nato,
+            viewer_counter_products::map::counter_tooltips::Style {
+                nato: options.counter_settings(document.game_counters).nato,
+                diagnostics: options.diagnostics,
+            },
         );
         let tooltips = counter_report
             .land_hovers

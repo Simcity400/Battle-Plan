@@ -505,3 +505,57 @@ fn base_prohibition_lists_keep_raw_zero_and_nonzero_country_aliases() {
     assert_eq!(country_list_contains(&[22], 11, &links), Ok(false));
     assert!(country_list_contains(&[88], 11, &links).is_err());
 }
+
+#[test]
+fn cached_base_joins_equal_fresh_hour_derivations() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use replay_data::rows::{AirBaseRow, ProvinceRow, TableRows};
+    use viewer_foundation::map::test_support::{test_frame, test_put};
+    super::super::tests::with_counter_inputs_fixture(
+        super::super::tests::action_gui(false),
+        |_| {},
+        |_| {},
+        |inputs| {
+            let mut frame = test_frame(1);
+            test_put(&mut frame, TableRows::CountryLinks(Vec::new()));
+            test_put(
+                &mut frame,
+                TableRows::Provinces(vec![ProvinceRow {
+                    id: 9,
+                    controller: 5,
+                    ..Default::default()
+                }]),
+            );
+            test_put(
+                &mut frame,
+                TableRows::AirBases(
+                    [0, 1, 2, 0]
+                        .map(|kind| AirBaseRow {
+                            id: kind as u64 + 1,
+                            state: Some(7),
+                            kind,
+                            capacity: 100,
+                            ..Default::default()
+                        })
+                        .into(),
+                ),
+            );
+            let vision = Vision::default();
+            let cached = BaseTables::read(&frame, &vision, inputs.content).unwrap();
+            assert_eq!(cached.wings, wings_per_site(&frame, &vision).unwrap());
+            assert_eq!(
+                (&cached.states, cached.complete),
+                (&site_icon_states(&frame).unwrap().0, true)
+            );
+            assert_eq!(cached.radar, radar_states(&frame, vision.ours()).unwrap());
+            assert_eq!(cached.controlled.get(&9), Some(&true));
+            assert_eq!(cached.controlled.get(&10), None);
+            assert_eq!(
+                cached.site_bases[&(7, 0)],
+                [1, 1],
+                "repeated base rows stay repeated"
+            );
+        },
+    );
+}

@@ -1831,9 +1831,7 @@ pub mod tests {
             buttonType = { name = player_flag parent = base }
         } }"#,
         );
-        let guis = native::Guis {
-            files: vec![("interface/topbar.gui".into(), gui)],
-        };
+        let guis = native::Guis::new(vec![("interface/topbar.gui".into(), gui)]);
         let mut warnings = Vec::new();
         assert_eq!(
             installed_content_core::gui::native::window_button_sprite(

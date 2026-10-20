@@ -133,9 +133,10 @@ impl NativeWindows {
     /// The windows of one file's `bytes` read in the GUI viewport `viewport`, for tests.
     #[cfg(any(test, feature = "test-support"))]
     pub fn read(bytes: &[u8], viewport: [i32; 2]) -> io::Result<Self> {
-        Self::of(native::Guis {
-            files: vec![(MAPICONS_GUI.to_owned(), native::read_at(bytes, viewport))],
-        })
+        Self::of(native::Guis::new(vec![(
+            MAPICONS_GUI.to_owned(),
+            native::read_at(bytes, viewport),
+        )]))
     }
 
     fn at(&self, (file, index): (usize, usize)) -> &native::Element {

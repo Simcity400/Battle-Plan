@@ -1990,8 +1990,16 @@ impl Gui {
     /// Template lookup over this file alone: the template its inserts leave under `name`,
     /// compared with every byte lowered.
     pub fn template(&self, name: impl AsRef<[u8]>) -> Option<&Element> {
+        let name = name.as_ref();
+        let lowered;
+        let key = if name.iter().any(u8::is_ascii_uppercase) {
+            lowered = name.to_ascii_lowercase();
+            lowered.as_slice()
+        } else {
+            name
+        };
         self.registered
-            .get(&name.as_ref().to_ascii_lowercase())
+            .get(key)
             .map(|index| &self.templates[*index])
     }
 
@@ -2112,23 +2120,54 @@ fn read_layers_with(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::
         &mut files.iter_mut().map(|(_, gui)| gui).collect::<Vec<_>>(),
         viewport,
     );
-    Ok(Guis { files })
+    Ok(Guis::new(files))
 }
 
 /// Every `.gui` file the game reads, in its load order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Guis {
     pub files: Vec<(String, Gui)>,
+    /// Lowered names in byte order and the file/template each last registration selects.
+    registered: Vec<(Vec<u8>, usize, usize)>,
 }
 
 impl Guis {
+    /// Builds the shared template registry in file registration order.
+    pub fn new(files: Vec<(String, Gui)>) -> Self {
+        let mut registered = BTreeMap::new();
+        for (file, (_, gui)) in files.iter().enumerate() {
+            for (name, &template) in &gui.registered {
+                registered.insert(name.clone(), (file, template));
+            }
+        }
+        Self {
+            files,
+            registered: registered
+                .into_iter()
+                .map(|(name, (file, template))| (name, file, template))
+                .collect(),
+        }
+    }
+
     /// Template lookup over the shared registry: the template left by the last file registering
     /// `name`.
     pub fn template(&self, name: impl AsRef<[u8]>) -> Option<&Element> {
-        self.files
-            .iter()
-            .rev()
-            .find_map(|(_, gui)| gui.template(name.as_ref()))
+        let name = name.as_ref();
+        let lowercase = !name.iter().any(u8::is_ascii_uppercase);
+        let index = self
+            .registered
+            .binary_search_by(|(key, ..)| {
+                if lowercase {
+                    key.as_slice().cmp(name)
+                } else {
+                    key.iter()
+                        .copied()
+                        .cmp(name.iter().map(u8::to_ascii_lowercase))
+                }
+            })
+            .ok()?;
+        let (_, file, template) = &self.registered[index];
+        Some(&self.files[*file].1.templates[*template])
     }
 
     /// [`Gui::text_box_named`] over every file.
@@ -2225,3 +2264,50 @@ fn finish(reader: reader::Reader, blocks: Vec<Vec<Element>>) -> Gui {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[test]
+    fn the_last_registering_file_wins_without_hiding_other_templates() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let guis = Guis::new(vec![
+            (
+                "first.gui".into(),
+                read(
+                    br#"guiTypes={
+                containerWindowType={name=Shared size={width=11 height=12}}
+                containerWindowType={name=first_only}
+            }"#,
+                ),
+            ),
+            (
+                "last.gui".into(),
+                read(
+                    br#"guiTypes={
+                containerWindowType={name=sHARED size={width=21 height=22}}
+                containerWindowType={name=last_only}
+            }"#,
+                ),
+            ),
+            ("empty.gui".into(), Gui::default()),
+        ]);
+        for name in ["shared", "SHARED", "sHaReD"] {
+            assert!(std::ptr::eq(
+                guis.template(name).unwrap(),
+                guis.files[1].1.template(name).unwrap(),
+            ));
+        }
+        assert!(guis.template("FIRST_ONLY").is_some());
+        assert!(guis.template("LAST_ONLY").is_some());
+        assert!(guis.template("missing").is_none());
+        let cloned = guis.clone();
+        assert_eq!(cloned, guis);
+        assert!(std::ptr::eq(
+            cloned.template("shared").unwrap(),
+            cloned.files[1].1.template("shared").unwrap(),
+        ));
+    }
+}

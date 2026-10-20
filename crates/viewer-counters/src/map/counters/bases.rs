@@ -920,7 +920,7 @@ pub(super) fn strategic_locations(frame: &DecodedFrame) -> io::Result<StrategicL
 
 /// The states whose radar icons the hour shows, and why some may be
 /// missing.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct RadarStates {
     pub(super) shown: BTreeSet<u32>,
     pub(super) notes: Vec<String>,
@@ -1043,8 +1043,85 @@ pub(super) fn radar_states(frame: &DecodedFrame, ours: u32) -> io::Result<RadarS
     Ok(out)
 }
 
-/// Draws the base icons: air bases per camera from the hour's rows, and the naval base,
-/// naval-HQ and facility icons [`BaseIcons`] decided for the hour.
+/// The base joins shared by every camera of this hour and viewing country.
+#[derive(Clone)]
+pub(super) struct BaseTables {
+    wings: BTreeMap<(u32, usize), AirBaseCount>,
+    states: [BTreeSet<u32>; 3],
+    complete: bool,
+    aircraft_complete: bool,
+    controlled: BTreeMap<u32, bool>,
+    locations: BTreeMap<u32, Option<String>>,
+    location_notes: Vec<String>,
+    radar: RadarStates,
+    site_bases: BTreeMap<(u32, i32), Vec<u64>>,
+    volunteers: Arc<Result<air_volunteers::Allowances, String>>,
+}
+
+impl BaseTables {
+    pub(super) fn read(
+        frame: &DecodedFrame,
+        vision: &Vision,
+        content: &CounterContent,
+    ) -> io::Result<Self> {
+        let (states, complete) = site_icon_states(frame)?;
+        let (locations, location_notes) = location_icons(frame)?;
+        let mut site_bases = BTreeMap::<_, Vec<_>>::new();
+        for base in rows::<tables::AirBases>(frame)?.rows() {
+            if let Some(state) = base.state {
+                site_bases
+                    .entry((state, base.kind))
+                    .or_default()
+                    .push(base.id);
+            }
+        }
+        Ok(Self {
+            volunteers: Arc::new(air_volunteers::Allowances::read(
+                frame,
+                vision.ours(),
+                &content.volunteer_air_defines,
+            )),
+            wings: wings_per_site(frame, vision)?,
+            states,
+            complete,
+            aircraft_complete: rows::<tables::AirWings>(frame)?.is_complete(),
+            controlled: rows::<tables::Provinces>(frame)?
+                .rows()
+                .iter()
+                .map(|row| (row.id, row.controller > 0))
+                .collect(),
+            locations,
+            location_notes,
+            radar: radar_states(frame, vision.ours())?,
+            site_bases,
+        })
+    }
+}
+
+type LocationIcons = (BTreeMap<u32, Option<String>>, Vec<String>);
+
+fn location_icons(frame: &DecodedFrame) -> io::Result<LocationIcons> {
+    let (locations, notes) = strategic_locations(frame)?;
+    let names = TokenNames::new(frame)?;
+    Ok((
+        locations
+            .into_iter()
+            .map(|(province, tokens)| {
+                (
+                    province,
+                    names
+                        .name(tokens[0])
+                        .ok()
+                        .map(|first| format!("{STRATEGIC_LOCATION_SPRITE_PREFIX}{first}")),
+                )
+            })
+            .collect(),
+        notes,
+    ))
+}
+
+/// Plans the base icons from the hour's shared joins, applying the camera,
+/// map mode and local selection to their retained windows.
 pub(super) fn bases(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
@@ -1060,7 +1137,8 @@ pub(super) fn bases(
     // The raids map mode clears these base icons with the other province icons; naval
     // headquarters and facilities stay.
     if inputs.visibility.province_icons && inputs.shows(defines.air_base_cutoff) {
-        let wings = wings_per_site(frame, vision)?;
+        let cached = &tables.bases;
+        let wings = &cached.wings;
         let grid_census = (inputs.visibility.priorities
             == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir)
             .then(|| air_grid::Census::new(frame));
@@ -1077,21 +1155,16 @@ pub(super) fn bases(
                 Some((base.state?, site_kind(base.kind)))
             })
             .collect();
-        let aircraft_complete = rows::<tables::AirWings>(frame)?.is_complete();
-        let volunteers = grid_census.as_ref().map(|_| {
-            air_volunteers::Allowances::read(
-                frame,
-                vision.ours(),
-                &inputs.content.volunteer_air_defines,
-            )
-        });
-        let (states, complete) = site_icon_states(frame)?;
+        let aircraft_complete = cached.aircraft_complete;
+        let volunteers = &*cached.volunteers;
+        let states = &cached.states;
+        let complete = cached.complete;
         let families = [
             (base_windows::Family::AirBase, AIR_BASE_WINDOW),
             (base_windows::Family::RocketSite, ROCKET_SITE_WINDOW),
             (base_windows::Family::GunEmplacement, GUN_EMPLACEMENT_WINDOW),
         ];
-        let controlled = province_controlled(frame)?;
+        let controlled = |province| cached.controlled.get(&province).copied();
         for (kind, (family, window)) in families.into_iter().enumerate() {
             if !complete {
                 *out.report
@@ -1164,12 +1237,7 @@ pub(super) fn bases(
                             let controller = vision
                                 .province_controller(province)
                                 .ok_or("Air volunteer base controller unavailable")?;
-                            volunteers
-                                .as_ref()
-                                .ok_or("Air volunteer preparation unavailable")?
-                                .as_ref()
-                                .map_err(Clone::clone)?
-                                .host(controller)
+                            volunteers.as_ref().map_err(Clone::clone)?.host(controller)
                         })();
                         match allowance {
                             Ok(value) => display.volunteers = value,
@@ -1183,15 +1251,12 @@ pub(super) fn bases(
                     if count.shown
                         && let Some((grid_index, _)) = family.wing_grid()
                     {
-                        let matching: Vec<_> = base_rows
-                            .rows()
-                            .iter()
-                            .filter(|base| base.state == Some(state) && base.kind == kind as i32)
-                            .collect();
-                        let grid = match (matching.as_slice(), grid_census.as_ref()) {
-                            ([base], Some(Ok(census))) => {
-                                census.base(inputs, base.id, vision.ours())
-                            }
+                        let matching = cached
+                            .site_bases
+                            .get(&(state, kind as i32))
+                            .map_or(&[][..], Vec::as_slice);
+                        let grid = match (matching, grid_census.as_ref()) {
+                            ([base], Some(Ok(census))) => census.base(inputs, *base, vision.ours()),
                             (_, Some(Err(reason))) => Err(reason.clone()),
                             _ => Err("state's air-base identity is not unique".into()),
                         };
@@ -1220,9 +1285,14 @@ pub(super) fn bases(
         }
     }
 
-    strategic_location_icons(inputs, frame, out)?;
+    strategic_location_icons_cached(
+        inputs,
+        &tables.bases.locations,
+        &tables.bases.location_notes,
+        out,
+    )?;
 
-    radars(inputs, frame, vision, out)?;
+    radars_cached(inputs, &tables.bases.radar, out)?;
 
     let icons = &tables.base_icons;
     out.report.unknown_bases.clone_from(&icons.unknown);
@@ -1264,24 +1334,33 @@ pub(super) fn bases(
 }
 
 /// Prepare strategic-location icons, deferring free-view cutoffs to each anchor.
+#[cfg(test)]
 pub(super) fn strategic_location_icons(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
+    out: &mut CounterFrame,
+) -> io::Result<()> {
+    let (locations, notes) = location_icons(frame)?;
+    strategic_location_icons_cached(inputs, &locations, &notes, out)
+}
+
+fn strategic_location_icons_cached(
+    inputs: &CounterInputs<'_>,
+    locations: &BTreeMap<u32, Option<String>>,
+    notes: &[String],
     out: &mut CounterFrame,
 ) -> io::Result<()> {
     let defines = &inputs.content.defines;
     // A strategic location shows with the air-base icons' camera cutoff and
     // map-mode gate, wherever the province lists one.
     if inputs.visibility.province_icons && inputs.shows(defines.air_base_cutoff) {
-        let (locations, notes) = strategic_locations(frame)?;
         for note in notes {
             *out.report
                 .icon_gui_notes
                 .entry(format!("{STRATEGIC_LOCATION_WINDOW}: {note}"))
                 .or_default() += 1;
         }
-        let names = TokenNames::new(frame)?;
-        for (province, tokens) in locations {
+        for (&province, sprite) in locations {
             let Some(anchor) = inputs.content.anchor(province, VICTORY_POINT) else {
                 *out.report
                     .icon_gui_notes
@@ -1291,7 +1370,7 @@ pub(super) fn strategic_location_icons(
                     .or_default() += 1;
                 continue;
             };
-            let Ok(first) = names.name(tokens[0]) else {
+            let Some(sprite) = sprite else {
                 *out.report
                     .icon_gui_notes
                     .entry(format!(
@@ -1310,7 +1389,7 @@ pub(super) fn strategic_location_icons(
                     air: None,
                     frame: 0,
                     enabled: true,
-                    sprite: Some(format!("{STRATEGIC_LOCATION_SPRITE_PREFIX}{first}")),
+                    sprite: Some(sprite.clone()),
                 },
             );
         }
@@ -1319,16 +1398,24 @@ pub(super) fn strategic_location_icons(
 }
 
 /// Prepare admitted radar icons; free views leave the cutoff to each anchor's presentation.
+#[cfg(test)]
 pub(super) fn radars(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
     vision: &Vision,
     out: &mut CounterFrame,
 ) -> io::Result<()> {
+    radars_cached(inputs, &radar_states(frame, vision.ours())?, out)
+}
+
+fn radars_cached(
+    inputs: &CounterInputs<'_>,
+    radar: &RadarStates,
+    out: &mut CounterFrame,
+) -> io::Result<()> {
     let defines = &inputs.content.defines;
     if inputs.visibility.province_icons && inputs.shows(defines.radar_cutoff) {
-        let radar = radar_states(frame, vision.ours())?;
-        for note in radar.notes {
+        for note in &radar.notes {
             *out.report
                 .icon_gui_notes
                 .entry(format!("{RADAR_WINDOW}: {note}"))
@@ -1472,6 +1559,7 @@ pub(super) fn air_base_frame(count: &AirBaseCount, detail: Option<bool>) -> u32 
 /// Whether a province has a controller (a positive raw controller link), as
 /// the game requires of an air-base, rocket-site or gun-emplacement icon;
 /// `None` when the hour records no row for it.
+#[cfg(test)]
 pub(super) fn province_controlled(
     frame: &DecodedFrame,
 ) -> io::Result<impl Fn(u32) -> Option<bool> + '_> {

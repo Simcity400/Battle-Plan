@@ -155,15 +155,18 @@ fn interception_alert(
     unknown.map_or(Ok(false), Err)
 }
 
+pub(super) struct HourInputs<'a> {
+    pub(super) content: &'a CounterContent,
+    pub(super) assets: &'a CounterAssets,
+    pub(super) localisation: &'a installed_content_localisation::localisation::Localisation,
+}
+
 impl Prepared {
     pub(super) fn read(
-        inputs: &CounterInputs<'_>,
+        inputs: &HourInputs<'_>,
         frame: &DecodedFrame,
         vision: &Vision,
     ) -> io::Result<Self> {
-        if inputs.visibility.priorities != PriorityTable::StrategicAir {
-            return Ok(Self::default());
-        }
         let result = (|| {
             let links = frame
                 .complete::<tables::CountryLinks>()
@@ -301,7 +304,7 @@ fn average(values: impl IntoIterator<Item = (i32, i64)>) -> Option<i64> {
 }
 
 impl Prepared {
-    fn prepare_ground(&mut self, inputs: &CounterInputs<'_>, frame: &DecodedFrame, viewer: u32) {
+    fn prepare_ground(&mut self, inputs: &HourInputs<'_>, frame: &DecodedFrame, viewer: u32) {
         use installed_content_localisation::localisation::Argument;
         use viewer_foundation::tooltip_text::Tooltip;
         let flags = frame.complete::<tables::AirGroundCrews>();
@@ -394,7 +397,7 @@ impl Prepared {
 
     fn prepare_hovers(
         &mut self,
-        inputs: &CounterInputs<'_>,
+        inputs: &HourInputs<'_>,
         frame: &DecodedFrame,
         regional_wings: &RegionalWings<'_>,
     ) {

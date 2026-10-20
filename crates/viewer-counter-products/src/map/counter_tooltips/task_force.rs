@@ -127,7 +127,7 @@ pub(super) fn build(
     let handled = append_arrival(context, input, &mut out, query);
     super::task_force_summary::append(context, &input.members, input.coarse, &mut out);
     super::task_force_children::append(context, input, &mut out);
-    if input.ours && !input.coarse {
+    if input.ours && !input.coarse && context.diagnostics {
         super::naval_management::append(context, &input.members, &mut out);
     }
     if !input.coarse
@@ -166,6 +166,7 @@ pub(super) mod tests {
         let vision = Vision::sharing(1, []);
         run(Context {
             nato: false,
+            diagnostics: true,
             content: None,
             reads: None,
             dig_in_factor: Err(unavailable.into()),

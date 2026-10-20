@@ -17,6 +17,7 @@
 //! UTF-8 after that cut retains the static name and reports `ProvinceNames.name`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -138,6 +139,8 @@ use viewer_foundation::map::native_windows::VICTORY_POINT_WINDOW;
 
 const ICON: &str = "icon";
 const TEXT: &str = "text";
+/// The batch part of [`TEXT`], which anchors the name apart from the dot.
+const TEXT_PART: &str = ".text";
 
 /// A label's shape group: 0 for the capital star, then one per size from largest
 /// to smallest. The last reached `VICTORY_POINT_MAP_ICON_AFTER` threshold
@@ -271,6 +274,9 @@ pub struct LabelTables {
     ours: u32,
     allegiances: BTreeMap<u32, Allegiance>,
     capitals: BTreeSet<u32>,
+    /// Positive victory points and capitals in the hour's province row order.
+    candidates: Vec<usize>,
+    names: BTreeMap<u32, Result<Option<Arc<str>>, String>>,
     /// State id to its raw owner link, from `States`.
     state_owners: BTreeMap<u32, u32>,
     /// Why a state the `States` rows lack has no known owner.
@@ -296,7 +302,7 @@ fn gap<T: replay_data::rows::TableSchema>(available: &Available<'_, T>) -> Strin
 
 impl LabelTables {
     /// Reads one hour's links, tags, war sides and capitals for `ours`.
-    pub fn read(frame: &DecodedFrame, ours: u32) -> io::Result<Self> {
+    pub fn read(frame: &DecodedFrame, ours: u32, localisation: &Localisation) -> io::Result<Self> {
         let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
             .iter()
             .map(|link| (link.id, link.canonical_slot))
@@ -317,6 +323,12 @@ impl LabelTables {
             .collect();
         let allegiances = allegiance::war_table(frame, &links, ours)?;
         let capitals = capital_provinces(frame, &links)?;
+        let candidates = core::<tables::Provinces>(frame)?
+            .iter()
+            .enumerate()
+            .filter(|(_, province)| province.victory_points > 0 || capitals.contains(&province.id))
+            .map(|(index, _)| index)
+            .collect();
         let states = rows::<tables::States>(frame)?;
         let appearance = rows::<tables::CountryAppearance>(frame)?;
         let mut original_tags: BTreeMap<_, _> = appearance
@@ -336,7 +348,8 @@ impl LabelTables {
             installed_content_country_names::country_names::reserved_zero_original_tag(frame)
                 .map(str::to_owned),
         );
-        Ok(Self {
+        let mut tables = Self {
+            names: BTreeMap::new(),
             state_owners: states
                 .rows()
                 .iter()
@@ -350,7 +363,26 @@ impl LabelTables {
             ours,
             allegiances,
             capitals,
-        })
+            candidates,
+        };
+        let overrides = province_overrides(frame)?;
+        let provinces = core::<tables::Provinces>(frame)?;
+        for &index in &tables.candidates {
+            let province = &provinces[index];
+            let recorded = overrides.get(&province.id).copied();
+            let tag = if recorded.is_some_and(overrides_ladder) {
+                Ok(None)
+            } else {
+                tables.victory_point_tag(province.state).map(Some)
+            };
+            let name = tag.and_then(|tag| {
+                label_name(localisation, recorded, tag, province.id)
+                    .map(|name| name.map(Arc::from))
+                    .map_err(|refusal| refusal.to_string())
+            });
+            tables.names.insert(province.id, name);
+        }
+        Ok(tables)
     }
 
     /// State-owner tag operands used by victory-point localisation. The original
@@ -437,17 +469,14 @@ pub fn prepare(
         capitals,
         ..
     } = tables;
-    // names: every recorded rename the hour holds. A truncated table's rows are
-    // real recorded rows and are used; the rows it did not reach leave their
-    // provinces on the static ladder, which `super::tables` states.
-    let overrides = province_overrides(frame)?;
-
     let mut report = LabelReport {
         perspective: tags.get(ours).cloned(),
         ..Default::default()
     };
-    let mut placed = Vec::new();
-    for province in provinces {
+    let mut placed = Vec::with_capacity(tables.candidates.len());
+    let viewport = gui_resources_viewport(inputs.viewport, inputs.ui_scale);
+    for &index in &tables.candidates {
+        let province = &provinces[index];
         let Some(definition) = inputs.map.definitions.get(&province.id) else {
             continue;
         };
@@ -473,11 +502,10 @@ pub fn prepare(
             continue;
         }
         let text = text_cutoff(capital, victory_points, defines);
-        let Some(projection) = inputs.camera.project_map_icon(
-            world,
-            inputs.viewport,
-            gui_resources_viewport(inputs.viewport, inputs.ui_scale),
-        ) else {
+        let Some(projection) = inputs
+            .camera
+            .project_map_icon(world, inputs.viewport, viewport)
+        else {
             continue;
         };
         let allegiance = dot_allegiance(province.controller, links, allegiances);
@@ -491,24 +519,13 @@ pub fn prepare(
         let name = if !named || height >= text {
             None
         } else {
-            let recorded = overrides.get(&province.id).copied();
-            // An override replaces the whole ladder, so the owner's
-            // tag matters only without one.
-            let tag = if recorded.is_some_and(overrides_ladder) {
-                Ok(None)
-            } else {
-                tables.victory_point_tag(province.state).map(Some)
-            };
-            match tag.and_then(|tag| {
-                label_name(inputs.localisation, recorded, tag, province.id)
-                    .map_err(|refusal| refusal.to_string())
-            }) {
-                Ok(name) => name,
+            match &tables.names[&province.id] {
+                Ok(name) => name.clone(),
                 Err(refusal) => {
                     report.refused_names += 1;
                     *report
                         .refused_localisation
-                        .entry(refusal)
+                        .entry(refusal.clone())
                         .or_default()
                         .entry(province.id)
                         .or_default() += 1;
@@ -548,7 +565,7 @@ struct Label {
     capital: bool,
     frame: i32,
     priority: i8,
-    text: Option<String>,
+    text: Option<Arc<str>>,
     /// Where the label stands for a free eye: its dot, and its name, which fades by its own
     /// cutoff.
     anchors: [IconAnchor; 2],
@@ -565,6 +582,8 @@ pub struct PreparedLabels {
 pub struct LabelView {
     pools: [PoolView; 2],
     texts: [BTreeMap<SlotId, String>; 2],
+    labels: HashMap<u32, usize>,
+    owners: Vec<viewer_foundation::map::icon_windows::Owner>,
 }
 
 impl LabelView {
@@ -589,7 +608,7 @@ impl PreparedLabels {
     ) -> LabelReport {
         use viewer_foundation::map::icon_windows::{Owner, Plan};
         let mut report = self.report.clone();
-        let mut drawn = Vec::new();
+        let mut drawn = Vec::with_capacity(self.placed.len());
         for (index, name) in [VICTORY_POINT_WINDOW, CAPITAL_WINDOW]
             .into_iter()
             .enumerate()
@@ -597,15 +616,17 @@ impl PreparedLabels {
             if !view.pools[index].same(context) {
                 view.texts[index].clear();
             }
-            let mut labels = HashMap::new();
-            let mut owners = Vec::new();
-            for label in self
+            let labels = &mut view.labels;
+            labels.clear();
+            view.owners.clear();
+            for (at, label) in self
                 .placed
                 .iter()
-                .filter(|label| usize::from(label.capital) == index)
+                .enumerate()
+                .filter(|(_, label)| usize::from(label.capital) == index)
             {
-                labels.insert(label.province, label);
-                owners.push(Owner {
+                labels.insert(label.province, at);
+                view.owners.push(Owner {
                     id: label.province,
                     screen: label.screen,
                     dirty: schedule.dirty(label.province),
@@ -630,7 +651,7 @@ impl PreparedLabels {
                         MapIconPool::Capital
                     },
                     alignment: 0x0A,
-                    owners: &owners,
+                    owners: &view.owners,
                 },
                 Box::new(|instance, root| {
                     // The game initially hides the bound text.
@@ -646,7 +667,7 @@ impl PreparedLabels {
                         .expect("the helper found the template")
                         .as_ref()
                         .map_err(Clone::clone)?;
-                    let label = labels[&owner];
+                    let label = &self.placed[labels[&owner]];
                     instance.set_frame(root, icon, label.frame)?;
                     let text = label.text.as_deref().unwrap_or_default();
                     if view.texts[index].get(&slot).map_or("", String::as_str) != text {
@@ -668,7 +689,7 @@ impl PreparedLabels {
             drawn.extend(
                 layouts
                     .into_iter()
-                    .map(|drawn| (labels[&drawn.owner], drawn)),
+                    .map(|drawn| (&self.placed[labels[&drawn.owner]], drawn)),
             );
         }
         // Sort both label families by depth.
@@ -677,7 +698,7 @@ impl PreparedLabels {
             batch.at_layer(sprites::layer(label.priority, ordinal as u32, 0));
             batch.at_anchor(Some(label.anchors[0]));
             // The name stands with the dot and fades by the name's cutoff.
-            batch.at_part_anchor(&format!(".{TEXT}"), label.anchors[1]);
+            batch.at_part_anchor(TEXT_PART, label.anchors[1]);
             match native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch) {
                 Ok(()) => {
                     report.icons += 1;
@@ -802,6 +823,97 @@ pub(crate) mod tests {
     use viewer_foundation::map::native_resources;
 
     use viewer_foundation::map::test_support::localisation::loaded;
+    #[test]
+    fn label_candidates_keep_province_order_and_zero_point_capitals() {
+        use replay_data::rows::{
+            CountryLinkRow, CountryRow, PoliticsRow, ProvinceRow, StateRow, TableRows,
+        };
+        use viewer_foundation::map::test_support::{test_frame, test_put};
+        let mut frame = test_frame(1);
+        test_put(
+            &mut frame,
+            TableRows::CountryLinks(vec![CountryLinkRow {
+                id: 1,
+                canonical_slot: 1,
+            }]),
+        );
+        test_put(
+            &mut frame,
+            TableRows::Countries(vec![CountryRow {
+                id: 1,
+                canonical_slot: 1,
+                ..Default::default()
+            }]),
+        );
+        test_put(
+            &mut frame,
+            TableRows::Politics(vec![PoliticsRow {
+                country: 1,
+                capital: 10,
+                ..Default::default()
+            }]),
+        );
+        test_put(
+            &mut frame,
+            TableRows::States(vec![StateRow {
+                id: 10,
+                owner: 1,
+                controller: 1,
+                ..Default::default()
+            }]),
+        );
+        test_put(
+            &mut frame,
+            TableRows::Provinces(
+                (0..5000)
+                    .map(|index| ProvinceRow {
+                        id: index + 1,
+                        state: if index == 11 { 10 } else { 0 },
+                        victory_points: if index == 7 || index == 4999 { 1 } else { 0 },
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        test_put(
+            &mut frame,
+            TableRows::ProvinceNames(vec![
+                replay_data::rows::ProvinceNameRow {
+                    province: 8,
+                    name: b"VICTORY_POINTS_678".to_vec(),
+                },
+                replay_data::rows::ProvinceNameRow {
+                    province: 12,
+                    name: b"First name".to_vec(),
+                },
+                replay_data::rows::ProvinceNameRow {
+                    province: 12,
+                    name: b"Last name\0ignored".to_vec(),
+                },
+            ]),
+        );
+        let tables = LabelTables::read(&frame, 1, &synthetic_labels()).unwrap();
+        assert_eq!(tables.capitals, BTreeSet::from([12]));
+        assert_eq!(tables.candidates, [7, 11, 4999]);
+        assert_eq!(
+            tables.names[&8].as_ref().unwrap().as_deref(),
+            Some("Port Haven")
+        );
+        assert_eq!(
+            tables.names[&12].as_ref().unwrap().as_deref(),
+            Some("Last name")
+        );
+        assert!(
+            tables.names[&5000].is_err(),
+            "a missing demanded owner stays a cached refusal"
+        );
+        let cloned = tables.clone();
+        assert!(Arc::ptr_eq(
+            tables.names[&8].as_ref().unwrap().as_ref().unwrap(),
+            cloned.names[&8].as_ref().unwrap().as_ref().unwrap()
+        ));
+    }
+
     #[test]
     fn occupied_capital_uses_the_independent_state_controller() {
         use replay_data::{
@@ -1321,7 +1433,8 @@ pub(crate) mod tests {
                     })
                     .into(),
             ));
-        let tables = LabelTables::read(&frame, 0).unwrap();
+        let tables = LabelTables::read(&frame, 0, &synthetic_labels()).unwrap();
+        assert!(tables.candidates.is_empty());
         assert_eq!(tables.victory_point_tag(10), Ok("GER"));
         // A dynamic country takes its original tag.
         assert_eq!(tables.victory_point_tag(20), Ok("SOV"));
@@ -1340,7 +1453,7 @@ pub(crate) mod tests {
                     ..Default::default()
                 },
             ]));
-        let tables = LabelTables::read(&frame, 0).unwrap();
+        let tables = LabelTables::read(&frame, 0, &synthetic_labels()).unwrap();
         // Both a null state and a known-zero state owner select the reserved
         // object's exact getter, without admitting it to the positive roster.
         assert_eq!(tables.victory_point_tag(0), Ok("ZERO_ORIGINAL"));
@@ -1355,7 +1468,7 @@ pub(crate) mod tests {
         *frame.tables[TableId::CountryAppearance.index()] = TableView::Unavailable {
             reason: "not sampled".into(),
         };
-        let tables = LabelTables::read(&frame, 0).unwrap();
+        let tables = LabelTables::read(&frame, 0, &synthetic_labels()).unwrap();
         assert_eq!(
             tables.victory_point_tag(10),
             Err("CountryAppearance.original_tag of slot 1 is not recorded: the table is unavailable: not sampled".into())

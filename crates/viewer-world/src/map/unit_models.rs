@@ -2020,19 +2020,28 @@ impl PreparedModels {
 
     /// Preserve this view's sailing stream across unchanged forward-hour route refreshes.
     /// Seeks and viewing-country changes recreate presentation through the host's restart rule.
-    pub fn inherit_convoys(&mut self, previous: &Self) {
+    pub fn inherit_convoys(&self, previous: &Self) {
         let (Some((lines, defines, fleet)), Some((old_lines, old_defines, old_fleet))) =
-            (&mut self.convoys, &previous.convoys)
+            (&self.convoys, &previous.convoys)
         else {
             return;
         };
         if lines == old_lines && defines == old_defines {
             *fleet
-                .get_mut()
+                .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = old_fleet
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .take();
+        }
+    }
+
+    /// A seek starts a fresh convoy presentation even when it reuses selector results.
+    pub fn reset_convoys(&self) {
+        if let Some((_, _, fleet)) = &self.convoys {
+            *fleet
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         }
     }
 

@@ -137,6 +137,7 @@ impl DumpFrames {
 }
 
 /// One owner request and its projected position, with the province's dirty-bit bypass.
+#[derive(Debug)]
 pub struct Owner<K = u32> {
     pub id: K,
     pub screen: [f32; 2],
@@ -196,6 +197,8 @@ pub struct PoolView<K = u32> {
     pool: Option<Pool<K>>,
     last: Option<f32>,
     active: bool,
+    /// Current request geometry; the map retains its allocation across camera frames.
+    owners: HashMap<K, ([f32; 2], bool)>,
     /// A sprite each live window fixed when its owner acquired it, by owner,
     /// with the slot that acquisition took; the caller keeps it while that
     /// window stays live ([`Self::live`]).
@@ -209,6 +212,7 @@ impl<K> Default for PoolView<K> {
             pool: None,
             last: None,
             active: false,
+            owners: HashMap::new(),
             acquired_sprites: HashMap::new(),
         }
     }
@@ -253,7 +257,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         mut update: impl FnMut(K, SlotId, &mut Instance, &native::Element) -> Result<(), String>,
         notes: &mut BTreeMap<String, usize>,
     ) -> Vec<Drawn<K>> {
-        let mut drawn = Vec::new();
+        let mut drawn = Vec::with_capacity(plan.owners.len());
         let run = || -> Result<(), String> {
             let root = context
                 .windows
@@ -275,7 +279,13 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                 self.built = Some((context.windows.clone(), context.viewport));
             }
             let pool = self.pool.as_mut().expect("the matching view was built");
-            let owners: HashMap<_, _> = plan.owners.iter().map(|owner| (owner.id, owner)).collect();
+            let owners = &mut self.owners;
+            owners.clear();
+            owners.extend(
+                plan.owners
+                    .iter()
+                    .map(|owner| (owner.id, (owner.screen, owner.dirty))),
+            );
             let (updated, tick) = if let Some(time) = context.time {
                 self.active = false;
                 let size = native_gui::container_frame(root, Some(context.viewport))?.size;
@@ -287,14 +297,16 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                     }
                 }
                 let pass = pool.update(root, |owner, _| {
-                    owners.get(owner).map_or(Admission::Empty, |owner| {
-                        let point = point(owner.screen, size, plan.alignment);
-                        let (admission, dirty) = admission(owner.dirty, point, |point| {
-                            rectangle_inside(point, size, context.viewport)
-                        });
-                        self.active |= dirty;
-                        admission
-                    })
+                    owners
+                        .get(owner)
+                        .map_or(Admission::Empty, |&(screen, dirty)| {
+                            let point = point(screen, size, plan.alignment);
+                            let (admission, dirty) = admission(dirty, point, |point| {
+                                rectangle_inside(point, size, context.viewport)
+                            });
+                            self.active |= dirty;
+                            admission
+                        })
                 })?;
                 let tick = frame(&mut self.last, time);
                 (pass.updated, Some(tick))

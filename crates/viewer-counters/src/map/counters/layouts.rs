@@ -353,9 +353,7 @@ mod tests {
             iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions
                 centerPosition=yes}}}"#,
         );
-        let guis = native::Guis {
-            files: vec![(MAPICONS_GUI.into(), gui)],
-        };
+        let guis = native::Guis::new(vec![(MAPICONS_GUI.into(), gui)]);
         let layout = land_counter(&guis, &mut Vec::new()).unwrap();
         let content = ActionContent::load(&layout.action, LAND_WINDOW, None);
         let why = content.frame(Ok(8), true, false).unwrap_err();
@@ -392,12 +390,11 @@ mod tests {
     fn counter_templates_use_the_native_registry_and_accept_eof() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let guis = native::Guis {
-            files: vec![
-                (
-                    MAPICONS_GUI.into(),
-                    native::read(
-                        br#"guiTypes={
+        let guis = native::Guis::new(vec![
+            (
+                MAPICONS_GUI.into(),
+                native::read(
+                    br#"guiTypes={
                 containerWindowType={name=unit_counter size={width=1 height=2}}
                 containerWindowType={name=unit_counter_navy}
                 containerWindowType={name=naval_combat_mapicon}
@@ -405,22 +402,21 @@ mod tests {
                     gridBoxType={name=units_box slotsize={width=58 height=1}}}
                 positionType={name=unit_counter_zoomed_in_offset position={x=0 y=20}}
             }"#,
-                    ),
                 ),
-                (
-                    "interface/mod_columns.gui".into(),
-                    native::read(
-                        br#"guiTypes={
+            ),
+            (
+                "interface/mod_columns.gui".into(),
+                native::read(
+                    br#"guiTypes={
                 containerWindowType={name=UNIT_COUNTER size={width=82 height=28}
                     buttonType={name=COUNT_BG quadTextureSprite=GFX_mod position={x=4 y=7}}
                     instantTextBoxType={name=count_txt position={x=8 y=9}}
                     instantTextBoxType={name=zero_count maxWidth=0}
                     instantTextBoxType={name=wide_count maxWidth=4294967295}
                 }"#,
-                    ),
                 ),
-            ],
-        };
+            ),
+        ]);
         let windows = NativeWindows::of(guis).unwrap();
         let layouts = Layouts::read(&windows);
         assert_eq!(layouts.land.as_ref().unwrap().size, [82.0, 28.0]);
@@ -446,11 +442,10 @@ mod tests {
     fn counter_lookup_keeps_native_kind_and_window_local_depth() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let guis = native::Guis {
-            files: vec![(
-                MAPICONS_GUI.into(),
-                native::read(
-                    br#"guiTypes={
+        let guis = native::Guis::new(vec![(
+            MAPICONS_GUI.into(),
+            native::read(
+                br#"guiTypes={
             containerWindowType={name=unit_counter size={width=80 height=30}
                 buttonType={name=flag spriteType=GFX_wrong_kind}
                 containerWindowType={name=inner size={width=20 height=10} position={x=5 y=6}
@@ -458,9 +453,8 @@ mod tests {
                 iconType={name=large_flag spriteType=GFX_large_flag position={x=4 y=5}}
                 instantTextBoxType={name=count_txt font=mod_font maxWidth=17}
             }}"#,
-                ),
-            )],
-        };
+            ),
+        )]);
         let root = window(&guis, LAND_WINDOW).unwrap();
         let mut missing = Vec::new();
         let flag = child(root, native::Kind::Icon, "flag", LAND_WINDOW, &mut missing).unwrap();
@@ -485,11 +479,10 @@ mod tests {
     fn counter_text_grid_and_ability_lookups_are_window_local() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let guis = native::Guis {
-            files: vec![(
-                MAPICONS_GUI.into(),
-                native::read(
-                    br#"guiTypes={
+        let guis = native::Guis::new(vec![(
+            MAPICONS_GUI.into(),
+            native::read(
+                br#"guiTypes={
                 containerWindowType={name=unit_counter size={width=80 height=30}
                     positionType={name=UNIT_COUNTER_HQ_X_OFFSET position={x=-20 y=0}}
                     containerWindowType={name=inner
@@ -502,9 +495,8 @@ mod tests {
                     containerWindowType={name=inner gridBoxType={name=units_box}}}
                 positionType={name=unit_counter_zoomed_in_offset position={x=0 y=20}}
             }"#,
-                ),
-            )],
-        };
+            ),
+        )]);
         let mut missing = Vec::new();
         let land = land_counter(&guis, &mut missing).unwrap();
         assert_eq!(land.hq_offset, [0.0; 2]);

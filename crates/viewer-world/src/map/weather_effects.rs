@@ -646,7 +646,7 @@ impl Assets {
 
 /// Hourly flags. Weather is global simulation state; the engine's dispatch
 /// has no country/intel predicate, so every recorded perspective uses it.
-#[derive(Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct Field {
     branch: replay_data::BranchId,
     hour: i32,
@@ -781,6 +781,7 @@ fn unit(v: [f32; 3]) -> [f32; 3] {
 /// Native changing gradient field, not independent
 /// particle jitter. Three linearly interpolated gradient-noise samples are
 /// normalized together, so `amount` is the magnitude before mass division.
+#[derive(Clone)]
 struct Noise {
     permutation: [u8; 256],
     original: [[f32; 3]; 256],
@@ -883,6 +884,7 @@ impl Noise {
     }
 }
 
+#[derive(Clone)]
 struct LiveParticle {
     age: f32,
     life: f32,
@@ -895,6 +897,7 @@ struct LiveParticle {
     color: [f32; 4],
     tile: [u8; 4],
 }
+#[derive(Clone)]
 struct Simulation {
     /// Prepared off-thread before the first render supplied its clock.
     prepared: bool,
@@ -1340,6 +1343,7 @@ fn sound_events(
 }
 
 /// New, empty weather emitters prepared off the frame path for this hour.
+#[derive(Clone)]
 pub struct Prepared {
     field: Field,
     simulations: Simulations,
@@ -1726,6 +1730,35 @@ pub(crate) fn advance_entity_effects(
     }
     let lights = lights.evaluate(&events);
     Ok((events, lights))
+}
+
+#[cfg(test)]
+#[test]
+fn a_reused_weather_preparation_keeps_an_independent_initial_runtime() {
+    let emitter = tests::activation_test_emitter();
+    let key = (0, false, 0);
+    let mut simulation = Simulation::cold(&emitter, 12345, [10.0, 0.0, 20.0], 0.0);
+    simulation.prepared = true;
+    let prepared_seed = simulation.seed;
+    let prepared = Prepared {
+        field: Field {
+            branch: 1,
+            hour: 10,
+            kinds: BTreeMap::from([(7, 0)]),
+        },
+        simulations: BTreeMap::from([(key, simulation)]),
+    };
+    let mut reused = prepared.clone();
+    assert!(prepared.field == reused.field);
+    let next = reused.simulations.get_mut(&key).unwrap();
+    next.advance(&emitter, 8.0, 1.0);
+    next.advance(&emitter, 8.25, 1.0);
+    assert!(!next.particles.is_empty());
+    let initial = &prepared.simulations[&key];
+    assert!(initial.prepared);
+    assert!(initial.particles.is_empty());
+    assert_eq!(initial.seed, prepared_seed);
+    assert_eq!(initial.time, 0.0);
 }
 
 #[cfg(test)]

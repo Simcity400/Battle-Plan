@@ -177,17 +177,17 @@ impl Viewer {
                 .collect(),
             received: 0,
         };
+        // Everything this frame lets go of, freed off the frame path at its end.
+        let mut retired = Retired::default();
         let pipeline = self.hours.as_mut().expect("started above");
         let epoch = pipeline.want(want)?;
         if epoch != self.epoch {
             self.epoch = epoch;
-            self.ready.clear();
+            retired.push(std::mem::take(&mut self.ready));
         }
         if self.dropper.is_none() {
             self.dropper = Some(Arc::new(Dropper::new()?));
         }
-        // Everything this frame lets go of, freed off the frame path at its end.
-        let mut retired = Retired::default();
         for built in pipeline.take()? {
             feed_raids(&self.raid_lane, &built);
             if built.epoch == epoch {
@@ -435,7 +435,7 @@ impl Viewer {
             building_warnings,
             trains,
             aircraft,
-            mut units,
+            units,
             orders,
             effects,
             impacts,
@@ -500,25 +500,43 @@ impl Viewer {
                 current: &raid_frame,
             },
         );
-        let replaced = scene.set_trains(document.trains.clone(), trains, continuity)?;
-        retired.push(replaced);
-        laps.lap("trains_upload");
-        let replaced = scene.set_aircraft(document.aircraft.clone(), aircraft)?;
-        retired.push(replaced);
-        laps.lap("aircraft_upload");
-        match unit_restart {
-            UnitRestart::Keep => {}
-            UnitRestart::ViewingCountry => scene.restart_unit_models(Some(units.owned())),
-            UnitRestart::All => scene.restart_unit_models(None),
+        let same_units = self
+            .unit_models
+            .as_ref()
+            .is_some_and(|previous| Arc::ptr_eq(previous, &units));
+        let keep_movers =
+            same_units && continuity == Continuity::Continue && unit_restart == UnitRestart::Keep;
+        if keep_movers {
+            retired.push(trains);
+        } else {
+            let replaced = scene.set_trains(document.trains.clone(), trains, continuity)?;
+            retired.push(replaced);
         }
-        if matches!(unit_restart, UnitRestart::Keep)
-            && let Some(previous) = &self.unit_models
-        {
-            units.inherit_convoys(previous);
+        laps.lap("trains_upload");
+        if keep_movers {
+            retired.push(aircraft);
+        } else {
+            let replaced = scene.set_aircraft(document.aircraft.clone(), aircraft)?;
+            retired.push(replaced);
+        }
+        laps.lap("aircraft_upload");
+        if !keep_movers {
+            match unit_restart {
+                UnitRestart::Keep => {}
+                UnitRestart::ViewingCountry => scene.restart_unit_models(Some(units.owned())),
+                UnitRestart::All => scene.restart_unit_models(None),
+            }
+            if unit_restart == UnitRestart::Keep && !same_units {
+                if let Some(previous) = &self.unit_models {
+                    units.inherit_convoys(previous);
+                }
+            } else {
+                units.reset_convoys();
+            }
+            self.unit_field_uploaded = false;
         }
         let model_warnings = units.report.warnings();
         retired.push(self.unit_models.replace(units));
-        self.unit_field_uploaded = false;
         if uploaded
             .orders
             .as_ref()
@@ -530,14 +548,18 @@ impl Viewer {
         let plan_warnings = orders.report.warnings();
         retired.push(orders);
         laps.lap("orders_upload");
-        let replaced = scene.set_prepared_weather_effects(
-            &state.device,
-            &state.queue,
-            document.weather_effects.clone(),
-            effects,
-            continuity,
-        )?;
-        retired.push(replaced);
+        if keep_movers {
+            retired.push(effects);
+        } else {
+            let replaced = scene.set_prepared_weather_effects(
+                &state.device,
+                &state.queue,
+                document.weather_effects.clone(),
+                effects,
+                continuity,
+            )?;
+            retired.push(replaced);
+        }
         laps.lap("effects_upload");
         if uploaded.political != Some(political.id) {
             scene.set_political(&state.device, &state.queue, &political.layers.regions)?;
@@ -587,6 +609,7 @@ impl Viewer {
             values: document.assets.heightmap_texels(),
         };
         match &raid_frame {
+            _ if keep_movers => retired.push((impacts, map_text)),
             crate::playback::Current::Frame(_) => {
                 let presented = (impacts, map_text);
                 scene.present_hours(

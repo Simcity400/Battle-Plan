@@ -185,12 +185,12 @@ fn with_port_context<R>(
         native: &native,
         ship_inputs: None,
         aggression: &[1],
-        ship_task_forces: BTreeMap::new(),
+        ship_task_forces: Arc::new(BTreeMap::new()),
         ships_complete: true,
-        ships: BTreeMap::new(),
+        ships: Arc::new(BTreeMap::new()),
         country_ids: &country_ids,
         ideology: &|_| Ok(None),
-        missions: BTreeMap::new(),
+        missions: Arc::new(BTreeMap::new()),
         mission_skips: Default::default(),
         forces,
         forces_complete: true,
@@ -387,7 +387,7 @@ fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
     let owner = |raw: u32| (raw < 100).then_some(raw);
     let unlinked = |_: u32| None;
     with_port_context(&forces, |context| {
-        context.ships = BTreeMap::from([(7, (2, 0))]);
+        context.ships = Arc::new(BTreeMap::from([(7, (2, 0))]));
         // What the admission decides: in at its ordinal, out, or undecided by why.
         let admit = |context: &NavalContext<'_>,
                      docked: Result<bool, &'static str>,
@@ -405,7 +405,7 @@ fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
             "task-force motion row absent"
         );
         assert_eq!(admit(context, Ok(true), &unlinked), PORT_OWNER_UNLINKED);
-        context.ships.clear();
+        Arc::make_mut(&mut context.ships).clear();
         assert_eq!(admit(context, Ok(true), &owner), "out");
         context.ships_complete = false;
         assert_eq!(admit(context, Ok(true), &owner), PORT_SHIPS_UNRECORDED);
@@ -540,4 +540,96 @@ fn strategic_port_frames_keep_fleet_mission_and_selected_splits() {
         );
         assert_eq!(prepare(coarse, &BTreeSet::new()), [vec![1, 2, 3], vec![4]]);
     });
+}
+
+#[test]
+fn cached_naval_operands_equal_fresh_joins_and_share_the_model_column() {
+    use replay_data::rows::{ShipCounterInputs, ShipModelRow, ShipRow};
+    use viewer_foundation::map::test_support::{test_frame, test_put};
+    let mut frame = test_frame(7);
+    test_put(
+        &mut frame,
+        TableRows::TaskForces(vec![TaskForceRow {
+            id: 10,
+            mission: 3,
+            ..Default::default()
+        }]),
+    );
+    test_put(
+        &mut frame,
+        TableRows::Ships(vec![
+            ShipRow {
+                id: 2,
+                task_force: 10,
+                strength: 30,
+                organisation: 20,
+                ..Default::default()
+            },
+            ShipRow {
+                id: 1,
+                task_force: 10,
+                strength: 50,
+                organisation: 40,
+                ..Default::default()
+            },
+        ]),
+    );
+    test_put(
+        &mut frame,
+        TableRows::ShipModels(
+            [1, 2]
+                .map(|ship| ShipModelRow {
+                    ship,
+                    counter: Some(ShipCounterInputs {
+                        roster_ordinal: 0,
+                        maximum_strength: 100,
+                        maximum_organisation: 100,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .into(),
+        ),
+    );
+    let vision = Vision::sharing(1, []);
+    let cached = NavalTables::read(&frame, &vision).unwrap();
+    let models = &cached.ship_inputs.as_ref().unwrap().models;
+    assert!(replay_frame::frame::SharedView::ptr_eq(
+        models,
+        &frame.tables[TableId::ShipModels.index()]
+    ));
+    let sources = NavalSources {
+        type_tints: &Default::default(),
+        equipment: Err("unused equipment"),
+        vision: &vision,
+        native: &Default::default(),
+        country_ids: &Default::default(),
+        aggression: &[],
+        ideology: &|_| Ok(None),
+    };
+    let prepared = NavalContext::cached(&frame, sources, &cached).unwrap();
+    let fresh = NavalContext::build(&frame, sources).unwrap();
+    assert_eq!(prepared.ships, fresh.ships);
+    assert_eq!(prepared.ship_task_forces, fresh.ship_task_forces);
+    assert_eq!(prepared.missions, fresh.missions);
+    assert!(Arc::ptr_eq(&prepared.ships, &cached.ships));
+    let signature = |inputs: &ShipInputs<'_>| {
+        inputs
+            .hulls(10)
+            .map(|hull| (hull.model.ship, hull.strength))
+            .collect::<Vec<_>>()
+    };
+    let prepared = prepared.ship_inputs.as_ref().unwrap();
+    let fresh = fresh.ship_inputs.as_ref().unwrap();
+    assert_eq!(
+        signature(prepared),
+        [(2, 30), (1, 50)],
+        "equal ordinals keep Ships row order"
+    );
+    assert_eq!(signature(prepared), signature(fresh));
+    assert_eq!(prepared.ratio(10), fresh.ratio(10));
+    assert_eq!(
+        prepared.cells(&[10], false).hull,
+        fresh.cells(&[10], false).hull
+    );
 }

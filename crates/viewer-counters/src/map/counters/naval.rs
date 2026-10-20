@@ -114,48 +114,50 @@ pub(super) struct NavalCells {
     pub(super) carrier: BTreeSet<Option<(&'static str, u32)>>,
 }
 
-/// The per-hour ship operands the naval counters read.
-pub(super) struct ShipInputs<'a> {
-    pub(super) equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
-    /// Task force to its ships in `ShipModels.counter.roster_ordinal` order, with `Ships.strength`.
-    pub(super) rosters: BTreeMap<u64, Vec<counter_order::Hull<'a>>>,
-    /// Task force to its strength and organisation ratios.
-    pub(super) ratios: BTreeMap<u64, (i64, i64)>,
-    /// `AirBases.kind` by base handle.
-    pub(super) base_kinds: BTreeMap<u64, i32>,
-    /// Registered wing lists at the viewer's slot, by base handle.
-    pub(super) viewer_wings: Option<BTreeMap<u64, bool>>,
+/// Ship-model joins and fixed-point bar operands, built once per hour.
+#[derive(Clone)]
+pub(super) struct ShipTables {
+    models: replay_frame::frame::SharedView,
+    rosters: BTreeMap<u64, Vec<(usize, i64)>>,
+    ratios: BTreeMap<u64, (i64, i64)>,
+    base_kinds: BTreeMap<u64, i32>,
+    viewer_wings: Option<BTreeMap<u64, bool>>,
 }
 
-impl<'a> ShipInputs<'a> {
-    /// `None` unless `Ships` and `ShipModels` are complete and every model carries counter inputs.
-    pub(super) fn read(
-        ships: &'a [replay_data::rows::ShipRow],
-        models: &'a [replay_data::rows::ShipModelRow],
+/// A camera's borrowed content paired with the shared ship operands.
+pub(super) struct ShipInputs<'a> {
+    pub(super) equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
+    pub(super) tables: Arc<ShipTables>,
+}
+
+impl ShipTables {
+    fn read(
+        ships: &[replay_data::rows::ShipRow],
+        models: &[replay_data::rows::ShipModelRow],
         frame: &DecodedFrame,
         vision: &Vision,
-        equipment: Result<&'a installed_content_core::equipment::Database, &'a str>,
     ) -> io::Result<Option<Self>> {
         if models.iter().any(|model| model.counter.is_none()) {
             return Ok(None);
         }
-        let by_ship: BTreeMap<u64, &replay_data::rows::ShipModelRow> =
-            models.iter().map(|model| (model.ship, model)).collect();
-        let mut rosters: BTreeMap<u64, Vec<(u32, counter_order::Hull<'a>)>> = BTreeMap::new();
-        let mut operands: BTreeMap<u64, Vec<[i64; 4]>> = BTreeMap::new();
+        let by_ship: BTreeMap<_, _> = models
+            .iter()
+            .enumerate()
+            .map(|(index, model)| (model.ship, (index, model)))
+            .collect();
+        let mut rosters = BTreeMap::<u64, Vec<(u32, usize, i64)>>::new();
+        let mut operands = BTreeMap::<u64, Vec<[i64; 4]>>::new();
         for ship in ships {
-            let Some(model) = by_ship.get(&ship.id) else {
+            let Some(&(index, model)) = by_ship.get(&ship.id) else {
                 return Ok(None);
             };
-            let Some(counter) = model.counter.as_ref() else {
+            let Some(counter) = &model.counter else {
                 return Ok(None);
             };
             rosters.entry(ship.task_force).or_default().push((
                 counter.roster_ordinal,
-                counter_order::Hull {
-                    strength: ship.strength,
-                    model,
-                },
+                index,
+                ship.strength,
             ));
             operands.entry(ship.task_force).or_default().push([
                 ship.strength,
@@ -179,8 +181,14 @@ impl<'a> ShipInputs<'a> {
         let rosters = rosters
             .into_iter()
             .map(|(force, mut ships)| {
-                ships.sort_by_key(|(ordinal, _)| *ordinal);
-                (force, ships.into_iter().map(|(_, hull)| hull).collect())
+                ships.sort_by_key(|(ordinal, _, _)| *ordinal);
+                (
+                    force,
+                    ships
+                        .into_iter()
+                        .map(|(_, index, strength)| (index, strength))
+                        .collect(),
+                )
             })
             .collect();
         let bases = rows::<tables::AirBases>(frame)?;
@@ -194,7 +202,7 @@ impl<'a> ShipInputs<'a> {
                 .collect()
         });
         Ok(Some(Self {
-            equipment,
+            models: frame.tables[replay_data::rows::TableId::ShipModels.index()].clone(),
             rosters,
             ratios,
             base_kinds: bases.rows().iter().map(|row| (row.id, row.kind)).collect(),
@@ -202,36 +210,82 @@ impl<'a> ShipInputs<'a> {
         }))
     }
 
+    #[cfg(test)]
+    pub(super) fn from_rosters(rosters: BTreeMap<u64, Vec<counter_order::Hull<'_>>>) -> Arc<Self> {
+        let mut models = Vec::new();
+        let rosters = rosters
+            .into_iter()
+            .map(|(force, hulls)| {
+                (
+                    force,
+                    hulls
+                        .into_iter()
+                        .map(|hull| {
+                            let index = models.len();
+                            models.push(hull.model.clone());
+                            (index, hull.strength)
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        Arc::new(Self {
+            models: replay_frame::frame::TableView::Complete(
+                replay_data::rows::TableRows::ShipModels(models),
+            )
+            .into(),
+            rosters,
+            ratios: BTreeMap::new(),
+            base_kinds: BTreeMap::new(),
+            viewer_wings: None,
+        })
+    }
+}
+
+impl ShipInputs<'_> {
+    pub(super) fn hulls(&self, force: u64) -> impl Iterator<Item = counter_order::Hull<'_>> {
+        let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::ShipModels(
+            models,
+        )) = &*self.tables.models
+        else {
+            unreachable!("prepared ship models are complete")
+        };
+        self.tables
+            .rosters
+            .get(&force)
+            .into_iter()
+            .flatten()
+            .map(|&(index, strength)| counter_order::Hull {
+                strength,
+                model: &models[index],
+            })
+    }
+
     /// Whether a task force's first carrier, in roster order, has a carrier air base: the air
     /// map mode's test for drawing its counter. `None` when a ship before it lacks model operands.
     pub(super) fn carries_air_wings(&self, force: u64) -> Option<bool> {
-        let ships: Vec<&replay_data::rows::ShipModelRow> =
-            self.rosters.get(&force).map_or_else(Vec::new, |roster| {
-                roster.iter().map(|hull| hull.model).collect()
-            });
+        let ships: Vec<_> = self.hulls(force).map(|hull| hull.model).collect();
         counter_order::first_carrier_has_air_base(&ships)
     }
 
     /// A task force's strength and organisation ratios; an empty roster returns zero for each.
     pub(super) fn ratio(&self, force: u64) -> (i64, i64) {
-        self.ratios.get(&force).copied().unwrap_or((0, 0))
+        self.tables.ratios.get(&force).copied().unwrap_or((0, 0))
     }
 
     pub(super) fn cells(&self, members: &[u64], port: bool) -> NavalCells {
-        let empty = Vec::new();
-        let roster = |force: &u64| self.rosters.get(force).unwrap_or(&empty);
+        let roster = |force: &u64| self.hulls(*force);
         let capitals = members
             .iter()
             .flat_map(roster)
             .map(|hull| counter_order::is_capital(hull.model))
             .try_fold(0usize, |sum, capital| Some(sum + usize::from(capital?)));
-        let hull =
-            counter_order::hull_icon(members.iter().flat_map(roster).copied(), self.equipment);
+        let hull = counter_order::hull_icon(members.iter().flat_map(roster), self.equipment);
         // The viewer's slot is what the game test, with fog on or off; an
         // incomplete census cannot test it, so every carrier state stays open.
         let base = |air: u64| -> Option<counter_order::CarrierBase> {
-            let wings = self.viewer_wings.as_ref()?;
-            let kind = *self.base_kinds.get(&air)?;
+            let wings = self.tables.viewer_wings.as_ref()?;
+            let kind = *self.tables.base_kinds.get(&air)?;
             Some(counter_order::CarrierBase {
                 access: wings.contains_key(&air),
                 kind,
@@ -242,7 +296,7 @@ impl<'a> ShipInputs<'a> {
             .iter()
             .map(|force| {
                 let ships: Vec<&replay_data::rows::ShipModelRow> =
-                    roster(force).iter().map(|hull| hull.model).collect();
+                    roster(force).map(|hull| hull.model).collect();
                 counter_order::task_force_carrier(&ships, &base)
             })
             .collect();
@@ -291,20 +345,20 @@ pub(super) struct NavalContext<'a> {
     pub(super) ship_inputs: Option<ShipInputs<'a>>,
     pub(super) aggression: &'a [i64],
     /// Ship handle to `Ships.task_force`, and whether that census is complete.
-    pub(super) ship_task_forces: BTreeMap<u64, u64>,
+    pub(super) ship_task_forces: Arc<BTreeMap<u64, u64>>,
     pub(super) ships_complete: bool,
     /// Per task force, its ship count and summed `Ships.strength`, with wrapping addition.
-    pub(super) ships: BTreeMap<u64, (usize, i64)>,
+    pub(super) ships: Arc<BTreeMap<u64, (usize, i64)>>,
     /// Canonical slot to `Countries.id`, the key of `CountryCounterInputs`.
     pub(super) country_ids: &'a BTreeMap<u32, u32>,
     /// A logical owner's `counter_ideology` frame at sea ([`ideology_frame`]).
     pub(super) ideology: &'a Ideology<'a>,
     /// `TaskForces.mission` by task force.
-    pub(super) missions: BTreeMap<u64, u32>,
+    pub(super) missions: Arc<BTreeMap<u64, u32>>,
     /// The recorded task forces, and whether that census is complete.
     pub(super) forces: &'a [replay_data::rows::TaskForceRow],
     /// The mission skip operands, shared with the ship models.
-    pub(super) mission_skips: viewer_foundation::map::task_force_visual::MissionSkips,
+    pub(super) mission_skips: Arc<viewer_foundation::map::task_force_visual::MissionSkips>,
     pub(super) forces_complete: bool,
 }
 
@@ -373,70 +427,100 @@ pub(super) fn ideology_frame(
     }
 }
 
-impl<'a> NavalContext<'a> {
-    /// The unit passes' naval context, or `None` when `shown` is false: no unit counter draws
-    /// (see [`super::units_shown`]), so no ship census, model or task-force table is read and
-    /// a camera that hides the counters pays nothing for them.
-    pub(super) fn read(
-        shown: bool,
-        frame: &'a DecodedFrame,
-        sources: NavalSources<'a>,
-    ) -> io::Result<Option<Self>> {
-        if !shown {
-            return Ok(None);
-        }
-        Self::build(frame, sources).map(Some)
-    }
+#[derive(Clone)]
+pub(super) struct NavalTables {
+    ship_inputs: Option<Arc<ShipTables>>,
+    ship_task_forces: Arc<BTreeMap<u64, u64>>,
+    ships_complete: bool,
+    ships: Arc<BTreeMap<u64, (usize, i64)>>,
+    missions: Arc<BTreeMap<u64, u32>>,
+    mission_skips: Arc<viewer_foundation::map::task_force_visual::MissionSkips>,
+    forces_complete: bool,
+}
 
-    /// The naval context whether or not a unit counter draws: the naval combat icons' grids,
-    /// which the unit gate does not hide, build it when the unit passes did not.
-    pub(super) fn build(frame: &'a DecodedFrame, sources: NavalSources<'a>) -> io::Result<Self> {
-        // `Ships.task_force` is each task force's ship array as rows: counting them reproduces
-        // the engine's number exactly for a complete table and falls short for a truncated one,
-        // which `crate::map::tables` states.
+impl NavalTables {
+    pub(super) fn read(frame: &DecodedFrame, vision: &Vision) -> io::Result<Self> {
         let ship_rows = rows::<tables::Ships>(frame)?;
-        let mut ships: BTreeMap<u64, (usize, i64)> = BTreeMap::new();
+        let mut ships = BTreeMap::<u64, (usize, i64)>::new();
         for ship in ship_rows.rows() {
             let entry = ships.entry(ship.task_force).or_default();
             entry.0 += 1;
             entry.1 = entry.1.wrapping_add(ship.strength);
         }
-        let model_rows = rows::<tables::ShipModels>(frame)?;
-        let ship_inputs = if ship_rows.is_complete() && model_rows.is_complete() {
-            ShipInputs::read(
-                ship_rows.rows(),
-                model_rows.rows(),
-                frame,
-                sources.vision,
-                sources.equipment,
-            )?
+        let models = rows::<tables::ShipModels>(frame)?;
+        let ship_inputs = if ship_rows.is_complete() && models.is_complete() {
+            ShipTables::read(ship_rows.rows(), models.rows(), frame, vision)?.map(Arc::new)
         } else {
             None
         };
-        let force_rows = rows::<tables::TaskForces>(frame)?;
-        let forces = force_rows.rows();
+        let forces = rows::<tables::TaskForces>(frame)?;
+        Ok(Self {
+            ship_inputs,
+            ship_task_forces: Arc::new(
+                ship_rows
+                    .rows()
+                    .iter()
+                    .map(|ship| (ship.id, ship.task_force))
+                    .collect(),
+            ),
+            ships_complete: ship_rows.is_complete(),
+            ships: Arc::new(ships),
+            missions: Arc::new(
+                forces
+                    .rows()
+                    .iter()
+                    .map(|force| (force.id, force.mission))
+                    .collect(),
+            ),
+            mission_skips: Arc::new(
+                viewer_foundation::map::task_force_visual::MissionSkips::read(frame)?,
+            ),
+            forces_complete: forces.is_complete(),
+        })
+    }
+}
+
+impl<'a> NavalContext<'a> {
+    #[cfg(test)]
+    pub(super) fn read(
+        shown: bool,
+        frame: &'a DecodedFrame,
+        sources: NavalSources<'a>,
+    ) -> io::Result<Option<Self>> {
+        if shown {
+            Self::build(frame, sources).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(super) fn build(frame: &'a DecodedFrame, sources: NavalSources<'a>) -> io::Result<Self> {
+        Self::cached(frame, sources, &NavalTables::read(frame, sources.vision)?)
+    }
+
+    pub(super) fn cached(
+        frame: &'a DecodedFrame,
+        sources: NavalSources<'a>,
+        tables: &NavalTables,
+    ) -> io::Result<Self> {
         Ok(Self {
             type_tints: sources.type_tints,
             vision: sources.vision,
             native: sources.native,
-            ship_inputs,
+            ship_inputs: tables.ship_inputs.as_ref().map(|tables| ShipInputs {
+                equipment: sources.equipment,
+                tables: Arc::clone(tables),
+            }),
             aggression: sources.aggression,
-            ship_task_forces: ship_rows
-                .rows()
-                .iter()
-                .map(|ship| (ship.id, ship.task_force))
-                .collect(),
-            ships_complete: ship_rows.is_complete(),
-            ships,
+            ship_task_forces: Arc::clone(&tables.ship_task_forces),
+            ships_complete: tables.ships_complete,
+            ships: Arc::clone(&tables.ships),
             country_ids: sources.country_ids,
             ideology: sources.ideology,
-            missions: forces
-                .iter()
-                .map(|force| (force.id, force.mission))
-                .collect(),
-            forces,
-            mission_skips: viewer_foundation::map::task_force_visual::MissionSkips::read(frame)?,
-            forces_complete: force_rows.is_complete(),
+            missions: Arc::clone(&tables.missions),
+            forces: rows::<tables::TaskForces>(frame)?.rows(),
+            mission_skips: Arc::clone(&tables.mission_skips),
+            forces_complete: tables.forces_complete,
         })
     }
 
@@ -860,14 +944,15 @@ pub(super) fn add_task_forces<'a>(
 
 /// Whether a province is land: the content movement map's terrain flag, else the map's own kind.
 pub(super) fn is_land(inputs: &CounterInputs<'_>, province: u32) -> bool {
-    inputs
-        .movement
+    province_is_land(inputs.map, inputs.movement, province)
+}
+
+fn province_is_land(map: &MapData, movement: Option<&MovementContent>, province: u32) -> bool {
+    movement
         .and_then(|movement| movement.map.terrain(province))
         .map_or_else(
             || {
-                inputs
-                    .map
-                    .definitions
+                map.definitions
                     .get(&province)
                     .is_some_and(|definition| matches!(definition.kind, ProvinceKind::Land))
             },
@@ -944,6 +1029,83 @@ fn sort_port_units(
         .map_err(|_| "port sort inputs unavailable")
 }
 
+/// Camera-independent port membership and anchor decisions. Comparator keys and
+/// runs still read the camera height, map mode and local task-force selection.
+#[derive(Clone, Default)]
+pub(super) struct PortTables {
+    anchors: Vec<(u32, [f32; 3])>,
+    unanchored: usize,
+    rosters: BTreeMap<u32, Vec<(usize, u32)>>,
+    undecided: BTreeMap<u32, Cow<'static, str>>,
+    refused: BTreeMap<&'static str, BTreeSet<u64>>,
+}
+
+impl PortTables {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn read(
+        frame: &DecodedFrame,
+        content: &CounterContent,
+        map: &MapData,
+        movement: Option<&MovementContent>,
+        tables: &CounterTables<'_>,
+        context: &NavalContext<'_>,
+        owner: &impl Fn(u32) -> Option<u32>,
+    ) -> io::Result<Self> {
+        let mut out = Self::default();
+        let bases = rows::<tables::NavalBases>(frame)?;
+        for base in bases.rows() {
+            match content.port(base.province) {
+                Some(anchor) => out.anchors.push((base.province, anchor)),
+                None => out.unanchored += 1,
+            }
+        }
+        let Some(order) = tables.order else {
+            return Ok(out);
+        };
+        let base_provinces: BTreeSet<_> = bases.rows().iter().map(|base| base.province).collect();
+        for (index, force) in context.forces.iter().enumerate() {
+            if force.province == 0
+                || force.fleet == 0
+                || !province_is_land(map, movement, force.province)
+                || !base_provinces.contains(&force.province)
+            {
+                continue;
+            }
+            match port_admission(
+                force,
+                context,
+                order,
+                || tables.task_forces.docked(force.id),
+                owner,
+            ) {
+                PortAdmission::Out => {}
+                PortAdmission::Undecided(reason) => {
+                    out.refused.entry(reason).or_default().insert(force.id);
+                    out.undecided.insert(force.province, port_undecided(reason));
+                }
+                PortAdmission::In(ordinal, unit) => {
+                    out.rosters
+                        .entry(unit.force.province)
+                        .or_default()
+                        .push((index, ordinal));
+                }
+            }
+        }
+        for (province, absent) in unrecorded_port_forces(&base_provinces, order, context) {
+            out.refused
+                .entry(PORT_FORCE_UNRECORDED)
+                .or_default()
+                .extend(absent);
+            out.undecided
+                .insert(province, port_undecided(PORT_FORCE_UNRECORDED));
+        }
+        for roster in out.rosters.values_mut() {
+            roster.sort_by_key(|(_, ordinal)| *ordinal);
+        }
+        Ok(out)
+    }
+}
+
 /// The naval base icons whose windows hold the port items, and the items: the game walks each
 /// land province's naval occupant array, independently of the ordinary
 /// sources, admits task forces with a fleet, ships and an empty ordinary route, sorts them and
@@ -953,6 +1115,7 @@ fn sort_port_units(
 /// are cleared and nothing is filled when the camera is coarse in the default map
 /// mode, and while the viewing country takes part in a peace conference (`context` is `None` then,
 /// [`super::units_shown`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn port_counters(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,
@@ -960,6 +1123,7 @@ pub(super) fn port_counters(
     tables: &CounterTables<'_>,
     context: Option<&NavalContext<'_>>,
     icons: &[NavalBaseIcon],
+    cached: &PortTables,
     out: &mut CounterFrame,
 ) -> io::Result<()> {
     // The raids map mode clears naval base icons, and their port counters with them.
@@ -996,14 +1160,8 @@ pub(super) fn port_counters(
         out.naval.bases_undecided = Some(why.into());
         return Ok(());
     }
-    let mut anchors = Vec::new();
-    let mut unanchored = 0;
-    for base in bases.rows() {
-        match inputs.content.port(base.province) {
-            Some(anchor) => anchors.push((base.province, anchor)),
-            None => unanchored += 1,
-        }
-    }
+    let anchors = &cached.anchors;
+    let unanchored = cached.unanchored;
     out.report.unanchored += unanchored;
     // A coarse camera, or a peace conference (no context), empties every box; a recorded order
     // the hour does not hold whole leaves every base's items undecided. A free eye empties the
@@ -1021,8 +1179,8 @@ pub(super) fn port_counters(
         {
             Ok(None)
         }
-        (Some(context), Some(order)) => {
-            let mut items = port_items(inputs, frame, owner, tables, context, order, out)?;
+        (Some(context), Some(_)) => {
+            let mut items = port_items(inputs, frame, owner, tables, context, cached, out)?;
             if inputs.camera.free().is_some() {
                 let at: BTreeMap<u32, [f32; 3]> = anchors.iter().copied().collect();
                 let defines = &inputs.content.defines;
@@ -1057,7 +1215,7 @@ pub(super) fn port_counters(
         }
     }
     out.naval.bases = Some(naval_windows::BasePass {
-        bases: anchors,
+        bases: anchors.clone(),
         glyphs,
         ports,
         size,
@@ -1162,37 +1320,12 @@ fn port_items(
     owner: &impl Fn(u32) -> Option<u32>,
     tables: &CounterTables<'_>,
     context: &NavalContext<'_>,
-    order: &counter_order::RecordedOrder,
+    cached: &PortTables,
     out: &mut CounterFrame,
 ) -> io::Result<naval_windows::PortItems> {
-    let bases = rows::<tables::NavalBases>(frame)?;
-    let base_provinces: BTreeSet<u32> = bases.rows().iter().map(|base| base.province).collect();
-    let mut rosters: BTreeMap<u32, Vec<(u32, NavalUnit<'_>)>> = BTreeMap::new();
-    let mut undecided: BTreeMap<u32, Cow<'static, str>> = BTreeMap::new();
-    for force in context.forces {
-        if force.province == 0
-            || force.fleet == 0
-            || !is_land(inputs, force.province)
-            || !base_provinces.contains(&force.province)
-        {
-            continue;
-        }
-        let docked = || tables.task_forces.docked(force.id);
-        match port_admission(force, context, order, docked, owner) {
-            PortAdmission::Out => {}
-            PortAdmission::Undecided(reason) => {
-                out.report.refuse_task_forces(reason, [force.id]);
-                undecided.insert(force.province, port_undecided(reason));
-            }
-            PortAdmission::In(ordinal, unit) => rosters
-                .entry(force.province)
-                .or_default()
-                .push((ordinal, unit)),
-        }
-    }
-    for (province, absent) in unrecorded_port_forces(&base_provinces, order, context) {
-        out.report.refuse_task_forces(PORT_FORCE_UNRECORDED, absent);
-        undecided.insert(province, port_undecided(PORT_FORCE_UNRECORDED));
+    for (&reason, forces) in &cached.refused {
+        out.report
+            .refuse_task_forces(reason, forces.iter().copied());
     }
     let navy = inputs.windows.navy();
     let art = gui_windows::CounterArt {
@@ -1209,16 +1342,21 @@ fn port_items(
     };
     let air_census = (inputs.visibility.priorities == PriorityTable::StrategicAir)
         .then(|| air_grid::Census::new(frame));
-    let mut ports: naval_windows::PortItems = undecided
-        .into_iter()
-        .map(|(province, why)| (province, Err(why)))
+    let mut ports: naval_windows::PortItems = cached
+        .undecided
+        .iter()
+        .map(|(&province, why)| (province, Err(why.clone())))
         .collect();
-    for (province, mut roster) in rosters {
+    for (&province, roster) in &cached.rosters {
         if ports.contains_key(&province) {
             continue;
         }
-        roster.sort_by_key(|(ordinal, _)| *ordinal);
-        let mut units: Vec<NavalUnit<'_>> = roster.into_iter().map(|(_, unit)| unit).collect();
+        let mut units: Vec<_> = roster
+            .iter()
+            .filter_map(|&(index, ordinal)| {
+                context.unit(&context.forces[index], owner, ordinal, None)
+            })
+            .collect();
         let height = inputs
             .content
             .port(province)
