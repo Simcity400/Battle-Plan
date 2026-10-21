@@ -93,7 +93,8 @@ fn a_design_built_new_then_converted_splits_exactly_by_month_and_domain() {
                     OutputPurpose::Converted,
                 );
                 converted.ordinal = 1;
-                rows.push(converted);
+                // Rows ascend by line and ordinal: line 1's second row.
+                rows.insert(1, converted);
             }
             Some(rows)
         });

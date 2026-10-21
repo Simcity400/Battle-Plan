@@ -1338,13 +1338,15 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
         (Some("Fusion Reactor"), Some(green))
     );
     assert_eq!((name(507), icon(507)), (Some("Custom Factory"), Some(blue)));
-    // No frame, a negative frame, one past the strip or a type declared twice
-    // with differing fields: no icon (the widget's placeholder), each refusal
-    // counted by name.
+    // A frame past the strip keeps its native offset, as the game draws it:
+    // the strip program's clamped sampler shows the strip's last column.
+    assert_eq!((name(503), icon(503)), (None, Some(green)));
+    // No frame, a negative frame or a type declared twice with differing
+    // fields: no icon (the widget's placeholder), each refusal counted by name.
     assert_eq!((name(501), icon(501)), (Some("Frameless Works"), None));
     assert_eq!((name(506), icon(506)), (Some("Twice Works"), None));
     assert_eq!((name(508), icon(508)), (Some("Ambiguous Works"), None));
-    for id in [502, 503, 504, 505] {
+    for id in [502, 504, 505] {
         assert_eq!((name(id), icon(id)), (None, None), "{id}");
     }
     assert_eq!(named.repair_icon.as_deref().map(first_pixel), Some(blue));
@@ -1367,7 +1369,14 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
         warned("2 building types are declared more than once with differing fields")
             .ends_with(": mod_twice, mod_case.")
     );
-    assert!(warned("1 building icons could not be read").contains("mod_far (frame 9"));
+    assert!(
+        named
+            .warnings
+            .iter()
+            .all(|(_, message)| !message.contains("could not be read")),
+        "{:?}",
+        named.warnings
+    );
     assert!(warned("1 building types are not declared").ends_with(": not_a_building."));
     assert!(
         warned("1 building types are not in the recorded lexical dictionary").ends_with(": 505.")

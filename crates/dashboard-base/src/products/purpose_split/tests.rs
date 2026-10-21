@@ -29,7 +29,6 @@ const NONE: Amounts = [0; Purpose::ALL.len()];
 #[test]
 fn a_month_counts_new_and_refit_input_from_its_baseline_and_refuses_what_cannot_be_told() {
     use ProductionSpendingUnknown::{CountryChanged, SpendingUnavailable};
-    let origins = [0];
     // From the observation's start: 10 new, then 4 refit and 6 more new.
     let ship = design(
         vec![run(0, 99, 10, true), run(100, 299, 16, false)],
@@ -40,52 +39,53 @@ fn a_month_counts_new_and_refit_input_from_its_baseline_and_refuses_what_cannot_
         ],
     );
     // The first month starts at the observation's zero.
-    assert_eq!(design_change(&ship, 0, 99, &origins), Ok(amounts(10, 4, 0)));
-    assert_eq!(design_change(&ship, 100, 299, &origins), Ok(amounts(6, 0, 0)));
-    assert_eq!(design_change(&ship, 40, 120, &origins), Ok(amounts(6, 4, 0)));
-    // A refit-only design has no series without refits at all.
-    let refitted = design(vec![], vec![run(150, 299, 7, false)]);
-    assert_eq!(design_change(&refitted, 100, 199, &origins), Ok(amounts(0, 7, 0)));
-    assert_eq!(design_change(&refitted, 200, 299, &origins), Ok(NONE));
+    assert_eq!(design_change(&ship, 0, 99), Ok(amounts(10, 4, 0)));
+    assert_eq!(design_change(&ship, 100, 299), Ok(amounts(6, 0, 0)));
+    assert_eq!(design_change(&ship, 40, 120), Ok(amounts(6, 4, 0)));
+    // A refit-only design has no series without refits at all. Its first
+    // input, after the observation began, opens its series with a break, as
+    // every series' first run does: it counts from zero.
+    let refitted = design(vec![], vec![run(150, 299, 7, true)]);
+    assert_eq!(design_change(&refitted, 100, 199), Ok(amounts(0, 7, 0)));
+    assert_eq!(design_change(&refitted, 200, 299), Ok(NONE));
     // Before a design's first input nothing is spent on it.
-    assert_eq!(design_change(&refitted, 0, 99, &origins), Ok(NONE));
+    assert_eq!(design_change(&refitted, 0, 99), Ok(NONE));
     // A series that ended is not known after it, nor across a gap.
     let ended = design(vec![], vec![run(0, 99, 5, true), run(150, 299, 9, false)]);
     assert_eq!(
-        design_change(&ended, 100, 120, &origins),
+        design_change(&ended, 100, 120),
         Err(SpendingUnavailable)
     );
     assert_eq!(
-        design_change(&ended, 50, 200, &origins),
+        design_change(&ended, 50, 200),
         Err(SpendingUnavailable)
     );
     // Its first value after the gap holds input from the gap too.
     assert_eq!(
-        design_change(&ended, 150, 200, &origins),
+        design_change(&ended, 150, 200),
         Err(SpendingUnavailable)
     );
-    assert_eq!(design_change(&ended, 151, 200, &origins), Ok(NONE));
-    // A new segment that is not the observation's start is another holder.
+    assert_eq!(design_change(&ended, 151, 200), Ok(NONE));
+    // A later segment is another holder's.
     let replaced = design(vec![], vec![run(0, 99, 5, true), run(100, 299, 2, true)]);
     assert_eq!(
-        design_change(&replaced, 50, 150, &origins),
+        design_change(&replaced, 50, 150),
         Err(CountryChanged)
     );
-    assert_eq!(design_change(&replaced, 150, 200, &origins), Ok(NONE));
+    assert_eq!(design_change(&replaced, 150, 200), Ok(NONE));
     // Signed corrections stay exact.
     let corrected = design(
         vec![run(0, 99, 8, true), run(100, 199, 5, false)],
         vec![run(0, 99, 8, true), run(100, 199, 5, false)],
     );
     assert_eq!(
-        design_change(&corrected, 100, 199, &origins),
+        design_change(&corrected, 100, 199),
         Ok(amounts(-3, 0, 0))
     );
 }
 
 #[test]
 fn converted_input_is_split_from_new_production_against_the_same_baseline() {
-    let origins = [0];
     // 10 new, then the line converts 6 in hours 100..=199 and goes back to
     // new production for 3 more; a -1 correction of conversions follows.
     let mut plane = design(
@@ -103,46 +103,95 @@ fn converted_input_is_split_from_new_production_against_the_same_baseline() {
         ],
     );
     plane.separate[0] = vec![run(100, 299, 6, false), run(300, 399, 5, false)];
-    assert_eq!(design_change(&plane, 0, 99, &origins), Ok(amounts(10, 0, 0)));
+    assert_eq!(design_change(&plane, 0, 99), Ok(amounts(10, 0, 0)));
     // A mode change inside one month splits it exactly.
-    assert_eq!(design_change(&plane, 50, 250, &origins), Ok(amounts(3, 0, 6)));
-    assert_eq!(design_change(&plane, 200, 299, &origins), Ok(amounts(3, 0, 0)));
+    assert_eq!(design_change(&plane, 50, 250), Ok(amounts(3, 0, 6)));
+    assert_eq!(design_change(&plane, 200, 299), Ok(amounts(3, 0, 0)));
     // A signed correction of conversions stays in conversions.
-    assert_eq!(design_change(&plane, 300, 399, &origins), Ok(amounts(0, 0, -1)));
-    assert_eq!(design_change(&plane, 0, 399, &origins), Ok(amounts(13, 0, 5)));
+    assert_eq!(design_change(&plane, 300, 399), Ok(amounts(0, 0, -1)));
+    assert_eq!(design_change(&plane, 0, 399), Ok(amounts(13, 0, 5)));
     // Converted input before the series began is none.
-    assert_eq!(design_change(&plane, 0, 50, &origins), Ok(amounts(10, 0, 0)));
+    assert_eq!(design_change(&plane, 0, 50), Ok(amounts(10, 0, 0)));
+}
+
+/// The endpoint page holding a month's last hour: the source's latest read
+/// and restart then, and the country's own refusal, when it is listed.
+fn page(
+    read: Option<i32>,
+    restart: Option<i32>,
+    country: Option<Option<ProductionSpendingUnknown>>,
+) -> pages::EndpointPage {
+    pages::EndpointPage {
+        schema: 1,
+        branch_id: "1".into(),
+        first_hour: 0,
+        last_hour: 0,
+        equipment_read: read,
+        rocket_read: None,
+        equipment_origin: read.map(|_| 100),
+        equipment_restart: restart,
+        rocket_origin: None,
+        rocket_restart: None,
+        countries: country
+            .map(|reason| pages::CountryEndpoint {
+                tag: "opaque|tag".into(),
+                equipment: Some(pages::SourceEndpoint {
+                    slot: 1,
+                    country_id: 1,
+                    observation: Some(100),
+                    segment: 0,
+                    read_hour: read.unwrap_or_default(),
+                    units_known: true,
+                    spending_known: reason.is_none(),
+                    present: Some(true),
+                    campaign_spending_reason: reason,
+                    amounts: Vec::new(),
+                }),
+                rocket: None,
+                rocket_joined: false,
+            })
+            .into_iter()
+            .collect(),
+        classifications: BTreeMap::new(),
+        warnings: Vec::new(),
+        unnamed_before: 0,
+        unnamed_per_hour: 0,
+        unnamed_warning_index: 0,
+    }
 }
 
 #[test]
 fn a_month_is_known_only_where_the_equipment_source_was_read_and_untainted() {
-    use ProductionSpendingUnknown::{NotRecorded, ObservationRestarted, RecordingGap};
-    let mut scanned = ScannedProduced {
-        reads: vec![100, 124, 148],
-        observations: vec![100],
-        ..Default::default()
+    use ProductionSpendingUnknown::{
+        CountryChanged, NotRecorded, ObservationRestarted, RecordingGap,
     };
-    let coverage = SourceCoverage::of(&scanned);
+    let tag = "opaque|tag";
+    let month = |page: Option<pages::EndpointPage>, tainted, last| {
+        SourceCoverage::at(page.as_ref(), tag, tainted).month(last)
+    };
     // Before any read nothing is known, not zero: no series is no proof.
-    assert_eq!(coverage.month(99), Err(NotRecorded));
+    assert_eq!(month(None, None, 99), Err(NotRecorded));
+    assert_eq!(month(Some(page(None, None, None)), None, 99), Err(NotRecorded));
     // The month the recording starts in counts from its first read.
-    assert_eq!(coverage.month(100), Ok(()));
-    assert_eq!(coverage.month(10_000), Ok(()));
-    scanned.spending_tainted = BTreeMap::from([(0, (500, RecordingGap))]);
-    scanned.observations = vec![100, 900];
-    let coverage = SourceCoverage::of(&scanned);
-    assert_eq!(coverage.month(499), Ok(()));
-    assert_eq!(coverage.month(500), Err(RecordingGap));
-    scanned.spending_tainted.clear();
-    let coverage = SourceCoverage::of(&scanned);
-    assert_eq!(coverage.month(950), Err(ObservationRestarted));
-    let none = SourceCoverage::of(&ScannedProduced::default());
-    assert_eq!(none.month(1_000), Err(NotRecorded));
+    assert_eq!(month(Some(page(Some(100), None, Some(None))), None, 100), Ok(()));
+    // A country the page does not list refuses nothing of its own.
+    assert_eq!(month(Some(page(Some(148), None, None)), None, 10_000), Ok(()));
+    let gap = Some((500, RecordingGap));
+    assert_eq!(month(Some(page(Some(148), None, None)), gap, 499), Ok(()));
+    assert_eq!(month(Some(page(Some(148), None, None)), gap, 500), Err(RecordingGap));
+    assert_eq!(
+        month(Some(page(Some(948), Some(900), None)), None, 950),
+        Err(ObservationRestarted)
+    );
+    // Its holder changed: the country's own refusal, as production spending's.
+    assert_eq!(
+        month(Some(page(Some(148), None, Some(Some(CountryChanged)))), None, 150),
+        Err(CountryChanged)
+    );
 }
 
 #[test]
 fn a_month_is_purpose_uncertain_only_where_unproven_input_joined_it() {
-    let origins = [0];
     // Unrecorded-purpose input in the first month only; later months add
     // recorded input of the same design.
     let mut ship = design(
@@ -150,14 +199,14 @@ fn a_month_is_purpose_uncertain_only_where_unproven_input_joined_it() {
         vec![run(0, 99, 10, true), run(100, 299, 16, false)],
     );
     ship.unproven = vec![run(0, 299, 4, true)];
-    assert_eq!(unproven_in(&ship, 0, 99, &origins), Ok(true));
-    assert_eq!(unproven_in(&ship, 100, 299, &origins), Ok(false));
+    assert_eq!(unproven_in(&ship, 0, 99), Ok(true));
+    assert_eq!(unproven_in(&ship, 100, 299), Ok(false));
     // Evidence that begins later is read from its own baseline.
     let mut refitted = design(vec![], vec![run(0, 99, 5, true), run(100, 299, 9, false)]);
     refitted.unproven = vec![run(150, 299, 3, false)];
-    assert_eq!(unproven_in(&refitted, 0, 99, &origins), Ok(false));
-    assert_eq!(unproven_in(&refitted, 100, 199, &origins), Ok(true));
-    assert_eq!(unproven_in(&refitted, 200, 299, &origins), Ok(false));
+    assert_eq!(unproven_in(&refitted, 0, 99), Ok(false));
+    assert_eq!(unproven_in(&refitted, 100, 199), Ok(true));
+    assert_eq!(unproven_in(&refitted, 200, 299), Ok(false));
     // Summed magnitudes: +1 and -1 of unproven input on two lines grow the
     // evidence by 2, so a month whose net input is zero is still uncertain.
     let mut cancelled = design(
@@ -165,15 +214,14 @@ fn a_month_is_purpose_uncertain_only_where_unproven_input_joined_it() {
         vec![run(0, 99, 10, true), run(100, 299, 10, false)],
     );
     cancelled.unproven = vec![run(0, 99, 0, true), run(100, 299, 2, false)];
-    assert_eq!(design_change(&cancelled, 100, 299, &origins), Ok(NONE));
-    assert_eq!(unproven_in(&cancelled, 100, 299, &origins), Ok(true));
+    assert_eq!(design_change(&cancelled, 100, 299), Ok(NONE));
+    assert_eq!(unproven_in(&cancelled, 100, 299), Ok(true));
 }
 
 /// Input whose purpose was not recorded is its own amount, never part of new
 /// production: 5 unrecorded and 2 new IC are 2 new and 5 unrecorded.
 #[test]
 fn unrecorded_purpose_input_is_kept_out_of_new_production() {
-    let origins = [0];
     let mut design = design(
         vec![run(0, 99, 7, true), run(100, 199, 9, false)],
         vec![run(0, 99, 7, true), run(100, 199, 9, false)],
@@ -182,9 +230,9 @@ fn unrecorded_purpose_input_is_kept_out_of_new_production() {
     design.unproven = vec![run(0, 199, 5, true)];
     let mut expected = amounts(2, 0, 0);
     expected[Purpose::Unknown.index()] = 5;
-    assert_eq!(design_change(&design, 0, 99, &origins), Ok(expected));
+    assert_eq!(design_change(&design, 0, 99), Ok(expected));
     // Later, recorded new input only.
-    assert_eq!(design_change(&design, 100, 199, &origins), Ok(amounts(2, 0, 0)));
+    assert_eq!(design_change(&design, 100, 199), Ok(amounts(2, 0, 0)));
 }
 
 /// Input of a purpose the domain never has stays in the month's whole as

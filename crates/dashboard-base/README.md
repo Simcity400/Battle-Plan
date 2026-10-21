@@ -595,7 +595,10 @@ start: new production is the input without refits less its converted and
 unrecorded-purpose input, refits the whole input less the input without
 refits, converted and unrecorded-purpose input their own series' change, all
 against the combined series' baseline; each month also carries the input of
-purposes the domain never has. Dockyard
+purposes the domain never has. A month is known from the equipment source's
+first read until a taint, an observation restart or a change of the
+country's holder, as Production spending's coverage, read from the endpoint
+page holding the month's last hour. Dockyard
 repairs integrate the prepared repair rate over the same hours. Dockyard
 spending answers through the hours the production and repair families have both
 prepared; Military factory spending through production's.

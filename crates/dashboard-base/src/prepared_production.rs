@@ -3143,6 +3143,8 @@ pub(crate) enum Leaves<'a> {
     /// These countries' Rocket amounts only. Other amounts stay empty and the
     /// page's classifications are not read.
     Rockets(&'a BTreeSet<String>),
+    /// No amounts or classifications: only the page's sources and coverage.
+    Sources,
 }
 
 /// One query's reads of a branch's endpoint pages. The catalogue, its parsed
@@ -3275,6 +3277,7 @@ impl<'a> Endpoints<'a> {
                 Leaves::All => true,
                 Leaves::Country(only) => tag == only,
                 Leaves::Rockets(tags) => *rocket && tags.contains(tag),
+                Leaves::Sources => false,
             };
             if !wanted {
                 continue;
@@ -3321,7 +3324,7 @@ impl<'a> Endpoints<'a> {
             source.as_mut().expect("selected production source").amounts =
                 values.into_values().collect();
         }
-        if matches!(leaves, Leaves::Rockets(_)) {
+        if matches!(leaves, Leaves::Rockets(_) | Leaves::Sources) {
             return Ok(());
         }
         let (variants, keys): (Vec<u64>, Vec<u64>) = self

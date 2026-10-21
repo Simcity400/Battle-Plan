@@ -15,9 +15,7 @@
 use crate::prepared::series::Run;
 use crate::prepared_production::{self as pages, Classification, SERIES_PURPOSES};
 use crate::products::equipment::{Domain, UNRESOLVED_MARK};
-use crate::products::equipment::production::{
-    ProductionSpendingUnknown, Purpose, ScannedProduced,
-};
+use crate::products::equipment::production::{ProductionSpendingUnknown, Purpose};
 use crate::products::production_spending::prepared::Answered;
 use serde_json::Value;
 use std::{
@@ -122,13 +120,17 @@ fn covering(runs: &[Run], hour: i32) -> Option<&Run> {
 
 /// Where a cumulative series' change over `first..=last` is measured from:
 /// None before the design had any input, `Some(None)` from zero (its first
-/// input in that span, or its observation's start), `Some(Some(hour))` from its
-/// value at `hour`. Err when an hour between cannot be told.
+/// input in that span), `Some(Some(hour))` from its value at `hour`. Err when
+/// an hour between cannot be told.
+///
+/// `runs` are the branch's: a design's first run is its first input since its
+/// country's observation began. That run starts with a break, as every
+/// series' first does; a restart or holder change is the month's coverage's
+/// refusal ([`SourceCoverage`]). A later break is another holder's series.
 fn baseline(
     runs: &[Run],
     first: i32,
     last: i32,
-    origins: &[i32],
 ) -> Result<Option<Option<i32>>, ProductionSpendingUnknown> {
     let index = runs.partition_point(|run| run.last_hour < last);
     match runs.get(index) {
@@ -143,15 +145,11 @@ fn baseline(
         if run.first_hour < first {
             return Ok(Some(Some(first - 1)));
         }
-        if run.break_before {
-            return if at == 0 && origins.contains(&run.first_hour) {
-                Ok(Some(None))
-            } else {
-                Err(ProductionSpendingUnknown::CountryChanged)
-            };
-        }
         if at == 0 {
             return Ok(Some(None));
+        }
+        if run.break_before {
+            return Err(ProductionSpendingUnknown::CountryChanged);
         }
         if runs[at - 1].last_hour.checked_add(1) != Some(run.first_hour) {
             return Err(ProductionSpendingUnknown::SpendingUnavailable);
@@ -172,9 +170,8 @@ pub(crate) fn design_change(
     design: &Design,
     first: i32,
     last: i32,
-    origins: &[i32],
 ) -> Result<Amounts, ProductionSpendingUnknown> {
-    let Some(from) = baseline(&design.combined, first, last, origins)? else {
+    let Some(from) = baseline(&design.combined, first, last)? else {
         return Ok([0; Purpose::ALL.len()]);
     };
     let overflow = || ProductionSpendingUnknown::SpendingUnavailable;
@@ -203,48 +200,68 @@ pub(crate) fn unproven_in(
     design: &Design,
     first: i32,
     last: i32,
-    origins: &[i32],
 ) -> Result<bool, ProductionSpendingUnknown> {
-    let Some(from) = baseline(&design.combined, first, last, origins)? else {
+    let Some(from) = baseline(&design.combined, first, last)? else {
         return Ok(false);
     };
     Ok(value(&design.unproven, Some(last)) != value(&design.unproven, from))
 }
 
-/// When the equipment source's spending is known: from its first read until
-/// the first taint of its observation or its restart.
+/// Whether one country's equipment spending is known through a month's last
+/// hour: from the source's first read until the first taint of its
+/// observation, its restart or a change of the country's holder, as
+/// production spending's coverage. The prepared catalogue keeps only the
+/// latest read and observation, so each month reads them from the endpoint
+/// page holding its last hour.
 pub(crate) struct SourceCoverage {
-    first_read: Option<i32>,
+    /// The equipment source was read by then.
+    read: bool,
+    /// The first taint of the source's spending, and its hour.
     tainted: Option<(i32, ProductionSpendingUnknown)>,
-    restart: Option<i32>,
+    /// The source's observation restarted by then.
+    restarted: bool,
+    /// The country's own refusal then: a taint, restart or holder change.
+    country: Option<ProductionSpendingUnknown>,
 }
 
 impl SourceCoverage {
-    pub(crate) fn of(scanned: &ScannedProduced) -> Self {
+    /// The coverage `page` gives `tag`: the endpoint page holding the month's
+    /// last hour, None when no page holds it.
+    pub(crate) fn at(
+        page: Option<&pages::EndpointPage>,
+        tag: &str,
+        tainted: Option<(i32, ProductionSpendingUnknown)>,
+    ) -> Self {
+        let country = page
+            .and_then(|page| {
+                let index = page
+                    .countries
+                    .binary_search_by(|row| row.tag.as_str().cmp(tag))
+                    .ok()?;
+                page.countries[index].equipment.as_ref()
+            })
+            .and_then(|source| source.campaign_spending_reason);
         Self {
-            first_read: scanned.reads.first().copied(),
-            tainted: scanned
-                .spending_tainted
-                .values()
-                .min_by_key(|(at, _)| *at)
-                .copied(),
-            restart: scanned.observations.get(1).copied(),
+            read: page.is_some_and(|page| page.equipment_read.is_some()),
+            tainted,
+            restarted: page.is_some_and(|page| page.equipment_restart.is_some()),
+            country,
         }
     }
 
-    /// Whether a month ending at `last` lies where spending is known. A
+    /// Whether the month ending at `last` lies where spending is known. A
     /// month the recording starts in counts from its first read.
     pub(crate) fn month(&self, last: i32) -> Result<(), ProductionSpendingUnknown> {
-        if self.first_read.is_none_or(|read| read > last) {
+        if !self.read {
             return Err(ProductionSpendingUnknown::NotRecorded);
         }
         if let Some((_, reason)) = self.tainted.filter(|(at, _)| *at <= last) {
             return Err(reason);
         }
-        if self.restart.is_some_and(|restart| restart <= last) {
+        if self.restarted {
             return Err(ProductionSpendingUnknown::ObservationRestarted);
         }
-        Ok(())
+        self.country.map_or(Ok(()), Err)
     }
 }
 
@@ -326,9 +343,13 @@ pub(crate) fn purpose_months(
     let Some(catalogue) = reads.catalogue()? else {
         return Ok(Vec::new());
     };
-    let scanned = catalogue.spending.scanned(tag);
-    let coverage = SourceCoverage::of(&scanned);
-    let origins = scanned.observations;
+    let tainted = catalogue
+        .spending
+        .scanned(tag)
+        .spending_tainted
+        .values()
+        .min_by_key(|(at, _)| *at)
+        .copied();
     let classes: BTreeMap<u64, Classification> = catalogue.classifications.clone();
     /// A design's series keys: without refits, combined, each separate
     /// purpose's, and its unproven input.
@@ -389,15 +410,16 @@ pub(crate) fn purpose_months(
     let mut result = Vec::new();
     for (month_first, month_last) in months(first, last) {
         cancelled(cancel)?;
-        // A month no read covers, or after a taint or restart, is not known,
-        // whatever its designs' series hold.
+        // A month no read covers, or after a taint, restart or holder change,
+        // is not known, whatever its designs' series hold.
+        let page = reads.page(month_last, pages::Leaves::Sources)?;
+        let coverage = SourceCoverage::at(page.as_ref(), tag, tainted);
         let mut amounts = coverage.month(month_last).map(|()| [0_i128; Purpose::ALL.len()]);
         let mut unresolved = false;
         let mut purpose_unproven = false;
         for design in &designs {
-            purpose_unproven |=
-                unproven_in(design, month_first, month_last, &origins).unwrap_or(false);
-            let change = design_change(design, month_first, month_last, &origins);
+            purpose_unproven |= unproven_in(design, month_first, month_last).unwrap_or(false);
+            let change = design_change(design, month_first, month_last);
             if design.unresolved {
                 unresolved |= change != Ok([0; Purpose::ALL.len()]);
                 continue;

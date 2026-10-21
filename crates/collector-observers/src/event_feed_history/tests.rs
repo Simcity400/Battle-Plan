@@ -627,13 +627,16 @@ fn unsupported_delayed_owner_is_attempted_once_through_refusal_and_registry_reco
         .observe(snapshot.prepare_pack().unwrap().row())
         .unwrap();
     store.acknowledged(snapshot.publication());
-    store.recover_delayed(&memory, BASE, 7, GAME, 1, healthy);
-    store.recover_delayed(&memory, BASE, 7, GAME, 1, unsupported);
+    // In production order the census visits follow the next boundary's
+    // first half, which retires the acknowledged hour's entries.
+    store
+        .prepare_boundary(boundary(7, 2), Some((&NoReads, BASE)))
+        .unwrap();
+    store.recover_delayed(&memory, BASE, 7, GAME, 2, healthy);
+    store.recover_delayed(&memory, BASE, 7, GAME, 2, unsupported);
     assert_eq!(memory.failed_owner.get(), 1);
     assert_eq!(memory.healthy_owner.get(), 1);
-    store
-        .snapshot_with_registry(&mut snapshot, boundary(7, 2), &NoReads, BASE)
-        .unwrap();
+    store.seal(&mut snapshot, boundary(7, 2), true).unwrap();
     let refused = snapshot.prepare_pack().unwrap();
     // Only that owner is refused, by name; the interval and every other
     // certificate stay complete.
@@ -692,8 +695,11 @@ fn unsupported_delayed_owner_is_attempted_once_through_refusal_and_registry_reco
 
     // A native country reset gives the owner a new queue: one new attempt.
     store.invalidate_delayed_country(TARGET);
-    store.recover_delayed(&memory, BASE, 7, GAME, 6, unsupported);
-    store.recover_delayed(&memory, BASE, 7, GAME, 6, unsupported);
+    store
+        .prepare_boundary(boundary(7, 7), Some((&NoReads, BASE)))
+        .unwrap();
+    store.recover_delayed(&memory, BASE, 7, GAME, 7, unsupported);
+    store.recover_delayed(&memory, BASE, 7, GAME, 7, unsupported);
     assert_eq!(memory.failed_owner.get(), 2);
     assert_eq!(store.counts.rejected, 3);
 }
@@ -3120,6 +3126,8 @@ fn abandoned_detour_witnesses_are_dropped_and_refused_at_the_next_boundary() {
         Some(WITNESS_ABANDONED.as_bytes())
     );
     assert_eq!(row.row().counts.unwrap().rejected, 1);
+    // The refusal's receipt ends the loss.
+    store.acknowledged(row.publication());
     // A published frame leaves nothing to refuse.
     store
         .stage_witness(token(2, 1), Witness::Selected { instance: 2 })

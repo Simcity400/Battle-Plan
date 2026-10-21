@@ -1420,6 +1420,9 @@ mod tests {
         store.prepare_decisions(8).unwrap();
         let mut state = replay_data::event_feed_rows::ScriptEventState::default();
         publish(&mut store, &mut state, 7); // Admit the observed generation.
+        // The census worker admits the decision index to the generation at
+        // its first visit, as every census begin does; writers never reset it.
+        store.decisions.reset(1);
         // Never baselined: writer stores still attribute the member exactly.
         let world = World::new(&memory, 0).unwrap();
         let pointer = Fixture::pointer(2);

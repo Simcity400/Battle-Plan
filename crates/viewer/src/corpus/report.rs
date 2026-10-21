@@ -1092,6 +1092,29 @@ mod tests {
 
     mod state_history;
 
+    /// The product matrix's cell for `stack` under the product `key`, found by
+    /// its heading, so no test depends on the registry's order.
+    fn product_cell(summary: &str, stack: &str, key: &str) -> String {
+        let matrix = summary
+            .split("## Dashboard products\n")
+            .nth(1)
+            .unwrap()
+            .split("## New in mods\n")
+            .next()
+            .unwrap();
+        let mut lines = matrix.lines();
+        let column = lines
+            .find(|line| line.starts_with("| stack |"))
+            .unwrap()
+            .split('|')
+            .position(|heading| heading.trim() == key)
+            .unwrap_or_else(|| panic!("no column {key}: {matrix}"));
+        let row = lines
+            .find(|line| line.starts_with(&format!("| {stack} |")))
+            .unwrap_or_else(|| panic!("no row {stack}: {matrix}"));
+        row.split('|').nth(column).unwrap().trim().to_owned()
+    }
+
     #[test]
     fn aggregate_inventory_changes_keep_the_diff_identity() {
         let mut before = Diagnostic::about(
@@ -1169,8 +1192,9 @@ mod tests {
             &BTreeMap::from([("vanilla".into(), baseline), ("mod".into(), modded)]),
             10,
         );
-        assert!(
-            out.contains("| mod | 1 unsettled, 1 parse, 8 unsupported (+8 vs vanilla) |"),
+        assert_eq!(
+            product_cell(&out, "mod", "national-focus"),
+            "1 unsettled, 1 parse, 8 unsupported (+8 vs vanilla)",
             "{out}"
         );
         assert!(out.contains("| 0 | 12 |"), "{out}");
@@ -1308,12 +1332,18 @@ mod tests {
         assert!(summary.contains("## Stacks found\n"));
         assert!(summary.contains("mod/fixture.mod | Fixture \\| conversion | 2.4 | 1.17.* | Dependency (123, 1.0) | Other: not installed"), "{summary}");
         assert!(summary.contains("## Dashboard products\n"));
-        assert!(
-            summary.contains("| local-fixture | 1 ambiguous, 1 fallback | clean |"),
-            "{summary}"
-        );
+        // The diagnosed product counts its kinds; every other one ran clean.
         for product in dashboard::products::PRODUCTS {
-            assert!(summary.contains(product.key));
+            let expected = if product.key == NationalFocus::KEY {
+                "1 ambiguous, 1 fallback"
+            } else {
+                "clean"
+            };
+            assert_eq!(
+                product_cell(&summary, "local-fixture", product.key),
+                expected,
+                "{summary}"
+            );
         }
         let diagnostic = Diagnostic::new(
             &format!("dashboard.{}", Research::KEY),
@@ -1421,11 +1451,16 @@ mod tests {
             1
         );
         assert!(matrix.contains("| content | offline |"));
-        assert!(
-            matrix.contains("| mod | 1 refused, 2 fallback (+2 vs vanilla) |"),
+        assert_eq!(
+            product_cell(&summary, "mod", "national-focus"),
+            "1 refused, 2 fallback (+2 vs vanilla)",
             "{matrix}"
         );
-        assert!(matrix.contains("| clean-mod | clean |"), "{matrix}");
+        assert_eq!(
+            product_cell(&summary, "clean-mod", "national-focus"),
+            "clean",
+            "{matrix}"
+        );
         assert!(matrix.contains("| 1 | 1 |"));
         let new = summary
             .split("## New in mods\n")
