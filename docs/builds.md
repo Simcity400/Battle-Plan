@@ -167,3 +167,68 @@ Workspace Serde dependencies share `alloc`, `derive` and `rc`. These additive
 capabilities keep the library's feature identity consistent when switching
 between a collector crate, viewer and desktop; they do not change existing
 serialized values. Cargo's resolver still separates host build dependencies.
+
+## Warm worktrees
+
+A new worktree's target directory is empty, so its first cargo command compiles the
+whole workspace. [tools/warm_target.py](../tools/warm_target.py) starts it from a seed
+instead: the build of a clean checkout at a known commit, recorded with that commit,
+the toolchain and the lockfile hash.
+
+```powershell
+# Once, then whenever the seed should follow main: fetches, checks out origin/main and runs
+# `cargo check --workspace --all-targets`, `cargo test --workspace --no-run` (what
+# `cargo nextest run --no-run` builds) and `cargo clippy --workspace --all-targets -- -D warnings`
+# in the seed's checkout, going on past crates that fail. `--like` is needed the first time.
+python tools/warm_target.py seed --root seed --like C:\Users\Example\.t3\worktrees\battle-plan\t3-00000000
+# In a new worktree, before its first cargo command; the profile directory goes to the
+# listed directory with the most free space, behind a junction at .cargo-target\debug:
+python tools/warm_target.py warm --root seed --target-roots "C:\hoi4-dev;G:\hoi4-dev"
+# Lists references to the seed in a target directory (exit code 1 if there are any):
+python tools/warm_target.py check --root seed --target-dir .cargo-target
+```
+
+With [one test build per crate](#one-test-build-per-crate), those commands also cover
+`-p` test and clippy selections. `seed` keeps only the units its commands used and
+drops rustc's incremental caches (`--keep-incremental` keeps them). `warm` copies the
+seed's build, about 11 GB, into the worktree's empty target directory (the one cargo would
+use, so `CARGO_TARGET_DIR` is followed) with the Windows copy engine, which clones blocks
+instead of copying them on ReFS (a Dev Drive). With `--target-roots`, it skips the copy
+when the chosen drive would keep less than `--min-free-gb` (60) free, and the next `warm`
+deletes profile directories whose worktree junction is gone. Incremental caches and
+cargo's uplifted copies stay behind, and nothing is hard-linked: lld rewrites small
+executables in place, so a relink in the worktree would change the seed. Then the copy is
+made the worktree's own:
+
+- Cargo decides freshness from mtimes, and a checkout gives every file a new one. Once
+  the copy is in place, each file cargo may compare (what a seeded unit's dep-info lists,
+  including files outside its package, build scripts' `rerun-if-changed` paths, and every
+  file a package holds) whose bytes equal the seed checkout's gets the seed file's mtime;
+  every other one gets the current time. Committed, uncommitted and untracked changes are
+  compared alike, so the crates that differ, and everything that depends on them, rebuild,
+  and nothing else does. Files written after `warm` started keep their own mtimes.
+- Compiled files name the checkout and target directory they were built in: source paths
+  in crate metadata, panic locations, `env!("CARGO_MANIFEST_DIR")`, build-script output,
+  object paths in PDBs. Cargo tracks none of these, so a copied unit would go on reading
+  the seed's files. `seed` records every place its build wrote either path. `warm`
+  rewrites cargo's and rustc's own records (dep-info, fingerprints, build-script output)
+  and patches other files in place where the worktree's path has the same length. A unit
+  with any other file naming the seed (another length, a path cut across PDB pages, a
+  path reached through `..` from the checkout, an environment value rustc read) is
+  removed, so cargo rebuilds it and everything above it. Nothing in the copy names the
+  seed afterwards: the seed can be rebuilt or deleted at any time.
+- `--like` gives the seed checkout the length and depth of the worktrees it serves, which
+  is what allows patching in place. A worktree or target directory of another shape
+  rebuilds most of the workspace and of its third-party crates.
+- The desktop and recorder apps always rebuild: Tauri's context macro embeds their
+  configuration and frontend at compile time without listing them in the dep-info.
+
+`warm` does nothing, and says why, when the target directory already holds a build, the
+toolchain differs from the seed's or no seed is ready; a different `Cargo.lock` only
+rebuilds the units it changes. A seed is not used while `seed` runs, and an interrupted
+`seed` leaves it unused until the next `seed` (which takes over the dead run's lock)
+finishes. A copy made while the seed changed is dropped, and if cargo starts building in
+the directory before the copy is in place, cargo's build is kept and no source is
+backdated; the next `warm` of any worktree deletes a copy an interrupted `warm` left.
+Run cargo in the seed checkout only through `seed`: `warm` refuses a seed whose build
+changed after it was recorded.
