@@ -972,25 +972,99 @@ fn construction_icons_follow_strip_direction_and_the_gui_repair_frame() {
             )
             .unwrap();
             assert_eq!(named.types[&42].1.as_deref().map(first_pixel), Some(green));
-            // The animated repair strip is cropped across only; one down its
-            // texture is refused by name.
-            let expected = match frame {
-                _ if vertical => None,
-                1 => Some(red),
-                2 => Some(blue),
-                _ => None,
-            };
-            assert_eq!(named.repair_icon.as_deref().map(first_pixel), expected);
-            if vertical && (1..=2).contains(&frame) {
-                assert!(named.warnings.iter().any(|(_, warning)| warning.contains(
-                    "production_building_line_entry.repair (repair_strip, frameanimatedspritetype) runs down its texture, which is not supported"
-                )));
-            } else if expected.is_none() {
-                assert!(named.warnings.iter().any(|(_, warning)| warning.contains(
-                    &format!("production_building_line_entry.repair (repair_strip): frame {frame} is outside 1..=2")
-                )));
-            }
+            // The marker draws its authored frame whichever way the strip runs:
+            // zero and negative frames draw the first, and a frame past the strip
+            // reads the program's clamped last texels.
+            let expected = if frame >= 2 { blue } else { red };
+            assert_eq!(
+                named.repair_icon.as_deref().map(first_pixel),
+                Some(expected),
+                "frame {frame}, vertical {vertical}"
+            );
+            assert!(
+                !named
+                    .warnings
+                    .iter()
+                    .any(|(_, warning)| warning.contains("repair")),
+                "{:?}",
+                named.warnings
+            );
         }
+    }
+}
+
+/// The repair marker of a catalogue whose `production_building_line_entry`
+/// marks repairs with `repair_sprite`, declared in `files`.
+fn repair_marker(files: &[(&str, String)]) -> (Option<String>, Vec<installed_content_core::Diagnostic>) {
+    use crate::products::construction_log::{ContentView, named};
+    use std::collections::BTreeSet;
+    let mut all: Vec<(&str, &str)> = vec![(
+        "interface/line.gui",
+        r#"guiTypes = { containerWindowType = { name = "production_building_line_entry"
+            iconType = { name = "picture" spriteType = "repair_sprite" }
+            iconType = { name = "repair" spriteType = "repair_sprite" frame = 1 } } }"#,
+    )];
+    all.extend(files.iter().map(|(path, text)| (*path, text.as_str())));
+    let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&all);
+    dashboard_text::catalogue::texture_tests::write_replacement_textures(&folder.0);
+    let named = named(
+        &ContentView {
+            layers: &catalogue.content.layers,
+            sprites: &catalogue.sprites,
+            guis: catalogue.guis().map_err(|error| error.to_string()),
+            gui_decode: &catalogue.gui_decode,
+            localise: &|_| None,
+        },
+        &[],
+        &BTreeSet::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    (named.repair_icon, named.warnings)
+}
+
+#[test]
+fn a_repair_marker_the_renderer_cannot_draw_is_refused_by_name() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (icon, warnings) = repair_marker(&[(
+        "interface/line.gfx",
+        "spriteTypes = { corneredTileSpriteType = { name = repair_sprite texturefile = gfx/replacement/base.png } }".into(),
+    )]);
+    assert!(icon.is_none());
+    assert!(
+        warnings.iter().any(
+            |(kind, why)| *kind == installed_content_core::DiagnosticKind::Refused
+                && why.contains("repair marker is unavailable")
+                && why.contains("production_building_line_entry.repair")
+                && why.contains("repair_sprite")
+                && why.contains("needs native sprite rendering")
+        ),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires DXC and a GPU; synthetic content only"]
+fn the_repair_marker_executes_a_mod_s_effects_masks_and_animations() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use dashboard_text::catalogue::texture_tests::{
+        from_url, replacement_programs, replacement_sprites,
+    };
+    for (declaration, pixel) in replacement_sprites("repair_sprite") {
+        let mut files = replacement_programs();
+        files.push((
+            "interface/line.gfx",
+            format!("spriteTypes = {{ {declaration} }}"),
+        ));
+        let (icon, warnings) = repair_marker(&files);
+        let icon = from_url(icon.as_deref().unwrap_or_else(|| panic!("{warnings:?}")));
+        assert!(
+            icon.pixels.chunks_exact(4).all(|rgba| rgba == pixel),
+            "{declaration}: {:?}",
+            icon.pixels
+        );
     }
 }
 

@@ -284,6 +284,19 @@ fn icon_key(
     })
 }
 
+/// A project's icon: its sprite's first frame, newly shown, drawn as the game
+/// draws the sprite.
+fn project_icon(catalogue: &Catalogue, key: &str) -> Result<String, String> {
+    let sprite = catalogue
+        .sprites
+        .find(key)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Content has no sprite {key}."))?;
+    let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
+    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, 96)
+        .map_err(|e| e.to_string())
+}
+
 struct Content {
     catalogue: Arc<Catalogue>,
     politics: Arc<PoliticsContent>,
@@ -321,27 +334,7 @@ impl Content {
     fn icon(&mut self, key: &str) -> Result<String, String> {
         self.icons
             .entry(key.to_owned())
-            .or_insert_with(|| {
-                let sprite = self
-                    .catalogue
-                    .sprites
-                    .find(key)
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("Content has no sprite {key}."))?;
-                let texture = sprite
-                    .texture
-                    .as_ref()
-                    .ok_or_else(|| format!("Sprite {key} has no texture."))?;
-                let decode = *self.catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
-                catalogue::texture_png(
-                    &self.catalogue.content.layers,
-                    texture,
-                    decode,
-                    sprite.frames,
-                    96,
-                )
-                .map_err(|e| format!("{key}: {e}"))
-            })
+            .or_insert_with(|| project_icon(&self.catalogue, key))
             .clone()
     }
 
@@ -2458,5 +2451,84 @@ mod tests {
             icon_key(&project, "mod_project", Some("X"), |_| Ok(true)).unwrap(),
             "GFX_missing_mod_icon"
         );
+    }
+
+    /// The project icon `GFX_fixture_project` of a catalogue over `files` and
+    /// `textures`, as its pixels.
+    fn fixture_icon(
+        files: &[(&str, String)],
+        textures: &[(&str, Vec<u8>)],
+    ) -> Result<(u32, u32, Vec<u8>), String> {
+        let files: Vec<_> = files
+            .iter()
+            .map(|(path, text)| (*path, text.as_str()))
+            .collect();
+        let (catalogue, folder) = dashboard_text::catalogue::tests::folder_catalogue(&files);
+        for (path, bytes) in textures {
+            let file = folder.0.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
+        }
+        dashboard_text::catalogue::texture_tests::write_replacement_textures(&folder.0);
+        project_icon(&catalogue, "GFX_fixture_project").map(|icon| {
+            let image = dashboard_text::catalogue::texture_tests::from_url(&icon);
+            (image.width, image.height, image.pixels)
+        })
+    }
+
+    #[test]
+    fn project_icons_draw_the_native_sprite_down_across_and_animated() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use dashboard_text::catalogue::texture_tests::strip_png;
+        let [red, green, blue] = [[200, 0, 0, 255], [0, 200, 0, 255], [0, 0, 200, 255]];
+        for kind in ["spriteType", "frameAnimatedSpriteType"] {
+            for down in [false, true] {
+                let direction = if down { "yes" } else { "no" };
+                let gfx = format!(
+                    "spriteTypes = {{ {kind} = {{ name = GFX_fixture_project texturefile = gfx/project.png noOfFrames = 3 frameDirectionY = {direction} }} }}"
+                );
+                let (width, height, pixels) = fixture_icon(
+                    &[("interface/project.gfx", gfx)],
+                    &[("gfx/project.png", strip_png(&[red, green, blue], down))],
+                )
+                .unwrap();
+                // One whole frame, the first, whichever way the strip runs.
+                assert_eq!([width, height], [2, 2], "{kind} {direction}");
+                assert_eq!(pixels, red.repeat(4), "{kind} {direction}");
+            }
+        }
+        let why = fixture_icon(
+            &[(
+                "interface/project.gfx",
+                "spriteTypes = { corneredTileSpriteType = { name = GFX_fixture_project texturefile = gfx/project.png } }".into(),
+            )],
+            &[("gfx/project.png", strip_png(&[red], false))],
+        )
+        .unwrap_err();
+        assert!(
+            why.contains("GFX_fixture_project") && why.contains("needs native sprite rendering"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires DXC and a GPU; synthetic content only"]
+    fn project_icons_execute_a_mod_s_effects_masks_and_animations() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use dashboard_text::catalogue::texture_tests::{replacement_programs, replacement_sprites};
+        for (declaration, pixel) in replacement_sprites("GFX_fixture_project") {
+            let mut files = replacement_programs();
+            files.push((
+                "interface/project.gfx",
+                format!("spriteTypes = {{ {declaration} }}"),
+            ));
+            let (_, _, pixels) = fixture_icon(&files, &[]).unwrap();
+            assert!(
+                pixels.chunks_exact(4).all(|rgba| rgba == pixel),
+                "{declaration}: {pixels:?}"
+            );
+        }
     }
 }

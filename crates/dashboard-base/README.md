@@ -79,6 +79,12 @@ image, so a product can return keys and the widget loads only the art it draws.
 Focus and technology artwork keep their own kinds: those read whole content
 databases, which an exact key does not need.
 
+Resource icons ([products/resources.rs](src/products/resources.rs)) draw each
+declaration's `icon_frame` of the sprite the trade view's resource row binds,
+through the same renderer, batched once per catalogue. A sprite draws every
+frame or none, so a draw it refuses is named once for all resources; no raw
+strip is cropped in its place.
+
 ## Prepared series
 
 The prepared map's native selection includes naval repair task settings, fleet home-base

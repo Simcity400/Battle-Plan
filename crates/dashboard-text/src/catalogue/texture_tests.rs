@@ -150,7 +150,8 @@ fn requested_sprite_batches_match_single_images_and_share_the_session() {
         .map(|sprite| sprite_frame_png(&layers, sprite, decode, 0, 96).unwrap())
         .collect::<Vec<_>>();
     let batched = fresh();
-    sprite_frames_png(&batched, &sprites, decode, 0, 96).unwrap();
+    let requests = sprites.map(|sprite| (sprite, 0));
+    sprite_frames_png(&batched, &requests, decode, 96).unwrap();
     std::fs::remove_file(folders[1].0.join("gfx/sheet.png")).unwrap();
     for (sprite, expected) in sprites.iter().zip(expected) {
         assert_eq!(
@@ -639,6 +640,83 @@ float4 main(Output i) : SV_TARGET {
 Effect Up { VertexShader = V PixelShader = P }
 "#;
 
+/// The programs of a mod that replaces an icon's sprite with one reaching another
+/// part of the native draw: (path, text) for a content folder. The default program
+/// is replaced, so a sprite without its own effect clears blue.
+pub fn replacement_programs() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "gfx/FX/buttonstate.shader",
+            ARTWORK_SHADER.replace("return color;", "color.b = 0.0; return color;"),
+        ),
+        ("gfx/FX/custom.shader", ARTWORK_SHADER.to_owned()),
+    ]
+}
+
+/// A PNG strip of 2 × 2 frames, one solid colour each, across the texture or down it.
+pub fn strip_png(colours: &[[u8; 4]], down: bool) -> Vec<u8> {
+    let long = colours.len() as u32 * 2;
+    let (width, height) = if down { (2, long) } else { (long, 2) };
+    png_bytes(&Rgba8Image {
+        width,
+        height,
+        pixels: (0..height)
+            .flat_map(|y| {
+                (0..width).flat_map(move |x| colours[(if down { y } else { x } / 2) as usize])
+            })
+            .collect(),
+    })
+}
+
+/// The textures [`replacement_sprites`] sample, written into the content folder `root`.
+pub fn write_replacement_textures(root: &std::path::Path) {
+    let solid = |rgba: [u8; 4]| {
+        png_bytes(&Rgba8Image {
+            width: 4,
+            height: 4,
+            pixels: rgba.repeat(16),
+        })
+    };
+    for (path, rgba) in [
+        ("gfx/replacement/base.png", [40, 80, 120, 200]),
+        ("gfx/replacement/mask.png", [255, 0, 0, 128]),
+        ("gfx/replacement/overlay.png", [50, 0, 0, 255]),
+    ] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, solid(rgba)).unwrap();
+    }
+}
+
+/// Declarations of sprite `name` a mod may replace an icon with, over
+/// [`replacement_programs`], and the pixel each draws at rest: the replaced
+/// default program, the sprite's own effect, a masking texture, overlay
+/// animations and a frame-animated sprite with its own effect.
+pub fn replacement_sprites(name: &str) -> Vec<(String, [u8; 4])> {
+    let texture = "textureFile = gfx/replacement/base.png";
+    [
+        (format!("spriteType = {{ name = {name} {texture} }}"), [40, 80, 0, 200]),
+        (
+            format!("spriteType = {{ name = {name} {texture} effectFile = gfx/FX/custom.lua }}"),
+            [40, 80, 120, 200],
+        ),
+        (
+            format!("spriteType = {{ name = {name} {texture} effectFile = gfx/FX/custom.lua masking_texture = gfx/replacement/mask.png }}"),
+            [40, 80, 120, 100],
+        ),
+        (
+            format!("spriteType = {{ name = {name} {texture} effectFile = gfx/FX/custom.lua legacy_lazy_load = no
+                animation = {{ animationtype = pulsing animationmaskfile = gfx/replacement/mask.png animationtexturefile = gfx/replacement/overlay.png animationblendmode = add }} }}"),
+            [90, 80, 120, 200],
+        ),
+        (
+            format!("frameAnimatedSpriteType = {{ name = {name} {texture} effectFile = gfx/FX/custom.lua play_on_show = yes }}"),
+            [40, 80, 120, 200],
+        ),
+    ]
+    .into()
+}
+
 const ARTWORK_MAP: &str = "definitions=definitions.csv provinces=grid.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp";
 
 pub fn map_bitmap() -> Vec<u8> {
@@ -657,6 +735,8 @@ pub fn map_bitmap() -> Vec<u8> {
 #[test]
 #[ignore = "requires DXC and a GPU; synthetic content only"]
 fn sprite_shaders_execute_stack_effects_masks_and_animation_at_rest() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let lazy_shader = ARTWORK_SHADER.replace("return color;", "color.b = 0.0; return color;");
     let unavailable_shader = ARTWORK_SHADER
         .replace(

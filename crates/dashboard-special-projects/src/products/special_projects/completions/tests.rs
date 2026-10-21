@@ -516,6 +516,7 @@ fn completion_projection_uses_mod_override_name_and_native_art_path() {
     let guard = super::super::tests::TempRoot::new("feed-mod");
     let base = guard.0.join("base");
     let over = guard.0.join("mod");
+    dashboard_text::catalogue::texture_tests::write_sprite_program(&base);
     for (layer, path, body) in [
         (
             &base,

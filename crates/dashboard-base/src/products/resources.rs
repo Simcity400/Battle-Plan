@@ -3,7 +3,7 @@
 //! the names and icons the recorded content stack gives them.
 //!
 //! Shared by Resource balance and Trade flows, so a resource is named, pictured
-//! and numbered the same way everywhere, and its icons are decoded once per
+//! and numbered the same way everywhere, and its icons are drawn once per
 //! catalogue whichever product asks first.
 
 use super::LoadContext;
@@ -17,7 +17,7 @@ use installed_content_localisation::localisation::Localisation;
 use replay_data::{rows::LexicalTokenRow, rows::ResourceDefinitionRow};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{
         Arc,
@@ -172,10 +172,9 @@ impl<'a> ContentView<'a> {
 }
 
 /// The icon sprite of the trade view's resource row, and each content declaration's
-/// frame in it: per token, its declarations in load order.
+/// one-based frame in it: per token, its declarations in load order.
 struct Icons {
-    texture: String,
-    frames: u32,
+    sprite: installed_content_gfx::gfx::SpriteType,
     icon_frames: BTreeMap<String, Vec<Option<u32>>>,
 }
 
@@ -187,11 +186,7 @@ fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
         RESOURCE_ICON,
         &mut warnings,
     )?;
-    let sprite = catalogue::created_gui_sprite(view.sprites, &name)?;
-    let texture = sprite
-        .texture
-        .clone()
-        .ok_or_else(|| crate::invalid(format!("{name} has no texture")))?;
+    let sprite = catalogue::created_gui_sprite(view.sprites, &name)?.clone();
     let (resources, notes) = installed_content_core::resources::read(view.layers)?;
     warnings.extend(notes.into_iter().map(|(_, message)| message));
     let mut icon_frames: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
@@ -203,8 +198,7 @@ fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
     }
     Ok((
         Icons {
-            texture,
-            frames: sprite.frames,
+            sprite,
             icon_frames,
         },
         warnings,
@@ -278,21 +272,49 @@ pub fn resource_content(
             None
         }
     };
-    // Decode one shared strip, rather than once per resource frame.
-    let image = icons.as_ref().and_then(|icons| {
-        view.gui_decode
-            .as_ref()
-            .map_err(crate::invalid)
-            .and_then(|decode| {
-                catalogue::gui_texture(view.layers, icons.texture.as_bytes(), *decode)
+    let decode = match (&icons, view.gui_decode) {
+        (Some(_), Ok(decode)) => Some(*decode),
+        (Some(_), Err(why)) => {
+            let message = format!("Resource icons are unavailable: {why}");
+            findings.push(Finding::new(Kind::Refused, "resource icons", &message));
+            warnings.push(message);
+            None
+        }
+        (None, _) => None,
+    };
+    let frame_of = |icons: &Icons, token: &str, ordinal: u32| {
+        icons
+            .icon_frames
+            .get(token)
+            .and_then(|frames| frames.get(ordinal as usize - 1))
+            .copied()
+            .flatten()
+    };
+    // Draw every wanted frame of the shared sprite in one batch. A refused
+    // batch leaves each frame to its own draw below, which names the refusal.
+    if let (Some(icons), Some(decode)) = (&icons, decode) {
+        let images = view.layers.derived::<catalogue::SpriteImages>();
+        let frames: BTreeSet<u32> = missing
+            .iter()
+            .filter_map(|(token, ordinal)| frame_of(icons, token, *ordinal))
+            .map(|frame| frame - 1)
+            .filter(|frame| {
+                !images.contains(&catalogue::sprite_image_key(
+                    &icons.sprite,
+                    decode,
+                    *frame,
+                    ICON_EDGE,
+                ))
             })
-            .map_err(|why| {
-                let message = format!("Resource icons are unavailable: {why}");
-                findings.push(Finding::new(Kind::Refused, "resource icons", &message));
-                warnings.push(message);
-            })
-            .ok()
-    });
+            .collect();
+        if frames.len() > 1 {
+            let requests: Vec<_> = frames.iter().map(|frame| (&icons.sprite, *frame)).collect();
+            let _ = catalogue::sprite_frames_png(view.layers, &requests, decode, ICON_EDGE);
+        }
+    }
+    // A sprite draws every frame or none: only the frame offset differs between
+    // them, and the resolved program samples past the strip as the game does.
+    let mut refused = false;
     for (token, ordinal) in missing {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
@@ -310,35 +332,32 @@ pub fn resource_content(
         if *ordinal == 1 {
             warnings.extend(notes);
         }
-        let icon = match icons.as_ref().map(|icons| {
-            let frame = icons
-                .icon_frames
-                .get(token.as_str())
-                .and_then(|frames| frames.get(*ordinal as usize - 1))
-                .copied()
-                .flatten();
-            (icons, frame)
-        }) {
-            Some((_, Some(_))) if image.is_none() => None,
-            Some((icons, Some(frame))) => match catalogue::image_frame_png(
-                image.as_ref().expect("shared texture decoded"),
-                icons.frames,
+        let Some(icons) = &icons else {
+            cached.insert((token.clone(), *ordinal), Declared { name, icon: None });
+            continue;
+        };
+        let icon = match (
+            frame_of(icons, token, *ordinal),
+            decode.filter(|_| !refused),
+        ) {
+            (Some(frame), Some(decode)) => match catalogue::sprite_frame_png(
+                view.layers,
+                &icons.sprite,
+                decode,
                 frame - 1,
                 ICON_EDGE,
             ) {
                 Ok(icon) => Some(icon),
                 Err(error) => {
-                    let message = format!("{token}: icon unavailable: {error}");
-                    findings.push(Finding::new(
-                        Kind::Refused,
-                        format!("resource {token} declaration {ordinal}"),
-                        &message,
-                    ));
+                    refused = true;
+                    let message = format!("Resource icons are unavailable: {error}");
+                    findings.push(Finding::new(Kind::Refused, "resource icons", &message));
                     warnings.push(message);
                     None
                 }
             },
-            Some((_, None)) => {
+            (Some(_), None) => None,
+            (None, _) => {
                 let message = format!("{token}: the recorded content gives no usable icon frame.");
                 findings.push(Finding::new(
                     Kind::Fallback,
@@ -348,7 +367,6 @@ pub fn resource_content(
                 warnings.push(message);
                 None
             }
-            None => None,
         };
         cached.insert((token.clone(), *ordinal), Declared { name, icon });
     }
@@ -482,17 +500,22 @@ mod tests {
 
     /// A true-colour Targa strip, one solid colour per frame, each frame 2 × 2.
     fn strip(colours: &[[u8; 3]]) -> Vec<u8> {
-        let width = colours.len() as u16 * 2;
+        targa(colours, false)
+    }
+
+    /// A strip across the texture, or down it.
+    fn targa(colours: &[[u8; 3]], down: bool) -> Vec<u8> {
+        let long = colours.len() as u16 * 2;
+        let (width, height) = if down { (2, long) } else { (long, 2) };
         let mut bytes = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         bytes.extend_from_slice(&width.to_le_bytes());
-        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&height.to_le_bytes());
         // 32 bits a pixel, top-left origin, 8 alpha bits.
         bytes.extend_from_slice(&[32, 0x28]);
-        for _ in 0..2 {
-            for [red, green, blue] in colours {
-                for _ in 0..2 {
-                    bytes.extend_from_slice(&[*blue, *green, *red, 255]);
-                }
+        for y in 0..height {
+            for x in 0..width {
+                let [red, green, blue] = colours[usize::from(if down { y } else { x } / 2)];
+                bytes.extend_from_slice(&[blue, green, red, 255]);
             }
         }
         bytes
@@ -527,6 +550,7 @@ mod tests {
     fn modded(root: &Path, replace: bool) -> ResolvedLayers {
         let _ = fs::remove_dir_all(root);
         let (base, add) = (root.join("base"), root.join("mod"));
+        crate::catalogue::texture_tests::write_sprite_program(&base);
         write(
             &base,
             "interface/countrytradeview.gui",
@@ -746,6 +770,124 @@ mod tests {
             .unwrap();
             assert!(repeated.is_empty());
             assert_eq!(warnings.len(), 1);
+        }
+    }
+
+    /// The icons, and icon findings, of a catalogue over `files`, `textures` and
+    /// the resources `ore` (frame 1), `metal` (2), `gem` (3) and `ingot` (4).
+    fn drawn(
+        sprite: &str,
+        files: &[(&str, String)],
+        textures: &[(&str, Vec<u8>)],
+    ) -> (Vec<Option<String>>, Vec<dashboard_core::findings::Finding>) {
+        let gui = format!(
+            "guiTypes = {{ containerWindowType = {{ name = resources_info_entry buttonType = {{ name = resources_icon spriteType = {sprite} }} }} }}"
+        );
+        let mut all: Vec<(&str, &str)> = vec![
+            ("interface/trade.gui", &gui),
+            (
+                "common/resources/fixture.txt",
+                "resources = { ore = { icon_frame = 1 } metal = { icon_frame = 2 } gem = { icon_frame = 3 } ingot = { icon_frame = 4 } }",
+            ),
+        ];
+        all.extend(files.iter().map(|(path, text)| (*path, text.as_str())));
+        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&all);
+        for (path, bytes) in textures {
+            write(&folder.0, path, bytes);
+        }
+        crate::catalogue::texture_tests::write_replacement_textures(&folder.0);
+        let wanted: Vec<(String, u32)> = ["ore", "metal", "gem", "ingot"]
+            .iter()
+            .map(|token| (token.to_string(), 1))
+            .collect();
+        let mut cached = BTreeMap::new();
+        let findings = resource_content(
+            &ContentView::of(&catalogue),
+            &wanted,
+            &mut cached,
+            &mut Vec::new(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let icons = wanted.iter().map(|key| cached[key].icon.clone()).collect();
+        // The fixture's resources have no names; only icon findings are kept.
+        let findings = findings
+            .into_iter()
+            .filter(|finding| finding.kind != dashboard_core::findings::Kind::Content)
+            .collect();
+        (icons, findings)
+    }
+
+    #[test]
+    fn resource_icons_draw_the_native_sprite_across_down_animated_and_past_the_strip() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        for (kind, down) in [
+            ("spriteType", false),
+            ("spriteType", true),
+            ("frameAnimatedSpriteType", false),
+            ("frameAnimatedSpriteType", true),
+        ] {
+            let direction = if down { "yes" } else { "no" };
+            let gfx = format!(
+                "spriteTypes = {{ {kind} = {{ name = GFX_fixture_strip texturefile = gfx/strip.tga noOfFrames = 3 frameDirectionY = {direction} }} }}"
+            );
+            let (icons, findings) = drawn(
+                "GFX_fixture_strip",
+                &[("interface/strip.gfx", gfx)],
+                &[("gfx/strip.tga", targa(&[RED, GREEN, BLUE], down))],
+            );
+            let pixels: Vec<_> = icons
+                .iter()
+                .map(|icon| first_pixel(icon.as_deref().unwrap()))
+                .collect();
+            // A frame past the strip keeps its offset; the program's clamped
+            // sampler reads the strip's last texels, as the game draws it.
+            assert_eq!(pixels, [RED, GREEN, BLUE, BLUE], "{kind} {direction}");
+            assert!(findings.is_empty(), "{findings:?}");
+        }
+        // A kind the renderer cannot draw is refused once, by name, for every
+        // resource; no strip is cropped in its place.
+        let gfx = "spriteTypes = { corneredTileSpriteType = { name = GFX_fixture_tile texturefile = gfx/strip.tga } }";
+        let (icons, findings) = drawn(
+            "GFX_fixture_tile",
+            &[("interface/tile.gfx", gfx.into())],
+            &[("gfx/strip.tga", strip(&[RED]))],
+        );
+        assert!(icons.iter().all(Option::is_none));
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].subject, "resource icons");
+        assert!(
+            findings[0].message.contains("GFX_fixture_tile")
+                && findings[0]
+                    .message
+                    .contains("needs native sprite rendering"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires DXC and a GPU; synthetic content only"]
+    fn resource_icons_execute_a_mod_s_effects_masks_and_animations() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use crate::catalogue::texture_tests::{
+            from_url, replacement_programs, replacement_sprites,
+        };
+        for (declaration, pixel) in replacement_sprites("GFX_fixture_icon") {
+            let mut files = replacement_programs();
+            files.push((
+                "interface/icon.gfx",
+                format!("spriteTypes = {{ {declaration} }}"),
+            ));
+            let (icons, findings) = drawn("GFX_fixture_icon", &files, &[]);
+            assert!(findings.is_empty(), "{declaration}: {findings:?}");
+            let icon = from_url(icons[0].as_deref().unwrap());
+            assert!(
+                icon.pixels.chunks_exact(4).all(|rgba| rgba == pixel),
+                "{declaration}: {:?}",
+                icon.pixels
+            );
         }
     }
 }

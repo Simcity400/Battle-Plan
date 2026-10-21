@@ -1193,8 +1193,8 @@ pub fn texture_frame_png(
 
 /// Native GUI texture loading: `resources::stack_texture` (the resolver, its
 /// 16 MiB `load_file` limit, the client decode state and the cube-map refusal),
-/// then RGBA8. Sprite artwork, shields and resource icons all use this path;
-/// decoded edges are bounded only by the decoder's device limit.
+/// then RGBA8. Raw texture paths and shields use this path; decoded edges are
+/// bounded only by the decoder's device limit.
 pub fn gui_texture(layers: &ResolvedLayers, name: &[u8], decode: Decode) -> io::Result<Rgba8Image> {
     let texture = resources::stack_texture(layers, name, decode)?.map_err(|why| {
         let extra = if why.native_failure() {
@@ -1210,7 +1210,8 @@ pub fn gui_texture(layers: &ResolvedLayers, name: &[u8], decode: Decode) -> io::
     installed_content_image::rgba::dds_base(texture.image)
 }
 
-/// A GUI sprite frame returned as dashboard artwork.
+/// One frame of a bare texture's horizontal strip, as [`texture_frame_png`]
+/// reads it. A sprite's frame is drawn by [`sprite_frame_png`] instead.
 pub fn gui_texture_frame_png(
     layers: &ResolvedLayers,
     name: &[u8],
@@ -1222,7 +1223,7 @@ pub fn gui_texture_frame_png(
     image_frame_png(&gui_texture(layers, name, decode)?, frames, frame, max_edge)
 }
 
-pub fn image_frame_png(
+fn image_frame_png(
     image: &Rgba8Image,
     frames: u32,
     frame: u32,
@@ -1267,19 +1268,26 @@ pub fn sprite_image_key(
     )
 }
 
-/// Render requested sprite frames together. Callers retry a refused or oversized
-/// batch through the ordinary image reader, preserving each sprite's refusal.
+/// The zero-based frame an authored icon `frame` draws in the Up state: `F - 1`
+/// for `F > 0`, unclamped (past the strip the effect's sampler reads on), and
+/// the first frame for zero or a negative frame.
+pub fn authored_frame(frame: i32) -> u32 {
+    u32::try_from(frame).map_or(0, |frame| frame.saturating_sub(1))
+}
+
+/// Render requested (sprite, frame) draws together into the session's sprite
+/// images. Callers retry a refused or oversized batch through
+/// [`sprite_frame_png`], preserving each draw's refusal.
 pub fn sprite_frames_png(
     layers: &ResolvedLayers,
-    sprites: &[&installed_content_gfx::gfx::SpriteType],
+    requests: &[(&installed_content_gfx::gfx::SpriteType, u32)],
     decode: Decode,
-    frame: u32,
     max_edge: u32,
 ) -> io::Result<()> {
     use installed_content_core::gui::native::sprites::SpriteKind;
     let mut draws = Vec::new();
     let mut transient_bytes = 0_u64;
-    for sprite in sprites {
+    for &(sprite, frame) in requests {
         let (plain, animated) = match &sprite.facts.kind {
             SpriteKind::Plain(plain) => (plain, None),
             SpriteKind::FrameAnimated { plain, animation } => (plain, Some(animation)),
@@ -1313,7 +1321,7 @@ pub fn sprite_frames_png(
         })
         .collect::<io::Result<Vec<_>>>()?;
     let cache = layers.derived::<SpriteImages>();
-    for (sprite, image) in sprites.iter().zip(images) {
+    for (&(sprite, frame), image) in requests.iter().zip(images) {
         cache.get(sprite_image_key(sprite, decode, frame, max_edge), || {
             Ok(image)
         })?;

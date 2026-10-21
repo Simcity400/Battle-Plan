@@ -1218,13 +1218,14 @@ impl Context {
                 let key = catalogue::sprite_image_key(sprite, *decode, 0, ICON_EDGE);
                 !cache.contains(&key) && seen.insert(key)
             })
+            .map(|sprite| (sprite, 0))
             .collect::<Vec<_>>();
         if sprites.len() < 2 {
             return;
         }
         // A refused batch is retried by the ordinary reader so each requested
         // item retains its output and named refusal.
-        let _ = catalogue::sprite_frames_png(layers, &sprites, *decode, 0, ICON_EDGE);
+        let _ = catalogue::sprite_frames_png(layers, &sprites, *decode, ICON_EDGE);
     }
 
     fn cached_icon(&mut self, name: &str) -> io::Result<Option<String>> {

@@ -2161,46 +2161,22 @@ fn named_inventory(
         "building icons could not be read from the queue's building strip and show a placeholder",
         &unreadable,
     );
+    // The marker draws its authored frame as the building icons draw theirs:
+    // every strip direction, frame animation and the resolved program, with
+    // a frame past the strip sampled where the program's sampler reads it.
     let repair_icon = match sprite(LINE_REPAIR).and_then(|line| {
-        let frame = u32::try_from(line.frame)
-            .ok()
-            .filter(|frame| *frame > 0 && *frame <= line.sprite.frames)
-            .ok_or_else(|| {
-                dashboard_core::invalid(format!(
-                    "{LINE_ENTRY}.{LINE_REPAIR} ({}): frame {} is outside 1..={}",
-                    line.sprite.name, line.frame, line.sprite.frames
-                ))
-            })?;
-        // The game's marker is a frame-animated strip (vanilla blends its frames);
-        // the widget shows the authored frame, cropped across the strip.
-        let sprite = &line.sprite;
-        let refused = match sprite.facts.kind.plain() {
-            None => Some("has no frame strip"),
-            Some(plain) if plain.frame_direction_y() => {
-                Some("runs down its texture, which is not supported")
-            }
-            Some(_) => None,
-        };
-        if let Some(refused) = refused {
-            return Err(dashboard_core::invalid(format!(
-                "{LINE_ENTRY}.{LINE_REPAIR} ({}, {}) {refused}",
-                sprite.name,
-                sprite.facts.kind.keyword()
-            )));
-        }
-        let texture = &sprite.facts.kind.plain().expect("frame strip").texture;
         let decode = *content
             .gui_decode
             .as_ref()
             .map_err(dashboard_core::invalid)?;
-        catalogue::gui_texture_frame_png(
+        catalogue::sprite_frame_png(
             layers,
-            texture,
+            &line.sprite,
             decode,
-            sprite.frames,
-            frame - 1,
+            catalogue::authored_frame(line.frame),
             ICON_EDGE,
         )
+        .map_err(|error| dashboard_core::invalid(format!("{LINE_ENTRY}.{LINE_REPAIR}: {error}")))
     }) {
         Ok(icon) => Some(icon),
         Err(error) => {
