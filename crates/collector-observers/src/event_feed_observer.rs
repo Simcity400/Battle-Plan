@@ -482,14 +482,8 @@ impl Owner {
     /// attempt's decline. If it reads a newer phase, the attempt leaves the
     /// old slot and joins the new one, so its decline belongs to the next
     /// seal. No attempt can record into a slot already settled.
-    fn enter_phase(&self) -> usize {
-        self.validate_phase(self.phase.load(Ordering::SeqCst))
-    }
-    /// [`Self::enter_phase`] from a phase read earlier.
-    fn validate_phase(&self, phase: u64) -> usize {
-        (self.join_phase(phase) & 1) as usize
-    }
-    /// Join from a phase read earlier; the phase actually joined.
+    ///
+    /// Join from a phase read earlier; returns the phase actually joined.
     fn join_phase(&self, mut phase: u64) -> u64 {
         loop {
             let slot = (phase & 1) as usize;
@@ -501,6 +495,16 @@ impl Owner {
             self.entering[slot].fetch_sub(1, Ordering::SeqCst);
             phase = now;
         }
+    }
+    /// Test-only: join the current phase; its slot.
+    #[cfg(test)]
+    fn enter_phase(&self) -> usize {
+        self.validate_phase(self.phase.load(Ordering::SeqCst))
+    }
+    /// Test-only: join from a phase read earlier; its slot.
+    #[cfg(test)]
+    fn validate_phase(&self, phase: u64) -> usize {
+        (self.join_phase(phase) & 1) as usize
     }
     fn leave_phase(&self, slot: usize) {
         self.entering[slot].fetch_sub(1, Ordering::SeqCst);
@@ -1746,10 +1750,6 @@ pub(crate) fn staging_test(capacity: usize) -> StagingTest {
 }
 #[cfg(test)]
 impl StagingTest {
-    /// Declines the store recorded that no entry has taken.
-    pub(crate) fn untaken(&self) -> u64 {
-        self._owner.untaken()
-    }
     /// Live witnesses staged in the store but not yet published.
     pub(crate) fn staged_live(&self) -> usize {
         unsafe { (*self._owner.store.get()).staged_live() }
