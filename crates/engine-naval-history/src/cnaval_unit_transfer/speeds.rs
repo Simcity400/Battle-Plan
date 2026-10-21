@@ -132,19 +132,30 @@ impl SpeedCache {
         self.regions.resize(regions, RegionTerms::default());
         self.census = None;
         self.weather_regions = None;
-        self.definitions = modifier_definition::DefinitionMemo::default();
+        self.definitions.clear();
         self.navies.clear();
         Ok(())
     }
 
     pub fn allocated_bytes(&self) -> usize {
         self.regions.capacity() * size_of::<RegionTerms>()
+            + self.definitions.allocated_bytes()
             + self
                 .navies
                 .iter()
                 .map(|(_, copy)| copy.as_ref().map_or(0, Vec::capacity))
                 .sum::<usize>()
             + self.navies.capacity() * size_of::<(usize, Option<Vec<u8>>)>()
+    }
+
+    /// No later query may use this acquisition. Release owned navy copies on
+    /// the consumer's thread rather than at the next parked begin().
+    pub fn finish(&mut self) {
+        self.regions.clear();
+        self.census = None;
+        self.weather_regions = None;
+        self.navies.clear();
+        self.definitions.clear();
     }
 
     /// One navy's operand for `region`, as a single guarded read returns it.
@@ -352,11 +363,11 @@ impl<M: Memory> Shared<'_, M> {
         ))
     }
 
-    /// [`composed_modifier`] for one region.
-    fn composed(&mut self, region: u32) -> Result<i64, &'static str> {
+    /// [`composed_inputs`] for one region.
+    fn composed(&mut self, region: u32) -> Result<ComposedInputs, &'static str> {
         let (memory, base, owner) = (self.memory, self.base, self.owner);
         let Some(Penalty { definition }) = self.penalty()? else {
-            return Ok(0);
+            return Ok(ComposedInputs::Zero);
         };
         let (total, mean) = self.totals(region)?;
         let maximum = memo(&mut self.maximum, || {
@@ -405,7 +416,7 @@ impl<M: Memory> Shared<'_, M> {
         };
         let fraction = reduction_fraction(total, mean, maximum, reduction, minimum, upper, scale)?;
         if fraction <= 0 {
-            return Ok(0);
+            return Ok(ComposedInputs::Zero);
         }
         let raw = memo(&mut self.raw, || {
             modifier_accumulator::lookup_at(
@@ -415,7 +426,7 @@ impl<M: Memory> Shared<'_, M> {
             )
         })?;
         if !raw.present {
-            return Ok(0);
+            return Ok(ComposedInputs::Zero);
         }
         let category = memo(&mut self.category, || {
             let metadata = pointer(memory, base, modifier_definition::TABLE_RVA)?;
@@ -428,13 +439,16 @@ impl<M: Memory> Shared<'_, M> {
                 .ok_or("transport modifier category unreadable")
         })?;
         if category == 0 {
-            return Ok(0);
+            return Ok(ComposedInputs::Zero);
         }
-        let scaled = multiply(raw.raw, fraction);
         let operands = memo(&mut self.operands, || {
             modifier_definition::operands(memory, base, SPEED_TOKEN)
         })?;
-        Ok(operands.effective(scaled))
+        Ok(ComposedInputs::Modifier {
+            raw: raw.raw,
+            fraction,
+            operands,
+        })
     }
 }
 
@@ -454,6 +468,25 @@ pub fn movement_speeds<M: Memory>(
     wanted: &[usize],
     cache: &mut SpeedCache,
     mut emit: impl FnMut(TransportRegion, Result<i64, &'static str>),
+) {
+    movement_speeds_inputs(
+        memory, base, state, owner, regions, wanted, cache,
+        |region, inputs| emit(region, inputs.map(SpeedInputs::evaluate)),
+    );
+}
+
+/// Native acquisition of movement_speeds, retaining its final arithmetic for
+/// an owned-data consumer. All gates and shared-memo decisions stay here.
+#[allow(clippy::too_many_arguments)]
+pub fn movement_speeds_inputs<M: Memory>(
+    memory: &M,
+    base: usize,
+    state: usize,
+    owner: u32,
+    regions: &[TransportRegion],
+    wanted: &[usize],
+    cache: &mut SpeedCache,
+    mut emit: impl FnMut(TransportRegion, Result<SpeedInputs, &'static str>),
 ) {
     if cache.regions.len() != regions.len()
         && let Err(reason) = cache.begin(regions.len())
@@ -520,10 +553,7 @@ pub fn movement_speeds<M: Memory>(
                 }
             }?;
             let composed = shared.composed(region_id)?;
-            Ok(multiply(
-                P.wrapping_add(weather).wrapping_add(composed),
-                speed,
-            ))
+            Ok(SpeedInputs { speed, weather, composed })
         })();
         emit(region, result);
     }

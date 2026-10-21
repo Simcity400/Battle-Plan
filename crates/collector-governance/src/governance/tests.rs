@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn nested_heap_measurement_is_lazy_tracks_loans_and_survives_outer_growth() {
+    use engine_research::research_inputs::{Row, Text};
+    let mut captured = Captured::vacant();
+    captured.research_inputs.rows.push(Row {
+        token: Text::Owned(Vec::with_capacity(64)),
+        ..Default::default()
+    });
+    captured
+        .breakdowns
+        .push(rows::PowerBalanceModifierBreakdownRow {
+            record: 7,
+            sources: vec![Vec::with_capacity(23)],
+            daily: Vec::new(),
+            weekly: Vec::new(),
+        });
+    assert!(captured.nested_bytes.get().is_none());
+    let before = captured.allocated_bytes();
+    assert_eq!(
+        captured.nested_bytes.get().copied(),
+        Some(captured.nested_allocated_bytes())
+    );
+    assert_eq!(captured.allocated_bytes(), before);
+    let mut part = captured.take_research();
+    assert!(captured.nested_bytes.get().is_none());
+    let loaned = captured.allocated_bytes();
+    assert!(loaned < before);
+    part.inputs.rows[0].token = Text::Owned(Vec::with_capacity(128));
+    captured.restore_research(part);
+    assert!(captured.nested_bytes.get().is_none());
+    assert!(captured.allocated_bytes() > before);
+    assert_eq!(
+        captured.nested_bytes.get().copied(),
+        Some(captured.nested_allocated_bytes())
+    );
+    captured.reset();
+    assert!(captured.nested_bytes.get().is_none());
+    captured.allocated_bytes();
+    assert_eq!(
+        captured.nested_bytes.get().copied(),
+        Some(captured.nested_allocated_bytes())
+    );
+    let nested = captured.nested_bytes.get().copied();
+    let mut capacity = Capacities::default();
+    capacity.rows[18] = 3;
+    capacity.rows[19] = 3;
+    capacity.rows[20] = 3;
+    captured.grow(&mut capacity);
+    assert_eq!(captured.nested_bytes.get().copied(), nested);
+    captured.allocated_bytes();
+    assert_eq!(
+        captured.nested_bytes.get().copied(),
+        Some(captured.nested_allocated_bytes())
+    );
+}
+
+#[test]
 fn recorded_effect_inputs_project_exact_bytes_and_keep_decision_cadence() {
     let mut capacity = Capacities::default();
     capacity.raise_for_effect_inputs(

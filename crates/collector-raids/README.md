@@ -4,6 +4,8 @@ Raid input capture: RaidLaunchInputs and the raid state input tables, read besid
 
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
+FIFO decode sorts and validates the independent resource-rights, oil, temporary-resource and regional-efficiency rows from owned observations. Origins, clients, route selection and carry certificates remain in parked acquisition because they select native read demand.
+
 Run `cargo test -p collector-raids` and `cargo clippy -p collector-raids --all-targets -- -D warnings` for its synthetic checks.
 
 Resource-map row sorting preserves captured native ordinals as ordinary columns: both origin lists, origin rights and both directional convoy-client lists. These hourly operands change when native membership or order changes; route structure keeps its existing sliced cadence.

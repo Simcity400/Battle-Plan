@@ -1802,7 +1802,8 @@ pub(crate) fn reads() -> &'static Reads {
     })
 }
 
-/// The scan's read mask of an hour: which of its tables were read there.
+/// The scan's read mask of an hour. Training is consumed from its held daily
+/// sample on every hour; its availability and values have ordinary change proofs.
 pub(crate) fn read_mask(
     format: FormatVersion,
     metrics: &replay_frame::frame::Metrics,
@@ -1814,7 +1815,10 @@ pub(crate) fn read_mask(
         .chain(COMMAND_TABLES.iter().filter(|_| career))
         .enumerate()
         .fold(0u32, |mask, (index, &table)| {
-            mask | (u32::from(slot_read(format, metrics, table, hour)) << index)
+            mask | (u32::from(
+                table == TableId::UnitLeaderTraitExperience
+                    || slot_read(format, metrics, table, hour),
+            ) << index)
         })
 }
 
@@ -2045,7 +2049,9 @@ impl Scan {
             .iter()
             .chain(COMMAND_TABLES.iter().filter(|_| career));
         let mask = inputs.enumerate().fold(0u32, |mask, (index, table)| {
-            mask | (u32::from(changes.slot_read[table.index()]) << index)
+            mask | (u32::from(
+                *table == TableId::UnitLeaderTraitExperience || changes.slot_read[table.index()],
+            ) << index)
         });
         let reads = reads();
         if moved(&reads.unit_leaders) {

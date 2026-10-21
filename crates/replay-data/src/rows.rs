@@ -1791,31 +1791,28 @@ fn encode_changes_typed<T: RowCodec>(
 ) -> io::Result<bool> {
     u32::try_from(rows.len()).map_err(|_| invalid("too many rows"))?;
     u32::try_from(previous.len()).map_err(|_| invalid("too many rows"))?;
-    let bytes = rows
-        .iter()
-        .try_fold(8, |size, row| allocation::add(size, row.encoded_bound()?))?;
-    allocation::reserve(output, bytes)?;
+    // Size a row only after the merge establishes that it changed. Walking
+    // every nested payload here repeats work for the often-quiet baseline.
+    allocation::reserve(output, 8)?;
     let count_at = output.len();
     output.extend_from_slice(&0_u32.to_le_bytes());
     let mut changed_count = 0_u32;
     let mut changed_key = 0_u128;
     deleted.clear();
-    allocation::reserve(
-        deleted,
-        allocation::mul(previous.len(), (T::KEY_BITS as usize).div_ceil(7).max(1))?,
-    )?;
     let mut deleted_count = 0_u32;
     let mut deleted_key = 0_u128;
-    let mut delete = |key| {
+    let mut delete = |key| -> io::Result<()> {
+        allocation::reserve(deleted, (T::KEY_BITS as usize).div_ceil(7).max(1))?;
         put_varint(deleted, key - deleted_key);
         deleted_key = key;
         deleted_count += 1;
+        Ok(())
     };
     let mut old = previous.iter().peekable();
     for row in rows {
         let key = row.key();
         while old.peek().is_some_and(|previous| previous.key() < key) {
-            delete(old.next().unwrap().key());
+            delete(old.next().unwrap().key())?;
         }
         let baseline = if old.peek().is_some_and(|previous| previous.key() == key) {
             old.next()
@@ -1827,13 +1824,13 @@ fn encode_changes_typed<T: RowCodec>(
         if baseline == Some(row) {
             continue;
         }
-        if row.encode_change_reserved(baseline, changed_key, output)? {
+        if row.encode_change(baseline, changed_key, output)? {
             changed_count += 1;
             changed_key = key;
         }
     }
     for row in old {
-        delete(row.key());
+        delete(row.key())?;
     }
     output[count_at..count_at + 4].copy_from_slice(&changed_count.to_le_bytes());
     allocation::reserve(output, allocation::add(4, deleted.len())?)?;
@@ -1859,22 +1856,20 @@ fn encode_replacements_typed<T: RowCodec>(
         ));
     }
     u32::try_from(rows.len()).map_err(|_| invalid("too many replacement rows"))?;
-    let bytes = rows
-        .iter()
-        .try_fold(8, |size, row| allocation::add(size, row.encoded_bound()?))?;
-    allocation::reserve(output, bytes)?;
+    allocation::reserve(output, 8)?;
     let count_at = output.len();
     output.extend_from_slice(&0_u32.to_le_bytes());
     let mut changed_count = 0_u32;
     let mut changed_key = 0_u128;
     for (row, &index) in rows.iter().zip(indices) {
         let old = &previous[index];
-        if row != old && row.encode_change_reserved(Some(old), changed_key, output)? {
+        if row != old && row.encode_change(Some(old), changed_key, output)? {
             changed_count += 1;
             changed_key = row.key();
         }
     }
     output[count_at..count_at + 4].copy_from_slice(&changed_count.to_le_bytes());
+    allocation::reserve(output, 4)?;
     output.extend_from_slice(&0_u32.to_le_bytes()); // unchanged membership: no deletions
     Ok(changed_count != 0)
 }
@@ -2290,8 +2285,8 @@ fn encode_native_field<T: NativeValue>(
     output: &mut Vec<u8>,
 ) -> io::Result<()> {
     match step {
-        None => native_wire_field(value).encode(output),
-        Some(step) => value.to_units(step)?.field().encode(output),
+        None => native_wire_field(value).encode_reserved(output),
+        Some(step) => value.to_units(step)?.field().encode_reserved(output),
     }
 }
 /// Encode a declared field's change from `previous`, in step units when it has
@@ -2932,12 +2927,16 @@ impl Opaque<'_> {
         )
     }
     fn encode(self, output: &mut Vec<u8>) -> io::Result<()> {
+        allocation::reserve(output, self.encoded_bytes()?)?;
+        self.encode_reserved(output)
+    }
+    fn encode_reserved(self, output: &mut Vec<u8>) -> io::Result<()> {
         match self {
             Self::Encoded(bytes, _) => put_bytes(output, bytes),
             Self::Native(value) => {
                 let prefix = output.len();
                 output.extend_from_slice(&0_u32.to_le_bytes());
-                value.encode_value(output)?;
+                value.encode_value_reserved(output)?;
                 let length = u32::try_from(output.len() - prefix - 4)
                     .map_err(|_| invalid("structured field exceeds u32"))?;
                 output[prefix..prefix + 4].copy_from_slice(&length.to_le_bytes());
@@ -2982,7 +2981,7 @@ impl<'a> Change<'a> {
             Self::Bytes(value) => return put_bytes(output, value),
             Self::U32List(value) => return value.encode(output),
             Self::U64List(value) => return value.encode(output),
-            Self::Opaque(value) => return value.encode(output),
+            Self::Opaque(value) => return value.encode_reserved(output),
         };
         let zigzag = ((difference as u128) << 1) ^ ((difference >> 127) as u128);
         put_varint(output, zigzag);
@@ -3122,6 +3121,13 @@ impl<'a> Field<'a> {
                 Change::Number(difference)
             },
         )
+    }
+    /// The enclosing row reserved every field's snapshot bound already.
+    fn encode_reserved(self, output: &mut Vec<u8>) -> io::Result<()> {
+        match self {
+            Self::Opaque(value) => value.encode_reserved(output),
+            value => value.encode(output),
+        }
     }
     pub fn encode(self, output: &mut Vec<u8>) -> io::Result<()> {
         match self {

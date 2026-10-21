@@ -6,7 +6,7 @@ use replay_data::rows::*;
 use std::{
     collections::HashMap,
     hash::Hash,
-    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard},
 };
 
 pub const TABLES: [TableId; 7] = [
@@ -43,6 +43,7 @@ enum Entry {
 }
 #[derive(Default)]
 struct Store {
+    loaned: bool,
     epoch: Option<u64>,
     entries: HashMap<usize, Entry>,
     countries: HashMap<u32, NavalRepairCountryRow>,
@@ -64,6 +65,35 @@ struct Store {
     snapshots: Captured,
 }
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::default()));
+static RETURNED: Condvar = Condvar::new();
+
+/// Owned publication only: no reader or native-memory capability crosses the cut.
+pub struct Owned {
+    store: Option<Store>,
+    complete: bool,
+}
+impl Owned {
+    pub fn decode(mut self) -> Captured {
+        let rows = self.store.as_mut().unwrap().publish();
+        self.complete = true;
+        rows
+    }
+}
+impl Drop for Owned {
+    fn drop(&mut self) {
+        let mut held = self.store.take().unwrap();
+        if !self.complete {
+            // A lost or unwound publication must reseed before it carries again.
+            held.epoch = None;
+        }
+        let mut store = STORE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(store.loaned, "one naval management publication loan");
+        *store = held;
+        RETURNED.notify_one();
+    }
+}
 
 fn insert<K: Copy + Eq + Hash, V: PartialEq>(
     map: &mut HashMap<K, V>,
@@ -127,9 +157,39 @@ impl<'a, M: Memory> Session<'a, M> {
     /// Worker only, before the selecting core census. No fallback scan when a writer domain
     /// cannot prove carry: that hour's tables stay refused by name.
     pub fn begin(memory: &'a M, base: usize, state: usize) -> Self {
+        Self::begin_inner(memory, base, state, None)
+    }
+
+    pub fn begin_owned(memory: &'a M, base: usize, state: usize, stopped: fn() -> bool) -> Self {
+        Self::begin_inner(memory, base, state, Some(stopped))
+    }
+
+    fn begin_inner(
+        memory: &'a M,
+        base: usize,
+        state: usize,
+        stopped: Option<fn() -> bool>,
+    ) -> Self {
         let mut store = STORE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while store.loaned {
+            if stopped.is_some_and(|stopped| stopped()) {
+                return Self {
+                    memory,
+                    base,
+                    state,
+                    store,
+                    observed: false,
+                    navies: None,
+                    countries: None,
+                };
+            }
+            store = RETURNED
+                .wait_timeout(store, std::time::Duration::from_millis(10))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
         store.dirty.clear();
         let mut dirty = std::mem::take(&mut store.dirty);
         let mut shortage = false;
@@ -681,10 +741,46 @@ impl<'a, M: Memory> Session<'a, M> {
     }
 
     pub fn finish(mut self, parent: engine_native::cfleet::Capture) -> Captured {
-        if !self.observed {
+        if let Some(reason) = self.failure(parent) {
             return Captured {
-                tables: std::array::from_fn(|_| Err(changes::UNAVAILABLE)),
+                tables: std::array::from_fn(|_| Err(reason)),
             };
+        }
+        changes::force_demand(self.store.entries.len());
+        self.store.publish()
+    }
+
+    /// Receiver registration, admission and parent verdict are already final.
+    /// The next acquisition waits for this owned store, not for native writers.
+    pub fn finish_owned(mut self, parent: engine_native::cfleet::Capture) -> (Captured, Option<Owned>) {
+        if let Some(reason) = self.failure(parent) {
+            return (
+                Captured {
+                    tables: std::array::from_fn(|_| Err(reason)),
+                },
+                None,
+            );
+        }
+        changes::force_demand(self.store.entries.len());
+        if !self.store.changed.iter().any(|changed| *changed)
+            && self.store.failures.iter().all(Option::is_none)
+        {
+            return (self.store.snapshots.clone(), None);
+        }
+        let held = std::mem::take(&mut *self.store);
+        self.store.loaned = true;
+        (
+            Captured::default(),
+            Some(Owned {
+                store: Some(held),
+                complete: false,
+            }),
+        )
+    }
+
+    fn failure(&mut self, parent: engine_native::cfleet::Capture) -> Option<&'static str> {
+        if !self.observed {
+            return Some(changes::UNAVAILABLE);
         }
         if !matches!(parent.fleets, engine_native::walk::Outcome::Rows { .. })
             || !matches!(
@@ -694,21 +790,25 @@ impl<'a, M: Memory> Session<'a, M> {
             || !matches!(parent.ships, engine_native::walk::Outcome::Rows { .. })
         {
             self.store.epoch = None;
-            return Captured {
-                tables: std::array::from_fn(|_| Err("naval management source census incomplete")),
-            };
+            return Some("naval management source census incomplete");
         }
+        None
+    }
+}
+
+impl Store {
+    fn publish(&mut self) -> Captured {
         macro_rules! publish {
             ($index:expr, $map:ident, $table:ident) => {
-                if let Some(reason) = self.store.failures[$index] {
-                    self.store.snapshots.tables[$index] = Err(reason);
-                } else if self.store.changed[$index] {
-                    let rows = engine_allocation::collect_vec(self.store.$map.values().copied())
+                if let Some(reason) = self.failures[$index] {
+                    self.snapshots.tables[$index] = Err(reason);
+                } else if self.changed[$index] {
+                    let rows = engine_allocation::collect_vec(self.$map.values().copied())
                         .map(|mut rows| {
                             rows.sort_unstable_by_key(RowCodec::key);
                             rows
                         });
-                    self.store.snapshots.tables[$index] = rows
+                    self.snapshots.tables[$index] = rows
                         .map(|rows| Arc::new(TableRows::$table(rows)))
                         .map_err(|_| "naval management snapshot allocation failed");
                 }
@@ -721,9 +821,8 @@ impl<'a, M: Memory> Session<'a, M> {
         publish!(4, ships, NavalRefitShips);
         publish!(5, lines, NavalRefitProgress);
         publish!(6, children, NavalRepairChildren);
-        changes::force_demand(self.store.entries.len());
-        self.store.changed.fill(false);
-        self.store.snapshots.clone()
+        self.changed.fill(false);
+        self.snapshots.clone()
     }
 }
 

@@ -1,3 +1,5 @@
+#[path = "aliases_tests.rs"]
+mod aliases_tests;
 use super::*;
 #[path = "file_backed_tests.rs"]
 mod file_backed_tests;

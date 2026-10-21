@@ -24,6 +24,7 @@ fn timed_hook_families() -> std::collections::BTreeSet<&'static str> {
             Family::PoliticsCapture | Family::PoliticsCaptureTaps => "politics_changes",
             Family::EventFeed | Family::EventFeedProvenance => "event_feed_observer",
             Family::VariantChanges => "design_changes",
+            Family::DoctrineChanges => "world_input_changes",
             Family::FactionResourceRebuild | Family::FactionRefreshPhases => "faction_companions",
             family => family.name(),
         })

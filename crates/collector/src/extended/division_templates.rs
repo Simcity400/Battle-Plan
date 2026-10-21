@@ -11,6 +11,7 @@ use crate::{
     spooling::{table, unavailable},
     table_capture::{Arena, CaptureRows},
 };
+use collector_projection::projection::{Projection, project_table};
 use engine_allocation::{copy_vec, owned_vec};
 use engine_native::{Memory, creferenced_division_template as native, walk::Outcome};
 use replay_data::rows::{
@@ -158,6 +159,7 @@ struct CountryRow {
 }
 pub struct Captured {
     preacquired: Option<Preacquired>,
+    pending_owned: bool,
     rows: CaptureRows<native::Row>,
     bytes: Arena<u8>,
     counts: Arena<native::SubunitCount>,
@@ -185,6 +187,7 @@ pub struct Captured {
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.pending_owned = false;
         self.rows
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.icon_rows
@@ -218,6 +221,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             preacquired: None,
+            pending_owned: false,
             rows: CaptureRows::new(capacity.rows),
             bytes: Arena::new(capacity.bytes),
             counts: Arena::new(capacity.counts),
@@ -241,6 +245,7 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
+        self.discard_owned();
         self.preacquired = None;
         self.rows.reset();
         self.bytes.reset();
@@ -257,6 +262,16 @@ impl Captured {
         self.locals.reset();
         self.speed_keys.clear();
         self.speed_spans.clear();
+    }
+    fn discard_owned(&mut self) {
+        if self.pending_owned {
+            self.keys.forget();
+            self.held.forget();
+            self.core.forget();
+            self.country_cache.forget();
+            self.country_snapshot = None;
+            self.pending_owned = false;
+        }
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -313,7 +328,9 @@ impl Captured {
         if let Some(marker) = &mut self.preacquired {
             if (marker.base, marker.state, marker.hour, marker.force) == (base, state, hour, force)
             {
-                return marker.ticks.take().unwrap_or([0; N]);
+                let ticks = marker.ticks.take().unwrap_or([0; N]);
+                self.settle_owned();
+                return ticks;
             }
             self.fail_preacquired(
                 base,
@@ -341,7 +358,7 @@ impl Captured {
         hour: i32,
         force: bool,
     ) {
-        let ticks = self.capture_original(
+        let ticks = self.capture_observed(
             memory,
             base,
             state,
@@ -398,8 +415,26 @@ impl Captured {
         self.fail_preacquired(base, state, hour, force, reason);
         [0; N]
     }
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn capture_original(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force: bool,
+        changes: &dyn crate::template_changes::Changes,
+    ) -> [u64; N] {
+        let mut ticks = self.capture_observed(memory, base, state, hour, force, changes);
+        let start = qpc();
+        self.settle_owned();
+        ticks[1] += qpc().saturating_sub(start).max(0) as u64;
+        ticks
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_observed(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -488,19 +523,9 @@ impl Captured {
             self.locals.required = walk.required_locals;
             self.capture_speed_keys(memory, base, changes);
             if let Some(rows) = self.icon_rows.rows.get(..walk.outcome.len()) {
-                if matches!(walk.outcome, Outcome::Rows { .. }) {
-                    self.held.prune(rows);
-                    self.core.prune(rows);
-                }
-                self.held.finish(
-                    changes,
-                    rows,
-                    &self.counts.first[..self.counts.len],
-                    &self.variants.first[..self.variants.len],
-                    &self.icon_bytes.first[..self.icon_bytes.len],
-                );
+                self.held.certify(changes, rows);
                 for row in rows {
-                    if matches!(self.held.values(row).1, Recorded::Value(None)) {
+                    if !self.held.settings_available(row) {
                         self.model_failures
                             .add("template details writer certificate unavailable");
                     }
@@ -517,25 +542,7 @@ impl Captured {
         };
         let country_native_ticks = country_ticks;
         self.country_cache.finish();
-        if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
-            self.country_cache.prune();
-        }
-        if !matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
-            self.country_snapshot = None;
-        }
-        if let Outcome::Rows { len } = self.country_rows.outcome
-            && (self.country_cache.changed
-                || self
-                    .country_snapshot
-                    .as_ref()
-                    .is_none_or(|rows| rows.len() != len))
-        {
-            let start = qpc();
-            if let TableView::Complete(rows) = self.country_state() {
-                self.country_snapshot = Some(std::sync::Arc::new(rows));
-            }
-            country_ticks += qpc().saturating_sub(start).max(0) as u64;
-        }
+        self.pending_owned = true;
         // The dictionary, from the same walk.
         let _reads = crate::read_accounting::table(TABLES[0]);
         let start = qpc();
@@ -567,6 +574,49 @@ impl Captured {
             icons.saturating_sub(country_native_ticks),
             country_ticks,
         ]
+    }
+
+    /// Owned observations and frozen `held` certificates; no Memory capability.
+    pub(crate) fn settle_owned(&mut self) {
+        if !self.pending_owned {
+            return;
+        }
+        let rows = self
+            .icon_rows
+            .rows
+            .get(..self.icon_rows.outcome.len())
+            .unwrap_or(&[]);
+        self.held.settle(
+            rows,
+            &self.counts.first[..self.counts.len],
+            &self.variants.first[..self.variants.len],
+            &self.icon_bytes.first[..self.icon_bytes.len],
+        );
+        if matches!(self.icon_rows.outcome, Outcome::Rows { .. }) {
+            self.held.prune(rows);
+            self.core.prune(rows);
+        }
+        self.speed_spans.sort_unstable_by_key(|entry| entry.0);
+        if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
+            self.country_cache.prune();
+        } else {
+            self.country_snapshot = None;
+        }
+        if let Outcome::Rows { len } = self.country_rows.outcome
+            && (self.country_cache.changed
+                || self
+                    .country_snapshot
+                    .as_ref()
+                    .is_none_or(|rows| rows.len() != len))
+            && let TableView::Complete(rows) = self.country_state()
+        {
+            self.country_snapshot = Some(std::sync::Arc::new(rows));
+        }
+        if crate::allocation::failed() {
+            self.discard_owned();
+        } else {
+            self.pending_owned = false;
+        }
     }
     /// DivisionTemplateIcons.speed_keys of every walked template, read from
     /// its template object after the walk.
@@ -618,7 +668,6 @@ impl Captured {
                 };
                 self.speed_spans.push((row.template, span));
             }
-            self.speed_spans.sort_unstable_by_key(|entry| entry.0);
         }
         for (total, count) in SPEED_KEY_COUNTS.iter().zip(counts) {
             total.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
@@ -627,13 +676,17 @@ impl Captured {
 
     /// The template's speed keys this hour; `None` is its refusal.
     fn speed_keys(&self, template: u64) -> Option<Vec<u32>> {
+        self.speed_key_slice(template)
+            .map(|keys| owned_vec(copy_vec(keys)))
+    }
+
+    fn speed_key_slice(&self, template: u64) -> Option<&[u32]> {
         let at = self
             .speed_spans
             .binary_search_by_key(&template, |entry| entry.0)
             .ok()?;
         let (start, len) = self.speed_spans[at].1?;
-        let keys = self.speed_keys.get(start..start.checked_add(len)?)?;
-        Some(owned_vec(copy_vec(keys)))
+        self.speed_keys.get(start..start.checked_add(len)?)
     }
 
     /// This hour's rows whose model inputs failed, by reason.
@@ -660,16 +713,24 @@ impl Captured {
     /// A display name equal to this frame's complete dictionary row is a
     /// same-frame certificate; a failed or truncated dictionary leaves every
     /// name a self-contained Changed override.
+    #[cfg(test)]
     pub(crate) fn table_inputs(&self) -> [TableInput; N] {
+        self.projected_inputs(None)
+    }
+
+    pub(crate) fn projected_inputs(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+    ) -> [TableInput; N] {
         let dictionary = self.templates();
         let names = match &dictionary {
             TableView::Complete(rows) => rows.rows::<tables::DivisionTemplates>(),
             _ => None,
         };
-        let icons = self.icons(names);
+        let icons = self.icons(projection, names);
         [
             TableInput::Sampled(dictionary),
-            TableInput::Sampled(icons),
+            icons,
             if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
                 self.country_snapshot
                     .as_ref()
@@ -721,22 +782,26 @@ impl Captured {
         })
     }
 
-    fn icons(&self, dictionary: Option<&[DivisionTemplateRow]>) -> TableView {
+    fn icons(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+        dictionary: Option<&[DivisionTemplateRow]>,
+    ) -> TableInput {
         let Some(names) = self.name_bytes.first.get(..self.name_bytes.len) else {
-            return unavailable("template display name arena invalid");
+            return unavailable("template display name arena invalid").into();
         };
         let outcome = self.icon_rows.outcome;
         let Some(bytes) = self.icon_bytes.first.get(..self.icon_bytes.len) else {
-            return unavailable("template icon byte arena invalid");
+            return unavailable("template icon byte arena invalid").into();
         };
         let Some(counts) = self.counts.first.get(..self.counts.len) else {
-            return unavailable("template grouped arena invalid");
+            return unavailable("template grouped arena invalid").into();
         };
         let Some(variants) = self.variants.first.get(..self.variants.len) else {
-            return unavailable("template variant arena invalid");
+            return unavailable("template variant arena invalid").into();
         };
         let Some(rows) = self.icon_rows.rows.get(..outcome.len()) else {
-            return unavailable("template icon row length invalid");
+            return unavailable("template icon row length invalid").into();
         };
         if rows.iter().any(|r| {
             span(bytes, r.priority_unit_name).is_none()
@@ -747,7 +812,7 @@ impl Captured {
                 || span(variants, r.excluded_variants).is_none()
                 || span(variants, r.forbidden_equipment).is_none()
         }) {
-            return unavailable("template icon row spans outside captured arenas");
+            return unavailable("template icon row spans outside captured arenas").into();
         }
         let entries = |range: native::Span| {
             owned_vec(engine_allocation::collect_vec(
@@ -761,106 +826,224 @@ impl Captured {
                     }),
             ))
         };
-        table::<tables::DivisionTemplateIcons, _>(outcome, &self.icon_rows.rows, |r| {
-            let [regiments, support, regimental_support] = r.grids;
-            let (layout, settings) = self.held.values(r);
-            DivisionTemplateIconRow {
-                manpower_exile: Recorded::Value(r.manpower_exile),
-                template: r.template,
-                base_width: Recorded::Value(
-                    (r.model_failure.is_none())
-                        .then(|| {
-                            span(counts, r.counts)?.iter().try_fold(0_i64, |sum, unit| {
-                                Some(
-                                    sum.wrapping_add(
-                                        i64::from(unit.count)
-                                            .wrapping_mul(100_000)
-                                            .wrapping_mul(unit.width?)
-                                            / 100_000,
-                                    ),
-                                )
-                            })
-                        })
-                        .flatten(),
-                ),
-                priority_unit: r.priority_unit,
-                priority_unit_name: owned_vec(copy_vec(span(bytes, r.priority_unit_name).unwrap())),
-                custom_icon: r.custom_icon,
-                custom_icon_nato: r.custom_icon_nato,
-                representative: r.representative.token,
-                representative_local: u8::from(r.representative.local),
-                subunits: entries(r.counts),
-                country: r.country,
-                foreign_country: r.foreign_country,
-                model_category: r.model_category,
-                model_entity: owned_vec(copy_vec(span(bytes, r.model_entity).unwrap())),
-                excluded_variants: owned_vec(copy_vec(
-                    span(variants, r.excluded_variants).unwrap(),
-                )),
-                model_unreadable: u8::from(r.model_failure.is_some()),
-                formation_division_count: replay_data::rows::Recorded::Value(
-                    r.formation_division_count,
-                ),
-                display_name: name_inputs(r, names, dictionary, self.sample_hour),
-                grids: Recorded::Value(TemplateGrids {
-                    regiments: entries(regiments),
-                    support: entries(support),
-                    regimental_support: entries(regimental_support),
-                }),
-                layout,
-                settings,
-                speed_keys: Recorded::Value(self.speed_keys(r.template)),
-            }
-        })
+        let base_width = |r: &native::IconRow| {
+            (r.model_failure.is_none())
+                .then(|| {
+                    span(counts, r.counts)?.iter().try_fold(0_i64, |sum, unit| {
+                        Some(
+                            sum.wrapping_add(
+                                i64::from(unit.count)
+                                    .wrapping_mul(100_000)
+                                    .wrapping_mul(unit.width?)
+                                    / 100_000,
+                            ),
+                        )
+                    })
+                })
+                .flatten()
+        };
+        let same_entries = |range: native::Span, previous: &[TemplateSubunit]| {
+            let current = span(counts, range).unwrap();
+            current.len() == previous.len()
+                && current.iter().zip(previous).all(|(a, b)| {
+                    a.token == b.token && u8::from(a.local) == b.local && a.count == b.count
+                })
+        };
+        project_table::<tables::DivisionTemplateIcons, _>(
+            projection,
+            outcome,
+            &self.icon_rows.rows,
+            |r| u128::from(r.template),
+            |r, previous| {
+                r.priority_unit == previous.priority_unit
+                    && span(bytes, r.priority_unit_name).unwrap() == previous.priority_unit_name
+                    && r.custom_icon == previous.custom_icon
+                    && r.custom_icon_nato == previous.custom_icon_nato
+                    && r.representative.token == previous.representative
+                    && u8::from(r.representative.local) == previous.representative_local
+                    && same_entries(r.counts, &previous.subunits)
+                    && r.country == previous.country
+                    && r.foreign_country == previous.foreign_country
+                    && r.model_category == previous.model_category
+                    && span(bytes, r.model_entity).unwrap() == previous.model_entity
+                    && span(variants, r.excluded_variants).unwrap() == previous.excluded_variants
+                    && u8::from(r.model_failure.is_some()) == previous.model_unreadable
+                    && Recorded::Value(r.formation_division_count)
+                        == previous.formation_division_count
+                    && same_name_inputs(
+                        r,
+                        names,
+                        dictionary,
+                        self.sample_hour,
+                        &previous.display_name,
+                    )
+                    && match &previous.grids {
+                        Recorded::Value(grids) => {
+                            same_entries(r.grids[0], &grids.regiments)
+                                && same_entries(r.grids[1], &grids.support)
+                                && same_entries(r.grids[2], &grids.regimental_support)
+                        }
+                        Recorded::NotRecorded => false,
+                    }
+                    && Recorded::Value(r.manpower_exile) == previous.manpower_exile
+                    && Recorded::Value(base_width(r)) == previous.base_width
+                    && self
+                        .held
+                        .matches_values(r, &previous.layout, &previous.settings)
+                    && match &previous.speed_keys {
+                        Recorded::Value(keys) => {
+                            self.speed_key_slice(r.template) == keys.as_deref()
+                        }
+                        Recorded::NotRecorded => false,
+                    }
+            },
+            |r| {
+                let [regiments, support, regimental_support] = r.grids;
+                let (layout, settings) = self.held.values(r);
+                DivisionTemplateIconRow {
+                    manpower_exile: Recorded::Value(r.manpower_exile),
+                    template: r.template,
+                    base_width: Recorded::Value(base_width(r)),
+                    priority_unit: r.priority_unit,
+                    priority_unit_name: owned_vec(copy_vec(
+                        span(bytes, r.priority_unit_name).unwrap(),
+                    )),
+                    custom_icon: r.custom_icon,
+                    custom_icon_nato: r.custom_icon_nato,
+                    representative: r.representative.token,
+                    representative_local: u8::from(r.representative.local),
+                    subunits: entries(r.counts),
+                    country: r.country,
+                    foreign_country: r.foreign_country,
+                    model_category: r.model_category,
+                    model_entity: owned_vec(copy_vec(span(bytes, r.model_entity).unwrap())),
+                    excluded_variants: owned_vec(copy_vec(
+                        span(variants, r.excluded_variants).unwrap(),
+                    )),
+                    model_unreadable: u8::from(r.model_failure.is_some()),
+                    formation_division_count: replay_data::rows::Recorded::Value(
+                        r.formation_division_count,
+                    ),
+                    display_name: name_inputs(r, names, dictionary, self.sample_hour),
+                    grids: Recorded::Value(TemplateGrids {
+                        regiments: entries(regiments),
+                        support: entries(support),
+                        regimental_support: entries(regimental_support),
+                    }),
+                    layout,
+                    settings,
+                    speed_keys: Recorded::Value(self.speed_keys(r.template)),
+                }
+            },
+        )
     }
 }
 
 /// Exact byte comparison, not a digest or pointer identity. Dictionary rows are
 /// sorted by the existing table conversion. New handles and changed values need
 /// no daily row; overrides make keyframes and direct seeks self-contained.
+enum NameValue<'a> {
+    Same,
+    Changed {
+        literal: &'a [u8],
+        fallback_key: Option<&'a [u8]>,
+    },
+}
+
 fn name_inputs(
     row: &native::IconRow,
     bytes: &[u8],
     dictionary: Option<&[DivisionTemplateRow]>,
     hour: Option<i32>,
 ) -> Recorded<Option<TemplateDisplayName>> {
-    if hour.is_none() {
-        return Recorded::Value(None);
+    Recorded::Value(
+        name_value(row, bytes, dictionary, hour).map(|value| TemplateDisplayName {
+            sample_hour: replay_data::rows::PacketHour::Host,
+            value: match value {
+                NameValue::Same => TemplateNameValue::SameAsDivisionTemplates,
+                NameValue::Changed {
+                    literal,
+                    fallback_key,
+                } => TemplateNameValue::Changed {
+                    literal: owned_vec(copy_vec(literal)),
+                    fallback_key: fallback_key.map(|key| owned_vec(copy_vec(key))),
+                },
+            },
+        }),
+    )
+}
+
+fn same_name_inputs(
+    row: &native::IconRow,
+    bytes: &[u8],
+    dictionary: Option<&[DivisionTemplateRow]>,
+    hour: Option<i32>,
+    previous: &Recorded<Option<TemplateDisplayName>>,
+) -> bool {
+    match (name_value(row, bytes, dictionary, hour), previous) {
+        (None, Recorded::Value(None)) => true,
+        (Some(value), Recorded::Value(Some(previous)))
+            if previous.sample_hour == replay_data::rows::PacketHour::Host =>
+        {
+            match (value, &previous.value) {
+                (NameValue::Same, TemplateNameValue::SameAsDivisionTemplates) => true,
+                (
+                    NameValue::Changed {
+                        literal,
+                        fallback_key,
+                    },
+                    TemplateNameValue::Changed {
+                        literal: old_literal,
+                        fallback_key: old_key,
+                    },
+                ) => literal == old_literal && fallback_key == old_key.as_deref(),
+                _ => false,
+            }
+        }
+        _ => false,
     }
-    let Some(name) = row.display_name else {
-        return Recorded::Value(None);
-    };
-    let Some(literal) = span(bytes, name.literal) else {
-        return Recorded::Value(None);
-    };
+}
+
+fn name_value<'a>(
+    row: &native::IconRow,
+    bytes: &'a [u8],
+    dictionary: Option<&[DivisionTemplateRow]>,
+    hour: Option<i32>,
+) -> Option<NameValue<'a>> {
+    if hour.is_none() {
+        return None;
+    }
+    let name = row.display_name?;
+    let literal = span(bytes, name.literal)?;
     let key = match name.fallback_key {
         Some(range) => match span(bytes, range) {
             Some(bytes) => Some(bytes),
-            None => return Recorded::Value(None),
+            None => return None,
         },
         None => None,
     };
     if literal.is_empty() != key.is_some() {
-        return Recorded::Value(None);
+        return None;
     }
-    let same = dictionary.and_then(|rows| {
-        rows.binary_search_by_key(&row.template, |row| row.template).ok().map(|index| &rows[index])
-    }).is_some_and(|daily| {
-        daily.name == literal && (!literal.is_empty()
-            || matches!(&daily.name_key, Recorded::Value(bytes) if Some(bytes.as_slice()) == key))
-    });
-    let value = if same {
-        TemplateNameValue::SameAsDivisionTemplates
+    let same = dictionary
+        .and_then(|rows| {
+            rows.binary_search_by_key(&row.template, |row| row.template)
+                .ok()
+                .map(|index| &rows[index])
+        })
+        .is_some_and(|daily| {
+            daily.name == literal
+                && (!literal.is_empty()
+                    || matches!(&daily.name_key, Recorded::Value(bytes) if Some(bytes.as_slice()) == key))
+        });
+    Some(if same {
+        NameValue::Same
     } else {
-        TemplateNameValue::Changed {
-            literal: owned_vec(copy_vec(literal)),
-            fallback_key: key.map(|key| owned_vec(copy_vec(key))),
+        NameValue::Changed {
+            literal,
+            fallback_key: key,
         }
-    };
-    Recorded::Value(Some(TemplateDisplayName {
-        sample_hour: replay_data::rows::PacketHour::Host,
-        value,
-    }))
+    })
 }
 fn span<T>(arena: &[T], range: native::Span) -> Option<&[T]> {
     arena.get(range.start..range.start.checked_add(range.len)?)

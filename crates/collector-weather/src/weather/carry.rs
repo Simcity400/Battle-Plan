@@ -329,13 +329,13 @@ impl WeatherCarry {
 /// every slot under `weather_verify`, otherwise those in the hour's phase of
 /// the rotation.
 fn compared(hour: i32, every: bool) -> (u32, u32) {
-    let check = crate::sampled_verify::Check::hourly(hour, every);
+    let check = crate::sampled_verify::Check::burned_in(hour, every);
     if check == crate::sampled_verify::Check::Every {
         return (0, 1);
     }
-    let rotation = crate::sampled_verify::ROTATION;
-    let phase = (0..rotation).find(|&phase| check.covers_phase(phase));
-    (phase.unwrap_or(0) as u32, rotation as u32)
+    let rotation = crate::sampled_verify::BURNED_IN_ROTATION;
+    // covers_phase identifies only the day's bucket, not the full graduated phase.
+    (hour.rem_euclid(rotation as i32) as u32, rotation as u32)
 }
 
 /// Whether `slot` is in the window `(first, visits)` of `count` slots.

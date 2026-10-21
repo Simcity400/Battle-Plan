@@ -645,3 +645,139 @@ fn counter_dig_in_factor_keeps_native_one_and_wrapping_commander_modifier() {
 }
 
 mod selected_retreat;
+
+#[test]
+fn prepared_movement_ranges_preserve_serial_faults_and_shared_admission_at_scale() {
+    const DIVISIONS: usize = 5_000;
+    let mut fixture = primary_fixture(129);
+    fixture.word(
+        MEMBERS + 8,
+        (HQ + crate::corders_group_member::HOST_OFFSET) as u64,
+    );
+    let seeds: Vec<_> = (0..DIVISIONS)
+        .map(|index| carmy::DivisionSeed {
+            pointer: if index % 3 == 0 { HQ } else { ARMY },
+            orders_group: match index % 11 {
+                0 => None,
+                1 => Some(0),
+                _ => Some(GROUP),
+            },
+            class: match index % 7 {
+                0 => None,
+                1 => Some(1),
+                _ => Some(0),
+            },
+            ..Default::default()
+        })
+        .collect();
+    for fault in [
+        None,
+        Some(GROUP),
+        Some(GROUP + group::LEADER),
+        Some(LEADER),
+        Some(crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA),
+        Some(GROUP + group::HQ_PROVIDER),
+        Some(ROOTS),
+        Some(MEMBERS),
+        Some(MEMBERS + 512),
+        Some(ARMY + crate::corders_group_member::HOST_OFFSET + PRIMARY_ROOT_DIRTY),
+    ] {
+        let source = Observed::new(Fixture {
+            bytes: fixture.bytes.clone(),
+            flags: fixture.flags,
+        });
+        source.fault.set(fault);
+        let mut serial = LeaderMemo::try_with_capacity(DIVISIONS).unwrap();
+        let expected: Vec<_> = seeds
+            .iter()
+            .map(|seed| movement_block_memoized(&source, 0, seed, &mut serial))
+            .collect();
+        for parts in [1, 2, 7, 31] {
+            let mut ranges: Vec<_> = (0..parts)
+                .map(|part| {
+                    LeaderMemo::try_with_capacity(
+                        DIVISIONS * (part + 1) / parts - DIVISIONS * part / parts,
+                    )
+                    .unwrap()
+                })
+                .collect();
+            let mut prepared = vec![MovementPreparation::default(); DIVISIONS];
+            let mut ordered = LeaderMemo::try_with_capacity(DIVISIONS).unwrap();
+            let mut bytes = None;
+            for _ in 0..2 {
+                ordered.clear();
+                for part in (0..parts).rev() {
+                    ranges[part].clear();
+                    for index in DIVISIONS * part / parts..DIVISIONS * (part + 1) / parts {
+                        prepared[index] = MovementPreparation::capture(
+                            &source,
+                            0,
+                            &seeds[index],
+                            &mut ranges[part],
+                        );
+                    }
+                }
+                let reads = source.reads.borrow().len();
+                let actual: Vec<_> = seeds
+                    .iter()
+                    .enumerate()
+                    .map(|(index, seed)| {
+                        movement_block_prepared(
+                            &source,
+                            0,
+                            seed,
+                            &mut ordered,
+                            Some(prepared[index]),
+                        )
+                    })
+                    .collect();
+                assert_eq!(actual, expected, "parts={parts} fault={fault:?}");
+                assert_eq!(
+                    source.reads.borrow().len(),
+                    reads,
+                    "settlement reread staged leaves"
+                );
+                let current = ranges
+                    .iter()
+                    .map(LeaderMemo::allocated_bytes)
+                    .sum::<usize>();
+                if let Some(bytes) = bytes {
+                    assert_eq!(current, bytes, "range scratch grew on the second hour");
+                }
+                bytes = Some(current);
+                source.reads.borrow_mut().clear();
+            }
+        }
+    }
+
+    // A later range's contradictory observation cannot replace a shared
+    // group's admitted result (success or refusal), nor its feature/HQ gate.
+    let source = Fixture::new();
+    let seed = carmy::DivisionSeed {
+        pointer: ARMY,
+        orders_group: Some(GROUP),
+        class: Some(1),
+        ..Default::default()
+    };
+    let mut memo = LeaderMemo::try_with_capacity(2).unwrap();
+    let first = MovementPreparation {
+        leader: Some(Ok(LEADER)),
+        ..Default::default()
+    };
+    let later = MovementPreparation {
+        leader: Some(Err("later group fault")),
+        ..Default::default()
+    };
+    let admitted = movement_block_prepared(&source, 0, &seed, &mut memo, Some(first));
+    assert_eq!(
+        movement_block_prepared(&source, 0, &seed, &mut memo, Some(later)),
+        admitted
+    );
+    memo.clear();
+    let refused = movement_block_prepared(&source, 0, &seed, &mut memo, Some(later));
+    assert_eq!(refused, Err("later group fault"));
+    assert_eq!(
+        movement_block_prepared(&source, 0, &seed, &mut memo, Some(first)),
+        refused
+    );
+}

@@ -107,7 +107,7 @@ macro_rules! spool_inputs {
     };
 
     (division_templates, $captured:expr, $conversion:expr) => {
-        $captured.table_inputs()
+        $captured.projected_inputs($conversion.projection.as_deref_mut())
     };
     (division_presentation, $captured:expr, $conversion:expr, $all:expr, $hour:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut(), Some($hour))
@@ -150,6 +150,12 @@ macro_rules! spool_inputs {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };
     (air, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
+    (character_inputs, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
+    (weather, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };
     (fog, $captured:expr, $conversion:expr) => {
@@ -1283,6 +1289,8 @@ impl Captured {
         self.resource_map.reset_selection(hour, force_full);
         self.country_stability.prepare_hour(hour, force_full);
         self.combat_log.prepare_hour(hour, force_full);
+        self.combat_progress.prepare_hour(hour, force_full);
+        self.characters.prepare_hour(hour, force_full);
         self.naval_mission_inputs.reset_selection(hour, force_full);
         self.supply_trains.reset_selection(hour, force_full);
         self.hired_advisors.reset_selection(hour, force_full);
@@ -1304,9 +1312,70 @@ impl Captured {
         self.unit_inputs = None;
     }
 
+    pub(crate) fn take_settled_army_store(&mut self) -> Option<division_presentation::held_store::Loan> {
+        self.division_presentation.take_settled_store()
+    }
+
+    /// No native-memory capability reaches the independent owned publication tails.
+    pub(crate) fn decode_owned_censuses(&mut self) -> ([u64; 3], u64) {
+        let bytes = |this: &Self| {
+            this.naval_bases.allocated_bytes()
+                + this.group_counters.allocated_bytes()
+                + this.governance.allocated_bytes()
+                + this.naval_counters.allocated_bytes()
+        };
+        let before = bytes(self);
+        let start = crate::sampling::qpc();
+        self.naval_bases.decode_owned();
+        self.group_counters.decode_owned();
+        let map = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
+        let start = crate::sampling::qpc();
+        self.governance.decode_owned();
+        let governance = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
+        let start = crate::sampling::qpc();
+        self.naval_counters.decode_owned();
+        let tasks = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
+        (
+            [map, governance, tasks],
+            (bytes(self) as u64).wrapping_sub(before as u64),
+        )
+    }
+
+    pub(crate) fn discard_owned_censuses(&mut self) {
+        self.naval_bases.discard_owned();
+    }
+
+    /// Independent, frame-owned mission tails. Native-demand indexes and
+    /// certificate comparisons were completed before either pack returned.
+    pub(crate) fn decode_mission_tails(&mut self) -> ([u64; 2], u64) {
+        let before = self.naval_mission_inputs.allocated_bytes() + self.railway_guns.allocated_bytes();
+        let start = crate::sampling::qpc();
+        self.naval_mission_inputs.decode_owned();
+        let navies = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
+        let start = crate::sampling::qpc();
+        self.railway_guns.decode_owned();
+        let railway = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
+        let after = self.naval_mission_inputs.allocated_bytes() + self.railway_guns.allocated_bytes();
+        ([navies, railway], (after as u64).wrapping_sub(before as u64))
+    }
+
     /// Project owned operands after their single live acquisition has finished.
     pub(crate) fn decode_division_presentation_inputs(&mut self) -> [u64; 2] {
         self.division_presentation.decode_inputs()
+    }
+
+    pub(crate) fn presentation_allocated_bytes(&self) -> usize {
+        self.division_presentation.allocated_bytes()
+    }
+
+    /// Only these buffers can change during owned division installation.
+    pub(crate) fn division_decode_allocated_bytes(&self) -> usize {
+        self.division_counts.allocated_bytes()
+            + self.production.division_equipment.allocated_bytes()
+            + self.production.groups.allocated_bytes()
+            + self.production.requests.allocated_bytes()
+            + self.production.deliveries.allocated_bytes()
+            + self.production.produced.allocated_bytes()
     }
 
     pub(crate) fn observe_division_naming(
@@ -1455,10 +1524,14 @@ impl Captured {
         base: usize,
         state: usize,
         hour: i32,
-        army_stats: Option<Box<attack_stats::ArmyStatStore>>,
+        army_stats: Option<division_presentation::held_store::Loan>,
     ) -> crate::acquisition_jobs::PresentationRequest {
         self.presentation_report = None;
+        if army_stats.is_some() {
+            self.division_presentation.enable_owned_settlement();
+        }
         crate::acquisition_jobs::PresentationRequest {
+            dispatch: Default::default(),
             countries: Arc::clone(countries),
             army_stats,
             context: division_presentation::CaptureContext {
@@ -1479,13 +1552,23 @@ impl Captured {
         &mut self,
         mut request: crate::acquisition_jobs::PresentationRequest,
         report: Result<division_presentation::CaptureReport, crate::acquisition::Failure>,
-    ) -> Option<Box<attack_stats::ArmyStatStore>> {
+    ) -> Option<division_presentation::held_store::Loan> {
         if report.is_err()
             && let Some(store) = request.army_stats.as_deref_mut()
         {
             store.forget();
         }
-        let army_stats = request.army_stats.take();
+        let army_stats = request.army_stats.take().and_then(|store| {
+            if report.is_ok() {
+                request.captured.retain_owned_settlement(
+                    store,
+                    request.inputs.clone(),
+                    request.context,
+                )
+            } else {
+                Some(store)
+            }
+        });
         self.presentation_report = Some(match report {
             Ok(report) => report,
             Err(failure) => request.captured.fail_owned_capture(match failure {
@@ -1691,15 +1774,15 @@ impl Captured {
         }
     }
 
-    /// Loan the variant registry and its detail tables on their slot or a
-    /// full hour. Off the slot they are skipped here without reads.
+    /// Loan the hourly design changes with the variant registry and its detail
+    /// tables. The worker drains changes before deciding its roster read.
     pub(crate) fn take_variants_request(
         &mut self,
         base: usize,
         state: usize,
         hour: i32,
         force_full: bool,
-    ) -> Option<crate::acquisition_jobs::VariantsRequest> {
+    ) -> crate::acquisition_jobs::VariantsRequest {
         self.variants_ticks = None;
         let context = governance::CaptureContext {
             base,
@@ -1707,22 +1790,14 @@ impl Captured {
             hour,
             force_full,
         };
-        if !force_full
-            && !production::design_changes::needs_full()
-            && !replay_data::cadence::should_walk(TableId::VariantDefinitions, hour, false)
-        {
-            self.registry.mark_skipped();
-            let mut variants = self.production.take_variants();
-            variants.fail(replay_data::cadence::SKIPPED_REASON, hour, false);
-            self.production.restore_variants(variants);
-            self.variants_ticks = Some([0; production::N]);
-            return None;
-        }
-        Some(crate::acquisition_jobs::VariantsRequest {
+        crate::acquisition_jobs::VariantsRequest {
             context,
             registry: std::mem::replace(&mut self.registry, Registry::new(0)),
             variants: self.production.take_variants(),
-        })
+            changes: self.production.take_design_changes(),
+            changes_ticks: 0,
+            changes_finished: false,
+        }
     }
 
     pub(crate) fn restore_variants_request(
@@ -1739,8 +1814,11 @@ impl Captured {
             })
         });
         self.variants_ticks = Some(ticks);
+        let changes = TableId::VariantChanges.index();
+        self.overhead[changes] = self.overhead[changes].saturating_add(request.changes_ticks);
         self.registry = request.registry;
         self.production.restore_variants(request.variants);
+        self.production.restore_design_changes(request.changes);
     }
 
     /// Returns the technology and focus fingerprint stores and the held
@@ -2221,6 +2299,30 @@ impl Captured {
     pub(crate) fn decode_air_copies(&mut self) {
         self.air_relations.decode();
         self.air_histories.decode();
+    }
+
+    /// FIFO-owned tails of completed native acquisitions. None accepts Memory.
+    pub(crate) fn decode_capture_tails(&mut self) -> ([u64; 5], u64) {
+        let bytes = |this: &Self| {
+            this.division_templates.allocated_bytes()
+                + this.ship_models.owned_tail_allocated_bytes()
+                + this.combat_details.owned_tail_allocated_bytes()
+        };
+        let before = bytes(self);
+        let mut ticks = [0; 5];
+        macro_rules! settle {
+            ($index:expr, $capture:ident, $method:ident) => {{
+                let start = crate::sampling::qpc();
+                self.$capture.$method();
+                ticks[$index] = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
+            }};
+        }
+        settle!(0, division_templates, settle_owned);
+        settle!(1, ship_models, settle_owned);
+        settle!(2, resource_map, settle_owned);
+        settle!(3, production, settle_variants_owned);
+        settle!(4, combat_details, settle_owned);
+        (ticks, (bytes(self) as u64).wrapping_sub(before as u64))
     }
 
     /// The frame is dropped before decoding.

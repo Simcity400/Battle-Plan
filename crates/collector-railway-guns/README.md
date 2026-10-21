@@ -5,3 +5,11 @@ Railway gun capture: the hourly RailwayGunCounterInputs with their route cells, 
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-railway-guns` and `cargo clippy -p collector-railway-guns --all-targets -- -D warnings` for its synthetic checks.
+
+OrdinaryMap uses `acquire_with_hour`: the parked worker retains native-demand
+sorts, exact native reads, shared-memo admission and first refusals. The FIFO
+decoder evaluates owned transport speed operands, counts row diagnostics and
+releases copied navy arrays through `decode_owned`, which accepts no Memory.
+Projection refuses to use unsettled transport operands. Five live-sized demand
+vectors retain their scratch capacity across hours. The gun row prefix stays
+available to the same-pause supply consumer; no new cross-frame loan is needed.

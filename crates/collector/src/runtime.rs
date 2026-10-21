@@ -2951,12 +2951,15 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
             "refresh_requests_accepted": REFRESH_ACCEPTED.load(Ordering::Relaxed),
             "presentation_phases": {
                 "hours": load(&shared.presentation.hours),
+                "settle": presentation_settle_status(shared),
+                "range_dispatch_ns": load(&shared.presentation.range_dispatch_ns),
+                "store_wait_ns": load(&shared.presentation.store_wait_ns),
                 "phase_ns": crate::status::map(
                     crate::extended::division_presentation::PHASE_NAMES
                         .into_iter()
                         .zip(shared.presentation.phase_ns.each_ref().map(load))
                 ),
-                "scope": "cumulative Presentation worker wall since attach inside the DivisionStatus acquisition span, split by pass; overlaps other jobs and the game-thread block and is not added to it",
+                "scope": "cumulative Presentation acquisition and owned-decode wall since attach; status includes preparation and ranges; prepare_* and certify_* are nested pause phases; decode_sources, decode_scalars, decode_stitch and decode_attack run on the FIFO decode worker before encoding; sources_* subdivides prepare_sources on an ordered fallback or decode_sources on a fully staged pass; sources_variants times dirty refresh; range_dispatch_ns is nested final-range submission wall; store_wait_ns is callback wait for the preceding owned store; settle reports its own acquisition-entry offsets, separately from initial setup; phases overlap other jobs",
             },
         })
     });
@@ -3008,7 +3011,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                     "role_timeline_scope": "per pool role, its collected jobs (jobs, cumulative) and the mean offset in ns from their acquisition body's entry of when each was queued (a held first-burst job is queued at its submission: its release only wakes idle workers, and a worker already running may claim it before), when a pool participant began and ended its body (over the jobs that ran on one), and when the game thread began and ended its join. A join that begins after the body ended waits only on collection; one that begins before it waits on the unfinished body. joins_waiting_over_250us, _1ms and _4ms count the role's joins whose wait reached each threshold, so a mean wait from a few long hours shows apart from a steady one",
                     "residual_mean_ns": phase_mean(shared.phase_residual_ns.load(Ordering::Relaxed)),
                 },
-                "block_phases_scope": "disjoint game-thread wall means summing to the recorded acquisition body: setup = reusable-frame wait, frame reset and country authentication; parallel = shared input acquisition, request dispatch, result installation and sequential job joins; residual = completion bookkeeping before decode enqueue. parallel_inline_walk is a subset of parallel outside joins, measured over the collection span; parallel_join counts sequential completion spans and may include execution of the exact awaited job. Their sum leaves dispatch and other work outside that span. Worker durations overlap this game-thread wall and must not be added. Reusable-frame wait is separately reported but already included in setup, collect_wait_ns and callback_work",
+                "block_phases_scope": "disjoint game-thread wall means summing to the recorded acquisition body: setup = reusable-frame wait, frame reset and country authentication; parallel = shared input acquisition, request dispatch, result installation and sequential job joins; residual = completion bookkeeping before decode enqueue. parallel_inline_walk is collection-span wall excluding joins, measured submissions and held-burst releases; it retains request building, owned merges and installations, not just native walks; parallel_join counts sequential completion spans and may include execution of the exact awaited job. Their sum leaves dispatch and other work outside that span. Worker durations overlap this game-thread wall and must not be added. Reusable-frame wait is separately reported but already included in setup, collect_wait_ns and callback_work",
                 "game_thread": game_thread_status(shared, phase_calls),
                 "panics": shared.acquisition_panics.load(Ordering::Relaxed),
                 "workers": calibration,
@@ -3035,6 +3038,18 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         shared: shared_status,
         acquisition,
     }
+}
+
+/// Separate the ordered worker's offsets from its short setup predecessor.
+fn presentation_settle_status(shared: &sampling::Shared) -> impl serde::Serialize {
+    let (jobs, ticks) =
+        shared.role_timeline[crate::acquisition_jobs::Role::PresentationSettle as usize].means();
+    let ns = ticks.map(|ticks| shared.ns(i64::try_from(ticks).unwrap_or(i64::MAX)));
+    crate::status::status!({
+        "jobs": jobs,
+        "queued_ns": ns[0], "body_begin_ns": ns[1], "body_end_ns": ns[2],
+        "join_begin_ns": ns[3], "join_end_ns": ns[4],
+    })
 }
 
 /// Each pool role's collection costs after its jobs finished
@@ -4712,6 +4727,9 @@ type RecycleIdleCheck = Box<dyn FnOnce(&SizingShared, &Shared) + Send>;
 /// State the spool thread shares with its sizing thread.
 struct SizingShared {
     capacities: Mutex<BufferCapacities>,
+    /// An explicit spool pass requests live preparation. Retiring encoded
+    /// rows wakes the worker to free them, not to repeat that preparation.
+    pass_requested: AtomicBool,
     /// A raise or refusal since the sizing thread last checked its hints.
     hint_demand: AtomicBool,
     #[cfg(test)]
@@ -4734,6 +4752,7 @@ impl SizingShared {
     fn new(capacities: BufferCapacities, state: Option<SizingState>) -> Self {
         Self {
             capacities: Mutex::new(capacities),
+            pass_requested: AtomicBool::new(false),
             hint_demand: AtomicBool::new(false),
             #[cfg(test)]
             before_recycle_idle_growth: Mutex::new(None),
@@ -4955,7 +4974,10 @@ impl SizingThread {
         *lock(&self.sizing.context) = crate::allocation::context();
         span.finish();
         match &self.thread {
-            Some(thread) => thread.thread().unpark(),
+            Some(thread) => {
+                self.sizing.pass_requested.store(true, Ordering::Release);
+                thread.thread().unpark();
+            }
             None => {
                 if let Some(state) = lock(&self.sizing.state).as_mut() {
                     sizing_pass(shared, &self.sizing, state, &crate::spool_phases::SPOOL)?;
@@ -5017,6 +5039,7 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
     };
     let phases = &crate::spool_phases::SIZING;
     let mut priority = OwnPriority::new();
+    let mut next_pass = Instant::now();
     while !sizing.stop.load(Ordering::Acquire) && !crate::allocation::failed() {
         priority.follow(shared.buffers_backlogged());
         let retired = std::mem::take(&mut *lock(&sizing.retired));
@@ -5024,14 +5047,17 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
             let _span = phases.span(Phase::Retire);
             drop(retired);
         }
-        crate::allocation::set_context(*lock(&sizing.context));
-        if let Err(failure) = sizing_pass(shared, sizing, &mut state, phases) {
-            let _ = sizing.failure.set(failure);
-            shared.wake_spool();
-            return;
+        if sizing.pass_requested.swap(false, Ordering::AcqRel) || Instant::now() >= next_pass {
+            crate::allocation::set_context(*lock(&sizing.context));
+            if let Err(failure) = sizing_pass(shared, sizing, &mut state, phases) {
+                let _ = sizing.failure.set(failure);
+                shared.wake_spool();
+                return;
+            }
+            next_pass = Instant::now() + SPOOL_IDLE_WAIT;
         }
         let _span = phases.span(Phase::Wait);
-        std::thread::park_timeout(SPOOL_IDLE_WAIT);
+        std::thread::park_timeout(next_pass.saturating_duration_since(Instant::now()));
     }
 }
 
@@ -5573,6 +5599,9 @@ static REFRESH_ACCEPTED: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_LOWERED: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_RAISED: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_FAILURES: AtomicU64 = AtomicU64::new(0);
+static ECO_QOS_ENABLED: AtomicU64 = AtomicU64::new(0);
+static ECO_QOS_CLEARED: AtomicU64 = AtomicU64::new(0);
+static ECO_QOS_FAILURES: AtomicU64 = AtomicU64::new(0);
 
 /// Reserved stack of each collector thread that decodes, converts, compares or
 /// encodes whole frames and tables: decode, spool, its conversion helpers and
@@ -5582,33 +5611,36 @@ static PRIORITY_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// pages a thread touches, so the reservation costs address space, not memory.
 pub(crate) const BACKGROUND_STACK_BYTES: usize = 16 * 1024 * 1024;
 
-/// Priority of one collector-owned background thread (decode, spool). It runs
-/// below normal so a woken game thread and the hour's acquisition workers find
-/// a CPU first, except while the capture buffers are backlogged: then the game
-/// thread may be waiting in `take_frame` for exactly this thread, so it runs at
-/// normal priority until the backlog drains. Only the calling thread is
+/// Priority of one collector-owned background thread (decode, spool). It uses
+/// THREAD_PRIORITY_LOWEST and execution-speed EcoQoS while keeping up. A buffer
+/// backlog restores THREAD_PRIORITY_NORMAL and clears EcoQoS: `take_frame` may
+/// be waiting for this thread. Only the calling thread is
 /// changed; game threads, their priorities and affinities are never touched.
-/// A failed change keeps the previous priority, which is slower, never wrong.
+/// Priority and EcoQoS failures independently retain their previous setting
+/// and retry between work items; neither prevents changing the other.
 pub(crate) struct OwnPriority {
-    below_normal: Option<bool>,
+    lowest: Option<bool>,
+    eco_qos: Option<bool>,
 }
 
 impl OwnPriority {
     pub(crate) const fn new() -> Self {
-        Self { below_normal: None }
+        Self {
+            lowest: None,
+            eco_qos: None,
+        }
     }
 
     /// Call between work items with the current backlog verdict.
     pub(crate) fn follow(&mut self, backlogged: bool) {
         use windows_sys::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, SetThreadPriorityBoost,
-            THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL,
+            GetCurrentThread, SetThreadInformation, SetThreadPriority, SetThreadPriorityBoost,
+            THREAD_POWER_THROTTLING_CURRENT_VERSION, THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+            THREAD_POWER_THROTTLING_STATE, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
+            ThreadPowerThrottling,
         };
-        let below_normal = !backlogged;
-        if self.below_normal == Some(below_normal) {
-            return;
-        }
-        if self.below_normal.is_none() {
+        let lowest = !backlogged;
+        if self.lowest.is_none() {
             // No dynamic boost: a wake-up never lifts this thread above its
             // base priority, so even the backlog's normal priority only shares
             // CPUs with game threads and never preempts them.
@@ -5617,22 +5649,55 @@ impl OwnPriority {
                 PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
             }
         }
-        let priority = if below_normal {
-            THREAD_PRIORITY_BELOW_NORMAL
-        } else {
-            THREAD_PRIORITY_NORMAL
-        };
-        // SAFETY: the pseudo-handle names only the calling thread and needs no close.
-        if unsafe { SetThreadPriority(GetCurrentThread(), priority) } == 0 {
-            PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
-            return;
+        if self.lowest != Some(lowest) {
+            let priority = if lowest {
+                THREAD_PRIORITY_LOWEST
+            } else {
+                THREAD_PRIORITY_NORMAL
+            };
+            // SAFETY: the pseudo-handle names only the calling thread and needs no close.
+            if unsafe { SetThreadPriority(GetCurrentThread(), priority) } == 0 {
+                PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
+            } else {
+                if lowest {
+                    PRIORITY_LOWERED.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    PRIORITY_RAISED.fetch_add(1, Ordering::Relaxed);
+                }
+                self.lowest = Some(lowest);
+            }
         }
-        if below_normal {
-            PRIORITY_LOWERED.fetch_add(1, Ordering::Relaxed);
-        } else {
-            PRIORITY_RAISED.fetch_add(1, Ordering::Relaxed);
+        if self.eco_qos != Some(lowest) {
+            let throttling = THREAD_POWER_THROTTLING_STATE {
+                Version: THREAD_POWER_THROTTLING_CURRENT_VERSION,
+                ControlMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+                StateMask: if lowest {
+                    THREAD_POWER_THROTTLING_EXECUTION_SPEED
+                } else {
+                    0
+                },
+            };
+            // SAFETY: GetCurrentThread names only this collector thread; throttling
+            // has the required version and remains live for the synchronous call.
+            if unsafe {
+                SetThreadInformation(
+                    GetCurrentThread(),
+                    ThreadPowerThrottling,
+                    (&throttling as *const THREAD_POWER_THROTTLING_STATE).cast(),
+                    size_of::<THREAD_POWER_THROTTLING_STATE>() as u32,
+                )
+            } == 0
+            {
+                ECO_QOS_FAILURES.fetch_add(1, Ordering::Relaxed);
+            } else {
+                if lowest {
+                    ECO_QOS_ENABLED.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    ECO_QOS_CLEARED.fetch_add(1, Ordering::Relaxed);
+                }
+                self.eco_qos = Some(lowest);
+            }
         }
-        self.below_normal = Some(below_normal);
     }
 }
 
@@ -5641,7 +5706,10 @@ fn background_priority_status() -> impl serde::Serialize {
         "lowered": PRIORITY_LOWERED.load(Ordering::Relaxed),
         "raised_for_backlog": PRIORITY_RAISED.load(Ordering::Relaxed),
         "failures": PRIORITY_FAILURES.load(Ordering::Relaxed),
-        "scope": "cumulative priority changes of the decode, spool, spool helper and sizing threads: below normal while idle or keeping up, normal with at most two of the four reusable buffers free (the game thread may then be waiting for them); dynamic wake-up boosts are disabled, so none runs above that base priority; failures keep the previous priority",
+        "eco_qos_enabled": ECO_QOS_ENABLED.load(Ordering::Relaxed),
+        "eco_qos_cleared_for_backlog": ECO_QOS_CLEARED.load(Ordering::Relaxed),
+        "eco_qos_failures": ECO_QOS_FAILURES.load(Ordering::Relaxed),
+        "scope": "cumulative successful policy applications of the decode, spool, spool helper and sizing threads: LOWEST with execution-speed EcoQoS while idle or keeping up, NORMAL with EcoQoS explicitly cleared when at most two of the four reusable buffers are free; dynamic wake-up boosts are disabled; priority and EcoQoS failures retain their previous setting independently and retry between work items; counts include initial applications, not current thread counts",
     })
 }
 

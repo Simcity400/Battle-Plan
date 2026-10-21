@@ -4,12 +4,18 @@ Faction member readers separate accounting from sparse upgrade/history selection
 
 Native layouts, guarded memory operations, shared containers, authentication and coupled native readers. The existing Memory capabilities, native observation order and refusal semantics belong to this crate. The SEH copy helper is compiled and linked here once.
 
+Reserve-speed observations retain each reached context and term prefix in reusable flat arenas. Their owned computation accepts no Memory capability and preserves the synchronous arithmetic and refusal order.
+
+Presentation may select whole unit supply footers for daily sampling: omitted units perform no footer scalar/header read, origin traversal or witness. Requested units retain the same complete layouts, ordered origins and independent refusals. Final-status ranges inherit this selection; owned stitching reads only captured bytes. Exercise accepts only current XP supplied by its caller and otherwise performs its ordinary demanded read; no copied header has daily-field holes.
+
 Consumers depend on this library and the native domain libraries they use.
 [engine](../engine/README.md) remains a public module index and integration-test
 host. Date layout, saved allocation counters and modifier breakdown readers
 also live here; none requires the complete engine facade. Shared rules live in [AGENTS.md](../../AGENTS.md); field contracts, arithmetic, native gates and failure order stay beside each reader.
 
 The module list is in [lib.rs](src/lib.rs). Production dependencies are [engine-executable](../engine-executable/README.md) and [engine-allocation](../engine-allocation/README.md), re-exported here as `allocation`. Tests keep their synthetic fixtures and existing ignored scale gates.
+
+Order-execution indices retain only census ordinals, reusing them only when the current seeds prove strict ordering; changed length, ordering or aliased keys rebuild the original order. Assigned and member-host lookups validate their selected census index without a second identity search. Primary memberships are prepared only for route-enabled, signed-positive-target paradrop consumers; their existing index checks and refusal order are unchanged.
 
 The faction goal companion reader accepts the faction already authenticated by
 the roster acquisition. It copies manifest, ordered runtime and historical goals,
@@ -153,6 +159,30 @@ Active raiders share their original target-reference resolutions with the first-
 Movement-organisation branch reads share successfully authenticated province identities, definitions and terrain flags within one pass, and a route position reuses the id it authenticated. Failed reads are never retained; full or unavailable memo storage falls back to ordinary reads.
 
 The referenced-template walk accepts complete caller-certified icon-core segments after its ordinary roster and fixed-record authentication. Carried segments are relocated into the existing arenas; literal/fallback display operands remain fresh. Definition database/memo initialization is deferred until a fresh core actually demands it. Extension selection remains independent.
+
+Division status exposes an ordered preparation and reusable final-status ranges.
+Preparation owns shared maxima and country admission: aliased stat blocks retain
+exactly the first seed's carried maxima. Ranges acquire membership and finish the
+scalar/exercise walk with their own group, AI-control, threshold, manpower,
+supply, camouflage and organisation scratch. They retain resolved membership and
+exercise decisions rather than copying child arenas during stitch. The ordered
+stitch preserves the serial first failure, full prepared maxima prefix and supply
+origin order. Its preview checks ordered outcomes and reserves supply-origin
+storage and builds the border lookup index before naming; owned unit/supply
+copying may finish after resume. Native border augmentation survives that later
+copy. Retreat bans use independent commander storage. The serial API keeps
+its original preparation and finish read order.
+
+Movement-block preparation can acquire group/leader, feature/HQ and per-division
+primary-root observations on independent ranges. Ordered selection admits the
+shared group/feature/HQ results through its original memo, including failures;
+per-range primary-root caches retain the original prefix/chunk guards and fallback.
+An observed refusal is not retried, and an unobserved branch uses the ordinary reader.
+
+Movement packets can retain ordered raw route bytes for owned projection after
+resume. The first ordinary word alone is decoded during acquisition because a
+null next province gates later native reads. Failed gathered spans never enter
+the completed route prefix; projection needs no Memory capability.
 
 The ship census can copy the retained name cache through `cship::cached_name_growing`
 and independently read raw saved name operands through `cship::naming_growing`.

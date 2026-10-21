@@ -8,6 +8,8 @@ Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/
 
 Run `cargo test -p collector-projects` and `cargo clippy -p collector-projects --all-targets -- -D warnings` for its synthetic checks.
 
+RaidIntelInputs uses the graduated 576-hour verification rotation (owner approval 2026-10-20), retaining hourly accumulator headers and current effective-value metadata. `raid_intel_verify` still compares every carryable country; mismatches poison the same naval-tree certificates, and crossed or incomplete reads establish no carry.
+
 Project runtime acquisition reuses the objects from the selected project pool pass. Variable maps use reusable storage and native variable-writer revisions; unchanged maps cause no native reads. Pending rewards use the existing project writer hooks and recorded iteration changes, reading only changed or uninitialized objects. Complete existing daily censuses prune dead held stores. Supporting assignments and injury recovery operands extend the existing daily acquisition, with their supplying hour retained for presentation. Missing child operands remain independently unavailable and counted.
 
 ProjectPrograms facility operands share its existing daily byte arena and raw-copy/decode pass. A retained assignment-reference scratch vector avoids rebuilding or rewalking membership. Scientist visibility origins use a retained daily byte arena and the same scientist acquisition admission; there is no new hourly read or origin carry certificate. Missing facility operands are independent counted refusals. Projects runtime records the pending reward occurrence only when its pending revision changes, so duplicate inline tokens remain distinguishable.

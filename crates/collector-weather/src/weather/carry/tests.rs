@@ -395,10 +395,10 @@ fn read(world: &World, census: &Census<'_>) -> (Vec<u32>, Vec<u32>) {
 
 /// The window's slots plus the hour's comparison slice.
 fn expected(window: (u32, u32), count: u32, hour: i32) -> Vec<u32> {
-    let phase = hour.rem_euclid(crate::sampled_verify::ROTATION as i32) as u32;
+    let check = crate::sampled_verify::Check::burned_in(hour, false);
     (0..count)
         .filter(|&slot| {
-            in_window(slot, window, count) || slot % crate::sampled_verify::ROTATION as u32 == phase
+            in_window(slot, window, count) || check.covers(u64::from(slot))
         })
         .collect()
 }
@@ -433,6 +433,22 @@ fn held(provinces: u32, regions: u32, budgets: (i32, i32)) -> (World, Box<Weathe
     assert_eq!(read(&world, &census), (every(regions), every(provinces)));
     assert!(carry.held.is_some());
     (world, carry)
+}
+
+#[test]
+fn graduated_comparisons_use_the_full_phase_and_preserve_every_mode() {
+    for hour in [-600, -1, 0, 23, 24, 575, 576, 599] {
+        let (start, step) = compared(hour, false);
+        assert_eq!(step, crate::sampled_verify::BURNED_IN_ROTATION as u32);
+        for slot in 0..5_000 {
+            assert_eq!(
+                slot >= start && (slot - start) % step == 0,
+                crate::sampled_verify::Check::burned_in(hour, false).covers(u64::from(slot)),
+                "hour {hour}, slot {slot}"
+            );
+        }
+        assert_eq!(compared(hour, true), (0, 1));
+    }
 }
 
 #[test]
@@ -642,25 +658,26 @@ fn regional_map_terms_share_the_existing_outside_window_carry_guard() {
 /// slice finds poisons the carry like a record difference.
 #[test]
 fn a_record_difference_reads_every_province_modifier_entry() {
-    let rotation = crate::sampled_verify::ROTATION as u32;
-    let mut world = World::new(80, 9, (5, 2));
+    let rotation = crate::sampled_verify::BURNED_IN_ROTATION as u32;
+    let provinces = rotation + 80; // A selected slot must also exist beyond the update window.
+    let mut world = World::new(provinces, 9, (5, 2));
     let key = engine_executable::modifier_keys::ARMY_SPEED_FACTOR;
-    let entries: Vec<usize> = (0..80)
+    let entries: Vec<usize> = (0..provinces)
         .map(|slot| world.province_entry(slot, key, i64::from(slot)))
         .collect();
     let (carry, _) = hour(&world, carry(), 1, false, Some(0));
-    assert_eq!(carry.province_modifiers.len(), 80);
+    assert_eq!(carry.province_modifiers.len(), provinces as usize);
     // Hour 2 compares the slots of its phase; one record there and one entry elsewhere
     // change outside the window.
     let (_, window) = next_windows(&world);
     world.pass(1);
     let phase = 2 % rotation;
-    let outside = |slot: &u32| !in_window(*slot, window, 80);
-    let record = (0..80)
+    let outside = |slot: &u32| !in_window(*slot, window, provinces);
+    let record = (0..provinces)
         .filter(outside)
         .find(|slot| slot % rotation == phase)
         .unwrap();
-    let entry = (0..80)
+    let entry = (0..provinces)
         .filter(outside)
         .find(|slot| slot % rotation != phase && *slot != record)
         .unwrap();
@@ -670,7 +687,7 @@ fn a_record_difference_reads_every_province_modifier_entry() {
     let (carry, census) = hour(&world, carry, 2, false, Some(0));
     assert!(carry.poisoned);
     assert!(!carry.provinces_followed);
-    assert_eq!(read(&world, &census).1, every(80));
+    assert_eq!(read(&world, &census).1, every(provinces));
 }
 
 /// A weather hour's guarded read at the vanilla census (13,414 provinces,

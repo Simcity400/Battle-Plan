@@ -110,3 +110,5 @@ choice, and the catalogue's languages and texture settings), so a reply is
 never answered under another presentation. The
 army products in [dashboard-army](../dashboard-army/README.md) use it too, along
 with the division log's template artwork and division name groups.
+
+Active observer numeric lanes a/b are daily slot-12 samples, including first-appearance values; occurrence membership, identities and c/d/e remain hourly (owner decision 2026-10-21). The combat-log view displays these held operands without a same-hour freshness gate. Retained and terminal history remain unsampled.

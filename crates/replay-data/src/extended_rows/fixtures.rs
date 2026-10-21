@@ -2407,7 +2407,19 @@ impl Fixture for LandCombatDivisionRow {
     }
 }
 fixture!(LandCombatModifierRow, |key| { combat: (key >> 1) as u64, side: (key & 1) as u8 }, { border_values: Option<[i64;3]>, divisions: Retired });
-fixture!(LandCombatDivisionModifierRow, |key| { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32 }, { division: u64, entries: Vec<CombatModifierValue> });
+impl Fixture for LandCombatDivisionModifierRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let mut row = Self {
+            combat: (key >> 33) as u64,
+            side: ((key >> 32) & 1) as u8,
+            ordinal: key as u32,
+            division: u64::sample(tick),
+            entries: Vec::<CombatModifierValue>::sample(tick),
+        };
+        RowCodec::round_to_display(&mut row);
+        row
+    }
+}
 impl Fixture for LandCombatSideRow {
     fn fixture(key: u128, tick: usize) -> Self {
         // Secondary sets hold distinct positive tags only.
@@ -5964,10 +5976,17 @@ fn land_division_numbers_are_a_field_each_and_older_packets_still_answer() {
     );
     assert_eq!(exact.scales(), Some([99_000, 101_230, 100_001, 100_000]));
 
-    // Format 101 held each as one packet; the historical writer stands in
-    // for its layout, and the packets still answer.
+    // Format 101 held each as one packet. Its table is now refused after the
+    // private-alias layout change; the standalone retained packets still answer.
     let previous = crate::format::FormatVersion::read(LAND_DIVISION_NUMBERS_FORMAT - 1).unwrap();
-    assert!(previous.table_refusal(table).is_none());
+    assert_eq!(
+        previous.table_refusal(table).unwrap(),
+        format!(
+            "{table:?} layout or meaning changed at format {}; this recording is format {}",
+            crate::rows::compatibility::PRIVATE_COPY_ALIASES_FORMAT,
+            previous.version()
+        )
+    );
     assert_eq!(previous.fields(table), 30);
     let older = LandCombatDivisionRow {
         combat: 9,
@@ -7826,7 +7845,19 @@ fn experience_suffixes_keep_retired_bearing_prefixes_readable() {
         use crate::{codec::Decoder, format::FormatVersion};
         for version in [91, 97, 99, 102, 103] {
             let format = FormatVersion::read(version).unwrap();
-            assert!(format.table_refusal(table).is_none());
+            // Daily display samples refuse the old table meaning, independently
+            // of its unchanged prefix codec and historical NotRecorded suffixes.
+            if table == TableId::DivisionStatus {
+                assert_eq!(
+                    format.table_refusal(table).unwrap(),
+                    format!(
+                        "{table:?} layout or meaning changed at format {}; this recording is format {version}",
+                        crate::rows::compatibility::DAILY_PROGRESS_FORMAT
+                    )
+                );
+            } else {
+                assert!(format.table_refusal(table).is_none());
+            }
             let fields = format.fields(table);
             let mut encoded = Vec::new();
             row.encode_fields(&mut encoded).unwrap();

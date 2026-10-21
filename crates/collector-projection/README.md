@@ -20,3 +20,8 @@ stay shared; empty changes reuse the baseline Arc. Missing/partial baselines,
 branch changes and hour gaps still refuse carry. Ordinary hours remain sparse.
 
 Within one unpublished batch, replacements reuse exclusively owned tree paths. Shared paths still copy before editing, so published snapshots, changed ranges and cached byte totals retain their immutable contract. Inserts and deletions retain their existing balancing.
+
+`RowOrder` retains a key-only permutation for changed owned snapshots,
+validates it against every
+current source, and converts in replay order without sorting row payloads.
+It does not certify values, preserve stale membership or reorder native storage.

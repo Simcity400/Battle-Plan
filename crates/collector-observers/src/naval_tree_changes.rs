@@ -194,6 +194,17 @@ pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
     WATCHES.sequence(receiver)
 }
 
+/// Register before acquisition, using a retained slot only when it still names the receiver.
+pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
+    let (_, slot) = WATCHES.observed_sequence_at(receiver, slot)?;
+    WATCHES.sequence_at(receiver, slot)
+}
+
+/// Provisional range lookup; the ordered consumer still registers the receiver.
+pub fn observed_sequence(receiver: usize) -> Option<(u64, u64)> {
+    WATCHES.observed_sequence(receiver)
+}
+
 /// One counter walk's certified censuses (a roster country's or fleet
 /// leader's modifier tree in the fresh ETA graph): `served` from a held
 /// capture, `verified` compared with a fresh read, `mismatches` of them

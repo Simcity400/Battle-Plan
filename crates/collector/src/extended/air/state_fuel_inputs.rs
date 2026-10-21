@@ -1,7 +1,7 @@
 //! State base scalar observations and metadata-only pool projections.
 //! Membership follows the existing registration segment; fuel words never
-//! come from its deliberately zeroed carried spans. Only native writer marks
-//! authorize another scalar read after the initial frozen observation.
+//! come from its deliberately zeroed carried spans. Every hourly acquisition
+//! reads both current fuel words on the existing AirBases worker.
 use super::{AirBasesJob, bases::HeldSegment};
 use crate::raw::RawLog;
 use engine_native::{
@@ -47,9 +47,6 @@ struct Container {
     country: u32,
     slot: u32,
     pools: Result<Vec<CarrierPool>, &'static str>,
-    certificate: Option<(u64, u64)>,
-    observed: bool,
-    fuel: ContainerFuel,
 }
 #[derive(Debug)]
 struct Base {
@@ -62,6 +59,7 @@ pub(crate) struct Store {
     resolved: Vec<cair_base::ResolvedLink>,
     visited: HashSet<u64>,
     index: Vec<SnapshotSpan>,
+    index_scratch: Vec<SnapshotSpan>,
 }
 impl Store {
     pub(crate) fn clear(&mut self) {
@@ -72,6 +70,7 @@ impl Store {
             + self.resolved.capacity() * std::mem::size_of::<cair_base::ResolvedLink>()
             + self.visited.capacity() * std::mem::size_of::<u64>()
             + self.index.capacity() * std::mem::size_of::<SnapshotSpan>()
+            + self.index_scratch.capacity() * std::mem::size_of::<SnapshotSpan>()
             + self
                 .bases
                 .values()
@@ -108,7 +107,7 @@ impl Store {
                 .is_none_or(|base| base.segment != segment.id)
         });
         if changed {
-            prepare_snapshot(log, &mut self.index)?;
+            prepare_snapshot(log, &mut self.index, &mut self.index_scratch)?;
         }
         let recorded = SnapshotMemory {
             log,
@@ -132,7 +131,6 @@ impl Store {
         self.visited.clear();
         engine_allocation::reserve_set(&mut self.visited, segments.len())
             .map_err(|_| "state air-base metadata storage unavailable")?;
-        let mut count = 0;
         for segment in segments {
             self.visited.insert(segment.handle);
             let changed = self
@@ -171,12 +169,7 @@ impl Store {
             engine_allocation::reserve(&mut output.rows, containers.len())
                 .map_err(|_| "state air-base input row storage unavailable")?;
             for row in containers {
-                count += 1;
-                let certificate = crate::air_base_carry_changes::fuel::sequence(row.pointer);
-                let pointer = row.pointer;
-                update_fuel(live, row, certificate, || {
-                    crate::air_base_carry_changes::fuel::sequence(pointer)
-                });
+                let fuel = update_fuel(live, row.pointer);
                 let start = output.pools.len();
                 let pools = match &row.pools {
                     Ok(pools) => {
@@ -191,70 +184,59 @@ impl Store {
                     base: segment.handle,
                     country: row.country,
                     slot: row.slot,
-                    fuel: row.fuel,
+                    fuel,
                     pools,
                 });
             }
         }
         self.bases.retain(|handle, _| self.visited.contains(handle));
-        crate::air_base_carry_changes::fuel::record_demand(count);
         Ok(())
     }
 }
 
-/// A complete receiver certificate brackets every scalar observation. Missing
-/// certificates never become polling; an overlapping writer refuses the pair
-/// and discards the previous token instead of certifying mixed scalar words.
-fn update_fuel(
-    memory: &impl Memory,
-    row: &mut Container,
-    certificate: Option<(u64, u64)>,
-    after: impl FnOnce() -> Option<(u64, u64)>,
-) {
-    let Some(certificate) = certificate else {
-        refuse_fuel(row, "state air-base fuel writer certificate unavailable");
-        return;
-    };
-    let should_read = !row.observed || row.certificate != Some(certificate);
-    let fuel = if should_read {
+/// The AirBaseRegistrations cadence audit puts FUEL_DEMAND_RAW in the hourly
+/// strategic-air worker stage; air_base_mutations documents its task-group join.
+/// engine_fuel::fuel_awards places FUEL_ALLOCATED_RAW in the serial pre-boundary
+/// country pass. Both phases are quiescent while the hourly callback is parked;
+/// these sources do not establish an exhaustive demand-updater caller set.
+/// A failed value never withholds its readable sibling.
+fn update_fuel(memory: &impl Memory, pointer: usize) -> ContainerFuel {
+    let addresses = [container::FUEL_DEMAND_RAW, container::FUEL_ALLOCATED_RAW].map(|offset| {
+        pointer
+            .checked_add(offset)
+            .filter(|at| at.checked_add(8).is_some())
+    });
+    let fuel = if let [Some(demand), Some(allocated)] = addresses {
+        let mut words = [[0; 8]; 2];
+        let completed = memory.copy_scattered(
+            [demand, allocated],
+            &mut words.each_mut().map(|word| word.as_mut_slice()),
+        );
         ContainerFuel {
-            demand: scalar(memory, row.pointer, container::FUEL_DEMAND_RAW),
-            allocated: scalar(memory, row.pointer, container::FUEL_ALLOCATED_RAW),
+            demand: if completed != 0 {
+                Ok(i64::from_le_bytes(words[0]))
+            } else {
+                Err("state air-base fuel scalar unreadable")
+            },
+            allocated: match completed {
+                // Demand failure must not suppress the independent allocation read.
+                0 => scalar(memory, pointer, container::FUEL_ALLOCATED_RAW),
+                1 => Err("state air-base fuel scalar unreadable"),
+                _ => Ok(i64::from_le_bytes(words[1])),
+            },
         }
     } else {
-        row.fuel
-    };
-    let after = after();
-    if after != Some(certificate) {
-        refuse_fuel(
-            row,
-            "state air-base fuel writer changed during scalar observation",
-        );
-        // A completed intervening writer certifies this refusal, rather than
-        // retrying the same quiet receiver until a read happens to succeed.
-        // An in-flight/unavailable observer has no token to retain.
-        row.certificate = after;
-        return;
-    }
-    if should_read {
-        for value in [fuel.demand, fuel.allocated] {
-            if let Err(reason) = value {
-                refused(reason);
-            }
+        ContainerFuel {
+            demand: scalar(memory, pointer, container::FUEL_DEMAND_RAW),
+            allocated: scalar(memory, pointer, container::FUEL_ALLOCATED_RAW),
         }
-        row.fuel = fuel;
-        row.observed = true;
-        row.certificate = Some(certificate);
-    }
-}
-fn refuse_fuel(row: &mut Container, reason: &'static str) {
-    refused(reason);
-    row.fuel = ContainerFuel {
-        demand: Err(reason),
-        allocated: Err(reason),
     };
-    row.certificate = None;
-    row.observed = true;
+    for value in [fuel.demand, fuel.allocated] {
+        if let Err(reason) = value {
+            refused(reason);
+        }
+    }
+    fuel
 }
 
 fn scalar(memory: &impl Memory, pointer: usize, offset: usize) -> Result<i64, &'static str> {
@@ -275,7 +257,11 @@ struct SnapshotSpan {
     index: usize,
     maximum_end: usize,
 }
-fn prepare_snapshot(log: &RawLog<3>, index: &mut Vec<SnapshotSpan>) -> Result<(), &'static str> {
+fn prepare_snapshot(
+    log: &RawLog<3>,
+    index: &mut Vec<SnapshotSpan>,
+    scratch: &mut Vec<SnapshotSpan>,
+) -> Result<(), &'static str> {
     // Ordinals and covering geometry alone define this index. New values,
     // including failures, are always read from the current owned log.
     if index.len() == log.spans.iter().filter(|span| span.len != 0).count()
@@ -310,13 +296,57 @@ fn prepare_snapshot(log: &RawLog<3>, index: &mut Vec<SnapshotSpan>) -> Result<()
             maximum_end: 0,
         });
     }
-    index.sort_unstable_by_key(|span| (span.start, span.index));
+    sort_snapshot(index, scratch);
     let mut maximum = 0;
     for span in index {
         maximum = maximum.max(span.end);
         span.maximum_end = maximum;
     }
     Ok(())
+}
+fn sort_snapshot(index: &mut Vec<SnapshotSpan>, scratch: &mut Vec<SnapshotSpan>) {
+    let Some(&first) = index.first() else {
+        return;
+    };
+    let varying = index
+        .iter()
+        .fold(0, |bits, span| bits | (span.start ^ first.start));
+    if varying == 0 {
+        return;
+    }
+    if scratch.capacity() < index.len()
+        && engine_allocation::advisory(|| {
+            engine_allocation::reserve(scratch, index.len().saturating_sub(scratch.len()))
+        })
+        .is_err()
+    {
+        index.sort_unstable_by_key(|span| (span.start, span.index));
+        return;
+    }
+    scratch.resize(index.len(), first);
+    // Input ordinals are increasing. Stable address-byte passes retain their
+    // order for equal starts, including the last covering failed observation.
+    for shift in (0..usize::BITS).step_by(8) {
+        if (varying >> shift) & 255 == 0 {
+            continue;
+        }
+        let mut positions = [0usize; 256];
+        for span in index.iter() {
+            positions[(span.start >> shift) & 255] += 1;
+        }
+        let mut next = 0;
+        for position in &mut positions {
+            let count = *position;
+            *position = next;
+            next += count;
+        }
+        for &span in index.iter() {
+            let position = &mut positions[(span.start >> shift) & 255];
+            scratch[*position] = span;
+            *position += 1;
+        }
+        std::mem::swap(index, scratch);
+    }
 }
 struct SnapshotMemory<'a> {
     log: &'a RawLog<3>,
@@ -456,12 +486,6 @@ fn read_membership<M: Memory>(
             country,
             slot,
             pools,
-            certificate: None,
-            observed: false,
-            fuel: ContainerFuel {
-                demand: Err("state air-base fuel not observed"),
-                allocated: Err("state air-base fuel not observed"),
-            },
         });
     }
     result.sort_unstable_by_key(|row| row.slot);
@@ -563,18 +587,31 @@ impl<M: Memory> Memory for Counted<'_, M> {
         }
         ok
     }
+
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        let completed = self.memory.copy_scattered(addresses, destinations);
+        self.bytes.set(
+            destinations[..completed]
+                .iter()
+                .fold(self.bytes.get(), |bytes, destination| {
+                    bytes.saturating_add(destination.len() as u64)
+                }),
+        );
+        completed
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::Cell;
-    fn update_fuel(memory: &impl Memory, row: &mut Container, certificate: Option<(u64, u64)>) {
-        super::update_fuel(memory, row, certificate, || certificate);
-    }
     struct ScalarMemory {
-        demand: Cell<i64>,
-        allocation: Cell<i64>,
+        demand: Cell<Option<i64>>,
+        allocation: Cell<Option<i64>>,
         reads: Cell<usize>,
     }
     impl Memory for ScalarMemory {
@@ -583,8 +620,9 @@ mod tests {
             let value = match at {
                 container::FUEL_DEMAND_RAW => self.demand.get(),
                 container::FUEL_ALLOCATED_RAW => self.allocation.get(),
-                _ => return false,
+                _ => None,
             };
+            let Some(value) = value else { return false };
             if bytes.len() != 8 {
                 return false;
             }
@@ -592,145 +630,216 @@ mod tests {
             true
         }
     }
-    fn row() -> Container {
-        Container {
-            pointer: 0,
-            country: 1,
-            slot: 1,
-            pools: Ok(vec![]),
-            certificate: None,
-            observed: false,
-            fuel: ContainerFuel {
-                demand: Err("unset"),
-                allocated: Err("unset"),
-            },
+
+    #[test]
+    fn fuel_batches_keep_independent_faults_exact_spans_and_successful_byte_accounting() {
+        use engine_native::read_counts::{CountedMemory, ReadCounts};
+        struct Batched {
+            words: ScalarMemory,
+            batches: Cell<usize>,
+            singles: Cell<usize>,
+            spans: std::cell::RefCell<Vec<(usize, usize)>>,
         }
-    }
-    #[test]
-    fn quiet_scalar_words_carry_and_only_writer_changes_reread() {
-        let memory = ScalarMemory {
-            demand: Cell::new(-21),
-            allocation: Cell::new(7),
-            reads: Cell::new(0),
-        };
-        let mut row = row();
-        update_fuel(&memory, &mut row, Some((1, 0)));
-        assert_eq!(row.fuel.demand, Ok(-21));
-        memory.demand.set(25);
-        memory.allocation.set(-11);
-        update_fuel(&memory, &mut row, Some((1, 0)));
-        assert_eq!(memory.reads.get(), 2);
-        assert_eq!(row.fuel.allocated, Ok(7));
-        update_fuel(&memory, &mut row, Some((1, 1)));
-        assert_eq!(memory.reads.get(), 4);
-        assert_eq!(row.fuel.demand, Ok(25));
-        assert_eq!(row.fuel.allocated, Ok(-11));
-    }
-    #[test]
-    fn missing_certificate_never_becomes_hourly_polling_or_zero_fuel() {
-        let memory = ScalarMemory {
-            demand: Cell::new(33),
-            allocation: Cell::new(2),
-            reads: Cell::new(0),
-        };
-        let mut row = row();
-        update_fuel(&memory, &mut row, None);
-        assert!(row.fuel.demand.is_err());
-        update_fuel(&memory, &mut row, None);
-        assert_eq!(memory.reads.get(), 0);
-        update_fuel(&memory, &mut row, Some((2, 0)));
-        assert_eq!(row.fuel.demand, Ok(33));
-        assert_eq!(memory.reads.get(), 2);
-        update_fuel(&memory, &mut row, None);
-        assert!(row.fuel.allocated.is_err());
-        assert_eq!(row.certificate, None);
-        assert_eq!(memory.reads.get(), 2);
-    }
-    #[test]
-    fn a_writer_between_scalar_words_refuses_both_and_never_retries_a_quiet_token() {
-        struct Racing {
-            token: Cell<Option<(u64, u64)>>,
-            reads: Cell<usize>,
-        }
-        impl Memory for Racing {
-            fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
-                self.reads.set(self.reads.get() + 1);
-                let value: i64 = match at {
-                    container::FUEL_DEMAND_RAW => {
-                        self.token.set(Some((1, 2)));
-                        10
+        impl Memory for Batched {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                self.singles.set(self.singles.get() + 1);
+                self.spans.borrow_mut().push((at, output.len()));
+                self.words.copy(at, output)
+            }
+            fn copy_scattered<const N: usize>(
+                &self,
+                addresses: [usize; N],
+                destinations: &mut [&mut [u8]; N],
+            ) -> usize {
+                self.batches.set(self.batches.get() + 1);
+                for (n, (&at, output)) in addresses.iter().zip(destinations).enumerate() {
+                    self.spans.borrow_mut().push((at, output.len()));
+                    if !self.words.copy(at, output) {
+                        return n;
                     }
-                    container::FUEL_ALLOCATED_RAW => 20,
-                    _ => return false,
-                };
-                bytes.copy_from_slice(&value.to_le_bytes());
-                true
+                }
+                N
             }
         }
-        let memory = Racing {
-            token: Cell::new(Some((1, 1))),
-            reads: Cell::new(0),
-        };
-        let mut row = row();
-        row.observed = true;
-        row.certificate = Some((1, 0));
-        row.fuel = ContainerFuel {
-            demand: Ok(1),
-            allocated: Ok(2),
-        };
-        super::update_fuel(&memory, &mut row, Some((1, 1)), || memory.token.get());
-        assert!(row.fuel.demand.is_err() && row.fuel.allocated.is_err());
-        assert_eq!(row.certificate, Some((1, 2)));
-        assert_eq!(memory.reads.get(), 2);
-        super::update_fuel(&memory, &mut row, Some((1, 2)), || Some((1, 2)));
-        assert!(row.fuel.demand.is_err() && row.fuel.allocated.is_err());
-        assert_eq!(memory.reads.get(), 2);
-        let settled = ScalarMemory {
-            demand: Cell::new(30),
-            allocation: Cell::new(40),
-            reads: Cell::new(0),
-        };
-        super::update_fuel(&settled, &mut row, Some((1, 3)), || Some((1, 3)));
-        assert_eq!(row.fuel.demand, Ok(30));
-        assert_eq!(row.fuel.allocated, Ok(40));
-        assert_eq!(settled.reads.get(), 2);
-        // A now-active writer cannot trigger uncertified fallback reads.
-        memory.token.set(None);
-        super::update_fuel(&memory, &mut row, None, || memory.token.get());
-        assert_eq!(memory.reads.get(), 2);
-    }
-    #[test]
-    fn a_carried_pair_is_refused_if_its_writer_starts_during_the_observation() {
-        let memory = ScalarMemory {
-            demand: Cell::new(33),
-            allocation: Cell::new(2),
-            reads: Cell::new(0),
-        };
-        let mut row = row();
-        update_fuel(&memory, &mut row, Some((1, 0)));
-        super::update_fuel(&memory, &mut row, Some((1, 0)), || None);
-        assert!(row.fuel.demand.is_err() && row.fuel.allocated.is_err());
-        assert_eq!(row.certificate, None);
-        assert_eq!(memory.reads.get(), 2);
+        for (demand, allocation) in [
+            (Some(-21), Some(7)),
+            (Some(-21), None),
+            (None, Some(7)),
+            (None, None),
+        ] {
+            ReadCounts::take_current();
+            let raw = CountedMemory::new(Batched {
+                words: ScalarMemory {
+                    demand: Cell::new(demand),
+                    allocation: Cell::new(allocation),
+                    reads: Cell::new(0),
+                },
+                batches: Cell::new(0),
+                singles: Cell::new(0),
+                spans: Default::default(),
+            });
+            let memory = Counted {
+                memory: &raw,
+                bytes: Cell::new(0),
+            };
+            let fuel = update_fuel(&memory, 0);
+            assert_eq!(
+                fuel.demand,
+                demand.ok_or("state air-base fuel scalar unreadable")
+            );
+            assert_eq!(
+                fuel.allocated,
+                allocation.ok_or("state air-base fuel scalar unreadable")
+            );
+            assert_eq!(raw.0.batches.get(), 1);
+            assert_eq!(raw.0.singles.get(), usize::from(demand.is_none()));
+            assert_eq!(
+                *raw.0.spans.borrow(),
+                [
+                    (container::FUEL_DEMAND_RAW, 8),
+                    (container::FUEL_ALLOCATED_RAW, 8),
+                ]
+            );
+            assert_eq!(
+                memory.bytes.get(),
+                8 * (u64::from(demand.is_some()) + u64::from(allocation.is_some()))
+            );
+            let counts = ReadCounts::take_current();
+            assert_eq!((counts.spans, counts.bytes), (2, 16));
+            assert_eq!(counts.scattered_calls, 1);
+            assert_eq!(counts.copy_calls, u64::from(demand.is_none()));
+        }
     }
 
     #[test]
-    fn scalar_read_faults_are_carried_under_the_unchanged_complete_certificate() {
+    fn both_scalar_words_are_read_fresh_every_hour_without_writer_certificates() {
         let memory = ScalarMemory {
-            demand: Cell::new(33),
-            allocation: Cell::new(2),
+            demand: Cell::new(Some(-21)),
+            allocation: Cell::new(Some(7)),
             reads: Cell::new(0),
         };
-        let mut row = row();
-        row.pointer = 1;
-        update_fuel(&memory, &mut row, Some((1, 0)));
-        assert!(row.fuel.demand.is_err() && row.fuel.allocated.is_err());
-        assert_eq!(row.certificate, Some((1, 0)));
-        assert_eq!(memory.reads.get(), 2);
-        update_fuel(&memory, &mut row, Some((1, 0)));
-        assert_eq!(memory.reads.get(), 2);
-        update_fuel(&memory, &mut row, Some((1, 1)));
+        let first = update_fuel(&memory, 0);
+        assert_eq!(first.demand, Ok(-21));
+        assert_eq!(first.allocated, Ok(7));
+        memory.demand.set(Some(25));
+        memory.allocation.set(Some(-11));
+        let next = update_fuel(&memory, 0);
+        assert_eq!(next.demand, Ok(25));
+        assert_eq!(next.allocated, Ok(-11));
         assert_eq!(memory.reads.get(), 4);
+        let quiet = update_fuel(&memory, 0);
+        assert_eq!(quiet.demand, next.demand);
+        assert_eq!(quiet.allocated, next.allocated);
+        assert_eq!(memory.reads.get(), 6);
+    }
+
+    #[test]
+    fn scalar_read_faults_refuse_only_the_failed_value_and_read_again_next_hour() {
+        let memory = ScalarMemory {
+            demand: Cell::new(None),
+            allocation: Cell::new(Some(7)),
+            reads: Cell::new(0),
+        };
+        let first = update_fuel(&memory, 0);
+        assert_eq!(first.demand, Err("state air-base fuel scalar unreadable"));
+        assert_eq!(first.allocated, Ok(7));
+        memory.demand.set(Some(i64::MIN));
+        memory.allocation.set(None);
+        let next = update_fuel(&memory, 0);
+        assert_eq!(next.demand, Ok(i64::MIN));
+        assert_eq!(next.allocated, Err("state air-base fuel scalar unreadable"));
+        memory.allocation.set(Some(i64::MAX));
+        let recovered = update_fuel(&memory, 0);
+        assert_eq!(recovered.demand, Ok(i64::MIN));
+        assert_eq!(recovered.allocated, Ok(i64::MAX));
+        assert_eq!(memory.reads.get(), 6);
+        let counts = REFUSALS.lock().unwrap();
+        assert_eq!(
+            counts.get("state air-base fuel scalar unreadable"),
+            Some(&2)
+        );
+    }
+
+    #[test]
+    fn overflowing_scalar_addresses_refuse_without_wrapping() {
+        let memory = ScalarMemory {
+            demand: Cell::new(Some(1)),
+            allocation: Cell::new(Some(2)),
+            reads: Cell::new(0),
+        };
+        let fuel = update_fuel(&memory, usize::MAX);
+        assert_eq!(fuel.demand, Err("state air-base fuel scalar unreadable"));
+        assert_eq!(fuel.allocated, Err("state air-base fuel scalar unreadable"));
+        assert_eq!(memory.reads.get(), 0);
+    }
+
+    #[test]
+    fn unchanged_registration_segments_refresh_every_containers_fuel_only() {
+        let mut store = Store::default();
+        let segment = HeldSegment {
+            handle: 7,
+            pointer: 0x1000,
+            id: 1,
+        };
+        let pools = vec![CarrierPool {
+            type_index: -4,
+            subunit_index: 8,
+            ..Default::default()
+        }];
+        store.bases.insert(
+            segment.handle,
+            Base {
+                segment: segment.id,
+                containers: Ok(vec![
+                    Container {
+                        pointer: 0,
+                        country: 1,
+                        slot: 1,
+                        pools: Ok(pools),
+                    },
+                    Container {
+                        pointer: 1,
+                        country: 2,
+                        slot: 2,
+                        pools: Err("state air-base metadata field unreadable"),
+                    },
+                ]),
+            },
+        );
+        let memory = ScalarMemory {
+            demand: Cell::new(Some(-21)),
+            allocation: Cell::new(Some(7)),
+            reads: Cell::new(0),
+        };
+        let log = RawLog::<3>::new(0, 0);
+        let mut packet = Packet::default();
+        for (hour, demand, allocation) in [(1, -21, 7), (2, 33, -11), (3, 33, -11)] {
+            memory.demand.set(Some(demand));
+            memory.allocation.set(Some(allocation));
+            store
+                .capture(&memory, 0, 0, &log, &[segment], &mut packet)
+                .unwrap();
+            assert_eq!(packet.rows.len(), 2);
+            assert_eq!(packet.rows[0].fuel.demand, Ok(demand));
+            assert_eq!(packet.rows[0].fuel.allocated, Ok(allocation));
+            assert_eq!(
+                packet.rows[1].fuel.demand,
+                Err("state air-base fuel scalar unreadable")
+            );
+            assert_eq!(
+                packet.rows[1].fuel.allocated,
+                Err("state air-base fuel scalar unreadable")
+            );
+            assert_eq!(packet.rows[0].pools, Ok((0, 1)));
+            assert_eq!(
+                packet.rows[1].pools,
+                Err("state air-base metadata field unreadable")
+            );
+            assert_eq!(packet.pools.len(), 1);
+            assert_eq!(packet.pools[0].type_index, -4);
+            assert_eq!(packet.pools[0].subunit_index, 8);
+            assert_eq!(memory.reads.get(), hour * 4);
+        }
     }
 
     #[test]
@@ -742,7 +851,8 @@ mod tests {
         let mut log = RawLog::<3>::new(3, 32);
         assert!(log.take(&source, 0x1000, 16, 0).is_some());
         let mut index = Vec::new();
-        prepare_snapshot(&log, &mut index).unwrap();
+        let mut scratch = Vec::new();
+        prepare_snapshot(&log, &mut index, &mut scratch).unwrap();
         let snapshot = SnapshotMemory {
             log: &log,
             index: &index,
@@ -759,14 +869,14 @@ mod tests {
             ok: false,
             bulk: false,
         });
-        prepare_snapshot(&log, &mut index).unwrap();
+        prepare_snapshot(&log, &mut index, &mut scratch).unwrap();
         let snapshot = SnapshotMemory {
             log: &log,
             index: &index,
         };
         let live = ScalarMemory {
-            demand: Cell::new(1),
-            allocation: Cell::new(2),
+            demand: Cell::new(Some(1)),
+            allocation: Cell::new(Some(2)),
             reads: Cell::new(0),
         };
         let metadata = MetadataMemory {
@@ -781,6 +891,7 @@ mod tests {
     fn snapshot_geometry_carries_but_current_values_and_failures_do_not() {
         let mut log = RawLog::<3>::new(3, 32);
         let mut index = Vec::new();
+        let mut scratch = Vec::new();
         let read_at = |log: &RawLog<3>, index: &[SnapshotSpan], at| {
             read::<u64>(&SnapshotMemory { log, index }, at)
         };
@@ -789,7 +900,7 @@ mod tests {
             bytes: &[7; 16],
         };
         assert!(log.take(&first, 0x1000, 16, 0).is_some());
-        prepare_snapshot(&log, &mut index).unwrap();
+        prepare_snapshot(&log, &mut index, &mut scratch).unwrap();
         assert_eq!(
             read_at(&log, &index, 0x1008),
             Some(u64::from_le_bytes([7; 8]))
@@ -800,22 +911,107 @@ mod tests {
             bytes: &[9; 16],
         };
         assert!(log.take(&second, 0x1000, 16, 0).is_some());
-        prepare_snapshot(&log, &mut index).unwrap();
+        prepare_snapshot(&log, &mut index, &mut scratch).unwrap();
         assert_eq!(
             read_at(&log, &index, 0x1008),
             Some(u64::from_le_bytes([9; 8]))
         );
         log.spans[0].ok = false;
-        prepare_snapshot(&log, &mut index).unwrap();
+        prepare_snapshot(&log, &mut index, &mut scratch).unwrap();
         assert_eq!(read_at(&log, &index, 0x1008), None);
         log.clear();
         assert!(log.take(&second, 0x1000, 8, 0).is_some());
-        prepare_snapshot(&log, &mut index).unwrap();
+        prepare_snapshot(&log, &mut index, &mut scratch).unwrap();
         assert_eq!(
             read_at(&log, &index, 0x1000),
             Some(u64::from_le_bytes([9; 8]))
         );
         assert_eq!(read_at(&log, &index, 0x1008), None);
+    }
+
+    #[test]
+    fn snapshot_address_passes_preserve_ordinal_order_and_last_covering_failures() {
+        let mut log = RawLog::<3>::new(2048, 16);
+        log.bytes.extend_from_slice(&[7; 16]);
+        let mut random = 17usize;
+        for ordinal in 0..1024 {
+            random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+            log.spans.push(crate::raw::Span {
+                addr: (random & (usize::MAX >> 1)) & !255,
+                len: 16,
+                start: 0,
+                mask: 0,
+                ok: ordinal % 3 != 0,
+                bulk: false,
+            });
+        }
+        for (address, ok) in [(0x1000, true), (0x1008, true), (0x1000, false)] {
+            log.spans.push(crate::raw::Span {
+                addr: address,
+                len: 16,
+                start: 0,
+                mask: 0,
+                ok,
+                bulk: false,
+            });
+        }
+        let mut expected: Vec<_> = log
+            .spans
+            .iter()
+            .enumerate()
+            .map(|(ordinal, span)| (span.addr, ordinal))
+            .collect();
+        expected.sort_unstable();
+        let mut index = Vec::new();
+        let mut scratch = Vec::new();
+        prepare_snapshot(&log, &mut index, &mut scratch).unwrap();
+        assert_eq!(
+            index
+                .iter()
+                .map(|span| (span.start, span.index))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let mut maximum = 0;
+        for span in &index {
+            maximum = maximum.max(span.end);
+            assert_eq!(span.maximum_end, maximum);
+        }
+        let snapshot = SnapshotMemory {
+            log: &log,
+            index: &index,
+        };
+        assert_eq!(snapshot.covering(0x1008, 8), Some(log.spans.len() - 1));
+        assert_eq!(read::<u64>(&snapshot, 0x1008), None);
+        assert_eq!(
+            read::<u64>(&snapshot, 0x1010),
+            Some(u64::from_le_bytes([7; 8]))
+        );
+        let capacities = (index.capacity(), scratch.capacity());
+        index.clear();
+        prepare_snapshot(&log, &mut index, &mut scratch).unwrap();
+        assert_eq!((index.capacity(), scratch.capacity()), capacities);
+        assert_eq!(
+            index
+                .iter()
+                .map(|span| (span.start, span.index))
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let mut no_scratch = Vec::new();
+        index.clear();
+        crate::test_support::with_allocations_denied(|| {
+            prepare_snapshot(&log, &mut index, &mut no_scratch)
+        })
+        .unwrap();
+        assert!(no_scratch.is_empty());
+        assert_eq!(
+            index
+                .iter()
+                .map(|span| (span.start, span.index))
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 
     #[test]
@@ -835,13 +1031,14 @@ mod tests {
             bulk: false,
         });
         let mut index = Vec::new();
+        let mut scratch = Vec::new();
         assert_eq!(
-            prepare_snapshot(&log, &mut index),
+            prepare_snapshot(&log, &mut index, &mut scratch),
             Err("state air-base snapshot address overflow")
         );
         assert!(index.is_empty());
         log.spans.pop();
-        prepare_snapshot(&log, &mut index).unwrap();
+        prepare_snapshot(&log, &mut index, &mut scratch).unwrap();
         let snapshot = SnapshotMemory {
             log: &log,
             index: &index,

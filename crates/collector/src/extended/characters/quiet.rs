@@ -450,7 +450,9 @@ fn quiet_pass(
                 .certify(census.generation, census.len(), || leaders(census))
         });
     let key = census.map(|census| program_key(ctx, source_mask, census));
-    let planned = !carrying && key.is_some_and(|key| job.log.begin_planned_capture(memory, key));
+    let planned = (!ctx.active[3] || ctx.active[5])
+        && !carrying
+        && key.is_some_and(|key| job.log.begin_planned_capture(memory, key));
     if !planned {
         // A completed program read exactly what its pass read, so that
         // pass's unit text demand holds; otherwise the pass counts it again.
@@ -540,6 +542,11 @@ fn copy_units(
         let (rows, bytes) = job.carry.census_demand(census);
         job.character_demand.add(rows, bytes);
         if carrying {
+            for (_, pointer, character) in leaders(census) {
+                if job.unit_carry.carries(pointer) {
+                    job.experience.touch(pointer, character);
+                }
+            }
             // And the carried leaders' held rows.
             let (rows, bytes) = job.unit_carry.carried_demand();
             job.unit_demand.add(rows, bytes);
@@ -744,7 +751,15 @@ pub(super) fn fresh_leaders_unchanged<M: Memory>(
             continue;
         };
         let read = loop {
-            let read = read_unit(memory, base, pointer, character, &mut row, &mut bytes);
+            let read = read_unit_selected(
+                memory,
+                base,
+                pointer,
+                character,
+                &mut row,
+                &mut bytes,
+                job.active[5],
+            );
             match read.outcome {
                 Outcome::Rows { .. } | Outcome::Truncated { .. }
                     if read.required_bytes > bytes.len() =>

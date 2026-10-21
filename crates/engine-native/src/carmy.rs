@@ -1604,6 +1604,9 @@ pub struct RetreatBanRow {
 
 use crate::corders_group_member::{MembershipCapacity, MembershipPacket, MembershipQuery};
 
+mod status_parts;
+pub use status_parts::StatusPart;
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct StatusCapacities {
     pub units: usize,
@@ -1680,6 +1683,9 @@ struct StatusUnitInputs {
     camouflage: Option<Camouflage>,
     weather_factor: Option<i64>,
     exercise: Option<StatusExerciseOperands>,
+    /// Range-local decisions over its membership and exercise arenas.
+    has_order: Option<Result<bool, &'static str>>,
+    exercising: Option<Result<u8, &'static str>>,
     failure: Option<&'static str>,
     border_combat_stats: Option<[i64; 3]>,
 }
@@ -1711,6 +1717,10 @@ pub struct StatusPacket {
     capacities: StatusCapacities,
     required: StatusCapacities,
     units: Vec<StatusUnitInputs>,
+    /// Certified experience lent to the scalar/exercise ranges.
+    prepared_experience: Vec<Option<i64>>,
+    /// Empty selects every footer; otherwise this capture's per-unit demand.
+    supply_requested: Vec<bool>,
     organisation_memo: organisation_movement::OrganisationMemo,
     /// Each unit's supply footer, by unit index; the first `supply_len` are
     /// this hour's.
@@ -1725,7 +1735,7 @@ pub struct StatusPacket {
     /// Every maxima-index lookup ([`Self::maxima_slot`]), selection and
     /// admission alike.
     #[cfg(test)]
-    maxima_probes: std::cell::Cell<usize>,
+    maxima_probes: std::sync::atomic::AtomicUsize,
     /// Initialized once with packet storage, reused by every hourly pass.
     acclimatization: Option<Box<AcclimatizationBatch>>,
     countries: Vec<StatusCountryInputs>,
@@ -1740,8 +1750,9 @@ pub struct StatusPacket {
     /// Each division the latest [`Self::retreat_bans`] read, by id, with the index of
     /// its group in `commander_bans` (`usize::MAX` for an ungrouped division).
     commander_divisions: Vec<(u64, usize)>,
-    /// Per-walk modifier metadata for the ban keys.
-    commander_memo: crate::modifier_definition::DefinitionMemo,
+    /// Per-walk ban metadata. Only the exclusive bans pass uses it; the
+    /// mutex permits immutable status preparation to be shared with parts.
+    commander_memo: std::sync::Mutex<crate::modifier_definition::DefinitionMemo>,
     modifiers: crate::modifier_accumulator::SnapshotArena,
     membership: MembershipPacket,
     manpower: Vec<i32>,
@@ -1818,6 +1829,8 @@ impl StatusPacket {
             capacities,
             required: capacities,
             units: Vec::new(),
+            prepared_experience: Vec::new(),
+            supply_requested: Vec::new(),
             organisation_memo: organisation_movement::OrganisationMemo::vacant(),
             supply: Vec::new(),
             supply_len: 0,
@@ -1828,7 +1841,7 @@ impl StatusPacket {
             maxima: Vec::new(),
             maxima_index: Vec::new(),
             #[cfg(test)]
-            maxima_probes: std::cell::Cell::new(0),
+            maxima_probes: std::sync::atomic::AtomicUsize::new(0),
             acclimatization: None,
             countries: Vec::new(),
             country_index: Vec::new(),
@@ -1838,7 +1851,9 @@ impl StatusPacket {
             commander_bans: Vec::new(),
             commander_index: Vec::new(),
             commander_divisions: Vec::new(),
-            commander_memo: crate::modifier_definition::DefinitionMemo::default(),
+            commander_memo: std::sync::Mutex::new(
+                crate::modifier_definition::DefinitionMemo::default(),
+            ),
             modifiers: crate::modifier_accumulator::SnapshotArena::vacant(),
             membership: MembershipPacket::vacant(),
             manpower: Vec::new(),
@@ -1870,6 +1885,8 @@ impl StatusPacket {
             capacities,
             required: capacities,
             units: crate::allocation::vec(capacities.units)?,
+            prepared_experience: Vec::new(),
+            supply_requested: Vec::new(),
             organisation_memo: organisation_movement::OrganisationMemo::new(capacities.units)
                 .unwrap_or_else(|_| organisation_movement::OrganisationMemo::vacant()),
             supply: crate::allocation::filled(
@@ -1887,7 +1904,7 @@ impl StatusPacket {
             maxima: crate::allocation::vec(capacities.units)?,
             maxima_index: crate::allocation::filled(index_capacity, 0)?,
             #[cfg(test)]
-            maxima_probes: std::cell::Cell::new(0),
+            maxima_probes: std::sync::atomic::AtomicUsize::new(0),
             acclimatization: if capacities.units == 0 {
                 None
             } else {
@@ -1902,8 +1919,10 @@ impl StatusPacket {
             commander_index: crate::allocation::filled(index_capacity, 0)?,
             commander_divisions: crate::allocation::vec(capacities.units)?,
             // The two retreat-ban keys; a vacant packet stays allocation-free.
-            commander_memo: crate::modifier_definition::DefinitionMemo::with_capacity(
-                if capacities.units == 0 { 0 } else { 2 },
+            commander_memo: std::sync::Mutex::new(
+                crate::modifier_definition::DefinitionMemo::with_capacity(
+                    if capacities.units == 0 { 0 } else { 2 },
+                ),
             ),
             modifiers: crate::modifier_accumulator::SnapshotArena::try_new(capacities.modifiers)?,
             membership: MembershipPacket::try_with_capacity(
@@ -1939,6 +1958,7 @@ impl StatusPacket {
 
     pub fn clear(&mut self) {
         self.units.clear();
+        self.prepared_experience.clear();
         self.supply_len = 0;
         self.supply_origins_len = 0;
         self.border_index.clear();
@@ -1946,7 +1966,8 @@ impl StatusPacket {
         self.maxima.clear();
         self.maxima_index.fill(0);
         #[cfg(test)]
-        self.maxima_probes.set(0);
+        self.maxima_probes
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         self.countries.clear();
         self.country_index.fill(0);
         self.groups.clear();
@@ -1956,7 +1977,10 @@ impl StatusPacket {
         self.commander_index.fill(0);
         self.commander_divisions.clear();
         // Keep the memo's storage: a fresh memo would allocate on every walk.
-        self.commander_memo.clear();
+        self.commander_memo
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
         self.modifiers.clear();
         self.membership.clear();
         self.manpower.clear();
@@ -1994,6 +2018,33 @@ impl StatusPacket {
             .get(row.supply_origins_start..end)
     }
 
+    /// Caller-owned daily footer selection. This configuration survives packet
+    /// clearing, like growth mode; set it for every acquisition. Failure selects
+    /// all footers, leaving the optional carry unable to suppress a native read.
+    pub fn select_supply(&mut self, requested: &[bool]) -> Result<(), &'static str> {
+        self.supply_requested.clear();
+        crate::allocation::reserve(&mut self.supply_requested, requested.len())
+            .map_err(|_| "division supply selection allocation failed")?;
+        self.supply_requested.extend_from_slice(requested);
+        Ok(())
+    }
+    /// Inspect captured footer bytes only; skipped units have no native sample.
+    pub fn supply_at(&self, index: usize) -> (
+        Option<crate::cunit_supply_inputs::Inputs>,
+        Option<crate::cunit_supply_inputs::Failure>,
+        Option<&[crate::cunit_supply_inputs::Origin]>,
+    ) {
+        let unit = self.supply.get(index).copied().filter(|_| index < self.supply_len)
+            .unwrap_or_default();
+        let inputs = unit.inputs.ok();
+        let failure = unit.inputs.err().or_else(|| inputs.and_then(|v| v.origins_len.err()));
+        let origins = inputs.and_then(|v| v.origins_len.ok()).and_then(|len| {
+            self.supply_origins.get(..self.supply_origins_len)?
+                .get(unit.origins_start..unit.origins_start.checked_add(len)?)
+        });
+        (inputs, failure, origins)
+    }
+
     /// Rebuild only during buffer recycling. Retain private arena demand and
     /// membership storage grown during acquisition even when a source fails
     /// before row projection. `membership` is the shared pooled storage floor.
@@ -2027,7 +2078,9 @@ impl StatusPacket {
         next.membership.chunks = next.membership.chunks.max(membership.chunks);
         if next != self.capacities {
             let growing = self.growing;
-            *self = Self::with_capacities(next)?;
+            let mut packet = Self::with_capacities(next)?;
+            std::mem::swap(&mut packet.supply_requested, &mut self.supply_requested);
+            *self = packet;
             if growing {
                 self.enable_growth();
             }
@@ -2054,6 +2107,8 @@ impl StatusPacket {
     pub fn allocated_bytes(&self) -> usize {
         use std::mem::size_of;
         self.units.capacity() * size_of::<StatusUnitInputs>()
+            + self.prepared_experience.capacity() * size_of::<Option<i64>>()
+            + self.supply_requested.capacity() * size_of::<bool>()
             + self.organisation_memo.allocated_bytes()
             + self.supply.capacity() * size_of::<crate::cunit_supply_inputs::UnitCapture>()
             + self.supply_origins.capacity() * size_of::<crate::cunit_supply_inputs::Origin>()
@@ -2066,7 +2121,11 @@ impl StatusPacket {
             + self.commander_bans.capacity()
                 * size_of::<Result<Option<crate::carmy_leader::RetreatBans>, &'static str>>()
             + self.commander_divisions.capacity() * size_of::<(u64, usize)>()
-            + self.commander_memo.allocated_bytes()
+            + self
+                .commander_memo
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .allocated_bytes()
             + (self.maxima_index.capacity()
                 + self.country_index.capacity()
                 + self.group_index.capacity()
@@ -2087,7 +2146,8 @@ impl StatusPacket {
     /// The only lookup of the maxima index.
     fn maxima_slot(&self, pointer: usize, key: impl Fn(usize) -> usize) -> usize {
         #[cfg(test)]
-        self.maxima_probes.set(self.maxima_probes.get() + 1);
+        self.maxima_probes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         status_pointer_slot(&self.maxima_index, pointer, key)
     }
 
@@ -2343,7 +2403,9 @@ impl StatusPacket {
             base,
             &self.commander_groups[first..],
             &mut self.commander_bans[first..],
-            &self.commander_memo,
+            self.commander_memo
+                .get_mut()
+                .unwrap_or_else(|error| error.into_inner()),
             held,
         );
     }
@@ -2432,7 +2494,10 @@ impl StatusPacket {
             self.commander_bans.clear();
             self.commander_index.fill(0);
             self.commander_divisions.clear();
-            self.commander_memo.clear();
+            self.commander_memo
+                .get_mut()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
             self.prepare_commanders(
                 memory,
                 base,
@@ -2779,6 +2844,9 @@ impl StatusPacket {
             .units
             .get(index)
             .ok_or("division exercise index invalid")?;
+        if let Some(decision) = unit.exercising {
+            return decision;
+        }
         let Some(inputs) = unit.exercise else {
             return Ok(0);
         };
@@ -2908,6 +2976,40 @@ impl StatusPacket {
         held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
         experience: &[Option<i64>],
     ) -> Outcome {
+        let prepared = self.prepare_holding_inner(
+            memory,
+            base,
+            state,
+            seeds,
+            source_outcome,
+            row_capacity,
+            held,
+            false,
+        );
+        self.finish_holding(
+            memory,
+            base,
+            state,
+            seeds,
+            source_outcome,
+            experience,
+            prepared,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_holding_inner<'a, M: Memory>(
+        &mut self,
+        memory: &'a M,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+        source_outcome: Outcome,
+        row_capacity: usize,
+        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        defer_membership: bool,
+    ) -> Result<(usize, ccountry::Reader<'a, M>), &'static str> {
         self.clear();
         let prepared = (|| {
             if let Outcome::Unavailable { reason } = source_outcome {
@@ -3013,7 +3115,78 @@ impl StatusPacket {
         // Query outcomes are independent and retain their first failing root.
         // Finishing in source order preserves a prior unit's scalar/exercise
         // error ahead of a later unit's membership or preparation failure.
-        self.membership.acquire(memory, base);
+        if !defer_membership {
+            self.membership.acquire(memory, base);
+        }
+        prepared
+    }
+
+    /// Ordered shared maxima/country admission only. Independent membership,
+    /// scalar and exercise acquisition belongs to each final-status range.
+    /// Maxima stay ordered because aliases must retain the first seed's held
+    /// observation, even when a later alias offers contradictory operands.
+    pub fn prepare_holding(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+        source_outcome: Outcome,
+        held: &[Option<crate::csub_unit_definition::DivisionMaxima>],
+        experience: &[Option<i64>],
+    ) -> Outcome {
+        let prepared = self.prepare_holding_inner(
+            memory,
+            base,
+            state,
+            seeds,
+            source_outcome,
+            seeds.len(),
+            held,
+            true,
+        );
+        self.outcome = match prepared {
+            Ok((count, _)) => {
+                if crate::allocation::reserve(&mut self.prepared_experience, experience.len())
+                    .is_err()
+                {
+                    Outcome::Unavailable {
+                        reason: "status experience allocation failed",
+                    }
+                } else {
+                    self.prepared_experience.extend_from_slice(experience);
+                    match source_outcome {
+                        Outcome::Truncated { unread_rows, .. } => Outcome::Truncated {
+                            len: count,
+                            unread_rows,
+                        },
+                        _ => Outcome::Rows { len: count },
+                    }
+                }
+            }
+            Err(reason) => Outcome::Unavailable { reason },
+        };
+        self.outcome
+    }
+
+    /// Number of prepared units, including the first unit whose preparation
+    /// failed. Later ranges must never manufacture maxima for its suffix.
+    pub fn prepared_units(&self) -> usize {
+        self.units.len()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_holding<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+        source_outcome: Outcome,
+        experience: &[Option<i64>],
+        prepared: Result<(usize, ccountry::Reader<'_, M>), &'static str>,
+        defer_children: bool,
+    ) -> Outcome {
         let mut entries = self.acclimatization.take();
         let result = prepared.and_then(|(count, countries)| {
             let admitted = &seeds[..self.units.len()];
@@ -3022,7 +3195,7 @@ impl StatusPacket {
                     .as_deref_mut()
                     .expect("admitted packet has entry scratch");
                 for (unit, seed) in admitted.iter().enumerate() {
-                    if unit.is_multiple_of(64) {
+                    if !defer_children && unit.is_multiple_of(64) {
                         entries.capture(
                             memory,
                             base,
@@ -3072,7 +3245,9 @@ impl StatusPacket {
                     self.units[unit].model_number = seed
                         .model_number
                         .ok_or("division presentation field unreadable")?;
-                    self.capture_camouflage(memory, base, seed, unit, entries.first(unit % 64));
+                    if !defer_children {
+                        self.capture_camouflage(memory, base, seed, unit, entries.first(unit % 64));
+                    }
                     self.units[unit].training = self.training(memory, self.units[unit].group)?;
                     if self.units[unit].training != 0 {
                         self.units[unit].exercise = Some(self.capture_exercise(
@@ -3108,6 +3283,9 @@ impl StatusPacket {
         });
         self.acclimatization = entries;
         self.outcome = result.unwrap_or_else(|reason| Outcome::Unavailable { reason });
+        if defer_children {
+            return self.outcome;
+        }
         if self.units.len() > self.border_index.capacity() {
             if matches!(self.outcome, Outcome::Rows { .. }) {
                 self.outcome = Outcome::Unavailable {
@@ -3123,6 +3301,11 @@ impl StatusPacket {
                 .map(|(index, unit)| (unit.division, index)),
         );
         self.border_index.sort_unstable_by_key(|entry| entry.0);
+        self.capture_status_children(memory, seeds);
+        self.outcome
+    }
+
+    fn capture_status_children(&mut self, memory: &impl Memory, seeds: &[DivisionSeed]) {
         // Complete the established scalar/exercise prefix before these optional
         // operands. A failed read must neither withhold that prefix nor
         // prevent the collector's later naming and border-stat acquisition.
@@ -3137,16 +3320,16 @@ impl StatusPacket {
         // The supply child's footer for every admitted division, in record
         // batches; each division's pack and origin rows fail alone.
         self.supply_len = self.outcome.len().min(self.supply.len());
-        let used = crate::cunit_supply_inputs::capture_units(
+        let used = crate::cunit_supply_inputs::capture_selected_units(
             memory,
             |index| seeds[index].pointer,
+            |index| self.supply_requested.get(index).copied().unwrap_or(true),
             &mut self.supply[..self.supply_len],
             &mut self.supply_origins,
             self.growing,
         );
         self.supply_origins_len = used.len;
         self.required.supply_origins = self.required.supply_origins.max(used.required);
-        self.outcome
     }
 
     /// Augment the same census lineage after state and province membership
@@ -3288,7 +3471,9 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
                     .attrition_define
                     .ok_or("division status attrition define missing")??,
             ) / 100_000;
-            let has_order = packet.membership.outcome(unit.membership)?;
+            let has_order = unit
+                .has_order
+                .unwrap_or_else(|| packet.membership.outcome(unit.membership))?;
             *row = StatusRow {
                 division: unit.division,
                 maximum_hit_points,
@@ -3302,10 +3487,13 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
                 attrition_value: unit.attrition_value,
                 attrition_threshold,
                 attrition: u8::from(attrition_threshold < unit.attrition_value),
-                exercising: u8::from(match unit.exercise {
-                    Some(inputs) => packet.exercise(inputs, maximum_hit_points)?,
-                    None => false,
-                }),
+                exercising: match unit.exercising {
+                    Some(decision) => decision?,
+                    None => u8::from(match unit.exercise {
+                        Some(inputs) => packet.exercise(inputs, maximum_hit_points)?,
+                        None => false,
+                    }),
+                },
                 has_order: u8::from(has_order),
                 invalid_orders: unit.invalid_orders,
                 invalid_orders_reason: unit.invalid_orders_reason,

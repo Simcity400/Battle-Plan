@@ -10,7 +10,7 @@
 //! store.
 //!
 //! Each country is read afresh and compared with its held answers on its
-//! hour of the sampled rotation (by id), and `raid_intel_verify`, off by
+//! hour of the graduated 576-hour rotation (by id), and `raid_intel_verify`, off by
 //! default since the family's burn-in passed, compares every carryable country
 //! every hour. A compared read across which the certificate stood still and
 //! that differs is a write no hook saw: it disables every naval
@@ -29,12 +29,12 @@ type Certificate = (u64, u64);
 /// Carried, read, compared and mismatched countries; walks that did not
 /// complete.
 static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::new(&[
+static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
     "a carried country's raid intel modifier answers differ from a fresh read",
 ]);
 static STORE: Mutex<Store> = Mutex::new(Store { held: Vec::new() });
 
-/// Compare every carryable country every hour (burn-in).
+/// Diagnostic: compare every carryable country every hour.
 const VERIFY: bool = cfg!(feature = "raid_intel_verify");
 
 /// The certificates as a walk consults them; tests substitute their own.
@@ -121,7 +121,11 @@ pub fn begin() -> Option<Walk<'static, Observer>> {
     if !cfg!(feature = "raid_intel_changes") {
         return None;
     }
-    Walk::begin_in(&STORE, &Observer, crate::sampled_verify::current(VERIFY))
+    Walk::begin_in(
+        &STORE,
+        &Observer,
+        crate::sampled_verify::current_burned_in(VERIFY),
+    )
 }
 
 impl<'a, C: Certificates> Walk<'a, C> {
@@ -253,7 +257,7 @@ pub fn status() -> impl serde::Serialize {
         "sampled_mismatches": SAMPLED.mismatches(),
         "last_mismatch": SAMPLED.last_mismatch(),
         "slice": SAMPLED.slice(),
-        "scope": "cumulative since attach; RaidIntelInputs reads each country's modifier accumulator header every hour and skips its entries copy, answering CRYPTO_STRENGTH and INTELLIGENCE_AGENCY_DEFENSE from the held raw values, while the header, CCountry, id and naval tree country certificate (modifier recalculation, country appearance reset) are the held read's; effective values always use the current modifier definitions. Each country is read and compared with its held answers on its hour of the day's rotation (every hour in verify mode); the first mismatch disables every naval tree certificate",
+        "scope": "cumulative since attach; RaidIntelInputs reads each country's modifier accumulator header every hour and skips its entries copy, answering CRYPTO_STRENGTH and INTELLIGENCE_AGENCY_DEFENSE from the held raw values, while the header, CCountry, id and naval tree country certificate (modifier recalculation, country appearance reset) are the held read's; effective values always use the current modifier definitions. Each country is read and compared with its held answers on its hour of the graduated 576-hour rotation (every hour in verify mode); the first mismatch disables every naval tree certificate",
     })
 }
 
@@ -451,14 +455,12 @@ mod tests {
             .count() as u64;
         assert_eq!(pass(Check::Nothing, &eleventh), (all - changed, changed, 0));
         assert_eq!(pass(Check::Nothing, &eleventh), (all, 0, 0));
-        // Hour 5 of the rotation compares the countries whose id is 5 mod 24.
-        let slice = (1..=COUNTRIES)
-            .filter(|slot| (slot + 100) % 24 == 5)
-            .count() as u64;
-        assert_eq!(
-            pass(Check::Slice { hour: 5 }, &eleventh),
-            (all - slice, slice, slice)
-        );
+        for check in [Check::hourly(5, false), Check::burned_in(5, false)] {
+            let slice = (1..=COUNTRIES)
+                .filter(|slot| check.covers(u64::from(slot + 100)))
+                .count() as u64;
+            assert_eq!(pass(check, &eleventh), (all - slice, slice, slice));
+        }
     }
 
     /// A walk that does not complete forgets every held country.

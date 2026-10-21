@@ -25,7 +25,7 @@ use engine_stability::cdynamic_modifier_container;
 use replay_data::rows::TableRows;
 use replay_data::{rows, rows::RowCodec, rows::TableId, rows::TableSchema, rows::tables};
 use replay_frame::{frame::TableInput, frame::TableView};
-use std::mem::size_of;
+use std::{mem::size_of, sync::OnceLock};
 
 mod demand;
 use crate::drift;
@@ -198,6 +198,7 @@ struct TacticRow {
 }
 
 pub struct Captured {
+    nested_bytes: OnceLock<usize>,
     breakdowns: Vec<rows::PowerBalanceModifierBreakdownRow>,
     breakdown_outcome: Outcome,
     focus: CaptureRows<cnational_focus_progress::Row>,
@@ -207,6 +208,7 @@ pub struct Captured {
     technology_pointers: Vec<usize>,
     slots: CaptureRows<cresearch_slot::Row>,
     definitions: CaptureRows<ctechnology_template::Row>,
+    definitions_pending: bool,
     politics: CaptureRows<CountryRow<cpolitical_status::Row>>,
     parties: CaptureRows<cpolitical_party::Row>,
     party_leaders: CaptureRows<cpolitical_party::LeaderRow>,
@@ -628,6 +630,7 @@ impl Captured {
     pub fn take_research(&mut self) -> ResearchPart {
         debug_assert!(!self.research_loaned, "research part already loaned");
         self.research_loaned = true;
+        self.nested_bytes.take();
         ResearchPart {
             inputs: std::mem::replace(&mut self.research_inputs, CaptureRows::new(0)),
             bonuses: std::mem::replace(&mut self.research_bonuses, CaptureRows::new(0)),
@@ -642,6 +645,7 @@ impl Captured {
     pub fn restore_research(&mut self, part: ResearchPart) {
         debug_assert!(self.research_loaned, "research part was not loaned");
         self.research_loaned = false;
+        self.nested_bytes.take();
         self.research_inputs = part.inputs;
         self.research_bonuses = part.bonuses;
         self.research_modifiers = part.modifiers;
@@ -705,12 +709,14 @@ impl Captured {
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
+            nested_bytes: OnceLock::new(),
             focus: CaptureRows::new(capacity.rows[0]),
             completed: CaptureRows::new(capacity.rows[1]),
             technologies: CaptureRows::new(capacity.rows[2]),
             technology_pointers: owned_vec(default_vec(capacity.rows[2])),
             slots: CaptureRows::new(capacity.rows[3]),
             definitions: CaptureRows::new(capacity.rows[4]),
+            definitions_pending: false,
             politics: CaptureRows::new(capacity.rows[5]),
             parties: CaptureRows::new(capacity.rows[6]),
             party_leaders: CaptureRows::new(capacity.rows[21]),
@@ -779,6 +785,49 @@ impl Captured {
         leaders: Option<&mut LeaderStore>,
         parties: Option<&mut PartyStore>,
     ) -> CaptureReport {
+        self.capture_owned_impl(
+            memory,
+            context,
+            technology_fingerprints,
+            focus_fingerprints,
+            leaders,
+            parties,
+            false,
+        )
+    }
+
+    /// Keep definition acquisition and all selection/certificates here; the
+    /// FIFO worker assembles the dictionary's already copied output rows.
+    pub fn acquire_owned(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        technology_fingerprints: &mut SliceFingerprints,
+        focus_fingerprints: &mut SliceFingerprints,
+        leaders: Option<&mut LeaderStore>,
+        parties: Option<&mut PartyStore>,
+    ) -> CaptureReport {
+        self.capture_owned_impl(
+            memory,
+            context,
+            technology_fingerprints,
+            focus_fingerprints,
+            leaders,
+            parties,
+            true,
+        )
+    }
+
+    fn capture_owned_impl(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        technology_fingerprints: &mut SliceFingerprints,
+        focus_fingerprints: &mut SliceFingerprints,
+        leaders: Option<&mut LeaderStore>,
+        parties: Option<&mut PartyStore>,
+        defer_definitions: bool,
+    ) -> CaptureReport {
         let burned_in = |every| crate::sampled_verify::Check::burned_in(context.hour, every);
         let politics = PoliticsWalk {
             leaders,
@@ -791,7 +840,7 @@ impl Captured {
             check: burned_in(crate::political_status_changes::VERIFY),
             force_full: context.force_full,
         };
-        let ticks = self.capture_sliced(
+        let ticks = self.capture_sliced_impl(
             memory,
             context.base,
             context.game_state,
@@ -803,8 +852,25 @@ impl Captured {
                 changes: &crate::country_input_changes::Observer,
             },
             Some(politics),
+            defer_definitions,
         );
         CaptureReport { ticks }
+    }
+
+    /// No Memory capability or native fallback. All retained dictionary
+    /// entries and text belong to this frame until publication completes.
+    pub fn decode_owned(&mut self) {
+        if std::mem::take(&mut self.definitions_pending) {
+            let outcome = definition_rows(&mut self.definitions.rows, &self.dictionary);
+            if matches!(
+                self.definitions.outcome,
+                Outcome::Rows { .. } | Outcome::Truncated { .. }
+            )
+                && let Outcome::Unavailable { .. } = outcome
+            {
+                self.definitions.outcome = outcome;
+            }
+        }
     }
 
     /// Terminal completion after an accepted worker failure. Partial rows and
@@ -864,6 +930,8 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
+        self.definitions_pending = false;
+        self.nested_bytes.take();
         self.focus.reset();
         self.completed.reset();
         self.technologies.reset();
@@ -912,7 +980,11 @@ impl Captured {
         self.dictionary_required = 0;
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.focus.allocated_bytes()
+        let nested = self
+            .nested_bytes
+            .get_or_init(|| self.nested_allocated_bytes());
+        *nested
+            + self.focus.allocated_bytes()
             + self.completed.allocated_bytes()
             + self.technologies.allocated_bytes()
             + self.technology_pointers.capacity() * size_of::<usize>()
@@ -936,46 +1008,12 @@ impl Captured {
             + self.sharing_members.allocated_bytes()
             + self.balances.allocated_bytes()
             + self.breakdowns.capacity() * size_of::<rows::PowerBalanceModifierBreakdownRow>()
-            + self
-                .breakdowns
-                .iter()
-                .map(|r| {
-                    r.sources.capacity() * size_of::<Vec<u8>>()
-                        + r.sources.iter().map(Vec::capacity).sum::<usize>()
-                        + [&r.daily, &r.weekly]
-                            .into_iter()
-                            .map(|nodes| {
-                                nodes.capacity()
-                                    * size_of::<engine_native::modifier_breakdown::Node>()
-                                    + nodes.iter().map(|n| n.name.capacity()).sum::<usize>()
-                            })
-                            .sum::<usize>()
-                })
-                .sum::<usize>()
             + self.balance_members.allocated_bytes()
             + self.ranges.allocated_bytes()
             + self.overrides.allocated_bytes()
             + self.research_bonuses.allocated_bytes()
-            + self
-                .research_bonuses
-                .rows
-                .iter()
-                .map(|row| row.value.name.allocated_bytes())
-                .sum::<usize>()
             + self.research_modifiers.allocated_bytes()
-            + self
-                .research_modifiers
-                .rows
-                .iter()
-                .map(|row| row.name.allocated_bytes())
-                .sum::<usize>()
             + self.research_inputs.allocated_bytes()
-            + self
-                .research_inputs
-                .rows
-                .iter()
-                .map(|row| row.token.allocated_bytes())
-                .sum::<usize>()
             + self.party_leaders.allocated_bytes()
             + self.focus_text.allocated_bytes()
             + self.definition_text.allocated_bytes()
@@ -992,6 +1030,42 @@ impl Captured {
             + self.idea_countries.allocated_bytes()
             + self.decision_countries.allocated_bytes()
             + self.dictionary.capacity() * size_of::<ctechnology_template::Entry>()
+    }
+    // Reset, capture and research loans invalidate child heaps. Buffer growth
+    // adds only default text without child heaps; outer capacities stay live.
+    fn nested_allocated_bytes(&self) -> usize {
+        self.breakdowns
+            .iter()
+            .map(|r| {
+                r.sources.capacity() * size_of::<Vec<u8>>()
+                    + r.sources.iter().map(Vec::capacity).sum::<usize>()
+                    + [&r.daily, &r.weekly]
+                        .into_iter()
+                        .map(|nodes| {
+                            nodes.capacity() * size_of::<engine_native::modifier_breakdown::Node>()
+                                + nodes.iter().map(|n| n.name.capacity()).sum::<usize>()
+                        })
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+            + self
+                .research_bonuses
+                .rows
+                .iter()
+                .map(|row| row.value.name.allocated_bytes())
+                .sum::<usize>()
+            + self
+                .research_modifiers
+                .rows
+                .iter()
+                .map(|row| row.name.allocated_bytes())
+                .sum::<usize>()
+            + self
+                .research_inputs
+                .rows
+                .iter()
+                .map(|row| row.token.allocated_bytes())
+                .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         // Worker-grown storage is demand for every recycled frame, including
@@ -1097,6 +1171,7 @@ impl Captured {
             technology_pointers: &mut self.technology_pointers,
             slots: &mut self.slots.rows,
             definitions: &mut self.definitions.rows,
+            defer_definitions: self.definitions_pending,
             politics: &mut self.politics.rows,
             parties: &mut self.parties.rows,
             ideas: &mut self.ideas.rows,
@@ -1180,6 +1255,29 @@ impl Captured {
         slices: Slices<'_>,
         politics: Option<PoliticsWalk<'_>>,
     ) -> [u64; N] {
+        self.capture_sliced_impl(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            slices,
+            politics,
+            false,
+        )
+    }
+
+    fn capture_sliced_impl(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        slices: Slices<'_>,
+        politics: Option<PoliticsWalk<'_>>,
+        defer_definitions: bool,
+    ) -> [u64; N] {
         self.reset();
         self.technology_selection.reset(hour, force_full);
         self.focus_selection.reset_daily(hour, force_full);
@@ -1189,6 +1287,7 @@ impl Captured {
         for index in RESEARCH {
             walk[index] = false;
         }
+        self.definitions_pending = defer_definitions && walk[2];
         let first = acquire(
             memory,
             base,
@@ -1295,6 +1394,7 @@ impl Captured {
     /// is read. A `breakdown_witness` build also reads the native trees of
     /// the records in this hour's sampled slice ([`BREAKDOWN_WITNESS`]).
     fn capture_breakdowns(&mut self, memory: &impl Memory, base: usize, state: usize, hour: i32) {
+        self.nested_bytes.take();
         let witness = crate::sampled_verify::Check::hourly(hour, false);
         let result = (|| {
             if !matches!(self.balances.outcome, Outcome::Rows { .. }) {
@@ -1663,6 +1763,7 @@ struct Buffers<'a> {
     technology_pointers: &'a mut Vec<usize>,
     slots: &'a mut Vec<cresearch_slot::Row>,
     definitions: &'a mut Vec<ctechnology_template::Row>,
+    defer_definitions: bool,
     politics: &'a mut Vec<CountryRow<cpolitical_status::Row>>,
     parties: &'a mut Vec<cpolitical_party::Row>,
     ideas: &'a mut Vec<cpolitical_status::IdeaRow>,
@@ -2530,21 +2631,10 @@ fn acquire(
             .filter(|entry| entry.copied)
             .count();
         b.definitions.clear();
-        let copied = if reserve(b.definitions, count).is_err() {
-            Outcome::Unavailable {
-                reason: "technology definition row allocation failed",
-            }
-        } else {
-            b.definitions.extend(
-                definitions
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.copied)
-                    .map(|entry| entry.row),
-            );
-            // Templates are identified by their positive database index.
-            b.definitions.sort_unstable_by_key(|row| row.database_index);
+        let copied = if b.defer_definitions {
             Outcome::Rows { len: count }
+        } else {
+            definition_rows(b.definitions, definitions.entries)
         };
         o.outcomes[4] = match (o.outcomes[2], definitions.outcome(), copied) {
             (Outcome::Rows { .. }, Outcome::Rows { .. }, output) => output,
@@ -2627,6 +2717,27 @@ fn acquire(
     }
     o
 }
+fn definition_rows(
+    rows: &mut Vec<ctechnology_template::Row>,
+    entries: &[ctechnology_template::Entry],
+) -> Outcome {
+    rows.clear();
+    let count = entries.iter().filter(|entry| entry.copied).count();
+    if reserve(rows, count).is_err() {
+        return Outcome::Unavailable {
+            reason: "technology definition row allocation failed",
+        };
+    }
+    rows.extend(
+        entries
+            .iter()
+            .filter(|entry| entry.copied)
+            .map(|entry| entry.row),
+    );
+    rows.sort_unstable_by_key(|row| row.database_index);
+    Outcome::Rows { len: count }
+}
+
 fn required_rows(outcome: Outcome) -> usize {
     match outcome {
         Outcome::Rows { len } => len,

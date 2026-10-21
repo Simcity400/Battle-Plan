@@ -25,6 +25,7 @@ const HEADER_MAGIC: &[u8; 4] = b"H4RP";
 const TRAILER_MAGIC: &[u8; 4] = b"H4TR";
 const FOOTER_MAGIC: &[u8; 4] = b"H4FT";
 const FOOTER_SIZE: usize = 24;
+mod aliases;
 mod changes;
 mod decoded_sections;
 pub use decoded_sections::SectionConsumer;
@@ -1963,6 +1964,7 @@ fn write_blocks(
         let mut current_branch = None;
         let mut needs_keyframe = true;
         let mut frame_decoder = FrameDecoder::new();
+        let mut alias_encoder = aliases::Encoder::default();
         let mut segment_state = SegmentState::default();
         for record in *segment {
             segment_state.accept(record)?;
@@ -2058,8 +2060,11 @@ fn write_blocks(
                     validate_campaign(decoded, campaign_id)?;
                     let mut payload = Vec::new();
                     let mut sizes = frame.encode_with_sizes(&mut payload)?;
+                    let mut aliased = alias_encoder.prepare(frame, decoded, &payload, &sizes)?;
                     let promoted;
-                    let emitted = if !current.fits(payload.len(), &sizes, block_limit) {
+                    let emitted = if !current.fits(payload.len(), &sizes, block_limit)
+                        || !current.fits(aliased.stored_len, &aliased.stored_sizes, block_limit)
+                    {
                         if current.frames == 0 {
                             return Err(invalid(
                                 "single replay frame exceeds raw block size limit",
@@ -2072,7 +2077,10 @@ fn write_blocks(
                         payload.clear();
                         sizes = promoted.encode_with_sizes(&mut payload)?;
                         let next = grouped::BlockWriter::new(&promoted);
-                        if !next.fits(payload.len(), &sizes, block_limit) {
+                        aliased = alias_encoder.prepare(&promoted, decoded, &payload, &sizes)?;
+                        if !next.fits(payload.len(), &sizes, block_limit)
+                            || !next.fits(aliased.stored_len, &aliased.stored_sizes, block_limit)
+                        {
                             return Err(invalid(
                                 "single replay keyframe exceeds raw block size limit",
                             ));
@@ -2082,16 +2090,20 @@ fn write_blocks(
                     } else {
                         frame
                     };
-                    block.as_mut().unwrap().push(
+                    let current = block.as_mut().unwrap();
+                    current.push_marked(
                         emitted,
-                        decoded,
-                        &payload,
-                        &sizes,
+                        &aliased.views,
+                        &aliased.payload,
+                        &aliased.sizes,
                         &mut anchors,
                         block_limit,
                         packer.cores(),
+                        &aliased.private,
                     )?;
-                    observe(emitted, decoded, sizes)?;
+                    current.charge_source(payload.len(), &sizes, &aliased.stored_sizes);
+                    observe(emitted, decoded, aliased.sizes)?;
+                    alias_encoder.commit(aliased);
                     last_hours.insert(frame.branch, frame.hour);
                     needs_keyframe = false;
                 }

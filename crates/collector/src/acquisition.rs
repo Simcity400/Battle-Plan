@@ -10,8 +10,9 @@
 //! After publication it never accesses the cell again. Cancellation owns only
 //! still-Queued cells under the mutex and publishes their Stopped completions.
 //! An acquire CAS from PUBLISHED to COLLECTING gives exactly one collector the
-//! complete cell. It moves that value once into `out`, then releases VACANT.
-//! A new submitter acquires VACANT under the mutex before reusing the storage.
+//! complete cell. Collection moves that value once into `out`, then releases
+//! VACANT; report-only inspection copies R and restores PUBLISHED without
+//! moving the request or transferring its ticket. A new submitter acquires VACANT under the mutex before reusing the storage.
 //! Parked cells are PENDING but metadata Parked: only locked unpark or
 //! rejection completion accesses them. Rejection initializes its completion
 //! directly in the existing heap cell and never admits or runs the job.
@@ -47,7 +48,8 @@ pub(crate) const MAX_WORKERS: usize = 15;
 // of RUST_MIN_STACK, matching the supported executable's stack reserve (4 MiB).
 // Native retention/copy depth is documented beside the engine reader.
 const WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
-/// Begin spinning only while a worker is idle, within the whole-hour 2 ms target.
+/// Joins begin spinning only while a worker is idle; readiness polls complete
+/// producer barriers before sleeping. Both use this fixed per-wait deadline.
 /// The first spin sets one deadline for the join. Default eligibility is
 /// reconsidered on claim and worker retirement, without extending that deadline.
 /// The pool-busy feature permits one episode, ending when all workers are active.
@@ -81,6 +83,10 @@ static JOIN_WALL_MAX_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 #[path = "acquisition/collection_bench.rs"]
 mod collection_bench;
+
+#[cfg(test)]
+#[path = "acquisition/readiness_tests.rs"]
+mod readiness_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Failure {
@@ -207,7 +213,7 @@ struct SubmitCounters {
     #[cfg(test)]
     notified_one: u64,
     #[cfg(test)]
-    notified_all: u64,
+    relayed_one: u64,
 }
 
 #[derive(Default)]
@@ -467,6 +473,8 @@ struct Shared<J, R> {
     state: Mutex<State>,
     started_ready: Condvar,
     work_ready: Condvar,
+    /// Remaining held-burst notifications, relayed one per worker claim.
+    burst_peers: AtomicUsize,
     run: Box<Runner<J, R>>,
     thread_ids: Vec<AtomicU32>,
     cells: Box<[Cell<J, R>]>,
@@ -480,6 +488,10 @@ struct Shared<J, R> {
     /// Eligibility waits use this address because an idle transition does not
     /// change the awaited slot word. Publication advances and wakes it too.
     spin_wake: AtomicU64,
+    /// The callback's readiness scheduler waits for any producer publication,
+    /// without collecting or running an unrelated job in a fixed join order.
+    ready_waiting: AtomicBool,
+    ready_wake: AtomicU64,
     /// Registered active-count waiters. A count preserves concurrent shutdown:
     /// an early zero observer cannot unregister another still-sleeping waiter.
     settling: AtomicUsize,
@@ -541,6 +553,11 @@ impl<J, R> Shared<J, R> {
         #[cfg(test)]
         if self.suppress_join_wakes.load(Ordering::SeqCst) {
             return;
+        }
+        if self.ready_waiting.load(Ordering::SeqCst) {
+            self.ready_wake.fetch_add(1, Ordering::SeqCst);
+            // SAFETY: stable aligned storage lives through the callback wait.
+            unsafe { WakeByAddressSingle(self.ready_wake.as_ptr().cast()) };
         }
         let awaited = self.awaited.load(Ordering::SeqCst);
         if awaited & AWAITED_SLOT_MASK == index as u64 + 1 {
@@ -961,6 +978,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             state: Mutex::new(state),
             started_ready: Condvar::new(),
             work_ready: Condvar::new(),
+            burst_peers: AtomicUsize::new(0),
             run: Box::new(run),
             thread_ids,
             cells: cells.into_boxed_slice(),
@@ -970,6 +988,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             uncollected: AtomicUsize::new(0),
             awaited: AtomicU64::new(0),
             spin_wake: AtomicU64::new(0),
+            ready_waiting: AtomicBool::new(false),
+            ready_wake: AtomicU64::new(0),
             settling: AtomicUsize::new(0),
             counters: Counters::default(),
             #[cfg(test)]
@@ -1171,23 +1191,26 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         self.shared.wait_active();
     }
     pub(crate) fn wake_workers(&self, jobs: usize) {
-        let all = jobs >= self.shared.thread_ids.len();
+        if jobs == 0 {
+            return;
+        }
+        let limit = self.shared.thread_ids.len().saturating_sub(1);
+        let peers = jobs.saturating_sub(1).min(limit);
+        if peers != 0 {
+            let _ =
+                self.shared
+                    .burst_peers
+                    .fetch_update(Ordering::Release, Ordering::Relaxed, |old| {
+                        Some(old.saturating_add(peers).min(limit))
+                    });
+        }
         #[cfg(test)]
         {
-            let mut state = self.shared.lock();
-            if all {
-                state.counters.notified_all += 1;
-            } else {
-                state.counters.notified_one += jobs as u64;
-            }
+            self.shared.lock().counters.notified_one += 1;
         }
-        if all {
-            self.shared.work_ready.notify_all();
-        } else {
-            for _ in 0..jobs {
-                self.shared.work_ready.notify_one();
-            }
-        }
+        // The collector notifies one worker, not every peer in a held burst.
+        // Claims relay the rest before their bodies, one notification each.
+        self.shared.work_ready.notify_one();
     }
     /// Park never admits, queues or counts a request. Prefer its partition,
     /// then any VACANT cell; exhaustion/fullness retains it with the caller.
@@ -1563,10 +1586,108 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             join_wall_max_ns: JOIN_WALL_MAX_NS.load(Ordering::Relaxed),
         }
     }
+    /// Wait until the sole callback collector can advance a dependency edge.
+    /// `ready` only inspects tickets; it never collects, submits or waits. The
+    /// workers must be able to complete the outstanding producers themselves.
+    /// Registration precedes both the sequence snapshot and the readiness
+    /// recheck: a publication either appears in that recheck or changes the
+    /// sequence before the address wait. No queue mutex or payload is borrowed.
+    pub(crate) fn wait_ready<T>(&self, mut ready: impl FnMut() -> Option<T>) -> T {
+        self.wait_ready_with_spin(JOIN_SPIN, &mut ready)
+    }
+
+    fn wait_ready_with_spin<T>(
+        &self,
+        budget: std::time::Duration,
+        mut ready: impl FnMut() -> Option<T>,
+    ) -> T {
+        if let Some(value) = ready() {
+            return value;
+        }
+        // Keep short producer edges on the callback instead of sleeping
+        // between publications. The fixed budget never extends after a wake.
+        // This wait inspects tickets only; it never claims a queued job.
+        if !budget.is_zero() && !self.shared.stopped.load(Ordering::Acquire) {
+            let begin = std::time::Instant::now();
+            add(&self.shared.counters.spins, 1);
+            let result = loop {
+                if let Some(value) = ready() {
+                    break Some(value);
+                }
+                if begin.elapsed() >= budget
+                    || self.shared.stopped.load(Ordering::Acquire)
+                    || (cfg!(feature = "executor_spin_until_pool_busy")
+                        && self.shared.active.load(Ordering::Acquire)
+                            >= self.shared.thread_ids.len())
+                {
+                    break None;
+                }
+                for _ in 0..64 {
+                    std::hint::spin_loop();
+                }
+            };
+            add(
+                &self.shared.counters.spin_wall_ns,
+                begin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+            );
+            if let Some(value) = result {
+                return value;
+            }
+        }
+        struct Registration<'a>(&'a AtomicBool);
+        impl Drop for Registration<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        assert!(!self.shared.ready_waiting.swap(true, Ordering::SeqCst));
+        let _registration = Registration(&self.shared.ready_waiting);
+        loop {
+            let wake = self.shared.ready_wake.load(Ordering::SeqCst);
+            if let Some(value) = ready() {
+                return value;
+            }
+            add(&self.shared.counters.join_sleeps, 1);
+            // SAFETY: stable aligned u64 and a same-size local comparison.
+            unsafe {
+                WaitOnAddress(
+                    self.shared.ready_wake.as_ptr().cast(),
+                    (&wake as *const u64).cast(),
+                    size_of::<u64>(),
+                    u32::MAX,
+                )
+            };
+        }
+    }
+
+    /// Inspect only a published, copyable report, without taking the request.
+    /// The collection CAS excludes a racing collector while it is copied; no
+    /// reference to the cell escapes. The sole pending collector may defer a
+    /// contained failure's settlement while advancing a successful edge.
+    pub(crate) fn completed_report(&self, ticket: Ticket) -> Option<Result<R, Failure>> {
+        if ticket.pool != self.shared.id {
+            return None;
+        }
+        let value = self.shared.words.get(ticket.slot)?;
+        value
+            .compare_exchange(
+                word(ticket.generation, PUBLISHED),
+                word(ticket.generation, COLLECTING),
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .ok()?;
+        // SAFETY: the CAS exclusively owns the fully initialized completion;
+        // copying R neither moves nor drops its request or other fields.
+        let report = unsafe { (*self.shared.cells[ticket.slot].pointer()).report };
+        value.store(word(ticket.generation, PUBLISHED), Ordering::SeqCst);
+        Some(report)
+    }
+
     pub(crate) fn is_complete(&self, ticket: Ticket) -> bool {
         ticket.pool == self.shared.id
             && self.shared.words.get(ticket.slot).is_some_and(|value| {
-                value.load(Ordering::Acquire) == word(ticket.generation, PUBLISHED)
+                value.load(Ordering::SeqCst) == word(ticket.generation, PUBLISHED)
             })
     }
     pub(crate) fn stopped(&self) -> bool {
@@ -1637,10 +1758,30 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
             return;
         }
         if let Some(claim) = state.take_ready(&shared, None) {
+            let relay = if state.ready.is_empty() {
+                // Under the queue mutex: no unclaimed job needs another wake.
+                shared.burst_peers.store(0, Ordering::Release);
+                false
+            } else {
+                shared
+                    .burst_peers
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |peers| {
+                        peers.checked_sub(1)
+                    })
+                    .is_ok()
+            };
+            #[cfg(test)]
+            {
+                state.counters.relayed_one += u64::from(relay);
+            }
             drop(state);
+            if relay {
+                shared.work_ready.notify_one();
+            }
             shared.execute(claim, false, false);
             state = shared.lock();
         } else {
+            shared.burst_peers.store(0, Ordering::Release);
             state = shared.wait_for_work(state);
         }
     }
@@ -3801,65 +3942,110 @@ mod tests {
         assert!(Pool::start(MAX_WORKERS + 1, 1, |request: &mut u8| *request).is_err());
     }
 
-    /// A release wakes one parked worker per released job below the pool's
-    /// size, and every parked worker for a burst as large as the pool; the
-    /// woken workers run every job. The jobs are worker-only, so no join can
-    /// run one on the collecting thread, and each holds its worker until all
-    /// are running, so they run on that many distinct workers at once.
+    /// One collector wake releases the burst through worker relays. Every
+    /// gated job must enter on a distinct worker before any can return.
     #[test]
     fn a_release_wakes_one_worker_per_job_and_the_workers_run_them_all() {
-        const WORKERS: usize = 4;
-        for jobs in 1..=WORKERS + 1 {
-            let gate = Arc::new(Barrier::new(jobs.min(WORKERS) + 1));
-            let ran = Arc::new(Mutex::new(Vec::new()));
-            let pool = {
-                let (gate, ran) = (Arc::clone(&gate), Arc::clone(&ran));
-                Pool::start(WORKERS, 8, move |job: &mut usize| {
-                    ran.lock().unwrap().push(std::thread::current().id());
-                    if *job < WORKERS {
-                        gate.wait();
-                    }
-                })
-                .unwrap()
-            };
-            pool.reserve_worker_slots(8).unwrap();
-            let tickets: Vec<_> = (0..jobs)
-                .map(|job| {
-                    unsafe { pool.submit_with_priority(&mut Some(job), 0, true, false) }.unwrap()
-                })
-                .collect();
-            pool.wake_workers(jobs);
-            {
-                let state = pool.shared.lock();
-                let expected = if jobs < WORKERS {
-                    (jobs as u64, 0)
-                } else {
-                    (0, 1)
+        for workers in 1..=4 {
+            for jobs in 1..=workers + 1 {
+                let gate = Arc::new(AtomicBool::new(false));
+                let ran = Arc::new(Mutex::new(Vec::new()));
+                let (entered, started) = mpsc::channel();
+                let pool = {
+                    let (gate, ran) = (Arc::clone(&gate), Arc::clone(&ran));
+                    Pool::start(workers, 8, move |job: &mut usize| {
+                        ran.lock().unwrap().push(std::thread::current().id());
+                        if *job < workers {
+                            entered.send(()).unwrap();
+                            wait_until(|| gate.load(Ordering::Acquire));
+                        }
+                    })
+                    .unwrap()
                 };
+                let release = Gate(gate);
+                pool.reserve_worker_slots(8).unwrap();
+                let tickets: Vec<_> = (0..jobs)
+                    .map(|job| unsafe {
+                        pool.submit_with_priority(&mut Some(job), 0, true, false)
+                            .unwrap()
+                    })
+                    .collect();
+                crate::test_support::with_allocations_denied(|| pool.wake_workers(jobs));
+                for _ in 0..jobs.min(workers) {
+                    started.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+                }
+                {
+                    let state = pool.shared.lock();
+                    assert_eq!(state.counters.notified_one, 1);
+                    assert!(state.counters.relayed_one <= (jobs - 1).min(workers - 1) as u64);
+                }
+                release.open();
+                for ticket in tickets {
+                    assert_eq!(pool.finish(ticket).unwrap().report, Ok(()), "{jobs} jobs");
+                }
+                let ran = ran.lock().unwrap();
+                assert_eq!(ran.len(), jobs);
+                let distinct: std::collections::HashSet<_> = ran.iter().copied().collect();
+                assert_eq!(distinct.len(), jobs.min(workers), "{jobs} jobs");
+                assert!(!distinct.contains(&std::thread::current().id()));
+                let calibration = pool.calibration();
                 assert_eq!(
-                    (state.counters.notified_one, state.counters.notified_all),
-                    expected,
-                    "{jobs} jobs"
+                    (calibration.caller_executed, calibration.worker_executed),
+                    (0, jobs as u64)
                 );
+                pool.shutdown().unwrap();
             }
-            // Every gated job runs at once, so on its own woken worker.
-            gate.wait();
-            for ticket in tickets {
-                assert_eq!(pool.finish(ticket).unwrap().report, Ok(()), "{jobs} jobs");
-            }
-            let ran = ran.lock().unwrap();
-            assert_eq!(ran.len(), jobs);
-            let workers: std::collections::HashSet<_> = ran.iter().copied().collect();
-            assert_eq!(workers.len(), jobs.min(WORKERS), "{jobs} jobs");
-            assert!(!workers.contains(&std::thread::current().id()));
-            let calibration = pool.calibration();
-            assert_eq!(
-                (calibration.caller_executed, calibration.worker_executed),
-                (0, jobs as u64)
-            );
-            assert_eq!(calibration.wake_boost_refusals, 0);
-            pool.shutdown().unwrap();
         }
+    }
+
+    #[test]
+    fn busy_workers_retain_and_merge_burst_relays_without_collector_allocation() {
+        const WORKERS: usize = 4;
+        let gate = Arc::new(AtomicBool::new(false));
+        let (entered, started) = mpsc::channel();
+        let pool = {
+            let gate = Arc::clone(&gate);
+            Pool::start(WORKERS, 8, move |job: &mut usize| {
+                if *job < WORKERS {
+                    entered.send(()).unwrap();
+                    wait_until(|| gate.load(Ordering::Acquire));
+                }
+                *job
+            })
+            .unwrap()
+        };
+        let release = Gate(gate);
+        pool.reserve_worker_slots(8).unwrap();
+        let running: Vec<_> = (0..WORKERS)
+            .map(|job| unsafe {
+                pool.submit_with_priority(&mut Some(job), 0, true, true)
+                    .unwrap()
+            })
+            .collect();
+        for _ in 0..WORKERS {
+            started.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+        }
+        let queued: Vec<_> = (WORKERS..2 * WORKERS)
+            .map(|job| unsafe {
+                pool.submit_with_priority(&mut Some(job), 0, true, false)
+                    .unwrap()
+            })
+            .collect();
+        crate::test_support::with_allocations_denied(|| {
+            pool.wake_workers(2);
+            pool.wake_workers(2);
+            assert_eq!(pool.shared.burst_peers.load(Ordering::Acquire), 2);
+            let state = pool.shared.lock();
+            assert_eq!(state.counters.notified_one, 2);
+            assert_eq!(state.counters.relayed_one, 0);
+        });
+        release.open();
+        for (job, ticket) in running.into_iter().chain(queued).enumerate() {
+            assert_eq!(pool.finish(ticket).unwrap().report, Ok(job));
+        }
+        assert_eq!(pool.shared.burst_peers.load(Ordering::Acquire), 0);
+        assert_eq!(pool.calibration().caller_executed, 0);
+        assert_eq!(pool.calibration().uncollected, 0);
     }
 
     /// Times job-sized submission and the burst wakes against a pool of

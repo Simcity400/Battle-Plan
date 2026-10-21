@@ -103,6 +103,46 @@ pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
 pub fn state_sequence(state: u32) -> Option<(u64, u64)> {
     STATES.sequence(state as usize)
 }
+/// Register before range acquisition; retained slots are checked by receiver.
+pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
+    let (_, slot) = OPERANDS.observed_sequence_at(receiver, slot)?;
+    OPERANDS.sequence_at(receiver, slot)
+}
+pub fn state_sequence_at(state: u32, slot: usize) -> Option<((u64, u64), usize)> {
+    let (_, slot) = STATES.observed_sequence_at(state as usize, slot)?;
+    STATES.sequence_at(state as usize, slot)
+}
+
+/// Passive lookups for range reads, revalidated at ordered admission.
+pub fn observed_sequence(receiver: usize) -> Option<(u64, u64)> {
+    OPERANDS.observed_sequence(receiver)
+}
+pub fn observed_state_sequence(state: u32) -> Option<(u64, u64)> {
+    STATES.observed_sequence(state as usize)
+}
+pub fn observed_lifetime_sequence(receiver: usize) -> Option<(u64, u64)> {
+    LIFETIMES.observed_sequence(receiver)
+}
+/// Passive domain stamp; this never consumes the dirty variant marks.
+pub fn observed_variant_stamp() -> Option<((u64, u64), u64)> {
+    let stamp = variant_capability()?;
+    if VARIANT_ACTIVE.load(Ordering::SeqCst) != 0 {
+        return None;
+    }
+    let quiet = VARIANTS.quiet()?;
+    (VARIANT_ACTIVE.load(Ordering::SeqCst) == 0 && variant_capability_is_current(stamp))
+        .then_some((quiet, stamp))
+}
+pub fn observed_variant_sequence(receiver: usize) -> Option<(u64, u64)> {
+    let stamp = variant_capability()?;
+    if VARIANT_ACTIVE.load(Ordering::SeqCst) != 0 {
+        return None;
+    }
+    LIFETIMES.observed_sequence(receiver)?;
+    let result = VARIANTS.observed_sequence(receiver);
+    (VARIANT_ACTIVE.load(Ordering::SeqCst) == 0 && variant_capability_is_current(stamp))
+        .then_some(result).flatten()
+}
 pub fn take(visit: impl FnMut(usize)) -> Option<u64> {
     let stamp = variant_capability()?;
     if VARIANT_ACTIVE.load(Ordering::SeqCst) != 0 {

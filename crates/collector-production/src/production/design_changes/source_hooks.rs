@@ -16,8 +16,8 @@ unsafe fn content(
     [a, b, c, d]: [usize; 4],
     original: collector_certificates::content_changes::Original,
 ) -> usize {
-    REVISION.fetch_add(1, Ordering::AcqRel);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
+    REVISION.fetch_add(1, Ordering::AcqRel);
     let mut scope = Scope { complete: false };
     let forwarded = unsafe { forward::content_invalidation() };
     super::boundary(true);
@@ -38,15 +38,15 @@ fn country_enabled(enabled: bool) {
     COUNTRY_ENABLED.store(enabled, Ordering::Release);
     super::update_enabled();
     if !enabled {
-        unobserved();
+        unobserved!();
     }
 }
 unsafe fn country(
     [a, b, c, d]: [usize; 4],
     original: collector_observers::country_input_changes::DesignSourceOriginal,
 ) -> usize {
-    REVISION.fetch_add(1, Ordering::AcqRel);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
+    REVISION.fetch_add(1, Ordering::AcqRel);
     let mut scope = Scope { complete: false };
     let forwarded = unsafe { forward::country_invalidation(a) };
     let result = unsafe { original(a, b, c, d) };
@@ -108,12 +108,12 @@ fn provider(log: &mut RawLog<1>, memory: &impl Memory, pointer: usize) -> Result
     }
     Ok(())
 }
-fn observe(memory: &impl Memory, base: usize, key: sources::Key, retired: bool) {
+pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, retired: bool) {
     let Some(store) = STORE.get() else {
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        lock_contended();
+        dependency_repair::source(key, retired);
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
@@ -195,7 +195,7 @@ impl Drop for Scope {
     fn drop(&mut self) {
         REVISION.fetch_add(1, Ordering::AcqRel);
         if !self.complete {
-            unobserved();
+            unobserved!();
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
@@ -224,8 +224,8 @@ unsafe fn around<const SITE: usize>(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    REVISION.fetch_add(1, Ordering::AcqRel);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
+    REVISION.fetch_add(1, Ordering::AcqRel);
     let mut scope = Scope { complete: false };
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -260,11 +260,11 @@ unsafe fn around<const SITE: usize>(
                     {
                         observe(&memory, base, sources::Key::Direct(pointer as usize), false);
                     } else {
-                        unobserved();
+                        unobserved!();
                     }
                 }
             } else {
-                unobserved();
+                unobserved!();
             }
         }
     }

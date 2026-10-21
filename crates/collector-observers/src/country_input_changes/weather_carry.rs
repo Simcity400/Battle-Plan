@@ -10,7 +10,7 @@ pub static FULL_HOURS: AtomicU64 = AtomicU64::new(0);
 pub static WINDOW_RECORDS: AtomicU64 = AtomicU64::new(0);
 pub static EXPLAINED: AtomicU64 = AtomicU64::new(0);
 pub static POISONED: AtomicBool = AtomicBool::new(false);
-pub static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::new(&[
+pub static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
     "a carried region weather record differs from a fresh read",
     "a carried province weather record differs from a fresh read",
     "a carried region's combat modifier entries differ from a fresh read",

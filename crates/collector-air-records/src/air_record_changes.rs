@@ -36,7 +36,7 @@ use replay_data::{
 };
 use replay_derive::air_region_derive;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Range,
     sync::{
         Arc, Mutex,
@@ -226,6 +226,8 @@ struct Store {
     /// holders without records.
     holders: Vec<Held>,
     by_address: HashMap<usize, usize>,
+    touched: Vec<usize>,
+    touched_index: HashSet<usize>,
     /// The sample hour of the latest complete capture.
     hour: Option<i32>,
     /// The table published for `holders`; rebuilt only when a row changed.
@@ -289,14 +291,28 @@ fn splice(
     since: i32,
     first: usize,
     tail: impl Iterator<Item = AirCombatRecord>,
-) -> bool {
-    let Some(pruned) = suffix_start(held, since).checked_sub(first) else {
-        return false;
-    };
+) -> Option<bool> {
+    let pruned = suffix_start(held, since).checked_sub(first)?;
+    // The native tail is dated at or after since. Removing an older prefix
+    // therefore changes the row even if the replacement tail has equal values.
+    let mut changed = pruned != 0;
     held.drain(..pruned);
-    held.truncate(first);
-    held.extend(tail);
-    true
+    let mut len = first;
+    for record in tail {
+        if let Some(previous) = held.get_mut(len) {
+            if *previous != record {
+                *previous = record;
+                changed = true;
+            }
+        } else {
+            held.push(record);
+            changed = true;
+        }
+        len += 1;
+    }
+    changed |= held.len() != len;
+    held.truncate(len);
+    Some(changed)
 }
 
 /// `fresh` is `held` less a leading run of records dated before `cutoff`.
@@ -374,18 +390,14 @@ impl Store {
         }
         COUNTS[1].fetch_add(1, Ordering::Relaxed);
         let [own, foreign] = holder.sides;
-        let mut updated = held.row.clone();
-        for (side, records) in [(own, &mut updated.own), (foreign, &mut updated.foreign)] {
+        for (side, records) in [(own, &mut held.row.own), (foreign, &mut held.row.foreign)] {
             COUNTS[2].fetch_add(side.records.len() as u64, Ordering::Relaxed);
             let first = side.first as usize;
             let tail = side.records.into_iter().map(convert);
-            if !splice(records, since, first, tail) {
+            let Some(changed) = splice(records, since, first, tail) else {
                 return Err(Refusal::Mismatch(1));
-            }
-        }
-        if updated != held.row {
-            held.row = updated;
-            self.changed = true;
+            };
+            self.changed |= changed;
         }
         Ok(())
     }
@@ -426,13 +438,12 @@ impl Store {
         base: usize,
         check: crate::sampled_verify::Check,
         cutoff: Option<i32>,
-        touched: &std::collections::HashSet<usize>,
     ) -> Result<(u64, u64), &'static str> {
         let mut verified = 0;
         let mut mismatches = 0;
         for held in &mut self.holders {
             let key = (u64::from(held.row.country) << 32) | u64::from(held.row.region);
-            if touched.contains(&held.address) || !check.covers(key) {
+            if self.touched_index.contains(&held.address) || !check.covers(key) {
                 continue;
             }
             COUNTS[4].fetch_add(1, Ordering::Relaxed);
@@ -469,16 +480,17 @@ impl Store {
                 None => self.discover(memory, base, state, address)?,
             }
         }
-        let touched: std::collections::HashSet<usize> = touched.iter().copied().collect();
+        self.touched_index.clear();
+        self.touched_index.extend(touched.iter().copied());
         // The game's own timeout bounds what a pass may have removed.
         let cutoff = base
             .checked_add(native::LOG_TIMEOUT_RVA)
             .and_then(|at| engine_native::read::<i32>(memory, at))
             .map(|timeout| air_region_derive::cutoff(air_region_derive::last_pass(hour), timeout));
         let check = crate::sampled_verify::current_burned_in(VERIFY);
-        let (verified, mismatches) = self.sample(memory, base, check, cutoff, &touched)?;
+        let (verified, mismatches) = self.sample(memory, base, check, cutoff)?;
         COUNTS[5].fetch_add(
-            (self.holders.len() as u64).saturating_sub(touched.len() as u64),
+            (self.holders.len() as u64).saturating_sub(self.touched_index.len() as u64),
             Ordering::Relaxed,
         );
         if SAMPLED.record(verified, mismatches, 0) {
@@ -546,7 +558,8 @@ pub fn capture(
         return Err("air region combat capture overlaps its store");
     };
     let store = guard.get_or_insert_with(Store::default);
-    let mut touched = Vec::new();
+    let mut touched = std::mem::take(&mut store.touched);
+    touched.clear();
     let observed = TOUCHED.take(&mut touched, &mut store.offered);
     let full_cause = match (&observed, store.hour) {
         (_, None) => Some(0),
@@ -574,6 +587,7 @@ pub fn capture(
             store.full(memory, base, state)
         }
     };
+    store.touched = touched;
     match result.and_then(|()| store.publish()) {
         Ok(published) => {
             store.hour = Some(hour);

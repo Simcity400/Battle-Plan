@@ -252,135 +252,210 @@ impl Captured {
 
     /// Spool-thread conversion; raw values and incomplete-table status survive.
     pub fn tables(&self) -> [TableView; N] {
-        let outcomes = self.outcomes();
         [
-            table_iter::<tables::WeatherRegions, _>(
-                outcomes[0],
-                self.regions.rows.iter().take(outcomes[0].len()).enumerate(),
-                |(index, r)| rows::WeatherRegionRow {
-                    id: r.id,
-                    // No region operand is witnessed; current writers leave it empty.
-                    attack: rows::Recorded::Value(rows::Witnessed(None)),
-                    combat: rows::Recorded::Value(self.combat.get(index).copied().flatten().map(
-                        |[
-                            _detection,
-                            _naval_detection,
-                            speed,
-                            _air_attack,
-                            _air_defence,
-                            attack,
-                            breakthrough,
-                            attack_speed,
-                        ]| {
-                            rows::RegionCombatWeather {
-                                army_attack_factor: attack,
-                                breakthrough_factor: breakthrough,
-                                army_speed_factor: speed,
-                                army_attack_speed_factor: attack_speed,
-                            }
-                        },
-                    )),
-                    air_detection: rows::Recorded::Value(
-                        self.combat
-                            .get(index)
-                            .copied()
-                            .flatten()
-                            .map(|terms| terms[0]),
-                    ),
-                    map_modifiers_known: (self.combat.get(index).is_some_and(Option::is_some))
-                        .into(),
-                    naval_detection: (self
-                        .combat
-                        .get(index)
-                        .copied()
-                        .flatten()
-                        .and_then(|terms| terms[1]))
-                    .into(),
-                    air_attack: (self
-                        .combat
-                        .get(index)
-                        .copied()
-                        .flatten()
-                        .and_then(|terms| terms[3]))
-                    .into(),
-                    air_defence: (self
-                        .combat
-                        .get(index)
-                        .copied()
-                        .flatten()
-                        .and_then(|terms| terms[4]))
-                    .into(),
-                    max_snow: r.max_snow,
-                    light_rain: r.light_rain,
-                    heavy_rain: r.heavy_rain,
-                    snow: r.snow,
-                    blizzard: r.blizzard,
-                    sandstorm: r.sandstorm,
-                    arctic_water: r.arctic_water,
-                },
+            self.region_table(),
+            table::<tables::WeatherProvinces, _>(
+                self.provinces.outcome,
+                &self.provinces.rows,
+                |row| self.province_row(row),
             ),
-            table::<tables::WeatherProvinces, _>(outcomes[1], &self.provinces.rows, |r| {
-                // A slot past the read (a short fixture) or refused is a refusal.
-                let modifiers = self.province_modifiers.get(r.id as usize).map(|entries| {
-                    rows::ProvinceWeatherModifiers {
-                        entries: entries
-                            .iter()
-                            .map(|&(key, value)| rows::ProvinceModifierEntry { key, value })
-                            .collect(),
-                    }
-                });
-                rows::WeatherProvinceRow {
-                    daylight: rows::Recorded::Value(if r.id == 0 {
-                        Some(rows::WeatherDaylight {
-                            updated: self.clocks_updated,
-                            held: self.daylight_direction,
-                            held_feather: self.daylight_feather,
-                        })
-                    } else {
-                        None
-                    }),
-                    modifiers: rows::Recorded::Value(modifiers),
-                    id: r.id,
-                    snow: r.snow,
-                    permanent_snow: r.permanent_snow,
-                    display_snow: r.display_snow,
-                    display_mud: r.display_mud,
-                    // The pass's anchor holds every slot; an hour without a pass keeps the
-                    // words it read, which no consumer derives from.
-                    temperature: rows::ProvinceTemperature::anchored(
-                        match &self.temperature_pass {
-                            Some(_) => self
-                                .temperature_anchor
-                                .get(r.id as usize)
-                                .copied()
-                                .unwrap_or_else(|| words_of(r)),
-                            None => words_of(r),
-                        },
-                    ),
-                    raw_mud: replay_data::rows::Recorded::Value(r.raw_mud),
-                    // Slot 0 is never updated (day/night update starts at 1); a
-                    // suspended or unread gate holds every slot's clock.
-                    clock: if r.id != 0 && self.clocks_updated {
-                        rows::DayNightClock::UPDATED
-                    } else {
-                        rows::DayNightClock::held(replay_data::day_night::Clock {
-                            local_hour: r.local_hour,
-                            night_factor: r.night_factor,
-                        })
-                    },
-                    display: rows::Recorded::Value(if r.id == 0 {
-                        self.display.row()
-                    } else {
-                        None
-                    }),
-                    temperature_pass: rows::Recorded::Value(if r.id == 0 {
-                        self.temperature_pass.clone()
-                    } else {
-                        None
-                    }),
-                }
-            }),
         ]
+    }
+
+    pub fn table_inputs(
+        &self,
+        projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> [replay_frame::frame::TableInput; N] {
+        [
+            self.region_table().into(),
+            collector_projection::projection::project_table::<tables::WeatherProvinces, _>(
+                projection,
+                self.provinces.outcome,
+                &self.provinces.rows,
+                |row| u128::from(row.id),
+                |row, previous| self.province_equal(row, previous),
+                |row| self.province_row(row),
+            ),
+        ]
+    }
+
+    fn region_table(&self) -> TableView {
+        let outcomes = self.outcomes();
+        table_iter::<tables::WeatherRegions, _>(
+            outcomes[0],
+            self.regions.rows.iter().take(outcomes[0].len()).enumerate(),
+            |(index, r)| rows::WeatherRegionRow {
+                id: r.id,
+                // No region operand is witnessed; current writers leave it empty.
+                attack: rows::Recorded::Value(rows::Witnessed(None)),
+                combat: rows::Recorded::Value(self.combat.get(index).copied().flatten().map(
+                    |[
+                        _detection,
+                        _naval_detection,
+                        speed,
+                        _air_attack,
+                        _air_defence,
+                        attack,
+                        breakthrough,
+                        attack_speed,
+                    ]| {
+                        rows::RegionCombatWeather {
+                            army_attack_factor: attack,
+                            breakthrough_factor: breakthrough,
+                            army_speed_factor: speed,
+                            army_attack_speed_factor: attack_speed,
+                        }
+                    },
+                )),
+                air_detection: rows::Recorded::Value(
+                    self.combat
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .map(|terms| terms[0]),
+                ),
+                map_modifiers_known: (self.combat.get(index).is_some_and(Option::is_some)).into(),
+                naval_detection: (self
+                    .combat
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .and_then(|terms| terms[1]))
+                .into(),
+                air_attack: (self
+                    .combat
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .and_then(|terms| terms[3]))
+                .into(),
+                air_defence: (self
+                    .combat
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .and_then(|terms| terms[4]))
+                .into(),
+                max_snow: r.max_snow,
+                light_rain: r.light_rain,
+                heavy_rain: r.heavy_rain,
+                snow: r.snow,
+                blizzard: r.blizzard,
+                sandstorm: r.sandstorm,
+                arctic_water: r.arctic_water,
+            },
+        )
+    }
+
+    fn province_row(&self, r: &sweather_per_province::Row) -> rows::WeatherProvinceRow {
+        // A slot past the read (a short fixture) or refused is a refusal.
+        let modifiers = self.province_modifiers.get(r.id as usize).map(|entries| {
+            rows::ProvinceWeatherModifiers {
+                entries: entries
+                    .iter()
+                    .map(|&(key, value)| rows::ProvinceModifierEntry { key, value })
+                    .collect(),
+            }
+        });
+        rows::WeatherProvinceRow {
+            daylight: rows::Recorded::Value(self.province_daylight(r)),
+            modifiers: rows::Recorded::Value(modifiers),
+            id: r.id,
+            snow: r.snow,
+            permanent_snow: r.permanent_snow,
+            display_snow: r.display_snow,
+            display_mud: r.display_mud,
+            // The pass's anchor holds every slot; an hour without a pass keeps the
+            // words it read, which no consumer derives from.
+            temperature: self.province_temperature(r),
+            raw_mud: replay_data::rows::Recorded::Value(r.raw_mud),
+            // Slot 0 is never updated (day/night update starts at 1); a
+            // suspended or unread gate holds every slot's clock.
+            clock: self.province_clock(r),
+            display: rows::Recorded::Value(if r.id == 0 { self.display.row() } else { None }),
+            temperature_pass: rows::Recorded::Value(if r.id == 0 {
+                self.temperature_pass.clone()
+            } else {
+                None
+            }),
+        }
+    }
+
+    fn province_daylight(&self, row: &sweather_per_province::Row) -> Option<rows::WeatherDaylight> {
+        (row.id == 0).then_some(rows::WeatherDaylight {
+            updated: self.clocks_updated,
+            held: self.daylight_direction,
+            held_feather: self.daylight_feather,
+        })
+    }
+
+    fn province_temperature(&self, row: &sweather_per_province::Row) -> rows::ProvinceTemperature {
+        rows::ProvinceTemperature::anchored(match &self.temperature_pass {
+            Some(_) => self
+                .temperature_anchor
+                .get(row.id as usize)
+                .copied()
+                .unwrap_or_else(|| words_of(row)),
+            None => words_of(row),
+        })
+    }
+
+    fn province_clock(&self, row: &sweather_per_province::Row) -> rows::DayNightClock {
+        if row.id != 0 && self.clocks_updated {
+            rows::DayNightClock::UPDATED
+        } else {
+            rows::DayNightClock::held(replay_data::day_night::Clock {
+                local_hour: row.local_hour,
+                night_factor: row.night_factor,
+            })
+        }
+    }
+
+    fn province_equal(
+        &self,
+        row: &sweather_per_province::Row,
+        previous: &rows::WeatherProvinceRow,
+    ) -> bool {
+        let rows::WeatherProvinceRow {
+            id,
+            snow,
+            permanent_snow,
+            display_snow,
+            display_mud,
+            raw_mud,
+            temperature,
+            clock,
+            display,
+            temperature_pass,
+            modifiers,
+            daylight,
+        } = previous;
+        row.id == *id
+            && row.snow == *snow
+            && row.permanent_snow == *permanent_snow
+            && row.display_snow == *display_snow
+            && row.display_mud == *display_mud
+            && *raw_mud == rows::Recorded::Value(row.raw_mud)
+            && *temperature == self.province_temperature(row)
+            && *clock == self.province_clock(row)
+            && *daylight == rows::Recorded::Value(self.province_daylight(row))
+            && matches!(temperature_pass, rows::Recorded::Value(value)
+                if value.as_ref() == if row.id == 0 { self.temperature_pass.as_ref() } else { None })
+            && matches!(display, rows::Recorded::Value(value)
+                if if row.id == 0 { self.display.equal(value.as_ref()) } else { value.is_none() })
+            && match (self.province_modifiers.get(row.id as usize), modifiers) {
+                (None, rows::Recorded::Value(None)) => true,
+                (Some(entries), rows::Recorded::Value(Some(previous))) => {
+                    entries.len() == previous.entries.len()
+                        && entries
+                            .iter()
+                            .zip(&previous.entries)
+                            .all(|(&(key, value), previous)| {
+                                key == previous.key && value == previous.value
+                            })
+                }
+                _ => false,
+            }
     }
 
     /// Hand the hour's complete read to the pass tracker and keep its anchored words and pass.

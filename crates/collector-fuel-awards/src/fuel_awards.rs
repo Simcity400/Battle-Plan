@@ -16,7 +16,6 @@ use std::{
 };
 
 static LOG: Log = Log::new(0);
-static AIR_CONTAINER_WRITERS: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ROOT: AtomicU64 = AtomicU64::new(1);
 static UNHOOKED: OnceLock<&'static str> = OnceLock::new();
@@ -215,42 +214,17 @@ struct Pending {
 }
 thread_local! {
     static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
-    // A receipt tap precedes its native store. Retain its notification until
-    // the next receipt or the terminal callback, after that store completed.
-    static AIR_CONTAINER_WRITER: RefCell<Option<AirContainerWriter>> = const { RefCell::new(None) };
     /// The registry headers the pending root's unit recipients share, reset
     /// at each root's start.
     static REGISTRY: RefCell<native::Registry> = RefCell::new(native::Registry::default());
 }
 
-/// The interval remains active beyond the receipt callback through the native
-/// store. Detach retains the terminal tap until every such interval completes.
-struct AirContainerWriter(Option<collector_observers::air_base_carry_changes::fuel::Allocation>);
-impl AirContainerWriter {
-    fn new(container: usize) -> Self {
-        let allocation = collector_observers::air_base_carry_changes::fuel::allocated(container);
-        AIR_CONTAINER_WRITERS.fetch_add(1, Ordering::SeqCst);
-        Self(Some(allocation))
-    }
-}
-impl Drop for AirContainerWriter {
-    fn drop(&mut self) {
-        drop(self.0.take());
-        AIR_CONTAINER_WRITERS.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-fn finish_air_store(tag: usize) {
-    if matches!(tag, 0 | 1 | 8 | 9) {
-        AIR_CONTAINER_WRITER.with(|writer| drop(writer.borrow_mut().take()));
-    }
-}
-/// Stop admitting receipts before testing the entire owner interval. Callbacks
-/// enter LOG before testing admission, so an old admitted callback cannot race
-/// past this check and retain a new guard after the terminal tap is restored.
+/// Stop admitting receipts before testing callback quiescence. Callbacks
+/// enter LOG before testing admission, so an admitted callback cannot race
+/// past this check while the taps are restored.
 fn stop_admission_and_drained() -> bool {
     LOG.enabled.store(false, Ordering::SeqCst);
-    collector_observers::air_base_carry_changes::fuel::forwarder(false);
-    LOG.active.load(Ordering::SeqCst) == 0 && AIR_CONTAINER_WRITERS.load(Ordering::SeqCst) == 0
+    LOG.active.load(Ordering::SeqCst) == 0
 }
 
 /// The world generation and hourly boundary a located root belongs to.
@@ -259,7 +233,9 @@ type Stamp = (u64, u64);
 static HOURS: AtomicU64 = AtomicU64::new(0);
 /// Calls that took their root's located country or registry headers: the
 /// settle, the air recipients and the unit recipients.
-static HELD: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+// Diagnostic only: writer epochs, stamps and payload publication retain their
+// own atomic ordering. The callback already owns its hook-timing thread slot.
+static HELD: crate::hook_timing::CallCounters<3> = crate::hook_timing::CallCounters::new();
 
 /// Game thread, at each hourly boundary: nothing located before it is taken
 /// after it.
@@ -486,9 +462,7 @@ pub fn collect() {
     offer(0, 0);
 }
 pub fn active() -> usize {
-    LOG.active
-        .load(Ordering::SeqCst)
-        .saturating_add(AIR_CONTAINER_WRITERS.load(Ordering::SeqCst))
+    LOG.active.load(Ordering::SeqCst)
 }
 
 /// Off-thread, after hook/IP quiescence and spool drain. Unflushed samples keep
@@ -750,16 +724,8 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     #[cfg(feature = "callback_profile")]
     let _tag = TagTimer::new(tag);
     let call = LOG.enter();
-    // Terminal cleanup must still run after recording admission stops. The
-    // previous receipt's displaced store precedes every one of these taps.
-    finish_air_store(tag);
     if !LOG.enabled.load(Ordering::SeqCst) {
         return;
-    }
-    if tag == 8 {
-        AIR_CONTAINER_WRITER.with(|writer| {
-            *writer.borrow_mut() = Some(AirContainerWriter::new(registers.rdx));
-        });
     }
     let memory = unsafe { LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
@@ -853,7 +819,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
         )
         .map(|(settled, taken)| {
             if taken {
-                HELD[0].fetch_add(1, Ordering::Relaxed);
+                HELD.increment(0);
             }
             settled
         });
@@ -904,7 +870,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, tag: usize) {
     }
     .map(|(recipient, taken)| {
         if taken {
-            HELD[if kind == 1 { 1 } else { 2 }].fetch_add(1, Ordering::Relaxed);
+            HELD.increment(if kind == 1 { 1 } else { 2 });
         }
         recipient
     });
@@ -1198,10 +1164,9 @@ pub fn status() -> crate::status::Object<impl crate::status::Fields> {
         "first_drain_refusal": FIRST_DRAIN_REFUSAL.get().copied(),
         "day_sum_refusals": crate::tables::day_sum_refusals(),
         "busy_refusals": COUNTERS[6].load(Ordering::Relaxed),
-        "held_settles": HELD[0].load(Ordering::Relaxed),
-        "held_air_recipients": HELD[1].load(Ordering::Relaxed),
-        "air_store_intervals": AIR_CONTAINER_WRITERS.load(Ordering::SeqCst),
-        "held_unit_recipients": HELD[2].load(Ordering::Relaxed),
+        "held_settles": HELD.total(0),
+        "held_air_recipients": HELD.total(1),
+        "held_unit_recipients": HELD.total(2),
         "held_scope": "calls that left out a read because they took their UpdateFuel invocation's country, located by its start (settles of the same status, which read only the payload and their own fields; air recipients consuming that country), or a registry header an earlier unit recipient of the invocation read; their other reads, values and refusals are a fresh read's" })
 }
 
@@ -1252,7 +1217,7 @@ impl Hooks {
             self.publication_attempted = true;
         }
         if !enabled && !stop_admission_and_drained() {
-            // Keep END published until it can drop the last receipt guard.
+            // Keep the taps published until admitted callbacks complete.
             return Ok(false);
         }
         let ready = match crate::hook::shared::attach_outcome() {
@@ -1270,11 +1235,6 @@ impl Hooks {
             LOG.invalidate();
             LOG.enabled
                 .store(enabled && !self.taps.is_empty(), Ordering::SeqCst);
-        }
-        if ready {
-            collector_observers::air_base_carry_changes::fuel::forwarder(
-                enabled && !self.taps.is_empty(),
-            );
         }
         Ok(ready)
     }

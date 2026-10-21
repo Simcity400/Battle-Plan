@@ -104,7 +104,6 @@ impl Family {
                         | "naval_map_changes"
                         | "fleet_region_changes"
                 ) | (Self::ArmyStats, "division_panel_changes")
-                    | (Self::AirBaseCarry, "air_base_fuel_changes")
                     | (
                         Self::Designs,
                         "design_source_changes"

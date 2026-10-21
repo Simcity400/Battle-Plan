@@ -26,11 +26,25 @@ pub const EVENT_FEED_COLUMNS_FORMAT: u16 = 106;
 /// older event batch decodes unchanged, and the new codes appear only from
 /// this format.
 pub const EVENT_FEED_OWNER_REFUSALS_FORMAT: u16 = 109;
-/// Stable semantic observer occurrences and independent signed numeric lanes.
-pub const COMBAT_LOG_OBSERVER_KEYS_FORMAT: u16 = 106;
 /// ProductionLineOutput rows carry each tick's purpose and split a line's
 /// buckets by it; ProductionLineModifiers records the conversion control.
 pub const CONVERSION_PURPOSE_FORMAT: u16 = 110;
+/// Initial exact combat scalar aliases; their row markers were later removed
+/// by PRIVATE_COPY_ALIASES_FORMAT. Historical numbering only, not an old decoder.
+pub const SAME_FRAME_ALIASES_FORMAT: u16 = 111;
+/// Initial exact province and factory-efficiency aliases, likewise superseded
+/// by PRIVATE_COPY_ALIASES_FORMAT without retaining their row markers.
+pub const SAME_FRAME_OPERAND_ALIASES_FORMAT: u16 = 112;
+/// Grouped-storage alias columns do not change public rows or field masks.
+pub const PRIVATE_ALIASES_FORMAT: u16 = 113;
+/// Combat, province and production alias marks leave native row schemas.
+pub const PRIVATE_COPY_ALIASES_FORMAT: u16 = 114;
+/// Conditional display aliases retain literal values outside recorded exact demand.
+pub const PRIVATE_DISPLAY_ALIASES_FORMAT: u16 = 115;
+/// Owner-approved daily commander/observer progress and three division display columns.
+pub const DAILY_PROGRESS_FORMAT: u16 = 116;
+/// Stable semantic observer occurrences and independent signed numeric lanes.
+pub const COMBAT_LOG_OBSERVER_KEYS_FORMAT: u16 = 106;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -1462,6 +1476,16 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         name: "border_land_doctrine_level",
         introduced: 93,
     }];
+    history[TableId::Divisions.index()] = table(
+        TableId::Divisions,
+        PRIVATE_COPY_ALIASES_FORMAT,
+        "container-private copy aliases",
+    );
+    history[TableId::ProductionLines.index()] = table(
+        TableId::ProductionLines,
+        PRIVATE_COPY_ALIASES_FORMAT,
+        "container-private copy aliases",
+    );
     history[TableId::Politics.index()] = appended_at(
         TableId::Politics,
         104,
@@ -1486,8 +1510,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::LandCombatDivisions.index()] = appended_at(
         TableId::LandCombatDivisions,
-        LAND_DIVISION_NUMBERS_FORMAT,
-        "restore/combat reserve speed share, size/lcd-flat numeric fields",
+        PRIVATE_COPY_ALIASES_FORMAT,
+        "container-private combat scalar aliases",
         &[
             AppendedField {
                 index: 30,
@@ -1551,6 +1575,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             },
         ],
     );
+    history[TableId::LandCombatDivisions.index()].kind = ChangeKind::Layout;
     history[TableId::LandCombatDetails.index()].kind = ChangeKind::AppendedOnly;
     history[TableId::LandCombatDetails.index()].appended = &[
         AppendedField {
@@ -2930,8 +2955,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         introduced: LAND_MODIFIER_ROWS_FORMAT,
         ..table(
             TableId::LandCombatDivisionModifiers,
-            LAND_MODIFIER_ROWS_FORMAT,
-            "perf/land-modifiers",
+            PRIVATE_COPY_ALIASES_FORMAT,
+            "container-private identity alias",
         )
     };
     history[TableId::FuelDemandParts.index()] = LastChange {
@@ -3690,6 +3715,20 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         EXPERIENCE_FORMAT,
         "capture/experience",
     );
+    let daily_progress = [
+        TableId::UnitLeaders,
+        TableId::UnitLeaderTraitExperience,
+        TableId::CombatLogObservers,
+        TableId::DivisionStatus,
+    ];
+    let mut daily = 0;
+    while daily < daily_progress.len() {
+        let entry = &mut history[daily_progress[daily].index()];
+        entry.format = DAILY_PROGRESS_FORMAT;
+        entry.kind = ChangeKind::Meaning;
+        entry.commit = "capture/daily-progress";
+        daily += 1;
+    }
     history[TableId::IndustrialOrganisationPolicies.index()] = LastChange {
         introduced: INDUSTRIAL_ORGANISATION_DETAILS_FORMAT,
         ..table(
@@ -4260,9 +4299,27 @@ mod tests {
                     ))
             );
         }
-        // Tables holding retired fields stay readable in every recording.
+        // Retired fields alone do not change a table's meaning. Daily display
+        // samples and removing public alias marks separately changed their hosts.
         for field in RETIRED_FIELDS {
             let history = field.table.last_change();
+            if field.table == TableId::DivisionStatus {
+                assert_eq!(history.kind, ChangeKind::Meaning);
+                assert_eq!(history.format, DAILY_PROGRESS_FORMAT);
+                assert!(history.table_gap(field.table, POLITICAL_FORMAT).is_some());
+                assert!(history.table_gap(field.table, FORMAT_VERSION).is_none());
+                continue;
+            }
+            if matches!(
+                field.table,
+                TableId::LandCombatDivisions | TableId::ProductionLines
+            ) {
+                assert_eq!(history.kind, ChangeKind::Layout);
+                assert_eq!(history.format, PRIVATE_COPY_ALIASES_FORMAT);
+                assert!(history.table_gap(field.table, POLITICAL_FORMAT).is_some());
+                assert!(history.table_gap(field.table, FORMAT_VERSION).is_none());
+                continue;
+            }
             assert_eq!(history.kind, ChangeKind::AppendedOnly, "{:?}", field.table);
             let current = history
                 .appended
@@ -4278,14 +4335,24 @@ mod tests {
     }
 
     #[test]
-    fn combat_log_observer_semantic_keys_and_numeric_lanes_change_at_106() {
+    fn combat_log_observer_numeric_lanes_become_daily_at_116() {
         let table = TableId::CombatLogObservers;
         let history = table.last_change();
         assert_eq!(history.introduced, COMBAT_LOG_FORMAT);
-        assert_eq!(history.format, COMBAT_LOG_OBSERVER_KEYS_FORMAT);
-        assert_eq!(history.kind, ChangeKind::Layout);
+        assert_eq!(history.format, DAILY_PROGRESS_FORMAT);
+        assert_eq!(history.kind, ChangeKind::Meaning);
         assert!(history.table_gap(table, 105).is_some());
-        assert!(history.table_gap(table, 106).is_none());
+        assert!(history.table_gap(table, DAILY_PROGRESS_FORMAT).is_none());
+    }
+
+    #[test]
+    fn division_status_display_samples_become_daily_in_the_same_format_116() {
+        let table = TableId::DivisionStatus;
+        let history = table.last_change();
+        assert_eq!(history.format, DAILY_PROGRESS_FORMAT);
+        assert_eq!(history.kind, ChangeKind::Meaning);
+        assert!(history.table_gap(table, DAILY_PROGRESS_FORMAT - 1).is_some());
+        assert!(history.table_gap(table, DAILY_PROGRESS_FORMAT).is_none());
     }
 
     #[test]
@@ -4554,6 +4621,73 @@ mod tests {
         assert_eq!(events.format, SCRIPTED_MAP_FORMAT);
         assert_eq!(events.kind, ChangeKind::Layout);
         assert_eq!(crate::rows::MapEventFamily::COUNT, 8);
+    }
+
+    #[test]
+    fn recorder_format_changes_follow_main_in_their_original_order() {
+        assert_eq!(EVENT_FEED_OWNER_REFUSALS_FORMAT, 109);
+        assert_eq!(CONVERSION_PURPOSE_FORMAT, 110);
+        assert_eq!(
+            [
+                SAME_FRAME_ALIASES_FORMAT,
+                SAME_FRAME_OPERAND_ALIASES_FORMAT,
+                PRIVATE_ALIASES_FORMAT,
+                PRIVATE_COPY_ALIASES_FORMAT,
+                PRIVATE_DISPLAY_ALIASES_FORMAT,
+                DAILY_PROGRESS_FORMAT,
+            ],
+            [111, 112, 113, 114, 115, 116],
+        );
+        assert_eq!(FORMAT_VERSION, DAILY_PROGRESS_FORMAT);
+    }
+
+    #[test]
+    fn private_alias_columns_do_not_change_native_row_fields_or_prefixes() {
+        for (table, fields) in [
+            (TableId::DivisionMovement, 25),
+            (TableId::DivisionStatus, 45),
+            (TableId::CombatLogObservers, 11),
+            (TableId::NavalCombatDetails, 7),
+            (TableId::CountryFuel, 23),
+        ] {
+            assert_eq!(table.field_count(), fields);
+            assert_eq!(
+                table
+                    .last_change()
+                    .fields(table, PRIVATE_ALIASES_FORMAT - 1),
+                fields
+            );
+            // Alias storage leaves the native prefix unchanged. These two
+            // tables independently changed meaning at the later daily format.
+            let daily = matches!(table, TableId::DivisionStatus | TableId::CombatLogObservers);
+            assert_eq!(
+                table
+                    .last_change()
+                    .table_gap(table, PRIVATE_ALIASES_FORMAT - 1)
+                    .is_some(),
+                daily,
+            );
+        }
+    }
+
+    #[test]
+    fn copy_aliases_are_private_columns_not_native_fields() {
+        for (table, fields) in [
+            (TableId::LandCombatDivisions, 42),
+            (TableId::LandCombatDivisionModifiers, 2),
+            (TableId::Divisions, 9),
+            (TableId::ProductionLines, 13),
+        ] {
+            assert_eq!(table.field_count(), fields);
+            assert_eq!(table.last_change().format, PRIVATE_COPY_ALIASES_FORMAT);
+            assert!(
+                table
+                    .last_change()
+                    .table_gap(table, PRIVATE_COPY_ALIASES_FORMAT)
+                    .is_none()
+            );
+            assert_eq!(table.field_name(fields), None);
+        }
     }
 
     #[test]

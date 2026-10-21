@@ -5,6 +5,14 @@ countries, fleets, task forces, ships and bases. Native writer notifications sel
 quiet objects supply their held values without another native read. Reusable native list storage
 follows each changed object's live demand. Replay snapshots are shared while their values hold.
 
+The recorder may loan the finalized force/base store to FIFO decode for owned
+snapshot collection, sorting and shared-table publication. Hooks continue marking
+their independent watch registries; native reads, receiver admission, retirements
+and the demand offer finish before resume. A subsequent acquisition waits for its
+store rather than rereading a quiet receiver. An abandoned or unwound publication
+invalidates the held epoch before returning the store; quiet completed snapshots
+retain the same shared allocations. The owned publication API takes no Memory.
+
 The writer observer, capture and replay consumers preserve ordered composition preferences, repair
 queues and full work-order identities. Content labels resolve through the recording's content stack.
 Reader failures remain named table refusals. There is no hourly polling fallback when observation

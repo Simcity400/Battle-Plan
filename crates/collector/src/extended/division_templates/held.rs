@@ -53,6 +53,35 @@ mod tests {
     use crate::template_changes::Watches;
 
     #[test]
+    fn owned_payload_settlement_uses_the_parked_certificate() {
+        let watches = Watches::enabled(16);
+        let mut store = Store::default();
+        let row = native::IconRow {
+            template: 52,
+            pointer: 0x5000,
+            owner: 1,
+            details_fresh: true,
+            names_group: Some(native::Span { start: 0, len: 3 }),
+            ..Default::default()
+        };
+        store.begin(&watches);
+        assert!(store.request(&watches, row.owner, row.pointer, row.template, 0));
+        store.certify(&watches, &[row]);
+        drop(watches.notify(row.pointer, 0));
+        store.settle(&[row], &[], &[], b"OLD");
+        let settings = store
+            .values(&row)
+            .1
+            .require("settings")
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert_eq!(settings.names_group.as_deref(), Some(b"OLD".as_slice()));
+        store.begin(&watches);
+        assert!(store.request(&watches, row.owner, row.pointer, row.template, 0));
+    }
+
+    #[test]
     fn template_first_acquisition_refuses_a_writer_active_at_both_ends_and_retries() {
         let watches = Watches::enabled(16);
         let mut store = Store::default();
@@ -414,16 +443,7 @@ impl Store {
         read
     }
 
-    pub fn finish(
-        &mut self,
-        changes: &dyn Changes,
-        rows: &[native::IconRow],
-        counts: &[native::SubunitCount],
-        variants: &[u64],
-        bytes: &[u8],
-    ) {
-        // Requests checked each row during the existing native walk. When no
-        // writer ran across it, there is nothing to finalize or revalidate.
+    pub fn certify(&mut self, changes: &dyn Changes, rows: &[native::IconRow]) {
         if !self.requested && self.before.is_some() && self.before == changes.quiet() {
             return;
         }
@@ -443,13 +463,47 @@ impl Store {
                 entry.acquired = false;
                 continue;
             }
-            if !entry.requested {
-                continue;
+            if entry.requested {
+                entry.attempted = true;
+                entry.certificate = entry.pending;
+                entry.valid = row.details_fresh;
             }
-            entry.attempted = true;
-            entry.certificate = entry.pending;
-            if !row.details_fresh {
-                entry.valid = false;
+        }
+    }
+
+    #[cfg(test)]
+    pub fn finish(
+        &mut self,
+        changes: &dyn Changes,
+        rows: &[native::IconRow],
+        counts: &[native::SubunitCount],
+        variants: &[u64],
+        bytes: &[u8],
+    ) {
+        self.certify(changes, rows);
+        self.settle(rows, counts, variants, bytes);
+    }
+
+    /// Certificates are frozen by `certify`; only owned payloads are reached.
+    pub fn settle(
+        &mut self,
+        rows: &[native::IconRow],
+        counts: &[native::SubunitCount],
+        variants: &[u64],
+        bytes: &[u8],
+    ) {
+        if !self.requested {
+            return;
+        }
+        for row in rows {
+            let Ok(at) = self
+                .entries
+                .binary_search_by_key(&row.template, |entry| entry.template)
+            else {
+                continue;
+            };
+            let entry = &mut self.entries[at];
+            if !entry.requested || !entry.valid {
                 continue;
             }
             let previous_bytes = entry.allocated_bytes();
@@ -557,8 +611,54 @@ impl Store {
             entry.raw_settings = Some(row.settings);
             entry.acquired = true;
             entry.valid = true;
+            entry.requested = false;
             self.payload_bytes = self.payload_bytes - previous_bytes + entry.allocated_bytes();
         }
+        self.requested = false;
+    }
+
+    pub fn settings_available(&self, row: &native::IconRow) -> bool {
+        self.entries
+            .binary_search_by_key(&row.template, |entry| entry.template)
+            .ok()
+            .is_some_and(|at| {
+                let entry = &self.entries[at];
+                entry.valid
+                    && entry.pointer == row.pointer
+                    && entry.owner == row.owner
+                    && (entry.requested || entry.settings.is_some())
+            })
+    }
+
+    fn value_refs(
+        &self,
+        row: &native::IconRow,
+    ) -> (Option<&Arc<TemplateLayout>>, Option<&Arc<TemplateSettings>>) {
+        let entry = self
+            .entries
+            .binary_search_by_key(&row.template, |entry| entry.template)
+            .ok()
+            .map(|at| &self.entries[at])
+            .filter(|entry| {
+                entry.valid && entry.pointer == row.pointer && entry.owner == row.owner
+            });
+        match entry.and_then(|entry| entry.settings.as_ref().map(|settings| (entry, settings))) {
+            Some((entry, settings)) => (entry.layout.as_ref(), Some(settings)),
+            None => (None, None),
+        }
+    }
+
+    pub fn matches_values(
+        &self,
+        row: &native::IconRow,
+        layout: &Recorded<Option<Arc<TemplateLayout>>>,
+        settings: &Recorded<Option<Arc<TemplateSettings>>>,
+    ) -> bool {
+        let (Recorded::Value(layout), Recorded::Value(settings)) = (layout, settings) else {
+            return false;
+        };
+        let (current_layout, current_settings) = self.value_refs(row);
+        current_layout == layout.as_ref() && current_settings == settings.as_ref()
     }
 
     // Preserve the independent recorded layout/settings availability in the borrowed view.
@@ -570,20 +670,10 @@ impl Store {
         Recorded<Option<Arc<TemplateLayout>>>,
         Recorded<Option<Arc<TemplateSettings>>>,
     ) {
-        let entry = self
-            .entries
-            .binary_search_by_key(&row.template, |entry| entry.template)
-            .ok()
-            .map(|at| &self.entries[at])
-            .filter(|entry| {
-                entry.valid && entry.pointer == row.pointer && entry.owner == row.owner
-            });
-        match entry.and_then(|entry| entry.settings.as_ref().map(|settings| (entry, settings))) {
-            Some((entry, settings)) => (
-                Recorded::Value(entry.layout.clone()),
-                Recorded::Value(Some(Arc::clone(settings))),
-            ),
-            None => (Recorded::Value(None), Recorded::Value(None)),
-        }
+        let (layout, settings) = self.value_refs(row);
+        (
+            Recorded::Value(layout.cloned()),
+            Recorded::Value(settings.cloned()),
+        )
     }
 }

@@ -202,14 +202,3 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
         Receiver::Pool,
     ),
 ];
-
-/// Container demand refresh. Its first argument is the container and the
-/// second is its base; observing this writer certifies only dynamic scalars.
-pub const FUEL_DEMAND: MutationSite = MutationSite {
-    name: "air_container_fuel_demand",
-    rva: 0xc4_8430,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0xaf,
-        0x07,
-    ],
-};

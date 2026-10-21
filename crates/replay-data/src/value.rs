@@ -44,6 +44,15 @@ pub trait Value: Sized {
         })
     }
     fn try_clone(&self) -> io::Result<Self>;
+    /// Checked owning copy of a collection. Scalar implementations copy the
+    /// slice at once; structured elements retain their checked nested clones.
+    fn try_clone_many(values: &[Self]) -> io::Result<Vec<Self>> {
+        let mut owned = allocation::vec(values.len())?;
+        for value in values {
+            owned.push(Value::try_clone(value)?);
+        }
+        Ok(owned)
+    }
     /// Bytes this value's own allocations hold: each collection it owns at
     /// its capacity and element size, and what those elements hold in turn.
     /// Its inline size is counted by whatever holds it.
@@ -188,6 +197,11 @@ pub trait EncodeValue {
     fn encoded_bytes(&self) -> io::Result<usize>;
     fn recorded_bytes(&self) -> io::Result<usize>;
     fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()>;
+    /// Append after the enclosing field/row reserved this value's encoded
+    /// bound. Custom encoders may retain their ordinary checked path.
+    fn encode_value_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        self.encode_value(output)
+    }
 }
 
 impl<T: Value> EncodeValue for T {
@@ -199,6 +213,9 @@ impl<T: Value> EncodeValue for T {
     }
     fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()> {
         self.encode(output)
+    }
+    fn encode_value_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        self.encode_reserved(output)
     }
 }
 
@@ -220,6 +237,7 @@ macro_rules! integer {
             fn encoded_bytes(&self) -> io::Result<usize> { Ok(size_of::<Self>()) }
             fn encoded_many_bytes(values: &[Self]) -> io::Result<usize> { allocation::mul(values.len(), size_of::<Self>()) }
             fn try_clone(&self) -> io::Result<Self> { Ok(*self) }
+            fn try_clone_many(values: &[Self]) -> io::Result<Vec<Self>> { allocation::copy_vec(values) }
             fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
                 output.extend_from_slice(&self.to_le_bytes());
                 Ok(())
@@ -253,6 +271,9 @@ impl Value for i64 {
     fn try_clone(&self) -> io::Result<Self> {
         Ok(*self)
     }
+    fn try_clone_many(values: &[Self]) -> io::Result<Vec<Self>> {
+        allocation::copy_vec(values)
+    }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         output.extend_from_slice(&self.to_le_bytes());
         Ok(())
@@ -285,6 +306,9 @@ impl Value for u8 {
     }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(*self)
+    }
+    fn try_clone_many(values: &[Self]) -> io::Result<Vec<Self>> {
+        allocation::copy_vec(values)
     }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         output.push(*self);
@@ -322,6 +346,9 @@ impl Value for bool {
     }
     fn try_clone(&self) -> io::Result<Self> {
         Ok(*self)
+    }
+    fn try_clone_many(values: &[Self]) -> io::Result<Vec<Self>> {
+        allocation::copy_vec(values)
     }
     fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
         output.push(u8::from(*self));
@@ -409,11 +436,7 @@ impl<T: Value> Value for Vec<T> {
         allocation::add(4, T::encoded_many_bytes(self)?)
     }
     fn try_clone(&self) -> io::Result<Self> {
-        let mut values = allocation::vec(self.len())?;
-        for value in self {
-            values.push(Value::try_clone(value)?);
-        }
-        Ok(values)
+        T::try_clone_many(self)
     }
     const HAS_STEPS: bool = T::HAS_STEPS;
     fn round_display(&mut self) {

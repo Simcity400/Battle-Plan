@@ -343,6 +343,19 @@ impl Variants {
         hour: i32,
         full: bool,
     ) -> [u64; N] {
+        let ticks = self.capture_deferred(memory, base, variants, hour, full);
+        self.settle_owned();
+        ticks
+    }
+
+    pub fn capture_deferred(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        variants: Sources<'_, cequipment_variant::RegistryRow>,
+        hour: i32,
+        full: bool,
+    ) -> [u64; N] {
         self.baseline_admitted = false;
         let recovery = design_changes::needs_full();
         if !full
@@ -408,8 +421,11 @@ impl Variants {
             // survive until a later scheduled retry.
             design_changes::refuse_census();
         }
-        self.canonicalize_definitions();
         ticks
+    }
+
+    pub fn settle_owned(&mut self) {
+        self.canonicalize_definitions();
     }
 
     /// Acquisition and coupled module/context visits retain native order.
@@ -703,6 +719,10 @@ impl Captured {
 
     pub fn restore_variants(&mut self, variants: Variants) {
         self.variants = variants;
+    }
+
+    pub fn settle_variants_owned(&mut self) {
+        self.variants.settle_owned();
     }
 
     pub fn with_capacities(capacities: &Capacities) -> Self {

@@ -246,6 +246,8 @@ pub struct UnitCapture {
     pub inputs: Result<Inputs, Failure>,
     /// The unit's first row in the shared origin arena.
     pub origins_start: usize,
+    /// Whether the header admitted an arena range, even if its payload later failed.
+    pub(crate) origins_admitted: bool,
     /// The origin header the scalar batch copied, witnessed after the payload.
     header: [u8; 16],
 }
@@ -255,6 +257,7 @@ impl Default for UnitCapture {
         Self {
             inputs: Err(Failure::Unreadable),
             origins_start: 0,
+            origins_admitted: false,
             header: [0; 16],
         }
     }
@@ -341,20 +344,44 @@ pub fn capture_units(
     origins: &mut Vec<Origin>,
     growing: bool,
 ) -> OriginsUse {
+    capture_selected_units(memory, pointer, |_| true, units, origins, growing)
+}
+
+/// The same batches for selected units only. A carried footer omits its entire
+/// scalar/header read, origin traversal and header witness, not record fields.
+pub fn capture_selected_units(
+    memory: &impl Memory,
+    pointer: impl Fn(usize) -> usize,
+    selected: impl Fn(usize) -> bool,
+    units: &mut [UnitCapture],
+    origins: &mut Vec<Origin>,
+    growing: bool,
+) -> OriginsUse {
     let mut pointers = [0usize; BATCH];
+    let mut indices = [0usize; BATCH];
     let mut records = [0u8; BATCH * UNIT_BYTES];
     for (chunk_index, chunk) in units.chunks_mut(BATCH).enumerate() {
         let first = chunk_index * BATCH;
-        for (row, slot) in pointers[..chunk.len()].iter_mut().enumerate() {
-            *slot = pointer(first + row);
+        let mut count = 0;
+        for (row, unit) in chunk.iter_mut().enumerate() {
+            *unit = UnitCapture::default();
+            if selected(first + row) {
+                pointers[count] = pointer(first + row);
+                indices[count] = row;
+                count += 1;
+            }
         }
-        let bytes = &mut records[..chunk.len() * UNIT_BYTES];
+        if count == 0 {
+            continue;
+        }
+        let bytes = &mut records[..count * UNIT_BYTES];
         let copied = memory.copy_records(
-            RecordSources::Pointers(&pointers[..chunk.len()]),
+            RecordSources::Pointers(&pointers[..count]),
             &UNIT_LAYOUT,
             bytes,
         );
-        for (row, unit) in chunk.iter_mut().enumerate() {
+        for row in 0..count {
+            let unit = &mut chunk[indices[row]];
             let unit_pointer = pointers[row];
             let record = &mut bytes[row * UNIT_BYTES..(row + 1) * UNIT_BYTES];
             let mut valid = [false; UNIT_FIELDS.len()];
@@ -426,6 +453,7 @@ pub fn capture_units(
             }
         }
         unit.origins_start = used.len;
+        unit.origins_admitted = true;
         used.len = end;
         inputs.origins_len = Ok(count);
     }

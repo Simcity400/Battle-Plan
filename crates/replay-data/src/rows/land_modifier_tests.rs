@@ -12,6 +12,7 @@ fn member(ordinal: u32, entries: Vec<CombatModifierValue>) -> LandCombatDivision
         ordinal,
         division: (0x35 << 32) | 0x33,
         entries,
+        ..Default::default()
     }
 }
 
@@ -48,6 +49,7 @@ fn land_combat_division_modifiers_hold_a_row_a_member_keyed_as_its_combat_row() 
     let table = TableId::LandCombatDivisionModifiers;
     assert_eq!(table.field_name(0), Some("division"));
     assert_eq!(table.field_name(1), Some("entries"));
+    assert_eq!(table.field_name(2), None);
     assert_eq!(table.field_count(), 2);
     let row = member(u32::MAX, vec![entry(7, 10, -20)]);
     assert_eq!(

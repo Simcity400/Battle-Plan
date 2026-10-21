@@ -2862,11 +2862,15 @@ fn experience_changes_create_visible_runs_and_keep_complete_ordered_training() {
             }]));
         frame
     };
+    let mut carried = make(101, i64::MAX);
+    *carried.tables[TableId::UnitLeaderTraitExperience.index()] = TableView::Unavailable {
+        reason: replay_data::cadence::SKIPPED_REASON.into(),
+    };
     let replay = Replay::from_records(
         dashboard_core::test_fixtures::CAMPAIGN.to_vec(),
         &[dashboard_core::test_fixtures::records(
             1,
-            vec![make(100, 3), make(101, i64::MAX)],
+            vec![make(100, 3), carried],
         )],
     )
     .unwrap();
@@ -2881,6 +2885,19 @@ fn experience_changes_create_visible_runs_and_keep_complete_ordered_training() {
     assert_eq!(training[0].experience_raw, i64::MAX.to_string());
     assert_eq!(training[1].experience_raw, "-1");
     assert_eq!(first.factors.as_ref().unwrap()[0].factor_raw, "-25000");
+    assert_eq!(
+        runs[1]
+            .value
+            .progress
+            .as_ref()
+            .unwrap()
+            .training
+            .as_ref()
+            .unwrap()
+            .len(),
+        2,
+        "the hourly XP row accepts training carried from its earlier daily sample"
+    );
     assert_eq!(
         runs[1].value.progress.as_ref().unwrap().experience_raw,
         i64::MAX.to_string()

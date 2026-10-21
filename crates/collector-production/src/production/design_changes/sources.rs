@@ -10,7 +10,7 @@ pub(super) enum Key {
 }
 #[derive(Default)]
 pub(super) struct Interests {
-    entries: HashMap<Key, (u32, bool)>,
+    pub(super) entries: HashMap<Key, (u32, bool)>,
     dirty_authors: std::collections::HashSet<u64>,
     pub(super) organisations: HashMap<u64, usize>,
     pub(super) organisation_pointers: HashMap<usize, u64>,
@@ -68,6 +68,7 @@ impl Interests {
             self.organisation_pointers.insert(pointer, handle);
         }
         self.organisations.insert(handle, pointer.unwrap_or(0));
+        liveness::demand(true);
         Ok(())
     }
     pub(super) fn changed(&mut self, key: Key) -> Option<u32> {
@@ -79,7 +80,7 @@ impl Interests {
         if !self.dirty_authors.contains(&handle)
             && self.dirty_authors.len() == self.dirty_authors.capacity()
         {
-            unobserved();
+            unobserved!();
             return;
         }
         self.dirty_authors.insert(handle);
@@ -227,6 +228,24 @@ pub(super) fn track(
     TRIM.store(true, Ordering::Release);
     Ok(())
 }
+/// A terminal repair did not pass through native staging. Register its freshly
+/// reached dependencies on the worker before certifying the next interval.
+pub(super) fn repair(
+    row: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
+    interests: &mut Interests,
+) -> Result<(), &'static str> {
+    interests.prepare(
+        row.source_links
+            .as_ref()
+            .map_or(0, |links| links.direct.len() + 1),
+    )?;
+    let mut held = bindings();
+    engine_allocation::reserve_map(&mut held, 1)
+        .map_err(|_| "design source binding allocation failed")?;
+    track_in(&mut held, interests, row)?;
+    TRIM.store(true, Ordering::Release);
+    Ok(())
+}
 static TRIM: AtomicBool = AtomicBool::new(false);
 pub(super) fn prune_interests() -> Result<(), &'static str> {
     if !TRIM.load(Ordering::Acquire) {
@@ -273,9 +292,43 @@ pub(super) fn prune_interests() -> Result<(), &'static str> {
         .interests
         .organisation_pointers
         .retain(|_, handle| authors.contains(handle));
+    super::liveness::demand(!store.interests.organisations.is_empty());
     super::liveness::retain(&authors);
     TRIM.store(false, Ordering::Release);
     Ok(())
+}
+pub(super) fn author_designs(handle: u64) -> Result<Vec<u64>, &'static str> {
+    let held = bindings();
+    let mut designs = engine_allocation::vec(held.len())
+        .map_err(|_| "variant author dependency allocation failed")?;
+    designs.extend(
+        held.iter()
+            .filter(|(_, binding)| binding.author == handle)
+            .map(|(id, _)| *id),
+    );
+    Ok(designs)
+}
+pub(super) fn affected(
+    direct: &std::collections::HashSet<usize>,
+    providers: &std::collections::HashSet<usize>,
+) -> Result<std::collections::HashSet<u64>, &'static str> {
+    let held = bindings();
+    let mut affected = std::collections::HashSet::new();
+    engine_allocation::reserve_set(&mut affected, held.len())
+        .map_err(|_| "variant dependency repair allocation failed")?;
+    for (id, binding) in held.iter() {
+        if binding
+            .direct
+            .iter()
+            .any(|pointer| direct.contains(pointer))
+            || binding
+                .provider
+                .is_some_and(|(_, pointer)| providers.contains(&pointer))
+        {
+            affected.insert(*id);
+        }
+    }
+    Ok(affected)
 }
 pub(super) fn remove(variant: u64) {
     bindings().remove(&variant);
@@ -443,6 +496,25 @@ mod tests {
                 named: vec![2, 2],
             },
         }
+    }
+    #[test]
+    fn lost_source_and_provider_keys_select_all_raw_owner_aliases() {
+        let first = binding();
+        let mut alias = first.clone();
+        alias.provider.as_mut().unwrap().0 = 4_999;
+        let mut unrelated = first.clone();
+        unrelated.direct = vec![SOURCE + 1];
+        unrelated.provider = Some((4_998, 0x2000));
+        bindings().extend([(1, first), (2, alias), (3, unrelated)]);
+        let empty = std::collections::HashSet::new();
+        assert_eq!(
+            affected(&std::collections::HashSet::from([SOURCE]), &empty).unwrap(),
+            std::collections::HashSet::from([1, 2])
+        );
+        assert_eq!(
+            affected(&empty, &std::collections::HashSet::from([0x1000])).unwrap(),
+            std::collections::HashSet::from([1, 2])
+        );
     }
     #[test]
     fn repeated_source_writes_freeze_distinct_versions_and_preserve_duplicate_references() {

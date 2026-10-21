@@ -61,6 +61,7 @@ pub struct Stores<'a> {
 }
 
 pub struct Captured {
+    pending_owned: bool,
     origins: Vec<native::OriginRow>,
     rights: Vec<native::RightsRow>,
     oil: Vec<native::OilRow>,
@@ -93,6 +94,7 @@ impl Captured {
     }
     fn new(storage: bool) -> Self {
         Self {
+            pending_owned: false,
             origins: Vec::new(),
             rights: Vec::new(),
             oil: Vec::new(),
@@ -110,9 +112,11 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
+        self.pending_owned = false;
         self.outcomes = [crate::MISSING; N];
     }
     pub fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.pending_owned = false;
         self.outcomes = TABLES.map(|table| crate::failed_capture(table, hour, force_full, reason));
         self.selection.reset(hour, force_full);
     }
@@ -170,6 +174,23 @@ impl Captured {
         force_full: bool,
         stores: Option<Stores<'_>>,
     ) -> [u64; N] {
+        let ticks = self.capture_deferred(memory, base, game_state, hour, force_full, stores);
+        let start = qpc();
+        self.settle_owned();
+        let mut ticks = ticks;
+        ticks[0] += elapsed(start);
+        ticks
+    }
+
+    pub fn capture_deferred(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        stores: Option<Stores<'_>>,
+    ) -> [u64; N] {
         self.reset();
         let full = force_full || stores.is_none();
         self.selection.reset(hour, full);
@@ -191,10 +212,8 @@ impl Captured {
             self.outcomes[0] = sorted(&mut self.origins, outcomes.origins, |row| {
                 (row.state, row.country)
             });
-            self.outcomes[1] = sorted(&mut self.rights, outcomes.rights, |row| {
-                (row.state, row.resource)
-            });
-            self.outcomes[2] = sorted(&mut self.oil, outcomes.oil, |row| row.country);
+            self.outcomes[1] = outcomes.rights;
+            self.outcomes[2] = outcomes.oil;
             self.outcomes[4] = sorted(&mut self.clients, outcomes.clients, |row| row.handle);
         }
         ticks[0] = elapsed(begin);
@@ -207,18 +226,13 @@ impl Captured {
                 Buffer::Growing(&mut self.descriptors),
             );
             self.outcomes[3] = match descriptors {
-                Outcome::Rows { len } => {
-                    let outcome = native::walk_temporary(
-                        memory,
-                        base,
-                        game_state,
-                        &self.descriptors[..len],
-                        Buffer::Growing(&mut self.temporary),
-                    );
-                    sorted(&mut self.temporary, outcome, |row| {
-                        (row.state, row.resource)
-                    })
-                }
+                Outcome::Rows { len } => native::walk_temporary(
+                    memory,
+                    base,
+                    game_state,
+                    &self.descriptors[..len],
+                    Buffer::Growing(&mut self.temporary),
+                ),
                 _ => Outcome::Unavailable {
                     reason: "resource descriptor census incomplete or inconsistent",
                 },
@@ -236,7 +250,7 @@ impl Captured {
             let _reads = crate::read_accounting::table(TABLES[6]);
             self.outcomes[6] = match (self.outcomes[0], self.outcomes[4]) {
                 (Outcome::Rows { len: origins }, Outcome::Rows { len: clients }) => {
-                    let outcome = native::walk_regional(
+                    native::walk_regional(
                         memory,
                         base,
                         game_state,
@@ -244,8 +258,7 @@ impl Captured {
                         &self.clients[..clients],
                         &mut self.pairs,
                         Buffer::Growing(&mut self.regional),
-                    );
-                    sorted(&mut self.regional, outcome, |row| (row.country, row.region))
+                    )
                 }
                 _ => Outcome::Unavailable {
                     reason: "regional convoy efficiency needs complete origins and convoy clients",
@@ -253,7 +266,27 @@ impl Captured {
             };
         }
         ticks[6] = elapsed(begin);
+        self.pending_owned = true;
         ticks
+    }
+
+    /// Origins and clients retain acquisition order for native route and
+    /// regional demand. These independent tables reach only owned rows.
+    pub fn settle_owned(&mut self) {
+        if !self.pending_owned {
+            return;
+        }
+        self.outcomes[1] = sorted(&mut self.rights, self.outcomes[1], |row| {
+            (row.state, row.resource)
+        });
+        self.outcomes[2] = sorted(&mut self.oil, self.outcomes[2], |row| row.country);
+        self.outcomes[3] = sorted(&mut self.temporary, self.outcomes[3], |row| {
+            (row.state, row.resource)
+        });
+        self.outcomes[6] = sorted(&mut self.regional, self.outcomes[6], |row| {
+            (row.country, row.region)
+        });
+        self.pending_owned = false;
     }
 
     /// The route census, its owners' selection and the selected owners' routes.

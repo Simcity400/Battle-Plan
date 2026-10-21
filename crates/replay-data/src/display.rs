@@ -117,6 +117,7 @@ impl Step {
     }
 
     /// The multiple of the step `value` is stored as; a sentinel word stays.
+    #[inline]
     pub const fn round(self, value: i64) -> i64 {
         if sentinel(value) {
             value
@@ -127,24 +128,29 @@ impl Step {
 
     /// `value` rounded and divided by the step; a sentinel word stays itself.
     /// A multiple outside i64 keeps the next multiple toward zero.
+    #[inline]
     pub const fn units(self, value: i64) -> i64 {
         if sentinel(value) {
             return value;
         }
-        let raw = self.raw as i128;
-        let magnitude = (value as i128).abs();
+        // Sentinel exclusion bounds the magnitude by i64::MAX - 1. A rounded
+        // product is at most magnitude + raw, so even the overflow check fits
+        // in u64; no wide division is needed for an ordinary display value.
+        let raw = self.raw as u64;
+        let magnitude = value.unsigned_abs();
+        let truncated = magnitude / raw;
         let mut quotient = match self.rounding {
-            Rounding::TowardZero => magnitude / raw,
+            Rounding::TowardZero => truncated,
             Rounding::TowardZeroNonzero => {
                 if magnitude != 0 && magnitude < raw {
                     1
                 } else {
-                    magnitude / raw
+                    truncated
                 }
             }
-            Rounding::HalfAwayFromZero => (2 * magnitude + raw) / (2 * raw),
+            Rounding::HalfAwayFromZero => truncated + (2 * (magnitude % raw) >= raw) as u64,
             Rounding::HalfAwayFromZeroNonzero => {
-                let rounded = (2 * magnitude + raw) / (2 * raw);
+                let rounded = truncated + (2 * (magnitude % raw) >= raw) as u64;
                 if magnitude != 0 && rounded == 0 {
                     1
                 } else {
@@ -152,7 +158,7 @@ impl Step {
                 }
             }
         };
-        if quotient * raw > i64::MAX as i128 {
+        if quotient * raw > i64::MAX as u64 {
             quotient -= 1;
         }
         let quotient = quotient as i64;

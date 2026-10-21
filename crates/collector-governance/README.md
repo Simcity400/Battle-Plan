@@ -4,6 +4,15 @@ Governance capture: politics, political parties and party leaders, ideas, resear
 
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
+Nested research-text and power-balance heap totals are measured lazily once per owned state, invalidated by capture, reset and research loans; outer buffer capacities remain measured directly, and growth adds only default text without child heaps.
+
+Recorder acquisition keeps technology dictionary entries and text owned by the
+frame; FIFO decode alone assembles and sorts TechnologyDefinitions rows. This
+tail takes no Memory, preserves the captured source/truncation refusal before
+any output allocation refusal, and finishes before frame reuse. Dictionary read
+demand, certificates and owner-fingerprint decisions stay parked. Direct capture
+uses the same row assembly synchronously.
+
 Scripted map demand can retain the native country sharing roster in ResearchModifiers,
 including idle countries. The existing research writer certificate and selected country
 census carry its count witness and ordered IDs; no separate periodic census is added.

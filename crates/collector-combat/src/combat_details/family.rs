@@ -1105,6 +1105,34 @@ fn run_reference(world: &impl Memory, c: Capacities) -> Observed {
     observe(&captured)
 }
 
+#[test]
+fn deferred_reserve_arithmetic_preserves_rows_refusals_and_native_read_order() {
+    let mut built = world(&Shape::small());
+    for fault in [None, Some((reserve_speed::SLOWEST_SPEED_RVA, 8))] {
+        built.world.poisoned = fault.into_iter().collect();
+        *built.world.log.lock().unwrap() = Some(Vec::new());
+        let expected = run(&built.world, roomy());
+        let reads = built.world.log.lock().unwrap().take().unwrap();
+        *built.world.log.lock().unwrap() = Some(Vec::new());
+        let mut deferred = Captured::with_capacities(&roomy());
+        deferred.reset();
+        deferred.capture_deferred(&built.world, 0, GAME);
+        assert_eq!(built.world.log.lock().unwrap().as_ref().unwrap(), &reads);
+        built.world.poisoned = vec![(0, usize::MAX)];
+        let bytes = deferred.allocated_bytes() as u64;
+        let tail_bytes = deferred.owned_tail_allocated_bytes() as u64;
+        deferred.settle_owned();
+        assert_eq!(
+            (deferred.allocated_bytes() as u64).wrapping_sub(bytes),
+            (deferred.owned_tail_allocated_bytes() as u64).wrapping_sub(tail_bytes)
+        );
+        assert_eq!(built.world.log.lock().unwrap().as_ref().unwrap(), &reads);
+        assert_eq!(observe(&deferred), expected);
+        deferred.settle_owned();
+        assert_eq!(observe(&deferred), expected);
+    }
+}
+
 /// The walk and the reference walk publish the same, with and without
 /// the authenticated roster: every table, outcome, failure and demand.
 #[cfg(test)]

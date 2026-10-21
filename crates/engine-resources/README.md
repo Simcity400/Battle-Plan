@@ -10,6 +10,8 @@ The module list is in [lib.rs](src/lib.rs). Production dependencies are [engine-
 
 Resource origins and resource-right entries retain their native list positions. Convoy clients retain independent endpoint list positions for supply transfers, outgoing/received lend-lease and sold/bought market contracts. Directional joins authenticate client identity and the country market-manager backlink; positions are never inferred from handles or global contract ownership order.
 
+Resource-origin efficiency/route factors and demanded convoy-client efficiency/convoy words use ordered scattered copies of only their existing spans, after the same authentication gates. Failed prefixes retain the serial refusal and demand no later span; standalone bad-route checks still read no convoy counts.
+
 Market-referenced routes acquire native state endpoints from the authenticated route header independently of naval port provinces, checking both state vtables and state-roster backlinks.
 
 Demanded strategic-resource pools can copy their stored amounts into reusable

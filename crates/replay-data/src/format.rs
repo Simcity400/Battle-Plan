@@ -186,7 +186,14 @@ mod tests {
             assert_eq!(table as u16, id);
         }
         for table in [TableId::DivisionStatus, TableId::DivisionTemplateIcons] {
-            assert_eq!(table.last_change().format, 104);
+            assert_eq!(
+                table.last_change().format,
+                if table == TableId::DivisionStatus {
+                    crate::rows::compatibility::DAILY_PROGRESS_FORMAT
+                } else {
+                    104
+                }
+            );
             let fields: Vec<_> = table
                 .last_change()
                 .appended
@@ -252,10 +259,7 @@ mod tests {
 
     #[test]
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
-        assert_eq!(
-            FORMAT_VERSION,
-            crate::rows::compatibility::CONVERSION_PURPOSE_FORMAT
-        );
+        assert_eq!(FORMAT_VERSION, 116);
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
                 assert!(FormatVersion::read(version).is_err());
@@ -267,8 +271,13 @@ mod tests {
             if version < 107 {
                 expected.push(TableId::Ships);
             }
-            if version < crate::rows::compatibility::COMBAT_LOG_OBSERVER_KEYS_FORMAT {
-                expected.push(TableId::CombatLogObservers);
+            if version < crate::rows::compatibility::DAILY_PROGRESS_FORMAT {
+                expected.extend([
+                    TableId::CombatLogObservers,
+                    TableId::DivisionStatus,
+                    TableId::UnitLeaders,
+                    TableId::UnitLeaderTraitExperience,
+                ]);
             }
             if version < crate::rows::compatibility::OCCUPATION_MAP_FORMAT {
                 expected.push(TableId::StateResistance);
@@ -282,8 +291,6 @@ mod tests {
             }
             if version < crate::rows::compatibility::EXPERIENCE_FORMAT {
                 expected.extend([
-                    TableId::UnitLeaders,
-                    TableId::UnitLeaderTraitExperience,
                     TableId::DivisionHistory,
                     TableId::DivisionPanelSources,
                     TableId::DivisionPanelStats,
@@ -340,8 +347,13 @@ mod tests {
             if version < crate::rows::compatibility::NUCLEAR_STRIKES_FORMAT {
                 expected.push(TableId::NuclearStrikes);
             }
-            if version < crate::rows::compatibility::LAND_MODIFIER_ROWS_FORMAT {
-                expected.push(TableId::LandCombatDivisionModifiers);
+            if version < crate::rows::compatibility::PRIVATE_COPY_ALIASES_FORMAT {
+                expected.extend([
+                    TableId::LandCombatDivisions,
+                    TableId::LandCombatDivisionModifiers,
+                    TableId::Divisions,
+                    TableId::ProductionLines,
+                ]);
             }
             if version < crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT {
                 expected.push(TableId::FuelDemandParts);

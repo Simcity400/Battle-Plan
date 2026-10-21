@@ -234,7 +234,9 @@ impl MapCapacities {
 /// details the ships seed, so the game thread never runs the census.
 pub struct ShipCensus {
     crew: crate::crew_store::CrewStore,
+    owned_pending: bool,
     pub management: collector_naval_management::forces::Captured,
+    management_owned: Option<collector_naval_management::forces::Owned>,
     pub fleets: CaptureRows<cfleet::Row>,
     pub fleet_names: Vec<u8>,
     pub ship_names: Vec<u8>,
@@ -249,7 +251,9 @@ impl ShipCensus {
     fn new(rows: &[usize]) -> Self {
         Self {
             crew: Default::default(),
+            owned_pending: false,
             management: Default::default(),
+            management_owned: None,
             fleets: CaptureRows::new(rows[0]),
             fleet_names: Vec::new(),
             ship_names: Vec::new(),
@@ -264,6 +268,8 @@ impl ShipCensus {
         Self::new(&[0; 3])
     }
     fn reset(&mut self) {
+        self.discard_owned();
+        self.owned_pending = false;
         self.management = Default::default();
         self.fleets.reset();
         self.fleet_names.clear();
@@ -299,10 +305,19 @@ impl ShipCensus {
         let tables = [TableId::Fleets, TableId::TaskForces, TableId::Ships];
         let mut reads = crate::read_accounting::table(tables[0]);
         let begin = qpc();
+        self.discard_owned();
+        // Mark the loan before the first read so a failed/unwound walk cannot
+        // leave a partially ordered crew baseline available to the next hour.
+        self.owned_pending = true;
         self.crew.begin(self.ships.rows.len());
         models.begin_sources();
         let management = std::cell::RefCell::new(
-            collector_naval_management::forces::Session::begin(memory, base, state),
+            collector_naval_management::forces::Session::begin_owned(
+                memory,
+                base,
+                state,
+                crate::decode::owned_failed,
+            ),
         );
         let mut name_counts = [0; 4];
         let (mut name_len, mut name_required) = (0, 0);
@@ -369,8 +384,7 @@ impl ShipCensus {
         }
         self.ship_names.truncate(name_len);
         self.ship_overrides.truncate(override_len);
-        self.crew.finish();
-        self.management = management.into_inner().finish(naval.capture);
+        (self.management, self.management_owned) = management.into_inner().finish_owned(naval.capture);
         models.finish_sources(naval.capture.ships);
         self.fleets.outcome = naval.capture.fleets;
         self.task_forces.outcome = naval.capture.task_forces;
@@ -381,6 +395,8 @@ impl ShipCensus {
             .saturating_sub(self.ticks[1]);
     }
     pub fn fail(&mut self, reason: &'static str) {
+        self.discard_owned();
+        self.owned_pending = false;
         self.ship_names.clear();
         self.ship_overrides.clear();
         self.management.tables = std::array::from_fn(|_| Err(reason));
@@ -389,6 +405,26 @@ impl ShipCensus {
         self.task_forces.outcome = outcome;
         self.ships.outcome = outcome;
         self.ticks = [0; 3];
+    }
+
+    /// The crew observations already include their writer certificates.
+    /// Their next lookup index is built before this frame returns to the pool.
+    pub(crate) fn decode_owned(&mut self) -> u64 {
+        let before = self.allocated_bytes();
+        if let Some(owned) = self.management_owned.take() {
+            self.management = owned.decode();
+        }
+        if std::mem::take(&mut self.owned_pending) {
+            self.crew.finish();
+        }
+        (self.allocated_bytes() as u64).wrapping_sub(before as u64)
+    }
+
+    pub(crate) fn discard_owned(&mut self) {
+        self.management_owned = None;
+        if std::mem::take(&mut self.owned_pending) {
+            self.crew.forget();
+        }
     }
 }
 

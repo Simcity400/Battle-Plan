@@ -10,6 +10,7 @@
 //! registration, an epoch change, a running writer) makes the capture read that division afresh.
 use crate::{
     hook::Hook,
+    hook_timing::CallCounters,
     watch_registry::{Notification, WatchRegistry},
 };
 use collector_observers::unit_history_changes;
@@ -108,7 +109,7 @@ pub struct Watches {
     registry: WatchRegistry,
     experience: WatchRegistry,
     progression: WatchRegistry,
-    calls: [AtomicU64; SITES],
+    calls: CallCounters<SITES>,
 }
 
 impl Default for Watches {
@@ -123,7 +124,7 @@ impl Watches {
             registry: WatchRegistry::marking(),
             experience: WatchRegistry::new(),
             progression: WatchRegistry::new(),
-            calls: [const { AtomicU64::new(0) }; SITES],
+            calls: CallCounters::new(),
         }
     }
 
@@ -135,7 +136,7 @@ impl Watches {
         receiver: usize,
         site: usize,
     ) -> (Notification<'_>, Option<Notification<'_>>) {
-        self.calls[site].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(site);
         let progression = matches!(
             site,
             6 | 7 | engine_mutations::army_stat_mutations::EXPERIENCE_TEMPLATE_SITE
@@ -156,7 +157,7 @@ impl Watches {
     /// Hook path, allocation-free: the writer of `site` rewrites members it
     /// does not name, revoking every certificate on entry and on return.
     pub fn notify_every(&self, site: usize) -> Notification<'_> {
-        self.calls[site].fetch_add(1, Ordering::Relaxed);
+        self.calls.increment(site);
         self.registry.notify_every()
     }
 
@@ -200,6 +201,14 @@ pub trait Changes: Sync {
     fn experience_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
         None
     }
+    /// Passive range lookups never register a new receiver. Ordered admission
+    /// still takes the ordinary sequence and validates the provisional read.
+    fn experience_observed_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
+        None
+    }
+    fn progression_observed_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
+        None
+    }
     /// Before any read of the hour: visits every registered army and member
     /// a hooked writer touched since the previous take, clearing its mark,
     /// and returns the epoch they were marked in ([`WatchRegistry::take`]).
@@ -221,6 +230,12 @@ impl Changes for Watches {
     fn experience_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         self.experience.sequence(receiver)
     }
+    fn experience_observed_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+        self.experience.observed_sequence(receiver)
+    }
+    fn progression_observed_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+        self.progression.observed_sequence(receiver)
+    }
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         self.registry.take(visit)
     }
@@ -240,6 +255,12 @@ impl Changes for Observer {
     }
     fn experience_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         WATCHES.experience.sequence(receiver)
+    }
+    fn experience_observed_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+        WATCHES.experience.observed_sequence(receiver)
+    }
+    fn progression_observed_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+        WATCHES.progression.observed_sequence(receiver)
     }
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         WATCHES.take(visit)
@@ -354,8 +375,8 @@ pub fn status() -> impl serde::Serialize {
     let events = crate::status::map(
         MUTATIONS
             .iter()
-            .zip(&WATCHES.calls)
-            .map(|(site, n)| (site.name, n.load(Ordering::Relaxed))),
+            .enumerate()
+            .map(|(index, site)| (site.name, WATCHES.calls.total(index))),
     );
     let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
     crate::status::status!({
@@ -715,7 +736,7 @@ mod tests {
         drop(watches.notify(0x3000, 1));
         assert_eq!(take(&watches), (epoch, vec![0x2000]));
         assert_eq!(take(&watches), (epoch, vec![]));
-        assert_eq!(watches.calls[0].load(Ordering::Relaxed), 1);
+        assert_eq!(watches.calls.total(0), 1);
         // A running writer certifies nothing.
         let running = watches.notify(0x1000, 0);
         assert_eq!(take(&watches).0, None);

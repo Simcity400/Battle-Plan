@@ -11,7 +11,6 @@
 //! only while its own hooks and both forwarders are enabled. Anything unobserved (disabled,
 //! poisoned, a refused registration, an epoch change, a running writer) makes the capture read that
 //! base afresh ([`crate::extended::air::RegistrationStore`]).
-pub mod fuel;
 pub mod registration;
 
 use crate::{
@@ -301,7 +300,7 @@ pub fn forwarder(forwarder: Forwarder, enabled: bool) {
 
 /// Notifications running now.
 pub fn active() -> usize {
-    WATCHES.registry.active().saturating_add(fuel::active())
+    WATCHES.registry.active()
 }
 
 /// Game thread, in the hourly callback before any capture. `invalidate`
@@ -309,14 +308,12 @@ pub fn active() -> usize {
 /// anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
-    fuel::boundary(invalidate);
 }
 
 /// Off the game thread: size the watches for the bases the latest pass
 /// visited. Nothing is offered before a pass visited them: a later larger
 /// table waits for an invalidating hour, while the first installs at once.
 pub fn presize() {
-    fuel::presize();
     let bases = BASES.load(Ordering::Relaxed);
     if bases != 0 {
         WATCHES.offer(bases);
@@ -326,7 +323,6 @@ pub fn presize() {
 /// Off the game thread: free a replaced watch table.
 pub fn collect() {
     WATCHES.registry.collect();
-    fuel::collect();
 }
 
 /// A compared base `handle` differed from its held subtree at `hour`; the
@@ -396,14 +392,12 @@ pub fn status() -> impl serde::Serialize {
         "forwarded_capacities": WATCHES.capacities.load(Ordering::Relaxed),
         "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
         "watches": WATCHES.registry.status(),
-        "fuel": fuel::status(),
         "scope": "cumulative since attach; a state air base's AirBaseRegistrations subtree (slot vector, dense list, containers, pools, wings) is carried (carried_bases) by splicing the log spans its latest fresh read took into the hour's air bases log, when the base is at the same address, no hooked writer touched its handle since that read registered it and the hour takes its slots as that read did; its container countries' links are resolved afresh and must still name the held slots; host bases and every other base are read afresh (read_bases); every hour also reads the carryable bases of its slice afresh (one in rotation_hours by base handle; every one in verify mode) and compares them with the held subtree, disabling reuse at the first mismatch (sampled_*); the decode worker appends a base's rows from its walk of the same held segment in an earlier hour (decoded_reused_bases) and keeps the rows of each reported base it walks (decoded_walked_bases)"
     })
 }
 
 pub struct Hooks {
     hooks: Vec<Hook>,
-    fuel: fuel::Hooks,
 }
 impl Hooks {
     /// The enclosing runtime verified the executable hash before construction.
@@ -440,15 +434,9 @@ impl Hooks {
                 hooks.push(hook);
             }
         }
-        Ok(Self {
-            hooks,
-            fuel: unsafe { fuel::Hooks::new(memory, base) }?,
-        })
+        Ok(Self { hooks })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-        if !self.fuel.set_enabled(enabled)? {
-            return Ok(false);
-        }
         if !enabled {
             crate::wing_preferences::publication_enabled(false);
         }
@@ -473,10 +461,7 @@ impl Hooks {
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
-        self.hooks
-            .iter()
-            .flat_map(Hook::executable_ranges)
-            .chain(self.fuel.executable_ranges())
+        self.hooks.iter().flat_map(Hook::executable_ranges)
     }
 }
 impl Drop for Hooks {

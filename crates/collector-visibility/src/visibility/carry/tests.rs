@@ -216,7 +216,7 @@ fn sampled_unmarked_raw_and_presence_changes_poison_even_when_effective_values_m
         world.raw(1, changed);
         domain.boundary(false);
         let (rows, counts, carried, reads) =
-            capture(&mut store, &world, &domain, Check::hourly(1, false));
+            capture(&mut store, &world, &domain, Check::burned_in(1, false));
         assert_eq!(rows, full(&world));
         assert_eq!(
             (reads, carried, counts.verified, counts.mismatches),

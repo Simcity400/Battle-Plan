@@ -105,6 +105,10 @@ impl CrewStore {
         self.current.sort_unstable_by_key(|entry| entry.object);
         collector_observers::crew_changes::record(self.counts);
     }
+    pub fn forget(&mut self) {
+        self.previous.clear();
+        self.current.clear();
+    }
     pub fn allocated_bytes(&self) -> usize {
         (self.current.capacity() + self.previous.capacity()) * size_of::<Entry>()
     }

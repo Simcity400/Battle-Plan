@@ -511,6 +511,47 @@ impl WatchRegistry {
         self.register(receiver).map(|(certificate, _)| certificate)
     }
 
+    /// A registered receiver's certificate without registering, consuming
+    /// marks or changing refusal counters. Range acquisition may use it only
+    /// provisionally; ordered admission must revalidate it before publication.
+    pub fn observed_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
+        if !self.observing() {
+            return None;
+        }
+        let epoch = self.epoch.load(SeqCst);
+        let sequence = match self.table()?.find(receiver, false) {
+            Lookup::Watched(_, sequence) => sequence.load(SeqCst),
+            _ => return None,
+        };
+        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some((epoch, sequence))
+    }
+
+    /// Passive slot-hinted lookup. A cleared/replaced table never admits a new
+    /// receiver here, so parallel warm acquisition preserves ordered cold/full
+    /// admission and its refusal counts.
+    pub fn observed_sequence_at(
+        &self,
+        receiver: usize,
+        held_slot: usize,
+    ) -> Option<((u64, u64), usize)> {
+        if !self.observing() {
+            return None;
+        }
+        let epoch = self.epoch.load(SeqCst);
+        let table = self.table()?;
+        let lookup = table
+            .slots
+            .get(held_slot)
+            .filter(|slot| receiver != 0 && slot.address.load(SeqCst) == receiver)
+            .map(|slot| Lookup::Watched(held_slot, &slot.sequence))
+            .unwrap_or_else(|| table.find(receiver, false));
+        let Lookup::Watched(index, sequence) = lookup else {
+            return None;
+        };
+        let sequence = sequence.load(SeqCst);
+        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some(((epoch, sequence), index))
+    }
+
     /// [`Self::sequence`] and the receiver's slot index. A held index skips
     /// probing only when the current table's slot still names `receiver`.
     /// The hint retains no table pointer; bounds, receiver, epoch and quiet
@@ -844,6 +885,14 @@ pub struct Notification<'a> {
     counted: bool,
 }
 
+impl Notification<'_> {
+    /// Whether this notification found a prepared receiver slot in a marking
+    /// registry. This attributes a mark; it is not a quiet or epoch certificate.
+    pub fn has_mark(&self) -> bool {
+        self.mark.is_some()
+    }
+}
+
 /// A writer running without a notification ([`WatchRegistry::running`]).
 pub struct Running<'a> {
     registry: &'a WatchRegistry,
@@ -898,6 +947,69 @@ impl Drop for Notification<'_> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn hinted_passive_lookup_never_admits_cold_or_cleared_receivers() {
+        let registry = WatchRegistry::new();
+        registry.offer(2);
+        registry.boundary(false);
+        registry.set_enabled(true);
+        let held = registry.sequence_at(8, usize::MAX).unwrap();
+        assert_eq!(registry.observed_sequence_at(8, held.1), Some(held));
+        let admitted = registry.registered.load(Relaxed);
+        let refused = registry.refused.load(Relaxed);
+        for receiver in (16..=5000 * 8).step_by(8) {
+            assert_eq!(registry.observed_sequence_at(receiver, held.1), None);
+        }
+        assert_eq!(registry.registered.load(Relaxed), admitted);
+        assert_eq!(registry.refused.load(Relaxed), refused);
+        registry.boundary(true);
+        assert_eq!(registry.observed_sequence_at(8, held.1), None);
+        assert_eq!(registry.refused.load(Relaxed), refused);
+    }
+
+    #[test]
+    fn passive_sequences_preserve_registration_admission_and_counters() {
+        let registry = registry(64);
+        let first = registry.sequence(0x1000).unwrap();
+        let registered = registry.registered.load(Relaxed);
+        let refused = registry.refused.load(Relaxed);
+        collector_test_support::with_allocations_denied(|| {
+            assert_eq!(registry.observed_sequence(0x1000), Some(first));
+            for receiver in 0..5_000 {
+                assert_eq!(registry.observed_sequence(0x2000 + receiver * 8), None);
+            }
+        });
+        assert_eq!(registry.registered.load(Relaxed), registered);
+        assert_eq!(registry.refused.load(Relaxed), refused);
+        assert!(registry.sequence(0x2000).is_some());
+        let running = registry.notify(0x1000);
+        assert!(registry.observed_sequence(0x1000).is_none());
+        drop(running);
+        assert_eq!(
+            registry.observed_sequence(0x1000),
+            registry.sequence(0x1000)
+        );
+        registry.set_enabled(false);
+        assert!(registry.observed_sequence(0x1000).is_none());
+    }
+
+    #[test]
+    fn notification_attributes_only_prepared_marking_slots_without_allocating() {
+        let watches = WatchRegistry::marking();
+        watches.offer(2);
+        watches.set_enabled(true);
+        watches.boundary(true);
+        watches.register(7).unwrap();
+        collector_test_support::with_allocations_denied(|| {
+            assert!(watches.notify(7).has_mark());
+            assert!(!watches.notify(8).has_mark());
+            assert!(!watches.notify(0).has_mark());
+        });
+        let mut marked = Vec::new();
+        assert!(watches.take(|key| marked.push(key)).is_some());
+        assert_eq!(marked, [7]);
+        unsafe { watches.release() };
+    }
     #[test]
     fn hook_dependency_stamp_excludes_other_writers_and_is_not_an_acquisition_certificate() {
         let watches = registry(64);

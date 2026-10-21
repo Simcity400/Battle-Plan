@@ -114,21 +114,65 @@ fn a_touched_vector_splices_the_tail_after_the_pruned_held_records() {
     // Native: the prune removed one record; two remain before the tail,
     // whose records were updated and gained one.
     let tail = vec![record(3, 100), record(4, 100), record(5, 101)];
-    assert!(splice(&mut held, since, 1, tail.clone().into_iter()));
+    assert_eq!(
+        splice(&mut held, since, 1, tail.clone().into_iter()),
+        Some(true)
+    );
     assert_eq!(
         held.iter().map(|r| r.wing_id).collect::<Vec<_>>(),
         [2, 3, 4, 5]
     );
     // An out-of-order older record stays in the prefix.
     let mut held = vec![record(1, 120), record(2, 80), record(3, 100)];
-    assert!(splice(&mut held, since, 2, [record(3, 100)].into_iter()));
+    assert_eq!(
+        splice(&mut held, since, 2, [record(3, 100)].into_iter()),
+        Some(false)
+    );
     assert_eq!(
         held.iter().map(|r| r.wing_id).collect::<Vec<_>>(),
         [1, 2, 3]
     );
     // More native records before the tail than held is a missed write.
     let mut held = vec![record(1, 70), record(3, 100)];
-    assert!(!splice(&mut held, since, 2, tail.into_iter()));
+    assert_eq!(splice(&mut held, since, 2, tail.into_iter()), None);
+}
+
+#[test]
+fn touched_tail_reuses_equal_damage_and_matches_replacement_changes() {
+    let mut original = vec![record(1, 70), record(2, 80), record(3, 100), record(4, 100)];
+    original[2].first_damage = vec![AirCombatDamage {
+        cause: 2,
+        amount: 3,
+    }];
+    for first in 0..=3 {
+        for tail in [
+            vec![],
+            vec![original[2].clone()],
+            original[2..].to_vec(),
+            vec![record(9, 101)],
+        ] {
+            let mut held = original.clone();
+            let expected = 2usize.checked_sub(first).map(|pruned| {
+                let mut expected = original[pruned..].to_vec();
+                expected.truncate(first);
+                expected.extend(tail.iter().cloned());
+                expected
+            });
+            let result = splice(&mut held, 100, first, tail.into_iter());
+            assert_eq!(
+                result,
+                expected.as_ref().map(|expected| *expected != original)
+            );
+            assert_eq!(held, expected.unwrap_or_else(|| original.clone()));
+        }
+    }
+    let mut held = original.clone();
+    let damage = held[2].first_damage.as_ptr();
+    assert_eq!(
+        splice(&mut held, 100, 2, original[2..].iter().cloned()),
+        Some(false)
+    );
+    assert_eq!(held[2].first_damage.as_ptr(), damage);
 }
 
 /// A fresh read of a carried holder must be its held row less a leading run

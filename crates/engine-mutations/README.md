@@ -56,4 +56,4 @@ Air-grid raid assignment uses the wing-reference setter and raid deleting destru
 
 Direct incoming Air-wing append and swap-remove share the wing observer through a disjoint base-inline certificate key. The relocation progress operands retain their separate hourly writers.
 
-The Air-base carry family owns pool-definition rebind alongside membership writers. Dynamic state-container fuel demand has a separate receiver certificate, so the hourly writer does not invalidate membership.
+The Air-base carry family owns pool-definition rebind alongside membership writers; hourly state-container fuel scalars require no writer descriptor.

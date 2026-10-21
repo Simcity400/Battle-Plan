@@ -184,6 +184,109 @@ fn shared_unit_speed_history_follows_hourly_marks_across_pooled_frames() {
 }
 
 #[test]
+fn deferred_unit_speed_entries_keep_owned_values_refusals_and_frozen_verification() {
+    for countries in [0, 1, 7, 512, 5_000] {
+        // No movers still needs a valid native country table (sentinel plus a slot).
+        let mut world = World::new(countries.max(1));
+        let changes = changes();
+        let mut capture = SpeedTerms { changes, ..SpeedTerms::default() };
+        movers(&mut capture, countries);
+        entries(&mut capture, &world, vec![], 1);
+        changes.every.store(true, Ordering::Relaxed);
+        if countries != 0 {
+            world.value(1, -70_000);
+        }
+        if countries > 1 {
+            // One failed value does not withdraw that country's other key.
+            world.fault = Some(COUNTRY + 2 * BLOCK + 0x708);
+        }
+        capture.entries.clear();
+        capture.counts = [[0; 3]; FAMILIES];
+        {
+            let reader = ccountry::Reader::new(&world, 0, GAME);
+            assert_eq!(capture.acquire_entries(&world, &reader, Take {
+                epoch: Some(1), complete: true, marked: vec![],
+            }), Outcome::Rows { len: countries * 2 });
+        }
+        assert!(capture.entries.is_empty(), "acquisition assembles no unit-speed rows");
+        assert!(!changes.poisoned.load(Ordering::Relaxed));
+        // Settlement has neither a borrowed Memory nor a native fallback. The
+        // game can change or disappear without affecting the frozen observation.
+        drop(world);
+        changes.every.store(false, Ordering::Relaxed);
+        assert_eq!(capture.settle_entries(), Outcome::Rows { len: countries * 2 });
+        assert_eq!(changes.poisoned.load(Ordering::Relaxed), countries != 0);
+        assert_eq!(capture.counts[2], [(countries * 2 - usize::from(countries > 1)) as u64, 0, u64::from(countries > 1)]);
+        for owner in 1..=countries {
+            assert_eq!(capture.entries[(owner - 1) * 2], CountryUnitSpeedEntryRow {
+                country: owner as u32,
+                key: SPEED_KEY,
+                entry: if owner == 2 { None } else { Some(Some(if owner == 1 { -70_000 } else { 10_000 })) },
+            });
+            assert_eq!(capture.entries[(owner - 1) * 2 + 1].entry, Some(None));
+        }
+    }
+}
+
+#[test]
+fn deferred_unit_speed_loan_forgets_dropped_unwound_and_invalidated_baselines() {
+    for complete in [false, true] {
+        let mut loan = owned::Loan::take().unwrap();
+        loan.epoch = Some(7);
+        if complete {
+            loan.return_complete();
+        }
+        drop(loan);
+        let next = owned::Loan::take().unwrap();
+        assert_eq!(next.epoch, complete.then_some(7));
+        drop(next);
+    }
+    let result = std::panic::catch_unwind(|| {
+        let mut loan = owned::Loan::take().unwrap();
+        loan.epoch = Some(8);
+        panic!("synthetic unit speed decode unwind");
+    });
+    assert!(result.is_err());
+    let mut loan = owned::Loan::take().unwrap();
+    assert_eq!(loan.epoch, None);
+    loan.epoch = Some(9);
+    owned::forget();
+    loan.return_complete();
+    assert_eq!(owned::Loan::take().unwrap().epoch, None);
+    let mut capture = SpeedTerms::default();
+    capture.held = owned::Loan::take().unwrap();
+    capture.held.epoch = Some(10);
+    // A caught decode panic can leave storage alive after consuming the flag.
+    capture.settle_pending = false;
+    capture.reset();
+    assert_eq!(owned::Loan::take().unwrap().epoch, None);
+}
+
+#[test]
+fn discarded_frame_without_army_store_returns_unit_speed_loan() {
+    struct Owned;
+    impl Memory for Owned {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            panic!("unavailable owned speed census must not read native memory")
+        }
+    }
+    let sources = || super::super::Sources {
+        rows: &[],
+        outcome: Outcome::Unavailable { reason: "discarded frame fixture" },
+    };
+    let mut frame = super::super::Captured::vacant();
+    let mut pass = frame.take_speed_terms();
+    pass.capture(&Owned, 0, 0, sources());
+    frame.restore_speed_terms(pass);
+    // The common frame-return hook must release the speed loan independently
+    // of whether ordered presentation ever lent an army-stat store.
+    assert!(frame.take_settled_store().is_none());
+    let mut next = super::super::Captured::vacant();
+    let mut pass = next.take_speed_terms();
+    pass.capture(&Owned, 0, 0, sources());
+}
+
+#[test]
 fn unit_speed_verification_publishes_fresh_entries_and_poison_on_a_missed_write() {
     let mut world = World::new(2);
     let changes = changes();
@@ -1043,11 +1146,11 @@ fn country_entry_scratch_is_reused_and_one_failed_key_keeps_healthy_entries() {
     movers(&mut capture, 5_000);
     let owners: Vec<_> = (1..=5_000).collect();
     entries(&mut capture, &world, owners.clone(), 1);
-    let keys = capture.entry_keys.as_ptr();
-    let values = capture.entry_values.as_ptr();
+    let keys = capture.observed_entries.wanted.as_ptr();
+    let values = capture.observed_entries.values.as_ptr();
     entries(&mut capture, &world, owners, 1);
-    assert_eq!(capture.entry_keys.as_ptr(), keys);
-    assert_eq!(capture.entry_values.as_ptr(), values);
+    assert_eq!(capture.observed_entries.wanted.as_ptr(), keys);
+    assert_eq!(capture.observed_entries.values.as_ptr(), values);
     // The selected key's value fails; another key's known absence stays usable.
     world.fault = Some(COUNTRY + BLOCK + 0x708);
     entries(&mut capture, &world, vec![1], 1);

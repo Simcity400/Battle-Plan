@@ -61,6 +61,10 @@ use crate::{
 };
 use replay_data::rows::TableId;
 
+static CAPTURE_TAIL_DECODE_NS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static CENSUS_TAIL_DECODE_NS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static MISSION_TAIL_DECODE_NS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
 use crossbeam_queue::ArrayQueue;
 use std::cell::UnsafeCell;
 use std::sync::{
@@ -504,6 +508,10 @@ static WORKER_ID: AtomicU32 = AtomicU32::new(0);
 
 mod failure;
 pub(crate) use failure::{HookGuard as PanicHook, first as panic_failure};
+
+pub(crate) fn owned_failed() -> bool {
+    crate::allocation::failed() || panic_failure().is_some()
+}
 
 /// Registered before hook installation, joined before final DLL quiescence.
 pub fn worker_id() -> u32 {
@@ -978,6 +986,14 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
         process_job(shared, &mut job, air_bases_memo);
     }
 
+    // Return even a terminally skipped frame's loan. Its Drop forgets an
+    // incomplete settlement, so later acquisition never carries a partial tree.
+    let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+    frame.map.naval.discard_owned();
+    frame.extended.discard_owned_censuses();
+    if let Some(store) = frame.extended.take_settled_army_store() {
+        shared.return_army_stat_store(store);
+    }
     failure::stage("release payloads", None);
     if let Some(payload) = job.relations_payload.take() {
         release_relations_job(payload);
@@ -1288,7 +1304,33 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     }
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     fail_missing_payloads(frame, job);
+    // Return presentation's cross-frame store before independent publication.
+    decode_presentation(shared, job.index);
+    failure::stage("owned capture tails", None);
+    let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+    let (ticks, bytes) = frame.extended.decode_capture_tails();
+    for (total, ticks) in CAPTURE_TAIL_DECODE_NS.iter().zip(ticks) {
+        total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+    }
+    shared.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
+    failure::stage("owned census publication", None);
+    let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+    let start = sampling::qpc();
+    let bytes = frame.map.naval.decode_owned();
+    let ships = sampling::qpc().saturating_sub(start).max(0) as u64;
+    let ([map, governance, tasks], extended_bytes) = frame.extended.decode_owned_censuses();
+    for (total, ticks) in CENSUS_TAIL_DECODE_NS.iter().zip([ships, map, governance, tasks]) {
+        total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+    }
+    shared.pool_bytes.fetch_add(bytes.wrapping_add(extended_bytes), Ordering::Relaxed);
+    failure::stage("owned mission tails", None);
+    let (ticks, bytes) = frame.extended.decode_mission_tails();
+    for (total, ticks) in MISSION_TAIL_DECODE_NS.iter().zip(ticks) {
+        total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+    }
+    shared.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
     failure::stage("air copies", None);
+    let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     frame.extended.decode_air_copies();
     LAST_SEQ.store(job.seq, Ordering::Relaxed);
     LAST_HOUR.store(job.hour as u64, Ordering::Relaxed);
@@ -1385,9 +1427,9 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         failure::stage("divisions", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 6];
-        let before_bytes = frame.extended.allocated_bytes();
+        let before_bytes = frame.extended.division_decode_allocated_bytes();
         sampling::decode_divisions_payload(frame, shared.base, payload, &mut decode_ticks);
-        let after_bytes = frame.extended.allocated_bytes();
+        let after_bytes = frame.extended.division_decode_allocated_bytes();
         // Payload ownership is charged by decode_divisions_payload. Account
         // for this frame's side of the transfer, including any smaller swap.
         if after_bytes >= before_bytes {
@@ -1712,13 +1754,30 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         }
         REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// The FIFO worker owns the frame; this packet has no raw decode dependency.
+/// Return its held-store loan before unrelated families can delay the next hour.
+fn decode_presentation(shared: &Shared, index: usize) {
     failure::stage("division presentation", None);
-    let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
+    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+    let before_bytes = frame.extended.presentation_allocated_bytes();
+    let before = frame.extended.presentation_phase_ticks();
     for (total, ticks) in DIVISION_PRESENTATION_DECODE_NS
         .iter()
         .zip(frame.extended.decode_division_presentation_inputs())
     {
         total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
+    }
+    let after = frame.extended.presentation_phase_ticks();
+    shared.record_owned_presentation(std::array::from_fn(|i| after[i].saturating_sub(before[i])));
+    let after_bytes = frame.extended.presentation_allocated_bytes();
+    shared.pool_bytes.fetch_add(
+        (after_bytes as u64).wrapping_sub(before_bytes as u64),
+        Ordering::Relaxed,
+    );
+    if let Some(store) = frame.extended.take_settled_army_store() {
+        shared.return_army_stat_store(store);
     }
 }
 
@@ -1793,6 +1852,15 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
 /// Additive calibration snapshot. Every counter is monotonic since attach.
 pub fn calibration() -> Calibration {
     Calibration {
+        mission_tail_decode_ns: MISSION_TAIL_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        census_tail_decode_ns: CENSUS_TAIL_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
+        capture_tail_decode_ns: CAPTURE_TAIL_DECODE_NS
+            .each_ref()
+            .map(|cell| cell.load(Ordering::Relaxed)),
         jobs: JOBS.load(Ordering::Relaxed),
         refresh_jobs: REFRESH_JOBS.load(Ordering::Relaxed),
         full_refresh_jobs: FULL_REFRESH_JOBS.load(Ordering::Relaxed),
@@ -1988,6 +2056,9 @@ pub fn calibration() -> Calibration {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Calibration {
+    pub mission_tail_decode_ns: [u64; 2],
+    pub census_tail_decode_ns: [u64; 4],
+    pub capture_tail_decode_ns: [u64; 5],
     pub jobs: u64,
     pub refresh_jobs: u64,
     pub full_refresh_jobs: u64,
@@ -2090,6 +2161,12 @@ impl Calibration {
             "drops": self.drops,
             "last_seq": self.last_seq,
             "last_hour": self.last_hour,
+            "capture_tail_decode_ns": self.capture_tail_decode_ns,
+            "census_tail_decode_ns": self.census_tail_decode_ns,
+            "mission_tail_decode_ns": self.mission_tail_decode_ns,
+            "mission_tail_roles": ["OrdinaryNavies", "RailwayGuns"],
+            "census_tail_roles": ["ShipModels", "OrdinaryMap", "Governance", "OrdinaryTaskForces"],
+            "capture_tail_roles": ["Templates", "ShipModelDetails", "RaidState", "Variants", "OrdinaryCombat"],
             "relations_copy_ns": self.relations_copy_ns,
             "relations_decode_ns": self.relations_decode_ns,
             "relations_raw_bytes": self.relations_raw_bytes,

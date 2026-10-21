@@ -93,6 +93,32 @@ fn capacity() -> Capacities {
 }
 
 #[test]
+fn owned_template_tails_match_synchronous_rows_and_survive_later_writer_marks() {
+    let mut source = fixture();
+    let changes = CoreChanges::new();
+    let mut synchronous = Captured::with_capacities(&capacity());
+    let mut deferred = Captured::with_capacities(&capacity());
+    for hour in 0..3 {
+        synchronous.capture_original(&source, 0, 0x1000, hour, false, &changes);
+        deferred.capture_observed(&source, 0, 0x1000, hour, false, &changes);
+        drop(changes.templates.notify(0x5000, 1));
+        source.bytes[0x6008..0x600c].copy_from_slice(&(hour + 7).to_le_bytes());
+        deferred.settle_owned();
+        assert_eq!(deferred.tables(), synchronous.tables());
+        assert_eq!(deferred.country_state(), synchronous.country_state());
+        assert_eq!(deferred.model_failures(), synchronous.model_failures());
+        deferred.settle_owned();
+        assert_eq!(deferred.tables(), synchronous.tables());
+    }
+    deferred.capture_observed(&source, 0, 0x1000, 3, false, &changes);
+    deferred.reset();
+    assert!(!deferred.pending_owned);
+    deferred.capture_original(&source, 0, 0x1000, 4, false, &changes);
+    synchronous.capture_original(&source, 0, 0x1000, 4, true, &changes);
+    assert_eq!(deferred.tables(), synchronous.tables());
+}
+
+#[test]
 fn enabled_unsized_startup_records_known_template_and_country_values_through_spool() {
     use crate::template_changes::Changes;
     use engine_deployment::cdeployment_status as deployment;

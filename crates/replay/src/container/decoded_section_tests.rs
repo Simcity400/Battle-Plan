@@ -32,8 +32,19 @@ fn fixture() -> Replay {
                     logical_owner: 1,
                     province: hour as u32,
                     hit_points: i64::from(hour) * 10_000,
+                    organisation: i64::from(hour) * 10_000,
                     ..Default::default()
                 }]));
+            // Exercise both a same-frame organisation alias and its literal
+            // fallback without making province membership or panel stats sources.
+            tables[TableId::DivisionStatus.index()] =
+                TableView::Complete(TableRows::DivisionStatus(vec![
+                    crate::rows::DivisionStatusRow {
+                        division: 1,
+                        organisation_exact: (hour != 4).then_some(i64::from(hour) * 10_000).into(),
+                        ..Default::default()
+                    },
+                ]));
             tables[TableId::LexicalTokens.index()] =
                 TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
                     token: 1,
@@ -171,7 +182,9 @@ fn consumer_selections_share_one_decode_and_keep_identical_wire_and_reconstructi
         });
         assert_eq!(watched, expected);
         assert_eq!(repeated, expected);
-        for table in tables {
+        // Only the conditional organisation source is needed. Its absent exact
+        // operand at one hour keeps the literal without opening unrelated sources.
+        for table in tables.into_iter().chain([TableId::DivisionStatus]) {
             assert_eq!(
                 decodes.iter().filter(|row| row.2 == table).count(),
                 1,
@@ -180,7 +193,7 @@ fn consumer_selections_share_one_decode_and_keep_identical_wire_and_reconstructi
         }
         assert_eq!(
             decodes.len(),
-            tables.len(),
+            tables.len() + 1,
             "unread sections must not decode"
         );
     }
@@ -317,7 +330,10 @@ fn immutable_readers_share_update_cells_without_copying_them() {
             );
         }
     }
-    assert_eq!(decodes.len(), tables.len());
+    for table in tables.into_iter().chain([TableId::DivisionStatus]) {
+        assert_eq!(decodes.iter().filter(|row| row.2 == table).count(), 1);
+    }
+    assert_eq!(decodes.len(), tables.len() + 1);
 }
 
 thread_local! {

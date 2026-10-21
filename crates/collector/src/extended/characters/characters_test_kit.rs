@@ -269,6 +269,7 @@ pub(crate) fn mapped_fixture() -> Vec<u8> {
 /// arenas installed exactly like `capture` installs them.
 pub(crate) fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {
     let mut captured = Captured::with_capacities(capacities);
+    captured.set_character_activity([true; N]);
     let results = walk_family(memory, BASE, GAME_STATE, captured.family(), None, None);
     captured.characters.primary(results[0]);
     captured.leaders.primary(results[1]);

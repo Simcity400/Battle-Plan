@@ -1,5 +1,10 @@
 # collector-observers
 
+Raid's diagnostic site counts use the timer's owned thread slots. The origin
+refresh count remains a separate atomic: route takes compare it around their
+bitmap walk to reject a completed overlapping refresh. Running counts, marks,
+epochs and that overlap proof retain their ordering.
+
 World-input admission counts its complete base hook group before companion hooks
 are appended. Companion storage does not withdraw the shared design or fog
 forwarders; a missing base group still refuses them.
@@ -14,6 +19,8 @@ Between-tick native writer observers that several capture families share, with t
 The war domain forwards status, relation-slot and diplomacy lifetime receivers to the participation owner before and after native mutation. These fixed-size marks keep invalidation local to the affected owner or war while the domain token excludes acquisition.
 
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
+
+Weather carry and war-goal inventory verification use the graduated 576-hour rotation (owner approval 2026-10-21). CountryVisibility and RaidIntelInputs use the same rotation after their 2026-10-20 approval. Diagnostics report that rotation; mismatch counters, reasons and each family's poisoning and refusal semantics remain unchanged.
 
 Trade-route carry observes both state-to-state and supply port-to-port updates.
 Origin refresh observes its inline clear with a before/after kind check, holding
@@ -74,13 +81,16 @@ Design source/provider invalidations revoke the variant-terrain epoch without in
 Division terrain certification keeps the owner's availability stamp and calls its live validator around every certificate acquisition and dirty-mark drain. Availability notification samples alone never admit carry. The receiver stores the stamp and validator atomically; callback withdrawal takes no lock and never waits.
 The world-input family owns doctrine selection, completion, mastery, source,
 grant, reward and load notifications, plus the two effective-gain store taps.
-Callbacks hand the exact mutated receiver or stored scalar to the bound doctrine
-store after the original writer. Their publication, restoration and quiescence
-follow that family; missing writer coverage refuses doctrine carry.
+Prepared lock-free marks select terminal receiver reads on the existing Slow
+worker. Effective-gain operands and grant-expiry counts use prepared scalar slots;
+Slow reduces their journals, settling expiry before grant snapshots. Cost-add and
+consumption callbacks only mark the terminal inventory; grant snapshots keep
+native ordering. Publication, restoration and quiescence still follow world-input,
+while `doctrine_changes` times doctrine detours and taps separately.
 
-The cost-consumption callback forwards the exact status receiver and folder
-operand after the native writer, without invoking the inventory snapshot reader.
-The bound store publishes prepared scalar occurrences for off-thread derivation.
+Cost-consumption callbacks forward the exact status receiver after the native
+writer. The bound store marks it without reading the folder or inventory; Slow
+reads the final cost rows once for the marked receiver.
 
 Doctrine gain publication failures name WorldInputs, the gain-store site and
 the underlying publication cause; runtime retains that message through detach.
@@ -182,7 +192,7 @@ The world-input observer keeps the sole navy-reset patch. Its dependent naval-ma
 
 Fleet-region certificates cover append, clear, removal, pruning, load and lifetime writers. Runtime membership calls hold an in-flight guard and notify only when their scalar count changes; pure permutations preserve the captured multiset. These callbacks allocate nothing and walk no vector.
 
-The Air-base carry observer also owns the state-container demand writer. Its independent container certificate receives allocation stores from the existing fuel-award owner. Native callbacks only notify pre-sized receivers; scalar reads run in the existing asynchronous AirBases job, and missing certificates refuse carry without periodic polling.
+The Air-base carry observer certifies registration membership and pool metadata only. State-container fuel demand/allocation scalars are read freshly by the existing asynchronous AirBases job without a fuel observer or allocation forwarding.
 
 Adjacent decision CALLs use the span-aware constructor and verify only their owned prefixes. Terminal hook errors retain family/site, sentinel/construction/publication stage and the underlying cause; busy publication remains a retry without an error diagnostic.
 
@@ -225,3 +235,13 @@ first capture; its group count bounds distinct commanders without another native
 walk. Later attempted demand remains a high-water mark, so an unsized registry
 cannot prevent its own bootstrap. Quiet certified commanders carry their exact
 two-block bans, and forwarded writers still select fresh reads.
+
+Division presentation ranges use passive source-root, membership, state and
+variant/lifetime gates before registering warm receivers and capturing their
+sequences, all before resume. Source, state and history held slot hints are
+validated against the current table; cleared/cold slots cannot be admitted by
+parallel ranges. Cold/full admissions stay ordered, preserving refusal counts.
+World, variant and lifetime marks are frozen before range acquisition, so complete
+warm source settlement and scalar/history row publication can run on FIFO decode
+without consuming later marks. The passive terrain-domain stamp still suppresses
+quiet membership scans.

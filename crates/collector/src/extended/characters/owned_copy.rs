@@ -49,6 +49,8 @@ pub(crate) struct CharactersJob {
     pub(super) published: quiet::Published,
     /// UnitLeaders rows held between quiet roster hours.
     pub(super) unit_carry: leader_carry::UnitCarry,
+    pub(super) experience: daily_experience::Store,
+    pub(super) daily_training: Option<bool>,
     /// UnitLeaderTraits rows held between the traits job's captures.
     pub(super) trait_carry: leader_carry::TraitCarry,
     /// The role census kept between gathers.
@@ -321,6 +323,8 @@ impl CharactersJob {
             roster: quiet::QuietRoster::default(),
             published: quiet::Published::default(),
             unit_carry: leader_carry::UnitCarry::default(),
+            experience: daily_experience::Store::default(),
+            daily_training: None,
             trait_carry: leader_carry::TraitCarry::default(),
             census_carry: census::CensusCarry::default(),
             census_charge,
@@ -1651,7 +1655,7 @@ pub(super) fn parse_unit_identity(
     Some((kind, pool_u32(job, start + cunit_leader::ID)))
 }
 
-/// Mirror of `read_unit` plus `cunit_leader::read`/`read_text`: identity,
+/// Mirror of `read_unit_selected` plus `cunit_leader::read`/`read_text`: identity,
 /// state, skill, kind components and both text strings. The identity-fallback
 /// spans are always recorded so the trait replay finds them when the scalar
 /// read fails. Any failure kills only the units batch.
@@ -1728,14 +1732,25 @@ pub(super) fn copy_unit(
                     kind,
                     Some(cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY)
                 ) {
-                    take_or_kill(
-                        job,
-                        memory,
-                        unit.checked_add(cunit_leader::EXPERIENCE),
-                        8,
-                        MASK_UNITS,
-                        &mut dead.units,
-                    );
+                    let key = (unit, character_id, parsed.unwrap().1);
+                    let held = job.experience.get(key);
+                    let address = unit.checked_add(cunit_leader::EXPERIENCE);
+                    let value = match (address, held) {
+                        (Some(address), Some(value)) => {
+                            job.log
+                                .record(address, 8, Some(&value.to_le_bytes()), MASK_UNITS)
+                        }
+                        _ => take_or_kill(job, memory, address, 8, MASK_UNITS, &mut dead.units),
+                    };
+                    if let Some(at) = value {
+                        if held.is_none() {
+                            let value =
+                                i64::from_le_bytes(job.log.bytes[at..at + 8].try_into().unwrap());
+                            job.experience.put(key, value);
+                        }
+                    } else {
+                        dead.units = true;
+                    }
                 }
                 if !dead.units {
                     copy_unit_skill(job, memory, base, skill, dead);
@@ -1766,6 +1781,7 @@ pub(super) fn copy_unit(
             }
         }
         if !dead.units
+            && job.active[5]
             && matches!(
                 kind,
                 Some(cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY)
@@ -2323,7 +2339,7 @@ pub(super) fn copy_pass(
     job.advisor_section_complete = false;
     // Each table owner retains its own raw program. Parts beyond the core
     // also preserve capacity demand and freshly reacquire bound trait sources.
-    let hourly = context.active == PART_MASKS[0];
+    let hourly = roster_part(context.active);
     let bound = !hourly && job.source_bindings.is_some();
     if bound && !job.source_bindings.as_ref().unwrap().matches(context) {
         job.log.invalidate_read_plan();
@@ -2360,7 +2376,12 @@ pub(super) fn copy_pass(
             ]
         },
     );
-    if !(hourly || bound) || !job.log.begin_planned_capture(memory, key) {
+    // Daily XP may be served from held bytes. Such a pass must not replay a
+    // native-only program that would reread the residual column.
+    if context.active[3] && !context.active[5]
+        || !(hourly || bound)
+        || !job.log.begin_planned_capture(memory, key)
+    {
         job.leader_rows = 0;
         job.character_demand = AdvisorDemand::default();
         job.unit_demand = AdvisorDemand::default();

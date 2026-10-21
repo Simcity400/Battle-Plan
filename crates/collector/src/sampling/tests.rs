@@ -1,3 +1,6 @@
+mod presentation_tests;
+mod stitch_barrier;
+
 use super::*;
 
 struct NoDivisionReads;
@@ -190,6 +193,7 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
     pool.shutdown().unwrap();
     let mut batch = acquisition::Batch::new(&pool);
     let mut request = acquisition::PresentationRequest {
+        dispatch: Default::default(),
         countries: Arc::new(Cache::try_with_capacity(0).unwrap()),
         context: extended::division_presentation::CaptureContext {
             base: 0,
@@ -218,7 +222,13 @@ fn a_rejected_presentation_fails_beside_a_completed_movement_pass() {
     });
     assert_eq!(
         request
-            .restore_movement(movement, Ok([1, 2, 3]), report)
+            .restore_movement(
+                movement,
+                Ok(extended::division_presentation::CaptureReport {
+                    ticks: [1, 3, 0, 2, 0, 0, 0, 5, 7, 11, 13, 17],
+                }),
+                report,
+            )
             .err(),
         Some(acquisition::Failure::Stopped)
     );
@@ -398,6 +408,9 @@ fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
     // SAFETY: the batch drains every accepted ticket before the pool drops.
     let pending = unsafe { submit_acquisition(&shared, &mut batch, job()) };
     assert!(matches!(pending, PendingAcquisition::Accepted(_)));
+    batch.wait_ready(|batch| pending_complete(batch, &pending).then_some(()));
+    assert!(!stitch_can_advance(&batch, &pending, false));
+    assert!(stitch_can_advance(&batch, &pending, true));
     // SAFETY: as above.
     let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
     let Ok(acquisition::Report::OrdersStitch(report)) = completed.report else {
@@ -432,6 +445,102 @@ fn a_stitch_panic_stops_the_pool_only_at_the_stitch_join() {
     assert!(matches!(refused, PendingAcquisition::Rejected(_)));
     // SAFETY: as above.
     drop(unsafe { finish_acquisition(&shared, &mut batch, refused) });
+}
+
+/// A clean stitch can release fronts before unrelated joins, while a
+/// rejected stitch retains its original failure barrier and refusal path.
+#[test]
+fn readiness_releases_clean_stitches_but_defers_rejected_stitches() {
+    let shared = Shared::new(0, 0, 1);
+    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let mut batch = acquisition::Batch::new(&pool);
+    // An earlier census refusal makes this body a no-read clean completion;
+    // its original table-local reason must survive the early handoff.
+    let job = acquisition::Job::OrdersStitch(stitch_request(0, Some("original census refusal")));
+    // SAFETY: the batch drains every accepted ticket.
+    let pending = unsafe { submit_acquisition(&shared, &mut batch, job) };
+    batch.wait_ready(|batch| stitch_can_advance(batch, &pending, false).then_some(()));
+    // SAFETY: as above.
+    let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
+    let acquisition::Job::OrdersStitch(request) = completed.request else {
+        unreachable!()
+    };
+    assert_eq!(
+        request.orders.rows.outcome,
+        Outcome::Unavailable {
+            reason: "original census refusal"
+        }
+    );
+    drop(request);
+    pool.shutdown().unwrap();
+    // SAFETY: the stopped pool runs no job; rejected storage stays in Batch.
+    let pending = unsafe {
+        submit_acquisition(
+            &shared,
+            &mut batch,
+            acquisition::Job::OrdersStitch(stitch_request(0, None)),
+        )
+    };
+    assert!(matches!(pending, PendingAcquisition::Rejected(_)));
+    assert!(!stitch_can_advance(&batch, &pending, false));
+    assert!(stitch_can_advance(&batch, &pending, true));
+    // SAFETY: as above.
+    let completed = unsafe { finish_acquisition(&shared, &mut batch, pending) };
+    let acquisition::Job::OrdersStitch(request) = completed.request else {
+        unreachable!()
+    };
+    assert_eq!(
+        request.orders.rows.outcome,
+        Outcome::Unavailable {
+            reason: "army order worker admission failed"
+        }
+    );
+}
+
+/// Publication, not collection order, releases the final borrowers. Parked
+/// cells supply unpublished tickets without racing a native reader.
+#[test]
+fn final_inputs_wait_only_for_their_producers_and_prior_dispatch_admission() {
+    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let mut batch = acquisition::Batch::new(&pool);
+    let ticket = batch
+        .park(&mut Some(acquisition::Job::OrdersStitch(stitch_request(
+            0, None,
+        ))))
+        .unwrap();
+    let unpublished = PendingAcquisition::Accepted(ticket);
+    let rejected = PendingAcquisition::Rejected(ticket);
+    // Residual Intel, capitulation, optional Session and Relations, Variants
+    // and the character parts: every scheduled producer must publish.
+    let producers = 5 + CHARACTER_PARTS - 1;
+    crate::test_support::with_allocations_denied(|| {
+        assert!(!final_inputs_ready(&batch, false, [None]));
+        assert!(final_inputs_ready(&batch, true, [None]));
+        for missing in 0..producers {
+            assert!(!final_inputs_ready(
+                &batch,
+                true,
+                (0..producers).map(|index| Some(if index == missing {
+                    &unpublished
+                } else {
+                    &rejected
+                })),
+            ));
+        }
+        // A rejected producer is collected through its normal failure path;
+        // an unrelated unpublished job is not part of this barrier.
+        assert!(final_inputs_ready(
+            &batch,
+            true,
+            (0..producers).map(|_| Some(&rejected)),
+        ));
+        assert!(!final_inputs_ready(
+            &batch,
+            false,
+            (0..producers).map(|_| Some(&rejected)),
+        ));
+    });
+    drop(batch.unpark(ticket).unwrap());
 }
 
 /// A contained stitch panic that the callback never settles, because it
@@ -679,6 +788,7 @@ fn missing_and_short_original_unit_packets_refuse_every_dependent_worker() {
         ))),
     ] {
         let mut request = acquisition::PresentationRequest {
+            dispatch: Default::default(),
             countries: Arc::clone(&countries),
             context: extended::division_presentation::CaptureContext {
                 base: kit::BASE,
@@ -3054,12 +3164,9 @@ fn the_observer_boundary_joins_after_the_hours_preparation_before_any_dispatch()
     }
 }
 
-/// The hourly body is straight-line: statement order is dispatch and join
-/// order. Every job that needs no other job's output leaves in the first
-/// burst, before any join; a job that reads another job's output leaves right
-/// after the last join it needs, with no other join in between. Those named
-/// data dependencies are the graph's only edges, and the producers of the
-/// longest chains are joined before the joins nothing waits for.
+/// Readiness gates replace global statement order. Audit each handler's own
+/// publish/install/dispatch order, the complete split barriers, and the packs
+/// that stay behind map sampling and the stitch's delayed failure barrier.
 #[test]
 fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
     let source = include_str!("../sampling.rs");
@@ -3068,77 +3175,39 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         body.find(needle)
             .unwrap_or_else(|| panic!("hourly body lacks {needle}"))
     };
-    let after = |needle: &str, from: usize| {
-        from + body[from..]
-            .find(needle)
-            .unwrap_or_else(|| panic!("hourly body lacks {needle} after {from}"))
-    };
     let queue = |job: &str| format!("queue!(acquisition::Job::{job}(");
-    // A join: the collection of a submitted job.
-    let joins_in = |range: std::ops::Range<usize>| {
-        [
-            "completed!(",
-            "collected!(",
-            "collect_acquisition(",
-            "collect_orders(",
-            "join_characters!(",
-        ]
-        .iter()
-        .any(|marker| body[range.clone()].contains(marker))
-    };
-
-    // The first burst queues without waking the pool and is released once,
-    // before the first join.
     let burst = at("batch.hold();");
-    let release = after("release!();", burst);
-    // The root census joins first and releases Orders and its parts before
-    // the unit inputs join: a registry walk, it is in long before them. The
-    // unit inputs join next: Presentation waits for nothing else.
-    let first_join = at("completed!(root_pending, OrderRoots)");
-    assert!(release < first_join);
-    let inputs_join = at("completed!(input_pending, DivisionInputs)");
-    for job in ["Orders", "OrdersPart"] {
-        assert!(
-            first_join < at(&queue(job)) && at(&queue(job)) < inputs_join,
-            "{job} waits for the unit inputs"
-        );
-    }
-    for later in [
-        "ship_models_pending,",
-        "completed!(countries_pending, Countries)",
+    let release = at("release!();");
+    let scheduler = at("while late_pending.is_none() || final_inputs_pending.is_none()");
+    assert!(burst < release && release < scheduler);
+    for join in [
+        "completed!(",
+        "collected!(",
+        "collect_acquisition(",
+        "collect_orders(",
     ] {
+        // Collection macros are defined before the burst, never invoked in it.
         assert!(
-            inputs_join < at(later),
-            "{later} joins before the unit inputs"
+            !body[burst..release].contains(join),
+            "join inside first burst: {join}"
         );
     }
-    assert!(!joins_in(burst..release), "a join inside the first burst");
     for job in [
         "ShipModels",
         "Countries",
-        // The template dictionary, beside the naming walk.
         "Templates",
         "DivisionInputs",
+        "DivisionInputParts",
         "OrderRoots",
-        // The wing census, bounded by the naval payload's membership
-        // capacity, which the root census does not change.
         "AirWing",
-        // The roster.
         "Characters",
         "World",
-        // The economy rest, beside the production and construction rests.
         "Economy",
         "Research",
-        // Focus included: Governance reads it per selected country.
         "Governance",
         "Variants",
-        // Combat and naval details, map counters and the physical navy pass
-        // with its mission ledgers; the task-force part is taken here too
-        // and leaves in the slack burst.
         "OrdinaryPart",
         "Slow",
-        // The stability tables, the war overview and, at its slot, the
-        // daily production walks, beside Slow.
         "WarOverview",
         "ProductionModifierPart",
         "ProductionDaily",
@@ -3160,431 +3229,340 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         "AirRelations",
         "SupplyTrains",
         "MapCombats",
-        // RaidAirScores and the shared rail tables read only the game state.
         "ScoresRails",
     ] {
-        let queued = at(&queue(job));
         assert!(
-            burst < queued && queued < release,
-            "{job} is not in the first burst"
+            burst < at(&queue(job)) && at(&queue(job)) < release,
+            "{job} first burst"
         );
     }
-    // The slack burst: the first-burst jobs whose joins come longest after
-    // their bodies end leave in one held burst right behind the Naval copy
-    // and the Orders parts, before the unit inputs join, so those claim the
-    // workers first. The first burst takes every Ordinary part's request and
-    // holds back only the task-force part's queue.
-    let naval = at(&queue("Naval"));
-    for job in ["Orders", "OrdersPart"] {
-        assert!(
-            at(&queue(job)) < naval,
-            "{job} is queued after the Naval copy"
-        );
-    }
-    let slack_hold = after("batch.hold();", naval);
-    let slack_release = after("release!();", slack_hold);
-    assert!(slack_release < inputs_join);
-    assert!(
-        !joins_in(naval..slack_release),
-        "a join inside the slack burst"
-    );
-    let held_back = at("extended::OrdinaryPart::TaskForces(_)");
-    assert!(burst < held_back && held_back < release);
-    let task_forces = after(&queue("OrdinaryPart"), at(&queue("OrdinaryPart")) + 1);
-    for (job, queued) in [
-        ("OrdinaryPart", task_forces),
-        ("Provinces", at(&queue("Provinces"))),
-        ("States", at(&queue("States"))),
-        ("Weather", at(&queue("Weather"))),
-        ("Capitulation", at(&queue("Capitulation"))),
-        ("Wars", at(&queue("Wars"))),
-        ("Relations", at(&queue("Relations"))),
-    ] {
-        assert!(
-            slack_hold < queued && queued < slack_release,
-            "{job} is not in the slack burst"
-        );
-    }
-
-    // The AirWing census parts after the first leave beside it.
-    let wing_part = after(&queue("AirWing"), at(&queue("AirWing")) + 1);
-    assert!(
-        burst < wing_part && wing_part < release,
-        "an AirWing part is not in the first burst"
-    );
-
-    // Each dependent job and the joins whose output it reads; it leaves
-    // right after the last of them.
-    let dependent: &[(&str, usize, &[&str])] = &[
-        // The census's ships seed the detail parts.
-        ("ShipModelDetails", 0, &["ship_models_pending,"]),
-        // The unit-input packet.
-        (
-            "Divisions",
-            0,
-            &[
-                "completed!(input_pending, DivisionInputs)",
-                "completed!(pending, DivisionInputParts)",
-            ],
-        ),
-        (
-            "Presentation",
-            0,
-            &[
-                "completed!(input_pending, DivisionInputs)",
-                "completed!(pending, DivisionInputParts)",
-            ],
-        ),
-        // The movement pass, beside the status side.
-        (
-            "PresentationMovement",
-            0,
-            &[
-                "completed!(input_pending, DivisionInputs)",
-                "completed!(pending, DivisionInputParts)",
-            ],
-        ),
-        (
-            "Intel",
-            0,
-            &[
-                "completed!(input_pending, DivisionInputs)",
-                "completed!(pending, DivisionInputParts)",
-            ],
-        ),
-        // The census whose divisions the walk takes without reading them.
-        (
-            "ProvinceUnitOrder",
-            0,
-            &[
-                "completed!(input_pending, DivisionInputs)",
-                "completed!(pending, DivisionInputParts)",
-            ],
-        ),
-        // The reserved naming the Countries job leaves in the appearance pack.
-        ("Ordinary", 0, &["completed!(countries_pending, Countries)"]),
-        // The roots; the wing census is installed after the copy returns.
-        ("Naval", 0, &["completed!(root_pending, OrderRoots)"]),
-        (
-            "AirMissions",
-            0,
-            &[
-                "completed!(air_pending, AirWing)",
-                "completed!(pending, AirWing)",
-            ],
-        ),
-        // The roster's portrait and role censuses.
-        ("CharacterPortraits", 0, &["join_characters!(0);"]),
-        ("CharacterInputs", 0, &["join_characters!(0);"]),
-        ("Characters", 1, &["join_characters!(0);"]),
-        // The order census and its plans, in parts, need only the root
-        // census.
-        ("Orders", 0, &["completed!(root_pending, OrderRoots)"]),
-        ("OrdersPart", 0, &["completed!(root_pending, OrderRoots)"]),
-        // The parts stitched, and every other pass over them, once the
-        // Orders job and its parts are joined (the later placement, when
-        // they had not all completed, is checked below).
-        ("OrdersStitch", 0, &["collect_orders("]),
-        // The fronts the stitched plans bound.
-        ("Fronts", 0, &["completed!(stitch_pending, OrdersStitch)"]),
-        // The child fronts' owner operands borrow the Naval copy.
-        (
-            "ChildFronts",
-            0,
-            &[
-                "completed!(stitch_pending, OrdersStitch)",
-                "completed!(naval_pending, Naval)",
-            ],
-        ),
-        // The air pack, the completed order census and the scores and rails
-        // the Late job keeps.
-        (
-            "Late",
-            0,
-            &[
-                "completed!(child_fronts_pending, ChildFronts)",
-                "completed!(air_missions_pending, AirMissions)",
-                "completed!(scores_rails_pending, ScoresRails)",
-                "completed!(pending, ArmyIcons)",
-            ],
-        ),
-        // The division sources and the seeded census.
-        ("ArmyIcons", 0, &["completed!(pending, Divisions)"]),
-        (
-            "AirHistories",
-            0,
-            &["completed!(air_missions_pending, AirMissions)"],
-        ),
-        // Its packs: the character parts, the restored Variants, Session,
-        // the intel joins and the division sources; no Late output.
-        (
-            "FinalInputs",
-            0,
-            &[
-                "join_characters!(part);",
-                "frame.extended.restore_variants_request(request, report);",
-                "completed!(pending, Session)",
-                "collected!(intel_residual_pending, IntelResidual)",
-                "completed!(capitulation_pending, Capitulation)",
-                "completed!(pending, Relations)",
-                "completed!(pending, Divisions)",
-            ],
-        ),
-        // The event feed seals after the census the Governance job ran.
-        (
-            "EventFeedSeal",
-            0,
-            &["collected!(governance_pending, Governance)"],
-        ),
-    ];
-    for (job, occurrence, producers) in dependent {
-        let mut queued = at(&queue(job));
-        for _ in 0..*occurrence {
-            queued = after(&queue(job), queued + 1);
+    let handlers = &body[at("match step {")..at("            segment!(1);")];
+    let handler = |step: &str| {
+        let marker = format!("EarlyStep::{step} => {{");
+        let start = handlers.find(&marker).unwrap() + marker.len();
+        let end = handlers[start..]
+            .find("EarlyStep::")
+            .map_or(handlers.len(), |offset| start + offset);
+        &handlers[start..end]
+    };
+    let ordered = |part: &str, markers: &[&str]| {
+        let compact = part.split_whitespace().collect::<String>();
+        let mut position = 0;
+        for marker in markers {
+            let marker = marker.split_whitespace().collect::<String>();
+            position += compact[position..]
+                .find(&marker)
+                .unwrap_or_else(|| panic!("missing/out-of-order {marker}"))
+                + marker.len();
         }
-        let last = producers
-            .iter()
-            .map(|producer| {
-                let joined = at(producer);
-                assert!(joined < queued, "{job} leaves before {producer}");
-                joined + producer.len()
-            })
-            .max()
-            .unwrap();
-        assert!(
-            !joins_in(last..queued),
-            "{job} waits for a join it does not read"
-        );
-    }
-
-    // The Late chain leaves before the verdicts only the assembly and the
-    // final borrowers read.
-    let late = at(&queue("Late"));
-    for later in [
-        "collected!(intel_residual_pending, IntelResidual)",
-        "completed!(capitulation_pending, Capitulation)",
-        "completed!(weather_pending, Weather)",
-        "completed!(pending, Lexical)",
-        "completed!(pending, Session)",
-    ] {
-        assert!(late < at(later), "Late waits for {later}");
-    }
-    // The fronts return to the plans the Late job returns, before the
-    // tables; the Late job does not read them.
-    let fronts_join = at("completed!(fronts_pending, Fronts)");
-    assert!(at("completed!(late_pending, Late)") < fronts_join);
-    assert!(fronts_join < at(".capture_tables_late("));
-    // The final borrowers leave before the Presentation join; the order
-    // transport the Late job returns waits for it.
-    let presentation_join = at("collected!(presentation_pending, Presentation)");
-    assert!(at("completed!(late_pending, Late)") < presentation_join);
-    assert!(at(&queue("FinalInputs")) < presentation_join);
-    // The final borrowers no longer wait for the Late job or the table
-    // assembly, and the residual Intel report is settled before they take
-    // the intel pack.
-    assert!(at(&queue("FinalInputs")) < at("completed!(late_pending, Late)"));
-    assert!(at(&queue("FinalInputs")) < at(".capture_tables(&cached"));
-    assert!(at("frame.extended.settle_intel_residual(") < at(&queue("FinalInputs")));
-    // Nor for the joins of jobs that hold none of their packs.
-    for later in [
-        "completed!(provinces_pending, Provinces)",
-        "completed!(templates_pending, Templates)",
-        "completed!(slow_pending, Slow)",
-        "completed!(gated_pending, Gated)",
-        "collected!(character_inputs_pending, CharacterInputs)",
-        "collected!(governance_pending, Governance)",
-        "collected!(research_pending, Research)",
+    };
+    let readiness = &body[at("let step = batch.wait_ready(")..at("match step {")];
+    for gate in [
+        "presentation.ready(batch)",
+        "all(&input_pending, &part_pending)",
+        "all(&air_pending, &air_part_pending)",
+        "orders_complete(batch, orders, parts)",
+        "ready!(divisions_pending)",
+        "ready!(army_icons_pending)",
+        "stitch_can_advance(batch, pending, false)",
+        "stitch_failure.ready(",
+        "stitched_orders.is_some()",
+        "wings_done",
+        "ready!(naval_pending)",
+        "divisions_done",
+        "ready!(combat_pending)",
+        "ready!(child_fronts_pending)",
+        "ready!(air_missions_pending)",
+        "pending_complete(batch, &scores_rails_pending)",
+        "map_done && child_done && icons_done && missions_done",
+        "final_inputs_ready(",
+        "late_pending.is_some()",
+        "intel_residual_pending.as_ref()",
+        "capitulation_pending.as_ref()",
+        "session_pending.as_ref()",
+        "relations_pending.as_ref()",
+        "variants_pending.as_ref().map(|(pending, _)| pending)",
+        "characters_pending[1..].iter().map(Option::as_ref)",
     ] {
         assert!(
-            at(&queue("FinalInputs")) < at(later),
-            "FinalInputs waits for {later}"
+            readiness
+                .split_whitespace()
+                .collect::<String>()
+                .contains(&gate.split_whitespace().collect::<String>()),
+            "readiness omits {gate}"
         );
     }
-    assert!(presentation_join < at("frame.extended.install_order_transport();"));
-    // The movement pass returns to the presentation before its report is
-    // restored, and both before the order transport.
-    let movement_join = at("collected!(movement_pending, PresentationMovement)");
-    assert!(presentation_join < movement_join);
-    assert!(!joins_in(presentation_join + 1..movement_join));
-    assert!(
-        movement_join < at(".restore_presentation_request(presentation_request")
-            && movement_join < at("frame.extended.install_order_transport();")
+    ordered(
+        &body[scheduler..at("let step = batch.wait_ready(")],
+        &[
+            "if verdicts_done && divisions_done",
+            "stitch_failure.reach(&batch)",
+        ],
     );
-
-    // AirMissions owns the air pack before the statistics and base joins
-    // whose verdicts only the Late job reads; they are installed on return.
-    let missions = at(&queue("AirMissions"));
-    assert!(missions < at("completed!(pending, AirStats)"));
-    // AirBases joins at its first reader, its failure handling, beside
-    // UnitIntel after the late assembly. Its verdicts are set before the
-    // Gated dispatch and the air pack's installs, and nothing between reads
-    // its payload, report, failure or registration store.
-    let air_bases_join = at("completed!(air_bases_pending, AirBases)");
-    let verdicts = at("registrations_raw_mode = true;");
-    assert!(verdicts < at("let mut air_bases_raw = Some(true);"));
-    assert!(verdicts < at(&queue("Gated")));
-    assert!(at("let mut air_bases_raw = Some(true);") < at("install_air_verdicts(frame,"));
-    assert!(at(".capture_tables_late(") < air_bases_join);
-    assert!(at("completed!(intel_pending, Intel)") < air_bases_join);
-    assert!(air_bases_join < at("if let Some(reason) = air_bases_failure {"));
-    assert!(air_bases_join < at("air_bases_report.raw_ok"));
-    assert_eq!(body.matches("registrations_raw_mode").count(), 1);
+    assert!(!handler("Naval").contains("!batch.stopped()"));
+    ordered(
+        handler("Presentation"),
+        &["presentation.advance(shared, &mut batch)"],
+    );
+    let collect_macro = &body[at("macro_rules! collected {")..at("macro_rules! completed {")];
+    assert!(collect_macro.contains("presentation.wait_for(shared, &mut batch, Some(&pending))"));
+    ordered(
+        handler("Roots"),
+        &[
+            "completed!(root_pending.take()",
+            "frame.map.orders =",
+            "charge_order_parts(",
+            "take_orders_request(",
+            &queue("OrdersPart"),
+            &queue("Orders"),
+            &queue("Naval"),
+            "batch.hold();",
+            &queue("Provinces"),
+            &queue("States"),
+            &queue("Weather"),
+            &queue("Capitulation"),
+            &queue("Wars"),
+            &queue("Relations"),
+            "release!();",
+        ],
+    );
+    ordered(
+        handler("Inputs"),
+        &[
+            "completed!(input_pending.take()",
+            "part_pending).into_iter()",
+            "completed!(pending, DivisionInputParts)",
+            "census.absorb(",
+            "(*shared.division_parts.get())[part] =",
+            "install_unit_inputs(",
+            "batch.hold();",
+            &queue("Divisions"),
+            &queue("PresentationPrepare"),
+            &queue("Presentation"),
+            &queue("PresentationMovement"),
+            &queue("Intel"),
+            "radar_raw_mode = true",
+            "registrations_raw_mode = true",
+            "intel_raw_mode = true",
+            "rest_raw_mode = construction_active",
+            &queue("Gated"),
+            &queue("ProvinceUnitOrder"),
+            "release!();",
+        ],
+    );
+    ordered(
+        handler("Ships"),
+        &[
+            "ship_models_pending.take()",
+            "restore_ship_models_request(",
+            "batch.hold();",
+            "take_ship_model_parts(",
+            &queue("ShipModelDetails"),
+            "release!();",
+        ],
+    );
+    ordered(
+        handler("Countries"),
+        &[
+            "completed!(countries_pending.take()",
+            "restore_countries_request(",
+            "take_ordinary_request(",
+            &queue("Ordinary"),
+        ],
+    );
+    ordered(
+        handler("Characters"),
+        &[
+            "join_characters!(0)",
+            &queue("CharacterPortraits"),
+            "role_census()",
+            &queue("CharacterInputs"),
+            &queue("Characters"),
+            "drop(role_census)",
+        ],
+    );
+    ordered(
+        handler("Wings"),
+        &[
+            "completed!(air_pending.take()",
+            "air_part_pending).into_iter()",
+            "completed!(pending, AirWing)",
+            "join_parts(",
+            "retained_store_bytes(",
+            "install_owned_mission_identities(",
+            &queue("AirMissions"),
+        ],
+    );
+    ordered(
+        handler("Orders"),
+        &["collect_orders(", &queue("OrdersStitch")],
+    );
+    ordered(
+        handler("Divisions"),
+        &[
+            "completed!(pending, Divisions)",
+            "supply_sources(",
+            "*divisions_payload =",
+            "set_divisions_raw_mode(true)",
+            &queue("ArmyIcons"),
+        ],
+    );
+    ordered(
+        handler("ArmyIcons"),
+        &[
+            "completed!(pending, ArmyIcons)",
+            "restore_army_icons_request(",
+        ],
+    );
+    ordered(
+        handler("Stitch"),
+        &[
+            "stitch_pending.take()",
+            "debug_assert!(!report.contained_panic && failure.is_none())",
+            "end_order_parts(",
+            &queue("Fronts"),
+            "plans.take_fronts()",
+            "Job::ChildFronts(request)",
+            "batch.park(",
+        ],
+    );
+    ordered(
+        handler("Naval"),
+        &[
+            "completed!(naval_pending.take()",
+            "install_wings_after(",
+            "frame.map.install_owned_air(",
+            "naval_pilot().raw_mode",
+            ".unpark(",
+            "stitch_pending.take()",
+            "settle_stitch(",
+            r#"stitch_failure.admissible.expect("pre-Naval admission")"#,
+            "end_order_parts(",
+            &queue("Fronts"),
+            "orders_request.group_source =",
+            &queue("ChildFronts"),
+        ],
+    );
+    ordered(
+        handler("ChildFronts"),
+        &[
+            "child_fronts_pending.take()",
+            "*naval_payload = orders_request.group_source.take()",
+            "fail_child_fronts()",
+            "restore_orders_request(",
+        ],
+    );
+    ordered(
+        handler("Map"),
+        &[
+            "completed!(combat_pending.take()",
+            "restore_combat_request(",
+            "frame.map.sample(",
+            &queue("AirMissions"),
+        ],
+    );
+    ordered(
+        handler("Missions"),
+        &[
+            "completed!(scores_rails_pending, ScoresRails)",
+            "air_missions_pending.take()",
+            "restore_air_missions_request(",
+            "install_air_verdicts(",
+            "restore_scores_rails_request(",
+        ],
+    );
+    ordered(handler("Late"), &[&queue("Late"), &queue("AirHistories")]);
+    // The map may need the typed wing fallback: its air pack and Ordinary
+    // score sources cannot be installed/loaned before the sample.
+    assert!(
+        readiness
+            .split_whitespace()
+            .collect::<String>()
+            .contains("ifmap_done&&!missions_done")
+    );
+    assert!(handler("Late").contains("take_late_request("));
+    ordered(
+        handler("FinalInputs"),
+        &[
+            "intel_residual_pending.take()",
+            "restore_intel_residual_request(",
+            "capitulation_pending.take()",
+            "capitulation_raw_mode =",
+            "session_pending.take()",
+            "session_pilot().raw_mode =",
+            "relations_pending.take()",
+            "join_relations(",
+            "variants_pending.take()",
+            "restore_variants_request(",
+            "join_characters!(part)",
+            "settle_intel_residual(",
+            "take_final_inputs_request(",
+        ],
+    );
+    for unrelated in [
+        "weather_pending",
+        "lexical_pending",
+        "provinces_pending",
+        "completed!(late_pending, Late)",
+        "movement_pending",
+        "character_inputs_pending",
+    ] {
+        assert!(
+            !handler("FinalInputs").contains(unrelated),
+            "{unrelated} gates final inputs"
+        );
+    }
+    // Assembly-only joins retain their order after FinalInputs admission.
+    let tail = &body[at("            segment!(1);")..];
+    // Governance contributes this hour's owner recovery markers. Seal them
+    // on a worker after that census joins, then restore before assembly.
+    ordered(
+        tail,
+        &[
+            "collected!(governance_pending, Governance)",
+            &queue("EventFeedSeal"),
+            "let acquisition::Job::EventFeedSeal(feed) = job",
+            ".restore_event_feed_seal(feed",
+            ".capture_tables(&cached",
+        ],
+    );
+    ordered(
+        tail,
+        &[
+            "completed!(weather_pending, Weather)",
+            "completed!(pending, Lexical)",
+            "completed!(provinces_pending, Provinces)",
+            "completed!(templates_pending, Templates)",
+            "completed!(slow_pending, Slow)",
+            "completed!(war_overview_pending, WarOverview)",
+            "completed!(stability_pending, Stability)",
+        ],
+    );
+    ordered(
+        tail,
+        &[
+            "completed!(pending, OrdinaryPart)",
+            "completed!(ordinary_pending, Ordinary)",
+            "let acquisition::Job::EventFeedSeal(feed) = job",
+            ".restore_event_feed_seal(feed",
+            "completed!(pending, ProductionDaily)",
+            "completed!(pending, ProductionModifierPart)",
+            ".capture_tables(&cached",
+            "completed!(late_pending, Late)",
+            "completed!(fronts_pending, Fronts)",
+            "presentation.finish(shared, &mut batch)",
+            "collected!(movement_pending, PresentationMovement)",
+            "install_order_transport()",
+            "completed!(final_pending, FinalInputs)",
+            "capture_tables_late(",
+            "completed!(intel_pending, Intel)",
+            "completed!(air_bases_pending, AirBases)",
+        ],
+    );
+    assert_eq!(body.matches("registrations_raw_mode = true").count(), 1);
     assert_eq!(body.matches("air_bases_report = report;").count(), 1);
-    for (reader, needle) in [
-        ("payload", "air_bases_payload"),
-        ("report", "air_bases_report"),
-        ("failure", "air_bases_failure"),
-        ("store", "shared.air_base_store.get()"),
-    ] {
-        let first = body
-            .match_indices(needle)
-            .map(|(index, _)| index)
-            .filter(|&index| index > at(&queue("AirBases")))
-            .min()
-            .unwrap();
-        // The join's own `let air_bases_failure = out_of_line(|| {` and
-        // comment lie just before its collection.
-        assert!(
-            first > air_bases_join - 400,
-            "the AirBases {reader} is read at {first}, before its join at {air_bases_join}"
-        );
-    }
-    assert!(
-        after(
-            "install_air_verdicts(frame,",
-            at("completed!(air_missions_pending, AirMissions)")
-        ) < at(&queue("Late"))
-    );
-    // The Ordinary family joins after the map sample, whose typed air
-    // fallback must not see its score pack, and before the assembly and the
-    // Late join that read the packs it returns.
-    let parts_join = at("completed!(pending, OrdinaryPart)");
-    assert!(at("let map_ticks = frame.map.sample(") < parts_join);
-    assert!(parts_join < at("completed!(ordinary_pending, Ordinary)"));
-    assert!(at("completed!(ordinary_pending, Ordinary)") < at(".capture_tables(&cached"));
-    assert!(at("completed!(ordinary_pending, Ordinary)") < at("completed!(late_pending, Late)"));
-    // The sealed event feed is back in the frame before the assembly.
-    let seal_join = at("let acquisition::Job::EventFeedSeal(feed) = job");
-    assert!(at(&queue("EventFeedSeal")) < seal_join);
-    assert!(seal_join < at(".restore_event_feed_seal(feed"));
-    assert!(at(".restore_event_feed_seal(feed") < at(".capture_tables(&cached"));
-    // The stability tables join where Slow does, before the assembly that
-    // takes their ticks.
-    let stability_join = at("completed!(stability_pending, Stability)");
-    assert!(at("completed!(slow_pending, Slow)") < stability_join);
-    assert!(stability_join < at(".capture_tables(&cached"));
-    // So does the war overview, split from Slow too.
-    let war_overview_join = at("completed!(war_overview_pending, WarOverview)");
-    assert!(at("completed!(slow_pending, Slow)") < war_overview_join);
-    assert!(war_overview_join < at(".capture_tables(&cached"));
-    // The daily production walks, split from Slow, join last before the
-    // assembly, after every other job it takes ticks from.
-    let production_daily_join = at("completed!(pending, ProductionDaily)");
-    assert!(war_overview_join < production_daily_join);
-    // Its other production modifier parts leave before it, after the split
-    // is prepared, and join right after it, in slot order.
-    let parts_join = at("completed!(pending, ProductionModifierPart)");
-    assert!(production_daily_join < parts_join);
-    assert!(!joins_in(production_daily_join + 1..parts_join));
-    assert!(parts_join < at(".capture_tables(&cached"));
-    assert!(!joins_in(parts_join + 1..at(".capture_tables(&cached")));
-    let prepared = at("frame.extended.prepare_production_modifier_parts(");
-    assert!(prepared < at(&queue("ProductionModifierPart")));
-    assert!(at(&queue("ProductionModifierPart")) < at(&queue("ProductionDaily")));
-    // The economy rest and the production and construction rests join
-    // together after the wing join and the raw-copy joins: nothing before
-    // them reads them, so they do not hold the roster's consumers in the
-    // early segments.
-    let world_join = at("completed!(world_pending, World)");
-    let economy_join = at("completed!(economy_pending, Economy)");
-    assert!(economy_join < world_join);
-    assert!(!joins_in(economy_join + 1..world_join));
-    assert!(at("completed!(air_pending, AirWing)") < economy_join);
-    // The Gated packs leave with the Intel job, before the joins of every
-    // job whose verdict they read: each verdict is settled once its job is
-    // queued, World's construction verdict from its scheduled part.
-    let gated = at(&queue("Gated"));
-    assert!(at(&queue("Intel")) < gated);
-    assert!(gated < after("segment!(1);", burst));
-    for verdict in [
-        "frame.extended.radar_pilot().radar_raw_mode = true;",
-        "frame.extended.radar_pilot().registrations_raw_mode = true;",
-        "frame.extended.intel_pilot().intel_raw_mode = true;",
-        "frame.extended.projects_pilot().raw_mode = true;",
-        "rest_raw_mode = construction_active;",
-    ] {
-        assert!(
-            at(verdict) < gated,
-            "{verdict} is set after the Gated dispatch"
-        );
-        assert_eq!(body.matches(verdict).count(), 1, "{verdict}");
-    }
-    assert!(at("let construction_active = request.construction.is_some();") < at(&queue("World")));
-    for join in [
-        "completed!(pending, Radar)",
-        "completed!(pending, Projects)",
-        "completed!(air_bases_pending, AirBases)",
-        "completed!(intel_pending, Intel)",
-        "completed!(economy_pending, Economy)",
-        "completed!(world_pending, World)",
-    ] {
-        assert!(gated < at(join), "the Gated packs wait for {join}");
-    }
-    // The joins no longer set a verdict the packs hold.
-    assert_eq!(body.matches("radar_raw_mode = report").count(), 0);
-    assert_eq!(
-        body.matches("projects_pilot().raw_mode = report").count(),
-        0
-    );
-    // The Orders job and its parts join right after the AirMissions burst
-    // that follows the wing join when they have all completed, and the stitch
-    // leaves at once, after the Gated dispatch and before the fifth segment's
-    // joins, so it runs beside them. Otherwise they join, and the stitch
-    // leaves, where the census is settled, behind the fifth segment. The
-    // stitch joins behind the Naval join either way, where its outcome is
-    // settled as if submitted there.
-    let missions_release = after("release!();", at(&queue("AirMissions")));
-    let early_join = at("collect_orders(");
-    let early = at(&queue("OrdersStitch"));
-    assert!(missions_release < early_join && early_join < early);
-    assert!(at("orders_complete(&batch,") < early_join);
-    assert!(early < at("completed!(air_bases_pending, AirBases)"));
-    assert!(early < economy_join && early < world_join);
-    assert!(at(&queue("Gated")) < early);
-    assert!(early < after("segment!(5);", burst));
-    // The early stitch's admission is read where the later one is
-    // submitted: past the place of that path's joins, before the Naval join.
-    let admissible = at("Some(pending) => (pending, !batch.stopped()),");
-    let late_join = after("collect_orders(", early);
-    let late = after(&queue("OrdersStitch"), late_join);
-    let naval_join = at("completed!(naval_pending, Naval)");
-    assert!(after("segment!(5);", burst) < admissible);
-    assert!(admissible < naval_join && late_join < late && late < naval_join);
-    assert!(!joins_in(late_join + "collect_orders(".len()..late));
-    assert!(naval_join < at("completed!(stitch_pending, OrdersStitch)"));
-    assert!(at("completed!(stitch_pending, OrdersStitch)") < at("settle_stitch("));
-    assert!(at("settle_stitch(") < at(&queue("Fronts")));
-    // The Gated packs read only UnitIntel's raw mode, settled before they
-    // leave; UnitIntel itself joins after the late assembly, at its failure
-    // handling, its first reader.
-    let intel_join = at("completed!(intel_pending, Intel)");
-    assert!(at("frame.extended.intel_pilot().intel_raw_mode = true;") < at(&queue("Gated")));
-    assert!(at("frame.extended.capture_tables_late(") < intel_join);
-    assert!(at("completed!(final_pending, FinalInputs)") < intel_join);
-    assert!(intel_join < at("if let Some(reason) = intel_failure {"));
-    assert!(intel_join < at("if intel_report.raw_ok {"));
-    assert!(world_join < at(&queue("FinalInputs")));
-    // The second segment is empty: the roster joins on its own in the
-    // third, its consumers leaving with it, long before the wing join.
-    assert!(!joins_in(
-        after("segment!(1);", burst)..after("segment!(2);", burst)
-    ));
-    let roster_join = at("join_characters!(0);");
-    assert!(after("segment!(2);", burst) < roster_join);
-    assert!(roster_join < after("segment!(3);", burst));
-
-    // A job another job waits for claims first; then the longest
-    // independent jobs; the short ones last.
+    // Variants and RaidState claim before the dependency tier; the
+    // remaining independent jobs follow it in descending length.
     use acquisition::Role;
     for gate in [
         Role::ObserverBoundary,
@@ -3620,6 +3598,7 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         // The longest job that waits for another: dispatched after the
         // first burst, it would queue behind every job of its class.
         Role::Presentation,
+        Role::FinalInputs,
         // The longest first-burst job and the tables split from it.
         Role::Slow,
         Role::Stability,
@@ -3627,7 +3606,7 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         Role::ProductionDaily,
         Role::ProductionModifierParts,
     ] {
-        assert_eq!(gate.priority(), 0, "{gate:?}");
+        assert_eq!(gate.priority(), Role::Countries.priority(), "{gate:?}");
     }
     for (long, short) in [
         (Role::IntelResidual, Role::Capitulation),
@@ -3636,6 +3615,7 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         (Role::OrdinaryNavies, Role::OrdinaryMap),
         (Role::PresentationMovement, Role::ProvinceUnitOrder),
         (Role::CharacterInputs, Role::CharacterTraits),
+        (Role::AdvisorRoles, Role::CountryLeaderRoles),
         (Role::Ordinary, Role::AirRelations),
         (Role::Templates, Role::Factions),
         (Role::Provinces, Role::States),
@@ -3644,6 +3624,8 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         assert!(long.priority() < short.priority(), "{long:?} {short:?}");
         assert!(Role::Countries.priority() < long.priority());
     }
+    // AdvisorRoles may gate FinalInputs, but does not outrank Presentation.
+    assert!(Role::Presentation.priority() < Role::AdvisorRoles.priority());
     // Split from Slow, the stability tables claim no later than it.
     assert!(Role::Stability.priority() <= Role::Slow.priority());
     assert!(Role::WarOverview.priority() <= Role::Slow.priority());

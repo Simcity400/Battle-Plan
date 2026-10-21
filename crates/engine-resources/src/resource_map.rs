@@ -345,6 +345,66 @@ fn client_convoys(memory: &impl Memory, client: usize) -> Result<[i32; 2], &'sta
     Ok([assigned as i32, required as i32])
 }
 
+fn client_status(
+    memory: &impl Memory,
+    client: usize,
+    threshold: i64,
+) -> Result<(bool, [i32; 2]), &'static str> {
+    let factors = client
+        .checked_add(CLIENT_EFFICIENCY_A)
+        .filter(|at| at.checked_add(16).is_some());
+    let convoys = client
+        .checked_add(CLIENT_CONVOYS)
+        .filter(|at| at.checked_add(8).is_some());
+    let (Some(factors), Some(convoys)) = (factors, convoys) else {
+        let bad = client_bad(memory, client, threshold)?;
+        return Ok((bad, client_convoys(memory, client)?));
+    };
+    let mut factor_bytes = [0; 16];
+    let mut convoy_bytes = [0; 8];
+    match memory.copy_scattered(
+        [factors, convoys],
+        &mut [factor_bytes.as_mut_slice(), convoy_bytes.as_mut_slice()],
+    ) {
+        0 => return Err("convoy client efficiency unreadable"),
+        1 => return Err("convoy client convoys unreadable"),
+        _ => {}
+    }
+    let a = i64::from_le_bytes(factor_bytes[..8].try_into().expect("eight bytes"));
+    let b = i64::from_le_bytes(factor_bytes[8..].try_into().expect("eight bytes"));
+    Ok((
+        efficiency_product(a, b) < i128::from(threshold),
+        [
+            i32::from_le_bytes(convoy_bytes[..4].try_into().expect("four bytes")),
+            i32::from_le_bytes(convoy_bytes[4..].try_into().expect("four bytes")),
+        ],
+    ))
+}
+
+fn origin_factors(memory: &impl Memory, origin: usize) -> Result<(i64, i64), &'static str> {
+    let addresses = [ORIGIN_EFFICIENCY, ORIGIN_ROUTE_FACTOR].map(|offset| {
+        origin
+            .checked_add(offset)
+            .filter(|at| at.checked_add(8).is_some())
+    });
+    let [Some(efficiency), Some(route_factor)] = addresses else {
+        let efficiency =
+            read(memory, at(origin, ORIGIN_EFFICIENCY)?).ok_or("origin efficiency unreadable")?;
+        let route_factor = read(memory, at(origin, ORIGIN_ROUTE_FACTOR)?)
+            .ok_or("origin route factor unreadable")?;
+        return Ok((efficiency, route_factor));
+    };
+    let mut words = [[0; 8]; 2];
+    match memory.copy_scattered(
+        [efficiency, route_factor],
+        &mut words.each_mut().map(|word| word.as_mut_slice()),
+    ) {
+        0 => Err("origin efficiency unreadable"),
+        1 => Err("origin route factor unreadable"),
+        _ => Ok((i64::from_le_bytes(words[0]), i64::from_le_bytes(words[1]))),
+    }
+}
+
 /// The client's handle id, authenticating its type.
 fn client_handle(memory: &impl Memory, client: usize) -> Result<u32, &'static str> {
     let handle = pair_u32(memory, at(client, CLIENT_HANDLE_TYPE)?)
@@ -453,17 +513,19 @@ impl<M: Memory> Walk<'_, M> {
         {
             return Err("convoy client of an unexpected type");
         }
+        let handle = client_handle(self.memory, client)?;
+        let (bad, convoys) = client_status(self.memory, client, self.threshold)?;
         Ok(ClientRow {
             owner_ordinal: None,
             other_ordinal: None,
             address: client,
-            handle: client_handle(self.memory, client)?,
+            handle,
             category,
             owner,
             other,
             route: route.0,
-            bad: client_bad(self.memory, client, self.threshold)?,
-            convoys: client_convoys(self.memory, client)?,
+            bad,
+            convoys,
             route_address: route.1,
         })
     }
@@ -487,10 +549,7 @@ impl<M: Memory> Walk<'_, M> {
         }
         let state = read::<u32>(memory, at(state_pointer, cstate::ID)?)
             .ok_or("origin state id unreadable")?;
-        let efficiency = read::<i64>(memory, at(origin, ORIGIN_EFFICIENCY)?)
-            .ok_or("origin efficiency unreadable")?;
-        let route_factor = read::<i64>(memory, at(origin, ORIGIN_ROUTE_FACTOR)?)
-            .ok_or("origin route factor unreadable")?;
+        let (efficiency, route_factor) = origin_factors(memory, origin)?;
         let accumulator = cstate::country_modifier_accumulator(
             memory,
             self.game_state,
@@ -507,7 +566,7 @@ impl<M: Memory> Walk<'_, M> {
         // A rights-holder origin carries its own route to the holder, as an own origin does.
         let route_address = at(origin, ORIGIN_ROUTE)?;
         self.authenticate_route(route_address)?;
-        let bad = client_bad(memory, origin, self.threshold)?;
+        let (bad, convoys) = client_status(memory, origin, self.threshold)?;
         Ok((
             OriginRow {
                 state,
@@ -518,7 +577,7 @@ impl<M: Memory> Walk<'_, M> {
                 route_factor,
                 local_resources_factor,
                 bad,
-                convoys: client_convoys(memory, origin)?,
+                convoys,
                 route_address,
             },
             state_pointer,

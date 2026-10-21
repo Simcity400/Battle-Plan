@@ -289,6 +289,7 @@ fn observe_fleet_regions(
 }
 
 pub struct Captured {
+    owned_pending: bool,
     fleet_regions: std::collections::BTreeMap<u64, HeldFleetRegions>,
     fleet_region_bytes: usize,
     task_forces: CaptureRows<ctask_force::CounterRow>,
@@ -453,6 +454,7 @@ impl Captured {
             collector_observers::fleet_region_changes::presize();
         }
         Self {
+            owned_pending: false,
             task_forces: CaptureRows::new(capacity.task_forces),
             fleets: CaptureRows::new(capacity.fleets),
             fleet_regions: Default::default(),
@@ -495,6 +497,8 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
+        // A later sibling failure must not lose this completed walk's refusals.
+        self.decode_owned();
         self.clear_fresh_owner_demands();
         self.task_forces.reset();
         self.fleets.reset();
@@ -577,6 +581,19 @@ impl Captured {
         self.capture_at(memory, base, state, Some(hour), modifier_guard)
     }
 
+    /// Native observations and certificates finish before the owned diagnostic
+    /// and retired-fleet bookkeeping tail is handed to FIFO decode.
+    pub fn acquire_with_hour(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        hour: i32,
+        modifier_guard: Result<(), &'static str>,
+    ) -> [u64; N] {
+        self.capture_impl(memory, base, state, Some(hour), modifier_guard, true)
+    }
+
     fn capture_at(
         &mut self,
         memory: &impl Memory,
@@ -585,7 +602,7 @@ impl Captured {
         hour: Option<i32>,
         modifier_guard: Result<(), &'static str>,
     ) -> [u64; N] {
-        self.capture_impl(memory, base, state, hour, modifier_guard)
+        self.capture_impl(memory, base, state, hour, modifier_guard, false)
     }
 
     fn capture_impl(
@@ -595,6 +612,7 @@ impl Captured {
         state: usize,
         hour: Option<i32>,
         modifier_guard: Result<(), &'static str>,
+        defer_owned: bool,
     ) -> [u64; N] {
         self.clear_fresh_owner_demands();
         let _reads = crate::read_accounting::table(TABLES[0]);
@@ -740,6 +758,26 @@ impl Captured {
         self.regions.len = registered.regions_len;
         self.regions.required = registered.required_regions;
         self.task_forces.outcome = captured.task_forces;
+        self.fleets.outcome = captured.fleets;
+        collector_observers::fleet_region_changes::demand(self.fleets.outcome.len());
+        self.rosters.len = captured.roster_len;
+        self.rosters.required = captured.roster_required;
+        self.motion.outcome = walked.outcome;
+        self.paths.len = walked.paths_len;
+        self.paths.required = walked.required_paths;
+        self.owned_pending = true;
+        if !defer_owned {
+            self.decode_owned();
+        }
+        [qpc().saturating_sub(begin).max(0) as u64, 0, 0, 0]
+    }
+
+    /// No Memory capability: receiver certificates and the poison decision
+    /// were finalized at acquisition; only owned rows and map retention remain.
+    pub fn decode_owned(&mut self) {
+        if !std::mem::take(&mut self.owned_pending) {
+            return;
+        }
         let mut arrow_refusals = [0_u64; 6];
         let mut fresh_refusals = [0_u64; 6];
         for row in &self.task_forces.rows[..self.task_forces.outcome.len()] {
@@ -747,8 +785,6 @@ impl Captured {
                 arrow_refusals[5] += 1;
             }
         }
-        self.fleets.outcome = captured.fleets;
-        collector_observers::fleet_region_changes::demand(self.fleets.outcome.len());
         if !matches!(self.fleets.outcome, Outcome::Rows { .. }) {
             self.fleet_regions.clear();
             self.fleet_region_bytes = 0;
@@ -771,10 +807,7 @@ impl Captured {
                 })
                 .sum();
         }
-        self.rosters.len = captured.roster_len;
-        self.rosters.required = captured.roster_required;
-        self.motion.outcome = walked.outcome;
-        for row in &self.motion.rows[..walked.outcome.len()] {
+        for row in &self.motion.rows[..self.motion.outcome.len()] {
             if let Some(fresh) = row.fresh {
                 for (index, refused) in [
                     fresh.base_speed.is_err(),
@@ -817,9 +850,6 @@ impl Captured {
                 counter.fetch_add(refused, std::sync::atomic::Ordering::Relaxed);
             }
         }
-        self.paths.len = walked.paths_len;
-        self.paths.required = walked.required_paths;
-        [qpc().saturating_sub(begin).max(0) as u64, 0, 0, 0]
     }
     fn supply_origins(
         &self,
@@ -1086,6 +1116,24 @@ mod tests {
     use super::*;
     use engine_native::memory::SliceMemory;
     use replay_data::rows::TableRows;
+
+    #[test]
+    fn sibling_failure_reset_settles_completed_counter_diagnostics_once() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let before = ARROW_REFUSALS.each_ref().map(|counter| counter.load(Relaxed));
+        let mut captured = Captured::vacant();
+        captured.task_forces.rows.push(Default::default());
+        captured.task_forces.outcome = Outcome::Rows { len: 1 };
+        captured.motion.rows.push(Default::default());
+        captured.motion.outcome = Outcome::Rows { len: 1 };
+        captured.owned_pending = true;
+        captured.reset();
+        let after = ARROW_REFUSALS.each_ref().map(|counter| counter.load(Relaxed));
+        assert_eq!(after, before.map(|count| count + 1));
+        captured.reset();
+        captured.decode_owned();
+        assert_eq!(ARROW_REFUSALS.each_ref().map(|counter| counter.load(Relaxed)), after);
+    }
 
     /// A source recording every single (unbatched) copy.
     struct Singles<'a> {

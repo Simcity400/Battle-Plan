@@ -1644,6 +1644,7 @@ fn walk_units(
             advisors: Batch::new(&mut [], &mut []),
             units,
             traits,
+            training: true,
         },
         None,
         None,
@@ -4177,6 +4178,7 @@ fn serial_family_reference(
         mut advisors,
         mut units,
         mut traits,
+        training,
     } = family;
     let result = (|| {
         let roster = ccharacter_manager::Roster::read(memory, base, game_state)?;
@@ -4259,7 +4261,9 @@ fn serial_family_reference(
             }
             let previous_len = units.len;
             units.append(
-                |rows, bytes| read_unit(memory, base, pointer, character_id, rows, bytes),
+                |rows, bytes| {
+                    read_unit_selected(memory, base, pointer, character_id, rows, bytes, training)
+                },
                 |row, offset| {
                     relocate(&mut row.text_a_start, offset)
                         && relocate(&mut row.text_b_start, offset)
@@ -4429,8 +4433,13 @@ fn character_family_matches_raw_and_typed_at_every_hour() {
             decoded.decode_characters_payload(IMAGE, &job, &mut [0; N]);
             characters_test_kit::assert_matches_direct(&decoded, &typed);
             assert_eq!(decoded.character_activity(), active);
-            // Roster, roles and traits are all hourly (replay_data::cadence).
-            assert_eq!(active, [true; N]);
+            // Roster, roles and assigned traits remain hourly; training alone
+            // follows the owner-approved daily progress slot.
+            assert_eq!(&active[..5], &[true; 5]);
+            assert_eq!(
+                active[5],
+                hour == replay_data::cadence::COMMANDER_PROGRESS_SLOT as i32
+            );
         }
     }
 }

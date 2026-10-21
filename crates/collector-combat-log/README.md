@@ -2,6 +2,10 @@
 
 Combat log capture: the kept CombatLog rows of the loaded session, read beside the daily slice, and the observer of the native log prune that withdraws pruned rows. The host owns dispatch, loans and table assembly.
 
+Prune status reports `observe_mean_ns` from every observed call, beside total
+and maximum wall time. It includes scheduling delays but does not extrapolate
+rare slow calls through the sampled hook timer.
+
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 The retained-history [mutation and lifetime certificate](CERTIFICATE.md) covers

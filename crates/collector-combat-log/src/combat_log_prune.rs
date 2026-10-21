@@ -257,6 +257,7 @@ pub fn status() -> impl serde::Serialize {
             (u128::from(counter.load(Ordering::Relaxed)) * 1_000_000_000 / frequency as u128) as u64
         })
     };
+    let observe_total_ns = ns(&OBSERVE_TICKS);
     crate::status::status!({
         "history_events": crate::history_events::status(),
         "unhooked": UNHOOKED.get(),
@@ -270,9 +271,10 @@ pub fn status() -> impl serde::Serialize {
         "handed_over": c[6],
         "unobserved_drains": c[7],
         "other_session_rows_discarded": c[8],
-        "observe_total_ns": ns(&OBSERVE_TICKS),
+        "observe_total_ns": observe_total_ns,
+        "observe_mean_ns": observe_total_ns.and_then(|total| total.checked_div(c[0])),
         "observe_max_ns": ns(&OBSERVE_MAX_TICKS),
-        "observe_scope": "wall in observe on the executing daily task thread; includes failed and empty reads; excludes the original prune",
+        "observe_scope": "every call's wall in observe on the executing daily task thread; includes failed and empty reads and scheduling delays; excludes the original prune; mean is not extrapolated from hook timing samples",
         "scope": "cumulative since attach; a prune call is one country's daily Combat Log prune"
     })
 }
@@ -436,6 +438,103 @@ mod tests {
         assert!(status["observe_total_ns"].is_u64());
         assert!(status["observe_max_ns"].is_u64());
         assert!(status["observe_total_ns"].as_u64() >= status["observe_max_ns"].as_u64());
+    }
+
+    #[test]
+    #[ignore = "synthetic per-call hook measurement"]
+    fn hook_cost_combat_log_prune() {
+        use engine_land_inputs::ncombat_log_corders_group_logs as logs;
+        use engine_native::{corders_group, creference_registry as registry, reference_bucket};
+        const CALLS: usize = 10_000;
+        const MANAGER: usize = 0x100;
+        const POINTERS: usize = 0x200;
+        const REGISTRY: usize = 0x500;
+        const BUCKETS: usize = 0x600;
+        const GROUPS: usize = 0x1000;
+        const GROUP_COUNT: usize = 64;
+        #[inline(never)]
+        unsafe extern "system" fn original(manager: usize) {
+            std::hint::black_box(manager);
+        }
+
+        let _lock = test_lock();
+        let mut bytes = vec![0_u64; (GROUPS + GROUP_COUNT * logs::SIZE).div_ceil(8)];
+        let at = bytes.as_ptr() as usize;
+        let base = at - (registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8);
+        let handle = (1_u64 << 32) | u64::from(corders_group::REFERENCE_TYPE);
+        let hash = handle
+            .rotate_left(32)
+            .wrapping_mul(registry::HASH_MULTIPLIER);
+        let bucket = (((hash >> 32) as u32 ^ hash as u32) & 7) as usize;
+        let mut word = |offset: usize, value: u64| bytes[offset / 8] = value;
+        word(0, (at + REGISTRY) as u64);
+        word(REGISTRY + registry::ENTRIES, (at + BUCKETS) as u64);
+        word(REGISTRY + registry::COUNT, 1 | (7_u64 << 32));
+        word(REGISTRY + registry::OVERFLOW_DISTANCE, 5);
+        word(
+            BUCKETS + 13 * reference_bucket::STRIDE,
+            u64::from(reference_bucket::TERMINAL_DISTANCE) << (reference_bucket::DISTANCE * 8),
+        );
+        word(
+            BUCKETS + bucket * reference_bucket::STRIDE,
+            1_u64 << (reference_bucket::DISTANCE * 8),
+        );
+        word(
+            BUCKETS + bucket * reference_bucket::STRIDE + reference_bucket::TYPE,
+            handle,
+        );
+        word(
+            BUCKETS + bucket * reference_bucket::STRIDE + reference_bucket::OBJECT,
+            1,
+        );
+        word(MANAGER, (base + native::VTABLE_RVA) as u64);
+        word(MANAGER + native::GROUPS, (at + POINTERS) as u64);
+        word(MANAGER + native::COUNTRY, 7);
+        for index in 0..GROUP_COUNT {
+            let group = GROUPS + index * logs::SIZE;
+            word(POINTERS + index * 8, (at + group) as u64);
+            word(group, (base + logs::VTABLE_RVA) as u64);
+            word(group + logs::GROUP, handle);
+        }
+        BASE.store(base, Ordering::Relaxed);
+        ORIGINAL.store(original as *const () as usize, Ordering::Release);
+        observe_for_test(true);
+        let manager = at + MANAGER;
+        let native = collector_test_support::per_call_ns(CALLS, || {
+            for _ in 0..CALLS {
+                unsafe { original(std::hint::black_box(manager)) };
+            }
+        });
+        for groups in [0, 1, 16, GROUP_COUNT] {
+            bytes[(MANAGER + native::GROUPS + 8) / 8] = groups as u64 | ((groups as u64) << 32);
+            collector_test_support::with_allocations_denied(|| unsafe { prune(manager) });
+            let before = COUNTERS[0].load(Ordering::Relaxed);
+            let hooked = collector_test_support::per_call_ns(CALLS, || {
+                for _ in 0..CALLS {
+                    unsafe { prune(std::hint::black_box(manager)) };
+                }
+            });
+            assert_eq!(
+                COUNTERS[0].load(Ordering::Relaxed) - before,
+                8 * CALLS as u64
+            );
+            assert_eq!(COUNTERS[3].load(Ordering::Relaxed), 0);
+            assert_eq!(CURSOR.load(Ordering::SeqCst), 0);
+            assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+            let status = serde_json::to_value(status()).unwrap();
+            assert_eq!(
+                status["observe_mean_ns"].as_u64(),
+                Some(
+                    status["observe_total_ns"].as_u64().unwrap()
+                        / status["prune_calls"].as_u64().unwrap()
+                )
+            );
+            println!(
+                "hook_cost combat_log_prune {groups} live groups: {:.1} ns/call (hooked {hooked:.1}, native {native:.1})",
+                hooked - native
+            );
+        }
+        std::hint::black_box(bytes);
     }
 
     #[test]

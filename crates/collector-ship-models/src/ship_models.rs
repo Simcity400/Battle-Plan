@@ -49,7 +49,7 @@ use engine_native::{
 };
 use std::{
     cell::{Cell, RefCell},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 // Fixed-budget fixtures and the initial optional cache floor. Worker-owned
@@ -969,11 +969,16 @@ fn receivers(pointer: usize, fields: &cship::HeldShip) -> [usize; 3] {
 
 pub struct Captured {
     worker_growth: bool,
+    defer_owned: bool,
+    pending_owned: bool,
+    pending_hold: bool,
+    pending_quiet: Option<(u64, u64)>,
     copied: Cell<(usize, usize)>,
     modifiers: RefCell<SnapshotArena>,
     required_modifiers: SnapshotCapacity,
     optional_refusals: [u64; OPTIONAL_REFUSAL_REASONS.len()],
     rows: CaptureRows<cship::ModelRow>,
+    row_heap_bytes: OnceLock<usize>,
     seeds: Vec<Seed>,
     context: Option<CaptureContext>,
     seed_len: usize,
@@ -1034,8 +1039,13 @@ impl Captured {
             ),
             required_modifiers: SnapshotCapacity::default(),
             worker_growth: false,
+            defer_owned: false,
+            pending_owned: false,
+            pending_hold: false,
+            pending_quiet: None,
             optional_refusals: [0; OPTIONAL_REFUSAL_REASONS.len()],
             rows: CaptureRows::new(capacity.rows),
+            row_heap_bytes: OnceLock::new(),
             seeds: owned_vec(filled(capacity.rows, Seed::default())),
             context: None,
             seed_len: 0,
@@ -1058,6 +1068,12 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
+        if self.pending_owned {
+            self.forget_stores();
+            self.release_sources();
+            self.pending_owned = false;
+        }
+        self.defer_owned = false;
         for part in &mut self.extra {
             part.reset();
         }
@@ -1081,14 +1097,15 @@ impl Captured {
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
-            + self
-                .rows
-                .rows
-                .iter()
-                .map(|row| {
-                    row.hull_sprite.allocated_bytes() + row.fallback_sprite.allocated_bytes()
-                })
-                .sum::<usize>()
+            + *self.row_heap_bytes.get_or_init(|| {
+                self.rows
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        row.hull_sprite.allocated_bytes() + row.fallback_sprite.allocated_bytes()
+                    })
+                    .sum::<usize>()
+            })
             + self.seeds.capacity() * std::mem::size_of::<Seed>()
             + self.modifiers.borrow().allocated_bytes()
             + self.model.allocated_bytes()
@@ -1132,6 +1149,12 @@ impl Captured {
     }
     /// Start the current map-owned ship census without reading model state.
     pub fn begin_sources(&mut self) {
+        if self.pending_owned {
+            self.forget_stores();
+            self.release_sources();
+            self.pending_owned = false;
+        }
+        self.defer_owned = false;
         self.worker_growth = false;
         self.terminal_failure = None;
         self.context = None;
@@ -1144,7 +1167,7 @@ impl Captured {
         self.missing = 0;
         self.parent = super::MISSING;
     }
-    /// Retain the map's native source order; pointers live only during capture.
+    /// Retain the map's native source order; only acquisition follows seed pointers.
     pub fn visit_source(&mut self, pointer: usize, source: &cship::Row) {
         if self.seed_len == self.seeds.len() {
             self.missing = self.missing.saturating_add(1);
@@ -1289,6 +1312,8 @@ impl Captured {
     }
 
     fn forget_stores(&mut self) {
+        self.pending_hold = false;
+        self.pending_quiet = None;
         self.store.forget();
         self.air_capacity.clear();
         for part in &mut self.extra {
@@ -2303,6 +2328,7 @@ impl Captured {
         }
         match read(self) {
             Ok(row) => {
+                self.row_heap_bytes.take();
                 self.rows.rows[self.len] = row;
                 self.len += 1;
             }
@@ -2362,12 +2388,66 @@ impl Captured {
         memory: &impl Memory,
         context: CaptureContext,
     ) -> CaptureReport {
+        if self.pending_owned && !self.defer_owned {
+            self.forget_stores();
+            self.pending_owned = false;
+        }
         self.capture_carrying(
             memory,
             context,
             &ship_model_changes::Observer,
             crate::sampled_verify::current_burned_in(ship_model_changes::VERIFY),
         )
+    }
+
+    /// Native demand and certificate checks finish here; the frame retains
+    /// the next store and scratch until FIFO settlement.
+    pub fn capture_deferred(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+    ) -> CaptureReport {
+        if self.pending_owned {
+            self.forget_stores();
+        }
+        self.pending_owned = true;
+        self.defer_owned = true;
+        let report = self.capture_owned(memory, context);
+        self.defer_owned = false;
+        report
+    }
+
+    /// `modifiers`, `model`, `store`, `air_capacity` and `extra` settlement storage.
+    pub fn owned_tail_allocated_bytes(&self) -> usize {
+        self.modifiers.borrow().allocated_bytes()
+            + self.model.allocated_bytes()
+            + self.store.allocated_bytes()
+            + self.air_capacity.allocated_bytes()
+            + self
+                .extra
+                .iter()
+                .map(Self::owned_tail_allocated_bytes)
+                .sum::<usize>()
+    }
+
+    /// Only owned store indexes, memo storage and seed identity tokens remain.
+    pub fn settle_owned(&mut self) {
+        if self.pending_owned {
+            if self.pending_hold && self.store.hold() {
+                self.store.quiet = self.pending_quiet;
+            }
+            self.release_sources();
+            self.doctrine = cship::OrganisationMemo::default();
+            if crate::allocation::failed() {
+                self.forget_stores();
+            }
+            self.pending_hold = false;
+            self.pending_quiet = None;
+            self.pending_owned = false;
+        }
+        for part in &mut self.extra {
+            part.settle_owned();
+        }
     }
 
     /// [`Self::capture_owned`] observing `changes`, comparing the carryable
@@ -2477,7 +2557,10 @@ impl Captured {
             self.terminal_failure.is_none() && matches!(self.rows.outcome, Outcome::Rows { .. });
         if complete {
             self.air_capacity.finish();
-            if self.store.hold() {
+            if self.defer_owned {
+                self.pending_hold = true;
+                self.pending_quiet = quiet;
+            } else if self.store.hold() {
                 self.store.quiet = quiet;
             }
         } else {
@@ -2542,7 +2625,9 @@ impl Captured {
                 None => Outcome::Rows { len: self.len },
             };
         }
-        self.release_sources();
+        if !self.defer_owned {
+            self.release_sources();
+        }
         CaptureReport {
             ticks: [qpc().saturating_sub(started).max(0) as u64],
         }
@@ -2552,6 +2637,8 @@ impl Captured {
         self.terminal_failure = Some(reason);
         self.forget_stores();
         self.release_sources();
+        self.pending_owned = false;
+        self.defer_owned = false;
         CaptureReport::default()
     }
     pub fn outcomes(&self) -> [Outcome; N] {

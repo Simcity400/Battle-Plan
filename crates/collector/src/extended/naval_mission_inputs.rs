@@ -232,6 +232,8 @@ struct PatrolMember {
 
 pub struct Captured {
     growing: bool,
+    weather_pending: bool,
+    headquarters_pending: bool,
     task_forces: CaptureRows<TaskForce>,
     ranges_outcome: Outcome,
     patrol: Vec<PatrolMember>,
@@ -364,6 +366,8 @@ impl Captured {
         let size = |count| if storage { count } else { 0 };
         Self {
             growing: false,
+            weather_pending: false,
+            headquarters_pending: false,
             task_forces: CaptureRows::new(size(capacity.task_forces)),
             ranges_outcome: Outcome::Rows { len: 0 },
             patrol: Vec::new(),
@@ -423,6 +427,12 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
+        // A discarded cut must not leave a partially maintained cache as a baseline.
+        if self.headquarters_pending {
+            self.mission_headquarters.clear();
+        }
+        self.weather_pending = false;
+        self.headquarters_pending = false;
         self.task_forces.reset();
         self.ranges_outcome = Outcome::Rows { len: 0 };
         self.patrol.clear();
@@ -566,7 +576,7 @@ impl Captured {
     /// registered missions; the sliced tables read the countries the hour
     /// and, with a store, the changed fingerprints select.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn capture_with_navies_growing(
+    pub(crate) fn acquire_with_navies_growing(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -682,6 +692,7 @@ impl Captured {
         );
         reader.clear();
         holder.finish();
+        self.decode_owned();
         ticks
     }
 
@@ -1080,13 +1091,34 @@ impl Captured {
                 }
             }
         }
-        self.task_index.sort_unstable_by_key(|entry| entry.0);
-        self.mission_headquarters.retain(|(id, _)| {
-            self.task_index
-                .binary_search_by_key(id, |entry| entry.0)
-                .is_ok()
-        });
+        self.headquarters_pending = true;
         Ok(())
+    }
+
+    /// Only the initial mission rows need weather fan-out. Sibling ranges
+    /// already retain their copied weather and may reorder those initial rows.
+    /// No native capability or writer decision reaches this FIFO tail.
+    pub(crate) fn decode_owned(&mut self) {
+        if std::mem::take(&mut self.weather_pending) {
+            let known = &self.weather[..self.weather_len];
+            for row in &mut self.task_forces.rows[..self.task_forces.outcome.len()] {
+                if row.additional_range || row.patrol_context || row.row.region == 0 {
+                    continue;
+                }
+                let at = known
+                    .binary_search_by_key(&row.row.region, |(region, _)| *region)
+                    .expect("every located mission region was read");
+                row.weather = known[at].1;
+            }
+        }
+        if std::mem::take(&mut self.headquarters_pending) {
+            self.task_index.sort_unstable_by_key(|entry| entry.0);
+            self.mission_headquarters.retain(|(id, _)| {
+                self.task_index
+                    .binary_search_by_key(id, |entry| entry.0)
+                    .is_ok()
+            });
+        }
     }
 
     fn add_named(&mut self, country: ccountry::Country) -> Result<(), &'static str> {
@@ -1570,16 +1602,9 @@ impl Captured {
             inputs::region_weather(memory, weather?, region, &mut values)?;
             self.weather[index] = (region, values);
         }
-        let known = &self.weather[..regions];
-        for task_force in &mut self.task_forces.rows[..rows] {
-            let region = task_force.row.region;
-            if region != 0 {
-                let at = known
-                    .binary_search_by_key(&region, |(region, _)| *region)
-                    .expect("every located region was read");
-                task_force.weather = known[at].1;
-            }
-        }
+        // The map remains available to later native-demand decisions. Copying
+        // its values into mission rows has no bearing on any of those reads.
+        self.weather_pending = true;
         Ok(())
     }
 
@@ -2143,6 +2168,10 @@ impl Captured {
     }
 
     pub fn tables(&self) -> [TableView; N] {
+        assert!(
+            !self.weather_pending && !self.headquarters_pending,
+            "naval mission operands not decoded"
+        );
         let value = |value: Value| value.present.then_some(value.raw);
         let convert = |t: &TaskForce| {
             let row = &t.row;

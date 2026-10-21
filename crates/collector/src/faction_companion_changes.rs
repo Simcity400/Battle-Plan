@@ -5,6 +5,7 @@
 //! One extraction completion observer reads registered final pools.
 use crate::{
     hook::{Hook, Registers, Tap},
+    hook_timing::CallCounters,
     watch_registry::WatchRegistry,
 };
 use engine_mutations::{
@@ -15,7 +16,7 @@ use engine_native::Memory;
 use std::{
     mem::ManuallyDrop,
     ops::Range,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 pub(crate) const FAMILIES: usize = 9;
 static WATCHES: [WatchRegistry; FAMILIES] = [
@@ -30,7 +31,7 @@ static WATCHES: [WatchRegistry; FAMILIES] = [
     WatchRegistry::retaining(),
 ];
 static ORIGINAL: [AtomicUsize; MUTATIONS.len()] = [const { AtomicUsize::new(0) }; MUTATIONS.len()];
-static CALLS: [AtomicU64; MUTATIONS.len()] = [const { AtomicU64::new(0) }; MUTATIONS.len()];
+static CALLS: CallCounters<{ MUTATIONS.len() }> = CallCounters::new();
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ACCOUNT_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static DEMAND: AtomicUsize = AtomicUsize::new(0);
@@ -132,7 +133,7 @@ pub fn status() -> impl serde::Serialize {
         "unlocks":WATCHES[Family::Unlocks as usize].status(),
         "accounts": WATCHES[Family::Accounts as usize].status(),
         "advisors":WATCHES[Family::Advisors as usize].status(),
-        "calls": crate::status::sequence(CALLS.iter().map(|calls| calls.load(Ordering::Relaxed))),
+        "calls": crate::status::sequence((0..MUTATIONS.len()).map(|site| CALLS.total(site))),
     })
 }
 enum OwnedHook {
@@ -375,7 +376,7 @@ macro_rules! callback {
     ($name:ident,$site:expr) => {
         unsafe extern "system-unwind" fn $name(a: usize, b: usize, c: usize, d: usize) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
-            CALLS[$site].fetch_add(1, Ordering::Relaxed);
+            CALLS.increment($site);
             let watch = &WATCHES[MUTATIONS[$site].1 as usize];
             if $site == 68 && b as u32 == 4 {
                 let original: Function =
@@ -433,7 +434,7 @@ unsafe extern "system-unwind" fn select_rule(
     e: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
-    CALLS[0].fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(0);
     let flight = ManuallyDrop::new(WATCHES[Family::Rules as usize].notify(a));
     let original: Five = unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c, d, e) });
@@ -443,7 +444,7 @@ unsafe extern "system-unwind" fn select_rule(
 
 unsafe extern "system-unwind" fn unlock(registers: &Registers, site: usize) {
     let _timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
-    CALLS[site].fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(site);
     drop(WATCHES[Family::Unlocks as usize].notify(registers.rax));
 }
 
@@ -452,7 +453,7 @@ macro_rules! scalar_callback {
         unsafe extern "system-unwind" fn $name(a: usize, b: usize, c: usize, d: usize) -> usize {
             use crate::faction_accounts::mirror::{self, Operation};
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
-            CALLS[$site].fetch_add(1, Ordering::Relaxed);
+            CALLS.increment($site);
             let flight = ManuallyDrop::new(mirror::Flight::new());
             if $site == 49 {
                 mirror::projection_sources(a, b as u32 as usize);
@@ -503,7 +504,7 @@ unsafe extern "system-unwind" fn account_entry_17(
     e: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
-    CALLS[17].fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(17);
     let flight = ManuallyDrop::new(WATCHES[Family::Accounts as usize].notify(a));
     let original: Five = unsafe { std::mem::transmute(ORIGINAL[17].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c, d, e) });
@@ -512,7 +513,7 @@ unsafe extern "system-unwind" fn account_entry_17(
 }
 unsafe extern "system-unwind" fn account_store(registers: &Registers, site: usize) {
     let _timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
-    CALLS[site].fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(site);
     use crate::faction_accounts::mirror::{self, Operation};
     if site == 71 {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -677,7 +678,7 @@ unsafe extern "system-unwind" fn pool_store(registers: &Registers, site: usize) 
     } else {
         crate::hook_timing::Family::FactionCompanions
     });
-    CALLS[site].fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(site);
     if site == 55 {
         crate::faction_pools::rebuild();
         return;
@@ -709,7 +710,7 @@ macro_rules! phase_callback {
         unsafe extern "system-unwind" fn $name(a: usize, b: usize, c: usize, d: usize) -> usize {
             let timing =
                 crate::hook_timing::enter(crate::hook_timing::Family::FactionRefreshPhases);
-            CALLS[$site].fetch_add(1, Ordering::Relaxed);
+            CALLS.increment($site);
             let flight = ManuallyDrop::new(crate::faction_accounts::mirror::Flight::new());
             let original: Function =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
@@ -742,7 +743,7 @@ unsafe extern "system-unwind" fn extraction_complete(
     d: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionResourceRebuild);
-    CALLS[55].fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(55);
     let original: Function = unsafe { std::mem::transmute(ORIGINAL[55].load(Ordering::Acquire)) };
     crate::faction_pools::rebuild_call(|| timing.original(|| unsafe { original(a, b, c, d) }))
 }
@@ -750,7 +751,7 @@ macro_rules! projection_call {
     ($name:ident,$site:expr,$operand:expr) => {
         unsafe extern "system-unwind" fn $name(a: usize, b: usize, c: usize, d: usize) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
-            CALLS[$site].fetch_add(1, Ordering::Relaxed);
+            CALLS.increment($site);
             let original: Function =
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
             let result = timing.original(|| unsafe { original(a, b, c, d) });
@@ -773,7 +774,7 @@ unsafe extern "system-unwind" fn projection_factory(
     d: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FactionCompanions);
-    CALLS[73].fetch_add(1, Ordering::Relaxed);
+    CALLS.increment(73);
     let original: Function = unsafe { std::mem::transmute(ORIGINAL[73].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c, d) });
     let memory = unsafe { engine_native::memory::LiveMemory::new() };

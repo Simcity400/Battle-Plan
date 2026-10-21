@@ -5,13 +5,14 @@ use engine_native::{Memory, naval_management as native, read};
 use replay_data::rows::*;
 use std::{
     collections::HashMap,
-    sync::{Arc, LazyLock, Mutex, MutexGuard},
+    sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard},
 };
 
 pub const TABLES: [TableId; 2] = [TableId::NavalRepairBases, TableId::NavalRepairQueue];
 pub type Captured = Snapshot<2>;
 #[derive(Default)]
 struct Store {
+    loaned: bool,
     epoch: Option<u64>,
     entries: HashMap<usize, u32>,
     bases: HashMap<u32, NavalRepairBaseRow>,
@@ -24,6 +25,34 @@ struct Store {
     snapshot: Captured,
 }
 static STORE: LazyLock<Mutex<Store>> = LazyLock::new(|| Mutex::new(Store::default()));
+static RETURNED: Condvar = Condvar::new();
+
+/// An owned snapshot-publication loan, with no native-memory capability.
+pub struct Owned {
+    store: Option<Store>,
+    complete: bool,
+}
+impl Owned {
+    pub fn decode(mut self) -> Captured {
+        let rows = self.store.as_mut().unwrap().publish();
+        self.complete = true;
+        rows
+    }
+}
+impl Drop for Owned {
+    fn drop(&mut self) {
+        let mut held = self.store.take().unwrap();
+        if !self.complete {
+            held.epoch = None;
+        }
+        let mut store = STORE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(store.loaned, "one naval base publication loan");
+        *store = held;
+        RETURNED.notify_one();
+    }
+}
 pub struct Session<'a, M: Memory> {
     memory: &'a M,
     base: usize,
@@ -32,9 +61,29 @@ pub struct Session<'a, M: Memory> {
 }
 impl<'a, M: Memory> Session<'a, M> {
     pub fn begin(memory: &'a M, base: usize) -> Self {
+        Self::begin_inner(memory, base, None)
+    }
+    pub fn begin_owned(memory: &'a M, base: usize, stopped: fn() -> bool) -> Self {
+        Self::begin_inner(memory, base, Some(stopped))
+    }
+    fn begin_inner(memory: &'a M, base: usize, stopped: Option<fn() -> bool>) -> Self {
         let mut store = STORE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while store.loaned {
+            if stopped.is_some_and(|stopped| stopped()) {
+                return Self {
+                    memory,
+                    base,
+                    store,
+                    observed: false,
+                };
+            }
+            store = RETURNED
+                .wait_timeout(store, std::time::Duration::from_millis(10))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
         let mut dirty = std::mem::take(&mut store.dirty);
         dirty.clear();
         let mut shortage = false;
@@ -188,23 +237,54 @@ impl<'a, M: Memory> Session<'a, M> {
         }
     }
     pub fn finish(mut self, parent: engine_native::walk::Outcome) -> Captured {
-        let failure = if !self.observed {
+        if let Some(reason) = self.failure(parent) {
+            return Captured {
+                tables: std::array::from_fn(|_| Err(reason)),
+            };
+        }
+        changes::base_demand(self.store.entries.len());
+        self.store.publish()
+    }
+    pub fn finish_owned(mut self, parent: engine_native::walk::Outcome) -> (Captured, Option<Owned>) {
+        if let Some(reason) = self.failure(parent) {
+            return (
+                Captured {
+                    tables: std::array::from_fn(|_| Err(reason)),
+                },
+                None,
+            );
+        }
+        changes::base_demand(self.store.entries.len());
+        if !self.store.changed {
+            return (self.store.snapshot.clone(), None);
+        }
+        let held = std::mem::take(&mut *self.store);
+        self.store.loaned = true;
+        (
+            Captured::default(),
+            Some(Owned {
+                store: Some(held),
+                complete: false,
+            }),
+        )
+    }
+    fn failure(&mut self, parent: engine_native::walk::Outcome) -> Option<&'static str> {
+        if !self.observed {
             Some(changes::UNAVAILABLE)
         } else if !matches!(parent, engine_native::walk::Outcome::Rows { .. }) {
             self.store.epoch = None;
             Some("naval repair source base census incomplete")
         } else {
             self.store.failure
-        };
-        if let Some(reason) = failure {
-            return Captured {
-                tables: std::array::from_fn(|_| Err(reason)),
-            };
         }
-        if self.store.changed {
-            let bases = engine_allocation::collect_vec(self.store.bases.values().copied());
-            let queues = engine_allocation::collect_vec(self.store.queues.values().copied());
-            self.store.snapshot.tables = [
+    }
+}
+impl Store {
+    fn publish(&mut self) -> Captured {
+        if self.changed {
+            let bases = engine_allocation::collect_vec(self.bases.values().copied());
+            let queues = engine_allocation::collect_vec(self.queues.values().copied());
+            self.snapshot.tables = [
                 bases
                     .map(|mut rows| {
                         rows.sort_unstable_by_key(RowCodec::key);
@@ -219,8 +299,7 @@ impl<'a, M: Memory> Session<'a, M> {
                     .map_err(|_| "naval repair queue snapshot allocation failed"),
             ];
         }
-        changes::base_demand(self.store.entries.len());
-        self.store.changed = false;
-        self.store.snapshot.clone()
+        self.changed = false;
+        self.snapshot.clone()
     }
 }

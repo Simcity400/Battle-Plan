@@ -1,5 +1,7 @@
 //! Prepared receiver claims outlive originals and their terminal snapshots.
 //! The claim mutex is never held while calling native code or taking STORE.
+//! Callback acquisition may wait only for this prepared metadata: the only
+//! nested order is STORE then WRITERS, never the reverse or across an original.
 use super::*;
 
 static WRITERS: OnceLock<Mutex<State>> = OnceLock::new();
@@ -18,6 +20,7 @@ struct Claim {
     ancestry: usize,
     lifetime: usize,
     conflicted: bool,
+    dependency_conflicted: bool,
 }
 #[derive(Default)]
 struct State {
@@ -27,21 +30,47 @@ struct State {
     lifetime: usize,
 }
 pub(super) fn prepare(population: usize) -> Result<(), &'static str> {
-    let mut state = WRITERS
-        .get_or_init(|| Mutex::new(State::default()))
+    prepare_with(population, || {})
+}
+fn prepare_with(population: usize, before_growth: impl FnOnce()) -> Result<(), &'static str> {
+    let writers = WRITERS.get_or_init(|| Mutex::new(State::default()));
+    let mut state = writers
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if ACTIVE.load(Ordering::SeqCst) != 0 {
+    if ACTIVE.load(Ordering::SeqCst) != 0 || !state.claims.is_empty() {
         return Err("variant receiver claims have a running writer");
     }
-    // A failed callback try_lock can leave a stale claim. Only a quiescent
-    // complete census may discard it, never an intervening callback.
-    state.claims.clear();
+    let required = population.max(state.required);
+    let replacement = if state.claims.capacity() < required {
+        drop(state);
+        // Callbacks may enter throughout allocation. Revalidate their live
+        // flights and capacity high-water before replacing prepared storage.
+        before_growth();
+        let mut claims = HashMap::new();
+        engine_allocation::reserve_map(&mut claims, required)
+            .map_err(|_| "variant receiver claim allocation failed")?;
+        state = writers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ACTIVE.load(Ordering::SeqCst) != 0 || !state.claims.is_empty() {
+            drop(state);
+            return Err("variant receiver claims have a running writer");
+        }
+        if claims.capacity() < population.max(state.required) {
+            drop(state);
+            return Err("variant receiver claim demand changed during preparation");
+        }
+        Some(claims)
+    } else {
+        None
+    };
+    // Only a quiescent complete census may discard receiver claims.
     state.ancestry = 0;
     state.lifetime = 0;
-    let required = population.max(state.required);
-    engine_allocation::reserve_map(&mut state.claims, required)
-        .map_err(|_| "variant receiver claim allocation failed")
+    let replaced = replacement.map(|claims| std::mem::replace(&mut state.claims, claims));
+    drop(state);
+    drop(replaced);
+    Ok(())
 }
 pub(super) fn release() {
     if let Some(state) = WRITERS.get() {
@@ -56,7 +85,7 @@ fn room(state: &mut State, additional: usize) -> bool {
         .max(state.claims.len().saturating_add(additional));
     if state.required > state.claims.capacity() {
         CLAIM_CAPACITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
-        unobserved();
+        unobserved!();
         return false;
     }
     true
@@ -64,6 +93,7 @@ fn room(state: &mut State, additional: usize) -> bool {
 fn claim(state: &mut State, pointer: usize, thread: u32, footprint: Footprint) -> bool {
     let mut conflicted = state.claims.get_mut(&0).is_some_and(|claim| {
         claim.conflicted |= claim.thread != thread;
+        claim.dependency_conflicted |= claim.thread != thread;
         claim.conflicted
     });
     // Roster/create commands have no single known receiver. Ancestry readers
@@ -80,6 +110,7 @@ fn claim(state: &mut State, pointer: usize, thread: u32, footprint: Footprint) -
                     || (footprint == Footprint::Lifetime && claim.ancestry != 0))
             {
                 claim.conflicted = true;
+                claim.dependency_conflicted = true;
                 conflicted = true;
             }
         }
@@ -92,11 +123,14 @@ fn claim(state: &mut State, pointer: usize, thread: u32, footprint: Footprint) -
         ancestry: 0,
         lifetime: 0,
         conflicted: false,
+        dependency_conflicted: false,
     });
     if footprint == Footprint::Identity {
-        // Ordinary edits do not change the parent's authenticated identity.
-        // An existing same-thread consuming move may snapshot its own parent.
-        claim.conflicted |= conflicted || (claim.lifetime != 0 && claim.thread != thread);
+        // Ordinary content conflicts repair that receiver, not a child's
+        // immutable parent identity. Only a lifetime/global conflict poisons
+        // this witness. A same-thread move may snapshot its own parent.
+        claim.dependency_conflicted |=
+            conflicted || (claim.lifetime != 0 && claim.thread != thread);
         claim.identities += 1;
     } else {
         if claim.writers == 0 {
@@ -105,14 +139,21 @@ fn claim(state: &mut State, pointer: usize, thread: u32, footprint: Footprint) -
         claim.conflicted |= conflicted
             || claim.thread != thread
             || (footprint == Footprint::Lifetime && claim.identities != 0);
+        claim.dependency_conflicted |= conflicted
+            || (claim.conflicted && (footprint == Footprint::Lifetime || claim.lifetime != 0));
         claim.writers += 1;
     }
     claim.count += 1;
     claim.ancestry += usize::from(footprint == Footprint::Ancestry);
     claim.lifetime += usize::from(footprint == Footprint::Lifetime);
-    let admitted = !claim.conflicted;
+    let admitted = if footprint == Footprint::Identity {
+        !claim.dependency_conflicted
+    } else {
+        !claim.conflicted
+    };
     state.ancestry += usize::from(footprint == Footprint::Ancestry);
     state.lifetime += usize::from(footprint == Footprint::Lifetime);
+    state.required = state.required.max(state.claims.len());
     admitted
 }
 pub(super) struct Flight {
@@ -125,20 +166,25 @@ pub(super) struct Flight {
 }
 pub(super) fn enter(pointer: usize, other: Option<usize>, footprint: Footprint) -> Option<Flight> {
     let Some(state) = WRITERS.get() else {
-        unknown_receiver();
+        unknown_receiver!();
         return None;
     };
-    let Ok(mut state) = state.try_lock() else {
-        lock_contended();
-        return None;
-    };
-    let other = other.filter(|other| *other != pointer);
-    let additional = usize::from(!state.claims.contains_key(&pointer))
-        + usize::from(other.is_some_and(|other| !state.claims.contains_key(&other)));
-    if !room(&mut state, additional) {
-        return None;
-    }
     let thread = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+    let mut state = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let other = other.filter(|other| *other != pointer);
+    // Prepared headroom normally covers both operands without probing either
+    // receiver twice. Near capacity, count only genuinely new claims.
+    if state.required > state.claims.capacity()
+        || state.claims.capacity() - state.claims.len() < 1 + usize::from(other.is_some())
+    {
+        let additional = usize::from(!state.claims.contains_key(&pointer))
+            + usize::from(other.is_some_and(|other| !state.claims.contains_key(&other)));
+        if !room(&mut state, additional) {
+            return None;
+        }
+    }
     let mut admitted = claim(&mut state, pointer, thread, footprint);
     if let Some(other) = other {
         admitted &= claim(&mut state, other, thread, Footprint::Lifetime);
@@ -160,15 +206,17 @@ impl Flight {
         self.admitted
     }
     pub(super) fn extend(&mut self, pointer: usize) {
-        let Ok(mut state) = WRITERS.get().unwrap().try_lock() else {
-            lock_contended();
-            self.admitted = false;
-            return;
-        };
-        let additional = usize::from(!state.claims.contains_key(&pointer));
-        if !room(&mut state, additional) {
-            self.admitted = false;
-            return;
+        let mut state = WRITERS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.required > state.claims.capacity() || state.claims.len() == state.claims.capacity() {
+            let additional = usize::from(!state.claims.contains_key(&pointer));
+            if !room(&mut state, additional) {
+                self.admitted = false;
+                return;
+            }
         }
         self.pointers[1] = Some((pointer, Footprint::Design));
         if !claim(&mut state, pointer, self.thread, Footprint::Design) {
@@ -182,41 +230,63 @@ impl Flight {
     /// writer could enter after inspection but before release, when a saved
     /// destruction's binding is already gone and looks like an excluded draft.
     pub(super) fn finish(mut self) -> bool {
+        self.close().0
+    }
+    pub(super) fn finish_with_dependency(mut self) -> (bool, bool) {
         self.close()
     }
-    fn close(&mut self) -> bool {
+    fn close(&mut self) -> (bool, bool) {
         if self.pointers[0].is_none() {
-            return false;
+            return (false, false);
         }
-        let pointers = std::mem::replace(&mut self.pointers, [None; 2]);
-        let Ok(mut state) = WRITERS.get().unwrap().try_lock() else {
-            lock_contended();
-            return true;
-        };
-        let conflicted = pointers.into_iter().flatten().any(|(pointer, _)| {
-            state
-                .claims
-                .get(&pointer)
-                .is_none_or(|claim| claim.conflicted)
-        });
+        let pointers = std::mem::take(&mut self.pointers);
+        let mut state = WRITERS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conflicted = false;
+        let mut dependency = false;
         for (pointer, footprint) in pointers.into_iter().flatten() {
-            let Some(claim) = state.claims.get_mut(&pointer) else {
-                unobserved();
+            // Entry may prepare insertion space for a missing key. Even this
+            // invalid-flight path must not grow a full callback table.
+            if state.claims.len() == state.claims.capacity() && !state.claims.contains_key(&pointer)
+            {
+                conflicted = true;
+                dependency = true;
+                unobserved!();
+                continue;
+            }
+            let std::collections::hash_map::Entry::Occupied(mut entry) =
+                state.claims.entry(pointer)
+            else {
+                conflicted = true;
+                dependency = true;
+                unobserved!();
                 continue;
             };
+            let claim = entry.get_mut();
+            conflicted |= if footprint == Footprint::Identity {
+                claim.dependency_conflicted
+            } else {
+                claim.conflicted
+            };
+            dependency |= claim.dependency_conflicted;
             claim.count -= 1;
             claim.writers -= usize::from(footprint != Footprint::Identity);
             claim.identities -= usize::from(footprint == Footprint::Identity);
             claim.ancestry -= usize::from(footprint == Footprint::Ancestry);
             claim.lifetime -= usize::from(footprint == Footprint::Lifetime);
             let remove = claim.count == 0;
+            // Retire through this lookup, rather than hashing the same receiver
+            // again on every completed outermost writer.
+            if remove {
+                entry.remove();
+            }
             state.ancestry -= usize::from(footprint == Footprint::Ancestry);
             state.lifetime -= usize::from(footprint == Footprint::Lifetime);
-            if remove {
-                state.claims.remove(&pointer);
-            }
         }
-        conflicted
+        (conflicted, dependency)
     }
 }
 impl Drop for Flight {
@@ -229,6 +299,61 @@ impl Drop for Flight {
 mod tests {
     use super::*;
 
+    #[test]
+    #[ignore = "synthetic per-call claim measurement"]
+    fn hook_cost_variant_receiver_claims() {
+        const CALLS: usize = 100_000;
+        prepare(5_000).unwrap();
+        let cost = collector_test_support::per_call_ns(CALLS, || {
+            for pointer in 1..=CALLS {
+                let flight = enter(
+                    std::hint::black_box(pointer % 5_000 + 1),
+                    None,
+                    Footprint::Design,
+                )
+                .unwrap();
+                assert!(flight.admitted());
+                assert!(!flight.finish());
+            }
+        });
+        let state = WRITERS.get().unwrap().lock().unwrap();
+        assert!(state.claims.is_empty());
+        assert_eq!((state.ancestry, state.lifetime), (0, 0));
+        println!("hook_cost variant receiver claim enter+finish: {cost:.1} ns/call");
+    }
+
+    #[test]
+    fn claim_growth_allows_callback_entry_and_revalidates_running_flights() {
+        use std::sync::Barrier;
+        prepare(1).unwrap();
+        let capacity = WRITERS.get().unwrap().lock().unwrap().claims.capacity();
+        let pause = Barrier::new(2);
+        std::thread::scope(|threads| {
+            let worker = threads.spawn(|| {
+                prepare_with(capacity + 1, || {
+                    pause.wait();
+                    pause.wait();
+                })
+            });
+            pause.wait();
+            ACTIVE.fetch_add(1, Ordering::SeqCst);
+            // The worker is paused at population-sized growth. A callback
+            // must enter without that worker releasing any further lock.
+            let flight = collector_test_support::with_allocations_denied(|| {
+                enter(1, None, Footprint::Design).unwrap()
+            });
+            assert!(flight.admitted());
+            pause.wait();
+            assert_eq!(
+                worker.join().unwrap(),
+                Err("variant receiver claims have a running writer")
+            );
+            assert!(!flight.finish());
+            ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        });
+        prepare(capacity + 1).unwrap();
+        assert!(WRITERS.get().unwrap().lock().unwrap().claims.capacity() > capacity);
+    }
     #[test]
     fn prepared_claims_cover_five_thousand_designs_without_callback_growth() {
         let population = 5_000;
@@ -254,6 +379,58 @@ mod tests {
         let state = WRITERS.get().unwrap().lock().unwrap();
         assert!(state.claims.is_empty());
         assert_eq!((state.ancestry, state.lifetime), (0, 0));
+        assert_eq!(state.required, population);
         assert_eq!(CLAIM_CAPACITY_REFUSALS.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn full_claim_storage_admits_nested_operands_without_growth_and_retains_overflow_demand() {
+        prepare(1).unwrap();
+        let capacity = WRITERS.get().unwrap().lock().unwrap().claims.capacity();
+        let mut flights = Vec::with_capacity(capacity);
+        collector_test_support::with_allocations_denied(|| {
+            for pointer in 1..=capacity {
+                flights.push(enter(pointer, None, Footprint::Design).unwrap());
+            }
+            let nested = enter(1, Some(capacity), Footprint::Lifetime).unwrap();
+            assert!(nested.admitted());
+            assert_eq!(nested.finish_with_dependency(), (false, false));
+            assert!(enter(capacity + 1, None, Footprint::Design).is_none());
+            for flight in flights.drain(..) {
+                assert!(!flight.finish());
+            }
+            // Once an overflow has raised demand, spare slots cannot reopen
+            // admission before the existing quiescent preparation succeeds.
+            assert!(enter(1, None, Footprint::Design).is_none());
+        });
+        prepare(capacity + 1).unwrap();
+        let flight = enter(1, None, Footprint::Design).unwrap();
+        assert!(flight.admitted());
+        assert!(!flight.finish());
+    }
+
+    #[test]
+    fn an_unmatched_full_claim_refuses_without_callback_growth() {
+        prepare(1).unwrap();
+        let capacity = WRITERS.get().unwrap().lock().unwrap().claims.capacity();
+        let mut flights = Vec::with_capacity(capacity);
+        collector_test_support::with_allocations_denied(|| {
+            for pointer in 1..=capacity {
+                flights.push(enter(pointer, None, Footprint::Design).unwrap());
+            }
+            let missing = Flight {
+                pointers: [Some((capacity + 1, Footprint::Design)), None],
+                thread: unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
+                admitted: true,
+            };
+            assert_eq!(missing.finish_with_dependency(), (true, true));
+            for flight in flights.drain(..) {
+                assert!(!flight.finish());
+            }
+        });
+        assert!(MISSED.load(Ordering::Acquire));
+        let state = WRITERS.get().unwrap().lock().unwrap();
+        assert!(state.claims.is_empty());
+        assert_eq!(state.claims.capacity(), capacity);
     }
 }

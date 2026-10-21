@@ -43,6 +43,16 @@ pub fn entry_demand(entries: usize) {
 pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
     WATCHES.sequence(receiver)
 }
+/// Warm range registration with a checked held slot. Cold/full-table winners
+/// remain with the ordered native acquisition.
+pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
+    let (_, slot) = WATCHES.observed_sequence_at(receiver, slot)?;
+    WATCHES.sequence_at(receiver, slot)
+}
+/// Provisional lookup only; does not register a receiver or alter admission.
+pub fn observed_sequence(receiver: usize) -> Option<(u64, u64)> {
+    WATCHES.observed_sequence(receiver)
+}
 pub fn boundary(invalidate: bool) {
     WATCHES.boundary(invalidate);
     EDITS.boundary(invalidate);

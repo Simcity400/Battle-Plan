@@ -18,6 +18,8 @@ use crate::{
     acquisition, acquisition_factions, acquisition_states, acquisition_wars, map_capture, sampling,
 };
 pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
+mod presentation;
+pub(crate) use presentation::PresentationDispatch;
 use engine_native::{memory::CountedMemory, memory::LiveMemory};
 use serde::Serialize;
 use std::sync::Arc;
@@ -102,19 +104,27 @@ impl GovernanceRequest {
         GovernanceReport::default()
     }
 }
-/// The variant registry and its detail tables, on their daily slot. Their
-/// buffers grow from counts read during the walk, so only a worker runs it.
+/// The hourly design changes, then the variant registry and its detail tables
+/// when scheduled or recovering. Only a worker drains or grows their storage.
 pub(crate) struct VariantsRequest {
     pub context: governance::CaptureContext,
     pub registry: crate::extended::Registry,
     pub variants: production::Variants,
+    pub changes: production::design_changes::Captured,
+    pub changes_ticks: u64,
+    pub changes_finished: bool,
 }
 impl VariantsRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
-        self.registry.allocated_bytes() + self.variants.allocated_bytes()
+        self.registry.allocated_bytes()
+            + self.variants.allocated_bytes()
+            + self.changes.allocated_bytes()
     }
 
     pub(crate) fn fail(&mut self, reason: &'static str) -> [u64; production::N] {
+        if !self.changes_finished {
+            self.changes.fail(reason);
+        }
         self.registry.fail(reason);
         self.variants
             .fail(reason, self.context.hour, self.context.force_full);
@@ -585,10 +595,11 @@ pub(crate) struct PresentationRequest {
     pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub captured: division_presentation::Captured,
+    pub dispatch: PresentationDispatch,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
     /// The `army_stat` family's held DivisionStatus attack operands, loaned
     /// for the hour.
-    pub army_stats: Option<Box<crate::extended::attack_stats::ArmyStatStore>>,
+    pub army_stats: Option<division_presentation::held_store::Loan>,
 }
 impl PresentationRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -605,27 +616,70 @@ impl PresentationRequest {
         }
     }
 
+    pub(crate) fn take_speed_terms(&mut self) -> PresentationSpeedTermsRequest {
+        PresentationSpeedTermsRequest {
+            countries: Arc::clone(&self.countries),
+            context: self.context,
+            inputs: self.inputs.clone(),
+            pass: self.captured.take_speed_terms(),
+        }
+    }
+
+    /// Return the speed pass before settling failure; its failure precedes
+    /// movement and status, as when it ran first inside the movement job.
+    pub(crate) fn restore_speed_terms(
+        &mut self,
+        speed_terms: PresentationSpeedTermsRequest,
+        speed_report: Result<division_presentation::CaptureReport, Failure>,
+        report: Result<division_presentation::CaptureReport, Failure>,
+    ) -> Result<division_presentation::CaptureReport, Failure> {
+        self.captured.restore_speed_terms(speed_terms.pass);
+        let speed_terms = speed_report?;
+        report.map(|mut report| {
+            report.merge_speed_terms(speed_terms);
+            report
+        })
+    }
+
     /// Return the movement pass and merge its ticks into this job's report.
     /// A failed movement job fails the whole presentation, as the single job
     /// did.
     pub(crate) fn restore_movement(
         &mut self,
         movement: PresentationMovementRequest,
-        movement_report: Result<[u64; 3], Failure>,
+        movement_report: Result<division_presentation::CaptureReport, Failure>,
         report: Result<division_presentation::CaptureReport, Failure>,
     ) -> Result<division_presentation::CaptureReport, Failure> {
         self.captured.restore_movement(movement.pass);
-        let [movement, land, dig_in] = movement_report?;
+        let movement = movement_report?;
         report.map(|mut report| {
-            report.ticks[0] = movement;
-            report.ticks[1] += dig_in;
-            report.ticks[3] = land;
+            report.merge_movement(movement);
             report
         })
     }
 }
-/// DivisionMovement, DivisionLandInputs and the dig-in factors, beside the
-/// Presentation job.
+/// One final-status range over immutable ordered preparation.
+pub(crate) struct PresentationStatusRequest {
+    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub context: division_presentation::CaptureContext,
+    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub part: division_presentation::StatusWork,
+}
+
+/// The unchanged whole-census speed pass beside status and movement.
+pub(crate) struct PresentationSpeedTermsRequest {
+    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub context: division_presentation::CaptureContext,
+    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub pass: division_presentation::SpeedTermsPass,
+}
+impl PresentationSpeedTermsRequest {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.pass.allocated_bytes()
+    }
+}
+
+/// Movement, land and dig-in beside the Presentation job.
 pub(crate) struct PresentationMovementRequest {
     pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
@@ -716,8 +770,12 @@ pub(crate) enum Job {
     Variants(VariantsRequest),
     Research(ResearchRequest),
     Intel(IntelRequest),
+    PresentationPrepare(PresentationRequest),
+    PresentationSettle(PresentationRequest),
+    PresentationStatus(PresentationStatusRequest),
     Presentation(PresentationRequest),
     PresentationMovement(PresentationMovementRequest),
+    PresentationSpeedTerms(PresentationSpeedTermsRequest),
     IntelResidual(IntelResidualRequest),
     SupplyTrains(SupplyTrainsRequest),
     CharacterPortraits(CharacterPortraitsRequest),
@@ -793,9 +851,13 @@ pub(crate) enum Report {
     Variants([u64; production::N]),
     Research(ResearchReport),
     Intel(fog::IntelCopyReport),
+    PresentationPrepare(()),
+    PresentationStatus(u64),
     Presentation(division_presentation::CaptureReport),
-    /// The DivisionMovement, DivisionLandInputs and dig-in ticks.
-    PresentationMovement([u64; 3]),
+    /// Movement, land and dig-in ticks in presentation table order.
+    PresentationMovement(division_presentation::CaptureReport),
+    /// Shared speed ticks in presentation table order.
+    PresentationSpeedTerms(division_presentation::CaptureReport),
     IntelResidual(intel::CaptureReport),
     SupplyTrains(supply_trains::CaptureReport),
     CharacterPortraits(character_portraits::CaptureReport),
@@ -867,6 +929,7 @@ pub(crate) enum Role {
     Research,
     Intel,
     Presentation,
+    FinalInputs,
     IntelResidual,
     SupplyTrains,
     CharacterPortraits,
@@ -913,6 +976,11 @@ pub(crate) enum Role {
     /// The orders-group root census, apart from the Orders job it leads to,
     /// so their joins report apart.
     OrderRoots,
+    PresentationSpeedTerms,
+    PresentationPrepare,
+    PresentationStatus,
+    PresentationPreparation,
+    PresentationSettle,
 }
 
 impl Role {
@@ -952,7 +1020,12 @@ impl Role {
             Self::Variants => T::VariantDefinitions,
             Self::Research => T::ResearchInputs,
             Self::Intel => T::UnitIntel,
-            Self::Presentation => T::DivisionStatus,
+            Self::Presentation
+            | Self::PresentationPrepare
+            | Self::PresentationSettle
+            | Self::PresentationStatus
+            | Self::PresentationPreparation
+            | Self::FinalInputs => T::DivisionStatus,
             Self::IntelResidual => intel::TABLES[0],
             Self::SupplyTrains => supply_trains::TABLES[0],
             Self::CharacterPortraits => character_portraits::TABLES[0],
@@ -993,14 +1066,17 @@ impl Role {
             Self::Templates => T::DivisionTemplateIcons,
             Self::CharacterInputs => T::CharacterRoleTraits,
             Self::PresentationMovement => T::DivisionMovement,
+            Self::PresentationSpeedTerms => T::MovementStateTerms,
         }
     }
 }
 
 impl Role {
     /// Claim order when workers are scarce, lower first and FIFO among equals.
-    /// A job another job waits for claims first, so the dependency chains it
-    /// opens start at once: the observer boundaries, Countries (the Ordinary
+    /// Variants and RaidState claim first, ahead of the saturated census
+    /// tier, so their independent bodies do not become the assembly tail.
+    /// Jobs another job waits for claim next, so their dependency chains
+    /// open at once: the observer boundaries, Countries (the Ordinary
     /// counter part), the order censuses, wings, the Naval copy, child fronts
     /// and missions (Late), the character roster (portraits, roles and
     /// character inputs), the unit-input copy (Presentation, Divisions,
@@ -1027,6 +1103,7 @@ impl Role {
     /// one already running.
     pub(crate) fn priority(self) -> u8 {
         match self {
+            Self::Variants | Self::RaidState => 0,
             Self::ObserverBoundary
             | Self::Countries
             | Self::Orders
@@ -1055,22 +1132,29 @@ impl Role {
             | Self::World
             | Self::Economy
             | Self::Presentation
+            | Self::PresentationPrepare
+            | Self::PresentationSettle
+            | Self::PresentationStatus
+            | Self::PresentationPreparation
+            | Self::PresentationSpeedTerms
+            | Self::FinalInputs
             // The longest first-burst job, 2.55 ms at 1943 with the war
             // overview: at priority 1 it started behind the dependency chains
             // about 2.8 ms into the hour and waited 0.47 ms at its join
             // (int_761c274). The stability tables (0.89/0.45 ms at 1943/1936)
             // and the war overview (0.76 ms at 1943) split from it claim
-            // beside it; the first burst's priority-0 jobs then exceed the
-            // fifteen workers by one, which the shortest of them frees.
+            // beside it.
             | Self::Slow
             | Self::Stability
             | Self::WarOverview
             | Self::ProductionDaily
-            | Self::ProductionModifierParts => 0,
+            | Self::ProductionModifierParts => 1,
             Self::IntelResidual
             | Self::Governance
             | Self::Gated
             | Self::CharacterInputs
+            // A FinalInputs producer, without delaying queued Presentation work.
+            | Self::AdvisorRoles
             | Self::PresentationMovement
             | Self::Ordinary
             | Self::OrdinaryNavies
@@ -1081,7 +1165,7 @@ impl Role {
             | Self::Provinces
             | Self::Research
             | Self::ShipModelDetails
-            | Self::Templates => 1,
+            | Self::Templates => 2,
             Self::States
             | Self::Capitulation
             | Self::Wars
@@ -1090,7 +1174,6 @@ impl Role {
             | Self::ProvinceUnitOrder
             | Self::CharacterPortraits
             | Self::CountryLeaderRoles
-            | Self::AdvisorRoles
             | Self::CharacterTraits
             | Self::SupplyTrains
             // Joined only before the Late dispatch, with segments of slack.
@@ -1098,22 +1181,20 @@ impl Role {
             | Self::ArmyIcons
             // Joined after the Late join, which it runs beside.
             | Self::Fronts
-            | Self::Weather => 2,
+            | Self::Weather => 3,
             Self::Factions
             | Self::Lexical
             | Self::Session
-            | Self::Variants
             | Self::Relations
-            | Self::RaidState
             | Self::RaidLaunch
             | Self::RaidTargets
             | Self::AirRelations
-            | Self::AirHistories => 3,
+            | Self::AirHistories => 4,
         }
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 71;
+pub(crate) const ROLE_COUNT: usize = 77;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -1144,6 +1225,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Research,
     Role::Intel,
     Role::Presentation,
+    Role::FinalInputs,
     Role::IntelResidual,
     Role::SupplyTrains,
     Role::CharacterPortraits,
@@ -1186,6 +1268,11 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::PresentationMovement,
     Role::DivisionInputs,
     Role::OrderRoots,
+    Role::PresentationSpeedTerms,
+    Role::PresentationPrepare,
+    Role::PresentationStatus,
+    Role::PresentationPreparation,
+    Role::PresentationSettle,
 ];
 impl Job {
     /// Whether this job must run on a worker: its role's rule, except a
@@ -1231,8 +1318,18 @@ impl Job {
             Self::Variants(..) => Role::Variants,
             Self::Research(..) => Role::Research,
             Self::Intel(..) => Role::Intel,
-            Self::FinalInputs(..) | Self::Presentation(..) => Role::Presentation,
+            Self::FinalInputs(..) => Role::FinalInputs,
+            Self::PresentationPrepare(..) => Role::PresentationPrepare,
+            Self::PresentationSettle(..) => Role::PresentationSettle,
+            Self::PresentationStatus(request) => match &request.part {
+                division_presentation::StatusWork::Preparation { .. } => {
+                    Role::PresentationPreparation
+                }
+                division_presentation::StatusWork::Status { .. } => Role::PresentationStatus,
+            },
+            Self::Presentation(..) => Role::Presentation,
             Self::PresentationMovement(..) => Role::PresentationMovement,
+            Self::PresentationSpeedTerms(..) => Role::PresentationSpeedTerms,
             Self::IntelResidual(..) => Role::IntelResidual,
             Self::SupplyTrains(..) => Role::SupplyTrains,
             Self::CharacterPortraits(..) => Role::CharacterPortraits,
@@ -1685,7 +1782,7 @@ fn run_with_memory(
         Job::Governance(request) => {
             let cached = request.countries.roster_view(memory);
             let context = request.context;
-            let governance = request.captured.capture_owned(
+            let governance = request.captured.acquire_owned(
                 &cached,
                 context,
                 &mut request.technology_fingerprints,
@@ -1708,6 +1805,13 @@ fn run_with_memory(
         }
         Job::Variants(request) => {
             let context = request.context;
+            // Repair before deciding recovery: the drain may withdraw the census.
+            let begin = sampling::qpc();
+            crate::read_accounting::with_table(replay_data::rows::TableId::VariantChanges, || {
+                request.changes.capture(context.base, context.hour);
+            });
+            request.changes_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
+            request.changes_finished = true;
             // The campaign registry includes variants absent from units,
             // production and stockpiles. Keep all entries and duplicates.
             let begin = sampling::qpc();
@@ -1724,7 +1828,7 @@ fn run_with_memory(
                 request.registry.mark_skipped();
             }
             let registry_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
-            let mut variants = request.variants.capture(
+            let mut variants = request.variants.capture_deferred(
                 memory,
                 context.base,
                 request.registry.sources(),
@@ -2092,7 +2196,7 @@ fn run_with_memory(
         }
         Job::ShipModelDetails(request) => {
             let cached = request.countries.roster_view(memory);
-            Report::ShipModelDetails(request.captured.capture_owned(&cached, request.context))
+            Report::ShipModelDetails(request.captured.capture_deferred(&cached, request.context))
         }
         Job::Provinces(request) => {
             let (base, game_state) = (request.base, request.game_state);
@@ -2109,6 +2213,48 @@ fn run_with_memory(
         Job::Templates(request) => Report::Templates(request.run(memory)),
         Job::Wars(request) => Report::Wars(request.run_growing(memory)),
         Job::States(request) => Report::States(request.run_growing(memory)),
+        Job::PresentationPrepare(request) | Job::PresentationSettle(request) => {
+            let cached = request.countries.roster_view(memory);
+            let inputs = request.inputs.as_deref();
+            request.captured.prepare_status_holding(
+                &cached,
+                request.context,
+                production::Sources {
+                    rows: inputs.map_or(&[], |inputs| inputs.seeds()),
+                    outcome: inputs.map_or(
+                        engine_native::walk::Outcome::Unavailable {
+                            reason: "acquisition source not supplied",
+                        },
+                        |inputs| inputs.outcome(),
+                    ),
+                },
+                request.army_stats.as_deref_mut(),
+            );
+            // Only an armed ordered-settle job owns this continuation. Setup
+            // keeps the callback's existing observation-range dispatch path.
+            request.dispatch.dispatch(
+                &mut request.captured,
+                &request.countries,
+                request.context,
+                &request.inputs,
+            );
+            Report::PresentationPrepare(())
+        }
+        Job::PresentationStatus(request) => {
+            let _reads = crate::read_accounting::table(replay_data::rows::TableId::DivisionStatus);
+            let begin = sampling::qpc();
+            let cached = request.countries.roster_view(memory);
+            request.part.capture(
+                &cached,
+                request.context,
+                request
+                    .inputs
+                    .as_deref()
+                    .map_or(&[], |inputs| inputs.seeds()),
+                &crate::army_stat_changes::Observer,
+            );
+            Report::PresentationStatus(sampling::qpc().saturating_sub(begin).max(0) as u64)
+        }
         Job::Presentation(request) => {
             let cached = request.countries.roster_view(memory);
             let inputs = request.inputs.as_deref();
@@ -2132,6 +2278,25 @@ fn run_with_memory(
                 request.army_stats.as_deref_mut(),
             );
             Report::Presentation(report)
+        }
+        Job::PresentationSpeedTerms(request) => {
+            let cached = request.countries.roster_view(memory);
+            let inputs = request.inputs.as_deref();
+            let context = request.context;
+            Report::PresentationSpeedTerms(request.pass.capture(
+                &cached,
+                context.base,
+                context.game_state,
+                production::Sources {
+                    rows: inputs.map_or(&[], |inputs| inputs.seeds()),
+                    outcome: inputs.map_or(
+                        engine_native::walk::Outcome::Unavailable {
+                            reason: "acquisition source not supplied",
+                        },
+                        |inputs| inputs.outcome(),
+                    ),
+                },
+            ))
         }
         Job::PresentationMovement(request) => {
             let cached = request.countries.roster_view(memory);
@@ -2188,7 +2353,7 @@ fn run_with_memory(
 }
 
 impl Role {
-    /// Jobs of this role an hour can hold at once.
+    /// Slots this role contributes to the peak hourly request reservation.
     const fn jobs_per_hour(self) -> usize {
         match self {
             Self::AirWing => air::WING_PARTS,
@@ -2198,8 +2363,10 @@ impl Role {
             Self::CharacterPortraits => character_portraits::PARTS,
             Self::SupplyTrains => supply_trains::PARTS,
             Self::DivisionInputParts => crate::division_census::MAX_PARTS - 1,
-            // The final borrowers leave before the Presentation join.
-            Self::Presentation => 2,
+            Self::PresentationStatus => division_presentation::MAX_STATUS_PARTS,
+            // Preparation uses the Presentation slot, then stays parked there.
+            // Its ranges reuse the final-status range slots, never concurrently.
+            Self::PresentationPrepare | Self::PresentationPreparation | Self::PresentationSettle => 0,
             Self::ProductionModifierParts => crate::extended::production_modifiers::MAX_PARTS - 1,
             Self::OrdersPart => crate::orders_parts::MAX_PARTS - 1,
             // Roles whose jobs follow one another (the observer boundary
@@ -2227,10 +2394,25 @@ const WORKER_ONLY_JOBS: usize = {
 const _: () = assert!(WORKER_ONLY_JOBS < MAX_JOBS);
 
 pub(crate) struct Pool {
-    executor: acquisition::Pool<Job, Report>,
+    executor: Arc<acquisition::Pool<Job, Report>>,
     calibration: Arc<SharedCalibration>,
+    worker_count: usize,
 }
 impl Pool {
+    #[cfg(test)]
+    pub(crate) fn with_test_runner(
+        workers: usize,
+        run: impl Fn(&mut Job) -> Report + Send + Sync + 'static,
+    ) -> Self {
+        let executor = acquisition::Pool::start(workers, MAX_JOBS, run).unwrap();
+        executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
+        Self {
+            executor: Arc::new(executor),
+            calibration: Arc::new(SharedCalibration::default()),
+            worker_count: workers,
+        }
+    }
+
     pub(crate) fn start(worker_count: usize, capacity: usize) -> Result<Self, &'static str> {
         let calibration = Arc::new(SharedCalibration::default());
         let runner_calibration = Arc::clone(&calibration);
@@ -2249,8 +2431,9 @@ impl Pool {
         )?;
         executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
         Ok(Self {
-            executor,
+            executor: Arc::new(executor),
             calibration,
+            worker_count: worker_count.max(1),
         })
     }
     /// # Safety
@@ -2349,12 +2532,17 @@ impl Pool {
             profile: Default::default(),
         }
     }
+    pub(crate) fn worker_count(&self) -> usize {
+        self.worker_count
+    }
     pub(crate) fn thread_ids(&self) -> Vec<u32> {
         self.executor.thread_ids()
     }
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.executor
             .allocated_bytes()
+            .saturating_add(std::mem::size_of::<acquisition::Pool<Job, Report>>())
+            .saturating_add(2 * std::mem::size_of::<usize>())
             .saturating_add(std::mem::size_of::<SharedCalibration>())
             .saturating_add(2 * std::mem::size_of::<usize>())
     }
@@ -2426,8 +2614,8 @@ impl<'a> Batch<'a> {
     pub(crate) fn hold(&mut self) {
         self.held = true;
     }
-    /// Wake the pool once for every job queued since [`Self::hold`]; returns
-    /// how many there were. Workers already running claim them sooner.
+    /// Wake one worker and relay the remaining burst wakes on workers; returns
+    /// the queued job count. Workers already running claim them sooner.
     pub(crate) fn release(&mut self) -> usize {
         let jobs = std::mem::take(&mut self.held_jobs);
         self.held = false;
@@ -2435,6 +2623,25 @@ impl<'a> Batch<'a> {
             self.pool.executor.wake_workers(jobs);
         }
         jobs
+    }
+    pub(crate) fn arm_presentation(&self, request: &mut PresentationRequest) {
+        request.dispatch.arm(self.pool);
+    }
+    pub(crate) fn adopt_presentation(
+        &mut self,
+        request: &mut PresentationRequest,
+        index: usize,
+    ) -> Option<(Ticket, bool)> {
+        let pending = request.dispatch.take(index)?;
+        // Executor worker-slot admission already bounded parent and children
+        // together; adoption cannot need a new native or Batch slot.
+        let slot = self.tickets[..WORKER_ONLY_JOBS]
+            .iter()
+            .position(Option::is_none)
+            .expect("admitted presentation child slot");
+        self.tickets[slot] = Some(pending.ticket);
+        self.parked[slot] = pending.parked;
+        Some((pending.ticket, pending.parked))
     }
     /// Whether a submission now would be refused ([`Pool::stopped`]).
     pub(crate) fn stopped(&self) -> bool {
@@ -2444,6 +2651,18 @@ impl<'a> Batch<'a> {
     /// ([`acquisition::Pool::is_complete`]).
     pub(crate) fn is_complete(&self, ticket: Ticket) -> bool {
         self.pool.executor.is_complete(ticket)
+    }
+    /// Copy a completed report without collecting its request. This lets a
+    /// clean stitch advance while its contained-panic settlement stays at the
+    /// existing dispatch barrier. Only the callback collects these tickets.
+    pub(crate) fn completed_report(&self, ticket: Ticket) -> Option<Result<Report, Failure>> {
+        self.pool.executor.completed_report(ticket)
+    }
+    /// Advance whichever dependency barrier is ready, without joining a
+    /// different producer first. Rejected requests are ready at their normal
+    /// collection path; accepted producers must have published completely.
+    pub(crate) fn wait_ready<T>(&self, mut ready: impl FnMut(&Self) -> Option<T>) -> T {
+        self.pool.executor.wait_ready(|| ready(self))
     }
     /// [`Pool::stop_for_contained_panic`].
     pub(crate) fn stop_for_contained_panic(&self, role: Role) {
@@ -2735,8 +2954,9 @@ mod tests {
         let executor = acquisition::Pool::start(1, MAX_JOBS, run).unwrap();
         executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
         Pool {
-            executor,
+            executor: Arc::new(executor),
             calibration: Arc::new(SharedCalibration::default()),
+            worker_count: 1,
         }
     }
 
@@ -2760,7 +2980,108 @@ mod tests {
                 .all(Role::worker_only)
         );
         // The final borrowers are queued before the Presentation join.
-        assert_eq!(Role::Presentation.jobs_per_hour(), 2);
+        assert_eq!(
+            Role::PresentationPrepare.jobs_per_hour()
+                + Role::PresentationStatus.jobs_per_hour()
+                + Role::Presentation.jobs_per_hour()
+                + Role::FinalInputs.jobs_per_hour(),
+            division_presentation::MAX_STATUS_PARTS + 2
+        );
+    }
+
+    #[test]
+    fn presentation_stages_have_distinct_roles_without_extra_slots() {
+        let countries =
+            Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+        let context = division_presentation::CaptureContext {
+            base: 0,
+            game_state: 0,
+            hour: 0,
+        };
+        let request = || PresentationRequest {
+            countries: Arc::clone(&countries),
+            context,
+            captured: division_presentation::Captured::vacant(),
+            dispatch: Default::default(),
+            inputs: None,
+            army_stats: None,
+        };
+        assert_eq!(
+            Job::PresentationPrepare(request()).role(),
+            Role::PresentationPrepare
+        );
+        assert_eq!(
+            Job::PresentationSettle(request()).role(),
+            Role::PresentationSettle
+        );
+        assert_eq!(Job::Presentation(request()).role(), Role::Presentation);
+        let status = Job::PresentationStatus(PresentationStatusRequest {
+            countries: Arc::clone(&countries),
+            context,
+            inputs: None,
+            part: division_presentation::StatusWork::Status {
+                prepared: Arc::new(engine_native::carmy::StatusPacket::vacant()),
+                part: engine_native::carmy::StatusPart::vacant(),
+                attack: Default::default(),
+            },
+        });
+        assert_eq!(status.role(), Role::PresentationStatus);
+        let preparation = Job::PresentationStatus(PresentationStatusRequest {
+            countries: Arc::clone(&countries),
+            context,
+            inputs: None,
+            part: division_presentation::StatusWork::Preparation {
+                store: None,
+                part: Default::default(),
+            },
+        });
+        assert_eq!(preparation.role(), Role::PresentationPreparation);
+        for role in [
+            Role::PresentationPrepare,
+            Role::PresentationPreparation,
+            Role::PresentationStatus,
+            Role::PresentationSettle,
+        ] {
+            assert!(role.worker_only());
+            assert_eq!(role.priority(), Role::Presentation.priority());
+            assert_eq!(role.read_anchor(), Role::Presentation.read_anchor());
+        }
+        assert_eq!(Role::PresentationPrepare.jobs_per_hour(), 0);
+        assert_eq!(Role::PresentationPreparation.jobs_per_hour(), 0);
+        assert_eq!(Role::PresentationSettle.jobs_per_hour(), 0);
+        assert_eq!(
+            Role::PresentationStatus.jobs_per_hour(),
+            division_presentation::MAX_STATUS_PARTS
+        );
+        assert_eq!(Role::Presentation.jobs_per_hour(), 1);
+    }
+
+    #[test]
+    fn presentation_speed_terms_have_their_own_early_worker_slot() {
+        for (index, role) in ROLES.iter().enumerate() {
+            assert_eq!(*role as usize, index, "{role:?}");
+        }
+        assert!(Role::PresentationSpeedTerms.worker_only());
+        assert_eq!(Role::PresentationSpeedTerms.jobs_per_hour(), 1);
+        assert_eq!(
+            Role::PresentationSpeedTerms.priority(),
+            Role::Presentation.priority()
+        );
+        assert!(Role::PresentationSpeedTerms.priority() < Role::PresentationMovement.priority());
+        assert_eq!(
+            Role::PresentationSpeedTerms.read_anchor(),
+            TableId::MovementStateTerms
+        );
+    }
+
+    #[test]
+    fn variants_and_raid_state_claim_before_the_saturated_census_tier() {
+        assert_eq!(Role::Variants.priority(), Role::RaidState.priority());
+        for role in ROLES {
+            if !matches!(role, Role::Variants | Role::RaidState) {
+                assert!(Role::Variants.priority() < role.priority(), "{role:?}");
+            }
+        }
     }
 
     #[test]

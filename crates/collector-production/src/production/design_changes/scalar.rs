@@ -81,11 +81,11 @@ fn stage(
 }
 pub(super) fn observe(memory: &impl Memory, base: usize, pointer: usize, field: Field) {
     let Some(store) = STORE.get() else {
-        unobserved();
+        unobserved!();
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        lock_contended();
+        repair::contended(pointer);
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {

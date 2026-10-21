@@ -9,6 +9,7 @@ mod carry_tests;
 pub(crate) mod census;
 #[cfg(test)]
 mod census_tests;
+mod daily_experience;
 mod leader_carry;
 mod leaders;
 #[cfg(test)]
@@ -200,6 +201,10 @@ pub(crate) const PART_MASKS: [[bool; N]; 4] = [
 ];
 pub(crate) const PARTS: usize = PART_MASKS.len();
 
+fn roster_part(active: [bool; N]) -> bool {
+    active[..5] == PART_MASKS[0][..5]
+}
+
 static COPY_CALLS: [std::sync::atomic::AtomicU64; PARTS] =
     [const { std::sync::atomic::AtomicU64::new(0) }; PARTS];
 static COPY_NS: [std::sync::atomic::AtomicU64; PARTS] =
@@ -314,8 +319,27 @@ impl Captured {
         self.active
     }
 
+    pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
+        if force_full
+            || replay_data::cadence::Cadence::Daily(replay_data::cadence::COMMANDER_PROGRESS_SLOT)
+                .is_refresh(hour)
+        {
+            // Revoke before dispatch: a rejected worker cannot leave a prior
+            // world's or day's samples available to the next off-slot hour.
+            daily_experience::STORE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .forget();
+        }
+    }
+
     pub(crate) fn set_character_activity(&mut self, active: [bool; N]) {
         self.active = active;
+        if !active[5] {
+            self.training_outcome = Outcome::Unavailable {
+                reason: replay_data::cadence::SKIPPED_REASON,
+            };
+        }
         self.fail_character_tables(
             active.map(|value| !value),
             replay_data::cadence::SKIPPED_REASON,
@@ -332,6 +356,7 @@ impl Captured {
             advisors: self.advisors.batch(),
             units: self.units.batch(),
             traits: self.traits.batch(),
+            training: true,
         }
     }
 
@@ -670,6 +695,9 @@ impl Captured {
     }
 
     fn training_input(&self, cache: &mut Option<((u64, u64), Weak<TableRows>)>) -> TableInput {
+        if !self.active[5] {
+            return TableInput::Sampled(unavailable(replay_data::cadence::SKIPPED_REASON));
+        }
         let key = self
             .held
             .units
@@ -719,6 +747,9 @@ impl Captured {
     }
 
     fn training_table(&self) -> TableView {
+        if !self.active[5] {
+            return unavailable(replay_data::cadence::SKIPPED_REASON);
+        }
         let rows = &self.units.rows.rows[..self.units.rows.outcome.len()];
         if let Outcome::Unavailable { reason } = self.units.rows.outcome {
             return unavailable(reason);
@@ -1163,10 +1194,12 @@ struct Family<'a> {
     advisors: Batch<'a, cadvisor::Row>,
     units: Batch<'a, LeaderRow>,
     traits: Batch<'a, cunit_leader::TraitRow>,
+    training: bool,
 }
 
 impl Family<'_> {
     fn select(mut self, active: [bool; N]) -> Self {
+        self.training = active[5];
         macro_rules! select {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 if !active[$index] {
@@ -1305,6 +1338,7 @@ impl Family<'_> {
                 self.advisors.fail(reason);
             }
         }
+        let training = self.training;
         let Family { units, traits, .. } = self;
         if !units.active() && !traits.active() {
             return;
@@ -1325,7 +1359,9 @@ impl Family<'_> {
         units.append(
             |rows, bytes| match carried.units.and_then(|carry| carry.carried_rows(pointer)) {
                 Some((held, text)) => leader_carry::held_rows(held, text, rows, bytes),
-                None => read_unit(memory, base, pointer, character_id, rows, bytes),
+                None => {
+                    read_unit_selected(memory, base, pointer, character_id, rows, bytes, training)
+                }
             },
             |row, offset| {
                 relocate(&mut row.text_a_start, offset)
@@ -1563,13 +1599,14 @@ fn unit_identity(
     Ok(u32::from_le_bytes(reference[4..].try_into().unwrap()))
 }
 
-fn read_unit(
+fn read_unit_selected(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
     character: u32,
     output: &mut [LeaderRow],
     bytes: &mut [u8],
+    training_active: bool,
 ) -> ReadResult {
     let Some(output) = output.first_mut() else {
         return ReadResult::rows(Outcome::Truncated {
@@ -1611,10 +1648,12 @@ fn read_unit(
     };
     let training_start = names.len;
     let mut training_reason = None;
-    if matches!(
-        native.kind,
-        cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY
-    ) {
+    if training_active
+        && matches!(
+            native.kind,
+            cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY
+        )
+    {
         let result = cunit_leader::visit_trait_progress(
             memory,
             base,
@@ -1642,27 +1681,29 @@ fn read_unit(
     }
     let mut training = (training_start, names.len - training_start);
     let factors_start = names.len;
-    if matches!(
-        native.kind,
-        cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY
-    ) && let Err(reason) =
-        cunit_leader::visit_trait_factors(memory, base, pointer, |token, definition, factor| {
-            names.required = names.required.saturating_add(16);
-            if let Some(end) = names
-                .len
-                .checked_add(16)
-                .filter(|&end| end <= names.bytes.len())
-            {
-                names.bytes[names.len..names.len + 4].copy_from_slice(&token.to_le_bytes());
-                names.bytes[names.len + 4..names.len + 8]
-                    .copy_from_slice(&definition.to_le_bytes());
-                names.bytes[names.len + 8..end].copy_from_slice(&factor.to_le_bytes());
-                names.len = end;
-            } else {
-                training_reason
-                    .get_or_insert("unit leader training factor byte capacity exhausted");
-            }
-        })
+    if training_active
+        && matches!(
+            native.kind,
+            cunit_leader::KIND_ARMY | cunit_leader::KIND_NAVY
+        )
+        && let Err(reason) =
+            cunit_leader::visit_trait_factors(memory, base, pointer, |token, definition, factor| {
+                names.required = names.required.saturating_add(16);
+                if let Some(end) = names
+                    .len
+                    .checked_add(16)
+                    .filter(|&end| end <= names.bytes.len())
+                {
+                    names.bytes[names.len..names.len + 4].copy_from_slice(&token.to_le_bytes());
+                    names.bytes[names.len + 4..names.len + 8]
+                        .copy_from_slice(&definition.to_le_bytes());
+                    names.bytes[names.len + 8..end].copy_from_slice(&factor.to_le_bytes());
+                    names.len = end;
+                } else {
+                    training_reason
+                        .get_or_insert("unit leader training factor byte capacity exhausted");
+                }
+            })
     {
         training_reason.get_or_insert(reason);
     }
@@ -2081,6 +2122,43 @@ pub(crate) fn copy_characters(
     job: &mut CharactersJob,
     roles: Roles<&census::RoleCensus>,
 ) -> CharactersCopyReport {
+    // One roster acquisition owns the shared daily XP carry until it ends.
+    // Raw payloads own the supplying bytes, so later decodes never consult it.
+    let mut daily = ctx.active[3].then(|| {
+        daily_experience::STORE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    });
+    if let Some(held) = daily.as_mut() {
+        held.begin((ctx.base, ctx.game_state), ctx.force_full, ctx.active[5]);
+        if job.experience.generation != held.generation || job.daily_training != Some(ctx.active[5])
+        {
+            job.unit_carry.forget();
+            job.log.invalidate_read_plan();
+        }
+        job.daily_training = Some(ctx.active[5]);
+        job.experience.forget();
+        std::mem::swap(&mut job.experience, &mut **held);
+    }
+    let report = copy_characters_inner(memory, ctx, job, roles);
+    if let Some(held) = daily.as_mut() {
+        if job.log.planned_capture_succeeded() {
+            job.experience.observe_prepared(&job.log);
+        }
+        job.experience.finish(report.raw_ok && !job.log.fault[3]);
+        std::mem::swap(&mut job.experience, &mut **held);
+        // Keep the generation even after returning the shared storage.
+        job.experience.generation = held.generation;
+    }
+    report
+}
+
+fn copy_characters_inner(
+    memory: &impl Memory,
+    ctx: CharactersCopyContext,
+    job: &mut CharactersJob,
+    roles: Roles<&census::RoleCensus>,
+) -> CharactersCopyReport {
     job.capture_growing = job.worker_growing;
     if !ctx.active.iter().any(|&active| active) {
         job.clear();
@@ -2142,7 +2220,7 @@ pub(crate) fn copy_characters(
         job.leader_cached = true;
     } else if let Some(census) = loaned.filter(|_| census_part(ctx.active)) {
         copy_census(memory, ctx, job, census);
-    } else if job.part == 0 && ctx.active == PART_MASKS[0] {
+    } else if job.part == 0 && roster_part(ctx.active) {
         // The roster job's hourly pass, quiet while the roster stands still.
         quiet::capture(
             memory,
@@ -2199,6 +2277,7 @@ pub(crate) fn copy_characters(
 impl Captured {
     #[cfg(test)]
     fn install_family(&mut self, active: [bool; N], results: [ReadResult; N]) {
+        self.active = std::array::from_fn(|index| self.active[index] || active[index]);
         self.install_carried_family(active, results, false);
     }
 
@@ -2232,8 +2311,12 @@ impl Captured {
         }
         if active[3] {
             self.units.primary(results[3]);
-            if !training_unchanged {
+            if active[5] && !training_unchanged {
                 self.training_outcome = self.training_outcome();
+            } else if !active[5] {
+                self.training_outcome = Outcome::Unavailable {
+                    reason: replay_data::cadence::SKIPPED_REASON,
+                };
             }
         }
         if active[4] {
@@ -2248,7 +2331,7 @@ impl Captured {
     }
 
     pub(crate) fn fail_character_tables(&mut self, active: [bool; N], reason: &'static str) {
-        if active[3] || active[5] {
+        if active[5] {
             self.training_outcome = Outcome::Unavailable { reason };
             self.raw_active[5] = false;
         }
@@ -2457,6 +2540,9 @@ impl Captured {
         self.active = std::array::from_fn(|index| {
             self.active[index] || self.raw_active[index] || job.active[index]
         });
+        if job.active[3] {
+            self.active[5] = job.active[5];
+        }
         self.fail_character_tables(
             self.active.map(|value| !value),
             replay_data::cadence::SKIPPED_REASON,
@@ -2609,7 +2695,7 @@ impl Captured {
             .filter(|_| {
                 job.roster.quiet
                     && job.unit_carry.certified()
-                    && decoded == [false, false, false, true, false, true]
+                    && decoded[..5] == [false, false, false, true, false]
             })
             .filter(|&(key, _)| {
                 job.unit_carry.table_key(quiet::census_generation(job)) == Some(key)

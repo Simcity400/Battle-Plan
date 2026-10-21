@@ -22,3 +22,16 @@ earlier take needs the OR unless another writer already reasserted the bit,
 and a later take consumes the existing mark.
 Repeated writers therefore avoid redundant locked ORs without losing a return
 mark, a sibling bit, or the running-writer refusal.
+
+A marking notification exposes whether it found a prepared receiver slot. That
+attributes a lost callback without another lookup; it does not certify a quiet
+registry or a stable epoch, and absence is meaningful only under the consumer's
+complete registration/publication proof.
+
+Passive watch-sequence lookups certify only already registered receivers and never
+register, drain marks or count refusals. The hinted passive lookup validates its
+receiver against the current table and epoch, falling back to ordinary probing
+without admitting a cold receiver. Presentation ranges use that gate before
+sequence_at: warm registration completes before resume, while cold/full-table
+admission stays ordered. Frozen observations may then settle owned rows on decode
+without registering a receiver late or consuming another hour's marks.

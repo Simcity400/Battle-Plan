@@ -5,7 +5,7 @@
 //! touched it ([`crate::retreat_ban_changes`]). The land movement speed's
 //! shared operands (MovementStateTerms, CoreSupplyAccess,
 //! CountryUnitSpeedEntries, RiverRelations, DivisionTransportSpeeds and
-//! DivisionStatus.combat_movement) follow the status pass ([`speed_terms`]).
+//! DivisionStatus.combat_movement) run beside the status pass ([`speed_terms`]).
 use super::production::Sources;
 use crate::{
     projection::{Projection, project_table, scalar_table},
@@ -18,18 +18,55 @@ use engine_native::{
     Memory, carmy, carmy::DivisionSeed, ccountry, cname_group_member,
     corders_group_member::MembershipCapacity, cprovince, walk::Outcome,
 };
+use engine_naval_history::cnaval_unit_transfer::SpeedInputs as TransportInputs;
 use replay_data::rows::{
     DivisionCamouflage, DivisionMovementRow, DivisionPanelStatsRow, DivisionRetreatBanRow,
     DivisionStatusRow, NameOperands, Recorded, Retired, TableId, Witnessed, tables,
 };
 use replay_frame::frame::TableInput;
+use std::sync::Arc;
 
+mod daily_status;
+pub(crate) mod held_store;
 mod speed_terms;
+mod status_work;
+pub(crate) use status_work::StatusWork;
+
+/// One final-status range per available worker, sized from the live census.
+pub(crate) const MAX_STATUS_PARTS: usize = crate::acquisition::MAX_WORKERS;
+const STATUS_PART_ENTRIES: usize = 512;
+
+pub(crate) fn status_parts_for(divisions: usize, workers: usize) -> usize {
+    divisions
+        .div_ceil(STATUS_PART_ENTRIES)
+        .clamp(1, workers.max(1))
+}
 
 pub const N: usize = 7 + speed_terms::N;
 /// The passes inside the DivisionStatus acquisition span.
-pub(crate) const PHASES: usize = 3;
-pub(crate) const PHASE_NAMES: [&str; PHASES] = ["status", "dig_in", "naming"];
+pub(crate) const PHASES: usize = 20;
+pub(crate) const PHASE_NAMES: [&str; PHASES] = [
+    "status",
+    "dig_in",
+    "naming",
+    "prepare_sources",
+    "prepare_certify",
+    "prepare_native",
+    "sources_ordered",
+    "sources_prune",
+    "sources_variants",
+    "sources_publish",
+    "certify_setup",
+    "certify_ordered",
+    "certify_finish",
+    "prepare_attack_plan",
+    "decode_sources",
+    "decode_attack",
+    "decode_stitch",
+    "decode_scalars",
+    "decode_speed_terms",
+    "decode_movement",
+];
 pub const TABLES: [TableId; N] = [
     TableId::DivisionMovement,
     TableId::DivisionStatus,
@@ -329,6 +366,18 @@ pub(crate) struct CaptureReport {
     pub ticks: [u64; N],
 }
 
+impl CaptureReport {
+    pub(crate) fn merge_movement(&mut self, movement: Self) {
+        self.ticks[0] = movement.ticks[0];
+        self.ticks[1] += movement.ticks[1];
+        self.ticks[3] = movement.ticks[3];
+    }
+
+    pub(crate) fn merge_speed_terms(&mut self, speed_terms: Self) {
+        self.ticks[7..].copy_from_slice(&speed_terms.ticks[7..]);
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     movement: usize,
@@ -479,9 +528,35 @@ fn source_outcome(sources: &Sources<'_, DivisionSeed>) -> Outcome {
     }
 }
 
+/// Shared speed terms: storage lent to their independent whole-census job.
+pub(crate) struct SpeedTermsPass {
+    terms: speed_terms::SpeedTerms,
+}
+
+impl SpeedTermsPass {
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.terms.allocated_bytes()
+    }
+
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        sources: Sources<'_, DivisionSeed>,
+    ) -> CaptureReport {
+        let mut report = CaptureReport::default();
+        let terms = self
+            .terms
+            .acquire(memory, base, state, sources.rows, source_outcome(&sources));
+        report.ticks[7..].copy_from_slice(&terms);
+        report
+    }
+}
+
 /// DivisionMovement, DivisionLandInputs and DivisionStatus's dig-in factors:
-/// the passes' storage, lent to their own job ([`Captured::take_movement`])
-/// beside the status pass. They share only the census with it and read the
+/// storage lent to their job ([`Captured::take_movement`]) beside the status
+/// and speed-term passes. They share only the census with them and read the
 /// same parked state; the dig-in pass reads every census division and is cut
 /// to the status pass's rows when the storage returns.
 pub(crate) struct MovementPass {
@@ -490,10 +565,12 @@ pub(crate) struct MovementPass {
     movement: CaptureRows<carmy::MovementRow>,
     paths: Arena<u32>,
     movement_packet: carmy::MovementPacket,
-    transport: std::collections::HashMap<(u32, u32), Result<i64, &'static str>>,
+    transport: std::collections::HashMap<(u32, u32), Result<TransportInputs, &'static str>>,
+    transport_inputs: Vec<(usize, Option<TransportInputs>)>,
     geometry: cprovince::GeometryPacket,
     dig_in: super::dig_in::Captured,
     dig_in_ticks: u64,
+    owned_pending: bool,
 }
 
 impl MovementPass {
@@ -502,16 +579,15 @@ impl MovementPass {
             + self.movement.allocated_bytes()
             + self.paths.allocated_bytes()
             + self.transport.capacity()
-                * (std::mem::size_of::<((u32, u32), Result<i64, &'static str>)>() + 1)
+                * (std::mem::size_of::<((u32, u32), Result<TransportInputs, &'static str>)>() + 1)
+            + self.transport_inputs.capacity() * size_of::<(usize, Option<TransportInputs>)>()
             + self.movement_packet.allocated_bytes()
             + self.geometry.allocated_bytes()
             + self.dig_in.allocated_bytes()
     }
 
-    /// The land inputs, the movement inputs and the dig-in factors of every
-    /// census division: the DivisionMovement, DivisionLandInputs and dig-in
-    /// ticks. Only the test fixture omits the worker's sample hour and uses
-    /// fixed storage.
+    /// The movement, land and dig-in terms of the same census.
+    /// Only the test fixture omits the sample hour and uses fixed storage.
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -519,15 +595,26 @@ impl MovementPass {
         state: usize,
         sources: Sources<'_, DivisionSeed>,
         hour: Option<i32>,
-    ) -> [u64; 3] {
+    ) -> CaptureReport {
+        let mut report = CaptureReport::default();
         self.land.reset();
         self.land_ticks = 0;
         self.movement.reset();
         self.paths.reset();
         self.dig_in.reset();
         self.dig_in_ticks = 0;
+        self.owned_pending = false;
+        self.transport_inputs.clear();
+        self.movement_packet.defer_route_decode();
         let outcome = source_outcome(&sources);
         let rows = &sources.rows[..outcome.len()];
+        if engine_allocation::reserve(&mut self.transport_inputs, rows.len()).is_err() {
+            let reason = "division transport observation allocation failed";
+            self.movement.outcome = Outcome::Unavailable { reason };
+            self.paths.len = 0;
+            self.land.fail(reason);
+            return report;
+        }
         if hour.is_some() {
             self.movement_packet.enable_growth();
             self.geometry.enable_growth();
@@ -536,7 +623,7 @@ impl MovementPass {
                 self.movement.outcome = Outcome::Unavailable { reason };
                 self.paths.len = 0;
                 self.land.fail(reason);
-                return [0; 3];
+                return report;
             }
         }
         self.land_ticks = self.land.capture(memory, base, rows, outcome);
@@ -546,6 +633,8 @@ impl MovementPass {
         let _ = self.geometry.begin(memory, base, state);
         self.transport.clear();
         let transport = &mut self.transport;
+        let transport_inputs = &mut self.transport_inputs;
+        let mut ordinal = 0;
         let movement = carmy::capture_movement_inputs_with_extra(
             memory,
             base,
@@ -558,6 +647,8 @@ impl MovementPass {
             &mut self.movement_packet,
             hour,
             |seed, row| {
+                let index = ordinal;
+                ordinal += 1;
                 if row.naval_transfer == 0 {
                     return;
                 }
@@ -580,7 +671,7 @@ impl MovementPass {
                             .map_err(|_| "division transport cache allocation failed")?;
                     }
                     *transport.entry((owner, region)).or_insert_with(|| {
-                        engine_naval_history::cnaval_unit_transfer::movement_speed(
+                        engine_naval_history::cnaval_unit_transfer::movement_speed_inputs(
                             memory, base, state, owner, pointer,
                         )
                     })
@@ -588,25 +679,11 @@ impl MovementPass {
                 if acquired.is_err() {
                     TRANSPORT_SPEED_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                row.transport_speed = acquired.ok();
+                transport_inputs.push((index, acquired.ok()));
             },
         );
-        for reason in self.movement_packet.combat_reference_failures() {
-            super::unit_combat_references::observe_failure(reason);
-        }
-        super::unit_combat_references::demand(
-            false,
-            self.movement_packet.combat_references_required(),
-            self.movement_packet.combat_references_capacity(),
-        );
         self.movement.outcome = movement.outcome;
-        let (withdrawal, priority) = self.movement_packet.movement_style_refusals();
-        WITHDRAWAL_REFUSALS.fetch_add(withdrawal as u64, std::sync::atomic::Ordering::Relaxed);
-        MOVEMENT_PRIORITY_REFUSALS.fetch_add(priority as u64, std::sync::atomic::Ordering::Relaxed);
-        BASE_SPEED_REFUSALS.fetch_add(
-            self.movement_packet.base_speed_refusals() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        self.owned_pending = true;
         self.paths.len = movement.paths_len;
         self.paths.required = movement.required_paths;
         let movement_ticks = qpc().saturating_sub(start).max(0) as u64;
@@ -616,7 +693,10 @@ impl MovementPass {
         self.dig_in
             .capture(memory, base, rows, Outcome::Rows { len: rows.len() });
         self.dig_in_ticks = qpc().saturating_sub(start).max(0) as u64;
-        [movement_ticks, self.land_ticks, self.dig_in_ticks]
+        report.ticks[0] = movement_ticks;
+        report.ticks[1] = self.dig_in_ticks;
+        report.ticks[3] = self.land_ticks;
+        report
     }
 }
 
@@ -632,29 +712,51 @@ pub struct Captured {
     cached_names: Arena<u8>,
     name_groups: cname_group_member::GroupKeys,
     movement_packet: carmy::MovementPacket,
-    transport: std::collections::HashMap<(u32, u32), Result<i64, &'static str>>,
+    transport: std::collections::HashMap<(u32, u32), Result<TransportInputs, &'static str>>,
+    transport_inputs: Vec<(usize, Option<TransportInputs>)>,
     /// Sparse execution output from the same held pass, installed only after
     /// both Presentation and Late have joined. Never reads native memory.
     order_transport: engine_native::order_execution::UnitPacket,
     geometry: cprovince::GeometryPacket,
     status_packet: carmy::StatusPacket,
+    daily_status: daily_status::DailyStatus,
+    prepared_status: Option<Arc<carmy::StatusPacket>>,
+    status_parts: Vec<carmy::StatusPart>,
+    attack_parts: Vec<super::attack_stats::AttackPart>,
+    preparation_parts: Vec<super::attack_stats::PreparationPart>,
+    preparation_store: Option<Arc<super::attack_stats::ArmyStatStore>>,
+    preparation_store_loaned: bool,
+    prefetching: bool,
+    probes_ready: bool,
+    owned_settlement: bool,
+    sources_deferred: bool,
+    stitch_deferred: bool,
+    attack_deferred: bool,
+    deferred_store: Option<held_store::Loan>,
+    deferred_inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    deferred_context: Option<CaptureContext>,
+    attack_ready: bool,
+    status_part_count: usize,
+    pub(crate) status_workers: usize,
+    status_prepared: bool,
     dig_in: super::dig_in::Captured,
     /// DivisionStatus.attack_stats and the attack witness
     /// ([`super::attack_stats`]), captured after the status pass.
     attack: super::attack_stats::Captured,
-    /// The DivisionStatus span split by pass: status and naming, in that
-    /// order. Diagnostics only.
+    /// The DivisionStatus span by PHASE_NAMES, including nested ordered
+    /// preparation sub-phases. Diagnostics only.
     phase_ticks: [u64; PHASES],
     membership: MembershipCapacity,
     source_capacity: usize,
     source_required: usize,
     decode_pending: bool,
+    movement_owned_pending: bool,
     /// The live `NMilitary.SUPPLY_GRACE` hours this pass read, which
     /// DivisionStatus.supply_grace_remaining is stored against
     /// ([`DivisionStatusRow::displayed_grace`]); None when unreadable.
     supply_grace: Option<i32>,
     /// The land movement speed's shared operands and each division's combat
-    /// movement operand, read after the status pass.
+    /// movement operand, lent to the independent speed-term pass.
     speed_terms: speed_terms::SpeedTerms,
     #[cfg(feature = "movement_witness")]
     movement_witness: Vec<(u64, Option<i64>)>,
@@ -756,9 +858,30 @@ impl Captured {
             name_groups: cname_group_member::GroupKeys::default(),
             movement_packet: carmy::MovementPacket::vacant(),
             transport: Default::default(),
+            transport_inputs: Vec::new(),
             order_transport: engine_native::order_execution::UnitPacket::vacant(),
             geometry: cprovince::GeometryPacket::vacant(),
             status_packet: carmy::StatusPacket::vacant(),
+            daily_status: Default::default(),
+            prepared_status: None,
+            status_parts: Vec::new(),
+            attack_parts: Vec::new(),
+            preparation_parts: Vec::new(),
+            preparation_store: None,
+            preparation_store_loaned: false,
+            prefetching: false,
+            probes_ready: false,
+            owned_settlement: false,
+            sources_deferred: false,
+            stitch_deferred: false,
+            attack_deferred: false,
+            deferred_store: None,
+            deferred_inputs: None,
+            deferred_context: None,
+            attack_ready: false,
+            status_part_count: 0,
+            status_workers: 1,
+            status_prepared: false,
             dig_in: super::dig_in::Captured::new(0),
             attack: Default::default(),
             phase_ticks: [0; PHASES],
@@ -766,6 +889,7 @@ impl Captured {
             source_capacity: 0,
             source_required: 0,
             decode_pending: false,
+            movement_owned_pending: false,
             supply_grace: None,
             speed_terms: speed_terms::SpeedTerms::default(),
             #[cfg(feature = "movement_witness")]
@@ -797,10 +921,31 @@ impl Captured {
             .unwrap_or_default(),
             movement_packet,
             transport: Default::default(),
+            transport_inputs: Vec::new(),
             order_transport: engine_native::order_execution::UnitPacket::vacant(),
             geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
                 .unwrap_or_default(),
             status_packet: status_packet(c),
+            daily_status: Default::default(),
+            prepared_status: None,
+            status_parts: Vec::new(),
+            attack_parts: Vec::new(),
+            preparation_parts: Vec::new(),
+            preparation_store: None,
+            preparation_store_loaned: false,
+            prefetching: false,
+            probes_ready: false,
+            owned_settlement: false,
+            sources_deferred: false,
+            stitch_deferred: false,
+            attack_deferred: false,
+            deferred_store: None,
+            deferred_inputs: None,
+            deferred_context: None,
+            attack_ready: false,
+            status_part_count: 0,
+            status_workers: 1,
+            status_prepared: false,
             dig_in: super::dig_in::Captured::new(c.status),
             attack: Default::default(),
             phase_ticks: [0; PHASES],
@@ -808,6 +953,7 @@ impl Captured {
             source_capacity: c.movement.max(c.status),
             source_required: 0,
             decode_pending: false,
+            movement_owned_pending: false,
             supply_grace: None,
             speed_terms: speed_terms::SpeedTerms::default(),
             #[cfg(feature = "movement_witness")]
@@ -823,13 +969,27 @@ impl Captured {
         self.movement.reset();
         self.paths.reset();
         self.dig_in.reset();
+        self.speed_terms.reset();
+        self.movement_owned_pending = false;
         self.reset_status();
     }
 
-    /// Everything but the movement pass's storage, which its own job resets
-    /// ([`MovementPass::capture`]).
+    /// Everything but the movement and speed-term storage, which their jobs
+    /// reset ([`MovementPass::capture`], [`SpeedTermsPass::capture`]).
     fn reset_status(&mut self) {
+        self.sources_deferred = false;
+        self.stitch_deferred = false;
+        self.attack_deferred = false;
+        self.deferred_store = None;
+        self.deferred_inputs = None;
+        self.deferred_context = None;
+        self.status_prepared = false;
+        self.status_part_count = 0;
+        self.prefetching = false;
+        self.probes_ready = false;
+        self.attack_ready = false;
         self.supply_grace = None;
+        self.daily_status.reset();
         self.status.reset();
         self.bans.reset();
         self.naming.reset();
@@ -841,7 +1001,6 @@ impl Captured {
         self.attack.selected_sources.clear();
         self.phase_ticks = [0; PHASES];
         self.order_transport.reset();
-        self.speed_terms.reset();
         // Engine acquisition resets each owned packet in its measured scope.
         self.decode_pending = false;
     }
@@ -867,11 +1026,42 @@ impl Captured {
             + self.cached_names.allocated_bytes()
             + self.name_groups.allocated_bytes()
             + self.transport.capacity()
-                * (std::mem::size_of::<((u32, u32), Result<i64, &'static str>)>() + 1)
+                * (std::mem::size_of::<((u32, u32), Result<TransportInputs, &'static str>)>() + 1)
+            + self.transport_inputs.capacity() * size_of::<(usize, Option<TransportInputs>)>()
             + self.movement_packet.allocated_bytes()
             + self.order_transport.allocated_bytes()
             + self.geometry.allocated_bytes()
             + self.status_packet.allocated_bytes()
+            + self.daily_status.allocated_bytes()
+            + self.prepared_status.as_ref().map_or(0, |packet| {
+                packet.allocated_bytes()
+                    + std::mem::size_of::<carmy::StatusPacket>()
+                    + 2 * std::mem::size_of::<usize>()
+            })
+            + self.preparation_parts.capacity()
+                * std::mem::size_of::<super::attack_stats::PreparationPart>()
+            + self
+                .preparation_parts
+                .iter()
+                .map(super::attack_stats::PreparationPart::allocated_bytes)
+                .sum::<usize>()
+            + self.preparation_store.as_ref().map_or(0, |store| {
+                store.allocated_bytes()
+                    + std::mem::size_of::<super::attack_stats::ArmyStatStore>()
+                    + 2 * std::mem::size_of::<usize>()
+            })
+            + self.attack_parts.capacity() * std::mem::size_of::<super::attack_stats::AttackPart>()
+            + self
+                .attack_parts
+                .iter()
+                .map(super::attack_stats::AttackPart::allocated_bytes)
+                .sum::<usize>()
+            + self.status_parts.capacity() * std::mem::size_of::<carmy::StatusPart>()
+            + self
+                .status_parts
+                .iter()
+                .map(carmy::StatusPart::allocated_bytes)
+                .sum::<usize>()
             + self.dig_in.allocated_bytes()
             + self.attack.allocated_bytes()
             + self.speed_terms.allocated_bytes()
@@ -949,9 +1139,11 @@ impl Captured {
                 carmy::MovementPacket::vacant(),
             ),
             transport: std::mem::take(&mut self.transport),
+            transport_inputs: std::mem::take(&mut self.transport_inputs),
             geometry: std::mem::replace(&mut self.geometry, cprovince::GeometryPacket::vacant()),
             dig_in: std::mem::replace(&mut self.dig_in, super::dig_in::Captured::new(0)),
             dig_in_ticks: 0,
+            owned_pending: std::mem::take(&mut self.movement_owned_pending),
         }
     }
 
@@ -965,9 +1157,11 @@ impl Captured {
             paths,
             movement_packet,
             transport,
+            transport_inputs,
             geometry,
             dig_in,
             dig_in_ticks,
+            owned_pending,
         } = pass;
         self.land = land;
         self.land_ticks = land_ticks;
@@ -975,10 +1169,22 @@ impl Captured {
         self.paths = paths;
         self.movement_packet = movement_packet;
         self.transport = transport;
+        self.transport_inputs = transport_inputs;
         self.geometry = geometry;
         self.dig_in = dig_in;
-        self.dig_in.settle(self.status.outcome);
+        self.movement_owned_pending = owned_pending;
         self.phase_ticks[1] = dig_in_ticks;
+    }
+
+    /// Lend the unchanged whole-census speed pass beside status and movement.
+    pub(crate) fn take_speed_terms(&mut self) -> SpeedTermsPass {
+        SpeedTermsPass {
+            terms: std::mem::take(&mut self.speed_terms),
+        }
+    }
+
+    pub(crate) fn restore_speed_terms(&mut self, pass: SpeedTermsPass) {
+        self.speed_terms = pass.terms;
     }
 
     /// The previous sparse output becomes the execution owner's reusable spare.
@@ -1045,7 +1251,8 @@ impl Captured {
 
     pub(crate) fn observe_counter_inputs(&self, work: &mut CounterWork) -> std::io::Result<()> {
         for row in &self.status.rows[..self.status.outcome.len()] {
-            work.supply.observe(row.supply, row.supply_failure);
+            let (inputs, failure, _) = self.supply_sample(row);
+            work.supply.observe(inputs, failure);
             if row.invalid_orders != 0 {
                 if row.invalid_orders_reason.is_some() {
                     work.captured = work.captured.saturating_add(1);
@@ -1279,8 +1486,8 @@ impl Captured {
         )
     }
 
-    /// Both sides on this thread, the movement pass lent and returned as
-    /// the Presentation and PresentationMovement jobs run them.
+    /// All three passes on this thread, with the same loans as Presentation,
+    /// PresentationMovement and PresentationSpeedTerms.
     #[cfg(test)]
     pub(super) fn capture_owned_observed(
         &mut self,
@@ -1292,9 +1499,16 @@ impl Captured {
     ) -> CaptureReport {
         let (rows, outcome) = (sources.rows, sources.outcome);
         let mut pass = self.take_movement();
+        let mut terms = self.take_speed_terms();
         let mut report =
             self.capture_status_observed(memory, context, sources, army_stats, changes);
-        let [movement, land, dig_in] = pass.capture(
+        let speed_terms = terms.capture(
+            memory,
+            context.base,
+            context.game_state,
+            Sources { rows, outcome },
+        );
+        let movement = pass.capture(
             memory,
             context.base,
             context.game_state,
@@ -1302,10 +1516,164 @@ impl Captured {
             Some(context.hour),
         );
         self.restore_movement(pass);
-        report.ticks[0] = movement;
-        report.ticks[1] += dig_in;
-        report.ticks[3] = land;
+        self.restore_speed_terms(terms);
+        report.merge_movement(movement);
+        report.merge_speed_terms(speed_terms);
         report
+    }
+
+    /// Stage independent leaves, then settle certificates and shared maxima
+    /// before lending final-status ranges. Naming and attack keep the same
+    /// held store and their original ordered publication.
+    pub(crate) fn prepare_status_holding(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+        store: Option<&mut super::attack_stats::ArmyStatStore>,
+    ) {
+        self.prepare_status_observed(
+            memory,
+            context,
+            sources,
+            store,
+            &crate::army_stat_changes::Observer,
+        );
+    }
+
+    fn prepare_status_observed(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+        mut store: Option<&mut super::attack_stats::ArmyStatStore>,
+        changes: &dyn crate::army_stat_changes::Changes,
+    ) {
+        if !self.prefetching {
+            if let Some(store) = store.as_deref_mut() {
+                store.sources.capture_boundary();
+            }
+        }
+        if !self.prefetching && self.begin_preparation(&sources, store.as_deref_mut()) {
+            return;
+        }
+        self.restore_preparation_store(store.as_deref_mut());
+        self.probes_ready = self.prefetching;
+        self.capture_status_at(
+            memory,
+            context.base,
+            context.game_state,
+            sources,
+            Some(context.hour),
+            store,
+            changes,
+            true,
+        );
+        self.probes_ready = false;
+        self.prefetching = false;
+        // A preparation refusal was already attempted; the final job must not retry.
+        self.status_prepared = true;
+    }
+
+    /// False selects the original ordered preparation without optional staging.
+    fn begin_preparation(
+        &mut self,
+        sources: &Sources<'_, DivisionSeed>,
+        store: Option<&mut super::attack_stats::ArmyStatStore>,
+    ) -> bool {
+        self.reset_status();
+        let divisions = source_outcome(sources).len();
+        let count = status_parts_for(divisions, self.status_workers);
+        if !grow_vec(&mut self.status.rows, divisions) {
+            self.fail_owned_capture("presentation row allocation failed");
+            self.status_prepared = true;
+            return true;
+        }
+        let additional = count.saturating_sub(self.preparation_parts.len());
+        if engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.preparation_parts, additional)
+        })
+        .is_err()
+        {
+            return false;
+        }
+        while self.preparation_parts.len() < count {
+            self.preparation_parts.push(Default::default());
+        }
+        for (index, part) in self.preparation_parts[..count].iter_mut().enumerate() {
+            part.range = divisions * index / count..divisions * (index + 1) / count;
+        }
+        if let Some(store) = store {
+            let held = self
+                .preparation_store
+                .get_or_insert_with(|| Arc::new(super::attack_stats::ArmyStatStore::new()));
+            std::mem::swap(
+                store,
+                Arc::get_mut(held).expect("preparation observations joined"),
+            );
+            self.preparation_store_loaned = true;
+        }
+        self.prefetching = true;
+        self.status_part_count = count;
+        true
+    }
+
+    /// All range leases must be dropped before the ordered pass, including failures.
+    pub(crate) fn restore_preparation_store(
+        &mut self,
+        store: Option<&mut super::attack_stats::ArmyStatStore>,
+    ) {
+        if self.preparation_store_loaned {
+            std::mem::swap(
+                store.expect("preparation store loan"),
+                Arc::get_mut(self.preparation_store.as_mut().expect("preparation store"))
+                    .expect("preparation observations joined"),
+            );
+            self.preparation_store_loaned = false;
+        }
+    }
+
+    pub(crate) fn preparation_pending(&self) -> bool {
+        self.prefetching
+    }
+
+    pub(crate) fn status_part_count(&self) -> usize {
+        self.status_part_count
+    }
+
+    pub(crate) fn take_status_part(&mut self, index: usize) -> StatusWork {
+        if self.prefetching {
+            StatusWork::Preparation {
+                store: self
+                    .preparation_store_loaned
+                    .then(|| Arc::clone(self.preparation_store.as_ref().unwrap())),
+                part: std::mem::take(&mut self.preparation_parts[index]),
+            }
+        } else {
+            StatusWork::Status {
+                prepared: Arc::clone(self.prepared_status.as_ref().expect("status prepared")),
+                part: std::mem::replace(&mut self.status_parts[index], carmy::StatusPart::vacant()),
+                attack: self
+                    .attack_parts
+                    .get_mut(index)
+                    .map(std::mem::take)
+                    .unwrap_or_default(),
+            }
+        }
+    }
+
+    pub(crate) fn restore_status_part(&mut self, index: usize, work: StatusWork, ticks: u64) {
+        match work {
+            StatusWork::Preparation { part, .. } => self.preparation_parts[index] = part,
+            StatusWork::Status { part, attack, .. } => {
+                self.status_parts[index] = part;
+                if let Some(destination) = self.attack_parts.get_mut(index) {
+                    *destination = attack;
+                    self.attack_ready = true;
+                }
+            }
+        }
+        self.phase_ticks[0] += ticks;
     }
 
     /// The status side on the reserved worker, using the immutable source
@@ -1333,42 +1701,89 @@ impl Captured {
     }
 
     /// [`Self::capture_status_holding`] observed through `changes`. The
-    /// movement and land ticks are the movement pass's.
+    /// movement, land, dig-in and speed ticks are the movement pass's.
     pub(super) fn capture_status_observed(
         &mut self,
         memory: &impl Memory,
         context: CaptureContext,
         sources: Sources<'_, DivisionSeed>,
-        army_stats: Option<&mut super::attack_stats::ArmyStatStore>,
+        mut army_stats: Option<&mut super::attack_stats::ArmyStatStore>,
         changes: &dyn crate::army_stat_changes::Changes,
     ) -> CaptureReport {
         let (rows, outcome) = (sources.rows, sources.outcome);
-        let status = self.capture_status_at(
-            memory,
-            context.base,
-            context.game_state,
-            sources,
-            Some(context.hour),
-            army_stats,
-            changes,
-        );
+        let status = if self.status_prepared && self.status_part_count == 0 {
+            self.status_prepared = false;
+            0
+        } else if self.status_prepared {
+            let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
+            let started = qpc();
+            let prepared = self.prepared_status.as_mut().expect("status prepared");
+            std::mem::swap(
+                &mut self.status_packet,
+                Arc::get_mut(prepared).expect("status parts joined"),
+            );
+            self.status_prepared = false;
+            self.stitch_deferred = self.owned_settlement;
+            self.status.outcome = if self.stitch_deferred {
+                self.status_packet
+                    .prepare_status_stitch(&self.status_parts[..self.status_part_count])
+            } else {
+                self.status_packet
+                    .stitch_status_parts(&self.status_parts[..self.status_part_count])
+            };
+            let refused = self.status_parts[..self.status_part_count]
+                .iter()
+                .map(|part| part.organisation_refused)
+                .sum::<u64>();
+            ORGANISATION_REFUSALS.fetch_add(refused, std::sync::atomic::Ordering::Relaxed);
+            let status = &self.status_packet;
+            self.attack
+                .verify_maxima(|index| status.unit_maxima(index), changes);
+            let named = qpc();
+            self.capture_naming_holding(
+                memory,
+                context.base,
+                &rows[..self.status.outcome.len()],
+                army_stats.as_deref_mut(),
+                changes,
+            );
+            if !self.owned_settlement {
+                if let Some(store) = army_stats {
+                    self.daily_status.settle(
+                        &self.status_packet,
+                        store,
+                        context.base,
+                        rows,
+                        matches!(outcome, Outcome::Rows { .. }) && self.status.outcome == outcome,
+                    );
+                }
+            }
+            let finished = qpc();
+            self.phase_ticks[0] += named.saturating_sub(started).max(0) as u64;
+            self.phase_ticks[2] = finished.saturating_sub(named).max(0) as u64;
+            self.decode_pending = true;
+            self.phase_ticks[0] + self.phase_ticks[2]
+        } else {
+            self.capture_status_at(
+                memory,
+                context.base,
+                context.game_state,
+                sources,
+                Some(context.hour),
+                army_stats,
+                changes,
+                false,
+            )
+        };
         let bans = self.capture_bans(
             memory,
             context,
             Sources { rows, outcome },
             &crate::retreat_ban_changes::Observer,
         );
-        let terms = self.speed_terms.capture(
-            memory,
-            context.base,
-            context.game_state,
-            rows,
-            source_outcome(&Sources { rows, outcome }),
-        );
         let mut ticks = [0; N];
         ticks[1] = status;
         ticks[2] = bans;
-        ticks[7..].copy_from_slice(&terms);
         CaptureReport { ticks }
     }
 
@@ -1399,12 +1814,47 @@ impl Captured {
         memory: &impl Memory,
         context: CaptureContext,
         sources: Sources<'_, DivisionSeed>,
-        store: Option<&mut super::attack_stats::ArmyStatStore>,
+        mut store: Option<&mut super::attack_stats::ArmyStatStore>,
         changes: &dyn crate::army_stat_changes::Changes,
     ) {
         let _reads = crate::read_accounting::table(TableId::DivisionStatus);
+        if self.owned_settlement
+            && store.is_some()
+            && self.attack_ready
+            && self
+                .attack_parts
+                .get(..self.status_part_count)
+                .is_some_and(|parts| parts.iter().all(|part| part.is_prepared()))
+        {
+            self.attack.prepare_witness(
+                memory,
+                context.base,
+                context.hour,
+                sources.rows,
+                sources.outcome,
+            );
+            self.attack_deferred = true;
+            return;
+        }
+        if let Some(store) = store.as_deref_mut() {
+            let parts = &self.preparation_parts;
+            self.attack.settle_certification(
+                context.base,
+                sources.rows,
+                sources.outcome,
+                store,
+                |index| {
+                    parts
+                        .iter()
+                        .find(|part| part.range.contains(&index))
+                        .and_then(|part| part.get(index))
+                },
+            );
+        }
         let status = &self.status_packet;
-        self.attack.capture(
+        let parts = &self.attack_parts;
+        let ready = self.attack_ready;
+        self.attack.capture_prepared(
             memory,
             context.base,
             context.hour,
@@ -1413,7 +1863,18 @@ impl Captured {
             store,
             |index| status.unit_maxima(index),
             changes,
+            |index| {
+                ready
+                    .then(|| {
+                        parts
+                            .iter()
+                            .find(|part| part.range.contains(&index))
+                            .and_then(|part| part.get(index))
+                    })
+                    .flatten()
+            },
         );
+        self.attack_ready = false;
     }
 
     /// DivisionRetreatBans for every division of the census: each group's
@@ -1479,6 +1940,17 @@ impl Captured {
 
     /// Finish an accepted worker failure without retrying the live acquisition.
     pub(crate) fn fail_owned_capture(&mut self, reason: &'static str) -> CaptureReport {
+        if self.status_prepared && self.status_part_count != 0 {
+            let prepared = self.prepared_status.as_mut().expect("status prepared");
+            std::mem::swap(
+                &mut self.status_packet,
+                Arc::get_mut(prepared).expect("status parts joined"),
+            );
+        }
+        self.status_prepared = false;
+        self.prefetching = false;
+        self.probes_ready = false;
+        self.attack_ready = false;
         self.attack.history = Some(Err(reason));
         self.attack.sources = Some(Err(reason));
         self.attack.selected_sources.clear();
@@ -1506,6 +1978,7 @@ impl Captured {
     ) -> [u64; 2] {
         let (rows, outcome) = (sources.rows, sources.outcome);
         let mut pass = self.take_movement();
+        let mut terms = self.take_speed_terms();
         let status = self.capture_status_at(
             memory,
             base,
@@ -1514,11 +1987,13 @@ impl Captured {
             None,
             None,
             &crate::army_stat_changes::Observer,
+            false,
         );
-        let [movement, _, dig_in] =
-            pass.capture(memory, base, state, Sources { rows, outcome }, None);
+        terms.capture(memory, base, state, Sources { rows, outcome });
+        let movement = pass.capture(memory, base, state, Sources { rows, outcome }, None);
         self.restore_movement(pass);
-        [movement, status + dig_in]
+        self.restore_speed_terms(terms);
+        [movement.ticks[0], status + movement.ticks[1]]
     }
 
     /// The status and naming passes: the DivisionStatus span but the dig-in
@@ -1533,8 +2008,14 @@ impl Captured {
         hour: Option<i32>,
         mut army_stats: Option<&mut super::attack_stats::ArmyStatStore>,
         changes: &dyn crate::army_stat_changes::Changes,
+        prepare_only: bool,
     ) -> u64 {
+        let probes_ready = self.probes_ready;
+        let preparation_count = self.status_part_count;
+        let preparation_ticks = if probes_ready { self.phase_ticks[0] } else { 0 };
         self.reset_status();
+        self.phase_ticks[0] = preparation_ticks;
+        self.status_prepared = prepare_only;
         let outcome = source_outcome(&sources);
         let rows = &sources.rows[..outcome.len()];
         self.supply_grace = engine_native::read::<i32>(
@@ -1552,28 +2033,149 @@ impl Captured {
         self.source_required = self.source_required.max(rows.len());
         let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
         let start = qpc();
-        self.attack.sources = army_stats.as_deref_mut().map(|store| {
-            let result =
-                store
-                    .sources
-                    .capture(memory, base, state, rows, &mut self.attack.selected_sources);
-            if result.is_err() {
-                store.sources.forget();
-                self.attack.selected_sources.clear();
-            }
-            result
-        });
+        let probes = &self.preparation_parts;
+        let ready = probes_ready;
+        let prepared = |index: usize| {
+            ready
+                .then(|| {
+                    probes
+                        .iter()
+                        .find(|part| part.range.contains(&index))
+                        .and_then(|part| part.get(index))
+                })
+                .flatten()
+        };
+        self.sources_deferred = self.owned_settlement
+            && ready
+            && !rows.is_empty()
+            && army_stats
+                .as_deref()
+                .is_some_and(|store| store.sources.can_settle_owned())
+            && probes[..preparation_count]
+                .iter()
+                .all(|part| part.can_settle_sources());
+        self.attack.sources = if self.sources_deferred {
+            None
+        } else {
+            army_stats.as_deref_mut().map(|store| {
+                let result = store.sources.capture_staged(
+                    memory,
+                    base,
+                    state,
+                    rows,
+                    &mut self.attack.selected_sources,
+                    |index| prepared(index).and_then(|row| row.selection),
+                    |index| {
+                        ready
+                            .then(|| {
+                                probes
+                                    .iter()
+                                    .find(|part| part.range.contains(&index))
+                                    .and_then(|part| part.source_reads())
+                            })
+                            .flatten()
+                    },
+                    |handle, pointer| {
+                        ready
+                            .then(|| {
+                                probes
+                                    .iter()
+                                    .filter_map(|part| part.source_reads())
+                                    .find(|reads| reads.has_variant(handle, pointer))
+                            })
+                            .flatten()
+                    },
+                );
+                self.phase_ticks[6..10].copy_from_slice(&store.sources.phase_ticks());
+                if result.is_err() {
+                    store.sources.forget();
+                    self.attack.selected_sources.clear();
+                }
+                result
+            })
+        };
         self.attack
             .selected_sources
             .sort_unstable_by_key(|row| row.0);
-        self.attack.certify(
+        let sources_finished = qpc();
+        self.phase_ticks[3] = sources_finished.saturating_sub(start).max(0) as u64;
+        self.attack.certify_staged(
             memory,
             base,
             rows,
             outcome,
             army_stats.as_deref_mut(),
             changes,
+            prepared,
+            self.owned_settlement && prepare_only && ready,
         );
+        self.daily_status.prepare(
+            &mut self.status_packet,
+            army_stats.as_deref_mut(),
+            base,
+            rows,
+        );
+        let certified = qpc();
+        self.phase_ticks[4] = certified.saturating_sub(sources_finished).max(0) as u64;
+        self.phase_ticks[10..13].copy_from_slice(&self.attack.certify_ticks());
+        if prepare_only {
+            self.status.outcome = self.status_packet.prepare_holding(
+                memory,
+                base,
+                state,
+                rows,
+                outcome,
+                &self.attack.held_maxima,
+                &self.attack.exercise_experience,
+            );
+            let native_finished = qpc();
+            self.phase_ticks[5] = native_finished.saturating_sub(certified).max(0) as u64;
+            let count = status_parts_for(rows.len(), self.status_workers);
+            let additional = count.saturating_sub(self.status_parts.len());
+            if engine_allocation::reserve(&mut self.status_parts, additional).is_err() {
+                self.fail_owned_capture("presentation part allocation failed");
+                return 0;
+            }
+            while self.status_parts.len() < count {
+                self.status_parts.push(carmy::StatusPart::vacant());
+            }
+            let additional = count.saturating_sub(self.attack_parts.len());
+            if engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut self.attack_parts, additional)
+            })
+            .is_ok()
+            {
+                self.attack_parts
+                    .resize_with(self.attack_parts.len().max(count), Default::default);
+            }
+            // Optional attack staging never changes the original ordered
+            // acquisition's admission or failure result.
+            for (index, part) in self.attack_parts.iter_mut().take(count).enumerate() {
+                part.range = rows.len() * index / count..rows.len() * (index + 1) / count;
+                part.prepare(
+                    rows,
+                    hour.expect("status preparation hour"),
+                    &self.attack,
+                    army_stats.as_deref(),
+                    |index| self.status_packet.unit_maxima(index),
+                );
+            }
+            self.phase_ticks[13] = qpc().saturating_sub(native_finished).max(0) as u64;
+            let admitted = self.status_packet.prepared_units();
+            for (part, work) in self.status_parts[..count].iter_mut().enumerate() {
+                work.range = admitted * part / count..admitted * (part + 1) / count;
+            }
+            let prepared = self
+                .prepared_status
+                .get_or_insert_with(|| Arc::new(carmy::StatusPacket::vacant()));
+            std::mem::swap(
+                &mut self.status_packet,
+                Arc::get_mut(prepared).expect("status parts joined"),
+            );
+            self.status_part_count = count;
+            self.phase_ticks[0] += qpc().saturating_sub(start).max(0) as u64;
+            return self.phase_ticks[0];
+        }
         self.status.outcome = self.status_packet.capture_holding(
             memory,
             base,
@@ -1582,8 +2184,9 @@ impl Captured {
             outcome,
             self.status.rows.len(),
             &self.attack.held_maxima,
-            &self.attack.experience,
+            &self.attack.exercise_experience,
         );
+        self.phase_ticks[5] = qpc().saturating_sub(certified).max(0) as u64;
         let refused = self
             .status_packet
             .capture_movement_organisation(memory, base, state, rows);
@@ -1596,16 +2199,25 @@ impl Captured {
             memory,
             base,
             &rows[..self.status.outcome.len()],
-            army_stats,
+            army_stats.as_deref_mut(),
             changes,
         );
+        if !self.owned_settlement {
+            if let Some(store) = army_stats {
+                self.daily_status.settle(
+                    &self.status_packet,
+                    store,
+                    base,
+                    rows,
+                    matches!(outcome, Outcome::Rows { .. }) && self.status.outcome == outcome,
+                );
+            }
+        }
         let finished = qpc();
         // The dig-in phase is the movement pass job's ([`Self::restore_movement`]).
-        self.phase_ticks = [
-            named.saturating_sub(start).max(0) as u64,
-            0,
-            finished.saturating_sub(named).max(0) as u64,
-        ];
+        self.phase_ticks[0] += named.saturating_sub(start).max(0) as u64;
+        self.phase_ticks[1] = 0;
+        self.phase_ticks[2] = finished.saturating_sub(named).max(0) as u64;
         drop(_status_reads);
         self.decode_pending = true;
         finished.saturating_sub(start).max(0) as u64
@@ -1616,11 +2228,185 @@ impl Captured {
         self.phase_ticks
     }
 
+    pub(crate) fn enable_owned_settlement(&mut self) {
+        self.owned_settlement = true;
+    }
+
+    pub(crate) fn retain_owned_settlement(
+        &mut self,
+        mut store: held_store::Loan,
+        inputs: Option<Arc<crate::division_census::UnitInputs>>,
+        context: CaptureContext,
+    ) -> Option<held_store::Loan> {
+        if !self.sources_deferred
+            && !self.attack_deferred
+            && !self.attack.has_owned_certification()
+            && !self.daily_status.pending()
+        {
+            store.complete();
+            return Some(store);
+        }
+        self.deferred_store = Some(store);
+        self.deferred_inputs = inputs;
+        self.deferred_context = Some(context);
+        None
+    }
+    pub(crate) fn take_settled_store(&mut self) -> Option<held_store::Loan> {
+        self.speed_terms.discard_owned();
+        self.deferred_store.take()
+    }
+    fn settle_owned_sources(&mut self) {
+        if !std::mem::take(&mut self.sources_deferred) {
+            return;
+        }
+        let context = self.deferred_context.expect("owned presentation context");
+        let Some(store) = self.deferred_store.as_deref_mut() else {
+            return;
+        };
+        let inputs = self
+            .deferred_inputs
+            .as_deref()
+            .expect("owned presentation sources");
+        let seeds = &inputs.seeds()[..inputs.outcome().len()];
+        let parts = &self.preparation_parts[..self.status_part_count];
+        self.attack.sources = Some(store.sources.settle_owned(
+            context.base,
+            context.game_state,
+            seeds,
+            &mut self.attack.selected_sources,
+            |index| {
+                parts
+                    .iter()
+                    .find(|part| part.range.contains(&index))
+                    .and_then(|part| part.get(index))
+                    .and_then(|row| row.selection)
+            },
+            |index| {
+                parts
+                    .iter()
+                    .find(|part| part.range.contains(&index))
+                    .and_then(|part| part.source_reads())
+            },
+            |handle, pointer| {
+                parts
+                    .iter()
+                    .filter_map(|part| part.source_reads())
+                    .find(|reads| reads.has_variant(handle, pointer))
+            },
+        ));
+        self.attack
+            .selected_sources
+            .sort_unstable_by_key(|row| row.0);
+        self.phase_ticks[6..10].copy_from_slice(&store.sources.phase_ticks());
+        if self.attack.sources.as_ref().is_some_and(Result::is_err) {
+            store.sources.forget();
+            self.attack.selected_sources.clear();
+        }
+    }
+
     /// Pure decode-worker projection from the current owned packets.
     pub(crate) fn decode_inputs(&mut self) -> [u64; 2] {
+        // Independent companions still settle if status itself refused. In
+        // particular, return the unit-speed loan before another hour takes marks.
+        self.phase_ticks[18] += self.speed_terms.decode();
+        if std::mem::take(&mut self.movement_owned_pending) {
+            let started = qpc();
+            for reason in self.movement_packet.combat_reference_failures() {
+                super::unit_combat_references::observe_failure(reason);
+            }
+            super::unit_combat_references::demand(
+                false,
+                self.movement_packet.combat_references_required(),
+                self.movement_packet.combat_references_capacity(),
+            );
+            let (withdrawal, priority) = self.movement_packet.movement_style_refusals();
+            WITHDRAWAL_REFUSALS.fetch_add(withdrawal as u64, std::sync::atomic::Ordering::Relaxed);
+            MOVEMENT_PRIORITY_REFUSALS.fetch_add(priority as u64, std::sync::atomic::Ordering::Relaxed);
+            BASE_SPEED_REFUSALS.fetch_add(
+                self.movement_packet.base_speed_refusals() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            self.dig_in.settle(self.status.outcome);
+            self.phase_ticks[19] += qpc().saturating_sub(started).max(0) as u64;
+        }
         if !std::mem::take(&mut self.decode_pending) {
             return [0; 2];
         }
+        let started = qpc();
+        self.settle_owned_sources();
+        self.phase_ticks[14] = qpc().saturating_sub(started).max(0) as u64;
+        let started = qpc();
+        if let Some(store) = self.deferred_store.as_deref_mut() {
+            let context = self.deferred_context.expect("owned certification context");
+            let inputs = self
+                .deferred_inputs
+                .as_deref()
+                .expect("owned certification census");
+            let parts = &self.preparation_parts;
+            self.attack.settle_certification(
+                context.base,
+                inputs.seeds(),
+                inputs.outcome(),
+                store,
+                |index| {
+                    parts
+                        .iter()
+                        .find(|part| part.range.contains(&index))
+                        .and_then(|part| part.get(index))
+                },
+            );
+        }
+        self.phase_ticks[17] = qpc().saturating_sub(started).max(0) as u64;
+        let started = qpc();
+        if std::mem::take(&mut self.stitch_deferred) {
+            self.status.outcome = self
+                .status_packet
+                .finish_status_stitch(&self.status_parts[..self.status_part_count]);
+        }
+        self.phase_ticks[16] = qpc().saturating_sub(started).max(0) as u64;
+        let started = qpc();
+        if std::mem::take(&mut self.attack_deferred) {
+            let context = self.deferred_context.expect("owned presentation context");
+            let inputs = self
+                .deferred_inputs
+                .as_deref()
+                .expect("owned attack sources");
+            let status = &self.status_packet;
+            let parts = &self.attack_parts;
+            self.attack.capture_owned(
+                context.base,
+                context.hour,
+                inputs.seeds(),
+                inputs.outcome(),
+                self.deferred_store.as_deref_mut(),
+                |index| status.unit_maxima(index),
+                &crate::army_stat_changes::Observer,
+                |index| {
+                    parts
+                        .iter()
+                        .find(|part| part.range.contains(&index))
+                        .and_then(|part| part.get(index))
+                },
+            );
+            self.attack_ready = false;
+        }
+        self.phase_ticks[15] = qpc().saturating_sub(started).max(0) as u64;
+        if let (Some(store), Some(inputs), Some(context)) = (
+            self.deferred_store.as_deref_mut(),
+            self.deferred_inputs.as_deref(),
+            self.deferred_context,
+        ) {
+            self.daily_status.settle(
+                &self.status_packet,
+                store,
+                context.base,
+                inputs.seeds(),
+                matches!(inputs.outcome(), Outcome::Rows { .. })
+                    && self.status.outcome == inputs.outcome(),
+            );
+        }
+        self.deferred_inputs = None;
+        self.deferred_context = None;
         let started = qpc();
         // Projection is still worker-owned. Its destination follows the full
         // original route demand, including a failed payload's retained prefix.
@@ -1642,9 +2428,16 @@ impl Captured {
             }
         };
         self.movement.outcome = movement.outcome;
+        for &(index, inputs) in &self.transport_inputs {
+            if let Some(row) = self.movement.rows.get_mut(index) {
+                row.transport_speed = inputs.map(TransportInputs::evaluate);
+            }
+        }
+        self.transport.clear();
         self.paths.len = movement.paths_len;
         self.paths.required = self.paths.required.max(movement.required_paths);
         let movement_ticks = qpc().saturating_sub(started).max(0) as u64;
+        self.phase_ticks[19] += movement_ticks;
         let started = qpc();
         self.status.outcome = self.status_packet.project(&mut self.status.rows);
         let count = self.status.outcome.len();
@@ -1660,6 +2453,9 @@ impl Captured {
             }
             row.naming = naming.inputs;
             row.country_ordinal = naming.country_ordinal;
+        }
+        if let Some(store) = self.deferred_store.as_mut() {
+            store.complete();
         }
         [movement_ticks, qpc().saturating_sub(started).max(0) as u64]
     }
@@ -1755,8 +2551,8 @@ impl Captured {
         let name_span = |(start, len): cname_group_member::Span| {
             start.checked_add(len).and_then(|end| names.get(start..end))
         };
-        let cached_name = |r: &carmy::StatusRow| {
-            let row = self.naming.first.get(self.status_index(r.division))?;
+        let cached_name = |r: &carmy::StatusRow, index: usize| {
+            let row = self.naming.first.get(index)?;
             if row.division != r.division {
                 return None;
             }
@@ -1783,7 +2579,6 @@ impl Captured {
             &self.status.rows,
             |r| u128::from(r.division),
             |r, previous| {
-                let commander = self.commander_modifiers(r.division);
                 let (Ok(border), Ok(maximum), Ok(remaining), Ok(naming)) = (
                     previous
                         .border_combat_stats
@@ -1798,21 +2593,23 @@ impl Captured {
                 ) else {
                     return false;
                 };
-                status_fields!(r, compare_status_fields, [previous])
-                    && previous.attack == Recorded::Value(Witnessed(None))
-                    && self.attack.witness(r.division, r.weather_factor).is_none()
-                    && Recorded::Value(self.attack.experience(r.division)) == previous.experience
-                    && Recorded::Value(self.attack.pending_template(r.division))
-                        == previous.pending_template
-                    && Recorded::Value(self.attack.officer(r.division))
-                        == previous.officer_experience
-                    && Recorded::Value(self.attack.career(r.division)) == previous.career_counter
-                    && Recorded::Value(self.attack.panel_source(r.division))
-                        == previous.panel_source
-                    && self.attack.same(r.division, &previous.attack_stats)
-                    && self
-                        .attack
-                        .same_movement(r.division, &previous.movement_stats)
+                if !status_fields!(r, compare_status_fields, [previous])
+                    || previous.attack != Recorded::Value(Witnessed(None))
+                    || self.attack.has_witness(r.division)
+                {
+                    return false;
+                }
+                let attack = self.attack.view(r.division);
+                let index = self.status_index(r.division);
+                let supply = self.supply_sample_at(r, index);
+                let commander = self.commander_modifiers(r.division, index);
+                Recorded::Value(attack.experience()) == previous.experience
+                    && Recorded::Value(attack.pending_template()) == previous.pending_template
+                    && Recorded::Value(attack.officer()) == previous.officer_experience
+                    && Recorded::Value(attack.career()) == previous.career_counter
+                    && Recorded::Value(attack.panel_source()) == previous.panel_source
+                    && attack.same(&previous.attack_stats)
+                    && attack.same_movement(&previous.movement_stats)
                     && Recorded::Value(r.weather_factor) == previous.weather_factor
                     && Recorded::Value(r.out_of_supply_days) == previous.out_of_supply_days
                     && DivisionStatusRow::exact_supply(
@@ -1822,17 +2619,11 @@ impl Captured {
                     ) == previous.supply_exact()
                     && matches!(previous.supply_ratio_exact, Recorded::Value(_))
                     && previous.attrition_inputs == Recorded::Value(Retired)
-                    && super::supply_inputs::matches_division(
-                        r.supply,
-                        self.status_packet.supply_origins(r),
-                        &previous.supply,
-                    )
+                    && super::supply_inputs::matches_division(supply.0, supply.2, &previous.supply)
                     && Recorded::Value(r.country_ordinal) == previous.country_ordinal
                     && Recorded::Value(r.invalid_orders_reason) == previous.invalid_orders_reason
-                    && Recorded::Value(
-                        self.dig_in
-                            .factor(r.division, self.status_index(r.division)),
-                    ) == previous.dig_in_factor
+                    && Recorded::Value(self.dig_in.factor(r.division, index))
+                        == previous.dig_in_factor
                     && Recorded::Value(commander.map(|entries| {
                         [entries[0], entries[1], entries[2], entries[4], entries[5]]
                     })) == previous.commander_modifiers
@@ -1841,7 +2632,7 @@ impl Captured {
                     && Recorded::Value(self.speed_terms.combat_movement(r.division))
                         == previous.combat_movement
                     && match &previous.name {
-                        Recorded::Value(name) => cached_name(r) == name.as_deref(),
+                        Recorded::Value(name) => cached_name(r, index) == name.as_deref(),
                         Recorded::NotRecorded => false,
                     }
                     && r.border_combat_stats == *border
@@ -1868,6 +2659,9 @@ impl Captured {
                     && Recorded::Value(name_template(r.naming)) == previous.name_template
             },
             |r| {
+                let attack = self.attack.view(r.division);
+                let index = self.status_index(r.division);
+                let supply = self.supply_sample_at(r, index);
                 status_fields!(
                     r,
                     project_status_fields,
@@ -1882,22 +2676,18 @@ impl Captured {
                             custom: owned_vec(copy_vec(name_span(n.custom).unwrap())),
                             group: owned_vec(copy_vec(name_span(n.group).unwrap())),
                         }),
-                        super::supply_inputs::project_division(
-                            r.supply,
-                            self.status_packet.supply_origins(r),
-                        ),
-                        self.dig_in
-                            .factor(r.division, self.status_index(r.division)),
-                        self.commander_modifiers(r.division),
-                        cached_name(r).map(|name| owned_vec(copy_vec(name))),
-                        self.attack.stats(r.division),
-                        self.attack.witness(r.division, r.weather_factor),
-                        self.attack.movement(r.division),
-                        self.attack.experience(r.division),
-                        self.attack.pending_template(r.division),
-                        self.attack.officer(r.division),
-                        self.attack.career(r.division),
-                        self.attack.panel_source(r.division),
+                        super::supply_inputs::project_division(supply.0, supply.2),
+                        self.dig_in.factor(r.division, index),
+                        self.commander_modifiers(r.division, index),
+                        cached_name(r, index).map(|name| owned_vec(copy_vec(name))),
+                        attack.stats(),
+                        attack.witness(r.weather_factor),
+                        attack.movement(),
+                        attack.experience(),
+                        attack.pending_template(),
+                        attack.officer(),
+                        attack.career(),
+                        attack.panel_source(),
                         self.speed_terms.combat_movement(r.division),
                     ],
                 )
@@ -2080,10 +2870,8 @@ impl Captured {
     /// The division's selected commander block's movement entries: the block from the
     /// dig-in factor's selection, its entries from the hour's retreat-ban read of the
     /// same commander ([`carmy::StatusPacket::commander_movement`]).
-    fn commander_modifiers(&self, division: u64) -> Option<[Option<i64>; 6]> {
-        let block = self
-            .dig_in
-            .commander_block(division, self.status_index(division))?;
+    fn commander_modifiers(&self, division: u64, index: usize) -> Option<[Option<i64>; 6]> {
+        let block = self.dig_in.commander_block(division, index)?;
         self.status_packet.commander_movement(division, block)
     }
 
@@ -2091,6 +2879,34 @@ impl Captured {
         self.status_packet
             .status_index(division)
             .unwrap_or(usize::MAX)
+    }
+    fn supply_sample(
+        &self,
+        row: &carmy::StatusRow,
+    ) -> (
+        Option<engine_native::cunit_supply_inputs::Inputs>,
+        Option<engine_native::cunit_supply_inputs::Failure>,
+        Option<&[engine_native::cunit_supply_inputs::Origin]>,
+    ) {
+        self.supply_sample_at(row, self.status_index(row.division))
+    }
+    fn supply_sample_at(
+        &self,
+        row: &carmy::StatusRow,
+        index: usize,
+    ) -> (
+        Option<engine_native::cunit_supply_inputs::Inputs>,
+        Option<engine_native::cunit_supply_inputs::Failure>,
+        Option<&[engine_native::cunit_supply_inputs::Origin]>,
+    ) {
+        match self.daily_status.sample(index) {
+            Some(sample) => (sample.inputs, sample.failure, sample.origins()),
+            None => (
+                row.supply,
+                row.supply_failure,
+                self.status_packet.supply_origins(row),
+            ),
+        }
     }
     #[cfg(test)]
     pub(super) fn tables(&self) -> [replay_frame::frame::TableView; N] {
@@ -2108,6 +2924,7 @@ mod tests {
     use replay_data::rows::TableRows;
     use replay_frame::frame::TableView;
 
+    mod daily_status;
     mod read_ahead;
     mod status_bench;
     mod status_reads;
@@ -3427,7 +4244,7 @@ mod tests {
                         &mut frequency,
                     )
                 };
-                let [status, dig_in, naming] = capture
+                let [status, dig_in, naming, ..] = capture
                     .phase_ticks()
                     .map(|ticks| ticks as f64 * 1e3 / frequency as f64);
                 capture.decode_inputs();
@@ -3732,13 +4549,17 @@ mod tests {
         };
 
         fn new() -> Self {
-            let mut world = scale_fixture::build(Self::SHAPE);
+            Self::with_shape(Self::SHAPE)
+        }
+
+        fn with_shape(shape: scale_fixture::Shape) -> Self {
+            let mut world = scale_fixture::build(shape);
             let registry = template_registry(&mut world);
             let members = division_name_members(&mut world);
             let mut census = crate::division_census::Census::new();
             loop {
                 census.clear();
-                census.capture(&world.live(), world.base, world.state, PRESENTED);
+                census.capture(&world.live(), world.base, world.state, shape.divisions);
                 if !census.overflowed {
                     break;
                 }
@@ -3746,7 +4567,9 @@ mod tests {
             }
             assert_eq!(
                 census.unit_inputs().unwrap().outcome(),
-                Outcome::Rows { len: PRESENTED }
+                Outcome::Rows {
+                    len: shape.divisions
+                }
             );
             Self {
                 world,
@@ -3765,13 +4588,279 @@ mod tests {
         }
 
         fn capture(&self) -> Captured {
+            let divisions = self.census.unit_inputs().unwrap().seeds().len();
             let mut capture = Captured::with_capacities(&Capacities {
-                status: PRESENTED,
-                name_groups: Self::SHAPE.countries,
+                status: divisions,
+                name_groups: divisions,
                 ..Capacities::default()
             });
-            capture.reserve_sources(PRESENTED);
+            capture.reserve_sources(divisions);
             capture
+        }
+    }
+
+    #[test]
+    fn presentation_status_split_keeps_rows_holds_and_certificates_at_scale() {
+        use super::super::attack_stats::ArmyStatStore;
+        use crate::army_stat_changes::Watches;
+        let populated = Populated::with_shape(scale_fixture::Shape {
+            countries: 1_500,
+            divisions: 5_000,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let inputs = populated.census.unit_inputs().unwrap();
+        let mut faulted = inputs.seeds().to_vec();
+        faulted[1_665].entrenchment = None;
+        faulted[3_333].handle = None;
+        for (workers, owned) in [1, 2, 3, 7, MAX_STATUS_PARTS]
+            .into_iter()
+            .flat_map(|workers| [false, true].map(|owned| (workers, owned)))
+        {
+            let mut serial = populated.capture();
+            let mut split = populated.capture();
+            split.status_workers = workers;
+            if owned {
+                split.enable_owned_settlement();
+            }
+            let serial_changes = Watches::enabled(2 * inputs.seeds().len());
+            let split_changes = Watches::enabled(2 * inputs.seeds().len());
+            let mut serial_store = ArmyStatStore::new();
+            let mut split_store = held_store::Loan::fixture(Box::new(ArmyStatStore::new()));
+            let mut warmed = None;
+            for hour in [1, 2, 3, 4, 5] {
+                crate::sampled_verify::begin_hour(hour);
+                // An earlier scalar fault outranks a later preparation fault.
+                // The following hour must recover its rows without losing holds.
+                let rows = if hour == 2 {
+                    &faulted[..]
+                } else {
+                    inputs.seeds()
+                };
+                let sources = || Sources {
+                    rows,
+                    outcome: inputs.outcome(),
+                };
+                let context = CaptureContext {
+                    hour,
+                    ..populated.context()
+                };
+                let memory = populated.world.live();
+                serial.capture_status_observed(
+                    &memory,
+                    context,
+                    sources(),
+                    Some(&mut serial_store),
+                    &serial_changes,
+                );
+                serial.capture_attack_observed(
+                    &memory,
+                    context,
+                    sources(),
+                    Some(&mut serial_store),
+                    &serial_changes,
+                );
+                split.prepare_status_observed(
+                    &memory,
+                    context,
+                    sources(),
+                    Some(&mut split_store),
+                    &split_changes,
+                );
+                for stage in 0..2 {
+                    assert_eq!(split.status_part_count(), status_parts_for(5_000, workers));
+                    let mut parts: Vec<_> = (0..split.status_part_count())
+                        .map(|index| split.take_status_part(index))
+                        .collect();
+                    std::thread::scope(|scope| {
+                        for part in parts.iter_mut().rev() {
+                            let world = &populated.world;
+                            let changes = &split_changes;
+                            scope
+                                .spawn(move || part.capture(&world.live(), context, rows, changes));
+                        }
+                    });
+                    for (index, part) in parts.into_iter().enumerate() {
+                        split.restore_status_part(index, part, 0);
+                    }
+                    if stage == 0 {
+                        split.prepare_status_observed(
+                            &memory,
+                            context,
+                            sources(),
+                            Some(&mut split_store),
+                            &split_changes,
+                        );
+                    }
+                }
+                split.capture_status_observed(
+                    &memory,
+                    context,
+                    sources(),
+                    Some(&mut split_store),
+                    &split_changes,
+                );
+                split.capture_attack_observed(
+                    &memory,
+                    context,
+                    sources(),
+                    Some(&mut split_store),
+                    &split_changes,
+                );
+                serial.decode_inputs();
+                let returned = split.retain_owned_settlement(
+                    split_store,
+                    Some(Arc::new(crate::division_census::UnitInputs::fixture(
+                        rows.to_vec(),
+                        inputs.outcome(),
+                    ))),
+                    context,
+                );
+                // FIFO decode may overlap the next callback's verification hour.
+                if owned {
+                    crate::sampled_verify::begin_hour(hour + 1);
+                }
+                split.decode_inputs();
+                crate::sampled_verify::begin_hour(hour);
+                split_store = returned.or_else(|| split.take_settled_store()).unwrap();
+                assert_eq!(
+                    split.outcomes(),
+                    serial.outcomes(),
+                    "workers={workers}, hour={hour}"
+                );
+                assert_eq!(
+                    split.tables(),
+                    serial.tables(),
+                    "workers={workers}, hour={hour}"
+                );
+                assert_eq!(split.attack.held_maxima, serial.attack.held_maxima);
+                assert_eq!(split.attack.status_counts, serial.attack.status_counts);
+                assert_eq!(split.attack.epoch(), serial.attack.epoch());
+                assert_eq!(split.attack.carryable, serial.attack.carryable);
+                assert_eq!(split.attack.experience, serial.attack.experience);
+                if hour > 1 && !crate::army_stat_changes::VERIFY {
+                    assert!(split.attack.held_maxima.iter().any(Option::is_some));
+                }
+                let mut serial_names = NamingWork::default();
+                let mut split_names = NamingWork::default();
+                serial.observe_naming(&mut serial_names).unwrap();
+                split.observe_naming(&mut split_names).unwrap();
+                assert_eq!(
+                    serde_json::to_value(split_names.status()).unwrap(),
+                    serde_json::to_value(serial_names.status()).unwrap()
+                );
+                assert!(!serial_changes.poisoned());
+                assert!(!split_changes.poisoned());
+                if hour >= 4 {
+                    let bytes = split.allocated_bytes();
+                    assert_eq!(
+                        *warmed.get_or_insert(bytes),
+                        bytes,
+                        "steady scratch is reused"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_preparation_keeps_country_header_failure_on_the_ordered_path() {
+        struct MissingCountries<'a, M>(&'a M, usize);
+        impl<M: Memory> Memory for MissingCountries<'_, M> {
+            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+                address != self.1 && self.0.copy(address, destination)
+            }
+        }
+        let populated = Populated::new();
+        let inputs = populated.census.unit_inputs().unwrap();
+        let live = populated.world.live();
+        let memory = MissingCountries(
+            &live,
+            populated.world.state + engine_native::cgame_state::COUNTRY_LINKS,
+        );
+        assert!(ccountry::Reader::new(&memory, populated.world.base, populated.world.state).is_err());
+        let store = super::super::attack_stats::ArmyStatStore::new();
+        let mut part = super::super::attack_stats::PreparationPart::default();
+        part.range = 0..inputs.seeds().len();
+        part.capture(
+            &memory,
+            populated.world.base,
+            populated.world.state,
+            inputs.seeds(),
+            Some(&store),
+            &crate::army_stat_changes::Observer,
+        );
+        assert!(part.source_reads().is_none());
+        assert!(!part.can_settle_sources());
+        assert!(part.get(0).is_some_and(|row| row.selection.is_none()));
+    }
+
+    #[test]
+    fn optional_preparation_staging_refusal_keeps_the_ordered_path_available() {
+        let populated = Populated::new();
+        let inputs = populated.census.unit_inputs().unwrap();
+        let mut capture = populated.capture();
+        let staged = crate::test_support::with_allocations_denied(|| {
+            capture.begin_preparation(
+                &Sources {
+                    rows: inputs.seeds(),
+                    outcome: inputs.outcome(),
+                },
+                None,
+            )
+        });
+        assert!(!staged);
+        assert!(!capture.preparation_pending());
+        assert!(!capture.status_prepared);
+        assert!(capture.preparation_parts.is_empty());
+    }
+
+    #[test]
+    fn presentation_status_preparation_allocation_refusal_is_not_retried() {
+        let populated = Populated::new();
+        let inputs = populated.census.unit_inputs().unwrap();
+        let sources = || Sources {
+            rows: inputs.seeds(),
+            outcome: inputs.outcome(),
+        };
+        let mut capture = Captured::vacant();
+        crate::test_support::with_allocations_denied(|| {
+            capture.prepare_status_observed(
+                &populated.world.live(),
+                populated.context(),
+                sources(),
+                None,
+                &crate::army_stat_changes::Observer,
+            );
+        });
+        assert_eq!(capture.status_part_count(), 0);
+        let refused = Outcome::Unavailable {
+            reason: "presentation row allocation failed",
+        };
+        assert_eq!(capture.status.outcome, refused);
+        capture.capture_status_observed(
+            &populated.world.live(),
+            populated.context(),
+            sources(),
+            None,
+            &crate::army_stat_changes::Observer,
+        );
+        assert_eq!(capture.status.outcome, refused);
+        assert!(!capture.decode_pending);
+    }
+
+    #[test]
+    fn presentation_status_parts_follow_live_divisions_and_pool_workers() {
+        for divisions in [0, 1, 511, 512, 513, 1_500, 5_000, 50_000] {
+            for workers in 1..=MAX_STATUS_PARTS {
+                let count = status_parts_for(divisions, workers);
+                assert!((1..=workers).contains(&count));
+                assert_eq!(
+                    count,
+                    divisions.div_ceil(STATUS_PART_ENTRIES).clamp(1, workers)
+                );
+            }
         }
     }
 
@@ -3864,7 +4953,7 @@ mod tests {
     }
 
     #[test]
-    fn presentation_movement_pass_runs_beside_the_status_side() {
+    fn presentation_speed_terms_run_beside_status_and_movement() {
         let populated = Populated::new();
         let world = &populated.world;
         let inputs = populated.census.unit_inputs().unwrap();
@@ -3882,36 +4971,77 @@ mod tests {
         assert_eq!(whole.naming.len, PRESENTED);
 
         let mut split = populated.capture();
+        split.capture_owned(&memory, context, sources());
+        let speed_bytes = split.speed_terms.allocated_bytes();
+        assert!(speed_bytes > 0);
         let bytes = split.allocated_bytes();
-        let mut pass = split.take_movement();
-        assert_eq!(split.allocated_bytes() + pass.allocated_bytes(), bytes);
-        let movement = std::thread::scope(|scope| {
+        let mut pass = crate::test_support::with_allocations_denied(|| split.take_movement());
+        assert_eq!(split.speed_terms.allocated_bytes(), speed_bytes);
+        let mut terms = crate::test_support::with_allocations_denied(|| split.take_speed_terms());
+        assert_eq!(split.speed_terms.allocated_bytes(), 0);
+        assert_eq!(
+            split.allocated_bytes() + pass.allocated_bytes() + terms.allocated_bytes(),
+            bytes
+        );
+        let (movement, speed_terms) = std::thread::scope(|scope| {
+            let speed_terms = scope.spawn(|| {
+                let counted = world.live();
+                let reads = crate::read_accounting::Capture::new();
+                let report = terms.capture(&counted, context.base, context.game_state, sources());
+                let counts = reads.finish();
+                assert!(counts[TableId::MovementStateTerms.index()].copy_calls > 0);
+                assert_eq!(counts[TableId::DivisionMovement.index()].copy_calls, 0);
+                assert_eq!(report.ticks[..7], [0; 7]);
+                report
+            });
             let movement = scope.spawn(|| {
-                pass.capture(
-                    &world.live(),
+                let counted = world.live();
+                let reads = crate::read_accounting::Capture::new();
+                let report = pass.capture(
+                    &counted,
                     context.base,
                     context.game_state,
                     sources(),
                     Some(context.hour),
-                )
+                );
+                let counts = reads.finish();
+                for table in speed_terms::TABLES {
+                    assert_eq!(counts[table.index()].copy_calls, 0, "{table:?}");
+                }
+                assert_eq!(report.ticks[7..], [0; speed_terms::N]);
+                report
             });
-            split.capture_status_holding(&memory, context, sources(), None);
-            split.capture_attack(&memory, context, sources(), None);
-            movement.join().unwrap()
+            let counted = world.live();
+            let reads = crate::read_accounting::Capture::new();
+            let report = split.capture_status_holding(&counted, context, sources(), None);
+            split.capture_attack(&counted, context, sources(), None);
+            let counts = reads.finish();
+            for table in speed_terms::TABLES {
+                assert_eq!(counts[table.index()].copy_calls, 0, "{table:?}");
+            }
+            assert_eq!(report.ticks[7..], [0; speed_terms::N]);
+            (movement.join().unwrap(), speed_terms.join().unwrap())
         });
-        split.restore_movement(pass);
+        crate::test_support::with_allocations_denied(|| {
+            split.restore_movement(pass);
+            split.restore_speed_terms(terms);
+        });
         split.decode_inputs();
         assert_eq!(split.outcomes(), whole.outcomes());
         assert_eq!(split.tables(), whole.tables());
         assert_eq!(split.naming.len, PRESENTED);
-        assert_eq!(movement[1], split.land_ticks);
-        assert_eq!(split.phase_ticks()[1], movement[2]);
+        assert_eq!(movement.ticks[3], split.land_ticks);
+        assert_eq!(split.phase_ticks()[1], movement.ticks[1]);
+        let mut report = CaptureReport::default();
+        report.merge_movement(movement);
+        report.merge_speed_terms(speed_terms);
+        assert_eq!(report.ticks[7..], speed_terms.ticks[7..]);
     }
 
-    /// A rejected or failed job on either side publishes none of the four
-    /// tables, though the other side read every division: the merged report
-    /// fails, and restoring the request refuses them all once both loans
-    /// are home. A rejected job completes Stopped, as a stopped pool's does.
+    /// A rejected or failed presentation pass publishes no presentation
+    /// table, though the other passes read every division: the merged report
+    /// fails, and restoring the request refuses them all once every loan is
+    /// home. A rejected job completes Stopped, as a stopped pool's does.
     #[test]
     fn a_failed_presentation_job_publishes_no_presentation_table() {
         use crate::acquisition::Failure;
@@ -3925,11 +5055,17 @@ mod tests {
         let countries = std::sync::Arc::new(
             engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
         );
-        for (status_failure, movement_failure) in [
-            (Some(Failure::Stopped), None),
-            (None, Some(Failure::Panicked)),
-            (None, Some(Failure::Stopped)),
-            (Some(Failure::Stopped), Some(Failure::Stopped)),
+        for (status_failure, movement_failure, speed_failure) in [
+            (Some(Failure::Stopped), None, None),
+            (None, Some(Failure::Panicked), None),
+            (None, Some(Failure::Stopped), None),
+            (None, None, Some(Failure::Panicked)),
+            (None, None, Some(Failure::Stopped)),
+            (
+                Some(Failure::Stopped),
+                Some(Failure::Stopped),
+                Some(Failure::Stopped),
+            ),
         ] {
             let mut captured =
                 super::super::Captured::with_capacities(&super::super::Capacities::default());
@@ -3944,6 +5080,12 @@ mod tests {
                 None,
             );
             let mut movement = request.take_movement();
+            let mut terms = request.take_speed_terms();
+            let speed_ticks =
+                terms
+                    .pass
+                    .capture(&memory, context.base, context.game_state, sources());
+            let speed_bytes = terms.allocated_bytes();
             let ticks = movement.pass.capture(
                 &memory,
                 context.base,
@@ -3967,6 +5109,12 @@ mod tests {
                 movement_failure.map_or(Ok(ticks), Err),
                 status_failure.map_or(Ok(status), Err),
             );
+            let report = request.restore_speed_terms(
+                terms,
+                speed_failure.map_or(Ok(speed_ticks), Err),
+                report,
+            );
+            assert_eq!(request.captured.speed_terms.allocated_bytes(), speed_bytes);
             assert!(report.is_err());
             captured.restore_presentation_request(request, report);
             assert_eq!(captured.acquire_presentation().ticks, [0; N]);
@@ -3977,17 +5125,17 @@ mod tests {
             {
                 assert!(
                     matches!(view, TableView::Unavailable { .. }),
-                    "{id:?} published after {status_failure:?} {movement_failure:?}"
+                    "{id:?} published after {status_failure:?} {movement_failure:?} {speed_failure:?}"
                 );
             }
         }
     }
 
-    /// A failed status side or a failed movement job refuses the whole
-    /// presentation once both loans are home, as the single job's failure
-    /// did; with both complete the movement job's ticks join the report.
+    /// Every loan returns before failure settlement. Speed failure precedes
+    /// movement failure, which precedes status failure; completed passes merge
+    /// only their own table ticks.
     #[test]
-    fn either_failed_presentation_job_fails_the_merged_report() {
+    fn failed_presentation_passes_keep_the_merged_failure_order() {
         use crate::acquisition::Failure;
         let (seed, bytes) = presentation_fixture();
         let seeds = [seed];
@@ -4004,12 +5152,20 @@ mod tests {
             rows: &seeds,
             outcome: Outcome::Rows { len: 1 },
         };
-        for (status_failure, movement_failure) in [
-            (None, None),
-            (Some(Failure::Stopped), None),
-            (Some(Failure::Panicked), None),
-            (None, Some(Failure::Panicked)),
-            (None, Some(Failure::Stopped)),
+        for (status_failure, movement_failure, speed_failure) in [
+            (None, None, None),
+            (Some(Failure::Stopped), None, None),
+            (Some(Failure::Panicked), None, None),
+            (None, Some(Failure::Panicked), None),
+            (None, Some(Failure::Stopped), None),
+            (None, None, Some(Failure::Panicked)),
+            (None, None, Some(Failure::Stopped)),
+            (Some(Failure::Stopped), Some(Failure::Panicked), None),
+            (
+                Some(Failure::Panicked),
+                Some(Failure::Stopped),
+                Some(Failure::Panicked),
+            ),
         ] {
             let mut captured = Captured::with_capacities(&Capacities {
                 movement: 1,
@@ -4024,6 +5180,7 @@ mod tests {
             });
             captured.reserve_sources(1);
             let mut request = crate::acquisition_jobs::PresentationRequest {
+                dispatch: Default::default(),
                 countries: std::sync::Arc::new(
                     engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
                 ),
@@ -4033,6 +5190,12 @@ mod tests {
                 army_stats: None,
             };
             let mut movement = request.take_movement();
+            let mut terms = request.take_speed_terms();
+            let speed_ticks =
+                terms
+                    .pass
+                    .capture(&memory, context.base, context.game_state, sources());
+            let speed_bytes = terms.allocated_bytes();
             let ticks = movement.pass.capture(
                 &memory,
                 context.base,
@@ -4049,19 +5212,41 @@ mod tests {
                 movement_failure.map_or(Ok(ticks), Err),
                 status_failure.map_or(Ok(status), Err),
             );
-            // Both loans are home before the outcome is settled.
+            let report = request.restore_speed_terms(
+                terms,
+                speed_failure.map_or(Ok(speed_ticks), Err),
+                report,
+            );
+            assert_eq!(request.captured.speed_terms.allocated_bytes(), speed_bytes);
+            // All loans are home before the outcome is settled.
             assert_eq!(request.captured.outcomes()[0], Outcome::Rows { len: 1 });
-            match status_failure.or(movement_failure) {
+            match speed_failure.or(movement_failure).or(status_failure) {
                 None => {
                     let report = report.unwrap();
-                    assert_eq!(report.ticks[0], ticks[0]);
-                    assert_eq!(report.ticks[1], status.ticks[1] + ticks[2]);
+                    assert_eq!(report.ticks[0], ticks.ticks[0]);
+                    assert_eq!(report.ticks[1], status.ticks[1] + ticks.ticks[1]);
                     assert_eq!(report.ticks[2], status.ticks[2]);
-                    assert_eq!(report.ticks[3], ticks[1]);
+                    assert_eq!(report.ticks[3], ticks.ticks[3]);
+                    assert_eq!(report.ticks[7..], speed_ticks.ticks[7..]);
                 }
                 failure => assert_eq!(report.err(), failure),
             }
         }
+    }
+
+    #[test]
+    fn presentation_report_merges_only_the_movement_owned_tables() {
+        let mut status = CaptureReport {
+            ticks: [0, 2, 3, 0, 5, 7, 11, 0, 0, 0, 0, 0],
+        };
+        status.merge_movement(CaptureReport {
+            ticks: [13, 17, 0, 19, 0, 0, 0, 23, 29, 31, 37, 41],
+        });
+        assert_eq!(status.ticks, [13, 19, 3, 19, 5, 7, 11, 0, 0, 0, 0, 0]);
+        status.merge_speed_terms(CaptureReport {
+            ticks: [43, 47, 53, 59, 61, 67, 71, 23, 29, 31, 37, 41],
+        });
+        assert_eq!(status.ticks, [13, 19, 3, 19, 5, 7, 11, 23, 29, 31, 37, 41]);
     }
 
     #[test]

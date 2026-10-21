@@ -139,6 +139,7 @@ fn world() -> Fixture {
     f
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct Rows {
     origins: Vec<OriginRow>,
     rights: Vec<RightsRow>,
@@ -146,7 +147,7 @@ struct Rows {
     clients: Vec<ClientRow>,
 }
 
-fn walk(memory: &Fixture) -> (Outcomes, Rows) {
+fn walk(memory: &impl Memory) -> (Outcomes, Rows) {
     let mut rows = Rows {
         origins: Vec::new(),
         rights: Vec::new(),
@@ -165,6 +166,186 @@ fn walk(memory: &Fixture) -> (Outcomes, Rows) {
         },
     );
     (outcomes, rows)
+}
+
+struct Copies {
+    image: Fixture,
+    fail: std::cell::Cell<Option<usize>>,
+    spans: std::cell::RefCell<Vec<(usize, usize)>>,
+    batches: std::cell::Cell<usize>,
+}
+impl Copies {
+    fn new(fail: Option<usize>) -> Self {
+        Self {
+            image: world(),
+            fail: std::cell::Cell::new(fail),
+            spans: Default::default(),
+            batches: Default::default(),
+        }
+    }
+}
+impl Memory for Copies {
+    fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+        self.spans.borrow_mut().push((at, output.len()));
+        if self.fail.get() == Some(at) {
+            self.fail.set(None);
+            return false;
+        }
+        self.image.copy(at, output)
+    }
+    fn copy_scattered<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> usize {
+        self.batches.set(self.batches.get() + 1);
+        for (n, (&at, output)) in addresses.iter().zip(destinations).enumerate() {
+            if !self.copy(at, output) {
+                return n;
+            }
+        }
+        N
+    }
+}
+
+#[test]
+fn demanded_scalar_batches_preserve_serial_values_and_one_shot_fault_prefixes() {
+    const ORIGIN: usize = 0x20000;
+    for failed in [
+        None,
+        Some(ORIGIN + ORIGIN_EFFICIENCY),
+        Some(ORIGIN + ORIGIN_ROUTE_FACTOR),
+    ] {
+        let serial = Copies::new(failed);
+        let expected = (|| {
+            let efficiency = read::<i64>(&serial, at(ORIGIN, ORIGIN_EFFICIENCY)?)
+                .ok_or("origin efficiency unreadable")?;
+            let factor = read::<i64>(&serial, at(ORIGIN, ORIGIN_ROUTE_FACTOR)?)
+                .ok_or("origin route factor unreadable")?;
+            Ok((efficiency, factor))
+        })();
+        let batched = Copies::new(failed);
+        assert_eq!(origin_factors(&batched, ORIGIN), expected);
+        assert_eq!(*batched.spans.borrow(), *serial.spans.borrow());
+        assert_eq!(batched.batches.get(), 1);
+        assert_eq!(serial.batches.get(), 0);
+    }
+    const CLIENT: usize = 0x52000;
+    for failed in [
+        None,
+        Some(CLIENT + CLIENT_EFFICIENCY_A),
+        Some(CLIENT + CLIENT_CONVOYS),
+    ] {
+        let serial = Copies::new(failed);
+        let expected = (|| {
+            let bad = client_bad(&serial, CLIENT, THRESHOLD)?;
+            Ok((bad, client_convoys(&serial, CLIENT)?))
+        })();
+        let batched = Copies::new(failed);
+        assert_eq!(client_status(&batched, CLIENT, THRESHOLD), expected);
+        assert_eq!(*batched.spans.borrow(), *serial.spans.borrow());
+        assert_eq!(batched.batches.get(), 1);
+        assert_eq!(serial.batches.get(), 0);
+    }
+    let memory = Copies::new(None);
+    assert_eq!(walk(&memory), walk(&memory.image));
+    assert!(memory.batches.get() > 0);
+}
+
+#[test]
+fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
+    for handle in [false, true] {
+        let mut memory = Copies::new(None);
+        if handle {
+            memory.image.u32(0x52000 + CLIENT_HANDLE_TYPE, 0);
+        } else {
+            memory.image.u64(0x52000, ROUTE_VTABLE_RVA as u64);
+        }
+        let countries = ccountry::Reader::new(&memory, 0, GAME_STATE).unwrap();
+        let walk = Walk {
+            memory: &memory,
+            base: 0,
+            game_state: GAME_STATE,
+            countries: &countries,
+            threshold: THRESHOLD,
+        };
+        memory.spans.borrow_mut().clear();
+        assert!(
+            walk.client(
+                0x52000,
+                SUPPLY_VTABLE_RVA,
+                SUPPLY_TRANSFER,
+                2,
+                0,
+                (RouteKey::default(), 0)
+            )
+            .is_err()
+        );
+        assert_eq!(memory.batches.get(), 0);
+        assert!(
+            !memory
+                .spans
+                .borrow()
+                .iter()
+                .any(|&(at, _)| at == 0x52000 + CLIENT_EFFICIENCY_A
+                    || at == 0x52000 + CLIENT_CONVOYS)
+        );
+    }
+    let mut memory = Copies::new(None);
+    memory.image.u64(0x20000 + ORIGIN_ROUTE, 0);
+    let countries = ccountry::Reader::new(&memory, 0, GAME_STATE).unwrap();
+    let walk = Walk {
+        memory: &memory,
+        base: 0,
+        game_state: GAME_STATE,
+        countries: &countries,
+        threshold: THRESHOLD,
+    };
+    let country = ccountry::Country {
+        pointer: 0x2000,
+        canonical_slot: 1,
+        id: 7,
+    };
+    assert_eq!(
+        walk.origin(0x20000, 0, 0, country),
+        Err("route vtable mismatch")
+    );
+    assert_eq!(memory.batches.get(), 1);
+    assert!(
+        !memory
+            .spans
+            .borrow()
+            .iter()
+            .any(|&(at, _)| at == 0x20000 + CLIENT_EFFICIENCY_A || at == 0x20000 + CLIENT_CONVOYS)
+    );
+}
+
+#[test]
+fn scalar_batch_geometry_keeps_an_earlier_read_failure_before_later_overflow() {
+    let origin = usize::MAX - ORIGIN_EFFICIENCY - 8;
+    let memory = Copies::new(None);
+    assert_eq!(
+        origin_factors(&memory, origin),
+        Err("origin efficiency unreadable")
+    );
+    assert_eq!(*memory.spans.borrow(), [(origin + ORIGIN_EFFICIENCY, 8)]);
+    assert_eq!(memory.batches.get(), 0);
+    let mut memory = Copies::new(None);
+    memory.image.u64(origin + ORIGIN_EFFICIENCY, 7);
+    assert_eq!(
+        origin_factors(&memory, origin),
+        Err("resources map address overflow")
+    );
+    assert_eq!(*memory.spans.borrow(), [(origin + ORIGIN_EFFICIENCY, 8)]);
+    assert_eq!(memory.batches.get(), 0);
+    let client = usize::MAX - CLIENT_EFFICIENCY_A;
+    let memory = Copies::new(None);
+    assert_eq!(
+        client_status(&memory, client, THRESHOLD),
+        Err("convoy client efficiency unreadable")
+    );
+    assert!(memory.spans.borrow().is_empty());
+    assert_eq!(memory.batches.get(), 0);
 }
 
 #[test]

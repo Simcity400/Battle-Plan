@@ -32,6 +32,15 @@ WarParticipation retains both directional ledgers as separate signed fixed-point
 
 Output workers can hold `codec::error_details_scope` or use `codec::with_error_details` to retain validation reasons and row/column context. Scopes nest and restore the calling thread's previous setting on return. Outside that scope, installed capture allocation hooks keep static I/O errors allocation-free.
 
+Owner-slice updates validate membership once per distinct owner and merge ordered
+owner groups without sorting. Equal owner slices bypass row encoding; complete
+table deltas size only changed rows and reserve deletion storage only for actual
+deletions. Nested payloads use the enclosing row/change's checked reservation
+instead of sizing themselves again, and checked scalar-vector clones copy the
+slice in one operation. Display-step rounding uses bounded unsigned arithmetic
+with the same sentinel, half-step, nonzero and overflow rules. None of these
+paths changes the recorded wire layout or values.
+
 Template layout and settings payloads encode acquisition refusal as a recorded optional value. This remains distinct from historical `NotRecorded`, which current ordinary spool rows cannot emit. Valid settings share their held allocation; a refused settings payload supplies no default priority, restriction or roster position.
 
 Row declarations own versions, field counts, keys, representations and
@@ -303,9 +312,23 @@ AirMissionInputs.patrol_night_applied_raw is the seventh independent disruption-
 
 New patrol detection/disruption leaves require a nonzero installed spotting factor. Zero/out-of-array factors leave those leaves absent; failed native factor acquisition leaves demanded nonzero-factor values unknown. Recorded content provides the factor, so no duplicate factor fact is serialized. The oracle resolves the same verified content vector before validating field demand.
 
-The writer uses format 109 and dense shared table registrations. DivisionStatus has 45 fields, with its deployed cache in DivisionPanelStats (22 fields). States uses manpower_locked at 10, best_vp_index at 11 and single_controller at 12. DivisionTemplateIcons uses manpower_exile at 16, base_width at 17, layout at 18, settings at 19 and speed_keys at 20. AirWings uses acquired_manpower at 19, exile_country at 20 and replacement_setting at 21. ResearchModifiers grant kinds occupy 25 through 30 and sharing roster is 31.
+The writer uses format 116 and dense shared table registrations. DivisionStatus has 45 fields, with its deployed cache in DivisionPanelStats (22 fields). States uses manpower_locked at 10, best_vp_index at 11 and single_controller at 12. DivisionTemplateIcons uses manpower_exile at 16, base_width at 17, layout at 18, settings at 19 and speed_keys at 20. AirWings uses acquired_manpower at 19, exile_country at 20 and replacement_setting at 21. ResearchModifiers grant kinds occupy 25 through 30 and sharing roster is 31.
 
-DivisionStatus and CountryCounterInputs remain append-only: independently recorded width columns retain the existing modifier payload layouts. Historical absence of progression/source suffixes is distinct from a current read refusal; current capture always supplies Value, including Value(None). Retired inputs keep their named framing and do not refuse either host table.
+Main's format history keeps its numbering, including Ships naming at 107 and
+event-feed owner refusals at 109 and production-purpose/control columns at 110.
+Recorder changes follow it in their original order; this is history only,
+without old alias decoders or translation:
+
+| Format | Recorder change |
+|---|---|
+| 111 | Exact combat-member scalar and modifier-identity copies. |
+| 112 | Exact division-province and production-efficiency copies. |
+| 113 | Container-private movement/maxima aliases and exact nested sums. |
+| 114 | Combat, province and production alias markers become container-private. |
+| 115 | Conditional supply ratio, supply grace and organisation display aliases. |
+| 116 | Owner-approved daily commander, combat-observer and division display samples. |
+
+Independently recorded DivisionStatus and CountryCounterInputs width columns retain the existing modifier payload layouts. DivisionStatus's daily display sampling is a separate format-116 meaning change. Historical absence of progression/source suffixes is distinct from a current read refusal; current capture always supplies Value, including Value(None). Retired inputs keep their named framing and do not refuse either host table.
 
 Air and Navy suffixes on weather, ace, country, wing execution, volunteer, fleet and mission source rows retain unrecorded fields separately from recorded false certificates and nullable raw entries. Current projections always publish a value or their existing independent refusal; older prefixes keep named field gaps. The wire kinds and current numeric delta columns are unchanged.
 
@@ -319,6 +342,45 @@ Equal entries remain separate occurrences. Independent full identities and signe
 avoid identity/amount mixing. `logical_order` and `fact` reconstruct the native
 ordered view for dashboard and save comparisons without losing a stored word.
 
+Combat-member scalar copies, modifier division identities, division provinces and
+production efficiencies use container-private alias columns. Native/public row
+schemas, acquisition, spools and prepared snapshots contain only ordinary values.
+Literal exceptions and incomplete independent sources preserve availability.
+
+Divisions.province aliases only unique full-handle membership in a complete
+ProvinceUnitOrder.mixed census. Repeated, absent and unequal memberships keep
+literals; native occupant order and independent availability are unchanged.
+
+ProductionLines.efficiency_raw aliases only a complete, identity/count-matched
+ProductionLineModifiers factory prefix. It uses the native wrapping sum and
+signed shifted average, clamped by active and maximum factory counts. Missing
+prefixes and unequal values keep literals.
+
+Movement aliases use a container-private marks column, not a public row field.
+Path totals alias only exact path lengths; base speed aliases only a present
+matching panel statistic. Optional absence, partial counts and literal exceptions
+stay independent. The stored count placeholder preserves strategic-action
+admission; public readers restore the full count before publication.
+
+DivisionStatus maximum HP and organisation use the same private column. Each
+aliases only its complete panel source after the native minimum and declared
+`MAXIMUM_STEP` produce the identical recorded value. Missing sources and unequal
+values keep literals; the native row fields and their masks are unchanged.
+
+CombatLogObservers state damage, NavalCombatDetails side damage totals and
+complete CountryFuel award totals also use private container marks. Exact
+wrapping sums retain all attribution, history and recipient children; literal
+exceptions and incomplete days preserve independent operands and availability.
+Native row schemas, spools and prepared snapshots contain only resolved values.
+
+Conditional display copies also use container-private rule bits. DivisionStatus's
+supply ratio and remaining grace reuse their recorded exact operands and declared
+display methods; grace joins the complete recorded movement-defines packet.
+Divisions' organisation reuses complete same-frame DivisionStatus exact
+organisation through `ORGANISATION_STEP`. Optional absence and incomplete sources
+leave literal payloads; unequal present values use literal escapes. No public row
+field, extra exact capture, availability or sample-origin change is introduced.
+
 `Ships.name` preserves the hourly retained display-cache bytes, including empty,
 non-UTF-8 and embedded NUL bytes. `Ships.naming` independently retains signed kind
 and order, both raw flag bytes, the complete override byte vector (its encoded
@@ -329,3 +391,5 @@ column inspection share those declarations. The cache is unsaved; saved naming
 operands do not certify its freshness.
 
 Military-aid consumers share `military_aid` for alias-held volunteer-list validation, full-handle live resolution, logical-host attribution, signed-positive expeditionary source ownership and repeated-reference signed-wrapping manpower sums. These helpers consume recorded rows only; they introduce no air-volunteer classifier or content defaults.
+
+Owner decision 2026-10-21 (format 116): UnitLeaderTraitExperience is daily slot 12. UnitLeaders.experience, CombatLogObservers.a/b and DivisionStatus.supply/experience/officer_experience use the same daily slot; their rows and all other columns remain hourly. New occurrences read their first values immediately, and attach/load/full refresh/recovery refreshes every value. Off-slot columns retain the last daily sample, not a same-hour observation; hourly identity changes cannot inherit a different referent's sample. Consumers use these held values without requiring hourly freshness. Division supply ratio, exact ratio, grace and exercise eligibility remain hourly; the latter independently demands current XP. Training retains its normal table supplying hour. No other cadence changes.

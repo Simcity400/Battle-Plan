@@ -133,13 +133,6 @@ pub(crate) fn patches() -> Vec<Patch> {
         );
     }
     add(
-        "air_base_fuel_changes",
-        air_base_mutations::FUEL_DEMAND.name,
-        air_base_mutations::FUEL_DEMAND.rva,
-        PATCH,
-        &air_base_mutations::FUEL_DEMAND.sentinel,
-    );
-    add(
         "hourly",
         "HourlyUpdate",
         cgame_state::HOURLY_UPDATE_RVA,

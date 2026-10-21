@@ -85,7 +85,7 @@ macro_rules! compared_tables {
 }
 
 compared_tables!(
-    UnitLeaderTraitExperience,
+    // Owner-approved daily slot-12 training progress uses the ordinary carried-table path.
     VariantChanges,
     VariantBonusSnapshots,
     DesignCountryModifiers,

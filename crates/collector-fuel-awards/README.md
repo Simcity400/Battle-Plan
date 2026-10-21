@@ -6,6 +6,8 @@ Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/
 
 Run `cargo test -p collector-fuel-awards` and `cargo clippy -p collector-fuel-awards --all-targets -- -D warnings` for its synthetic checks.
 
-The existing Air receipt tap forwards a container notification to the Air-base fuel certificate. Its guard stays live until the next receipt or terminal update callback, after the original store, so another capture cannot certify the pre-store interval. This adds no patch, native read or callback allocation.
+Air receipt taps retain fuel awards' own exact observation without forwarding container stores to a separate fuel certificate. Detach stops receipt admission before restoring taps and waits for admitted callbacks to complete.
 
-Detach stops receipt admission before restoring taps. Admitted callbacks and forwarded Air-store intervals retain the terminal tap until cleanup completes, including callbacks after admission stops. The callback guard precedes its admission check, so an admitted receipt cannot cross the drain check unnoticed. No extra patch or native read is added.
+Held-read diagnostics use the timer's owned thread counters, avoiding shared
+atomic increments. Writer epochs, boundary stamps and receipt publication are
+independent and keep their existing fences.

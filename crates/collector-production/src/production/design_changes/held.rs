@@ -69,28 +69,43 @@ impl Census {
             && self.epoch == EPOCH.load(Ordering::Acquire)
             && self.revision == REVISION.load(Ordering::Acquire)
             && self.dependencies == CENSUS_REVISION.load(Ordering::Acquire)
+            && !repair::pending()
     }
+}
+#[cfg(test)]
+thread_local! {
+    static AFTER_CENSUS_ADMISSION: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
 }
 pub(in super::super) fn census() -> Option<Census> {
     let store = STORE
         .get()?
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Capture before admission: a completed callback after the gate must not
+    // become part of the proof for values acquired before its lost edit.
+    let revision = REVISION.load(Ordering::Acquire);
     let dependencies = CENSUS_REVISION.load(Ordering::Acquire);
     if native::mutations::WRITER_AUDIT_REFUSAL.is_some()
         || !enabled()
         || active() != 0
+        || repair::pending()
         || store.epoch != EPOCH.load(Ordering::Acquire)
         || dependencies != CENSUS_BASELINE.load(Ordering::Acquire)
     {
         return None;
     }
+    #[cfg(test)]
+    AFTER_CENSUS_ADMISSION.with(|hook| {
+        if let Some(hook) = hook.take() {
+            hook();
+        }
+    });
     Some(Census {
         epoch: store.epoch,
         store,
         held: cache(),
         bindings: sources::certified_bindings(),
-        revision: REVISION.load(Ordering::Acquire),
+        revision,
         dependencies,
     })
 }
@@ -214,6 +229,30 @@ fn apply_to(
         engine_allocation::reserve_map(held, 1)
             .map_err(|_| "variant held state allocation failed")?;
         held.insert(row.variant, (event.pointer, Arc::new(state)));
+    }
+    Ok(())
+}
+/// Lifetime events invalidate dependent parent identities, not just their own
+/// rows. Rebuild the census rather than carry a child of a consumed binding.
+pub(super) fn check_lifetimes(events: &[Event]) -> Result<(), &'static str> {
+    if !events.iter().any(|event| event.removed) {
+        return Ok(());
+    }
+    let mut retired = std::collections::HashSet::new();
+    engine_allocation::reserve_set(&mut retired, events.len())
+        .map_err(|_| "variant lifetime dependency allocation failed")?;
+    retired.extend(
+        events
+            .iter()
+            .filter(|event| event.removed)
+            .map(|event| event.variant),
+    );
+    if cache()
+        .values()
+        .any(|(_, state)| state.parent.is_some_and(|id| retired.contains(&id)))
+    {
+        unobserved!();
+        return Err("variant parent identity has a consumed saved binding");
     }
     Ok(())
 }
@@ -407,6 +446,7 @@ mod census_tests {
                 )
             })
             .collect();
+        repair::prepare(&watches).unwrap();
         seed(&sources[..7], &baseline, &watches).unwrap();
         let mut interests = sources::Interests::default();
         liveness::seed(&baseline, &mut interests).unwrap();
@@ -447,6 +487,50 @@ mod census_tests {
             self.bytes.set(self.bytes.get() + output.len());
             self.space.memory().copy(address, output)
         }
+    }
+    #[test]
+    fn variant_recovery_rechecks_a_lost_edit_completed_after_census_admission() {
+        static PAUSE: OnceLock<Barrier> = OnceLock::new();
+        fn admitted() {
+            let pause = PAUSE.get().unwrap();
+            pause.wait();
+            pause.wait();
+        }
+        let (space, sources, baseline) = setup();
+        BASE.store(space.base, Ordering::Release);
+        let pointer = sources[0].pointer();
+        let pause = PAUSE.get_or_init(|| Barrier::new(2));
+        let writer = std::thread::spawn(move || {
+            pause.wait();
+            collector_test_support::with_allocations_denied(|| unsafe {
+                around::<0>([pointer, 0, 23, 0], refresh_bonus)
+            });
+            pause.wait();
+        });
+        AFTER_CENSUS_ADMISSION.with(|hook| hook.set(Some(admitted)));
+        let recovered = acquire(&space.memory(), space.base, &sources[..7], true);
+        writer.join().unwrap();
+        assert!(repair::pending());
+        assert_eq!(status().receiver_lock_contentions, 1);
+        assert_eq!(recovered.definitions.rows[0].design.design_team_traits, 23);
+        assert!(!Arc::ptr_eq(
+            &recovered.definitions.rows[0].design,
+            &baseline.definitions.rows[0].design
+        ));
+        assert_eq!(
+            views(recovered),
+            views(acquire(&space.memory(), space.base, &sources[..7], false))
+        );
+    }
+    #[test]
+    fn variant_census_final_proof_rechecks_pending_receiver_marks() {
+        let (_space, sources, _) = setup();
+        let proof = census().unwrap();
+        repair::mark(sources[0].pointer());
+        // Even unchanged writer/dependency revisions cannot certify a mark.
+        assert_eq!(proof.revision, REVISION.load(Ordering::Acquire));
+        assert_eq!(proof.dependencies, CENSUS_REVISION.load(Ordering::Acquire));
+        assert!(!proof.is_current());
     }
     #[test]
     fn variant_recovery_reads_only_marked_and_new_deep_values_and_matches_a_full_census() {
@@ -735,7 +819,7 @@ mod census_tests {
         assert!(census().is_none());
         ACTIVE.store(0, Ordering::SeqCst);
         let proof = census().unwrap();
-        unobserved();
+        unobserved!();
         assert!(!proof.is_current());
         drop(proof);
         assert!(
@@ -759,7 +843,7 @@ mod census_tests {
         impl Memory for Invalidate<'_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 if address == self.trigger && !self.changed.replace(true) {
-                    unobserved();
+                    unobserved!();
                 }
                 self.space.memory().copy(address, output)
             }
@@ -824,7 +908,7 @@ mod census_tests {
         );
     }
     #[test]
-    fn variant_interval_refusal_retains_the_origin_of_a_store_collision() {
+    fn variant_store_collision_repairs_without_refusing_the_interval() {
         let (space, sources, _) = setup();
         let store = STORE.get().unwrap().lock().unwrap();
         collector_test_support::with_allocations_denied(|| {
@@ -836,13 +920,12 @@ mod census_tests {
             );
         });
         drop(store);
-        assert!(drain(space.base, 7, &mut Vec::new()).is_err());
+        assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(1));
         let status = status();
-        assert_eq!(status.missed_refusals, 1);
+        assert_eq!(status.missed_refusals, 0);
         assert_eq!(status.running_refusals, 0);
-        let at = status.last_missed_at.unwrap();
-        assert!(at.file.ends_with("scalar.rs"));
-        assert!(at.line > 0);
+        assert_eq!(status.repaired_receivers, 1);
+        assert!(!needs_full());
     }
     #[test]
     fn variant_unwatched_draft_collisions_do_not_refuse_the_saved_interval() {
@@ -868,7 +951,7 @@ mod census_tests {
             unrecorded_writer(Receiver::Removed, draft, None);
         });
         assert!(!MISSED.load(Ordering::Acquire));
-        assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(()));
+        assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(0));
         assert!(!needs_full());
         assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
         // Publishing that same draft is different: it adds a saved member.
@@ -883,16 +966,14 @@ mod census_tests {
     fn variant_log_owner_collision_marks_known_receivers_without_revoking_unrelated_designs() {
         let (space, sources, baseline) = setup();
         collector_test_support::with_allocations_denied(|| {
-            unrecorded_writer(
-                Receiver::Variant,
-                sources[1].pointer(),
-                Some(sources[2].pointer()),
-            )
+            unrecorded_writer(Receiver::Variant, sources[1].pointer(), None);
+            unrecorded_writer(Receiver::Variant, sources[2].pointer(), None);
         });
-        assert_eq!(
-            drain(space.base, 7, &mut Vec::new()),
-            Err("variant change interval has an unobserved or running writer")
+        assert!(
+            census().is_none(),
+            "pending atomic marks cannot certify deep reuse"
         );
+        assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(2));
         let proof = census().unwrap();
         assert!(proof.get(&sources[1]).is_none());
         assert!(proof.get(&sources[2]).is_none());

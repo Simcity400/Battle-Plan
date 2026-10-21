@@ -1,15 +1,11 @@
-//! Baseline from the existing doctrine-status census. Native writer callbacks
-//! copy subsequent changes while the writer still owns its exact objects.
-//! The hourly job only swaps owned event buffers; spool conversion follows no
-//! pointers and shares quiet replay allocations. Missing observation refuses
-//! the affected data and never enables periodic native reads.
+//! Baseline from the existing doctrine-status census. Prepared receiver marks
+//! select terminal-state reads on the parked Slow worker. Grant expiry anchors
+//! and effective-gain store operands retain their native witnesses.
+//! Spool conversion follows no pointers and shares quiet replay allocations.
 use collector_observers::doctrine_changes::{self as changes, Domain};
 use engine_allocation as a;
 use engine_land_inputs::{country_tactic_unlocks, doctrine_state as n};
-use engine_native::{
-    Memory,
-    cpdx_array::{self, Array},
-};
+use engine_native::{Memory, cpdx_array::Array};
 use replay_data::rows::*;
 use replay_frame::frame::TableInput;
 use std::{
@@ -20,7 +16,6 @@ use std::{
     },
 };
 
-const COST_CONSUMPTION_LIMIT: i64 = 100_000;
 pub const N: usize = 7;
 pub const TABLES: [TableId; N] = [
     TableId::DoctrineCountries,
@@ -76,13 +71,6 @@ fn element(array: Array, index: u32, stride: usize) -> Result<usize> {
 enum Action<R> {
     Set(R),
     Remove(u128),
-    // Only the cost journal uses this prepared scalar event. Immutable row
-    // payloads stay in the snapshot; compaction is a spool-only operation.
-    ConsumeCost {
-        slot: u32,
-        folder: Option<u32>,
-        count: u64,
-    },
 }
 struct Rows<R: RowCodec> {
     rows: Vec<R>,
@@ -120,15 +108,11 @@ impl<R: RowCodec> Default for Rows<R> {
 }
 impl<R: RowCodec> Rows<R> {
     fn set(&mut self, row: R) -> Result<()> {
-        self.write(row, false)
-    }
-    fn write(&mut self, row: R, force: bool) -> Result<()> {
         let key = row.key();
-        if !force
-            && self
-                .indices
-                .get(&key)
-                .is_some_and(|&index| self.rows[index] == row)
+        if self
+            .indices
+            .get(&key)
+            .is_some_and(|&index| self.rows[index] == row)
         {
             return Ok(());
         }
@@ -139,7 +123,7 @@ impl<R: RowCodec> Rows<R> {
             {
                 self.action_heap -= match &self.actions[index] {
                     Action::Set(row) => row.heap_bytes(),
-                    Action::Remove(_) | Action::ConsumeCost { .. } => 0,
+                    Action::Remove(_) => 0,
                 };
                 self.action_heap += row.heap_bytes();
                 self.actions[index] = event;
@@ -179,7 +163,7 @@ impl<R: RowCodec> Rows<R> {
             {
                 self.action_heap -= match &self.actions[index] {
                     Action::Set(row) => row.heap_bytes(),
-                    Action::Remove(_) | Action::ConsumeCost { .. } => 0,
+                    Action::Remove(_) => 0,
                 };
                 self.actions[index] = Action::Remove(key);
             } else {
@@ -239,7 +223,6 @@ impl<R: RowCodec> Rows<R> {
             match action {
                 Action::Set(row) => self.set(row)?,
                 Action::Remove(key) => self.remove(key)?,
-                Action::ConsumeCost { .. } => return Err("cost event in another doctrine journal"),
             }
         }
         // Spool-only preparation of the recycled event vector.
@@ -276,61 +259,6 @@ impl<R: RowCodec> Rows<R> {
                 .sum::<usize>()
             + self.spares.capacity() * std::mem::size_of::<Vec<Action<R>>>()
             + self.marks.capacity() * (std::mem::size_of::<(u128, (u64, usize))>() + 1)
-    }
-}
-
-impl Rows<DoctrineCostReductionRow> {
-    fn apply_costs(&mut self, actions: &mut Vec<Action<DoctrineCostReductionRow>>) -> Result<()> {
-        for action in actions.drain(..) {
-            match action {
-                Action::Set(row) => self.set(row)?,
-                Action::Remove(key) => self.remove(key)?,
-                Action::ConsumeCost {
-                    slot,
-                    folder,
-                    count,
-                } => {
-                    for _ in 0..count {
-                        self.consume_cost(slot, folder)?;
-                    }
-                }
-            }
-        }
-        alloc(a::reserve(actions, self.rows.len()))?;
-        Ok(())
-    }
-    fn consume_cost(&mut self, slot: u32, folder: Option<u32>) -> Result<()> {
-        let mut old = 0;
-        let mut sum = 0i64;
-        let mut consuming = true;
-        while let Some(&index) = self.indices.get(&key2(slot, old)) {
-            let row = &mut self.rows[index];
-            if consuming && row.folder == folder {
-                row.uses = row.uses.wrapping_sub(1);
-                self.dirty = true;
-                sum = sum.wrapping_add(row.cost_factor);
-                consuming = sum > COST_CONSUMPTION_LIMIT;
-            }
-            old += 1;
-        }
-        let mut next = 0;
-        for ordinal in 0..old {
-            let row = &self.rows[self.indices[&key2(slot, ordinal)]];
-            if row.uses <= 0 {
-                continue;
-            }
-            if next != ordinal {
-                // This is the spool worker, never the shared live-store mutex.
-                let mut row = alloc(row.try_clone_validated())?;
-                row.ordinal = next;
-                self.set(row)?;
-            }
-            next += 1;
-        }
-        for ordinal in next..old {
-            self.remove(key2(slot, ordinal))?;
-        }
-        Ok(())
     }
 }
 
@@ -470,9 +398,9 @@ impl Frame {
                 projection
                     .leader_rows
                     .apply(&mut self.pending.leader_rows)?;
-                projection.costs.apply_costs(&mut self.pending.costs)?;
+                projection.costs.apply(&mut self.pending.costs)?;
                 if projection.costs.rows.len() != self.counts[4] {
-                    return Err("doctrine cost consumption count differs from native result");
+                    return Err("doctrine cost snapshot count differs from native result");
                 }
                 projection.grants.apply(&mut self.pending.grants)?;
                 projection.equipment.apply(&mut self.pending.equipment)?;
@@ -538,7 +466,6 @@ struct Country {
     country: u32,
     folders: Vec<usize>,
     costs: u32,
-    live_costs: u32,
     grants: u32,
     expiry_events: u64,
     equipment: u32,
@@ -570,13 +497,9 @@ pub struct Store {
     owners: HashMap<usize, u32>,
     folders: HashMap<usize, Folder>,
     tracks: HashMap<usize, Track>,
+    registrations_dirty: bool,
     nested_bytes: usize,
     text: Vec<u8>,
-    // First cleanup is ordered; later positive-use consumption commutes by
-    // folder. Marks and replacement journals are prepared at snapshots only.
-    cost_first: Vec<(u64, usize)>,
-    cost_consumptions: HashMap<(u32, Option<u32>), (u64, usize)>,
-    cost_count: usize,
     projection: Arc<SharedProjection>,
     country_rows: Rows<DoctrineCountryRow>,
     folder_rows: Rows<DoctrineFolderRow>,
@@ -597,9 +520,6 @@ impl Store {
             + self.folders.capacity() * (std::mem::size_of::<(usize, Folder)>() + 1)
             + self.tracks.capacity() * (std::mem::size_of::<(usize, Track)>() + 1)
             + self.text.capacity()
-            + self.cost_first.capacity() * std::mem::size_of::<(u64, usize)>()
-            + self.cost_consumptions.capacity()
-                * (std::mem::size_of::<((u32, Option<u32>), (u64, usize))>() + 1)
             + self.country_rows.bytes()
             + self.folder_rows.bytes()
             + self.track_rows.bytes()
@@ -637,7 +557,8 @@ impl Store {
         }
         // Lost observation or a failed conversion rebuilds the baseline at the
         // next capture instead of refusing every hour until a forced refresh.
-        let lost = self.failed || self.projection.failed.load(Ordering::Acquire);
+        let marked_loss = changes::take_lost();
+        let lost = self.failed || self.projection.failed.load(Ordering::Acquire) || marked_loss;
         if full || lost || !self.ready || root != self.root {
             // Baseline/relocation only. The root is the same header already
             // read and authenticated by CountryTacticUnlocks, including empty slots.
@@ -647,8 +568,6 @@ impl Store {
             alloc(a::reserve(&mut self.countries, root.1 as usize))?;
             self.countries
                 .resize_with(root.1 as usize, Country::default);
-            alloc(a::reserve(&mut self.cost_first, root.1 as usize))?;
-            self.cost_first.resize(root.1 as usize, (0, 0));
             for slot in 0..root.1 {
                 let pointer = root
                     .0
@@ -674,9 +593,10 @@ impl Store {
             self.folder_rows.prepare_baseline()?;
             self.track_rows.prepare_baseline()?;
             self.leader_rows.prepare_baseline()?;
-            self.prepare_cost_events()?;
+            self.costs.prepare_baseline()?;
             self.grants.prepare_baseline()?;
             self.equipment.prepare_baseline()?;
+            self.prepare_receivers()?;
             self.ready = true;
         } else {
             for (i, &domain) in DOMAINS.iter().enumerate() {
@@ -687,6 +607,11 @@ impl Store {
                 {
                     return Err("doctrine writer epoch invalidated; full refresh required");
                 }
+            }
+            self.settle_pending()?;
+            self.refresh_marked(memory, base)?;
+            if self.registrations_dirty {
+                self.prepare_receivers()?;
             }
         }
         for (i, &domain) in DOMAINS.iter().enumerate() {
@@ -714,12 +639,100 @@ impl Store {
             self.folder_rows.rows.len(),
             self.track_rows.rows.len(),
             self.leader_rows.rows.len(),
-            self.cost_count,
+            self.costs.rows.len(),
             self.grants.rows.len(),
             self.equipment.rows.len(),
         ];
         frame.store_bytes = self.allocated_bytes();
         self.failed = false;
+        Ok(())
+    }
+    fn prepare_receivers(&mut self) -> Result<()> {
+        for domain in changes::REFRESH_DOMAINS {
+            match domain {
+                Domain::Status | Domain::StatusFolders | Domain::Equipment | Domain::Costs => {
+                    changes::prepare(domain, self.owners.len(), self.owners.keys().copied())?;
+                }
+                Domain::Folder | Domain::Gains => {
+                    changes::prepare(domain, self.folders.len(), self.folders.keys().copied())?;
+                }
+                Domain::Track | Domain::Bank | Domain::Progress => {
+                    changes::prepare(domain, self.tracks.len(), self.tracks.keys().copied())?;
+                }
+                _ => unreachable!("coalesced doctrine domain"),
+            }
+        }
+        changes::prepare_gains(self.tracks.len(), self.tracks.keys().copied())?;
+        changes::prepare_expiries(self.owners.len(), self.owners.keys().copied())?;
+        self.registrations_dirty = false;
+        Ok(())
+    }
+    fn settle_expiries(&mut self, pointer: usize, mut count: u64) -> Result<()> {
+        let slot = *self
+            .owners
+            .get(&pointer)
+            .ok_or("doctrine occurrence receiver unavailable")?;
+        while count != 0 && self.countries[slot as usize].grants != 0 {
+            self.expire_grants(slot)?;
+            count -= 1;
+        }
+        Ok(())
+    }
+    fn settle_pending(&mut self) -> Result<()> {
+        let mut result = Ok(());
+        changes::take_expiries(|pointer, count| {
+            if result.is_ok() {
+                result = self.settle_expiries(pointer, count);
+            }
+        })?;
+        result?;
+        changes::take_gains(|pointer, value| {
+            if result.is_err() {
+                return;
+            }
+            result = self.settle_gain(pointer, value);
+        })?;
+        result
+    }
+    fn settle_gain(&mut self, pointer: usize, value: i64) -> Result<()> {
+        let location = self
+            .tracks
+            .get(&pointer)
+            .copied()
+            .ok_or("doctrine gain receiver unavailable")?;
+        let key = key3(location.slot, location.folder, location.ordinal);
+        let index = self.track_rows.indices[&key];
+        if self.track_rows.rows[index].effective_daily_mastery != value {
+            let mut row = self.track_rows.rows[index].clone();
+            row.effective_daily_mastery = value;
+            self.track_rows.set(row)?;
+        }
+        Ok(())
+    }
+    fn refresh_marked(&mut self, memory: &impl Memory, base: usize) -> Result<()> {
+        // Parent membership is settled before any child mark. A retired child
+        // no longer in the owned maps is never dereferenced.
+        for domain in changes::REFRESH_DOMAINS {
+            let mut result = Ok(());
+            changes::take(domain, |pointer| {
+                if result.is_err() {
+                    return;
+                }
+                result = if domain == Domain::Status {
+                    if let Some(&slot) = self.owners.get(&pointer) {
+                        self.refresh_folders(memory, base, slot)
+                            .and_then(|()| self.refresh_costs(memory, base, slot))
+                            .and_then(|()| self.refresh_equipment(memory, base, slot))
+                    } else {
+                        Err("doctrine status receiver unavailable")
+                    }
+                } else {
+                    self.observe(memory, base, domain, pointer)
+                };
+            })
+            .ok_or("doctrine refresh marks overlapped a writer")?;
+            result?;
+        }
         Ok(())
     }
     fn observe(
@@ -731,6 +744,11 @@ impl Store {
     ) -> Result<()> {
         if !self.ready || self.failed {
             return Ok(());
+        }
+        if matches!(domain, Domain::Costs | Domain::Grants | Domain::GrantExpiry)
+            && !self.owners.contains_key(&pointer)
+        {
+            return Err("doctrine occurrence receiver unavailable");
         }
         match domain {
             Domain::Status => {
@@ -747,8 +765,8 @@ impl Store {
             Domain::Gains => self.refresh_gains(memory, base, pointer)?,
             Domain::Bank | Domain::Progress => {
                 if let Some(location) = self.tracks.get(&pointer).copied() {
-                    // The writer owns this demanded receiver. Baseline, folder
-                    // relocation and reset coverage authenticate its lifetime.
+                    // Parent marks settle folder/track membership before these
+                    // narrow scalar reads; the writer tokens bracket capture.
                     let index = self.track_rows.indices
                         [&key3(location.slot, location.folder, location.ordinal)];
                     let mut row = self.track_rows.rows[index].clone();
@@ -803,6 +821,7 @@ impl Store {
         self.refresh_equipment(memory, base, slot)
     }
     fn refresh_folders(&mut self, memory: &impl Memory, base: usize, slot: u32) -> Result<()> {
+        self.registrations_dirty = true;
         let country = &mut self.countries[slot as usize];
         let status = n::status(memory, base, country.pointer, country.country)?;
         let mut old = std::mem::take(&mut country.folders);
@@ -856,6 +875,7 @@ impl Store {
                 .unwrap_or(folder.tracks.data)
                 == folder.tracks.data;
         if !same_tracks {
+            self.registrations_dirty = true;
             for track in location.tracks.drain(..) {
                 self.remove_track(track)?;
             }
@@ -994,125 +1014,28 @@ impl Store {
         }
         Ok(())
     }
-    fn prepare_cost_events(&mut self) -> Result<()> {
-        self.costs.prepare_capacity(
-            self.costs.actions.len()
-                + self.costs.rows.len()
-                + self.cost_consumptions.len()
-                + self.cost_first.len(),
-        )
-    }
-    fn cancel_cost_consumption(&mut self, mark: (u64, usize)) {
-        if mark.0 == self.costs.epoch
-            && let Action::ConsumeCost { count, .. } = &mut self.costs.actions[mark.1]
-        {
-            *count = 0;
-        }
-    }
-    fn observe_cost_consumption(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        pointer: usize,
-        folder: usize,
-    ) -> Result<()> {
-        if !self.ready || self.failed {
-            return Ok(());
-        }
-        let Some(&slot) = self.owners.get(&pointer) else {
-            return Ok(());
-        };
-        let folder = (folder != 0)
-            .then(|| n::token(memory, base, folder, n::FOLDER_TEMPLATE_VTABLE))
-            .transpose()?;
-        let remaining: u32 = n::field(memory, pointer, n::COSTS + cpdx_array::COUNT)?;
-        if remaining > i32::MAX as u32 {
-            return Err("doctrine cost count invalid");
-        }
-        self.cost_count = self.cost_count - self.countries[slot as usize].live_costs as usize
-            + remaining as usize;
-        self.countries[slot as usize].live_costs = remaining;
-        let epoch = self.costs.epoch;
-        let first = self.cost_first[slot as usize].0 != epoch;
-        let mark = if first {
-            (0, 0)
-        } else if let Some(&mark) = self.cost_consumptions.get(&(slot, folder)) {
-            mark
-        } else {
-            // The first event already removed invalid entries. A folder absent
-            // from this snapshot cannot change any remaining reduction.
-            return Ok(());
-        };
-        if mark.0 == epoch {
-            let Action::ConsumeCost { count, .. } = &mut self.costs.actions[mark.1] else {
-                return Err("doctrine cost consumption mark invalid");
-            };
-            *count = count
-                .checked_add(1)
-                .ok_or("doctrine cost occurrence counter exhausted")?;
-        } else {
-            if self.costs.actions.len() == self.costs.actions.capacity() {
-                return Err("doctrine prepared cost journal exhausted");
-            }
-            let mark = (epoch, self.costs.actions.len());
-            self.costs.actions.push(Action::ConsumeCost {
-                slot,
-                folder,
-                count: 1,
-            });
-            if first {
-                self.cost_first[slot as usize] = mark;
-            } else {
-                *self
-                    .cost_consumptions
-                    .get_mut(&(slot, folder))
-                    .expect("prepared cost folder") = mark;
-            }
-        }
-        Ok(())
-    }
     fn refresh_costs(&mut self, memory: &impl Memory, base: usize, slot: u32) -> Result<()> {
         let country = &self.countries[slot as usize];
         let array = n::array(memory, country.pointer, n::COSTS, n::COST_STRIDE)?;
         let old = country.costs;
-        // A full owner snapshot supersedes its earlier pending scalar events.
-        // Stale immutable payloads remain owned until this structural writer.
-        self.cancel_cost_consumption(self.cost_first[slot as usize]);
-        self.cost_first[slot as usize] = (0, 0);
-        for ordinal in 0..old {
-            let folder = self.costs.rows[self.costs.indices[&key2(slot, ordinal)]].folder;
-            if let Some(mark) = self.cost_consumptions.remove(&(slot, folder)) {
-                self.cancel_cost_consumption(mark);
-            }
-        }
         for ordinal in 0..array.count {
             let pointer = element(array, ordinal, n::COST_STRIDE)?;
             let (uses, cost_factor, folder) = n::cost(memory, base, pointer)?;
             let mut used = 0;
             let (start, len) = n::name(memory, pointer, n::COST_NAME, &mut self.text, &mut used)?;
-            put(&mut self.cost_consumptions, (slot, folder), (0, 0))?;
-            self.costs.write(
-                DoctrineCostReductionRow {
-                    slot,
-                    ordinal,
-                    uses,
-                    cost_factor,
-                    folder,
-                    name: alloc(a::copy_vec(&self.text[start..start + len]))?,
-                },
-                true,
-            )?;
+            self.costs.set(DoctrineCostReductionRow {
+                slot,
+                ordinal,
+                uses,
+                cost_factor,
+                folder,
+                name: alloc(a::copy_vec(&self.text[start..start + len]))?,
+            })?;
         }
         for ordinal in array.count..old {
             self.costs.remove(key2(slot, ordinal))?;
         }
-        self.cost_count = self.cost_count - self.countries[slot as usize].live_costs as usize
-            + array.count as usize;
         self.countries[slot as usize].costs = array.count;
-        self.countries[slot as usize].live_costs = array.count;
-        if self.ready {
-            self.prepare_cost_events()?;
-        }
         Ok(())
     }
     fn refresh_grants(
@@ -1122,6 +1045,10 @@ impl Store {
         slot: u32,
         append: bool,
     ) -> Result<()> {
+        if self.ready {
+            let pointer = self.countries[slot as usize].pointer;
+            self.settle_expiries(pointer, changes::take_expiry(pointer)?)?;
+        }
         let country = &self.countries[slot as usize];
         let array = n::array(memory, country.pointer, n::GRANTS, n::GRANT_STRIDE)?;
         let old = country.grants;
@@ -1222,56 +1149,49 @@ impl Store {
 /// # Safety
 /// `context` is the registered live mutex, owned for the entire observer lifetime.
 pub unsafe fn observe(context: usize, domain: Domain, pointer: usize) {
+    if domain == Domain::GrantExpiry {
+        changes::defer_expiry(pointer);
+        return;
+    }
+    if changes::mark(domain, pointer) && domain != Domain::Status {
+        return;
+    }
     let mutex = unsafe { &*(context as *const Mutex<Store>) };
     if let Ok(mut store) = mutex.lock() {
         let base = store.base;
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
-        if store.observe(&memory, base, domain, pointer).is_err() {
+        let result = if domain == Domain::Status && store.ready && !store.failed {
+            // Grant snapshots retain their expiry anchors. Costs, folders and
+            // equipment publish only terminal rows, selected by the worker mark.
+            match store.owners.get(&pointer).copied() {
+                Some(slot) => store.refresh_grants(&memory, base, slot, false),
+                None => Err("doctrine status receiver unavailable"),
+            }
+        } else {
+            store.observe(&memory, base, domain, pointer)
+        };
+        if result.is_err() {
             store.failed = true;
         }
     }
 }
 
-/// Cost consumption publishes one prepared scalar occurrence. Immutable names
-/// and folders are neither read nor cloned here; removals are derived on spool.
+/// Cost rows contain only terminal inventory values, not occurrence history.
+/// The cost-add and consumption writers select the same Slow-worker snapshot.
 /// # Safety
 /// Uses the retained context and quiescence contract of `observe`.
-pub unsafe fn observe_cost_consumption(context: usize, pointer: usize, folder: usize) {
-    let mutex = unsafe { &*(context as *const Mutex<Store>) };
-    if let Ok(mut store) = mutex.lock() {
-        let base = store.base;
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
-        if store
-            .observe_cost_consumption(&memory, base, pointer, folder)
-            .is_err()
-        {
-            store.failed = true;
-        }
-    }
+pub unsafe fn observe_cost_consumption(_context: usize, pointer: usize, _folder: usize) {
+    changes::mark(Domain::Costs, pointer);
 }
 
-/// Operand capture from either native effective-gain store. No live read.
+/// Retain the exact pre-store operand without acquiring the doctrine Store.
+/// Slow applies the last operand before terminal receiver refreshes, so a later
+/// track reset or parent retirement still supersedes it. No later native read
+/// is assumed equivalent to the EFFECTIVE_DAILY store occurrence.
 /// # Safety
 /// The context follows the same lifetime contract as `observe`.
-pub unsafe fn observe_gain(context: usize, pointer: usize, value: i64) {
-    let mutex = unsafe { &*(context as *const Mutex<Store>) };
-    if let Ok(mut store) = mutex.lock() {
-        if !store.ready || store.failed {
-            return;
-        }
-        let Some(location) = store.tracks.get(&pointer).copied() else {
-            return;
-        };
-        let key = key3(location.slot, location.folder, location.ordinal);
-        let index = store.track_rows.indices[&key];
-        if store.track_rows.rows[index].effective_daily_mastery != value {
-            let mut row = store.track_rows.rows[index].clone();
-            row.effective_daily_mastery = value;
-            if store.track_rows.set(row).is_err() {
-                store.failed = true;
-            }
-        }
-    }
+pub unsafe fn observe_gain(_context: usize, pointer: usize, value: i64) {
+    changes::defer_gain(pointer, value);
 }
 
 #[cfg(test)]
@@ -1359,199 +1279,7 @@ mod tests {
     }
 
     #[test]
-    fn doctrine_cost_consumption_is_prepared_and_reads_only_fixed_operands() {
-        use std::cell::Cell;
-        let _guard = DENY_LOCK.lock().unwrap();
-        struct Scalars {
-            remaining: u32,
-            reads: Cell<usize>,
-        }
-        impl Memory for Scalars {
-            fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
-                self.reads.set(self.reads.get() + 1);
-                match (address, bytes.len()) {
-                    (0x200, 8) => {
-                        bytes.copy_from_slice(&(n::FOLDER_TEMPLATE_VTABLE as u64).to_le_bytes())
-                    }
-                    (0x208, 4) => bytes.copy_from_slice(&91u32.to_le_bytes()),
-                    (address, 4) if address == 0x100 + n::COSTS + cpdx_array::COUNT => {
-                        bytes.copy_from_slice(&self.remaining.to_le_bytes())
-                    }
-                    _ => panic!("cost consumption read an inventory or immutable payload"),
-                }
-                true
-            }
-        }
-        for count in [1_500u32, 5_000] {
-            let slot = count - 1;
-            let mut store = Store::default();
-            store
-                .countries
-                .resize_with(count as usize, Country::default);
-            store.cost_first.resize(count as usize, (0, 0));
-            store.countries[slot as usize].costs = count;
-            store.countries[slot as usize].live_costs = count;
-            store.cost_count = count as usize;
-            store.owners.insert(0x100, slot);
-            store.cost_consumptions.insert((slot, Some(91)), (0, 0));
-            for ordinal in 0..count {
-                store
-                    .costs
-                    .set(DoctrineCostReductionRow {
-                        slot,
-                        ordinal,
-                        folder: Some(91),
-                        uses: 100_000,
-                        cost_factor: 35_000,
-                        name: vec![b'n'; 256],
-                    })
-                    .unwrap();
-            }
-            store.prepare_cost_events().unwrap();
-            let mut batch = Vec::new();
-            let mut projection = Rows {
-                record: false,
-                ..Rows::default()
-            };
-            store.costs.handoff(&mut batch).unwrap();
-            projection.apply_costs(&mut batch).unwrap();
-            let name = store.costs.rows[0].name.as_ptr();
-            let memory = Scalars {
-                remaining: count,
-                reads: Cell::new(0),
-            };
-            store.ready = true;
-            collector_test_support::with_allocations_denied(|| {
-                for _ in 0..32 {
-                    store
-                        .observe_cost_consumption(&memory, 0, 0x100, 0x200)
-                        .unwrap();
-                }
-                store.costs.handoff(&mut batch).unwrap();
-            });
-            assert_eq!(collector_test_support::ATTEMPTS.load(Ordering::Relaxed), 0);
-            assert_eq!(memory.reads.get(), 96); // Independent of inventory/country count.
-            assert_eq!(store.costs.rows[0].name.as_ptr(), name);
-            assert_eq!(store.costs.rows[0].uses, 100_000); // Immutable snapshot on live side.
-            assert_eq!(batch.len(), 2); // Ordered first cleanup, then 31 coalesced uses.
-            projection.apply_costs(&mut batch).unwrap();
-            assert_eq!(
-                projection.rows[projection.indices[&key2(slot, 0)]].uses,
-                99_968
-            );
-            assert_eq!(
-                projection.rows[projection.indices[&key2(slot, 1)]].uses,
-                100_000
-            );
-            assert_eq!(projection.rows.len(), count as usize);
-        }
-    }
-
-    #[test]
-    fn doctrine_cost_spool_derives_threshold_removals_order_and_wrapping() {
-        let mut rows = Rows::<DoctrineCostReductionRow> {
-            record: false,
-            ..Default::default()
-        };
-        for (ordinal, uses, factor, folder) in [
-            (0, 1, 200_000, Some(1)),
-            (1, 2, -150_000, Some(1)),
-            (2, 5, 35_000, Some(2)),
-            (3, i32::MIN, 35_000, Some(2)),
-            (4, 0, 35_000, None),
-            (5, 2, 35_000, Some(1)),
-        ] {
-            rows.set(DoctrineCostReductionRow {
-                ordinal,
-                uses,
-                cost_factor: factor,
-                folder,
-                name: vec![ordinal as u8],
-                ..Default::default()
-            })
-            .unwrap();
-        }
-        rows.consume_cost(0, Some(1)).unwrap();
-        let ordered = |rows: &Rows<DoctrineCostReductionRow>| {
-            (0..rows.rows.len())
-                .map(|ordinal| {
-                    let row = &rows.rows[rows.indices[&key2(0, ordinal as u32)]];
-                    (row.name[0], row.uses, row.folder)
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            ordered(&rows),
-            [(1, 1, Some(1)), (2, 5, Some(2)), (5, 2, Some(1))]
-        );
-        rows.consume_cost(0, None).unwrap();
-        assert_eq!(rows.rows.len(), 3); // Null is not a wildcard folder.
-        rows.set(DoctrineCostReductionRow {
-            ordinal: 3,
-            uses: i32::MIN,
-            folder: None,
-            cost_factor: i64::MAX,
-            name: vec![6],
-            ..Default::default()
-        })
-        .unwrap();
-        rows.set(DoctrineCostReductionRow {
-            ordinal: 4,
-            uses: 2,
-            folder: None,
-            cost_factor: 1,
-            name: vec![7],
-            ..Default::default()
-        })
-        .unwrap();
-        rows.consume_cost(0, None).unwrap();
-        assert_eq!(ordered(&rows)[3..], [(6, i32::MAX, None), (7, 1, None)]);
-    }
-
-    #[test]
-    fn doctrine_cost_first_cleanup_precedes_other_folder_consumption() {
-        let mut rows = Rows::<DoctrineCostReductionRow> {
-            record: false,
-            ..Default::default()
-        };
-        for (ordinal, uses, folder) in [(0, i32::MIN, Some(1)), (1, 4, Some(2)), (2, 3, None)] {
-            rows.set(DoctrineCostReductionRow {
-                ordinal,
-                uses,
-                folder,
-                cost_factor: 35_000,
-                name: vec![ordinal as u8],
-                ..Default::default()
-            })
-            .unwrap();
-        }
-        let mut events = vec![
-            Action::ConsumeCost {
-                slot: 0,
-                folder: Some(2),
-                count: 1,
-            },
-            Action::ConsumeCost {
-                slot: 0,
-                folder: Some(1),
-                count: 2,
-            },
-            Action::ConsumeCost {
-                slot: 0,
-                folder: Some(2),
-                count: 2,
-            },
-        ];
-        rows.apply_costs(&mut events).unwrap();
-        assert_eq!(rows.rows.len(), 2);
-        assert_eq!(rows.rows[rows.indices[&key2(0, 0)]].name, [1]);
-        assert_eq!(rows.rows[rows.indices[&key2(0, 0)]].uses, 1);
-        assert_eq!(rows.rows[rows.indices[&key2(0, 1)]].name, [2]);
-        assert_eq!(rows.rows[rows.indices[&key2(0, 1)]].uses, 3);
-    }
-
-    #[test]
-    fn doctrine_cost_native_result_count_certifies_spool_derivation() {
+    fn doctrine_cost_snapshot_count_certifies_projection() {
         let mut frame = Frame {
             projection: Some(Arc::new(SharedProjection::default())),
             counts: [0, 0, 0, 0, 1, 0, 0],
@@ -1560,7 +1288,7 @@ mod tests {
         let _ = frame.inputs();
         assert_eq!(
             frame.refusal,
-            "doctrine cost consumption count differs from native result"
+            "doctrine cost snapshot count differs from native result"
         );
         assert!(
             frame
@@ -1600,6 +1328,87 @@ mod tests {
             .unwrap();
         assert!(frame.complete());
         assert!(!Arc::ptr_eq(&failed, &store.projection));
+        let previous = Arc::clone(&store.projection);
+        assert!(changes::mark(Domain::Bank, usize::MAX));
+        frame.reset();
+        store
+            .capture(&NoReads, 0, (0, 0), false, &mut frame)
+            .unwrap();
+        assert!(!Arc::ptr_eq(&previous, &store.projection));
+        for gain in [true, false] {
+            let previous = Arc::clone(&store.projection);
+            if gain {
+                changes::defer_gain(usize::MAX, -1);
+            } else {
+                changes::defer_expiry(usize::MAX);
+            }
+            frame.reset();
+            store
+                .capture(&NoReads, 0, (0, 0), false, &mut frame)
+                .unwrap();
+            assert!(!Arc::ptr_eq(&previous, &store.projection));
+        }
+        changes::enabled(false);
+    }
+
+    #[test]
+    fn doctrine_marked_bank_and_progress_keep_their_narrow_read_surface() {
+        let _guard = DENY_LOCK.lock().unwrap();
+        struct Scalars(bool);
+        impl Memory for Scalars {
+            fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
+                let value: &[u8] = match address - 0x100 {
+                    n::BANK if self.0 => return false,
+                    n::BANK => &31_i64.to_le_bytes(),
+                    n::MASTERY => &42_i64.to_le_bytes(),
+                    n::REWARDS => &3_i32.to_le_bytes(),
+                    _ => panic!("scalar doctrine mark read an unrelated field"),
+                };
+                bytes.copy_from_slice(value);
+                true
+            }
+        }
+        changes::enabled(true);
+        let mut store = Store {
+            ready: true,
+            ..Default::default()
+        };
+        for (i, domain) in DOMAINS.iter().enumerate() {
+            store.epochs[i] = changes::token(*domain).unwrap().0;
+        }
+        store.tracks.insert(
+            0x100,
+            Track {
+                slot: 0,
+                folder: 0,
+                ordinal: 0,
+                owner: 0,
+                parent: 0,
+                leaders: 0,
+            },
+        );
+        store.track_rows.set(DoctrineTrackRow::default()).unwrap();
+        store.track_rows.prepare_baseline().unwrap();
+        store.prepare_receivers().unwrap();
+        for _ in 0..16 {
+            changes::mark(Domain::Bank, 0x100);
+            changes::mark(Domain::Progress, 0x100);
+        }
+        let mut frame = Frame::default();
+        store
+            .capture(&Scalars(false), 0, (0, 0), false, &mut frame)
+            .unwrap();
+        let row = &store.track_rows.rows[0];
+        assert_eq!((row.mastery_bank, row.mastery, row.rewards), (31, 42, 3));
+        let _ = frame.inputs();
+        changes::mark(Domain::Bank, 0x100);
+        frame.reset();
+        assert_eq!(
+            store.capture(&Scalars(true), 0, (0, 0), false, &mut frame),
+            Err("doctrine field unreadable")
+        );
+        assert!(store.failed);
+        assert!(!frame.complete());
         changes::enabled(false);
     }
 
@@ -1621,6 +1430,7 @@ mod tests {
         for (i, domain) in DOMAINS.iter().enumerate() {
             store.epochs[i] = changes::token(*domain).unwrap().0;
         }
+        store.prepare_receivers().unwrap();
         let mut frame = Frame::default();
         collector_test_support::with_allocations_denied(|| {
             store
@@ -1678,7 +1488,48 @@ mod tests {
     }
 
     #[test]
-    fn doctrine_native_baseline_and_targeted_events_reach_replay_without_hourly_reads() {
+    fn deferred_expiry_counts_match_eager_compaction_and_empty_tail() {
+        fn seeded() -> Store {
+            let mut store = Store::default();
+            store.owners.insert(7, 0);
+            store.countries.push(Country {
+                pointer: 7,
+                grants: 3,
+                expiry_events: u64::MAX - 1,
+                ..Default::default()
+            });
+            for (ordinal, days) in [(0, 1), (1, 4), (2, 0)] {
+                store
+                    .grants
+                    .set(DoctrineMasteryGrantRow {
+                        ordinal,
+                        daily_mastery: 1,
+                        days_at_anchor: days,
+                        expiry_events_at_anchor: u64::MAX - 1,
+                        ..Default::default()
+                    })
+                    .unwrap();
+            }
+            store
+        }
+        let mut eager = seeded();
+        let mut deferred = seeded();
+        for _ in 0..12 {
+            eager.expire_grants(0).unwrap();
+        }
+        deferred.settle_expiries(7, 12).unwrap();
+        assert_eq!(
+            eager.countries[0].expiry_events,
+            deferred.countries[0].expiry_events
+        );
+        assert_eq!(eager.countries[0].grants, deferred.countries[0].grants);
+        assert_eq!(eager.grants.rows, deferred.grants.rows);
+        assert_eq!(deferred.countries[0].expiry_events, 2);
+        assert!(deferred.grants.rows.is_empty());
+    }
+
+    #[test]
+    fn doctrine_native_baseline_and_marked_worker_reads_preserve_occurrence_journals() {
         let _guard = DENY_LOCK.lock().unwrap();
         struct Memory(Vec<u8>);
         impl engine_native::Memory for Memory {
@@ -1795,21 +1646,54 @@ mod tests {
                 engine_native::Memory::copy(self.0, address, output)
             }
         }
+        // Marks and prepared scalar callbacks do not need the held Store mutex.
+        let store_mutex = Mutex::new(store);
+        let context = &store_mutex as *const Mutex<Store> as usize;
+        let mut store = store_mutex.lock().unwrap();
+        collector_test_support::with_allocations_denied(|| {
+            unsafe { observe_gain(context, 0x300, i64::MIN) };
+            unsafe { observe_gain(context, 0x300, 87_500) };
+        });
+        frame.reset();
         store
-            .observe(&FoldersOnly(&memory), 0, Domain::StatusFolders, status)
+            .capture(&NoReads, 0, (status, 1), false, &mut frame)
             .unwrap();
+        let gained = frame.inputs();
+        let TableInput::SharedComplete(rows) = &gained[2] else {
+            unreachable!()
+        };
+        let TableRows::DoctrineTracks(rows) = &**rows else {
+            unreachable!()
+        };
+        assert_eq!(rows[0].effective_daily_mastery, 87_500);
+        // A later selected track refresh supersedes the pending gain operand.
+        collector_test_support::with_allocations_denied(|| {
+            unsafe { observe_gain(context, 0x300, -1) };
+            for _ in 0..8 {
+                unsafe { observe(context, Domain::StatusFolders, status) };
+                unsafe { observe(context, Domain::Track, 0x300) };
+                unsafe { observe(context, Domain::Gains, 0x200) };
+            }
+        });
+        assert_eq!(collector_test_support::ATTEMPTS.load(Ordering::Relaxed), 0);
+        assert_eq!(store.track_rows.rows[0].mastery, 125_000);
         memory.word(0x300 + n::MASTERY, 150_000);
-        store.observe(&memory, 0, Domain::Track, 0x300).unwrap();
+        frame.reset();
+        store
+            .capture(&FoldersOnly(&memory), 0, (status, 1), false, &mut frame)
+            .unwrap();
+        let _ = frame.inputs();
         memory.word(0x600 + n::GRANT_DAYS, 4);
         store
             .observe(&NoReads, 0, Domain::GrantExpiry, status)
             .unwrap();
-        // A structural owner snapshot supersedes an earlier pending consumption,
-        // including its cleanup. A later consumption must see the appended row.
+        // Cost writers coalesce to the terminal native inventory, including
+        // removal and compaction after an intervening append.
         memory.word(0x500 + n::COST_USES, 1);
-        store
-            .observe_cost_consumption(&memory, 0, status, 0x800)
-            .unwrap();
+        collector_test_support::with_allocations_denied(|| {
+            // A removed folder operand is not needed for terminal cost rows.
+            unsafe { observe_cost_consumption(context, status, usize::MAX) };
+        });
         memory.array(status + n::COSTS, 0x500, 2);
         memory.word(0x540, n::COST_VTABLE as u64);
         memory.word(0x540 + n::COST_USES, 3);
@@ -1818,17 +1702,14 @@ mod tests {
         memory.word(0x540 + n::COST_NAME + 24, 15);
         memory.word(0x540 + n::COST_FACTOR, 35_000);
         memory.word(0x540 + n::COST_FOLDER, 0x800);
-        store.observe(&memory, 0, Domain::Costs, status).unwrap();
+        unsafe { observe(context, Domain::Costs, status) };
+        memory.0.copy_within(0x540..0x580, 0x500);
         memory.array(status + n::COSTS, 0x500, 1);
-        store
-            .observe_cost_consumption(&memory, 0, status, 0x800)
-            .unwrap();
+        unsafe { observe_cost_consumption(context, status, 0x800) };
         frame.reset();
-        collector_test_support::with_allocations_denied(|| {
-            store
-                .capture(&NoReads, 0, (status, 1), false, &mut frame)
-                .unwrap()
-        });
+        store
+            .capture(&memory, 0, (status, 1), false, &mut frame)
+            .unwrap();
         let next = frame.inputs();
         let TableInput::SharedComplete(rows) = &next[2] else {
             unreachable!()
@@ -1837,6 +1718,7 @@ mod tests {
             unreachable!()
         };
         assert_eq!(rows[0].mastery, 150_000);
+        assert_eq!(rows[0].effective_daily_mastery, 75_000);
         let TableInput::SharedComplete(costs) = &next[4] else {
             unreachable!()
         };
@@ -1862,6 +1744,58 @@ mod tests {
             unreachable!()
         };
         assert_eq!(grants[0].days_at(store.countries[0].expiry_events), 4);
+
+        // Settle a preceding expiry before anchoring an appended grant, then
+        // apply only subsequent expiry counts to the new row.
+        unsafe { observe(context, Domain::GrantExpiry, status) };
+        memory.array(status + n::GRANTS, 0x600, 2);
+        memory.word(0x600 + n::GRANT_DAYS, 3);
+        memory.word(0x670, n::GRANT_VTABLE as u64);
+        memory.word(0x670 + n::GRANT_NAME + 24, 15);
+        memory.word(0x670 + n::GRANT_FILTER, n::FILTER_VTABLE as u64);
+        memory.word(0x670 + n::GRANT_FILTER + 0x28, (-1_i64) as u64);
+        memory.word(0x670 + n::GRANT_DAILY, 25_000);
+        memory.word(0x670 + n::GRANT_DAYS, 10);
+        store.observe(&memory, 0, Domain::Grants, status).unwrap();
+        assert_eq!(store.countries[0].expiry_events, 2);
+        unsafe { observe(context, Domain::GrantExpiry, status) };
+        frame.reset();
+        store
+            .capture(&NoReads, 0, (status, 1), false, &mut frame)
+            .unwrap();
+        let appended = frame.inputs();
+        let TableInput::SharedComplete(grants) = &appended[5] else {
+            unreachable!()
+        };
+        let TableRows::DoctrineMasteryGrants(grants) = &**grants else {
+            unreachable!()
+        };
+        assert_eq!(store.countries[0].expiry_events, 3);
+        assert_eq!(grants[0].days_at(3), 2);
+        assert_eq!(grants[1].days_at(3), 9);
+        assert_eq!(grants[1].expiry_events_at_anchor, 2);
+
+        struct RetiredChildren<'a>(&'a Memory);
+        impl engine_native::Memory for RetiredChildren<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                assert!(
+                    address + output.len() <= 0x200 || address >= 0x400,
+                    "retired doctrine child was read"
+                );
+                engine_native::Memory::copy(self.0, address, output)
+            }
+        }
+        unsafe { observe_gain(context, 0x300, 99) };
+        changes::mark(Domain::Track, 0x300);
+        changes::mark(Domain::Gains, 0x200);
+        changes::mark(Domain::StatusFolders, status);
+        memory.array(status + n::FOLDERS, 0, 0);
+        frame.reset();
+        store
+            .capture(&RetiredChildren(&memory), 0, (status, 1), false, &mut frame)
+            .unwrap();
+        assert_eq!(&frame.counts[1..4], &[0, 0, 0]);
+        let _ = frame.inputs();
         changes::enabled(false);
     }
 }

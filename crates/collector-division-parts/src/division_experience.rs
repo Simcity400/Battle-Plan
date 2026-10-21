@@ -1,11 +1,34 @@
 //! Stored division experience carried under its own writer certificate.
 //! Each observation uses the existing authenticated census seed. There is no
-//! independent roster walk, no native read for an unchanged certificate, and
-//! both cache vectors reserve from census demand before any entity is visited.
-use engine_native::{
-    Memory,
-    carmy::{self, DivisionSeed},
-};
+//! independent roster walk. Daily display samples may ignore sequence changes
+//! within an epoch, but never replace their original writer certificate. Both
+//! cache vectors reserve from census demand before any entity is visited.
+use engine_native::carmy::{self, DivisionSeed};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+// Range scratch can outlive or move between stores. Complete baselines get
+// distinct stamps; exhaustion disables index reuse rather than reusing a stamp.
+static NEXT_BASELINE: AtomicU64 = AtomicU64::new(1);
+
+/// Reusable range-local index into one complete scalar baseline.
+#[derive(Default)]
+pub struct Order {
+    baseline: Option<u64>,
+    entries: Vec<(u64, usize)>,
+    #[cfg(test)]
+    rebuilds: usize,
+    #[cfg(test)]
+    probes: usize,
+}
+impl Order {
+    pub fn clear(&mut self) {
+        self.baseline = None;
+        self.entries.clear();
+    }
+    pub fn allocated_bytes(&self) -> usize {
+        self.entries.capacity() * std::mem::size_of::<(u64, usize)>()
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Held<T> {
@@ -17,11 +40,33 @@ struct Held<T> {
 #[derive(Default)]
 pub struct Store<T = i64> {
     held: Vec<Held<T>>,
+    baseline: Option<u64>,
     next: Vec<Held<T>>,
     order: Vec<(u64, usize)>,
     shift: isize,
+    daily: bool,
 }
-impl<T: Copy> Store<T> {
+impl<T: Clone> Store<T> {
+    pub fn daily(&mut self, refresh: bool) {
+        self.daily = true;
+        if refresh {
+            self.forget();
+        }
+    }
+    fn matches(&self, held: &Held<T>, certificate: (u64, u64)) -> bool {
+        held.certificate == certificate || self.daily && held.certificate.0 == certificate.0
+    }
+    /// Only an exact writer certificate can lend XP to the hourly exercise predicate.
+    pub fn current(&self, seed: &DivisionSeed, certificate: Option<(u64, u64)>) -> Option<T> {
+        self.next
+            .last()
+            .filter(|held| {
+                held.division == seed.division
+                    && held.army == seed.pointer
+                    && Some(held.certificate) == certificate
+            })
+            .map(|held| held.value.clone())
+    }
     pub fn begin(&mut self, count: usize) -> Result<(), &'static str> {
         self.next.clear();
         self.order.clear();
@@ -31,6 +76,7 @@ impl<T: Copy> Store<T> {
     }
     pub fn forget(&mut self) {
         self.held.clear();
+        self.baseline = None;
         self.next.clear();
         self.order.clear();
     }
@@ -88,11 +134,11 @@ impl<T: Copy> Store<T> {
             self.shift = at as isize - self.next.len() as isize;
         }
         let held = at
-            .map(|at| self.held[at])
-            .filter(|held| held.army == seed.pointer && held.certificate == certificate);
-        let value = match held {
-            Some(held) => held.value,
-            None => read()?,
+            .map(|at| &self.held[at])
+            .filter(|held| held.army == seed.pointer && self.matches(held, certificate));
+        let (value, certificate) = match held {
+            Some(held) => (held.value.clone(), held.certificate),
+            None => (read()?, certificate),
         };
         {
             if self.next.len() == self.next.capacity() {
@@ -102,25 +148,148 @@ impl<T: Copy> Store<T> {
                 division: seed.division,
                 army: seed.pointer,
                 certificate,
-                value,
+                value: value.clone(),
             });
         }
         Ok(value)
     }
+    /// Read-only range acquisition. The ordered observer still owns admission,
+    /// next-entry order and failure accounting when it consumes this result.
+    pub(super) fn prefetch(
+        &self,
+        base: usize,
+        index: usize,
+        seed: &DivisionSeed,
+        certificate: Option<(u64, u64)>,
+        order: &mut Order,
+        read: impl FnOnce() -> Result<T, &'static str>,
+    ) -> Option<Result<T, &'static str>> {
+        if seed.division == 0
+            || seed.handle != Some(seed.division)
+            || seed.class != Some(0)
+            || base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64) != seed.primary_vtable
+            || base
+                .checked_add(carmy::SECONDARY_VTABLE_RVA)
+                .map(|v| v as u64)
+                != seed.secondary_vtable
+        {
+            return None;
+        }
+        let certificate = certificate?;
+        match self.prefetch_held(index, seed, certificate, order) {
+            Some(_) => None,
+            None => Some(read()),
+        }
+    }
+
+    fn prefetch_held(
+        &self,
+        index: usize,
+        seed: &DivisionSeed,
+        certificate: (u64, u64),
+        order: &mut Order,
+    ) -> Option<&Held<T>> {
+        #[cfg(test)]
+        {
+            order.probes += 1;
+        }
+        let at = if self
+            .held
+            .get(index)
+            .is_some_and(|held| held.division == seed.division)
+        {
+            Some(index)
+        } else {
+            if self.held.is_empty() {
+                return None;
+            }
+            if self.baseline.is_none() || order.baseline != self.baseline {
+                order.clear();
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve(&mut order.entries, self.held.len())
+                })
+                .is_ok()
+                {
+                    order.entries.extend(
+                        self.held
+                            .iter()
+                            .enumerate()
+                            .map(|(at, held)| (held.division, at)),
+                    );
+                    order.entries.sort_unstable_by_key(|entry| entry.0);
+                    order.baseline = self.baseline;
+                    #[cfg(test)]
+                    {
+                        order.rebuilds += 1;
+                    }
+                } else {
+                    // A refused advisory index must not turn a carry into a
+                    // fresh native read (and potentially a different refusal).
+                    return self.held.iter().find(|held| {
+                        #[cfg(test)]
+                        {
+                            order.probes += 1;
+                        }
+                        held.division == seed.division
+                            && held.army == seed.pointer
+                            && self.matches(held, certificate)
+                    });
+                }
+            }
+            order
+                .entries
+                .binary_search_by_key(&seed.division, |entry| {
+                    #[cfg(test)]
+                    {
+                        order.probes += 1;
+                    }
+                    entry.0
+                })
+                .ok()
+                .map(|at| order.entries[at].1)
+        };
+        at.and_then(|at| self.held.get(at))
+            .filter(|held| held.division == seed.division)
+            .filter(|held| held.army == seed.pointer && self.matches(held, certificate))
+    }
+
+    /// Owned range result, including carries. Cache admission stays ordered;
+    /// the common census ordinal avoids another index on unchanged rosters.
+    pub(super) fn prefetch_value(
+        &self,
+        base: usize,
+        index: usize,
+        seed: &DivisionSeed,
+        certificate: Option<(u64, u64)>,
+        order: &mut Order,
+        read: impl FnOnce() -> Result<T, &'static str>,
+    ) -> Option<Result<T, &'static str>> {
+        self.prefetch(base, index, seed, certificate, order, read)
+            .or_else(|| {
+                let certificate = certificate?;
+                self.prefetch_held(index, seed, certificate, order)
+                    .map(|held| Ok(held.value.clone()))
+            })
+    }
+
     pub fn finish(&mut self, complete: bool) {
         if !complete {
             self.forget();
             return;
         }
         std::mem::swap(&mut self.held, &mut self.next);
+        self.baseline = NEXT_BASELINE
+            .fetch_update(Relaxed, Relaxed, |next| next.checked_add(1))
+            .ok();
         self.next.clear();
     }
 }
 
+#[cfg(test)]
 impl Store<i64> {
     pub fn observe(
         &mut self,
-        memory: &impl Memory,
+        memory: &impl engine_native::Memory,
         base: usize,
         seed: &DivisionSeed,
         certificate: Option<(u64, u64)>,
@@ -140,6 +309,7 @@ impl Store<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine_native::Memory;
     use std::cell::Cell;
     struct Value {
         value: i64,
@@ -167,6 +337,169 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn provisional_fresh_values_never_replace_ordered_carries_or_admission() {
+        let mut store = Store::<i64>::default();
+        let mut order = Order::default();
+        let seeds = [seed(1, 0x1000), seed(2, 0x2000), seed(3, 0x3000)];
+        store.begin(seeds.len()).unwrap();
+        for seed in &seeds {
+            store
+                .observe_with(0, seed, Some((1, 1)), || Ok(seed.division as i64))
+                .unwrap();
+        }
+        store.finish(true);
+        store.begin(seeds.len()).unwrap();
+        for (index, seed) in seeds.iter().rev().enumerate() {
+            assert_eq!(
+                store.prefetch(0, index, seed, Some((1, 1)), &mut order, || panic!(
+                    "a carry must not be prefetched"
+                )),
+                None
+            );
+            assert_eq!(
+                store.observe_with(0, seed, Some((1, 1)), || panic!("ordered carry was lost")),
+                Ok(seed.division as i64)
+            );
+        }
+        let seed = seed(4, 0x4000);
+        assert_eq!(
+            store.prefetch(0, 3, &seed, None, &mut order, || panic!(
+                "absent certificate must not read"
+            )),
+            None
+        );
+        let staged = store.prefetch(0, 3, &seed, Some((1, 2)), &mut order, || {
+            Err("fresh scalar fault")
+        });
+        assert_eq!(staged, Some(Err("fresh scalar fault")));
+        // Ordered registration can still refuse this provisional observation.
+        assert_eq!(
+            store.observe_with(0, &seed, None, || panic!(
+                "failed admission must not consume a staged read"
+            )),
+            Err("division experience writer certificate unavailable")
+        );
+        assert_eq!(store.next.len(), 3);
+    }
+
+    #[test]
+    fn range_scalar_indexes_rebuild_once_for_five_thousand_divisions() {
+        const COUNT: usize = 5000;
+        let mut store = Store::<i64>::default();
+        let mut order = Order::default();
+        let certificate = Some((1, 1));
+        let check = |store: &Store<i64>, order: &mut Order, first: usize, rebuilds: usize| {
+            let before = (order.rebuilds, order.probes);
+            for index in 0..COUNT {
+                let id = first + COUNT - index - 1;
+                assert_eq!(
+                    store.prefetch_value(
+                        0,
+                        index,
+                        &seed(id as u64, id),
+                        certificate,
+                        order,
+                        || panic!("an indexed owned carry must not read"),
+                    ),
+                    Some(Ok(id as i64))
+                );
+            }
+            assert_eq!(order.rebuilds - before.0, rebuilds);
+            // Count actual ordinal/search probes, not elapsed time. Both the
+            // carry decision and its owned-value lookup must stay logarithmic.
+            let limit = COUNT * 2 * (COUNT.ilog2() as usize + 4);
+            assert!(order.probes - before.1 <= limit);
+        };
+
+        store.begin(COUNT).unwrap();
+        for id in 1..=COUNT {
+            store
+                .observe_with(0, &seed(id as u64, id), certificate, || Ok(id as i64))
+                .unwrap();
+        }
+        store.finish(true);
+        for id in 1..=COUNT {
+            assert_eq!(
+                store.prefetch_value(
+                    0,
+                    id - 1,
+                    &seed(id as u64, id),
+                    certificate,
+                    &mut order,
+                    || panic!("an ordinal owned carry must not read"),
+                ),
+                Some(Ok(id as i64))
+            );
+        }
+        assert_eq!(order.rebuilds, 0);
+        assert_eq!(order.probes, 2 * COUNT);
+        check(&store, &mut order, 1, 1);
+        let bytes = order.allocated_bytes();
+        check(&store, &mut order, 1, 0);
+        assert_eq!(order.allocated_bytes(), bytes);
+
+        // A same-length replacement changes every hint without clearing the
+        // caller's scratch. Its first miss must rebuild only once.
+        store.begin(COUNT).unwrap();
+        for index in 0..COUNT {
+            let id = 1 + (index + COUNT / 2) % COUNT;
+            store
+                .observe_with(0, &seed(id as u64, id), certificate, || panic!(
+                    "ordered carry was lost"
+                ))
+                .unwrap();
+        }
+        store.finish(true);
+        check(&store, &mut order, 1, 1);
+
+        store.forget();
+        let before = (order.rebuilds, order.probes);
+        for id in 1..=COUNT {
+            assert_eq!(
+                store.prefetch_value(
+                    0,
+                    id - 1,
+                    &seed(id as u64, id),
+                    certificate,
+                    &mut order,
+                    || Err("fresh scalar fault"),
+                ),
+                Some(Err("fresh scalar fault"))
+            );
+        }
+        assert_eq!(order.rebuilds, before.0);
+        assert_eq!(order.probes - before.1, COUNT);
+
+        // All keys are absent from the stale same-sized index. A search miss
+        // must not silently miss a new baseline's carry or rebuild per lookup.
+        store.begin(COUNT).unwrap();
+        for id in COUNT + 1..=2 * COUNT {
+            store
+                .observe_with(0, &seed(id as u64, id), certificate, || Ok(id as i64))
+                .unwrap();
+        }
+        store.finish(true);
+        check(&store, &mut order, COUNT + 1, 1);
+        let before = (order.rebuilds, order.probes);
+        for id in 2 * COUNT + 1..=3 * COUNT {
+            assert_eq!(
+                store.prefetch_value(
+                    0,
+                    id,
+                    &seed(id as u64, id),
+                    certificate,
+                    &mut order,
+                    || Err("fresh scalar fault"),
+                ),
+                Some(Err("fresh scalar fault"))
+            );
+        }
+        assert_eq!(order.rebuilds, before.0);
+        assert!(order.probes - before.1 <= COUNT * (COUNT.ilog2() as usize + 4));
+        assert_eq!(order.allocated_bytes(), bytes);
+    }
+
     #[test]
     fn unchanged_experience_carries_five_thousand_divisions_without_reading() {
         let mut store = Store::default();
@@ -218,6 +551,53 @@ mod tests {
         assert_eq!(
             store.observe(&memory, 0, &seed(12, 12), Some((2, 2))),
             Err("division experience unreadable")
+        );
+    }
+
+    #[test]
+    fn daily_scalars_keep_the_sample_but_never_certify_stale_exercise_xp() {
+        // The same store policy supplies recorded XP and officer XP.
+        let mut store = Store::<i64>::default();
+        let original = seed(1, 0x1000);
+        store.daily(true);
+        store.begin(1).unwrap();
+        assert_eq!(
+            store.observe_with(0, &original, Some((1, 1)), || Ok(-7)),
+            Ok(-7)
+        );
+        assert_eq!(store.current(&original, Some((1, 1))), Some(-7));
+        store.finish(true);
+        store.daily(false);
+        store.begin(2).unwrap();
+        assert_eq!(
+            store.observe_with(0, &original, Some((1, 2)), || panic!("daily carry read")),
+            Ok(-7)
+        );
+        assert_eq!(store.current(&original, Some((1, 2))), None);
+        let born = seed(2, 0x2000);
+        assert_eq!(
+            store.observe_with(0, &born, Some((1, 2)), || Ok(19)),
+            Ok(19)
+        );
+        store.finish(true);
+        store.begin(1).unwrap();
+        assert_eq!(
+            store.observe_with(0, &seed(1, 0x3000), Some((1, 2)), || Ok(21)),
+            Ok(21)
+        );
+        store.finish(true);
+        store.daily(true);
+        store.begin(1).unwrap();
+        assert_eq!(
+            store.observe_with(0, &original, Some((1, 2)), || Ok(23)),
+            Ok(23)
+        );
+        assert_eq!(store.current(&original, Some((1, 2))), Some(23));
+        store.finish(false);
+        store.begin(1).unwrap();
+        assert_eq!(
+            store.observe_with(0, &original, Some((1, 2)), || Ok(29)),
+            Ok(29)
         );
     }
 }

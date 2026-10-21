@@ -784,6 +784,12 @@ impl FrameEncoder {
             if !matches!(view, Some(TableInput::SliceUpdate { .. })) {
                 continue;
             }
+            if unchanged[table.index()] {
+                // Encoding already established that this update changes no
+                // rows. Keep the shared baseline and retire the unused input
+                // below, rather than cloning/applying an identical table.
+                continue;
+            }
             let Some(TableInput::SliceUpdate { update, .. }) = view.take() else {
                 unreachable!("matched above");
             };
@@ -816,18 +822,7 @@ impl FrameEncoder {
                 retired.push(Retiring::Input(view));
                 continue;
             }
-            if let TableInput::ComparedChanges { indices, rows, .. } = view {
-                let (hour, BaselineRows::Owned(previous)) = self.state.tables[index]
-                    .as_mut()
-                    .expect("validated replacement baseline")
-                else {
-                    unreachable!("validated owned replacement baseline")
-                };
-                retired.push(Retiring::Rows(
-                    previous.install_replacements(rows, &indices),
-                ));
-                *hour = source.hour;
-            } else if unchanged[index] {
+            if unchanged[index] {
                 let baseline = self.state.tables[index]
                     .as_mut()
                     .expect("unchanged table has a validated baseline");
@@ -838,6 +833,17 @@ impl FrameEncoder {
                     )),
                     view => retired.push(Retiring::Input(view)),
                 }
+            } else if let TableInput::ComparedChanges { indices, rows, .. } = view {
+                let (hour, BaselineRows::Owned(previous)) = self.state.tables[index]
+                    .as_mut()
+                    .expect("validated replacement baseline")
+                else {
+                    unreachable!("validated owned replacement baseline")
+                };
+                retired.push(Retiring::Rows(
+                    previous.install_replacements(rows, &indices),
+                ));
+                *hour = source.hour;
             } else {
                 let next = match view {
                     TableInput::Sampled(TableView::Complete(rows)) => {

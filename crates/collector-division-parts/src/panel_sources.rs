@@ -1,5 +1,17 @@
 //! Shared deployed modifier roots carried by the existing tree writers.
+use crate::clock::qpc;
 use collector_observers::division_panel_changes as operands;
+
+mod owned;
+mod preparation;
+use preparation::NativeReads;
+
+pub const PHASE_NAMES: [&str; 4] = [
+    "sources_ordered",
+    "sources_prune",
+    "sources_variants",
+    "sources_publish",
+];
 use collector_observers::naval_tree_changes as changes;
 use collector_projection::certified::{Snapshot, Store as Rows};
 use engine_native::{
@@ -7,7 +19,7 @@ use engine_native::{
 };
 use replay_data::rows::{DivisionPanelSourceRow, SharedDivisionPanelSourceRow};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, OnceLock},
 };
 type RowSnapshot = Snapshot<SharedDivisionPanelSourceRow>;
@@ -78,6 +90,173 @@ impl SourceSnapshot {
         }
     }
 }
+/// Independent per-division observations. Only the ordered consumer inserts
+/// shared country/commander/province results or changes certified source rows.
+#[derive(Clone, Copy)]
+pub struct Selection {
+    country: Option<(u32, Result<ccountry::Country, &'static str>)>,
+    movement: Option<carmy_leader::MovementPreparation>,
+    commander: Option<(usize, Result<u64, &'static str>)>,
+    province: Result<usize, &'static str>,
+    context: Option<Result<Option<(u32, usize)>, &'static str>>,
+    // Frozen with this census ordinal rather than hashed again per division.
+    membership: Option<((u64, u64), usize)>,
+}
+
+/// Reused range-local read memos; cold writer-certificate admission stays ordered.
+pub struct Preparation {
+    memo: carmy_leader::LeaderMemo,
+    countries: HashMap<u32, Result<ccountry::Country, &'static str>>,
+    commanders: HashMap<usize, u64>,
+    provinces: HashMap<usize, Option<(u32, usize)>>,
+    reads: NativeReads,
+}
+impl Default for Preparation {
+    fn default() -> Self {
+        Self {
+            memo: carmy_leader::LeaderMemo::vacant(),
+            countries: HashMap::new(),
+            commanders: HashMap::new(),
+            provinces: HashMap::new(),
+            reads: NativeReads::default(),
+        }
+    }
+}
+impl Preparation {
+    pub fn can_settle_owned(&self) -> bool {
+        self.reads.complete
+    }
+    pub fn has_variant(&self, handle: u64, pointer: usize) -> bool {
+        self.reads.has_variant(handle, pointer)
+    }
+    pub fn allocated_bytes(&self) -> usize {
+        self.memo.allocated_bytes()
+            + self.reads.allocated_bytes()
+            + self.countries.capacity()
+                * std::mem::size_of::<(u32, Result<ccountry::Country, &'static str>)>()
+            + self.commanders.capacity() * std::mem::size_of::<(usize, u64)>()
+            + self.provinces.capacity() * std::mem::size_of::<(usize, Option<(u32, usize)>)>()
+    }
+    /// Optional staging shortage keeps the original ordered reader.
+    pub fn begin(&mut self, divisions: usize) -> bool {
+        self.countries.clear();
+        self.commanders.clear();
+        self.provinces.clear();
+        engine_allocation::advisory(|| {
+            if self.memo.capacity() < divisions {
+                self.memo = carmy_leader::LeaderMemo::try_with_capacity(divisions)?;
+            }
+            self.memo.clear();
+            engine_allocation::reserve_map(&mut self.countries, divisions)?;
+            engine_allocation::reserve_map(&mut self.commanders, divisions)?;
+            engine_allocation::reserve_map(&mut self.provinces, divisions)?;
+            self.reads.begin(divisions)
+        })
+        .is_ok()
+    }
+    pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        countries: Option<&ccountry::Reader<'_, impl Memory>>,
+        store: &Store,
+        seed: &DivisionSeed,
+    ) -> Selection {
+        if countries.is_none() {
+            self.reads.complete = false;
+        }
+        let country = source_owner(seed).ok().and_then(|owner| {
+            countries.map(|countries| {
+                let country = *self
+                    .countries
+                    .entry(owner)
+                    .or_insert_with(|| countries.resolve(owner));
+                (owner, country)
+            })
+        });
+        let movement = country.filter(|(_, country)| country.is_ok()).map(|_| {
+            carmy_leader::MovementPreparation::capture(memory, base, seed, &mut self.memo)
+        });
+        let commander = movement
+            .and_then(|movement| movement.leader())
+            .map(|receiver| {
+                let handle = self
+                    .commanders
+                    .get(&receiver)
+                    .copied()
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        read::<u64>(memory, receiver + engine_native::cunit_leader::TYPE)
+                            .ok_or("division source commander identity unreadable")
+                    });
+                if let Ok(handle) = handle {
+                    self.commanders.insert(receiver, handle);
+                }
+                (receiver, handle)
+            });
+        let province =
+            engine_native::division_panel_operands::selected_province(memory, state, seed);
+        let context = province
+            .ok()
+            .filter(|province| !store.provinces.contains_key(province))
+            .map(|province| {
+                if let Some(context) = self.provinces.get(&province) {
+                    return Ok(*context);
+                }
+                let context =
+                    engine_native::division_panel_operands::province_state(memory, base, province);
+                if let Ok(context) = context {
+                    self.provinces.insert(province, context);
+                }
+                context
+            });
+        let mut selection = Selection {
+            country,
+            movement,
+            commander,
+            province,
+            context,
+            membership: None,
+        };
+        let block = movement.and_then(|movement| {
+            match carmy_leader::movement_block_prepared(
+                memory,
+                base,
+                seed,
+                &mut self.memo,
+                Some(movement),
+            ) {
+                Ok(block) => block,
+                Err(_) => {
+                    self.reads.complete = false;
+                    None
+                }
+            }
+        });
+        // Failed shared selections can make an earlier range's admitted memo
+        // choose a branch this range never read. Keep that ordered slow path.
+        if country.is_some_and(|(_, value)| value.is_err())
+            || commander.is_some_and(|(_, value)| value.is_err())
+            || province.is_err()
+            || context.is_some_and(|value| value.is_err())
+        {
+            self.reads.complete = false;
+        }
+        self.reads
+            .capture(memory, base, state, store, seed, selection, block);
+        selection.membership = self.reads.membership_observation;
+        selection
+    }
+}
+
+fn source_owner(seed: &DivisionSeed) -> Result<u32, &'static str> {
+    seed.expeditionary_owner
+        .filter(|&owner| (owner as i32) > 0)
+        .or(seed.roster_owner)
+        .ok_or("division source owner unavailable")
+}
+
 struct Pool {
     army: usize,
     certificate: Option<(u64, u64)>,
@@ -86,20 +265,24 @@ struct Pool {
     seen: u64,
     context: Option<(usize, u32, u32)>,
     context_refusal: Option<&'static str>,
+    slot: usize,
 }
 struct Variant {
     refs: usize,
+    lifetime: Option<(u64, u64)>,
     pointer: usize,
     certificate: Option<(u64, u64)>,
     count: u32,
     availability: Option<u64>,
 }
 struct State {
+    slot: usize,
     pointer: usize,
     certificate: Option<(u64, u64)>,
     seen: u64,
 }
 struct Held {
+    slot: usize,
     receiver: usize,
     accumulator: usize,
     certificate: Option<(u64, u64)>,
@@ -126,9 +309,14 @@ pub struct Store {
     context_changed: bool,
     dirty: Vec<usize>,
     variant_epoch: Option<u64>,
+    variant_observation: Option<((u64, u64), u64)>,
     retired: Vec<usize>,
     lifetime_epoch: Option<u64>,
     published: Option<Arc<SourceSnapshot>>,
+    phase_ticks: [u64; PHASE_NAMES.len()],
+    boundary: owned::Boundary,
+    settling_owned: bool,
+    settling_availability: Option<u64>,
 }
 impl Default for Store {
     fn default() -> Self {
@@ -152,9 +340,14 @@ impl Default for Store {
             context_changed: false,
             dirty: Vec::new(),
             variant_epoch: None,
+            variant_observation: None,
             retired: Vec::new(),
             lifetime_epoch: None,
             published: None,
+            phase_ticks: [0; PHASE_NAMES.len()],
+            boundary: Default::default(),
+            settling_owned: false,
+            settling_availability: None,
         }
     }
 }
@@ -167,6 +360,9 @@ fn owner_range(kind: u8, owner: u64) -> std::ops::Range<u128> {
 }
 impl Store {
     pub fn forget(&mut self) {
+        self.boundary.active = false;
+        self.settling_owned = false;
+        self.settling_availability = None;
         self.roots.clear();
         self.countries.clear();
         self.leaders.clear();
@@ -179,12 +375,14 @@ impl Store {
         self.variant_handles.clear();
         self.provinces.clear();
         self.variant_epoch = None;
+        self.variant_observation = None;
         self.lifetime_epoch = None;
         self.retired.clear();
         self.published = None;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
+            + self.boundary.allocated_bytes()
             + self.retired.capacity() * std::mem::size_of::<usize>()
             + self.memo.allocated_bytes()
             + self.roots.len() * std::mem::size_of::<((u8, u64), Held)>()
@@ -200,16 +398,17 @@ impl Store {
             + self.membership_scratch.capacity() * std::mem::size_of::<(u32, u64, usize)>()
             + self.dirty.capacity() * std::mem::size_of::<usize>()
     }
-    fn root(
+    fn root_prepared(
         &mut self,
         memory: &impl Memory,
         kind: u8,
         owner: u64,
         receiver: usize,
         accumulator: usize,
+        reads: Option<&NativeReads>,
     ) -> Result<(), &'static str> {
-        // Shared roots already visited this pass keep the first selection,
-        // including its refusal, without another registry lookup.
+        // Repeated roots retain the first admission, including a refusal.
+        // Their lookup cost belongs to selection, with no per-hit timer read.
         if self
             .roots
             .get(&(kind, owner))
@@ -217,15 +416,27 @@ impl Store {
         {
             return Ok(());
         }
-        self.root_with_certificate(
+        if let Some(held) = self.roots.get_mut(&(kind, owner))
+            && let Some(slot) = reads.and_then(|reads| reads.root_slots.get(&(kind, owner)))
+        {
+            held.slot = *slot;
+        }
+        let certificate = if self.settling_owned {
+            reads.and_then(|reads| reads.root_certificate(kind, owner))
+        } else {
+            changes::sequence(receiver)
+        };
+        self.root_with_observation(
             memory,
             kind,
             owner,
             receiver,
             accumulator,
-            changes::sequence(receiver),
+            certificate,
+            reads,
         )
     }
+    #[cfg(test)]
     fn root_with_certificate(
         &mut self,
         memory: &impl Memory,
@@ -234,6 +445,26 @@ impl Store {
         receiver: usize,
         accumulator: usize,
         certificate: Option<(u64, u64)>,
+    ) -> Result<(), &'static str> {
+        self.root_with_observation(
+            memory,
+            kind,
+            owner,
+            receiver,
+            accumulator,
+            certificate,
+            None,
+        )
+    }
+    fn root_with_observation(
+        &mut self,
+        memory: &impl Memory,
+        kind: u8,
+        owner: u64,
+        receiver: usize,
+        accumulator: usize,
+        certificate: Option<(u64, u64)>,
+        reads: Option<&NativeReads>,
     ) -> Result<(), &'static str> {
         if self
             .roots
@@ -254,6 +485,18 @@ impl Store {
         let mut count = 0;
         let result = (|| {
             certificate.ok_or("division modifier source writer certificate unavailable")?;
+            if let Some(observed) =
+                reads.and_then(|reads| reads.root(kind, owner, receiver, accumulator, certificate))
+            {
+                for row in &observed.rows {
+                    count = row
+                        .ordinal
+                        .checked_add(1)
+                        .ok_or("division modifier source ordinal overflow")?;
+                    self.rows.insert(Arc::clone(row))?;
+                }
+                return observed.result;
+            }
             modifier_breakdown::source_nodes(memory, accumulator, |ordinal, node| {
                 count = ordinal
                     .checked_add(1)
@@ -285,6 +528,10 @@ impl Store {
         self.roots.insert(
             (kind, owner),
             Held {
+                slot: reads
+                    .and_then(|reads| reads.root_slots.get(&(kind, owner)))
+                    .copied()
+                    .unwrap_or(usize::MAX),
                 receiver,
                 accumulator,
                 certificate,
@@ -302,8 +549,75 @@ impl Store {
         seeds: &[DivisionSeed],
         selected: &mut Vec<(u64, Option<[u64; 3]>)>,
     ) -> Result<Arc<SourceSnapshot>, &'static str> {
-        let availability = operands::variant_capability().unwrap_or(0);
-        let world_epoch = operands::world_epoch();
+        self.capture_prepared(memory, base, state, seeds, selected, |_| None)
+    }
+    pub fn capture_prepared(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+        selected: &mut Vec<(u64, Option<[u64; 3]>)>,
+        prepared: impl Fn(usize) -> Option<Selection>,
+    ) -> Result<Arc<SourceSnapshot>, &'static str> {
+        self.capture_staged(
+            memory,
+            base,
+            state,
+            seeds,
+            selected,
+            prepared,
+            |_| None,
+            |_, _| None,
+        )
+    }
+    pub fn phase_ticks(&self) -> [u64; PHASE_NAMES.len()] {
+        self.phase_ticks
+    }
+    pub fn capture_staged<'a>(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+        selected: &mut Vec<(u64, Option<[u64; 3]>)>,
+        prepared: impl Fn(usize) -> Option<Selection>,
+        reads: impl Fn(usize) -> Option<&'a Preparation>,
+        variant_reads: impl Fn(u64, usize) -> Option<&'a Preparation>,
+    ) -> Result<Arc<SourceSnapshot>, &'static str> {
+        self.capture_boundary();
+        let boundary = std::mem::take(&mut self.boundary);
+        let result = self.capture_inner(
+            memory,
+            base,
+            state,
+            seeds,
+            selected,
+            prepared,
+            reads,
+            variant_reads,
+            &boundary,
+        );
+        self.boundary = boundary;
+        self.boundary.active = false;
+        result
+    }
+    fn capture_inner<'a>(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+        selected: &mut Vec<(u64, Option<[u64; 3]>)>,
+        prepared: impl Fn(usize) -> Option<Selection>,
+        reads: impl Fn(usize) -> Option<&'a Preparation>,
+        variant_reads: impl Fn(u64, usize) -> Option<&'a Preparation>,
+        boundary: &owned::Boundary,
+    ) -> Result<Arc<SourceSnapshot>, &'static str> {
+        self.phase_ticks = [0; PHASE_NAMES.len()];
+        let setup = qpc();
+        let availability = boundary.availability.unwrap_or(0);
+        let world_epoch = boundary.world_epoch;
         if self.world_epoch != world_epoch {
             self.forget();
             self.world_epoch = world_epoch;
@@ -322,42 +636,45 @@ impl Store {
         self.context_changed = self.membership_changed;
         self.dirty.clear();
 
-        self.retire_memberships()?;
-        let mut failed = false;
-        let operand_epoch = operands::take(|pointer| {
-            if engine_allocation::reserve(&mut self.dirty, 1).is_err() {
-                failed = true;
-            } else {
-                self.dirty.push(pointer);
-            }
-        });
-        self.dirty.sort_unstable();
-
-        if failed {
-            return Err("attrition dirty ranges allocation failed");
-        }
+        boundary.result?;
+        self.retire_from(boundary.lifetime_epoch, &boundary.retired)?;
+        engine_allocation::reserve(&mut self.dirty, boundary.dirty.len())
+            .map_err(|_| "attrition dirty ranges allocation failed")?;
+        self.dirty.extend_from_slice(&boundary.dirty);
+        let operand_epoch = boundary.variant_epoch;
         // A domain epoch change revokes all its held operands; this is a
         // recovery acquisition, never a quiet-hour membership scan.
         let variant_recovery = self.variant_epoch != operand_epoch;
         self.variant_epoch = operand_epoch;
-        let countries = ccountry::Reader::new(memory, base, state)?;
-        for seed in seeds {
+        let countries = if self.settling_owned {
+            None
+        } else {
+            Some(ccountry::Reader::new(memory, base, state)?)
+        };
+        for (index, seed) in seeds.iter().enumerate() {
+            let prepared = prepared(index);
+            let reads = reads(index).map(|preparation| &preparation.reads);
             let selection = (|| {
-                let owner = seed
-                    .expeditionary_owner
-                    .filter(|&owner| (owner as i32) > 0)
-                    .or(seed.roster_owner)
-                    .ok_or("division source owner unavailable")?;
+                let owner = source_owner(seed)?;
                 let country = match self.countries.get(&owner) {
                     Some(&(turn, country)) if turn == self.turn => country,
                     _ => {
-                        let country = countries.resolve(owner);
+                        let country = prepared
+                            .and_then(|p| p.country)
+                            .filter(|(selected, _)| *selected == owner)
+                            .map(|(_, country)| country)
+                            .unwrap_or_else(|| {
+                                countries
+                                    .as_ref()
+                                    .ok_or("division source owned selection missing")?
+                                    .resolve(owner)
+                            });
                         self.countries.insert(owner, (self.turn, country));
                         country
                     }
                 };
                 let country = country?;
-                self.root(
+                self.root_prepared(
                     memory,
                     0,
                     country.id as u64,
@@ -366,10 +683,16 @@ impl Store {
                         .pointer
                         .checked_add(ccountry::MODIFIER_ACCUMULATOR)
                         .ok_or("division source country overflow")?,
+                    reads,
                 )?;
                 let selection = (|| {
-                    let Some((accumulator, hq)) =
-                        carmy_leader::movement_block_memoized(memory, base, seed, &mut self.memo)?
+                    let Some((accumulator, hq)) = carmy_leader::movement_block_prepared(
+                        memory,
+                        base,
+                        seed,
+                        &mut self.memo,
+                        prepared.and_then(|p| p.movement),
+                    )?
                     else {
                         return Ok([country.id as u64, 0, 0]);
                     };
@@ -384,9 +707,17 @@ impl Store {
                     let handle = match self.leaders.get(&receiver) {
                         Some(&(turn, handle)) if turn == self.turn => handle,
                         _ => {
-                            let handle =
-                                read::<u64>(memory, receiver + engine_native::cunit_leader::TYPE)
-                                    .ok_or("division source commander identity unreadable")?;
+                            let handle = prepared
+                                .and_then(|p| p.commander)
+                                .filter(|(selected, _)| *selected == receiver)
+                                .map(|(_, handle)| handle)
+                                .unwrap_or_else(|| {
+                                    read::<u64>(
+                                        memory,
+                                        receiver + engine_native::cunit_leader::TYPE,
+                                    )
+                                    .ok_or("division source commander identity unreadable")
+                                })?;
                             self.leaders.insert(receiver, (self.turn, handle));
                             handle
                         }
@@ -395,7 +726,7 @@ impl Store {
                         return Err("division source commander identity mismatch");
                     }
                     let kind = if hq { 2 } else { 1 };
-                    self.root(memory, kind, handle, receiver, accumulator)?;
+                    self.root_prepared(memory, kind, handle, receiver, accumulator, reads)?;
                     Ok::<_, &'static str>([country.id as u64, kind as u64, handle])
                 })()
                 .unwrap_or([country.id as u64, u64::MAX, 0]);
@@ -404,10 +735,20 @@ impl Store {
             selected.push((seed.division, selection.ok()));
             let selection_failure = selection.err();
 
-            self.membership(memory, base, seed)?;
+            self.membership_prepared(
+                memory,
+                base,
+                seed,
+                reads,
+                prepared.and_then(|p| p.membership),
+            )?;
             let context_result = (|| {
-                let province =
-                    engine_native::division_panel_operands::selected_province(memory, state, seed)?;
+                let province = match prepared {
+                    Some(prepared) => prepared.province,
+                    None => engine_native::division_panel_operands::selected_province(
+                        memory, state, seed,
+                    ),
+                }?;
                 let current = (
                     province,
                     seed.roster_owner.unwrap_or(0),
@@ -426,9 +767,11 @@ impl Store {
                 let context = match self.provinces.get(&province) {
                     Some(context) => *context,
                     None => {
-                        let context = engine_native::division_panel_operands::province_state(
-                            memory, base, province,
-                        )?;
+                        let context = prepared.and_then(|p| p.context).unwrap_or_else(|| {
+                            engine_native::division_panel_operands::province_state(
+                                memory, base, province,
+                            )
+                        })?;
                         self.provinces.insert(province, context);
                         context
                     }
@@ -438,18 +781,25 @@ impl Store {
                         .into_iter()
                         .flatten()
                     {
-                        self.state(memory, base, state, id, pointer, country)?;
+                        self.state_prepared(memory, base, state, id, pointer, country, reads)?;
                     }
                 }
                 Ok::<_, &'static str>(())
             })();
-            self.context_refusal(seed.division, selection_failure.or(context_result.err()))?;
+            let result =
+                self.context_refusal(seed.division, selection_failure.or(context_result.err()));
+            result?;
         }
         // Variant pointers touched by a rebuild refresh only that shared
         // operand. New memberships seed their variants in membership().
-        if self.membership_changed || self.context_changed {
-            self.prune()?;
-        }
+        let begin = qpc();
+        let result = if self.membership_changed || self.context_changed {
+            self.prune()
+        } else {
+            Ok(())
+        };
+        self.phase_ticks[1] += qpc().saturating_sub(begin).max(0) as u64;
+        result?;
         if variant_recovery {
             self.dirty.clear();
             engine_allocation::reserve(&mut self.dirty, self.variants.len())
@@ -457,13 +807,17 @@ impl Store {
             self.dirty
                 .extend(self.variants.values().map(|held| held.pointer));
         }
+        let variants_begin = qpc();
         for index in 0..self.dirty.len() {
             let pointer = self.dirty[index];
             if let Some(&handle) = self.variant_handles.get(&pointer) {
-                self.variant(memory, base, handle, pointer)?;
+                let observed = variant_reads(handle, pointer);
+                self.variant_prepared(memory, base, handle, pointer, observed.map(|p| &p.reads))?;
             }
         }
 
+        self.phase_ticks[2] = qpc().saturating_sub(variants_begin).max(0) as u64;
+        let begin = qpc();
         operands::demand(self.pools.len(), self.variants.len(), self.states.len());
         changes::division_trees(self.roots.len());
         // Roots no longer demanded publish only their removed ranges.
@@ -480,22 +834,37 @@ impl Store {
             self.rows
                 .remove_range(key(kind, owner, 0)..key(kind, owner, held.count))?;
         }
-        let rows = self.rows.finish()?;
-        let availability = Some(availability);
-        if let Some(held) = &self.published
-            && Arc::ptr_eq(&held.rows, &rows)
-            && held.availability == availability
-        {
-            return Ok(Arc::clone(held));
+        self.phase_ticks[1] += qpc().saturating_sub(begin).max(0) as u64;
+        let begin = qpc();
+        let result = (|| {
+            let rows = self.rows.finish()?;
+            let availability = Some(availability);
+            if let Some(held) = &self.published
+                && Arc::ptr_eq(&held.rows, &rows)
+                && held.availability == availability
+            {
+                return Ok(Arc::clone(held));
+            }
+            let snapshot = Arc::new(SourceSnapshot {
+                rows,
+                availability,
+                withdrawn: OnceLock::new(),
+            });
+            self.published = Some(Arc::clone(&snapshot));
+            Ok(snapshot)
+        })();
+        let finished = qpc();
+        self.phase_ticks[3] += finished.saturating_sub(begin).max(0) as u64;
+        // Selection/setup is the residual of this pass, including repeated
+        // memo hits; it needs no pair of timer reads on every division.
+        self.phase_ticks[0] = (finished.saturating_sub(setup).max(0) as u64)
+            .saturating_sub(self.phase_ticks[1..].iter().sum());
+        if result.is_ok() {
+            self.variant_observation = boundary.stamp;
         }
-        let snapshot = Arc::new(SourceSnapshot {
-            rows,
-            availability,
-            withdrawn: OnceLock::new(),
-        });
-        self.published = Some(Arc::clone(&snapshot));
-        Ok(snapshot)
+        result
     }
+    #[cfg(test)]
     fn retire_memberships(&mut self) -> Result<(), &'static str> {
         self.retired.clear();
         let mut failed = false;
@@ -511,15 +880,21 @@ impl Store {
             return Err("variant lifetime ranges allocation failed");
         }
         self.retired.sort_unstable();
+        let retired = std::mem::take(&mut self.retired);
+        let result = self.retire_from(epoch, &retired);
+        self.retired = retired;
+        result
+    }
+    fn retire_from(&mut self, epoch: Option<u64>, retired: &[usize]) -> Result<(), &'static str> {
         let recovery = self.lifetime_epoch != epoch;
         self.lifetime_epoch = epoch;
-        if recovery || !self.retired.is_empty() {
+        if recovery || !retired.is_empty() {
             for held in self.pools.values_mut() {
                 if recovery
                     || held
                         .variants
                         .iter()
-                        .any(|&(_, _, pointer)| self.retired.binary_search(&pointer).is_ok())
+                        .any(|&(_, _, pointer)| retired.binary_search(&pointer).is_ok())
                 {
                     // The cached address no longer proves a live binding.
                     // membership() authenticates the current pool before any
@@ -605,6 +980,7 @@ impl Store {
             reason: Vec::new(),
         }))
     }
+    #[cfg(test)]
     fn variant(
         &mut self,
         memory: &impl Memory,
@@ -612,13 +988,44 @@ impl Store {
         handle: u64,
         pointer: usize,
     ) -> Result<(), &'static str> {
-        let availability = operands::variant_capability();
-        let certificate = operands::variant_sequence(pointer);
+        self.variant_prepared(memory, base, handle, pointer, None)
+    }
+    fn variant_prepared(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        handle: u64,
+        pointer: usize,
+        reads: Option<&NativeReads>,
+    ) -> Result<(), &'static str> {
+        self.variant_observed(memory, base, handle, pointer, reads)
+    }
+    fn variant_observed(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        handle: u64,
+        pointer: usize,
+        reads: Option<&NativeReads>,
+    ) -> Result<(), &'static str> {
+        let availability = if self.settling_owned {
+            self.settling_availability
+        } else {
+            operands::variant_capability()
+        };
+        let certificate = if self.settling_owned {
+            reads
+                .and_then(|reads| reads.variant_certificates.get(&(handle, pointer)))
+                .copied()
+        } else {
+            operands::variant_sequence(pointer)
+        };
         if let Some(held) = self.variants.get(&handle)
             && held.certificate == certificate
             && held.pointer == pointer
             && held.availability == availability
-            && (availability.is_some_and(operands::variant_capability_is_current)
+            && (self.settling_owned
+                || availability.is_some_and(operands::variant_capability_is_current)
                 || self
                     .rows
                     .get(key(3, handle, 0))
@@ -629,23 +1036,44 @@ impl Store {
         let old = self.variants.get(&handle).map_or(0, |held| held.count);
         let result = (|| {
             certificate.ok_or("held variant terrain writer certificate unavailable")?;
-            engine_native::division_panel_operands::terrain(
-                memory,
-                base,
-                pointer,
-                handle,
-                |ordinal, raw| {
+            let result = if let Some(observed) = reads.and_then(|reads| {
+                reads.variant_observed(
+                    handle,
+                    pointer,
+                    certificate,
+                    availability,
+                    self.settling_owned,
+                )
+            }) {
+                for (ordinal, &raw) in observed.values.iter().enumerate() {
                     self.operand(
                         3,
                         handle,
-                        ordinal,
+                        ordinal as u32,
                         vec![engine_native::modifier_breakdown::SourceValue { key: 0, raw }],
-                    )
-                },
-            )
-            .and_then(|count| {
-                if availability.is_some_and(operands::variant_capability_is_current)
-                    && operands::variant_sequence(pointer) == certificate
+                    )?;
+                }
+                observed.result
+            } else {
+                engine_native::division_panel_operands::terrain(
+                    memory,
+                    base,
+                    pointer,
+                    handle,
+                    |ordinal, raw| {
+                        self.operand(
+                            3,
+                            handle,
+                            ordinal,
+                            vec![engine_native::modifier_breakdown::SourceValue { key: 0, raw }],
+                        )
+                    },
+                )
+            };
+            result.and_then(|count| {
+                if self.settling_owned
+                    || (availability.is_some_and(operands::variant_capability_is_current)
+                        && operands::variant_sequence(pointer) == certificate)
                 {
                     Ok(count)
                 } else {
@@ -682,6 +1110,13 @@ impl Store {
             handle,
             Variant {
                 refs: self.variants.get(&handle).map_or(0, |held| held.refs),
+                lifetime: if self.settling_owned {
+                    reads
+                        .and_then(|reads| reads.variant_lifetimes.get(&(handle, pointer)))
+                        .copied()
+                } else {
+                    operands::observed_lifetime_sequence(pointer)
+                },
                 pointer,
                 certificate,
                 count,
@@ -690,22 +1125,40 @@ impl Store {
         );
         Ok(())
     }
+    #[cfg(test)]
     fn membership(
         &mut self,
         memory: &impl Memory,
         base: usize,
         seed: &DivisionSeed,
     ) -> Result<(), &'static str> {
+        self.membership_prepared(memory, base, seed, None, None)
+    }
+    fn membership_prepared(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        seed: &DivisionSeed,
+        reads: Option<&NativeReads>,
+        observation: Option<((u64, u64), usize)>,
+    ) -> Result<(), &'static str> {
         let pool = seed
             .pointer
             .checked_add(engine_native::carmy::EQUIPMENT_POOL)
             .ok_or("attrition pool overflow")?;
-        let certificate = operands::sequence(pool);
+        let certificate = if self.settling_owned {
+            observation.map(|(certificate, _)| certificate)
+        } else {
+            operands::sequence(pool)
+        };
         if let Some(held) = self.pools.get_mut(&seed.division)
             && held.certificate == certificate
             && held.army == seed.pointer
         {
             held.seen = self.turn;
+            if let Some((_, slot)) = observation {
+                held.slot = slot;
+            }
             return Ok(());
         }
         let old_count = self.pools.get(&seed.division).map_or(0, |held| held.count);
@@ -713,6 +1166,12 @@ impl Store {
         let result = (|| {
             certificate.ok_or("held variant membership writer certificate unavailable")?;
             let scratch = &mut self.membership_scratch;
+            if let Some(observed) = reads.and_then(|reads| reads.membership(seed, certificate)) {
+                engine_allocation::reserve(scratch, observed.variants.len())
+                    .map_err(|_| "attrition membership scratch allocation failed")?;
+                scratch.extend_from_slice(&observed.variants);
+                return observed.result;
+            }
             let count = engine_native::division_panel_operands::held_variants(
                 memory,
                 base,
@@ -772,7 +1231,7 @@ impl Store {
                     }
                 }
                 for &(_, handle, pointer) in &scratch {
-                    self.variant(memory, base, handle, pointer)?;
+                    self.variant_prepared(memory, base, handle, pointer, reads)?;
                 }
                 count
             }
@@ -830,11 +1289,12 @@ impl Store {
                 seen: self.turn,
                 context,
                 context_refusal,
+                slot: observation.map_or(usize::MAX, |(_, slot)| slot),
             },
         );
         Ok(())
     }
-    fn state(
+    fn state_prepared(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -842,27 +1302,44 @@ impl Store {
         id: u32,
         pointer: usize,
         country: u32,
+        reads: Option<&NativeReads>,
     ) -> Result<(), &'static str> {
-        let certificate = operands::state_sequence(id);
+        let certificate = if self.settling_owned {
+            reads
+                .and_then(|reads| reads.state_certificates.get(&(id, country)))
+                .copied()
+        } else {
+            operands::state_sequence(id)
+        };
         if let Some(held) = self.states.get_mut(&(id, country))
             && held.certificate == certificate
             && held.pointer == pointer
         {
             held.seen = self.turn;
+            if let Some(slot) = reads.and_then(|reads| reads.state_slots.get(&(id, country))) {
+                held.slot = *slot;
+            }
             return Ok(());
         }
         let owner = ((id as u64) << 32) | country as u64;
         let result = (|| {
             certificate.ok_or("state attrition writer certificate unavailable")?;
             let mut values = Vec::new();
-            for key in [
+            let observed = reads.and_then(|reads| reads.state(id, pointer, country, certificate));
+            for (index, key) in [
                 engine_executable::modifier_keys::ATTRITION,
                 engine_executable::modifier_keys::ATTRITION_FOR_CONTROLLER,
                 engine_executable::modifier_keys::ENEMY_ATTRITION,
-            ] {
-                let raw = engine_native::cstate::movement_modifier(
-                    memory, base, game_state, pointer, country, key,
-                )?;
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let raw = match observed {
+                    Some(observed) => observed.values[index],
+                    None => engine_native::cstate::movement_modifier(
+                        memory, base, game_state, pointer, country, key,
+                    ),
+                }?;
                 engine_allocation::reserve(&mut values, 1)
                     .map_err(|_| "state attrition allocation failed")?;
                 values.push(engine_native::modifier_breakdown::SourceValue { key, raw });
@@ -881,6 +1358,10 @@ impl Store {
         self.states.insert(
             (id, country),
             State {
+                slot: reads
+                    .and_then(|reads| reads.state_slots.get(&(id, country)))
+                    .copied()
+                    .unwrap_or(usize::MAX),
                 pointer,
                 certificate,
                 seen: self.turn,
@@ -1000,6 +1481,7 @@ mod tests {
         operands::presize();
         operands::boundary(true);
         operands::patched(true);
+        observe(true);
         let _enabled = Enabled;
         let mut world = World {
             bytes: vec![0; 0x4000 + DIVISIONS * 0x1000],
@@ -1063,6 +1545,104 @@ mod tests {
                 .capture(&world, 0, STATE, seeds, &mut selection)
                 .unwrap();
             assert_eq!(complete(snapshot), complete(&expected));
+            // Completion order differs from settlement order, including the
+            // 5,000-division pass and its refused/recovered context hours.
+            for parts in [1, 2, 7, 31] {
+                let mut contexts = vec![None; seeds.len()];
+                let mut staged = Store::default();
+                let mut memos: Vec<_> = (0..parts).map(|_| Preparation::default()).collect();
+                let mut staged_selection = Vec::new();
+                let mut first = None;
+                let mut bytes = 0;
+                for pass in 0..3 {
+                    staged.capture_boundary();
+                    let countries = ccountry::Reader::new(&world, 0, STATE).unwrap();
+                    for part in (0..parts).rev() {
+                        let range = seeds.len() * part / parts..seeds.len() * (part + 1) / parts;
+                        assert!(memos[part].begin(range.len()));
+                        for index in range {
+                            contexts[index] = Some(memos[part].capture(
+                                &world,
+                                0,
+                                STATE,
+                                Some(&countries),
+                                &staged,
+                                &seeds[index],
+                            ));
+                        }
+                    }
+                    let owned = staged.can_settle_owned()
+                        && memos.iter().all(Preparation::can_settle_owned);
+                    if pass > 0
+                        && seeds.iter().all(|seed| {
+                            seed.roster_owner.is_none() && seed.ordinary_route.is_some()
+                        })
+                    {
+                        assert!(owned, "warm owned source settlement must be exercised");
+                    }
+                    let mut capture = || {
+                        let selection = |index| contexts[index];
+                        let reads = |index| {
+                            memos
+                                .iter()
+                                .enumerate()
+                                .find(|(part, _)| {
+                                    (seeds.len() * part / parts..seeds.len() * (part + 1) / parts)
+                                        .contains(&index)
+                                })
+                                .map(|(_, memo)| memo)
+                        };
+                        let variants = |handle, pointer| {
+                            memos
+                                .iter()
+                                .find(|reads| reads.has_variant(handle, pointer))
+                        };
+                        if owned {
+                            staged.settle_owned(
+                                0,
+                                STATE,
+                                seeds,
+                                &mut staged_selection,
+                                selection,
+                                reads,
+                                variants,
+                            )
+                        } else {
+                            staged.capture_staged(
+                                &world,
+                                0,
+                                STATE,
+                                seeds,
+                                &mut staged_selection,
+                                selection,
+                                reads,
+                                variants,
+                            )
+                        }
+                        .unwrap()
+                    };
+                    let actual = if pass == 0 {
+                        capture()
+                    } else {
+                        // Both paths preserve a quiet certified snapshot without
+                        // allocation; Owned panics on any accidental native read.
+                        collector_test_support::with_allocations_denied(capture)
+                    };
+                    assert_eq!(complete(&actual), complete(&expected));
+                    assert_eq!(staged_selection, selection);
+                    let current_bytes = memos
+                        .iter()
+                        .map(Preparation::allocated_bytes)
+                        .sum::<usize>();
+                    if let Some(first) = &first {
+                        assert!(Arc::ptr_eq(first, &actual));
+                        assert_eq!(current_bytes, bytes, "range scratch grew on a quiet hour");
+                    } else {
+                        first = Some(actual);
+                        bytes = current_bytes;
+                    }
+                }
+            }
             selection
         };
         assert_eq!(selected, assert_fresh(&first, &seeds));
@@ -1072,6 +1652,19 @@ mod tests {
                 .unwrap()
         });
         assert!(Arc::ptr_eq(&first, &quiet));
+
+        // No country selection reaches the independent tree domain: these
+        // 5,000 refused contexts still exercise owned membership settlement,
+        // exact refusal publication and quiet persistent-root reuse.
+        let mut ownerless = seeds.clone();
+        for seed in &mut ownerless {
+            seed.roster_owner = None;
+        }
+        let mut ownerless_store = Store::default();
+        let ownerless_rows = ownerless_store
+            .capture(&world, 0, STATE, &ownerless, &mut selected)
+            .unwrap();
+        assert_eq!(selected, assert_fresh(&ownerless_rows, &ownerless));
 
         // Context is still evaluated hourly: a new refusal changes exactly its
         // own row, repeated refusals carry, and recovery removes that row.
@@ -1133,6 +1726,134 @@ mod tests {
         assert!(store.rows.get(key(5, new.division, 0)).is_none());
         assert!(store.rows.get(key(6, new.division, 0)).is_none());
         assert_eq!(complete(&first), complete(&recovered));
+
+        // Faulted country, commander and province/state reads must settle the
+        // same rows, refusals and held certificates at the same census positions.
+        const GROUP: usize = 0x2000;
+        const LEADER: usize = 0x2800;
+        const PROVINCE: usize = 0x3000;
+        const CONTEXT: usize = 0x3800;
+        put(
+            &mut world.bytes,
+            GROUP,
+            engine_native::corders_group::VTABLE_RVA as u64,
+        );
+        put(
+            &mut world.bytes,
+            GROUP + engine_native::corders_group::HANDLE,
+            engine_native::corders_group::REFERENCE_TYPE as u64,
+        );
+        put(
+            &mut world.bytes,
+            GROUP + engine_native::corders_group::LEADER,
+            LEADER as u64,
+        );
+        put(&mut world.bytes, LEADER, carmy_leader::VTABLE_RVA as u64);
+        put(
+            &mut world.bytes,
+            LEADER + engine_native::cunit_leader::TYPE,
+            (9 << 32) | engine_native::cunit_leader::REFERENCE_TYPE as u64,
+        );
+        put(
+            &mut world.bytes,
+            PROVINCE,
+            engine_native::cprovince::VTABLE_RVA as u64,
+        );
+        put(
+            &mut world.bytes,
+            PROVINCE + engine_native::cprovince::STATE,
+            CONTEXT as u64,
+        );
+        put(
+            &mut world.bytes,
+            CONTEXT,
+            engine_native::cstate::VTABLE_RVA as u64,
+        );
+        put(&mut world.bytes, CONTEXT + engine_native::cstate::ID, 7);
+        for seed in &mut seeds {
+            seed.orders_group = Some(GROUP);
+            seed.class = Some(1);
+            seed.location = Some(PROVINCE);
+        }
+        struct Fault<'a> {
+            world: &'a World,
+            address: usize,
+            len: usize,
+        }
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+                !(address == self.address && out.len() == self.len) && self.world.copy(address, out)
+            }
+        }
+        let refusals = || {
+            serde_json::to_value(operands::status()).unwrap()["refused_operands"]
+                .as_u64()
+                .unwrap()
+        };
+        for (address, len) in [
+            (usize::MAX, 0),
+            (COUNTRY, 8),
+            (GROUP, 8),
+            (LEADER + engine_native::cunit_leader::TYPE, 8),
+            (PROVINCE, 8),
+            (PROVINCE + engine_native::cprovince::STATE, 8),
+            (CONTEXT + engine_native::cstate::ID, 4),
+        ] {
+            let source = Fault {
+                world: &world,
+                address,
+                len,
+            };
+            let mut serial = Store::default();
+            let mut expected_selection = Vec::new();
+            let before = refusals();
+            let expected = serial
+                .capture(&source, 0, STATE, &seeds, &mut expected_selection)
+                .unwrap();
+            let expected_refusals = refusals() - before;
+            for parts in [1, 7] {
+                let mut staged = Store::default();
+                let mut selected = Vec::new();
+                let mut observations = vec![None; seeds.len()];
+                let countries = ccountry::Reader::new(&source, 0, STATE).unwrap();
+                let before = refusals();
+                for part in (0..parts).rev() {
+                    let range = seeds.len() * part / parts..seeds.len() * (part + 1) / parts;
+                    let mut memo = Preparation::default();
+                    assert!(memo.begin(range.len()));
+                    for index in range {
+                        observations[index] = Some(memo.capture(
+                            &source,
+                            0,
+                            STATE,
+                            Some(&countries),
+                            &staged,
+                            &seeds[index],
+                        ));
+                    }
+                }
+                let actual = staged
+                    .capture_prepared(&source, 0, STATE, &seeds, &mut selected, |index| {
+                        observations[index]
+                    })
+                    .unwrap();
+                assert_eq!(refusals() - before, expected_refusals);
+                assert_eq!(complete(&actual), complete(&expected));
+                assert_eq!(selected, expected_selection);
+                for (division, held) in &serial.pools {
+                    let actual = &staged.pools[division];
+                    assert_eq!(actual.certificate, held.certificate);
+                    assert_eq!(actual.context, held.context);
+                    assert_eq!(actual.context_refusal, held.context_refusal);
+                }
+                for (identity, held) in &serial.roots {
+                    let actual = &staged.roots[identity];
+                    assert_eq!(actual.certificate, held.certificate);
+                    assert_eq!(actual.receiver, held.receiver);
+                    assert_eq!(actual.accumulator, held.accumulator);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1271,6 +1992,7 @@ mod tests {
             store.variants.insert(
                 handle,
                 Variant {
+                    lifetime: None,
                     refs,
                     pointer,
                     certificate: Some((1, 1)),

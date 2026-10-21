@@ -7,7 +7,7 @@ use crate::sampling::qpc;
 use replay_data::rows::TableId;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const N: usize = 9;
+const N: usize = 8;
 const FAMILIES: [&str; N] = [
     "land_events",
     "event_feed",
@@ -17,7 +17,6 @@ const FAMILIES: [&str; N] = [
     "peace_settlements",
     "operation_outcomes",
     "politics",
-    "variant_changes",
 ];
 static LOST_DRAINS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 
@@ -49,7 +48,6 @@ pub(crate) struct ObserverBoundaryRequest {
     peace: peace_settlements::Captured,
     operations: operation_outcomes::Captured,
     politics: politics::Captured,
-    designs: crate::design_changes::Captured,
     finished: [bool; N],
 }
 impl ObserverBoundaryRequest {
@@ -61,8 +59,7 @@ impl ObserverBoundaryRequest {
             + self.construction.allocated_bytes()
             + self.peace.allocated_bytes()
             + self.operations.allocated_bytes()
-            + self.politics.allocated_bytes()
-            + self.designs.allocated_bytes()) as u64
+            + self.politics.allocated_bytes()) as u64
     }
     pub(crate) fn capture(&mut self) -> ObserverBoundaryReport {
         let mut report = ObserverBoundaryReport::default();
@@ -145,10 +142,6 @@ impl ObserverBoundaryRequest {
         self.finished[6] = true;
         report.ticks[7] = self.politics.capture_growing();
         self.finished[7] = true;
-        let begin = qpc();
-        self.designs.capture(self.base, self.hour);
-        self.finished[8] = true;
-        report.ticks[8] = elapsed(begin);
         report
     }
     fn fail_pending(&mut self, reason: &'static str) {
@@ -214,7 +207,6 @@ impl ObserverBoundaryRequest {
                     }
                     6 => self.operations.fail(lane_reason),
                     7 => self.politics.fail(lane_reason),
-                    8 => self.designs.fail(lane_reason),
                     _ => unreachable!(),
                 }
             }
@@ -288,7 +280,6 @@ impl Captured {
                 operation_outcomes::Captured::vacant(),
             ),
             politics: std::mem::replace(&mut self.politics, politics::Captured::vacant()),
-            designs: self.production.take_design_changes(),
             finished: [false; N],
         }
     }
@@ -309,9 +300,7 @@ impl Captured {
         self.peace_settlements = request.peace;
         self.operation_outcomes = request.operations;
         self.politics = request.politics;
-        self.production.restore_design_changes(request.designs);
         for (table, ticks) in [
-            (TableId::VariantChanges, report.ticks[8]),
             (TableId::LandEventCoverage, report.ticks[0]),
             (TableId::OperationCompletions, report.ticks[6]),
             (TableId::PoliticsCaptureCoverage, report.ticks[7]),

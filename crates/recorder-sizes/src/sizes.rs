@@ -297,7 +297,16 @@ pub(crate) fn verify_same_hours(recorded: &Replay, encoded: &Replay) -> io::Resu
     for wanted in Hours::new(recorded) {
         let wanted = wanted?;
         match actual.next().transpose()? {
-            Some(actual) if actual == wanted => hours += 1,
+            Some(actual)
+                if actual == wanted
+                    && actual
+                        .tables
+                        .iter()
+                        .zip(&wanted.tables)
+                        .all(|(a, b)| a.sampled_at() == b.sampled_at()) =>
+            {
+                hours += 1;
+            }
             _ => {
                 return Err(io::Error::other(format!(
                     "branch {} hour {} decodes differently after rewriting",
@@ -423,6 +432,7 @@ pub(crate) fn column_report(encoded: &Replay, sizes: &Sizes) -> io::Result<Value
                         0 => ("control", None),
                         1 => ("keys", None),
                         2 => ("masks", None),
+                        column if column == 3 + table.field_count() => ("aliases", None),
                         column => (
                             table.field_name(column - 3).unwrap_or("unknown"),
                             sizes.field_changes[index].get(column - 3),
@@ -755,7 +765,7 @@ mod tests {
             for column in table["columns"].as_array().unwrap() {
                 let name = column["column"].as_str().unwrap();
                 assert_ne!(name, "unknown", "{table}");
-                let counted = !matches!(name, "control" | "keys" | "masks");
+                let counted = !matches!(name, "control" | "keys" | "masks" | "aliases");
                 assert_eq!(column["changes_per_hour"].is_f64(), counted, "{table}");
             }
         }

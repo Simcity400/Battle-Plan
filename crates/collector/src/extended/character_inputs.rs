@@ -24,7 +24,7 @@ use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::CharacterOperativeRow,
     rows::CharacterRoleTraitRow, rows::Recorded, rows::TableId, rows::tables,
 };
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
 
 mod role_store;
 pub(crate) use role_store::RoleStore;
@@ -445,41 +445,82 @@ impl Captured {
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.traits.outcome, self.operatives.outcome]
     }
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
-        [self.traits_table(), self.operatives_table()]
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("no projection supplied"),
+        })
     }
-    fn traits_table(&self) -> TableView {
+    pub(crate) fn table_inputs(
+        &self,
+        projection: Option<&mut crate::projection::Projection<'_>>,
+    ) -> [TableInput; N] {
+        [
+            self.traits_input(projection),
+            self.operatives_table().into(),
+        ]
+    }
+    fn traits_input(
+        &self,
+        projection: Option<&mut crate::projection::Projection<'_>>,
+    ) -> TableInput {
         let values = &self.values.first[..self.values.len.min(self.values.first.len())];
         let Some(rows) = self.traits.rows.get(..self.traits.outcome.len()) else {
-            return unavailable("character role trait rows exceed buffer");
+            return unavailable("character role trait rows exceed buffer").into();
         };
         if rows
             .iter()
             .any(|row| span(values, row.start, row.len).is_none())
         {
-            return unavailable("character role traits outside captured arena");
+            return unavailable("character role traits outside captured arena").into();
         }
-        table::<tables::CharacterRoleTraits, _>(self.traits.outcome, rows, |row| {
-            let (kind, role) = match row.role {
-                Role::CountryLeader(ideology) => {
-                    (CharacterRoleTraitRow::COUNTRY_LEADER, ideology as u32)
-                }
-                Role::Advisor(ordinal) => (CharacterRoleTraitRow::ADVISOR, ordinal),
-                Role::Scientist => (CharacterRoleTraitRow::SCIENTIST, 0),
-            };
-            let traits = span(values, row.start, row.len).unwrap();
-            CharacterRoleTraitRow {
-                character: row.character,
-                kind,
-                role,
-                tokens: owned_vec(map_slice(traits, |value| value.token)),
-                definitions: owned_vec((|| {
-                    let mut definitions = vec(traits.len())?;
-                    definitions.extend(traits.iter().filter_map(|value| value.ordinal));
-                    Ok(definitions)
-                })()),
+        let role_key = |row: &native::TraitRow| match row.role {
+            Role::CountryLeader(ideology) => {
+                (CharacterRoleTraitRow::COUNTRY_LEADER, ideology as u32)
             }
-        })
+            Role::Advisor(ordinal) => (CharacterRoleTraitRow::ADVISOR, ordinal),
+            Role::Scientist => (CharacterRoleTraitRow::SCIENTIST, 0),
+        };
+        crate::projection::project_table::<tables::CharacterRoleTraits, _>(
+            projection,
+            self.traits.outcome,
+            rows,
+            |row| {
+                let (kind, role) = role_key(row);
+                (u128::from(row.character) << 40) | (u128::from(kind) << 32) | u128::from(role)
+            },
+            |row, previous| {
+                let (kind, role) = role_key(row);
+                let traits = span(values, row.start, row.len).unwrap();
+                row.character == previous.character
+                    && kind == previous.kind
+                    && role == previous.role
+                    && traits
+                        .iter()
+                        .map(|value| value.token)
+                        .eq(previous.tokens.iter().copied())
+                    && traits
+                        .iter()
+                        .filter_map(|value| value.ordinal)
+                        .eq(previous.definitions.iter().copied())
+            },
+            |row| {
+                let (kind, role) = role_key(row);
+                let traits = span(values, row.start, row.len).unwrap();
+                CharacterRoleTraitRow {
+                    character: row.character,
+                    kind,
+                    role,
+                    tokens: owned_vec(map_slice(traits, |value| value.token)),
+                    definitions: owned_vec((|| {
+                        let mut definitions = vec(traits.len())?;
+                        definitions.extend(traits.iter().filter_map(|value| value.ordinal));
+                        Ok(definitions)
+                    })()),
+                }
+            },
+        )
     }
     fn operatives_table(&self) -> TableView {
         let values =
@@ -808,6 +849,62 @@ mod tests {
                 outcome,
                 Outcome::Unavailable { reason } if *reason != SKIPPED_REASON
             )));
+        }
+    }
+
+    #[test]
+    fn traits_projection_reuses_all_fields_and_preserves_frame_results() {
+        use crate::projection::{Projection, ProjectionScratch};
+        use replay_frame::frame::{FrameEncoder, FrameInput, Metrics};
+        let mut captured = captured();
+        let mut encoder = FrameEncoder::new();
+        let mut complete = FrameEncoder::new();
+        let scratch = ProjectionScratch::default();
+        for hour in 0..7 {
+            match hour {
+                2 => captured.values.first[0].ordinal = Some(9),
+                3 => captured.values.first[0].token = 303,
+                4 => captured.traits.rows.swap(0, 1),
+                5 => {
+                    captured.traits.outcome = Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 1,
+                    }
+                }
+                6 => captured.traits.outcome = Outcome::Rows { len: 2 },
+                _ => {}
+            }
+            let force = hour == 4;
+            let frame = |values: [TableInput; N]| {
+                let mut tables = std::array::from_fn(|_| unavailable("fixture table").into());
+                for (table, input) in TABLES.into_iter().zip(values) {
+                    tables[table.index()] = input;
+                }
+                FrameInput {
+                    branch: 1,
+                    hour,
+                    tables,
+                    metrics: Metrics::default(),
+                }
+            };
+            let expected = complete
+                .encode_input(frame(captured.tables().map(Into::into)), force)
+                .unwrap();
+            let mut projection = Projection::new(&encoder, 1, hour, force, &scratch);
+            let inputs = if hour == 1 {
+                let traits = collector_test_support::with_allocations_denied(|| {
+                    captured.traits_input(Some(&mut projection))
+                });
+                assert!(matches!(traits, TableInput::ComparedEqual(_)));
+                [traits, captured.operatives_table().into()]
+            } else {
+                captured.table_inputs(Some(&mut projection))
+            };
+            assert_eq!(
+                encoder.encode_input(frame(inputs), force).unwrap(),
+                expected,
+                "hour {hour}"
+            );
         }
     }
 }

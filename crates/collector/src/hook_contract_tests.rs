@@ -501,7 +501,6 @@ fn constructor_sites(family: Family) -> Vec<usize> {
                 .iter()
                 .map(|s| s.rva),
         ),
-        Family::AirBaseCarry => sites.push(engine_mutations::air_base_mutations::FUEL_DEMAND.rva),
         Family::Wings => {
             sites.extend(
                 engine_mutations::air_wing_equipment_mutations::MAP_MUTATIONS

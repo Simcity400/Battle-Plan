@@ -115,22 +115,26 @@ fn written_block(frames: &[Frame], layout: grouped::Layout) -> CompressedBlock {
     let mut block = grouped::BlockWriter::with_layout(&frames[0], layout);
     let mut decoder = FrameDecoder::new();
     let mut anchors = grouped::Anchors::default();
+    let mut aliases = aliases::Encoder::default();
     let cores = pack::Cores::new(1);
     for frame in frames {
         let decoded = decoder.advance(frame).unwrap();
         let mut payload = Vec::new();
         let sizes = frame.encode_with_sizes(&mut payload).unwrap();
+        let prepared = aliases.prepare(frame, decoded, &payload, &sizes).unwrap();
         block
-            .push(
+            .push_marked(
                 frame,
-                decoded,
-                &payload,
-                &sizes,
+                &prepared.views,
+                &prepared.payload,
+                &prepared.sizes,
                 &mut anchors,
                 MAX_BLOCK_RAW_BYTES,
                 &cores,
+                &prepared.private,
             )
             .unwrap();
+        aliases.commit(prepared);
     }
     block.compress(&cores).unwrap()
 }
@@ -561,8 +565,17 @@ fn constant_rate_fields_cost_nothing_after_their_first_two_changes() {
             decoded_hours(&replay),
             frames.into_iter().map(stored).collect::<Vec<_>>()
         );
+        let section = Section::Later(TableId::Divisions);
+        let (_, raw) = grouped::stored_section(&replay, 0, section).unwrap();
+        let mut input = Decoder::new(&raw);
+        let count = usize::try_from(input.varint().unwrap()).unwrap();
+        let lengths: Vec<_> = (0..count).map(|_| input.varint().unwrap()).collect();
+        // Private marks have one empty-change byte per later hour, outside
+        // the numeric predictor's rows, masks and value columns.
+        let aliases = u64::try_from(*lengths.last().unwrap()).unwrap();
+        assert_eq!(aliases, (hours - 1) as u64);
         (
-            size(&replay, 0, Section::Later(TableId::Divisions)).unwrap(),
+            size(&replay, 0, section).unwrap().raw - aliases,
             size(&replay, 0, Section::Later(TableId::Clock)),
         )
     };
@@ -571,7 +584,7 @@ fn constant_rate_fields_cost_nothing_after_their_first_two_changes() {
     // Hours 2 and 3 store each change; from hour 4 every change is the
     // predicted one, so a hundred more hours of 200 moving rows and of the
     // clock's hour add no entry.
-    assert_eq!(long.raw, short.raw, "{short:?} {long:?}");
+    assert_eq!(long, short);
     assert_eq!(
         long_clock.map(|size| size.raw),
         short_clock.map(|size| size.raw)
@@ -1098,24 +1111,29 @@ fn chosen_blocks_keep_modelled_streaky_divisions() {
         b"H4GC"
     );
     let spool = spool_frames(&records);
-    let advanced = one_block_in_layout(&chosen, &spool, grouped::Layout::Advanced);
     assert_eq!(later_row_coding(&chosen, TableId::Divisions), 0);
-    // The modelled section itself: the advanced block's rows and masks after
-    // the coding byte, and at most a byte more for the masks column's length.
-    let later = |replay: &Replay| {
-        size(replay, 0, Section::Later(TableId::Divisions))
-            .unwrap()
-            .raw
-    };
+    // Alias metadata can tip the compressed plain/residual choice. Compare
+    // modelled sections with the same residual choice, not different winners.
+    grouped::FORCE_RESIDUAL.set(true);
+    let modelled = one_block_in_layout(&chosen, &spool, grouped::Layout::Chosen);
+    let advanced = one_block_in_layout(&chosen, &spool, grouped::Layout::Advanced);
+    grouped::FORCE_RESIDUAL.set(false);
+    assert_eq!(later_row_coding(&modelled, TableId::Divisions), 0);
+    // The coding byte and at most one more byte for its column's length.
+    let later = |replay: &Replay| size(replay, 0, Section::Later(TableId::Divisions)).unwrap();
     assert!(
-        later(&chosen) > later(&advanced) && later(&chosen) <= later(&advanced) + 2,
-        "chosen {} against advanced {}",
-        later(&chosen),
+        later(&modelled).raw > later(&advanced).raw
+            && later(&modelled).raw <= later(&advanced).raw + 2,
+        "modelled {:?} against advanced {:?}",
+        later(&modelled),
         later(&advanced)
     );
-    assert_eq!(chosen.read_block(&chosen.index[0]).unwrap(), spool);
+    assert!(later(&chosen).compressed <= later(&modelled).compressed);
     let expected: Vec<DecodedFrame> = frames.into_iter().map(stored).collect();
-    assert_eq!(decoded_hours(&chosen), expected);
+    for replay in [&chosen, &modelled, &advanced] {
+        assert_eq!(replay.read_block(&replay.index[0]).unwrap(), spool);
+        assert_eq!(decoded_hours(replay), expected);
+    }
 }
 
 /// A literal holding a nested little-endian counter between fixed bytes.

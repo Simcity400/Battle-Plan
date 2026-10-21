@@ -1180,6 +1180,8 @@ pub struct DivisionStatusRow {
     pub invalid_orders_reason: Recorded<Option<i32>>,
     /// The supply child's per-source footer, recorded for every division at display
     /// precision ([`DivisionSupplyFooter`]). None is a counted scalar-pack failure.
+    /// Owner-approved slot-12 sample, held off-slot; new occurrences and full
+    /// refreshes read fresh. Ratio, exact ratio and grace stay hourly.
     /// Formats before 99 use NotRecorded, as do format-102 recordings written while the
     /// field was a provisional tombstone, whose empty payload decodes as not recorded.
     pub supply: Recorded<Option<DivisionSupplyFooter>>,
@@ -1244,10 +1246,13 @@ pub struct DivisionStatusRow {
     /// step), kept with [`Self::supply_ratio_exact`]. A numeric column, so an hourly
     /// countdown stores its small difference.
     pub supply_grace_exact: Recorded<Option<i64>>,
-    /// Stored signed fixed5 XP, carried under the division experience writers. None is a counted read or certificate refusal.
+    /// Stored signed fixed5 XP, sampled at slot 12, first appearance or full
+    /// refresh. Held off-slot, independently of the hourly exercise predicate.
+    /// None is a counted read or certificate refusal.
     pub experience: Recorded<Option<i64>>,
     /// Previous full template handle during conversion; zero is no pending conversion.
     pub pending_template: Recorded<Option<u64>>,
+    /// Officer XP with the same daily/first/full sampling as stored XP.
     pub officer_experience: Recorded<Option<i64>>,
     pub career_counter: Recorded<Option<i32>>,
     /// Country source identity, selected commander kind and full handle; zero commander is known absence.

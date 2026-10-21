@@ -188,7 +188,21 @@ fn layout_buffer_len() -> usize {
     engine_fixed_layout::fixed_layout::longest_name()
 }
 
+#[derive(Clone, Copy)]
+enum TransportSpeed {
+    Observed(Option<engine_naval_history::cnaval_unit_transfer::SpeedInputs>),
+    Ready(Option<i64>),
+}
+
+struct TransportRow {
+    owner: u32,
+    region: u32,
+    speed: TransportSpeed,
+}
+
 pub struct Captured {
+    owned_pending: bool,
+    transport_pending: bool,
     rows: CaptureRows<railway_gun_counter_inputs::Row>,
     combat_references: Arena<engine_native::cunit::MapCombatReference>,
     sample_hour: Option<i32>,
@@ -209,9 +223,16 @@ pub struct Captured {
     regions: Vec<engine_naval_history::cnaval_unit_transfer::TransportRegion>,
     /// Each positive logical owner of a walked gun, once.
     owners: Vec<u32>,
-    transport: Vec<OwnerTransportSpeedRow>,
+    transport: Vec<TransportRow>,
     transport_outcome: Outcome,
     transport_refused: Vec<(&'static str, u64)>,
+    /// Native-demand sorts still run parked; their live-sized scratch survives
+    /// the hour instead of allocating and freeing five temporary vectors.
+    transport_demand: Vec<(u32, u32)>,
+    transport_provinces: Vec<u32>,
+    transport_located: Vec<(u32, u32)>,
+    transport_wanted: Vec<(u32, usize)>,
+    transport_indices: Vec<usize>,
     /// What every owner's transport query of one capture shares.
     speed_cache: engine_naval_history::cnaval_unit_transfer::SpeedCache,
 }
@@ -246,6 +267,8 @@ impl Captured {
             0
         };
         Self {
+            owned_pending: false,
+            transport_pending: false,
             rows: CaptureRows::new(capacity.rows),
             combat_references: Arena::new(capacity.combat_references),
             sample_hour: None,
@@ -266,11 +289,20 @@ impl Captured {
             transport: Vec::new(),
             transport_outcome: TRANSPORT_UNCAPTURED,
             transport_refused: Vec::new(),
+            transport_demand: Vec::new(),
+            transport_provinces: Vec::new(),
+            transport_located: Vec::new(),
+            transport_wanted: Vec::new(),
+            transport_indices: Vec::new(),
             speed_cache: Default::default(),
         }
     }
 
     pub fn reset(&mut self) {
+        // Failed siblings may discard this cut before its ordinary FIFO turn.
+        self.decode_owned();
+        self.decode_transport();
+        self.speed_cache.finish();
         self.combat_references.reset();
         self.sample_hour = None;
         self.rows.reset();
@@ -301,7 +333,12 @@ impl Captured {
             + self.regions.capacity()
                 * std::mem::size_of::<engine_naval_history::cnaval_unit_transfer::TransportRegion>()
             + self.owners.capacity() * std::mem::size_of::<u32>()
-            + self.transport.capacity() * std::mem::size_of::<OwnerTransportSpeedRow>()
+            + self.transport.capacity() * std::mem::size_of::<TransportRow>()
+            + (self.transport_demand.capacity() + self.transport_located.capacity())
+                * std::mem::size_of::<(u32, u32)>()
+            + self.transport_provinces.capacity() * std::mem::size_of::<u32>()
+            + self.transport_wanted.capacity() * std::mem::size_of::<(u32, usize)>()
+            + self.transport_indices.capacity() * std::mem::size_of::<usize>()
             + self.speed_cache.allocated_bytes()
     }
 
@@ -326,7 +363,7 @@ impl Captured {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; N] {
-        self.capture_at(memory, base, game_state, None)
+        self.capture_at(memory, base, game_state, None, false)
     }
 
     pub fn capture_with_hour(
@@ -336,7 +373,17 @@ impl Captured {
         game_state: usize,
         hour: i32,
     ) -> [u64; N] {
-        self.capture_at(memory, base, game_state, Some(hour))
+        self.capture_at(memory, base, game_state, Some(hour), false)
+    }
+
+    pub fn acquire_with_hour(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+    ) -> [u64; N] {
+        self.capture_at(memory, base, game_state, Some(hour), true)
     }
 
     fn capture_at(
@@ -345,6 +392,7 @@ impl Captured {
         base: usize,
         game_state: usize,
         hour: Option<i32>,
+        defer_owned: bool,
     ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
@@ -389,7 +437,37 @@ impl Captured {
         );
         self.combat_references.len = references.used;
         self.combat_references.required = references.required;
-        for row in &self.rows.rows[..walk.outcome.len()] {
+        self.required_named_bonuses = tooltip.named.required;
+        self.supply_origins.len = tooltip.supply_origins_len;
+        self.supply_origins.required = tooltip.required_supply_origins;
+        self.rows.outcome = walk.outcome;
+        self.paths.len = walk.paths_len;
+        self.paths.required = walk.required_paths;
+        self.names.len = names.used;
+        self.names.required = names.required;
+        NAME_REFUSALS.fetch_add(names.failures as u64, std::sync::atomic::Ordering::Relaxed);
+        self.owned_pending = true;
+        let walked = qpc();
+        let guns = walked.saturating_sub(begin).max(0) as u64;
+        drop(_reads);
+        let _reads = crate::read_accounting::table(TABLES[1]);
+        self.acquire_transport(memory, base, game_state);
+        let mut ticks = [guns, qpc().saturating_sub(walked).max(0) as u64];
+        if !defer_owned {
+            let start = qpc();
+            self.decode_owned();
+            ticks[0] += qpc().saturating_sub(start).max(0) as u64;
+        }
+        ticks
+    }
+
+    /// FIFO-only reduction of copied transport operands and diagnostics.
+    /// Supply consumers in the pause use the unchanged native row prefix.
+    pub fn decode_owned(&mut self) {
+        if !std::mem::take(&mut self.owned_pending) {
+            return;
+        }
+        for row in &self.rows.rows[..self.rows.outcome.len()] {
             if let Some(reason) = row.combat_references_failure {
                 super::unit_combat_references::observe_failure(reason);
             }
@@ -399,26 +477,22 @@ impl Captured {
             self.combat_references.required,
             self.combat_references.first.len(),
         );
-        self.required_named_bonuses = tooltip.named.required;
-        self.supply_origins.len = tooltip.supply_origins_len;
-        self.supply_origins.required = tooltip.required_supply_origins;
-        self.rows.outcome = walk.outcome;
         WITHDRAWAL_REFUSALS.fetch_add(
-            self.rows.rows[..walk.outcome.len()]
+            self.rows.rows[..self.rows.outcome.len()]
                 .iter()
                 .filter(|row| row.withdrawal.is_none())
                 .count() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
         ETA_REFUSALS.fetch_add(
-            self.rows.rows[..walk.outcome.len()]
+            self.rows.rows[..self.rows.outcome.len()]
                 .iter()
                 .filter(|row| row.ordinary_len != 0 && row.eta.is_none())
                 .count() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
         let mut fresh_refusals = [0_u64; 4];
-        for row in &self.rows.rows[..walk.outcome.len()] {
+        for row in &self.rows.rows[..self.rows.outcome.len()] {
             fresh_refusals[0] += u64::from(row.fresh_failure.is_some());
             for (count, failure) in fresh_refusals[1..].iter_mut().zip(row.fresh_failures) {
                 *count += u64::from(failure.is_some());
@@ -427,25 +501,27 @@ impl Captured {
         for (count, refused) in FRESH_REFUSALS.iter().zip(fresh_refusals) {
             count.fetch_add(refused, std::sync::atomic::Ordering::Relaxed);
         }
-        self.paths.len = walk.paths_len;
-        self.paths.required = walk.required_paths;
-        self.names.len = names.used;
-        self.names.required = names.required;
-        NAME_REFUSALS.fetch_add(names.failures as u64, std::sync::atomic::Ordering::Relaxed);
-        let walked = qpc();
-        let guns = walked.saturating_sub(begin).max(0) as u64;
-        drop(_reads);
-        let _reads = crate::read_accounting::table(TABLES[1]);
-        self.capture_transport(memory, base, game_state);
-        [guns, qpc().saturating_sub(walked).max(0) as u64]
+        self.decode_transport();
+    }
+
+    #[cfg(test)]
+    fn capture_transport(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+        self.acquire_transport(memory, base, game_state);
+        self.decode_transport();
     }
 
     /// OwnerTransportSpeeds for this walk's guns: every live region for each
     /// positive logical owner, in owner then region order.
-    fn capture_transport(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+    fn acquire_transport(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
+        self.transport_pending = false;
         self.transport.clear();
         self.owners.clear();
         self.transport_refused.clear();
+        self.transport_demand.clear();
+        self.transport_provinces.clear();
+        self.transport_located.clear();
+        self.transport_wanted.clear();
+        self.transport_indices.clear();
         self.transport_outcome = match self.transport_rows(memory, base, game_state) {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => {
@@ -455,7 +531,20 @@ impl Captured {
         };
         // Region pointers never outlive the acquisition.
         self.regions.clear();
+        self.transport_pending = true;
+    }
+
+    fn decode_transport(&mut self) {
+        if !std::mem::take(&mut self.transport_pending) {
+            return;
+        }
+        for row in &mut self.transport {
+            if let TransportSpeed::Observed(inputs) = row.speed {
+                row.speed = TransportSpeed::Ready(inputs.map(|inputs| inputs.evaluate()));
+            }
+        }
         note_transport_refusals(&self.transport_refused);
+        self.speed_cache.finish();
     }
 
     fn transport_rows(
@@ -481,7 +570,7 @@ impl Captured {
             .ok_or("railway-gun path arena length invalid")?;
         // Each positive owner with the provinces its guns stand on and route
         // through, the sources of every leg of their recorded routes.
-        let mut demand: Vec<(u32, u32)> = Vec::new();
+        let demand = &mut self.transport_demand;
         for gun in guns.iter().filter(|gun| gun.logical_owner as i32 > 0) {
             let route = |start: usize, len: usize| {
                 start
@@ -513,14 +602,14 @@ impl Captured {
             return Ok(0);
         }
         // Each distinct province's region once, then every owner's regions.
-        let mut provinces: Vec<u32> = Vec::new();
+        let provinces = &mut self.transport_provinces;
         provinces
             .try_reserve(demand.len())
             .map_err(|_| ALLOCATION)?;
         provinces.extend(demand.iter().map(|&(_, province)| province));
         provinces.sort_unstable();
         provinces.dedup();
-        let mut located: Vec<(u32, u32)> = Vec::new();
+        let located = &mut self.transport_located;
         located
             .try_reserve(provinces.len())
             .map_err(|_| ALLOCATION)?;
@@ -529,7 +618,7 @@ impl Captured {
             .map_err(|_| ALLOCATION)?;
         // A province whose region cannot be read is skipped and counted; its
         // legs refuse by name in the viewer, and every other province stands.
-        for &province in &provinces {
+        for &province in provinces.iter() {
             match engine_naval_history::cnaval_unit_transfer::province_region(
                 memory, base, game_state, province,
             ) {
@@ -542,9 +631,9 @@ impl Captured {
         }
         self.regions.sort_unstable_by_key(|region| region.id);
         self.regions.dedup_by_key(|region| region.id);
-        let mut wanted: Vec<(u32, usize)> = Vec::new();
+        let wanted = &mut self.transport_wanted;
         wanted.try_reserve(demand.len()).map_err(|_| ALLOCATION)?;
-        for &(owner, province) in &demand {
+        for &(owner, province) in demand.iter() {
             let Ok(at) = located.binary_search_by_key(&province, |&(known, _)| known) else {
                 continue;
             };
@@ -561,7 +650,7 @@ impl Captured {
             .try_reserve(wanted.len())
             .map_err(|_| ALLOCATION)?;
         self.speed_cache.begin(self.regions.len())?;
-        let mut indices: Vec<usize> = Vec::new();
+        let indices = &mut self.transport_indices;
         indices
             .try_reserve(self.regions.len())
             .map_err(|_| ALLOCATION)?;
@@ -578,22 +667,22 @@ impl Captured {
                     .filter(|&&(known, _)| known == owner)
                     .map(|&(_, index)| index),
             );
-            engine_naval_history::cnaval_unit_transfer::movement_speeds(
+            engine_naval_history::cnaval_unit_transfer::movement_speeds_inputs(
                 memory,
                 base,
                 game_state,
                 owner,
                 &self.regions,
-                &indices,
+                indices,
                 cache,
                 |region, speed| {
                     if let Err(reason) = speed {
                         count_refusal(refused, reason);
                     }
-                    transport.push(OwnerTransportSpeedRow {
+                    transport.push(TransportRow {
                         owner,
                         region: region.id,
-                        speed: speed.ok(),
+                        speed: TransportSpeed::Observed(speed.ok()),
                     });
                 },
             );
@@ -629,7 +718,16 @@ impl Captured {
             table::<tables::OwnerTransportSpeeds, _>(
                 self.transport_outcome,
                 &self.transport,
-                |r| *r,
+                |r| {
+                    let TransportSpeed::Ready(speed) = r.speed else {
+                        panic!("owner transport operands not decoded");
+                    };
+                    OwnerTransportSpeedRow {
+                        owner: r.owner,
+                        region: r.region,
+                        speed,
+                    }
+                },
             ),
         ]
     }
@@ -733,6 +831,77 @@ mod tests {
     use super::*;
     use engine_native::memory::SliceMemory;
     use replay_data::rows::TableRows;
+
+    #[test]
+    fn sibling_failure_reset_settles_completed_gun_diagnostics_once() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let counts = || [WITHDRAWAL_REFUSALS.load(Relaxed), ETA_REFUSALS.load(Relaxed)];
+        let before = counts();
+        let mut captured = Captured::vacant();
+        captured.rows.rows.push(railway_gun_counter_inputs::Row {
+            ordinary_len: 1,
+            ..Default::default()
+        });
+        captured.rows.outcome = Outcome::Rows { len: 1 };
+        captured.owned_pending = true;
+        captured.reset();
+        assert_eq!(counts(), before.map(|count| count + 1));
+        captured.reset();
+        captured.decode_owned();
+        assert_eq!(counts(), before.map(|count| count + 1));
+    }
+
+    #[test]
+    fn staged_transport_refusals_keep_native_demand_and_reuse_live_scratch() {
+        struct Refused(std::cell::Cell<usize>);
+        impl Memory for Refused {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                self.0.set(self.0.get() + 1);
+                false
+            }
+        }
+        for count in [0, 1, 1_500, 5_000] {
+            let memory = Refused(Default::default());
+            let mut captured = Captured::vacant();
+            captured.rows.rows = (0..count)
+                .map(|index| railway_gun_counter_inputs::Row {
+                    gun: index as u64 + 1,
+                    logical_owner: (index % 23 + 1) as u32,
+                    province: (index % 17 + 1) as u32,
+                    ..Default::default()
+                })
+                .collect();
+            captured.rows.outcome = Outcome::Rows { len: count };
+            captured.acquire_transport(&memory, 0, 0x10);
+            let reads = memory.0.get();
+            let refusals = captured.transport_refused.clone();
+            let capacity = (
+                captured.transport_demand.capacity(),
+                captured.transport_provinces.capacity(),
+                captured.transport_located.capacity(),
+                captured.transport_wanted.capacity(),
+                captured.transport_indices.capacity(),
+            );
+            captured.decode_transport();
+            assert_eq!(memory.0.get(), reads, "owned decode performs no native read");
+            assert!(matches!(captured.transport_outcome, Outcome::Rows { len: 0 }));
+            assert!(captured.regions.is_empty());
+            memory.0.set(0);
+            captured.capture_transport(&memory, 0, 0x10);
+            assert_eq!(memory.0.get(), reads);
+            assert_eq!(captured.transport_refused, refusals);
+            assert_eq!(
+                (
+                    captured.transport_demand.capacity(),
+                    captured.transport_provinces.capacity(),
+                    captured.transport_located.capacity(),
+                    captured.transport_wanted.capacity(),
+                    captured.transport_indices.capacity(),
+                ),
+                capacity,
+            );
+        }
+    }
 
     fn gun(handle: u64) -> railway_gun_counter_inputs::Row {
         railway_gun_counter_inputs::Row {

@@ -177,6 +177,7 @@ struct Division {
     /// A reserve's share or why it was refused; `None` for a
     /// committed division, whose entry has no reinforcement hover.
     reserve_speed: Option<Result<i64, &'static str>>,
+    reserve_observation: Option<usize>,
 }
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct ModifierSide {
@@ -244,7 +245,12 @@ struct Acquired {
     stats: carmy_combat_inputs::Row,
     exile: carmy_combat_inputs::Exile,
     context: carmy_combat_inputs::ContextRow,
-    reserve_speed: Option<Result<i64, &'static str>>,
+    reserve_speed: Option<Result<ReserveSpeed, &'static str>>,
+}
+
+enum ReserveSpeed {
+    Value(i64),
+    Observed(usize),
 }
 
 /// Per-division and per-combat reader storage grows from original headers and
@@ -255,12 +261,15 @@ struct Scratch {
     modifiers: Vec<carmy_combat_inputs::Modifier>,
     /// A reserve's movement-speed operands while its share is composed.
     reinforcement: reserve_speed::Scratch,
+    observations: reserve_speed::Observations,
+    defer_speed: bool,
 }
 impl Scratch {
     fn allocated_bytes(&self) -> usize {
         self.widths.capacity() * size_of::<carmy_combat_inputs::WidthTerm>()
             + self.modifiers.capacity() * size_of::<carmy_combat_inputs::Modifier>()
             + self.reinforcement.allocated_bytes()
+            + self.observations.allocated_bytes()
     }
 }
 
@@ -269,7 +278,7 @@ type DivisionRead = (
     carmy_combat_inputs::Row,
     carmy_combat_inputs::Exile,
     carmy_combat_inputs::ContextRow,
-    Option<Result<i64, &'static str>>,
+    Option<Result<ReserveSpeed, &'static str>>,
 );
 
 /// Where one division's reads write their variable-length results: the
@@ -335,16 +344,32 @@ fn read_division<M: Memory, C: Memory>(
     // every acclimatization weight. A failed read or an unported form
     // refuses only this share; the division and its table stay.
     let reserve_speed = (role == 2).then(|| {
-        reserve_speed::capture_share(
-            memory,
-            base,
-            state,
-            sources,
-            pointer,
-            handle,
-            context.base_speed,
-            &mut scratch.reinforcement,
-        )
+        if scratch.defer_speed {
+            scratch
+                .observations
+                .acquire(
+                    memory,
+                    base,
+                    state,
+                    sources,
+                    pointer,
+                    handle,
+                    context.base_speed,
+                )
+                .map(ReserveSpeed::Observed)
+        } else {
+            reserve_speed::capture_share(
+                memory,
+                base,
+                state,
+                sources,
+                pointer,
+                handle,
+                context.base_speed,
+                &mut scratch.reinforcement,
+            )
+            .map(ReserveSpeed::Value)
+        }
     });
     Ok((stats, exile, context, reserve_speed))
 }
@@ -435,6 +460,12 @@ impl Destination<'_> {
         // The player's name was written uncommitted at the arena's length.
         debug_assert!(naming.custom.1 == 0 || naming.custom.0 == self.names.len);
         self.names.len += naming.custom.1;
+        let (reserve_speed, reserve_observation) = match reserve_speed {
+            Some(Ok(ReserveSpeed::Observed(index))) => (None, Some(index)),
+            Some(Ok(ReserveSpeed::Value(value))) => (Some(Ok(value)), None),
+            Some(Err(reason)) => (Some(Err(reason)), None),
+            None => (None, None),
+        };
         self.divisions[self.progress[1].len] = Division {
             pointer: at.pointer,
             combat: at.combat,
@@ -447,6 +478,7 @@ impl Destination<'_> {
             context,
             width_start: start,
             reserve_speed,
+            reserve_observation,
         };
         self.progress[1].len += 1;
     }
@@ -865,6 +897,7 @@ impl Destination<'_> {
 }
 
 pub struct Captured {
+    pending_owned: bool,
     details: CaptureRows<Detail>,
     divisions: CaptureRows<Division>,
     sides: CaptureRows<ModifierSide>,
@@ -1060,6 +1093,7 @@ impl Captured {
 
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
+            pending_owned: false,
             details: CaptureRows::new(c.details),
             divisions: CaptureRows::new(c.divisions),
             sides: CaptureRows::new(c.sides),
@@ -1105,6 +1139,11 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
+        if self.pending_owned {
+            self.held_reserve_trees = HeldReserveTrees::default();
+        }
+        self.pending_owned = false;
+        self.scratch.observations.reset();
         self.details.reset();
         self.divisions.reset();
         self.sides.reset();
@@ -1338,14 +1377,39 @@ impl Captured {
         (outcomes, ticks)
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+        self.scratch.defer_speed = false;
+        let mut ticks = self.capture_observed(memory, base, state);
+        let start = qpc();
+        self.settle_owned();
+        ticks[0] += elapsed(start);
+        ticks
+    }
+
+    pub fn capture_deferred(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> [u64; N] {
+        self.scratch.defer_speed = true;
+        let ticks = self.capture_observed(memory, base, state);
+        self.scratch.defer_speed = false;
+        ticks
+    }
+
+    fn capture_observed(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+        if self.pending_owned {
+            self.held_reserve_trees = HeldReserveTrees::default();
+            self.pending_owned = false;
+        }
+        self.scratch.observations.reset();
         let started = qpc();
         let (outcomes, mut ticks) = self.pass(memory, base, state);
         self.details.outcome = outcomes[0];
         self.divisions.outcome = outcomes[1];
         self.sides.outcome = outcomes[2];
         self.combat_sides.outcome = outcomes[3];
-        self.count_reserve_shares();
-        self.count_side_input_refusals();
+        self.pending_owned = true;
         let trees = qpc();
         {
             let _reads = crate::read_accounting::table(TABLES[5]);
@@ -1353,11 +1417,40 @@ impl Captured {
         }
         ticks[5] = elapsed(trees);
         if crate::allocation::failed() {
+            self.settle_owned();
             self.fail("collector allocation failed");
             return ticks;
         }
         ticks[0] += elapsed(started).saturating_sub(ticks.iter().sum::<u64>());
         ticks
+    }
+
+    pub fn owned_tail_allocated_bytes(&self) -> usize {
+        self.leaders.allocated_bytes()
+    }
+
+    /// Reserve arithmetic and diagnostics use only captured operands. Keep
+    /// `pending_owned` until completion so a reset forgets an unfinished store.
+    pub fn settle_owned(&mut self) {
+        if !self.pending_owned {
+            return;
+        }
+        let len = self.divisions.outcome.len().min(self.divisions.rows.len());
+        for row in &mut self.divisions.rows[..len] {
+            if let Some(index) = row.reserve_observation {
+                row.reserve_speed = Some(self.scratch.observations.compute(index));
+                row.reserve_observation = None;
+            }
+        }
+        self.count_reserve_shares();
+        self.count_side_input_refusals();
+        self.sources.clear();
+        self.leaders.clear();
+        self.scratch.observations.reset();
+        if crate::allocation::failed() {
+            self.held_reserve_trees = HeldReserveTrees::default();
+        }
+        self.pending_owned = false;
     }
     /// ReserveModifierTrees for this pass's reserves: each reserve's country
     /// (its positive expeditionary owner, else its roster owner) and, when it

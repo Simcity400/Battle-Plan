@@ -4,4 +4,6 @@ Owned land-combat details, participants, casualties, modifier operands, reinforc
 
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
+The ordinary combat worker copies reserve-speed operands in native read order; FIFO decode composes their shares and diagnostics without a Memory capability. Unfinished owned settlement forgets the held reserve-tree baseline before reuse; tree verification and native-demand decisions remain parked.
+
 Run `cargo test -p collector-combat` and `cargo clippy -p collector-combat --all-targets -- -D warnings` for its synthetic checks.

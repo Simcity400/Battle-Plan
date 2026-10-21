@@ -296,23 +296,23 @@ fn reduction_fraction(
     Ok(result)
 }
 
-fn composed_modifier<M: Memory>(
+fn composed_inputs<M: Memory>(
     memory: &M,
     base: usize,
     state: usize,
     owner: ccountry::Country,
     countries: &ccountry::Reader<'_, M>,
     region: u32,
-) -> Result<i64, &'static str> {
+) -> Result<ComposedInputs, &'static str> {
     let flags = value::<u32>(memory, base, modifier_definition::TRADE_FEATURE_FLAGS_RVA)?;
     // Feature 0x13 tests exactly DLC bit 4.
     if flags & (1 << 4) == 0 {
-        return Ok(0);
+        return Ok(ComposedInputs::Zero);
     }
     let definitions = pointer(memory, base, MODIFIER_SET_RVA)?;
     let definition = value::<u64>(memory, definitions, TRANSPORT_MODIFIER)?;
     if definition == 0 {
-        return Ok(0);
+        return Ok(ComposedInputs::Zero);
     }
     let definition =
         usize::try_from(definition).map_err(|_| "transport modifier pointer invalid")?;
@@ -377,16 +377,19 @@ fn composed_modifier<M: Memory>(
             // Both category-filter stages use mask 0xffffffff, initialized by the
             // temporary accumulator constructor.
             if category == 0 {
-                0
+                ComposedInputs::Zero
             } else {
-                let scaled = multiply(raw.raw, fraction);
-                modifier_definition::operands(memory, base, SPEED_TOKEN)?.effective(scaled)
+                ComposedInputs::Modifier {
+                    raw: raw.raw,
+                    fraction,
+                    operands: modifier_definition::operands(memory, base, SPEED_TOKEN)?,
+                }
             }
         } else {
-            0
+            ComposedInputs::Zero
         }
     } else {
-        0
+        ComposedInputs::Zero
     };
     Ok(result)
 }
@@ -434,6 +437,54 @@ pub fn movement_speed(
     owner: u32,
     region: usize,
 ) -> Result<i64, &'static str> {
+    movement_speed_inputs(memory, base, state, owner, region).map(SpeedInputs::evaluate)
+}
+
+/// Final transport arithmetic has no native demand. Its operands can travel
+/// with an owned movement packet while all conditional acquisition stays parked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpeedInputs {
+    speed: i64,
+    weather: i64,
+    composed: ComposedInputs,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ComposedInputs {
+    Zero,
+    Modifier {
+        raw: i64,
+        fraction: i64,
+        operands: modifier_definition::Operands,
+    },
+}
+impl ComposedInputs {
+    fn evaluate(self) -> i64 {
+        match self {
+            Self::Zero => 0,
+            Self::Modifier { raw, fraction, operands } => {
+                operands.effective(multiply(raw, fraction))
+            }
+        }
+    }
+}
+impl SpeedInputs {
+    pub fn evaluate(self) -> i64 {
+        multiply(
+            P.wrapping_add(self.weather).wrapping_add(self.composed.evaluate()),
+            self.speed,
+        )
+    }
+}
+
+/// The same native reads and first refusal as movement_speed, without its
+/// final wrapping additions and fixed-point multiplication.
+pub fn movement_speed_inputs(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    owner: u32,
+    region: usize,
+) -> Result<SpeedInputs, &'static str> {
     let arrays = ccountry::Reader::new(memory, base, state)?.arrays();
     let countries = ccountry::Reader::from_arrays(memory, base, state, arrays)?;
     let country = countries.resolve(owner)?;
@@ -455,15 +506,14 @@ pub fn movement_speed(
     // Read base speed before both additive factors.
     let speed = value::<i64>(memory, base, BASE_SPEED_RVA)?;
     let weather = weather_modifier(memory, base, state, region_id)?;
-    let composed = composed_modifier(memory, base, state, country, &countries, region_id)?;
-    Ok(multiply(
-        P.wrapping_add(weather).wrapping_add(composed),
-        speed,
-    ))
+    let composed = composed_inputs(memory, base, state, country, &countries, region_id)?;
+    Ok(SpeedInputs { speed, weather, composed })
 }
 
 mod speeds;
-pub use speeds::{SpeedCache, TransportRegion, movement_speeds, province_region};
+pub use speeds::{
+    SpeedCache, TransportRegion, movement_speeds, movement_speeds_inputs, province_region,
+};
 
 #[cfg(test)]
 mod tests;

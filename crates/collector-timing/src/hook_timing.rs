@@ -116,6 +116,8 @@ pub enum Family {
     /// Province name effects, navy access setter and reset, world tension
     /// total, and dynamic modifier addition, renewal, removal and daily update.
     WorldInputChanges,
+    /// Doctrine receiver notifications, occurrence callbacks and gain-store taps.
+    DoctrineChanges,
     /// The retained air-combat record updater.
     AirRecordChanges,
     /// Local sub-unit creation, definition rebuilding, runtime clearing and
@@ -174,7 +176,7 @@ pub enum Family {
     /// Bilateral war contribution writers, first-credit capture and delivery histories.
     WarParticipation,
 }
-pub const FAMILY_COUNT: usize = 62;
+pub const FAMILY_COUNT: usize = 63;
 
 /// How collector code surrounds the native original.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,6 +241,7 @@ impl Family {
         Self::UnitLeaderChanges,
         Self::CensusChanges,
         Self::WorldInputChanges,
+        Self::DoctrineChanges,
         Self::AirRecordChanges,
         Self::LocalSubunitChanges,
         Self::TemplateChanges,
@@ -306,6 +309,7 @@ impl Family {
             Self::UnitLeaderChanges => "unit_leader_changes",
             Self::CensusChanges => "census_changes",
             Self::WorldInputChanges => "world_input_changes",
+            Self::DoctrineChanges => "doctrine_changes",
             Self::AirRecordChanges => "air_record_changes",
             Self::LocalSubunitChanges => "local_subunit_changes",
             Self::TemplateChanges => "template_changes",
@@ -385,6 +389,7 @@ impl Family {
             | Self::FactionRefreshPhases
             | Self::FactionResourceRebuild => Kind::Detour,
             Self::LandEvents
+            | Self::DoctrineChanges
             | Self::MapEvents
             | Self::MarketChanges
             | Self::FactionGoals
@@ -592,6 +597,45 @@ fn claim_current() -> usize {
     let slot = TABLE.claim();
     SLOT.set(slot);
     slot
+}
+
+#[repr(align(64))]
+struct CallSlot<const SITES: usize>([AtomicU64; SITES]);
+
+/// Diagnostic calls, using the timer's existing thread ownership. Not a writer
+/// revision or an acquisition fence: consumers must not certify reads with it.
+pub struct CallCounters<const SITES: usize> {
+    slots: [CallSlot<SITES>; SLOT_COUNT],
+}
+impl<const SITES: usize> Default for CallCounters<SITES> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl<const SITES: usize> CallCounters<SITES> {
+    pub const fn new() -> Self {
+        Self {
+            slots: [const { CallSlot([const { AtomicU64::new(0) }; SITES]) }; SLOT_COUNT],
+        }
+    }
+    #[inline(always)]
+    pub fn increment(&self, site: usize) {
+        self.increment_at(current_slot(), site);
+    }
+    #[inline(always)]
+    fn increment_at(&self, slot: usize, site: usize) {
+        bump(&self.slots[slot].0[site], slot == SHARED_SLOT, 1);
+    }
+    /// Exact after writers join; concurrent status reads are not one atomic cut.
+    pub fn total(&self, site: usize) -> u64 {
+        let claimed = TABLE.claimed.load(Ordering::Relaxed).min(OWNED_SLOTS);
+        self.slots[..claimed]
+            .iter()
+            .chain(std::iter::once(&self.slots[SHARED_SLOT]))
+            .fold(0, |total, slot| {
+                total.wrapping_add(slot.0[site].load(Ordering::Relaxed))
+            })
+    }
 }
 
 /// Start a callback's span before any other collector work in it.
@@ -911,6 +955,13 @@ mod tests {
     }
 
     #[test]
+    fn doctrine_timing_keeps_its_shared_patch_owner_separate() {
+        assert_eq!(Family::DoctrineChanges.name(), "doctrine_changes");
+        assert_eq!(Family::DoctrineChanges.kind(), Kind::Mixed);
+        assert_eq!(Family::DoctrineChanges.period(), 64);
+    }
+
+    #[test]
     fn war_participation_registers_sampled_detours_with_original_accounting() {
         let family = Family::WarParticipation;
         assert_eq!(family.name(), "war_participation");
@@ -999,6 +1050,32 @@ mod tests {
         let after = table.totals()[Family::PortraitChanges as usize];
         assert_eq!((after.calls, after.sampled), (2, 1));
         assert_eq!(after.original, totals.original);
+    }
+
+    #[test]
+    fn diagnostic_calls_keep_owned_and_shared_thread_totals_without_sampling() {
+        let counter = CallCounters::<2>::new();
+        std::thread::scope(|threads| {
+            for _ in 0..4 {
+                threads.spawn(|| {
+                    for _ in 0..1000 {
+                        counter.increment(0);
+                        counter.increment_at(SHARED_SLOT, 1);
+                    }
+                });
+            }
+        });
+        assert_eq!(counter.total(0), 4000);
+        assert_eq!(counter.total(1), 4000);
+        assert_eq!(counter.slots[SHARED_SLOT].0[1].load(Ordering::Relaxed), 4000);
+        assert_eq!(TABLE.totals()[Family::RaidChanges as usize].calls, 0);
+    }
+
+    #[test]
+    fn diagnostic_calls_claim_thread_slots_without_allocation() {
+        let counter = CallCounters::<1>::new();
+        collector_test_support::with_allocations_denied(|| counter.increment(0));
+        assert_eq!(counter.total(0), 1);
     }
 
     #[test]

@@ -42,6 +42,10 @@ use replay_data::{
     rows::DivisionMovementStats, rows::PacketHour,
 };
 
+mod preparation;
+pub use crate::division_experience::Order as ScalarOrder;
+pub use preparation::{AttackPart, PreparationPart, PreparedDivision};
+
 /// A stat block's scalars.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Scalars {
@@ -159,6 +163,8 @@ pub struct ArmyStatStore {
     progression: crate::division_experience::Store<u64>,
     officer: crate::division_experience::Store<i64>,
     career: crate::division_experience::Store<i32>,
+    supply: crate::division_experience::Store<std::sync::Arc<crate::supply_inputs::Sample>>,
+    daily: bool,
     pub history: crate::division_history::Store,
     pub sources: crate::panel_sources::Store,
     /// The marks' epoch the held entries were certified in; `None` holds
@@ -190,13 +196,76 @@ impl Default for ArmyStatStore {
     }
 }
 
+// Footer carry uses daily/full revocation and census occurrence identity, not
+// a native writer sequence. The common occurrence store still needs a token.
+const DAILY_SUPPLY_SAMPLE: Option<(u64, u64)> = Some((0, 0));
+
 impl ArmyStatStore {
+    /// Owner-approved daily display samples; hourly certificates still protect
+    /// every other operand, including the XP lent to exercise eligibility.
+    pub fn daily_progress(&mut self, refresh: bool) {
+        self.daily = true;
+        self.experience.daily(refresh);
+        self.officer.daily(refresh);
+        if refresh {
+            self.supply.forget();
+        }
+    }
+    pub fn daily_supply(
+        &self,
+        base: usize,
+        index: usize,
+        seed: &DivisionSeed,
+        order: &mut ScalarOrder,
+    ) -> Option<std::sync::Arc<crate::supply_inputs::Sample>> {
+        self.daily
+            .then(|| {
+                self.supply
+                    .prefetch_value(base, index, seed, DAILY_SUPPLY_SAMPLE, order, || {
+                        Err("division supply has no daily sample")
+                    })
+            })
+            .flatten()
+            .and_then(Result::ok)
+    }
+    pub fn forget_supply(&mut self) {
+        self.supply.forget();
+    }
+    pub fn holds_daily_progress(&self) -> bool {
+        self.daily
+    }
+    pub fn remember_supply(
+        &mut self,
+        base: usize,
+        seeds: &[DivisionSeed],
+        samples: &[Option<std::sync::Arc<crate::supply_inputs::Sample>>],
+        complete: bool,
+    ) {
+        if !self.daily {
+            return;
+        }
+        let stored = complete
+            && self.supply.begin(seeds.len()).is_ok()
+            && seeds.iter().zip(samples).all(|(seed, sample)| {
+                self.supply
+                    .observe_with(base, seed, DAILY_SUPPLY_SAMPLE, || {
+                        sample
+                            .clone()
+                            .ok_or("division supply daily sample unavailable")
+                    })
+                    .is_ok()
+            })
+            && samples.len() == seeds.len();
+        self.supply.finish(stored);
+    }
     pub fn new() -> Self {
         Self {
             experience: crate::division_experience::Store::default(),
             progression: Default::default(),
             officer: Default::default(),
             career: Default::default(),
+            supply: Default::default(),
+            daily: false,
             history: Default::default(),
             sources: Default::default(),
             epoch: None,
@@ -226,6 +295,7 @@ impl ArmyStatStore {
         self.progression.forget();
         self.officer.forget();
         self.career.forget();
+        self.supply.forget();
         self.history.forget();
         self.sources.forget();
         self.epoch = None;
@@ -247,6 +317,7 @@ impl ArmyStatStore {
 
     pub fn allocated_bytes(&self) -> usize {
         self.experience.allocated_bytes()
+            + self.supply.allocated_bytes()
             + self.progression.allocated_bytes()
             + self.officer.allocated_bytes()
             + self.career.allocated_bytes()
@@ -354,11 +425,19 @@ impl ArmyStatStore {
     }
 }
 
+pub const CERTIFY_PHASE_NAMES: [&str; 3] = ["certify_setup", "certify_ordered", "certify_finish"];
+
 /// The hour's operands, sorted by division, and the witnessed packets.
 #[derive(Default)]
 pub struct Captured {
-    /// Certified XP in the existing seed order, shared with the status predicate.
+    /// Recorded XP in census order, possibly held at the daily sample.
     pub experience: Vec<Option<i64>>,
+    /// Only certificate-current XP may be consumed by the hourly native predicate.
+    pub exercise_experience: Vec<Option<i64>>,
+    certify_ticks: [u64; CERTIFY_PHASE_NAMES.len()],
+    scalars_deferred: bool,
+    certified_check: crate::sampled_verify::Check,
+    history_finish: Option<Result<(), &'static str>>,
     pending_templates: Vec<Option<u64>>,
     officer: Vec<Option<i64>>,
     career: Vec<Option<i32>>,
@@ -415,6 +494,7 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.selected_sources.capacity() * std::mem::size_of::<(u64, Option<[u64; 3]>)>()
             + self.experience.capacity() * std::mem::size_of::<Option<i64>>()
+            + self.exercise_experience.capacity() * std::mem::size_of::<Option<i64>>()
             + self.pending_templates.capacity() * std::mem::size_of::<Option<u64>>()
             + self.officer.capacity() * std::mem::size_of::<Option<i64>>()
             + self.career.capacity() * std::mem::size_of::<Option<i32>>()
@@ -457,7 +537,43 @@ impl Captured {
         store: Option<&mut ArmyStatStore>,
         changes: &dyn Changes,
     ) {
+        self.certify_prepared(memory, base, seeds, outcome, store, changes, |_| None);
+    }
+
+    /// Settle range-local observations in the original census order. Taking
+    /// marks, registration, cache admission and history edits still happen once.
+    #[allow(clippy::too_many_arguments)]
+    pub fn certify_prepared(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        seeds: &[DivisionSeed],
+        outcome: Outcome,
+        store: Option<&mut ArmyStatStore>,
+        changes: &dyn Changes,
+        prepared: impl Fn(usize) -> Option<PreparedDivision>,
+    ) {
+        self.certify_staged(
+            memory, base, seeds, outcome, store, changes, prepared, false,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn certify_staged(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        seeds: &[DivisionSeed],
+        outcome: Outcome,
+        store: Option<&mut ArmyStatStore>,
+        changes: &dyn Changes,
+        prepared: impl Fn(usize) -> Option<PreparedDivision>,
+        defer_owned: bool,
+    ) {
+        let begin = crate::clock::qpc();
+        self.certify_ticks = [0; CERTIFY_PHASE_NAMES.len()];
         self.experience.clear();
+        self.exercise_experience.clear();
         self.pending_templates.clear();
         self.officer.clear();
         self.career.clear();
@@ -470,6 +586,9 @@ impl Captured {
         self.status_counts = Counts::default();
         self.epoch = None;
         self.carryable = false;
+        self.certified_check = crate::sampled_verify::current_burned_in(army_stat_changes::VERIFY);
+        self.scalars_deferred = false;
+        self.history_finish = None;
         let Some(store) = store else {
             return;
         };
@@ -487,6 +606,12 @@ impl Captured {
         // The take consumed the marks: only this hour's capture holds again.
         store.epoch = None;
         let seeds = &seeds[..outcome.len().min(seeds.len())];
+        self.scalars_deferred = defer_owned
+            && seeds
+                .iter()
+                .enumerate()
+                .all(|(index, _)| prepared(index).is_some_and(|p| p.owned_scalars()));
+        self.history_finish = None;
         let experience_ready = store
             .experience
             .begin(seeds.len())
@@ -499,11 +624,18 @@ impl Captured {
                     )
                 })
                 .is_ok();
-        let progression_ready = store
-            .progression
-            .begin(seeds.len())
-            .map_err(army_stat_changes::progression_refused)
-            .is_ok()
+        // This optional loan only avoids the native exercise reader's own XP
+        // read. Allocation failure must not withdraw the recorded XP sample.
+        let exercise_ready = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.exercise_experience, seeds.len())
+        })
+        .is_ok();
+        let progression_ready = !self.scalars_deferred
+            && store
+                .progression
+                .begin(seeds.len())
+                .map_err(army_stat_changes::progression_refused)
+                .is_ok()
             && engine_allocation::reserve(&mut self.pending_templates, seeds.len())
                 .map_err(|_| {
                     army_stat_changes::progression_refused(
@@ -511,28 +643,50 @@ impl Captured {
                     )
                 })
                 .is_ok();
-        let officer_ready = store.officer.begin(seeds.len()).is_ok()
+        let officer_ready = !self.scalars_deferred
+            && store.officer.begin(seeds.len()).is_ok()
             && engine_allocation::reserve(&mut self.officer, seeds.len()).is_ok();
-        let career_ready = store.career.begin(seeds.len()).is_ok()
+        let career_ready = !self.scalars_deferred
+            && store.career.begin(seeds.len()).is_ok()
             && engine_allocation::reserve(&mut self.career, seeds.len()).is_ok();
-        let mut history_result = store.history.begin(seeds.len());
+        let mut history_result = if defer_owned {
+            store.history.begin_owned(seeds.len())
+        } else {
+            store.history.begin(seeds.len())
+        };
         let check = crate::sampled_verify::current_burned_in(army_stat_changes::VERIFY);
+        self.certify_ticks[0] = crate::clock::qpc().saturating_sub(begin).max(0) as u64;
+        let ordered_begin = crate::clock::qpc();
         for (index, seed) in seeds.iter().enumerate() {
             use collector_observers::unit_history_changes as history_changes;
+            let prepared = prepared(index);
             if officer_ready {
                 let receiver = seed
                     .pointer
                     .checked_add(engine_native::unit_history::OFFICER);
-                let certificate = receiver.and_then(history_changes::sequence);
+                let certificate = match prepared.filter(|p| p.acquired[2]) {
+                    Some(p) => p.officer_certificate,
+                    None => receiver.and_then(history_changes::sequence),
+                };
                 self.officer.push(
                     store
                         .officer
                         .observe_with(base, seed, certificate, || {
-                            engine_native::unit_history::officer_experience(
-                                memory,
-                                base,
-                                seed.pointer,
-                            )
+                            prepared
+                                .filter(|p| {
+                                    certificate.is_some() && p.officer_certificate == certificate
+                                })
+                                .and_then(|p| p.officer)
+                                .map_or_else(
+                                    || {
+                                        engine_native::unit_history::officer_experience(
+                                            memory,
+                                            base,
+                                            seed.pointer,
+                                        )
+                                    },
+                                    |value| value,
+                                )
                         })
                         .map_err(|_| history_changes::refused())
                         .ok(),
@@ -541,28 +695,66 @@ impl Captured {
             // Career and stored XP consult the same independent writer
             // domain within this quiescent pass. Observe it only once.
             let experience_certificate = (career_ready || experience_ready)
-                .then(|| changes.experience_sequence(seed.pointer))
+                .then(|| match prepared.filter(|p| p.acquired[0]) {
+                    Some(p) => p.experience_certificate,
+                    None => changes.experience_sequence(seed.pointer),
+                })
                 .flatten();
             if career_ready {
-                let certificate =
-                    experience_certificate.and_then(|_| history_changes::sequence(seed.pointer));
+                let certificate = match prepared.filter(|p| p.acquired[3]) {
+                    Some(p) => p.career_certificate,
+                    None => {
+                        experience_certificate.and_then(|_| history_changes::sequence(seed.pointer))
+                    }
+                };
                 self.career.push(
                     store
                         .career
                         .observe_with(base, seed, certificate, || {
-                            engine_native::unit_history::career_counter(memory, seed.pointer)
+                            prepared
+                                .filter(|p| {
+                                    certificate.is_some() && p.career_certificate == certificate
+                                })
+                                .and_then(|p| p.career)
+                                .map_or_else(
+                                    || {
+                                        engine_native::unit_history::career_counter(
+                                            memory,
+                                            seed.pointer,
+                                        )
+                                    },
+                                    |value| value,
+                                )
                         })
                         .map_err(|_| history_changes::refused())
                         .ok(),
                 );
             }
             if progression_ready {
-                let certificate = changes.progression_sequence(seed.pointer);
+                let certificate = match prepared.filter(|p| p.acquired[1]) {
+                    Some(p) => p.progression_certificate,
+                    None => changes.progression_sequence(seed.pointer),
+                };
                 self.pending_templates.push(
                     store
                         .progression
                         .observe_with(base, seed, certificate, || {
-                            engine_native::carmy::pending_template(memory, base, seed.pointer)
+                            prepared
+                                .filter(|p| {
+                                    certificate.is_some()
+                                        && p.progression_certificate == certificate
+                                })
+                                .and_then(|p| p.progression)
+                                .map_or_else(
+                                    || {
+                                        engine_native::carmy::pending_template(
+                                            memory,
+                                            base,
+                                            seed.pointer,
+                                        )
+                                    },
+                                    |value| value,
+                                )
                         })
                         .map_err(army_stat_changes::progression_refused)
                         .ok(),
@@ -572,17 +764,44 @@ impl Captured {
                 let _reads = collector_memory::read_accounting::table(
                     replay_data::rows::TableId::DivisionHistory,
                 );
-                history_result = store.history.observe(memory, base, seed);
+                history_result = store.history.observe_prepared(
+                    memory,
+                    base,
+                    seed,
+                    prepared.and_then(|p| p.history),
+                );
             }
             if experience_ready {
                 let certificate = experience_certificate;
                 self.experience.push(
                     store
                         .experience
-                        .observe(memory, base, seed, certificate)
+                        .observe_with(base, seed, certificate, || {
+                            prepared
+                                .filter(|p| {
+                                    certificate.is_some() && p.experience_certificate == certificate
+                                })
+                                .and_then(|p| p.experience)
+                                .map_or_else(
+                                    || {
+                                        engine_native::read::<i64>(
+                                            memory,
+                                            seed.pointer
+                                                .checked_add(engine_native::carmy::EXPERIENCE)
+                                                .ok_or("division experience address overflow")?,
+                                        )
+                                        .ok_or("division experience unreadable")
+                                    },
+                                    |value| value,
+                                )
+                        })
                         .map_err(army_stat_changes::experience_refused)
                         .ok(),
                 );
+                if exercise_ready {
+                    self.exercise_experience
+                        .push(store.experience.current(seed, certificate));
+                }
             }
             let held = self
                 .carryable
@@ -604,27 +823,124 @@ impl Captured {
             }
             self.held_maxima.push(maxima.filter(|_| !sampled));
         }
+        self.certify_ticks[1] = crate::clock::qpc().saturating_sub(ordered_begin).max(0) as u64;
+        let begin = crate::clock::qpc();
         store
             .experience
             .finish(matches!(outcome, Outcome::Rows { .. }) && experience_ready);
-        store
-            .progression
-            .finish(matches!(outcome, Outcome::Rows { .. }) && progression_ready);
-        store
-            .officer
-            .finish(matches!(outcome, Outcome::Rows { .. }) && officer_ready);
-        store
-            .career
-            .finish(matches!(outcome, Outcome::Rows { .. }) && career_ready);
-        self.history = Some(if matches!(outcome, Outcome::Rows { .. }) {
-            history_result.and_then(|()| store.history.finish())
+        if !self.scalars_deferred {
+            store
+                .progression
+                .finish(matches!(outcome, Outcome::Rows { .. }) && progression_ready);
+            store
+                .officer
+                .finish(matches!(outcome, Outcome::Rows { .. }) && officer_ready);
+            store
+                .career
+                .finish(matches!(outcome, Outcome::Rows { .. }) && career_ready);
+        }
+        if defer_owned {
+            self.history_finish = Some(if matches!(outcome, Outcome::Rows { .. }) {
+                history_result
+            } else {
+                Err("complete division history census unavailable")
+            });
         } else {
-            Err("complete division history census unavailable")
-        });
-        if !matches!(self.history, Some(Ok(_))) {
-            store.history.forget();
+            self.history = Some(if matches!(outcome, Outcome::Rows { .. }) {
+                history_result.and_then(|()| store.history.finish())
+            } else {
+                Err("complete division history census unavailable")
+            });
+            if !matches!(self.history, Some(Ok(_))) {
+                store.history.forget();
+            }
         }
         self.status_counts.maxima_reused = self.held_maxima.iter().flatten().count() as u64;
+        self.certify_ticks[2] = crate::clock::qpc().saturating_sub(begin).max(0) as u64;
+    }
+    pub fn has_owned_certification(&self) -> bool {
+        self.scalars_deferred || self.history_finish.is_some()
+    }
+    /// Frozen receiver observations only. No native read, registration or mark
+    /// drain may occur here after the simulation resumes.
+    pub fn settle_certification(
+        &mut self,
+        base: usize,
+        seeds: &[DivisionSeed],
+        outcome: Outcome,
+        store: &mut ArmyStatStore,
+        prepared: impl Fn(usize) -> Option<PreparedDivision>,
+    ) {
+        use collector_observers::unit_history_changes as history_changes;
+        if std::mem::take(&mut self.scalars_deferred) {
+            let seeds = &seeds[..outcome.len().min(seeds.len())];
+            let progression_ready = store
+                .progression
+                .begin(seeds.len())
+                .map_err(army_stat_changes::progression_refused)
+                .is_ok()
+                && engine_allocation::reserve(&mut self.pending_templates, seeds.len())
+                    .map_err(|_| {
+                        army_stat_changes::progression_refused(
+                            "division experience cache allocation failed",
+                        )
+                    })
+                    .is_ok();
+            let officer_ready = store.officer.begin(seeds.len()).is_ok()
+                && engine_allocation::reserve(&mut self.officer, seeds.len()).is_ok();
+            let career_ready = store.career.begin(seeds.len()).is_ok()
+                && engine_allocation::reserve(&mut self.career, seeds.len()).is_ok();
+            for (index, seed) in seeds.iter().enumerate() {
+                let p = prepared(index).expect("owned scalar range coverage");
+                if officer_ready {
+                    self.officer.push(
+                        store
+                            .officer
+                            .observe_with(base, seed, p.officer_certificate, || {
+                                p.officer.expect("owned officer operand")
+                            })
+                            .map_err(|_| history_changes::refused())
+                            .ok(),
+                    );
+                }
+                if career_ready {
+                    self.career.push(
+                        store
+                            .career
+                            .observe_with(base, seed, p.career_certificate, || {
+                                p.career.expect("owned career operand")
+                            })
+                            .map_err(|_| history_changes::refused())
+                            .ok(),
+                    );
+                }
+                if progression_ready {
+                    self.pending_templates.push(
+                        store
+                            .progression
+                            .observe_with(base, seed, p.progression_certificate, || {
+                                p.progression.expect("owned progression operand")
+                            })
+                            .map_err(army_stat_changes::progression_refused)
+                            .ok(),
+                    );
+                }
+            }
+            let complete = matches!(outcome, Outcome::Rows { .. });
+            store.progression.finish(complete && progression_ready);
+            store.officer.finish(complete && officer_ready);
+            store.career.finish(complete && career_ready);
+        }
+        if let Some(result) = self.history_finish.take() {
+            self.history = Some(result.and_then(|()| store.history.finish()));
+            if !matches!(self.history, Some(Ok(_))) {
+                store.history.forget();
+            }
+        }
+    }
+
+    pub fn certify_ticks(&self) -> [u64; CERTIFY_PHASE_NAMES.len()] {
+        self.certify_ticks
     }
 
     /// After the status pass: its read of each sampled carryable division's
@@ -658,20 +974,56 @@ impl Captured {
         hour: i32,
         seeds: &[DivisionSeed],
         outcome: Outcome,
-        mut store: Option<&mut ArmyStatStore>,
+        store: Option<&mut ArmyStatStore>,
         maxima: impl Fn(usize) -> Option<DivisionMaxima>,
         changes: &dyn Changes,
     ) {
-        self.reset();
+        self.capture_prepared(
+            memory,
+            base,
+            hour,
+            seeds,
+            outcome,
+            store,
+            maxima,
+            changes,
+            |_| None,
+        );
+    }
+
+    /// Consume range-local fresh reads only where the original ordered walk
+    /// chooses acquisition. Carry, verification, row order and store settlement
+    /// are still performed by that walk.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_prepared<'a>(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        hour: i32,
+        seeds: &[DivisionSeed],
+        outcome: Outcome,
+        store: Option<&mut ArmyStatStore>,
+        maxima: impl Fn(usize) -> Option<DivisionMaxima>,
+        changes: &dyn Changes,
+        prepared: impl Fn(usize) -> Option<Result<&'a stats::AttackStats, &'static str>>,
+    ) {
+        self.prepare_witness(memory, base, hour, seeds, outcome);
         let check = crate::sampled_verify::current_burned_in(army_stat_changes::VERIFY);
-        // The status and naming passes' counts publish with this pass's.
-        let mut counts = self.status_counts;
+        self.capture_values(
+            memory, base, hour, seeds, outcome, store, maxima, changes, prepared, check,
+        );
+    }
+
+    /// The witness database is native; acquire it before the owned handoff.
+    pub fn prepare_witness(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        hour: i32,
+        seeds: &[DivisionSeed],
+        outcome: Outcome,
+    ) {
         let seeds = &seeds[..outcome.len().min(seeds.len())];
-        if let Some(store) = store.as_deref_mut() {
-            store.next.clear();
-            store.next_terrain.clear();
-            store.next_movement.clear();
-        }
         if army_stat_changes::WITNESS
             && seeds
                 .iter()
@@ -683,6 +1035,61 @@ impl Captured {
             {
                 self.terrains.clear();
             }
+        }
+    }
+
+    /// Every non-carried block has an owned range result. No reader or registry
+    /// registration is reachable after resume, including witness-only hours.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_owned<'a>(
+        &mut self,
+        base: usize,
+        hour: i32,
+        seeds: &[DivisionSeed],
+        outcome: Outcome,
+        store: Option<&mut ArmyStatStore>,
+        maxima: impl Fn(usize) -> Option<DivisionMaxima>,
+        changes: &dyn Changes,
+        prepared: impl Fn(usize) -> Option<Result<&'a stats::AttackStats, &'static str>>,
+    ) {
+        // The callback may already have advanced the global verification hour.
+        let check = self.certified_check;
+        self.capture_values(
+            &OwnedAttack,
+            base,
+            hour,
+            seeds,
+            outcome,
+            store,
+            maxima,
+            changes,
+            prepared,
+            check,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_values<'a>(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        hour: i32,
+        seeds: &[DivisionSeed],
+        outcome: Outcome,
+        mut store: Option<&mut ArmyStatStore>,
+        maxima: impl Fn(usize) -> Option<DivisionMaxima>,
+        changes: &dyn Changes,
+        prepared: impl Fn(usize) -> Option<Result<&'a stats::AttackStats, &'static str>>,
+        check: crate::sampled_verify::Check,
+    ) {
+        self.reset();
+        // The status and naming passes' counts publish with this pass's.
+        let mut counts = self.status_counts;
+        let seeds = &seeds[..outcome.len().min(seeds.len())];
+        if let Some(store) = store.as_deref_mut() {
+            store.next.clear();
+            store.next_terrain.clear();
+            store.next_movement.clear();
         }
         for (index, seed) in seeds.iter().enumerate() {
             let experience = self.experience.get(index).copied().flatten();
@@ -741,14 +1148,25 @@ impl Captured {
                 continue;
             }
             counts.read += 1;
-            let fresh = stats::capture_attack_stats_holding(
-                memory,
-                base,
-                stat_block,
-                &mut self.scratch,
-                &mut self.movement_scratch,
-                maxima(index),
-            );
+            let staged = prepared(index);
+            let acquired = staged.is_none().then(|| {
+                stats::capture_attack_stats_holding(
+                    memory,
+                    base,
+                    stat_block,
+                    &mut self.scratch,
+                    &mut self.movement_scratch,
+                    maxima(index),
+                )
+            });
+            let fresh = match staged {
+                Some(value) => value,
+                None => acquired
+                    .as_ref()
+                    .expect("fresh acquisition")
+                    .as_ref()
+                    .map_err(|&reason| reason),
+            };
             if let (Some(held), Some(store)) = (held, store.as_deref())
                 && let Ok(fresh) = &fresh
                 && check.covers(id)
@@ -804,9 +1222,13 @@ impl Captured {
                             maxima: maxima(index),
                         });
                     }
-                    // Return the entries' storage for the next read.
-                    self.scratch = fresh.terrain;
-                    self.movement_scratch = fresh.movement_terrain;
+                    // Staged entries retain their own buffers across hours.
+                    if staged.is_none() {
+                        if let Some(Ok(fresh)) = acquired {
+                            self.scratch = fresh.terrain;
+                            self.movement_scratch = fresh.movement_terrain;
+                        }
+                    }
                 }
                 Err(_) => {
                     counts.refused += 1;
@@ -864,14 +1286,87 @@ impl Captured {
             .map(|at| &self.rows[at])
     }
 
+    /// Resolve the attack-row key once for this row's scalar and terrain fields.
+    pub fn view(&self, division: u64) -> RowView<'_> {
+        RowView {
+            captured: self,
+            division,
+            row: self.row(division),
+        }
+    }
+    pub fn stats(&self, division: u64) -> Option<DivisionAttackStats> {
+        self.view(division).stats()
+    }
+    pub fn movement(&self, division: u64) -> Option<DivisionMovementStats> {
+        self.view(division).movement()
+    }
+    pub fn same(
+        &self,
+        division: u64,
+        previous: &replay_data::rows::Recorded<Option<DivisionAttackStats>>,
+    ) -> bool {
+        self.view(division).same(previous)
+    }
+    pub fn same_movement(
+        &self,
+        division: u64,
+        previous: &replay_data::rows::Recorded<Option<DivisionMovementStats>>,
+    ) -> bool {
+        self.view(division).same_movement(previous)
+    }
+    pub fn has_witness(&self, division: u64) -> bool {
+        self.witness
+            .binary_search_by_key(&division, |(division, _)| *division)
+            .is_ok()
+    }
+
+    /// The witnessed native operands of a division, with the hour's
+    /// acclimatization factor.
+    pub fn witness(&self, division: u64, factor: Option<i64>) -> Option<DivisionAttackInputs> {
+        let at = self
+            .witness
+            .binary_search_by_key(&division, |(division, _)| *division)
+            .ok()?;
+        Some(DivisionAttackInputs {
+            acclimatization: factor,
+            ..self.witness[at].1.clone()
+        })
+    }
+}
+
+/// Borrowed projection of one current owned attack row; no new read or carry.
+pub struct RowView<'a> {
+    captured: &'a Captured,
+    division: u64,
+    row: Option<&'a Row>,
+}
+impl RowView<'_> {
+    pub fn experience(&self) -> Option<i64> {
+        self.row?.experience
+    }
+    pub fn pending_template(&self) -> Option<u64> {
+        self.row?.pending_template
+    }
+    pub fn officer(&self) -> Option<i64> {
+        self.row?.officer_experience
+    }
+    pub fn career(&self) -> Option<i32> {
+        self.row?.career_counter
+    }
+    pub fn panel_source(&self) -> Option<[u64; 3]> {
+        self.captured.panel_source(self.division)
+    }
+    pub fn witness(&self, factor: Option<i64>) -> Option<DivisionAttackInputs> {
+        self.captured.witness(self.division, factor)
+    }
     /// The division's recorded operands; `None` is a refusal (or a division
     /// the capture did not reach).
-    pub fn stats(&self, division: u64) -> Option<DivisionAttackStats> {
-        let row = self.row(division)?;
+    pub fn stats(&self) -> Option<DivisionAttackStats> {
+        let row = self.row?;
         let scalars = row.scalars?;
         Some(DivisionAttackStats {
             terrain: engine_allocation::owned_vec(engine_allocation::copy_vec(
-                self.terrain.get(row.start..row.start + row.len)?,
+                self.captured.terrain.get(row.start..row.start + row.len)?,
             )),
             river: scalars.river,
             fort: scalars.fort,
@@ -882,12 +1377,12 @@ impl Captured {
 
     /// The division's recorded movement operands, held with its attack
     /// operands; `None` is a refusal.
-    pub fn movement(&self, division: u64) -> Option<DivisionMovementStats> {
-        let row = self.row(division)?;
+    pub fn movement(&self) -> Option<DivisionMovementStats> {
+        let row = self.row?;
         let scalars = row.scalars?;
         Some(DivisionMovementStats {
             terrain: engine_allocation::owned_vec(engine_allocation::copy_vec(
-                self.movement.get(row.start..row.start + row.len)?,
+                self.captured.movement.get(row.start..row.start + row.len)?,
             )),
             scalars: scalars.movement,
             fuel_rate: scalars.fuel_rate,
@@ -898,16 +1393,15 @@ impl Captured {
     /// Whether `previous` holds exactly what [`Self::movement`] would publish.
     pub fn same_movement(
         &self,
-        division: u64,
         previous: &replay_data::rows::Recorded<Option<DivisionMovementStats>>,
     ) -> bool {
         let replay_data::rows::Recorded::Value(previous) = previous else {
             return false;
         };
-        let current = self.row(division).and_then(|row| {
+        let current = self.row.and_then(|row| {
             Some((
                 row.scalars?,
-                self.movement.get(row.start..row.start + row.len)?,
+                self.captured.movement.get(row.start..row.start + row.len)?,
             ))
         });
         match (current, previous) {
@@ -925,16 +1419,15 @@ impl Captured {
     /// Whether `previous` holds exactly what [`Self::stats`] would publish.
     pub fn same(
         &self,
-        division: u64,
         previous: &replay_data::rows::Recorded<Option<DivisionAttackStats>>,
     ) -> bool {
         let replay_data::rows::Recorded::Value(previous) = previous else {
             return false;
         };
-        let current = self.row(division).and_then(|row| {
+        let current = self.row.and_then(|row| {
             Some((
                 row.scalars?,
-                self.terrain.get(row.start..row.start + row.len)?,
+                self.captured.terrain.get(row.start..row.start + row.len)?,
             ))
         });
         match (current, previous) {
@@ -948,19 +1441,6 @@ impl Captured {
             }
             _ => false,
         }
-    }
-
-    /// The witnessed native operands of a division, with the hour's
-    /// acclimatization factor.
-    pub fn witness(&self, division: u64, factor: Option<i64>) -> Option<DivisionAttackInputs> {
-        let at = self
-            .witness
-            .binary_search_by_key(&division, |(division, _)| *division)
-            .ok()?;
-        Some(DivisionAttackInputs {
-            acclimatization: factor,
-            ..self.witness[at].1.clone()
-        })
     }
 }
 
@@ -1159,5 +1639,13 @@ mod tests {
             ]
         );
         assert_eq!(packet.stats.night, Some(6));
+    }
+}
+
+/// A missing range is a programming error, never an invented native refusal.
+struct OwnedAttack;
+impl Memory for OwnedAttack {
+    fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+        panic!("owned attack settlement attempted a native read")
     }
 }

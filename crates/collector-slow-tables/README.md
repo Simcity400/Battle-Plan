@@ -6,21 +6,15 @@ Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/
 
 Run `cargo test -p collector-slow-tables` and `cargo clippy -p collector-slow-tables --all-targets -- -D warnings` for its synthetic checks.
 
-Doctrine state shares the CountryTacticUnlocks status-table baseline. Native writer
-callbacks copy only changed statuses, folders, tracks or grant lists into owned,
-coalesced journals. Effective daily gain is copied from the native store operands;
-unit-source daily gain remains separate. Folder resets read only the folder
-inventory; load completion also reads the other inventories. Each inventory
-header is acquired once by its reader. Ordinary Slow jobs validate the fixed
-observer epochs and swap prepared journals without reading doctrine objects or
-growing storage. Baselines and structural insertions prepare journals for every
-existing frame buffer. Grant expiry advances one carried country counter; grant rows keep signed
-days and a counter anchor, so scalar expiry publishes no grant payload. Spool
-conversion applies events and shares unchanged replay tables. Lost observation or a failed conversion refuses that hour and rebuilds the baseline at the next capture.
+Doctrine state shares the CountryTacticUnlocks status-table baseline. Prepared
+lock-free receiver marks select coalesced status/folder, track, bank, progress,
+source-gain and equipment reads on the parked Slow worker; quiet hours only hand
+off owned journals. Parent inventories settle before marked children, and lost
+marks rebuild the baseline. Prepared gain operands and expiry counts defer row
+reduction to Slow; grant append/load snapshots first settle earlier expiry counts.
+Cost-add/consumption marks select the final native cost inventory, and effective
+daily gain keeps its exact pre-store operand independently of unit-source gain.
+Spool conversion follows no pointers and shares unchanged replay tables.
 
-Cost consumption publishes prepared scalar occurrence events, with constant-size
-folder authentication and a native result-count witness. Immutable reduction
-names and folders remain owned; the spool worker derives use decrements,
-removals and ordinal compaction. The first cleanup stays ordered, then folder
-occurrences coalesce until an owner snapshot supersedes them. This adds no
-inventory walk or allocation to the consumption hook or ordinary hourly job.
+Cost rows retain terminal uses, names, factors, folders and ordinals. The worker
+copies their marked inventory directly, without a private consumption reducer.

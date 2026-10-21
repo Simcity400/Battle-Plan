@@ -549,7 +549,9 @@ fn status_maxima_reuses_one_probe_per_seed_and_keeps_carried_aliases_unread() {
         );
         assert_eq!(outcome, Outcome::Rows { len: seeds.len() });
         assert_eq!(
-            packet.maxima_probes.get(),
+            packet
+                .maxima_probes
+                .load(std::sync::atomic::Ordering::Relaxed),
             seeds.len(),
             "selection's slots must serve admission too"
         );
@@ -607,7 +609,12 @@ fn status_maxima_collisions_use_serial_slots_and_values() {
         &[],
     );
     assert_eq!(outcome, Outcome::Rows { len: seeds.len() });
-    assert_eq!(packet.maxima_probes.get(), seeds.len());
+    assert_eq!(
+        packet
+            .maxima_probes
+            .load(std::sync::atomic::Ordering::Relaxed),
+        seeds.len()
+    );
     for (index, seed) in seeds.iter().enumerate() {
         let expected = crate::csub_unit_definition::capture_division_maxima(
             &source,
@@ -1115,3 +1122,5 @@ fn batched_movement_capacity_duplicates_shared_null_and_stationary_equal_serial(
         }
     }
 }
+
+mod split_tests;

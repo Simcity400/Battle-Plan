@@ -64,6 +64,31 @@ A witnessed native world invalidation splits branch continuity even when stored 
 
 `FrameDecoder::for_tables` fixes its selection for its lifetime; omitted tables are unavailable. `Replay::read_block_selected` decompresses and validates only the selected tables' sections of a grouped block (each section carries its own checksum). In an interleaved block it validates every update's wire grammar before discarding unselected ones: compatible omitted deltas borrow field values and retain only keys for ordering/overlap checks; retained deltas own their values. Snapshots retain typed row validation, while delta nested validation and baseline arithmetic remain reconstruction work. `Replay::visit_block` (and through it `read_block_selected`) decodes a grouped block's selected tables whole, and inflates and decodes an interleaved block one frame at a time and may stop early; an interleaved block is checksum-verified by inflating it to its end once, after which reads stop at their hour. `seek_selected` uses `read_block_selected_through` at its target hour and preserves its frame visitor's cancellation, baseline recovery and campaign validation. These reads keep ordinary baseline/recovery rules. `Replay::read_block_parallel` preserves sequential frames/first error and requires caller-owned spare workers; it decodes a grouped block's tables, or an interleaved block's frames, in parallel. Collector and recorder read sequentially.
 
+Grouped storage uses exact same-frame aliases for repeated combat-member
+scalars, modifier division identities, division provinces and factory efficiency ([private_aliases.rs](src/container/private_aliases.rs)).
+The writer replaces a scalar with a zero payload only when its recorded operands
+supply the identical value, with complete independent source tables. Private bits
+distinguish aliases from literals. Conditional display-rule bits leave the payload
+literal when the optional exact operand is absent. Missing rows, absent operands,
+truncation and unequal values keep literals. Capture cadence and sampling
+provenance do not change. Readers materialize ordinary literal updates before
+exposing them, including watched, selected, prefix, parallel and keyframe reads;
+prepared checkpoints therefore contain resolved values. A selected alias reads
+its source sections internally without exposing them as selected tables. Source
+dependencies are acyclic. Keyframe anchors retain storage rows, while aliases
+resolve against the requested block's own hour, not the anchor's hour. Both
+stored and materialized plain bytes retain the existing block bounds.
+
+Conditional display aliases use only already recorded exact operands:
+DivisionStatus's supply ratio takes `SUPPLY_RATIO_STEP`, its remaining grace takes
+`displayed_grace` with the complete SimulationFeatures movement-defines packet,
+and Divisions' organisation takes `ORGANISATION_STEP` from complete same-frame
+DivisionStatus rows. The grace define must fit its native signed width. Optional
+absence keeps its literal and availability, rather than asserting that a source
+exists or adding marks at every demand transition. Present unequal values escape
+the rule individually. Capture demand, sample origins and public row schemas do
+not change.
+
 `Replay::open_path` holds a read-only recording file with read/write/delete sharing
 on Windows and reads its header and trailer without buffering the recording.
 Resident reads borrow their existing bytes. Held grouped reads buffer one current
@@ -394,3 +419,29 @@ air-supply availability only past the noncore bypass and core-access gates.
 The naval dominance source law derives selected-design power, native mission gates, strike-force effects, building multipliers and the regional source fold from raw recorded operands and the verified content defines.
 
 `FrameEncoder::prepare_contained` lets the collector replace a non-clock row-validation failure with the existing table `Unavailable` form while assembling a frame. It does not contain invalid baseline tokens, frame bookkeeping, allocation or I/O failures. Refusal commits clear the table's delta baseline; its next complete sample is a snapshot. Parallel table segments use the same validation path, with failed segments retried during frame assembly.
+
+Storage-private alias columns retain per-row marks independently of ordinary
+field masks. Each keyframe stores its own complete marks, even when its native
+rows anchor to an older block; later marks are exact key/mask changes. Private
+marks resolve against the same decoded frame before section caching or any
+public frame, selected read, seek or checkpoint. Native acquisition, spools and
+public rows contain no private marks.
+
+Private default bits compress marks, not assumptions about game values: every
+alias is equality-checked first, with explicit literal exceptions for mismatches
+or incomplete sources. Movement path counts retain the stored predicate required
+by strategic-action validation; maximum HP and organisation retain their declared
+step and native minimum. Independent absence and table sample origins survive
+materialization.
+
+Private local-sum aliases replace only the active CombatLogObservers state damage
+lane, NavalCombatDetails side totals and complete CountryFuel award totals. They
+retain ordered attribution children, all history cells and recipient amounts;
+wrapping sums must equal the recorded totals. Unequal totals, incomplete observer
+censuses and refused award days remain literal. No public row fields are added.
+
+Combat copies, modifier identities, division provinces and production efficiency
+share these private columns; no native row carries storage metadata. Their
+keyframe default is an unsigned mask varint, with exact per-key XOR exceptions.
+The twelve combat-copy bits do not alter optional absence, literal values or the
+existing acyclic complete-source joins.

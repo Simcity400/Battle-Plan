@@ -103,6 +103,18 @@ impl DisplayCapture {
             Ok(header)
         });
     }
+    pub(super) fn equal(&self, previous: Option<&rows::WeatherDisplay>) -> bool {
+        match (self.header, previous) {
+            (Err(_), None) => true,
+            (Ok(header), Some(previous)) => {
+                header.size == [previous.width, previous.height]
+                    && header.refresh_interval == previous.refresh_interval
+                    && header.refresh_identity == previous.refresh_identity
+                    && self.bytes[..self.required] == previous.edges
+            }
+            _ => false,
+        }
+    }
     pub(super) fn row(&self) -> Option<rows::WeatherDisplay> {
         let header = self.header.ok()?;
         Some(rows::WeatherDisplay {

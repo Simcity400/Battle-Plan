@@ -86,7 +86,7 @@ mod test_recording;
 mod through_tests;
 
 use crate::frame::recorded::Updates;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use keyed::{KeyChanges, KeyReader, KeySet, KeyWriter, MaskList, RowCoding, RowRun};
 use modelled::Model;
@@ -565,6 +565,13 @@ impl Columns {
         }
         Ok(())
     }
+    fn marks(&mut self, table: TableId, marks: &[u8]) -> io::Result<()> {
+        if super::aliases::private::stored(table, FormatVersion::CURRENT.version()) {
+            self.0.push(engine_allocation::copy_vec(marks)?);
+            self.1.push(None);
+        }
+        Ok(())
+    }
     fn raw(&self) -> Vec<u8> {
         let mut raw =
             Vec::with_capacity(self.0.iter().map(Vec::len).sum::<usize>() + 4 * self.0.len());
@@ -579,7 +586,7 @@ impl Columns {
     }
 }
 
-struct ColumnReader<'a>(Vec<Decoder<'a>>);
+struct ColumnReader<'a>(Vec<Decoder<'a>>, Option<&'a [u8]>);
 
 impl<'a> ColumnReader<'a> {
     fn open(raw: &'a [u8], fields: usize) -> io::Result<Self> {
@@ -596,10 +603,21 @@ impl<'a> ColumnReader<'a> {
             columns.push(Decoder::new(input.take(length)?));
         }
         input.finish()?;
-        Ok(Self(columns))
+        Ok(Self(columns, None))
+    }
+    fn stored(raw: &'a [u8], fields: usize, table: TableId, version: u16) -> io::Result<Self> {
+        let marked = super::aliases::private::stored(table, version);
+        let mut columns = Self::open(raw, fields + usize::from(marked))?;
+        if marked {
+            columns.1 = Some(columns.0.pop().unwrap().rest());
+        }
+        Ok(columns)
     }
     fn empty(fields: usize) -> Self {
-        Self((0..FIELDS + fields).map(|_| Decoder::new(&[])).collect())
+        Self(
+            (0..FIELDS + fields).map(|_| Decoder::new(&[])).collect(),
+            None,
+        )
     }
     /// Consume a chosen later section's row-coding byte before its rows.
     fn modelled_rows(&mut self, table: TableId, layout: Layout) -> io::Result<bool> {
@@ -1297,7 +1315,7 @@ fn seed_table(
     let Some(raw) = directory.raw(block, keyframe_section(table))? else {
         return Ok(None);
     };
-    let mut input = ColumnReader::open(&raw, fields)?;
+    let mut input = ColumnReader::stored(&raw, fields, table, version)?;
     let mut plain = Vec::new();
     let head = take_head(
         &mut input,
@@ -1401,6 +1419,10 @@ impl Later {
         } else {
             Columns::new(fields)
         };
+        if super::aliases::private::stored(table, FormatVersion::CURRENT.version()) {
+            columns.0.push(Vec::new());
+            columns.1.push(None);
+        }
         if layout.chooses_rows() {
             columns.0[MASKS].push(MODELLED_ROWS);
             columns.1[KEYS] = Some(Vec::new());
@@ -1664,6 +1686,7 @@ fn put_keyframe(
     layout: Layout,
     first_hour: Hour,
     position: usize,
+    marks: &[u8],
 ) -> io::Result<()> {
     let table = writer.table;
     let format = FormatVersion::CURRENT.version();
@@ -1677,6 +1700,7 @@ fn put_keyframe(
         &mut whole,
         None,
     )?;
+    whole.marks(table, marks)?;
     let raw = whole.raw();
     let snapshot_bytes = compress(&raw)?;
     // A change against an older snapshot is kept while it
@@ -1744,6 +1768,7 @@ fn put_keyframe(
                 &mut candidate,
                 None,
             )?;
+            candidate.marks(table, marks)?;
             let raw = candidate.raw();
             let charge = chain_charge(anchor.charge, raw.len(), anchor.root);
             if layout.anchors_back() && charge.is_none() {
@@ -1914,6 +1939,7 @@ impl BlockWriter {
     /// the decoded hour it produced. A keyframe's tables are written on this
     /// thread and the threads `cores` has free.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn push(
         &mut self,
         frame: &Frame,
@@ -1924,7 +1950,33 @@ impl BlockWriter {
         limit: usize,
         cores: &Cores,
     ) -> io::Result<()> {
-        if !self.fits(payload.len(), sizes, limit) {
+        self.push_marked(
+            frame,
+            decoded,
+            payload,
+            sizes,
+            anchors,
+            limit,
+            cores,
+            &Default::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_marked(
+        &mut self,
+        frame: &Frame,
+        decoded: &DecodedFrame,
+        payload: &[u8],
+        sizes: &[usize; TABLE_COUNT],
+        anchors: &mut Anchors,
+        limit: usize,
+        cores: &Cores,
+        marks: &super::aliases::private::Prepared,
+    ) -> io::Result<()> {
+        let mut stored_sizes = *sizes;
+        let stored_len = engine_allocation::add(payload.len(), marks.charge(&mut stored_sizes)?)?;
+        if !self.fits(stored_len, &stored_sizes, limit) {
             return Err(invalid("single replay frame exceeds raw block size limit"));
         }
         let keyframe = self.frames == 0;
@@ -1981,8 +2033,9 @@ impl BlockWriter {
                 .collect();
             pack::each(cores, tables, |(writer, plain, snapshot, latest)| {
                 let view = &decoded.tables[writer.table.index()];
+                let column = marks.column(writer.table, true);
                 put_keyframe(
-                    writer, plain, view, snapshot, latest, layout, first_hour, position,
+                    writer, plain, view, snapshot, latest, layout, first_hour, position, column,
                 )
             })?;
         } else {
@@ -2012,6 +2065,11 @@ impl BlockWriter {
                     writer.plain.entries += 1;
                 }
                 writer.plain.present.push(entry);
+                if super::aliases::private::stored(table, format) {
+                    writer.plain.columns.0[FIELDS + writer.fields]
+                        .extend_from_slice(marks.column(table, false));
+                    writer.plain.entries += usize::from(marks.column(table, false) != [0]);
+                }
                 if let Some(later) = &mut writer.predicted {
                     let coding = layout.keyed().then_some(RowCoding {
                         keys: &writer.keys,
@@ -2055,6 +2113,11 @@ impl BlockWriter {
                     };
                     later.entries += usize::from(entry);
                     later.present.push(entry);
+                    if super::aliases::private::stored(table, format) {
+                        later.columns.0[FIELDS + writer.fields]
+                            .extend_from_slice(marks.column(table, false));
+                        later.entries += usize::from(marks.column(table, false) != [0]);
+                    }
                 }
                 advance_shadow(table, format, plain, &mut writer.shadow)?;
                 if layout.keyed() {
@@ -2109,12 +2172,26 @@ impl BlockWriter {
             .checked_add(1)
             .ok_or_else(|| invalid("too many frames"))?;
         self.headers += 4 + payload.len() - sizes.iter().sum::<usize>();
-        for (used, size) in self.plain.iter_mut().zip(sizes) {
+        for (used, size) in self.plain.iter_mut().zip(&stored_sizes) {
             *used += size;
         }
-        self.last_payload = payload.len();
+        self.last_payload = stored_len;
         self.last_hour = frame.hour;
         Ok(())
+    }
+
+    /// Bound both stored updates and their literal materialization, so aliases
+    /// cannot expand a table beyond the existing plain decoder allowance.
+    pub(crate) fn charge_source(
+        &mut self,
+        bytes: usize,
+        source: &[usize; TABLE_COUNT],
+        stored: &[usize; TABLE_COUNT],
+    ) {
+        for ((used, source), stored) in self.plain.iter_mut().zip(source).zip(stored) {
+            *used += source.saturating_sub(*stored);
+        }
+        self.last_payload = self.last_payload.max(bytes);
     }
 
     /// The finished block as [`compress`](Self::compress) reads it, without
@@ -2596,6 +2673,7 @@ struct Context<'a> {
     entries: &'a [u8],
     selected: Option<&'a [TableId]>,
     complete: bool,
+    memo: &'a [OnceLock<Updates>],
 }
 
 impl Replay {
@@ -2659,34 +2737,12 @@ impl Replay {
             index,
             layout: directory.layout,
         };
+        let memo = engine_allocation::collect_vec(TableId::ALL.iter().map(|_| OnceLock::new()))?;
         let updates = engine_allocation::collect_vec(TableId::ALL.iter().map(|&table| {
             if let Some(update) = keyframe_refusal(&directory, self.format, Some(tables), table)? {
                 return Updates::new(vec![update]);
             }
-            self.decoded_sections.read(
-                super::decoded_sections::Key::new(self, index, table),
-                1,
-                true,
-                || {
-                    let raw = directory
-                        .read_raw(self, index, keyframe_section(table))?
-                        .ok_or_else(|| {
-                            invalid(format!("grouped block has no keyframe entry for {table:?}"))
-                        })?;
-                    #[cfg(any(test, feature = "test-support"))]
-                    super::test_work::decoded(index, table, 1);
-                    Ok(vec![
-                        keyframe_update(
-                            self,
-                            &from,
-                            table,
-                            &raw,
-                            &Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES)),
-                        )?
-                        .update,
-                    ])
-                },
-            )
+            keyframe_admitted(self, &from, &directory, table, &memo)
         }))?;
         let columns = updates.into_iter().collect::<io::Result<Vec<_>>>()?;
         RecordedFrame::from_columns(
@@ -2811,6 +2867,56 @@ impl Replay {
     }
 }
 
+fn keyframe_admitted(
+    replay: &Replay,
+    from: &From<'_>,
+    directory: &Directory,
+    table: TableId,
+    memo: &[OnceLock<Updates>],
+) -> io::Result<Updates> {
+    if let Some(updates) = memo[table.index()].get() {
+        return Ok(updates.clone());
+    }
+    let updates = replay.decoded_sections.read(
+        super::decoded_sections::Key::new(replay, from.index, table),
+        1,
+        true,
+        || {
+            let raw = directory
+                .read_raw(replay, from.index, keyframe_section(table))?
+                .ok_or_else(|| {
+                    invalid(format!("grouped block has no keyframe entry for {table:?}"))
+                })?;
+            #[cfg(any(test, feature = "test-support"))]
+            super::test_work::decoded(from.index, table, 1);
+            let keyframe = keyframe_update(
+                replay,
+                from,
+                table,
+                &raw,
+                &Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES)),
+            )?;
+            super::aliases::private::resolve(
+                table,
+                &[from.index.first_hour],
+                vec![keyframe.update],
+                keyframe.marks.as_deref(),
+                None,
+                true,
+                |source| {
+                    if let Some(update) = keyframe_refusal(directory, replay.format, None, source)?
+                    {
+                        return Updates::new(vec![update]);
+                    }
+                    keyframe_admitted(replay, from, directory, source, memo)
+                },
+            )
+        },
+    )?;
+    let _ = memo[table.index()].set(updates.clone());
+    Ok(updates)
+}
+
 /// Decode a grouped block's frames.
 pub(crate) fn read(
     replay: &Replay,
@@ -2859,6 +2965,7 @@ fn read_recorded_through(
         return Ok(Vec::new());
     }
     let hours = &hours[..keep];
+    let memo = engine_allocation::collect_vec(TableId::ALL.iter().map(|_| OnceLock::new()))?;
     let context = Context {
         replay,
         index,
@@ -2871,6 +2978,7 @@ fn read_recorded_through(
         entries: &entries,
         selected,
         complete: keep == frames,
+        memo: &memo,
     };
     let decode = |table: &TableId| table_updates(&context, *table);
     let decoded = match parallel {
@@ -2958,6 +3066,7 @@ pub(crate) fn read_selected_updates(
         .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?;
     let timed = directory.layout == Layout::Timed;
     let metrics = read_diagnostics_prefix(&diagnostics, frames, &present, timed, frames)?;
+    let memo = engine_allocation::collect_vec(TableId::ALL.iter().map(|_| OnceLock::new()))?;
     let context = Context {
         replay,
         index,
@@ -2970,6 +3079,7 @@ pub(crate) fn read_selected_updates(
         entries: &entries,
         selected: Some(selected),
         complete: true,
+        memo: &memo,
     };
     let mut updates: Vec<Option<Updates>> =
         engine_allocation::collect_vec(selected.iter().map(|_| None))?;
@@ -3139,6 +3249,7 @@ fn keyframe_refusal(
 }
 
 struct KeyframeUpdate {
+    marks: Option<Vec<u8>>,
     update: TableUpdate,
     plain: Vec<u8>,
     shadow: Shadow,
@@ -3159,7 +3270,8 @@ fn keyframe_update(
     let discarded = change.table_gap(table, format.version()).is_some();
     let layout = from.layout;
     let first = from.index.first_hour;
-    let mut key_input = ColumnReader::open(raw, fields)?;
+    let mut key_input = ColumnReader::stored(raw, fields, table, format.version())?;
+    let marks = key_input.1.map(engine_allocation::copy_vec).transpose()?;
     let mut plain = Vec::new();
     let mut shadow = Shadow::new();
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
@@ -3208,6 +3320,7 @@ fn keyframe_update(
     };
     key_input.finish()?;
     Ok(KeyframeUpdate {
+        marks,
         update,
         plain,
         shadow,
@@ -3228,8 +3341,18 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
 // The cached decoder receives only admitted sections. No selection-dependent
 // value can enter the cache; selected tables and unselected layout gaps use
 // this identical decoder. Selection below only attributes CPU measurements.
+fn dependency_updates(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
+    if let Some(update) = keyframe_refusal(context.directory, context.format, None, table)? {
+        return Updates::repeat(update, context.hours.len());
+    }
+    table_updates_admitted(context, table)
+}
+
 fn table_updates_admitted(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
-    context.replay.decoded_sections.read(
+    if let Some(updates) = context.memo[table.index()].get() {
+        return Ok(updates.clone());
+    }
+    let updates = context.replay.decoded_sections.read(
         super::decoded_sections::Key::new(context.replay, context.index, table),
         context.hours.len(),
         false,
@@ -3251,7 +3374,9 @@ fn table_updates_admitted(context: &Context<'_>, table: TableId) -> io::Result<U
             }
             decoded
         },
-    )
+    )?;
+    let _ = context.memo[table.index()].set(updates.clone());
+    Ok(updates)
 }
 
 fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
@@ -3275,7 +3400,7 @@ fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<
         .ok_or_else(|| invalid(format!("grouped block has no keyframe entry for {table:?}")))?;
     let later_raw = context.directory.raw(context.block, later_id)?;
     let mut later_input = match &later_raw {
-        Some(raw) => ColumnReader::open(raw, fields)?,
+        Some(raw) => ColumnReader::stored(raw, fields, table, format.version())?,
         None => ColumnReader::empty(fields),
     };
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
@@ -3302,6 +3427,7 @@ fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<
         layout,
     };
     let KeyframeUpdate {
+        marks,
         update,
         mut plain,
         mut shadow,
@@ -3405,10 +3531,19 @@ fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<
             }
         }
     }
+    let later_marks = later_input.1;
     if context.complete {
         later_input.finish()?;
     }
-    Ok(updates)
+    super::aliases::private::resolve(
+        table,
+        context.hours,
+        updates,
+        marks.as_deref(),
+        later_marks,
+        context.complete,
+        |source| dependency_updates(context, source),
+    )
 }
 
 /// A keyframe as a later keyframe's anchor: its rows (none for a table this
@@ -3526,7 +3661,7 @@ fn anchored_keyframe(
         let raw = directory
             .read_raw(replay, block_index, keyframe_section(table))?
             .ok_or_else(|| invalid_static("keyframe anchor has no entry for its table"))?;
-        let mut input = ColumnReader::open(&raw, fields)?;
+        let mut input = ColumnReader::stored(&raw, fields, table, version)?;
         let head = take_head(
             &mut input,
             None,
@@ -3566,7 +3701,7 @@ fn anchored_keyframe(
     let mut state: Option<AnchorState> = None;
     let mut root_state = None;
     for link in chain.iter().rev() {
-        let mut input = ColumnReader::open(&link.raw, fields)?;
+        let mut input = ColumnReader::stored(&link.raw, fields, table, version)?;
         let mut plain = Vec::new();
         let head = take_head(&mut input, None, link.hour, &mut plain, link.layout)?;
         // Each keyframe's rows were bounded by its own block.
@@ -3646,7 +3781,8 @@ pub(crate) fn keyframe_chain(
     position: usize,
     table: TableId,
 ) -> io::Result<Vec<(usize, usize)>> {
-    let fields = table.last_change().fields(table, replay.format.version());
+    let version = replay.format.version();
+    let fields = table.last_change().fields(table, version);
     let mut chain = Vec::new();
     let mut at = position;
     loop {
@@ -3656,7 +3792,7 @@ pub(crate) fn keyframe_chain(
         let raw = directory
             .raw(&block, keyframe_section(table))?
             .ok_or_else(|| invalid_static("no keyframe entry"))?;
-        let mut input = ColumnReader::open(&raw, fields)?;
+        let mut input = ColumnReader::stored(&raw, fields, table, version)?;
         let head = take_head(
             &mut input,
             None,

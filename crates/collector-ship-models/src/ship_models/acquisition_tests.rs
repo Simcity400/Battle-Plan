@@ -1433,6 +1433,79 @@ fn held_ships_are_carried_until_a_writer_touches_them() {
     assert!(watches.poisoned());
 }
 
+#[test]
+fn deferred_ship_store_publication_preserves_carry_and_discards_unfinished_stores() {
+    use crate::ship_model_changes::Watches;
+    let watches = Watches::enabled(64);
+    let world = Fleet::new();
+    let capacity = Capacities {
+        rows: fleet::SHIPS,
+        modifiers: SnapshotCapacity {
+            nodes: 64,
+            entries: 64,
+        },
+    };
+    let mut synchronous = Captured::with_capacities(&capacity);
+    let mut deferred = Captured::with_capacities(&capacity);
+    let seed = |capture: &mut Captured| {
+        capture.begin_sources();
+        for index in 0..fleet::SHIPS {
+            capture.visit_source(fleet::ship(index), &fleet::census(index));
+        }
+        capture.finish_sources(Outcome::Rows { len: fleet::SHIPS });
+    };
+    for _ in 0..2 {
+        seed(&mut synchronous);
+        synchronous.capture_carrying(
+            &world,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Nothing,
+        );
+        seed(&mut deferred);
+        deferred.pending_owned = true;
+        deferred.defer_owned = true;
+        deferred.capture_carrying(
+            &world,
+            CaptureContext::new(fleet::IMAGE),
+            &watches,
+            Check::Nothing,
+        );
+        deferred.defer_owned = false;
+        drop(watches.notify(fleet::ship(0), 0));
+        let reads = world.calls.get();
+        let bytes = deferred.allocated_bytes() as u64;
+        let tail_bytes = deferred.owned_tail_allocated_bytes() as u64;
+        deferred.settle_owned();
+        assert_eq!(
+            (deferred.allocated_bytes() as u64).wrapping_sub(bytes),
+            (deferred.owned_tail_allocated_bytes() as u64).wrapping_sub(tail_bytes)
+        );
+        assert_eq!(world.calls.get(), reads);
+        assert_eq!(deferred.outcomes(), synchronous.outcomes());
+        assert_eq!(deferred.tables(), synchronous.tables());
+        assert_eq!(deferred.store.quiet, synchronous.store.quiet);
+        assert!(
+            deferred.seeds[..deferred.seed_len]
+                .iter()
+                .all(|seed| seed.pointer == 0)
+        );
+    }
+    seed(&mut deferred);
+    deferred.pending_owned = true;
+    deferred.defer_owned = true;
+    deferred.capture_carrying(
+        &world,
+        CaptureContext::new(fleet::IMAGE),
+        &watches,
+        Check::Nothing,
+    );
+    deferred.reset();
+    assert!(!deferred.pending_owned);
+    assert!(deferred.store.held.is_empty());
+    assert!(deferred.store.next.is_empty());
+}
+
 /// A carried ship keeps its held row's model part even when its task
 /// force's terms are read with it (it is the task force's first ship in the
 /// range): the model reader and its suffixes read only the ship's certified

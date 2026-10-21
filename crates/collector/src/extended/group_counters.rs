@@ -81,6 +81,7 @@ pub struct Captured {
     required: usize,
     templates: templates::Store,
     refresh_templates: bool,
+    owned_pending: bool,
 }
 
 /// The direct commander lookup for a group and its
@@ -133,9 +134,12 @@ impl Captured {
             required: 0,
             templates: templates::Store::default(),
             refresh_templates: false,
+            owned_pending: false,
         }
     }
     pub fn reset(&mut self) {
+        // Preserve completed native-walk diagnostics even if a sibling failed.
+        self.decode_owned();
         self.rows.reset();
         self.roots.fill(Default::default());
         self.commanders.clear();
@@ -184,7 +188,17 @@ impl Captured {
             &mut self.rows.rows,
         )
     }
+    #[cfg(test)]
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+        let begin = qpc();
+        self.acquire(memory, base, state);
+        self.decode_owned();
+        [qpc().saturating_sub(begin).max(0) as u64]
+    }
+
+    /// Native observations and receiver admission only. The frame owns the
+    /// unsorted commander observations until its FIFO publication tail.
+    pub(crate) fn acquire(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         if std::mem::take(&mut self.refresh_templates) {
@@ -214,10 +228,20 @@ impl Captured {
             }
             self.commanders.push((row.group, commander));
         }
-        self.commanders.sort_unstable_by_key(|(group, _)| *group);
         if matches!(self.rows.outcome, Outcome::Rows { .. }) {
+            // Pruning unregisters held receivers; keep it before resume.
             self.templates.prune(&self.roots[..len]);
         }
+        self.owned_pending = true;
+        [qpc().saturating_sub(begin).max(0) as u64]
+    }
+
+    /// No Memory capability: sorting and diagnostic scans use this cut's rows.
+    pub(crate) fn decode_owned(&mut self) {
+        if !std::mem::take(&mut self.owned_pending) {
+            return;
+        }
+        self.commanders.sort_unstable_by_key(|(group, _)| *group);
         // No later consumer borrows the root controls.
         self.roots.fill(Default::default());
         let rows = &self.rows.rows[..self.rows.outcome.len()];
@@ -239,7 +263,6 @@ impl Captured {
                 .count() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-        [qpc().saturating_sub(begin).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome]
@@ -301,6 +324,26 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sibling_failure_reset_settles_completed_group_diagnostics_once() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let counts = || [
+            COOLDOWN_REFUSALS.load(Relaxed),
+            BORDER_REFUSALS.load(Relaxed),
+            INVASION_DISTANCE_REFUSALS.load(Relaxed),
+        ];
+        let before = counts();
+        let mut captured = Captured::vacant();
+        captured.rows.rows.push(Default::default());
+        captured.rows.outcome = Outcome::Rows { len: 1 };
+        captured.owned_pending = true;
+        captured.reset();
+        assert_eq!(counts(), before.map(|count| count + 1));
+        captured.reset();
+        captured.decode_owned();
+        assert_eq!(counts(), before.map(|count| count + 1));
+    }
     use engine_native::memory::SliceMemory;
     #[test]
     fn missing_registry_and_capacity_pressure_preserve_primary_rows() {

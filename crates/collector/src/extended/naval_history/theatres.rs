@@ -22,6 +22,7 @@ const OOB_MASK: u32 = 0x1C0;
 #[derive(Debug, Default)]
 pub(crate) struct NavalJob {
     pub log: RawLog<NAVAL_PACK_N>,
+    pub(super) reserved_index: crate::raw::RecordedCache,
     pub game_state: usize,
     pub(super) growing: bool,
     pub(super) theatres_active: bool,
@@ -2002,13 +2003,17 @@ pub(crate) fn decode_naval_payload(
     }
     captured.theatre_names.len = first.names_len;
     captured.theatre_names.required = first.names_required;
-    // Finish all positive byte consumers before recycling the one index for
-    // the independently acquired optional suffix. Never share address cursors.
+    // Finish positive byte consumers before the independent optional suffix.
+    // Each scope retains its own shape; neither shares address cursors.
     drop(recorded);
     // Replay the logical failure order even when a later staged header failed:
     // its callback must first retain an earlier OOB refusal. A staging refusal
     // can veto a successful whole batch, but can never authorize publication.
-    match crate::raw::Recorded::build_range(&job.log, job.positive_span_end..job.log.spans.len()) {
+    match crate::raw::Recorded::build_range_cached(
+        &job.log,
+        job.positive_span_end..job.log.spans.len(),
+        &job.reserved_index,
+    ) {
         Ok(recorded) => {
             let source = RosterReplay {
                 inner: &recorded,

@@ -907,8 +907,12 @@ fn characters_gate_walks_the_roster_roles_and_traits_every_hour() {
     for hour in -48..48i32 {
         assert!(characters_refresh_hour(hour, false), "hour {hour}");
         for table in CHARACTERS {
-            assert!(
+            // Owner-approved training progress is daily slot 12; the roster and traits stay hourly.
+            let expected = table != TableId::UnitLeaderTraitExperience
+                || hour.rem_euclid(24) == replay_data::cadence::COMMANDER_PROGRESS_SLOT as i32;
+            assert_eq!(
                 replay_data::cadence::should_walk(table, hour, false),
+                expected,
                 "{table:?} at hour {hour}"
             );
             assert!(replay_data::cadence::should_walk(table, hour, true));

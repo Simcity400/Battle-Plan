@@ -457,8 +457,8 @@ impl Prepared {
         self.required = Capacity::default();
         self.groups.clear();
         self.visits.clear();
-        self.pointers.clear();
-        self.handles.clear();
+        // Retain only census ordinals; index_units validates their ordering
+        // against the current seeds before any identity lookup can use them.
         self.invalid.fill(None);
         self.memberships.clear();
         self.membership_error = None;
@@ -882,7 +882,28 @@ impl Prepared {
                 return Err("execution unit storage capacity exceeded");
             }
             self.index_units(seeds);
-            self.index_memberships(seeds, orders, plans);
+            let primary_demand = |row: &order::Row, plan: &PlanRow| {
+                row.order_type == order::TYPE_PARADROP
+                    && (row.paradrop_target as i32) > 0
+                    && plan
+                        .execution
+                        .and_then(|value| value.route_is_ok)
+                        .is_some_and(|raw| raw != 0)
+            };
+            // Only the selected paradrop branch consumes primary membership.
+            // Its original index checks still precede every consuming read.
+            if orders
+                .rows
+                .iter()
+                .zip(plans.plans)
+                .any(|(row, plan)| primary_demand(row, plan))
+            {
+                self.index_memberships(seeds, orders, plans);
+            } else {
+                self.memberships.clear();
+                self.membership_error = None;
+                self.required.memberships = 0;
+            }
             packet.rows.resize(seeds.len(), UnitRow::default());
             let observed = UnitMemory {
                 memory,
@@ -893,12 +914,7 @@ impl Prepared {
             };
             for (row, plan) in orders.rows.iter().zip(plans.plans) {
                 let naval = row.order_type == order::TYPE_INVASION;
-                let para = row.order_type == order::TYPE_PARADROP
-                    && (row.paradrop_target as i32) > 0
-                    && plan
-                        .execution
-                        .and_then(|value| value.route_is_ok)
-                        .is_some_and(|raw| raw != 0);
+                let para = primary_demand(row, plan);
                 if !naval && !para {
                     continue;
                 }
@@ -931,7 +947,7 @@ impl Prepared {
                         packet.rows[index].division = handle;
                         self.count(|work| work.scoped_units += 1);
                     }
-                    if self.unit_index(seeds, handle, host).is_err()
+                    if self.checked_unit_index(seeds, index, host).is_err()
                         || authenticate_seed(base, &seeds[index]).is_err()
                     {
                         if attempted[index] & 8 == 0 {
@@ -1059,15 +1075,29 @@ impl Prepared {
         self.attempted = attempted;
     }
     fn index_units(&mut self, seeds: &[carmy::DivisionSeed]) {
-        self.pointers.clear();
-        self.handles.clear();
         self.invalid.fill(None);
-        self.pointers.extend(0..seeds.len());
-        self.handles.extend(0..seeds.len());
-        self.pointers
-            .sort_unstable_by_key(|&index| seeds[index].pointer);
-        self.handles
-            .sort_unstable_by_key(|&index| seeds[index].division);
+        if self.pointers.len() != seeds.len()
+            || self
+                .pointers
+                .windows(2)
+                .any(|pair| seeds[pair[0]].pointer >= seeds[pair[1]].pointer)
+        {
+            self.pointers.clear();
+            self.pointers.extend(0..seeds.len());
+            self.pointers
+                .sort_unstable_by_key(|&index| seeds[index].pointer);
+        }
+        if self.handles.len() != seeds.len()
+            || self
+                .handles
+                .windows(2)
+                .any(|pair| seeds[pair[0]].division >= seeds[pair[1]].division)
+        {
+            self.handles.clear();
+            self.handles.extend(0..seeds.len());
+            self.handles
+                .sort_unstable_by_key(|&index| seeds[index].division);
+        }
         for pair in self.pointers.windows(2) {
             if seeds[pair[0]].pointer == seeds[pair[1]].pointer {
                 self.invalid[pair[0]] = Some("execution census aliases a unit pointer");
@@ -1092,10 +1122,18 @@ impl Prepared {
             .binary_search_by_key(&handle, |&index| seeds[index].division)
             .map_err(|_| "execution assigned unit absent from full census")?;
         let index = self.handles[slot];
+        self.checked_unit_index(seeds, index, pointer)
+    }
+    fn checked_unit_index(
+        &self,
+        seeds: &[carmy::DivisionSeed],
+        index: usize,
+        pointer: usize,
+    ) -> Result<usize, &'static str> {
         if let Some(reason) = self.invalid[index] {
             return Err(reason);
         }
-        if handle == 0 || pointer == 0 || seeds[index].pointer != pointer {
+        if seeds[index].division == 0 || pointer == 0 || seeds[index].pointer != pointer {
             return Err("execution assigned handle/host identity mismatch");
         }
         Ok(index)
@@ -1110,7 +1148,7 @@ impl Prepared {
             .binary_search_by_key(&pointer, |&index| seeds[index].pointer)
             .map_err(|_| "execution member host absent from full census")?;
         let index = self.pointers[slot];
-        self.unit_index(seeds, seeds[index].division, pointer)
+        self.checked_unit_index(seeds, index, pointer)
     }
     fn order_pointer(&self, orders: Orders<'_>, key: u128) -> Result<usize, &'static str> {
         if let Some(reason) = self.index_error {

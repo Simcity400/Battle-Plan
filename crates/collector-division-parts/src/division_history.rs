@@ -12,6 +12,8 @@ struct Held {
     division: u64,
     army: usize,
     history: Option<(u64, u64)>,
+    history_slot: usize,
+    medals_slot: usize,
     store: usize,
     medals: Option<(u64, u64)>,
     counts: [usize; 2],
@@ -30,12 +32,57 @@ pub struct Store {
     edits: Vec<usize>,
     edit_epoch: Option<u64>,
     ship_text: Vec<u8>,
+    pending: Vec<Edit>,
+    defer_edits: bool,
+}
+#[derive(Clone, Copy)]
+pub(super) struct Certificates {
+    history: ((u64, u64), usize),
+    store: usize,
+    medals: Option<((u64, u64), usize)>,
+}
+enum Edit {
+    Remove(std::ops::Range<u128>),
+    Insert(SharedDivisionHistoryRow),
+    ClearBindings(u64, u8),
+    Bind(u64, usize, u128),
+}
+fn push_edit(pending: &mut Vec<Edit>, edit: Edit) -> Result<(), &'static str> {
+    allocation::reserve(pending, 1).map_err(|_| "division history edit allocation failed")?;
+    pending.push(edit);
+    Ok(())
+}
+fn insert(
+    rows: &mut Rows<SharedDivisionHistoryRow>,
+    pending: &mut Vec<Edit>,
+    deferred: bool,
+    row: SharedDivisionHistoryRow,
+) -> Result<(), &'static str> {
+    if deferred {
+        push_edit(pending, Edit::Insert(row))
+    } else {
+        rows.insert(row)
+    }
+}
+fn remove(
+    rows: &mut Rows<SharedDivisionHistoryRow>,
+    pending: &mut Vec<Edit>,
+    deferred: bool,
+    range: std::ops::Range<u128>,
+) -> Result<(), &'static str> {
+    if deferred {
+        push_edit(pending, Edit::Remove(range))
+    } else {
+        rows.remove_range(range)
+    }
 }
 fn key(division: u64, list: u8, ordinal: u32) -> u128 {
     ((division as u128) << 34) | ((list as u128) << 32) | ordinal as u128
 }
 impl Store {
     pub fn begin(&mut self, count: usize) -> Result<(), &'static str> {
+        self.pending.clear();
+        self.defer_edits = false;
         changes::demand(count);
         self.next.clear();
         self.order.clear();
@@ -59,7 +106,44 @@ impl Store {
         allocation::reserve(&mut self.next, count)
             .map_err(|_| "division history cache allocation failed")
     }
+    pub fn begin_owned(&mut self, count: usize) -> Result<(), &'static str> {
+        let result = self.begin(count);
+        self.defer_edits = true;
+        result
+    }
+    pub(super) fn prefetch_certificates(
+        &self,
+        index: usize,
+        seed: &DivisionSeed,
+    ) -> Option<Certificates> {
+        let held = self
+            .held
+            .get(index)
+            .filter(|held| held.division == seed.division)
+            .or_else(|| self.held.iter().find(|held| held.division == seed.division))
+            .filter(|held| held.army == seed.pointer);
+        let history = changes::sequence_at(
+            seed.pointer.checked_add(unit_history::DIVISION_HISTORY)?,
+            held.map_or(usize::MAX, |held| held.history_slot),
+        )?;
+        let store = held.map_or(0, |held| held.store);
+        let medals = if store != 0 {
+            Some(changes::sequence_at(
+                store,
+                held.map_or(usize::MAX, |held| held.medals_slot),
+            )?)
+        } else {
+            None
+        };
+        Some(Certificates {
+            history,
+            store,
+            medals,
+        })
+    }
     pub fn forget(&mut self) {
+        self.pending.clear();
+        self.defer_edits = false;
         self.held.clear();
         self.next.clear();
         self.order.clear();
@@ -72,6 +156,15 @@ impl Store {
         (self.held.capacity() + self.next.capacity()) * std::mem::size_of::<Held>()
             + self.order.capacity() * std::mem::size_of::<(u64, usize)>()
             + self.ship_text.capacity()
+            + self.pending.capacity() * std::mem::size_of::<Edit>()
+            + self
+                .pending
+                .iter()
+                .map(|edit| match edit {
+                    Edit::Insert(row) => row.heap_bytes(),
+                    _ => 0,
+                })
+                .sum::<usize>()
             + self.rows.allocated_bytes()
             + self.edits.capacity() * std::mem::size_of::<usize>()
             + self.binding_count * std::mem::size_of::<((usize, u128), ())>()
@@ -82,6 +175,15 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         seed: &DivisionSeed,
+    ) -> Result<(), &'static str> {
+        self.observe_prepared(memory, base, seed, None)
+    }
+    pub(super) fn observe_prepared(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        seed: &DivisionSeed,
+        prepared: Option<Certificates>,
     ) -> Result<(), &'static str> {
         let index = self.next.len();
         let held_at = if self
@@ -113,7 +215,7 @@ impl Store {
             }
             self.seen[at] = true;
         }
-        let held = held_at
+        let mut held = held_at
             .map(|at| &self.held[at])
             .filter(|held| held.army == seed.pointer)
             .cloned();
@@ -122,11 +224,23 @@ impl Store {
             .pointer
             .checked_add(unit_history::DIVISION_HISTORY)
             .ok_or("division history address overflow")?;
-        let history = changes::sequence(history_address);
+        let history = match prepared {
+            Some(p) => Some(p.history.0),
+            None => changes::sequence(history_address),
+        };
         let medals = held
             .as_ref()
             .filter(|held| held.store != 0)
-            .and_then(|held| changes::sequence(held.store));
+            .and_then(|held| match prepared.filter(|p| p.store == held.store) {
+                Some(p) => p.medals.map(|(certificate, _)| certificate),
+                None => changes::sequence(held.store),
+            });
+        if let (Some(held), Some(p)) = (held.as_mut(), prepared) {
+            held.history_slot = p.history.1;
+            if p.store == held.store {
+                held.medals_slot = p.medals.map_or(usize::MAX, |(_, slot)| slot);
+            }
+        }
         if let Some(held) = held.as_ref().filter(|held| {
             held.history == history
                 && held.medals == medals
@@ -148,6 +262,8 @@ impl Store {
             division: seed.division,
             army: seed.pointer,
             history,
+            history_slot: prepared.map_or(usize::MAX, |p| p.history.1),
+            medals_slot: usize::MAX,
             store: 0,
             medals: None,
             counts: [0; 2],
@@ -159,7 +275,13 @@ impl Store {
             history.ok_or("division history writer certificate unavailable")?;
             let roots = unit_history::roots(memory, base, seed)?;
             next.store = roots.store;
-            next.medals = changes::sequence(roots.store);
+            next.medals = match prepared.filter(|p| p.store == roots.store) {
+                Some(p) => {
+                    next.medals_slot = p.medals.map_or(usize::MAX, |(_, slot)| slot);
+                    p.medals.map(|(certificate, _)| certificate)
+                }
+                None => changes::sequence(roots.store),
+            };
             next.medals
                 .ok_or("division medal writer certificate unavailable")?;
             changes::read();
@@ -183,22 +305,32 @@ impl Store {
             for (index, &first) in starts.iter().enumerate() {
                 if first == 0 {
                     let list = index as u8 + 1;
-                    self.rows.remove_range(
+                    remove(
+                        &mut self.rows,
+                        &mut self.pending,
+                        self.defer_edits,
                         key(seed.division, list, 0)..key(seed.division, list + 1, 0),
                     )?;
-                    if let Some(bindings) = self.bindings.get_mut(&seed.division) {
+                    if self.defer_edits {
+                        push_edit(&mut self.pending, Edit::ClearBindings(seed.division, list))?;
+                    } else if let Some(bindings) = self.bindings.get_mut(&seed.division) {
                         let before = bindings.len();
                         bindings.retain(|(_, k), _| ((k >> 32) & 3) != u128::from(list));
                         self.binding_count -= before - bindings.len();
                     }
                 }
             }
-            self.rows.insert(Arc::new(DivisionHistoryRow {
-                division: seed.division,
-                available: 1,
-                amount: roots.amount,
-                ..Default::default()
-            }))?;
+            insert(
+                &mut self.rows,
+                &mut self.pending,
+                self.defer_edits,
+                Arc::new(DivisionHistoryRow {
+                    division: seed.division,
+                    available: 1,
+                    amount: roots.amount,
+                    ..Default::default()
+                }),
+            )?;
             if prefix.is_some() {
                 // Only explicitly edited entry receivers are revisited. Alias
                 // occurrences retain their separate list keys.
@@ -208,16 +340,27 @@ impl Store {
                     };
                     for (&(_, entry_key), _) in bindings.range((address, 0)..=(address, u128::MAX))
                     {
+                        // A fully refreshed list's old bindings have already
+                        // been cleared in the serial pass, before edited reads.
+                        let list = ((entry_key >> 32) & 3) as usize;
+                        if starts[list - 1] == 0 {
+                            continue;
+                        }
                         let entry = unit_history::entry(memory, base, address)?;
-                        self.rows.insert(project(
-                            memory,
-                            base,
-                            seed.division,
-                            ((entry_key >> 32) & 3) == 2,
-                            entry_key as u32,
-                            entry,
-                            &mut self.ship_text,
-                        )?)?;
+                        insert(
+                            &mut self.rows,
+                            &mut self.pending,
+                            self.defer_edits,
+                            project(
+                                memory,
+                                base,
+                                seed.division,
+                                ((entry_key >> 32) & 3) == 2,
+                                entry_key as u32,
+                                entry,
+                                &mut self.ship_text,
+                            )?,
+                        )?;
                     }
                 }
             }
@@ -237,7 +380,12 @@ impl Store {
                         entry,
                         &mut self.ship_text,
                     )?;
-                    if self
+                    if self.defer_edits {
+                        push_edit(
+                            &mut self.pending,
+                            Edit::Bind(seed.division, address, row.key()),
+                        )?;
+                    } else if self
                         .bindings
                         .entry(seed.division)
                         .or_default()
@@ -246,7 +394,7 @@ impl Store {
                     {
                         self.binding_count += 1;
                     }
-                    self.rows.insert(row)
+                    insert(&mut self.rows, &mut self.pending, self.defer_edits, row)
                 })?;
             }
             if changes::edit_sequence(history_address).is_none()
@@ -259,19 +407,59 @@ impl Store {
         })();
         if let Err(reason) = result {
             changes::refused();
-            self.rows
-                .remove_range(key(seed.division, 0, 0)..key(seed.division, 3, 0))?;
-            self.rows.insert(Arc::new(DivisionHistoryRow {
-                division: seed.division,
-                reason: allocation::copy_vec(reason.as_bytes())
-                    .map_err(|_| "division history refusal allocation failed")?,
-                ..Default::default()
-            }))?;
+            remove(
+                &mut self.rows,
+                &mut self.pending,
+                self.defer_edits,
+                key(seed.division, 0, 0)..key(seed.division, 3, 0),
+            )?;
+            insert(
+                &mut self.rows,
+                &mut self.pending,
+                self.defer_edits,
+                Arc::new(DivisionHistoryRow {
+                    division: seed.division,
+                    reason: allocation::copy_vec(reason.as_bytes())
+                        .map_err(|_| "division history refusal allocation failed")?,
+                    ..Default::default()
+                }),
+            )?;
         }
         self.next.push(next);
         Ok(())
     }
     pub fn finish(&mut self) -> Result<Arc<HistorySnapshot>, &'static str> {
+        self.defer_edits = false;
+        let mut pending = std::mem::take(&mut self.pending);
+        let result = (|| {
+            for edit in pending.drain(..) {
+                match edit {
+                    Edit::Remove(range) => self.rows.remove_range(range)?,
+                    Edit::Insert(row) => self.rows.insert(row)?,
+                    Edit::ClearBindings(division, list) => {
+                        if let Some(bindings) = self.bindings.get_mut(&division) {
+                            let before = bindings.len();
+                            bindings.retain(|(_, k), _| ((k >> 32) & 3) != u128::from(list));
+                            self.binding_count -= before - bindings.len();
+                        }
+                    }
+                    Edit::Bind(division, address, key) => {
+                        if self
+                            .bindings
+                            .entry(division)
+                            .or_default()
+                            .insert((address, key), ())
+                            .is_none()
+                        {
+                            self.binding_count += 1;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })();
+        self.pending = pending;
+        result?;
         for (index, held) in self.held.iter().enumerate() {
             if !self.seen[index] {
                 self.rows
@@ -444,149 +632,177 @@ mod tests {
     #[test]
     fn experience_history_carries_without_reads_and_refreshes_only_the_writer_dirty_division() {
         let _serial = crate::army_stat_changes::HISTORY_TEST.lock().unwrap();
-        changes::patched(true);
-        changes::forwarder(true);
-        changes::demand(2);
-        changes::presize();
-        changes::boundary(false);
-        let mut world = World {
-            bytes: vec![0; 0x9000],
-            reads: Cell::new(0),
-            deny: Cell::new(false),
-            blocked: Cell::new(None),
-        };
-        root(&mut world.bytes, 0x1000, 0x4000, 0x6000);
-        root(&mut world.bytes, 0x2000, 0x5000, 0x6100);
-        let entry = 0x7000;
-        put(
-            &mut world.bytes,
-            entry,
-            (native::ENTRY_VTABLE_RVA as u64).to_le_bytes(),
-        );
-        for text in [8, 0x28] {
-            put(&mut world.bytes, entry + text + 24, 15_u64.to_le_bytes());
+        for owned in [false, true] {
+            let begin = |store: &mut Store| {
+                if owned {
+                    store.begin_owned(2)
+                } else {
+                    store.begin(2)
+                }
+                .unwrap();
+            };
+            changes::patched(true);
+            changes::forwarder(true);
+            changes::demand(2);
+            changes::presize();
+            changes::boundary(false);
+            let mut world = World {
+                bytes: vec![0; 0x9000],
+                reads: Cell::new(0),
+                deny: Cell::new(false),
+                blocked: Cell::new(None),
+            };
+            root(&mut world.bytes, 0x1000, 0x4000, 0x6000);
+            root(&mut world.bytes, 0x2000, 0x5000, 0x6100);
+            let entry = 0x7000;
+            put(
+                &mut world.bytes,
+                entry,
+                (native::ENTRY_VTABLE_RVA as u64).to_le_bytes(),
+            );
+            for text in [8, 0x28] {
+                put(&mut world.bytes, entry + text + 24, 15_u64.to_le_bytes());
+            }
+            put(
+                &mut world.bytes,
+                entry + 0x50,
+                (cgame_date::VTABLE_RVA as u64).to_le_bytes(),
+            );
+            put(
+                &mut world.bytes,
+                entry + 0x60,
+                (cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
+            );
+            put(&mut world.bytes, entry + 0x138, 100_000_i64.to_le_bytes());
+            let seeds = [seed(0x2000, 2), seed(0x1000, 1)];
+            let mut store = Store::default();
+            begin(&mut store);
+            for (index, seed) in seeds.iter().enumerate() {
+                let prepared = owned
+                    .then(|| store.prefetch_certificates(index, seed))
+                    .flatten();
+                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+            }
+            let first = store.finish().unwrap();
+            let first_rows = first.complete::<tables::DivisionHistory>().unwrap();
+            let TableRows::DivisionHistory(rows) = &first_rows else {
+                panic!()
+            };
+            assert_eq!(rows.len(), 6);
+            assert_eq!(rows[2].ordinal, 1);
+            assert_eq!(rows[0].available, 1);
+            world.reads.set(0);
+            world.deny.set(true);
+            begin(&mut store);
+            for (index, seed) in seeds.iter().enumerate() {
+                let prepared = owned
+                    .then(|| store.prefetch_certificates(index, seed))
+                    .flatten();
+                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+            }
+            let quiet = store.finish().unwrap();
+            assert!(Arc::ptr_eq(&first, &quiet));
+            assert_eq!(world.reads.get(), 0);
+            assert!(
+                store.order.is_empty(),
+                "stable unsorted census needs no locator rebuild"
+            );
+            assert_eq!(
+                store
+                    .held
+                    .iter()
+                    .map(|held| held.division)
+                    .collect::<Vec<_>>(),
+                [2, 1]
+            );
+            world.deny.set(false);
+            put(
+                &mut world.bytes,
+                0x4000 + native::AWARD_AMOUNT,
+                8_i32.to_le_bytes(),
+            );
+            drop(changes::notify(0x4000));
+            begin(&mut store);
+            for (index, seed) in seeds.iter().enumerate() {
+                let prepared = owned
+                    .then(|| store.prefetch_certificates(index, seed))
+                    .flatten();
+                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+            }
+            let changed = store.finish().unwrap();
+            let changed_rows = changed.complete::<tables::DivisionHistory>().unwrap();
+            let TableRows::DivisionHistory(next) = &changed_rows else {
+                panic!()
+            };
+            assert_eq!(next[0].amount, 8);
+            assert!(Arc::ptr_eq(&rows[1], &next[1]));
+            assert!(Arc::ptr_eq(&rows[3], &next[3]));
+            // A new career occurrence must not reacquire any existing entry,
+            // even when the campaign already holds repeats of that entry.
+            let appended = world.bytes[entry..entry + 0x148].to_vec();
+            put(&mut world.bytes, 0x7200, &appended);
+            put(&mut world.bytes, 0x6010, 0x7200u64.to_le_bytes());
+            put(
+                &mut world.bytes,
+                0x1000 + native::DIVISION_HISTORY + native::HISTORY_ENTRIES + 8,
+                3u32.to_le_bytes(),
+            );
+            put(
+                &mut world.bytes,
+                0x1000 + native::DIVISION_HISTORY + native::HISTORY_ENTRIES + 12,
+                3u32.to_le_bytes(),
+            );
+            world.blocked.set(Some((entry, entry + 0x148)));
+            drop(changes::notify(0x1000 + native::DIVISION_HISTORY));
+            begin(&mut store);
+            for (index, seed) in seeds.iter().enumerate() {
+                let prepared = owned
+                    .then(|| store.prefetch_certificates(index, seed))
+                    .flatten();
+                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+            }
+            let appended = store.finish().unwrap();
+            assert_eq!(appended.changed.len(), 1);
+            assert_eq!(appended.ranges.len(), 1);
+            let TableRows::DivisionHistory(appended_rows) =
+                appended.complete::<tables::DivisionHistory>().unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(appended_rows[0].available, 1);
+            assert_eq!(appended_rows[3].ordinal, 2);
+            assert!(Arc::ptr_eq(&rows[1], &appended_rows[1]));
+            world.blocked.set(None);
+            // Refusal replaces only the affected root and is carried without rereading it.
+            drop(changes::notify(0x1000 + native::DIVISION_HISTORY));
+            world.deny.set(true);
+            begin(&mut store);
+            for (index, seed) in seeds.iter().enumerate() {
+                let prepared = owned
+                    .then(|| store.prefetch_certificates(index, seed))
+                    .flatten();
+                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+            }
+            let refused = store.finish().unwrap();
+            let refused_rows = refused.complete::<tables::DivisionHistory>().unwrap();
+            let TableRows::DivisionHistory(rows) = &refused_rows else {
+                panic!()
+            };
+            assert_eq!(rows[0].available, 0);
+            assert!(!rows[0].reason.is_empty());
+            assert_eq!(rows[1].division, 2);
+            world.reads.set(0);
+            begin(&mut store);
+            for (index, seed) in seeds.iter().enumerate() {
+                let prepared = owned
+                    .then(|| store.prefetch_certificates(index, seed))
+                    .flatten();
+                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+            }
+            assert!(Arc::ptr_eq(&refused, &store.finish().unwrap()));
+            assert_eq!(world.reads.get(), 0);
+            changes::patched(false);
+            changes::forwarder(false);
         }
-        put(
-            &mut world.bytes,
-            entry + 0x50,
-            (cgame_date::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(
-            &mut world.bytes,
-            entry + 0x60,
-            (cgame_date::PERSISTENT_VTABLE_RVA as u64).to_le_bytes(),
-        );
-        put(&mut world.bytes, entry + 0x138, 100_000_i64.to_le_bytes());
-        let seeds = [seed(0x2000, 2), seed(0x1000, 1)];
-        let mut store = Store::default();
-        store.begin(2).unwrap();
-        for seed in &seeds {
-            store.observe(&world, 0, seed).unwrap();
-        }
-        let first = store.finish().unwrap();
-        let first_rows = first.complete::<tables::DivisionHistory>().unwrap();
-        let TableRows::DivisionHistory(rows) = &first_rows else {
-            panic!()
-        };
-        assert_eq!(rows.len(), 6);
-        assert_eq!(rows[2].ordinal, 1);
-        assert_eq!(rows[0].available, 1);
-        world.reads.set(0);
-        world.deny.set(true);
-        store.begin(2).unwrap();
-        for seed in &seeds {
-            store.observe(&world, 0, seed).unwrap();
-        }
-        let quiet = store.finish().unwrap();
-        assert!(Arc::ptr_eq(&first, &quiet));
-        assert_eq!(world.reads.get(), 0);
-        assert!(
-            store.order.is_empty(),
-            "stable unsorted census needs no locator rebuild"
-        );
-        assert_eq!(
-            store
-                .held
-                .iter()
-                .map(|held| held.division)
-                .collect::<Vec<_>>(),
-            [2, 1]
-        );
-        world.deny.set(false);
-        put(
-            &mut world.bytes,
-            0x4000 + native::AWARD_AMOUNT,
-            8_i32.to_le_bytes(),
-        );
-        drop(changes::notify(0x4000));
-        store.begin(2).unwrap();
-        for seed in &seeds {
-            store.observe(&world, 0, seed).unwrap();
-        }
-        let changed = store.finish().unwrap();
-        let changed_rows = changed.complete::<tables::DivisionHistory>().unwrap();
-        let TableRows::DivisionHistory(next) = &changed_rows else {
-            panic!()
-        };
-        assert_eq!(next[0].amount, 8);
-        assert!(Arc::ptr_eq(&rows[1], &next[1]));
-        assert!(Arc::ptr_eq(&rows[3], &next[3]));
-        // A new career occurrence must not reacquire any existing entry,
-        // even when the campaign already holds repeats of that entry.
-        let appended = world.bytes[entry..entry + 0x148].to_vec();
-        put(&mut world.bytes, 0x7200, &appended);
-        put(&mut world.bytes, 0x6010, 0x7200u64.to_le_bytes());
-        put(
-            &mut world.bytes,
-            0x1000 + native::DIVISION_HISTORY + native::HISTORY_ENTRIES + 8,
-            3u32.to_le_bytes(),
-        );
-        put(
-            &mut world.bytes,
-            0x1000 + native::DIVISION_HISTORY + native::HISTORY_ENTRIES + 12,
-            3u32.to_le_bytes(),
-        );
-        world.blocked.set(Some((entry, entry + 0x148)));
-        drop(changes::notify(0x1000 + native::DIVISION_HISTORY));
-        store.begin(2).unwrap();
-        for seed in &seeds {
-            store.observe(&world, 0, seed).unwrap();
-        }
-        let appended = store.finish().unwrap();
-        assert_eq!(appended.changed.len(), 1);
-        assert_eq!(appended.ranges.len(), 1);
-        let TableRows::DivisionHistory(appended_rows) =
-            appended.complete::<tables::DivisionHistory>().unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(appended_rows[0].available, 1);
-        assert_eq!(appended_rows[3].ordinal, 2);
-        assert!(Arc::ptr_eq(&rows[1], &appended_rows[1]));
-        world.blocked.set(None);
-        // Refusal replaces only the affected root and is carried without rereading it.
-        drop(changes::notify(0x1000 + native::DIVISION_HISTORY));
-        world.deny.set(true);
-        store.begin(2).unwrap();
-        for seed in &seeds {
-            store.observe(&world, 0, seed).unwrap();
-        }
-        let refused = store.finish().unwrap();
-        let refused_rows = refused.complete::<tables::DivisionHistory>().unwrap();
-        let TableRows::DivisionHistory(rows) = &refused_rows else {
-            panic!()
-        };
-        assert_eq!(rows[0].available, 0);
-        assert!(!rows[0].reason.is_empty());
-        assert_eq!(rows[1].division, 2);
-        world.reads.set(0);
-        store.begin(2).unwrap();
-        for seed in &seeds {
-            store.observe(&world, 0, seed).unwrap();
-        }
-        assert!(Arc::ptr_eq(&refused, &store.finish().unwrap()));
-        assert_eq!(world.reads.get(), 0);
-        changes::patched(false);
-        changes::forwarder(false);
     }
 }

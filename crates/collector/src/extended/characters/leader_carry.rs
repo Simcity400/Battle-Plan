@@ -413,7 +413,7 @@ impl<R: Held> LeaderCarry<R> {
             && self.text[entry.text.clone()] == text[..]
     }
 
-    fn forget(&mut self) {
+    pub(super) fn forget(&mut self) {
         self.layout = fresh_layout();
         self.visits.clear();
         self.entries.clear();

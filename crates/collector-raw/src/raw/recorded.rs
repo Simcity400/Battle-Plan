@@ -49,6 +49,15 @@ pub struct Recorded<'a> {
     pub(super) last_bulk: std::cell::Cell<usize>,
 }
 
+/// Address metadata retained for one independently replayed acquisition scope.
+/// It owns no payload or cursor shared with another live reader. Callers with
+/// multiple phases keep one cache per phase, rather than evicting the log's
+/// whole-scope shape each time they replay a suffix.
+#[derive(Debug, Default)]
+pub struct RecordedCache {
+    index: RefCell<Option<RecordedIndex>>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct RecordedIndex {
     has_bulk: bool,
@@ -310,17 +319,40 @@ impl<'a> Recorded<'a> {
         log: &'a RawLog<N>,
         range: std::ops::Range<usize>,
     ) -> Result<Self, &'static str> {
+        Self::build_range_recycling(log, range, &log.index)
+    }
+
+    pub fn build_range_cached<const N: usize>(
+        log: &'a RawLog<N>,
+        range: std::ops::Range<usize>,
+        cache: &'a RecordedCache,
+    ) -> Result<Self, &'static str> {
+        Self::build_range_recycling(log, range, &cache.index)
+    }
+
+    fn build_range_recycling<const N: usize>(
+        log: &'a RawLog<N>,
+        range: std::ops::Range<usize>,
+        recycle: &'a RefCell<Option<RecordedIndex>>,
+    ) -> Result<Self, &'static str> {
         let source_spans = log.spans.get(range).ok_or("recorded span range invalid")?;
         let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
         let started = std::time::Instant::now();
-        let mut index = log
-            .index
+        let mut index = recycle
             .borrow_mut()
             .take()
             .unwrap_or_else(|| RecordedIndex {
                 capacity_charge: crate::raw_memory::Charge::empty_on(log.capacity_charge.tracker()),
                 ..Default::default()
             });
+        if !std::ptr::eq(
+            index.capacity_charge.tracker(),
+            log.capacity_charge.tracker(),
+        ) {
+            index.capacity_charge =
+                crate::raw_memory::Charge::empty_on(log.capacity_charge.tracker());
+            index.update_capacity_charge();
+        }
         // Range scoping narrows eligibility; it cannot enable a capability
         // the owning log withdrew, including when reusing a pooled index.
         let has_bulk = log.has_bulk && source_spans.iter().any(|span| span.bulk);
@@ -343,7 +375,7 @@ impl<'a> Recorded<'a> {
         count.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
             index,
-            recycle: &log.index,
+            recycle,
             spans: source_spans,
             bytes: &log.bytes,
             next_exact: std::cell::Cell::new(0),
@@ -460,7 +492,7 @@ impl<'a> Recorded<'a> {
 impl Drop for Recorded<'_> {
     fn drop(&mut self) {
         // Simultaneous readers get independent cursors. Only one cached index
-        // is retained per payload; any additional index is dropped off-thread.
+        // is retained per cache; any additional index is dropped off-thread.
         let mut recycled = self.recycle.borrow_mut();
         if recycled.is_none() {
             *recycled = Some(std::mem::take(&mut self.index));

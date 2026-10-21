@@ -49,6 +49,7 @@
 use crate::{
     dirty_set::{Dirty, DirtySet},
     hook::Hook,
+    hook_timing::CallCounters,
 };
 use engine_mutations::raid_mutations::{DAILY_CAPACITIES, MUTATIONS, ORIGIN_ROUTE_SITE, Receiver};
 use engine_native::Memory;
@@ -117,7 +118,9 @@ pub struct Watches {
     sites: DirtySet,
     routes: DirtySet,
     origin_flights: AtomicUsize,
-    calls: [AtomicU64; SITES],
+    calls: CallCounters<SITES>,
+    /// Also closes the completed-origin overlap proof in `take`.
+    origin_calls: AtomicU64,
     /// Receivers whose id did not read.
     unnamed: AtomicU64,
     /// Forwarded building writes of a state status, and those naming no
@@ -168,7 +171,8 @@ impl Watches {
             sites: DirtySet::new(),
             routes: DirtySet::new(),
             origin_flights: AtomicUsize::new(0),
-            calls: [const { AtomicU64::new(0) }; SITES],
+            calls: CallCounters::new(),
+            origin_calls: AtomicU64::new(0),
             unnamed: AtomicU64::new(0),
             buildings: [const { AtomicU64::new(0) }; 2],
             unchanged_capacities: AtomicU64::new(0),
@@ -196,7 +200,11 @@ impl Watches {
     /// whose arguments name `target` is about to run. Dropping the guard
     /// marks its return.
     pub fn notify(&self, site: usize, target: Target) -> Option<Dirty<'_>> {
-        self.calls[site].fetch_add(1, Ordering::Relaxed);
+        if site == ORIGIN_ROUTE_SITE {
+            self.origin_calls.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.calls.increment(site);
+        }
         match target {
             Target::State(id) => Some(self.mark(&self.states, id)),
             Target::Country(id) => Some(self.mark(&self.countries, id)),
@@ -267,7 +275,11 @@ impl Watches {
     /// Calls of writer `site`, the capacity setter's unchanged stores
     /// included.
     fn site_calls(&self, site: usize) -> u64 {
-        let calls = self.calls[site].load(Ordering::Relaxed);
+        let calls = if site == ORIGIN_ROUTE_SITE {
+            self.origin_calls.load(Ordering::Relaxed)
+        } else {
+            self.calls.total(site)
+        };
         if site == CAPACITY_SITE {
             calls + self.unchanged_capacities.load(Ordering::Relaxed)
         } else {
@@ -370,7 +382,7 @@ pub trait Changes: Sync {
 impl Changes for Watches {
     fn take(&self, family: Family, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         let origin_calls = (family == Family::Routes)
-            .then(|| self.calls[ORIGIN_ROUTE_SITE].load(Ordering::Acquire));
+            .then(|| self.origin_calls.load(Ordering::Acquire));
         if family == Family::Routes && self.origin_flights.load(Ordering::SeqCst) != 0 {
             return None;
         }
@@ -379,7 +391,7 @@ impl Changes for Watches {
         // call count catches that overlap even when both flight reads see zero.
         if let Some(before) = origin_calls
             && (self.origin_flights.load(Ordering::SeqCst) != 0
-                || self.calls[ORIGIN_ROUTE_SITE].load(Ordering::Acquire) != before)
+                || self.origin_calls.load(Ordering::Acquire) != before)
         {
             return None;
         }
@@ -1358,7 +1370,7 @@ mod tests {
                     mutation.name
                 );
             }
-            assert_eq!(watches.calls[index].load(Ordering::Relaxed), 2);
+            assert_eq!(watches.site_calls(index), 2);
         }
         // An origin without a state marks nothing and keeps both epochs.
         let watches = Watches::enabled(64, 64);

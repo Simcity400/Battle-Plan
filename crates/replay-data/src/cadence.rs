@@ -20,9 +20,22 @@
 //! writer (effects, commands, actions, console) or a hook log. A table moves
 //! off Hourly only when every writer of every field it records runs on the
 //! slower cadence, or when an owner decision accepts a day's staleness for a
-//! table only panels read (noted beside its cadence).
+//! table only panels read (noted beside its cadence). The 2026-10-21 owner
+//! exception names UnitLeaders.experience, CombatLogObservers.a/b and
+//! DivisionStatus.supply/experience/officer_experience; their other columns
+//! and row membership remain hourly.
 
 use crate::rows::TableId;
+
+/// Owner decision 2026-10-21 accepts daily samples for UnitLeaderTraitExperience,
+/// UnitLeaders.experience, CombatLogObservers.a/b and the DivisionStatus supply
+/// footer/stored XP/officer XP only. Other fields keep their existing cadence
+/// and writer-certificate requirements. The division's supply ratio, exact
+/// ratio, grace and native exercise decision remain hourly. New occurrences
+/// read fresh; daily/full boundaries revoke column carry before dispatch.
+pub const COMMANDER_PROGRESS_SLOT: u32 = 12;
+pub const COMBAT_LOG_NUMERIC_SLOT: u32 = 12;
+pub const DIVISION_STATUS_DAILY_SLOT: u32 = 12;
 
 pub const STAGGER_PERIOD: i32 = 24;
 pub const SKIPPED_REASON: &str = "staggered off-hours; carry forward";
@@ -258,6 +271,10 @@ pub const fn cadence(table: TableId) -> Cadence {
         // its hour. Countries holding the log of a deleted orders group are
         // also read at the last hour before the daily prune deletes it.
         TableId::CombatLogEquipment => Sliced,
+        // Owner decision 2026-10-21: training progress and runtime factors may
+        // be up to a day stale despite their any-hour writers. Residual XP uses
+        // the same slot, but the rest of UnitLeaders remains hourly.
+        TableId::UnitLeaderTraitExperience => Daily(COMMANDER_PROGRESS_SLOT),
         // Daily slots: whole shared-source families stay together; a
         // definition table shares the slot of the census that reaches it.
         // Intel lanes change only in the daily update, which runs inside the
@@ -1145,6 +1162,42 @@ mod tests {
         assert!((-48..48).all(|hour| should_walk(TableId::StateResistance, hour, false)));
         assert_eq!(cadence(TableId::StateGarrisons), Cadence::Daily(3));
     }
+    #[test]
+    fn owner_daily_progress_exception_is_limited_to_approved_items() {
+        assert_eq!(
+            cadence(TableId::UnitLeaderTraitExperience),
+            Cadence::Daily(12)
+        );
+        assert_eq!(COMMANDER_PROGRESS_SLOT, COMBAT_LOG_NUMERIC_SLOT);
+        assert_eq!(COMMANDER_PROGRESS_SLOT, DIVISION_STATUS_DAILY_SLOT);
+        for hour in -48..48 {
+            assert_eq!(
+                should_walk(TableId::UnitLeaderTraitExperience, hour, false),
+                hour.rem_euclid(24) == 12
+            );
+            assert!(should_walk(TableId::UnitLeaderTraitExperience, hour, true));
+            assert_eq!(
+                Cadence::Daily(DIVISION_STATUS_DAILY_SLOT).is_refresh(hour),
+                hour.rem_euclid(24) == 12
+            );
+            assert!(should_walk(TableId::DivisionStatus, hour, false));
+        }
+        for table in [
+            TableId::UnitLeaders,
+            TableId::CombatLogObservers,
+            TableId::IntelContributions,
+            TableId::FactionAccounts,
+            TableId::WarParticipation,
+            TableId::States,
+            TableId::TaskForceCounterInputs,
+            TableId::AirRegionCombat,
+            TableId::DivisionStatus,
+            TableId::DivisionLandInputs,
+        ] {
+            assert_eq!(cadence(table), Cadence::Hourly, "{table:?}");
+        }
+    }
+
     #[test]
     fn combat_log_hourly_tables_have_writer_certificate_audit_entries() {
         let audit = include_str!("../cadence-audit.md");

@@ -96,8 +96,9 @@ fn pool(workers: usize, jobs: &Arc<Jobs>) -> Pool {
         acquisition::Pool::start(workers, MAX_JOBS, move |job: &mut Job| runner.run(job)).unwrap();
     executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
     Pool {
-        executor,
+        executor: Arc::new(executor),
         calibration: Arc::new(SharedCalibration::default()),
+        worker_count: workers,
     }
 }
 
@@ -222,8 +223,9 @@ fn an_unwinding_callback_settles_a_contained_stitch_panic_beside_its_siblings() 
     .unwrap();
     executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
     let pool = Pool {
-        executor,
+        executor: Arc::new(executor),
         calibration: Arc::new(SharedCalibration::default()),
+        worker_count: 1,
     };
     let stitch = || {
         use crate::extended::plans::{Capacities, Captured};

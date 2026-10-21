@@ -600,3 +600,184 @@ fn combat_log_projection_uses_committed_labels_across_capture_buffers_and_keyfra
         }
     }
 }
+
+fn daily_capture(memory: &impl Memory, world: &World, hour: i32, full: bool) -> Captured {
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.prepare_hour(hour, full);
+    captured.begin();
+    captured.visit(memory, 0, world.source(7 << 32 | 62));
+    captured.finish(Outcome::Rows { len: 1 });
+    assert!(
+        matches!(captured.outcomes()[1], Outcome::Rows { .. }),
+        "{:?}",
+        captured.outcomes()
+    );
+    captured
+}
+fn observer_row(
+    captured: &Captured,
+    kind: u64,
+    item: u64,
+) -> &replay_data::rows::CombatLogObserverRow {
+    captured
+        .observers
+        .iter()
+        .find(|row| row.attacker && row.kind as u64 == kind && row.item == item)
+        .unwrap()
+}
+fn native_array(bytes: &mut [u8], offset: usize, pointer: usize, count: u32) {
+    World::q(bytes, offset, pointer as u64);
+    bytes[offset + 8..offset + 12].copy_from_slice(&count.to_le_bytes());
+    bytes[offset + 12..offset + 16].copy_from_slice(&count.to_le_bytes());
+}
+
+#[test]
+fn observer_daily_numeric_carry_keeps_hourly_columns_and_reads_new_rows_fresh() {
+    use engine_land_inputs::combat_log_events as event;
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let mut world = World::new(0);
+    let origin = side::STATS_OBSERVER;
+    World::q(
+        &mut world.sides[0],
+        origin + event::OBSERVER_TOTAL_DAMAGE,
+        11,
+    );
+    World::q(&mut world.sides[0], origin + event::OBSERVER_PROGRESS, 12);
+    let before = daily_capture(&memory, &world, 12, true);
+    let old = observer_row(&before, event::OBSERVER_STATE, 0).clone();
+    World::q(
+        &mut world.sides[0],
+        origin + event::OBSERVER_TOTAL_DAMAGE,
+        99,
+    );
+    World::q(&mut world.sides[0], origin + event::OBSERVER_PROGRESS, 98);
+    world.sides[0][origin + event::OBSERVER_FLAGS] = 7;
+    let counters = origin + event::OBSERVER_COUNTERS;
+    for (lane, value) in [41_u32, 42, 43, 44, 45].into_iter().enumerate() {
+        world.sides[0][counters + lane * 4..counters + lane * 4 + 4]
+            .copy_from_slice(&value.to_le_bytes());
+    }
+    // Membership is still visited every hour, and new entries read their first value.
+    let mut leader = [0; 12];
+    World::q(&mut leader, 0, 51);
+    leader[8..].copy_from_slice(&(-17_i32).to_le_bytes());
+    native_array(
+        &mut world.sides[0],
+        origin + stats::LEADERS,
+        leader.as_ptr() as usize,
+        1,
+    );
+    let after = daily_capture(&memory, &world, 13, false);
+    let state = observer_row(&after, event::OBSERVER_STATE, 0);
+    assert_eq!((state.a, state.b, state.c), (old.a, old.b, 7));
+    let counters = observer_row(&after, event::OBSERVER_MODIFIERS, 0);
+    assert_eq!(
+        (counters.a, counters.b, counters.c, counters.d, counters.e),
+        (0, 0, 43, 44, 45)
+    );
+    assert_eq!(
+        observer_row(&after, event::OBSERVER_LEADER, 0).a as i32,
+        -17
+    );
+    leader[8..].copy_from_slice(&23_i32.to_le_bytes());
+    let carried = daily_capture(&memory, &world, 14, false);
+    assert_eq!(
+        observer_row(&carried, event::OBSERVER_LEADER, 0).a as i32,
+        -17
+    );
+    World::q(&mut leader, 0, 52);
+    let changed = daily_capture(&memory, &world, 15, false);
+    assert_eq!(observer_row(&changed, event::OBSERVER_LEADER, 0).a, 23);
+    let refreshed = daily_capture(&memory, &world, 16, true);
+    assert_eq!(observer_row(&refreshed, event::OBSERVER_STATE, 0).a, 99);
+    let mut fresh = Vec::new();
+    event::observer(&memory, 0, world.sides[0].as_ptr() as usize, &mut |fact| {
+        fresh.push(fact)
+    })
+    .unwrap();
+    let actual: Vec<_> = refreshed
+        .observers
+        .iter()
+        .filter(|row| row.attacker)
+        .map(|row| row.fact())
+        .collect();
+    assert_eq!(
+        actual,
+        fresh
+            .iter()
+            .map(|fact| (fact.kind as u8, fact.item, fact.values))
+            .collect::<Vec<_>>(),
+        "forced refresh and the unchanged full terminal reader agree"
+    );
+    native_array(&mut world.sides[0], origin + stats::LEADERS, 0, 0);
+    daily_capture(&memory, &world, 17, false);
+    leader[8..].copy_from_slice(&31_i32.to_le_bytes());
+    native_array(
+        &mut world.sides[0],
+        origin + stats::LEADERS,
+        leader.as_ptr() as usize,
+        1,
+    );
+    let reappeared = daily_capture(&memory, &world, 18, false);
+    assert_eq!(observer_row(&reappeared, event::OBSERVER_LEADER, 0).a, 31);
+    leader[8..].copy_from_slice(&32_i32.to_le_bytes());
+    let daily = daily_capture(&memory, &world, 36, false);
+    assert_eq!(observer_row(&daily, event::OBSERVER_LEADER, 0).a, 32);
+}
+
+#[test]
+fn observer_daily_children_follow_current_parent_and_refusal_forces_fresh_recovery() {
+    use engine_land_inputs::combat_log_events as event;
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let mut world = World::new(0);
+    let mut activity = [0; event::ACTIVITY_SIZE];
+    World::q(&mut activity, 0, event::ACTIVITY_VTABLE_RVA as u64);
+    World::q(&mut activity, event::ACTIVITY_GROUP, 41);
+    World::q(
+        &mut activity,
+        event::ACTIVITY_EQUIPMENT_POOL,
+        pool::VTABLE_RVA as u64,
+    );
+    let mut damage = [0; 16];
+    World::q(&mut damage, 0, 61);
+    World::q(&mut damage, 8, 101);
+    native_array(
+        &mut activity,
+        event::ACTIVITY_DAMAGE_ENTRIES,
+        damage.as_ptr() as usize,
+        1,
+    );
+    let group = [activity.as_ptr() as u64];
+    native_array(
+        &mut world.sides[0],
+        side::STATS_OBSERVER + event::OBSERVER_GROUPS,
+        group.as_ptr() as usize,
+        1,
+    );
+    daily_capture(&memory, &world, 12, true);
+    World::q(&mut damage, 8, 202);
+    let carried = daily_capture(&memory, &world, 13, false);
+    assert_eq!(observer_row(&carried, event::ACTIVITY_DAMAGE, 0).a, 101);
+    World::q(&mut activity, event::ACTIVITY_GROUP, 42);
+    let changed = daily_capture(&memory, &world, 14, false);
+    assert_eq!(observer_row(&changed, event::ACTIVITY_DAMAGE, 0).a, 202);
+    let mut failed = Captured::with_capacities(&Capacities::default());
+    failed.prepare_hour(15, false);
+    failed.begin();
+    failed.finish(Outcome::Unavailable {
+        reason: "synthetic census refusal",
+    });
+    World::q(&mut damage, 8, 303);
+    let recovered = daily_capture(&memory, &world, 16, false);
+    assert_eq!(observer_row(&recovered, event::ACTIVITY_DAMAGE, 0).a, 303);
+    let mut rejected = Captured::with_capacities(&Capacities::default());
+    for (hour, full, value) in [(36, false, 404), (38, true, 505)] {
+        World::q(&mut damage, 8, value);
+        rejected.prepare_hour(hour, full); // No native acquisition follows.
+        let recovered = daily_capture(&memory, &world, hour + 1, false);
+        assert_eq!(
+            observer_row(&recovered, event::ACTIVITY_DAMAGE, 0).a,
+            value as i64
+        );
+    }
+}

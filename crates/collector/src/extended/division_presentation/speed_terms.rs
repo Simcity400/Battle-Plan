@@ -1,4 +1,4 @@
-//! The land movement speed's shared operands, read with the division status
+//! The land movement speed's shared operands, read beside the division status
 //! pass from the same census seeds: MovementStateTerms, CoreSupplyAccess,
 //! CountryUnitSpeedEntries, RiverRelations and DivisionTransportSpeeds for the
 //! hour's movers (divisions with a nonempty ordinary route). Land families
@@ -48,6 +48,8 @@ use std::sync::{
 };
 
 use crate::country_input_changes::{self as changes, Changes, Counts, Mismatch, Table};
+
+mod owned;
 
 pub const N: usize = 5;
 pub const TABLES: [TableId; N] = [
@@ -169,10 +171,6 @@ struct Held {
     values: Vec<Option<i64>>,
 }
 
-// The country marks have one consumer. Keep its last read across pooled frames,
-// rather than consulting the read of whichever buffer happens to return next.
-static HELD: Mutex<Option<Held>> = Mutex::new(None);
-
 impl Held {
     fn clear(&mut self) {
         self.epoch = None;
@@ -215,8 +213,8 @@ pub(super) struct SpeedTerms {
     #[allow(clippy::type_complexity)]
     templates: Vec<(usize, Result<(usize, usize), &'static str>)>,
     keys: Vec<u32>,
-    entry_keys: Vec<u32>,
-    entry_values: Vec<Result<Value, &'static str>>,
+    observed_entries: owned::Entries,
+    observed_rows: owned::Rows,
     /// Each unique combat's movement word and attacking side in `attackers`.
     combats: Vec<Result<CombatOperands, &'static str>>,
     combat_index: std::collections::HashMap<usize, usize>,
@@ -225,7 +223,8 @@ pub(super) struct SpeedTerms {
     /// Reused across hours; only qualifying sea/transfer edges append.
     transport_demand: Vec<(u32, usize)>,
     speed_cache: SpeedCache,
-    held: Held,
+    held: owned::Loan,
+    settle_pending: bool,
     changes: &'static dyn Changes,
     /// The hour's family counts: reads, carried, refusals.
     counts: [[u64; 3]; FAMILIES],
@@ -251,15 +250,16 @@ impl Default for SpeedTerms {
             state_facts: Vec::new(),
             templates: Vec::new(),
             keys: Vec::new(),
-            entry_keys: Vec::new(),
-            entry_values: Vec::new(),
+            observed_entries: owned::Entries::default(),
+            observed_rows: owned::Rows::default(),
             combats: Vec::new(),
             combat_index: std::collections::HashMap::new(),
             attackers: Vec::new(),
             regions: Vec::new(),
             transport_demand: Vec::new(),
             speed_cache: SpeedCache::default(),
-            held: Held::default(),
+            held: owned::Loan::default(),
+            settle_pending: false,
             changes: &changes::Observer,
             counts: [[0; 3]; FAMILIES],
         }
@@ -314,8 +314,8 @@ impl SpeedTerms {
             + self.state_facts.capacity() * size_of::<(usize, Result<(u32, u32), &'static str>)>()
             + self.templates.capacity() * size_of::<(usize, Result<(usize, usize), &'static str>)>()
             + self.keys.capacity() * size_of::<u32>()
-            + self.entry_keys.capacity() * size_of::<u32>()
-            + self.entry_values.capacity() * size_of::<Result<Value, &'static str>>()
+            + self.observed_entries.bytes()
+            + self.observed_rows.bytes()
             + self.combats.capacity() * size_of::<Result<CombatOperands, &'static str>>()
             + self.combat_index.capacity() * (size_of::<(usize, usize)>() + 1)
             + self.attackers.capacity() * size_of::<usize>()
@@ -325,9 +325,17 @@ impl SpeedTerms {
             + self.held.bytes()
     }
 
-    /// Before the status pass: nothing of a previous hour is published. The
+    /// Before the speed pass: nothing of a previous hour is published. The
     /// held entries stay.
     pub(super) fn reset(&mut self) {
+        // A reused/dropped frame cannot carry unfinished owned settlement.
+        if self.settle_pending {
+            self.held.clear();
+        }
+        self.held.abandon();
+        self.settle_pending = false;
+        self.observed_entries.clear();
+        self.observed_rows.clear();
         self.states.clear();
         self.access.clear();
         self.entries.clear();
@@ -344,7 +352,7 @@ impl SpeedTerms {
         self.reset();
         self.outcomes = [Outcome::Unavailable { reason }; N];
         self.held.clear();
-        *HELD.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        owned::forget();
     }
 
     /// The hour's DivisionStatus.combat_movement of `division`; the outer
@@ -371,9 +379,27 @@ impl SpeedTerms {
         ]
     }
 
-    /// Every family for the status pass's census `rows` under `outcome`, the
-    /// ticks of each table in [`TABLES`] order.
-    pub(super) fn capture(
+    #[cfg(test)]
+    fn capture_holding<T>(
+        &mut self,
+        store: &Mutex<Option<Held>>,
+        capture: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.held.replace(
+            store
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+                .unwrap_or_default(),
+        );
+        let result = capture(self);
+        *store.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::mem::take(&mut *self.held));
+        result
+    }
+
+    /// Every family's native-demand selection and reads, timed in TABLES order.
+    /// The held baseline remains lent until FIFO decode completes publication.
+    pub(super) fn acquire(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -381,24 +407,46 @@ impl SpeedTerms {
         rows: &[DivisionSeed],
         outcome: Outcome,
     ) -> [u64; N] {
-        self.capture_holding(&HELD, |capture| {
-            capture.capture_current(memory, base, game, rows, outcome)
-        })
+        self.reset();
+        match owned::Loan::take() {
+            Ok(loan) => self.held = loan,
+            Err(reason) => {
+                self.outcomes = [Outcome::Unavailable { reason }; N];
+                return [0; N];
+            }
+        }
+        self.settle_pending = true;
+        self.capture_current(memory, base, game, rows, outcome)
     }
 
-    fn capture_holding<T>(
-        &mut self,
-        store: &Mutex<Option<Held>>,
-        capture: impl FnOnce(&mut Self) -> T,
-    ) -> T {
-        self.held = store
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
-            .unwrap_or_default();
-        let result = capture(self);
-        *store.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::mem::take(&mut self.held));
-        result
+    pub(super) fn decode(&mut self) -> u64 {
+        if !std::mem::take(&mut self.settle_pending) {
+            return 0;
+        }
+        let started = crate::sampling::qpc();
+        if self.observed_entries.pending {
+            self.outcomes[2] = self.settle_entries();
+        }
+        for slot in [0, 1, 3, 4] {
+            self.settle_family(slot);
+            if let Outcome::Unavailable { reason } = self.outcomes[slot] {
+                self.finish(Err(reason), slot);
+            }
+        }
+        self.combat.sort_unstable_by_key(|entry| entry.0);
+        self.speed_cache.finish();
+        self.publish();
+        self.held.return_complete();
+        crate::sampling::qpc().saturating_sub(started).max(0) as u64
+    }
+
+    /// The common failed-frame return path also runs when there is no army
+    /// store loan. Release this independent loan before the next acquisition.
+    pub(super) fn discard_owned(&mut self) {
+        self.held.abandon();
+        self.settle_pending = false;
+        self.observed_entries.clear();
+        self.observed_rows.clear();
     }
 
     fn capture_current(
@@ -427,7 +475,6 @@ impl SpeedTerms {
             Err(reason) => {
                 self.outcomes = [Outcome::Unavailable { reason }; N];
                 self.held.clear();
-                self.publish();
                 return ticks;
             }
         };
@@ -439,7 +486,6 @@ impl SpeedTerms {
         if let Err(reason) = prepared {
             self.outcomes = [Outcome::Unavailable { reason }; N];
             self.held.clear();
-            self.publish();
             return ticks;
         }
         {
@@ -469,7 +515,7 @@ impl SpeedTerms {
         lap(1, &mut at);
         self.outcomes[2] = {
             let _reads = crate::read_accounting::table(TABLES[2]);
-            self.capture_entries(memory, &countries, take)
+            self.acquire_entries(memory, &countries, take)
         };
         lap(2, &mut at);
         self.outcomes[3] = {
@@ -484,7 +530,6 @@ impl SpeedTerms {
         lap(4, &mut at);
         // Region pointers never outlive the acquisition.
         self.regions.clear();
-        self.publish();
         ticks
     }
 
@@ -608,7 +653,9 @@ impl SpeedTerms {
             }
             self.combat.push((seed.division, value.ok()));
         }
-        self.combat.sort_unstable_by_key(|entry| entry.0);
+        if !self.settle_pending {
+            self.combat.sort_unstable_by_key(|entry| entry.0);
+        }
         Ok(())
     }
 
@@ -894,9 +941,10 @@ impl SpeedTerms {
             // are neither queried nor allowed to refuse this row.
             let mut block: Option<(
                 (usize, u32, u8, bool),
-                Result<StateMovementTerms, &'static str>,
+                Result<owned::StateInputs, &'static str>,
             )> = None;
             reserve(&mut self.states, wanted.len())?;
+            reserve(&mut self.observed_rows.states, wanted.len())?;
             for &(state_id, roster, owner, state, controller, attacking) in &wanted {
                 let branch =
                     memo(&branches, (owner, controller)).ok_or("movement branch unread")?;
@@ -915,7 +963,7 @@ impl SpeedTerms {
                         let army = accumulator::lookup_requested_at(memory, at, selected[0])?;
                         let relation = if len == 2 {
                             let value = accumulator::lookup_requested_at(memory, at, selected[1])?;
-                            value.present.then_some(value.raw)
+                            Some(value)
                         } else {
                             None
                         };
@@ -924,44 +972,35 @@ impl SpeedTerms {
                         } else {
                             Ok(Value::default())
                         };
-                        Ok(StateMovementTerms {
-                            army_speed: army.present.then_some(army.raw),
-                            attack_speed: attack
-                                .ok()
-                                .and_then(|value| value.present.then_some(value.raw)),
-                            relation_speed: relation,
-                            branch: branch
-                                | if attack.is_err() {
-                                    StateMovementTerms::ATTACK_REFUSED
-                                } else {
-                                    0
-                                },
+                        Ok(owned::StateInputs {
+                            army,
+                            attack,
+                            relation,
+                            branch,
                         })
                     })();
                     block = Some((key, terms));
                     terms
                 });
-                self.counts[0][usize::from(terms.is_err()) * 2] += 1;
-                if terms.is_ok_and(|terms| terms.branch & StateMovementTerms::ATTACK_REFUSED != 0) {
-                    self.counts[0][2] += 1;
-                }
-                self.states.push(MovementStateTermRow {
-                    state: state_id,
-                    roster,
-                    owner,
-                    terms: terms.ok(),
-                });
+                self.observed_rows.states.push(((state_id, roster, owner), terms));
             }
-            Ok(self.states.len())
+            Ok(self.states.len() + self.observed_rows.states.len())
         })();
+        if !self.settle_pending {
+            self.settle_family(0);
+        }
         self.finish(result, 0)
     }
 
     /// CoreSupplyAccess: one row per (owner, location province) of a mover
     /// whose noncore-supply term can apply.
     fn capture_access(&mut self, memory: &impl Memory, base: usize, game: usize) -> Outcome {
+        let mut wanted = std::mem::take(&mut self.observed_rows.access);
+        let mut areas = std::mem::take(&mut self.observed_rows.access_areas);
+        wanted.clear();
+        areas.clear();
+        let mut ready = false;
         let result = (|| -> Result<usize, &'static str> {
-            let mut wanted: Vec<(u32, u32)> = Vec::new();
             reserve(&mut wanted, self.movers.len())?;
             for mover in self.movers.iter().filter(|mover| mover.land == Ok(true)) {
                 match (mover.noncore, mover.location) {
@@ -978,7 +1017,6 @@ impl SpeedTerms {
             // Several location provinces can share the same controller area.
             // Query that predicate once per owner/area, while retaining the
             // province key playback joins without a second area column.
-            let mut areas = Vec::new();
             reserve(&mut areas, wanted.len())?;
             for &(owner, province) in &wanted {
                 if let Ok(facts) = self::province(&self.provinces, province)
@@ -993,26 +1031,32 @@ impl SpeedTerms {
                 *access = ccountry::has_core_supply_access(memory, base, game, *owner, *area);
             }
             reserve(&mut self.access, wanted.len())?;
-            for &(owner, province) in &wanted {
-                let access = self::province(&self.provinces, province).and_then(|facts| {
-                    memo(&areas, (owner, facts.controller_area?))
-                        .ok_or("core supply area unread")?
-                });
-                self.counts[1][usize::from(access.is_err()) * 2] += 1;
-                self.access.push(CoreSupplyAccessRow {
-                    owner,
-                    province,
-                    access: access.ok(),
-                });
-            }
-            Ok(self.access.len())
+            ready = true;
+            Ok(self.access.len() + wanted.len())
         })();
+        self.observed_rows.access = wanted;
+        self.observed_rows.access_areas = areas;
+        self.observed_rows.access_ready = ready;
+        if !self.settle_pending {
+            self.settle_family(1);
+        }
         self.finish(result, 1)
     }
 
     /// CountryUnitSpeedEntries: one row per (owner, key) over the movement
     /// speed keys of the movers' templates, carried under the unit speed set.
+    #[cfg(test)]
     fn capture_entries(
+        &mut self,
+        memory: &impl Memory,
+        countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
+        take: Take,
+    ) -> Outcome {
+        self.acquire_entries(memory, countries, take);
+        self.settle_entries()
+    }
+
+    fn acquire_entries(
         &mut self,
         memory: &impl Memory,
         countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
@@ -1025,18 +1069,16 @@ impl SpeedTerms {
             && take.epoch.is_some()
             && take.epoch == self.held.epoch
             && arrays == Some(self.held.arrays);
-        let mut counts = Counts {
+        let counts = Counts {
             marked: take.marked.len() as u64,
             full: !certified,
             ..Counts::default()
         };
-        let mut carried_countries = 0_u64;
-        let mut next = Held::default();
-        let mut holdable = take.complete && take.epoch.is_some() && arrays.is_some();
-        let mut keys_of = std::mem::take(&mut self.entry_keys);
-        let mut values = std::mem::take(&mut self.entry_values);
+        self.observed_entries.clear();
+        let mut wanted = std::mem::take(&mut self.observed_entries.wanted);
+        let mut values = std::mem::take(&mut self.observed_entries.values);
+        let mut observed = std::mem::take(&mut self.observed_entries.countries);
         let result = (|| -> Result<usize, &'static str> {
-            let mut wanted: Vec<(u32, u32)> = Vec::new();
             for mover in self.movers.iter().filter(|mover| mover.land == Ok(true)) {
                 let Some(owner) = mover.owner else {
                     self.counts[2][2] += 1;
@@ -1063,11 +1105,14 @@ impl SpeedTerms {
             wanted.sort_unstable();
             wanted.dedup();
             reserve(&mut self.entries, wanted.len())?;
+            reserve(&mut values, wanted.len())?;
 
             let mut first = 0;
             while first < wanted.len() {
+                reserve(&mut observed, 1)?;
                 let owner = wanted[first].0;
                 let end = first + wanted[first..].partition_point(|&(known, _)| known == owner);
+                let start = first;
                 let group = &wanted[first..end];
                 first = end;
                 let country = countries
@@ -1088,136 +1133,48 @@ impl SpeedTerms {
                         && group.iter().all(|(_, key)| keys.binary_search(key).is_ok()))
                     .then_some(held)
                 });
-                let held_value = |held: HeldCountry, key: u32| {
-                    let keys = &self.held.keys[held.start..held.start + held.len];
-                    keys.binary_search(&key)
-                        .ok()
-                        .map(|at| self.held.values[held.start + at])
-                };
                 let compared = held.is_some_and(|_| {
                     country.is_ok_and(|country| every || check.covers(u64::from(country.id)))
                 });
-                let read: Result<&[Result<Value, &'static str>], &'static str> =
-                    match (held, compared) {
-                        (Some(_), false) => Ok(&[]),
-                        _ => {
-                            values.clear();
-                            reserve(&mut values, group.len())?;
-                            keys_of.clear();
-                            reserve(&mut keys_of, group.len())?;
-                            keys_of.extend(group.iter().map(|&(_, key)| key));
-                            country.and_then(|country| {
-                                let at = country
-                                    .pointer
-                                    .checked_add(ccountry::MODIFIER_ACCUMULATOR)
-                                    .ok_or("country accumulator address overflow")?;
-                                values.extend(
-                                    keys_of.iter().map(|&key| {
-                                        accumulator::lookup_requested_at(memory, at, key)
-                                    }),
-                                );
-                                Ok(values.as_slice())
-                            })
-                        }
-                    };
-                let carried = held.filter(|_| !compared);
-                if carried.is_some() {
-                    carried_countries += 1;
-                } else {
-                    counts.read += 1;
-                }
-                if let (Some(held), true, Ok(fresh), Ok(country)) = (held, compared, &read, country)
-                {
-                    counts.verified += u64::from(fresh.iter().all(Result::is_ok));
-                    let differs = group.iter().zip(fresh.iter()).any(|(&(_, key), value)| {
-                        value.is_ok_and(|value| {
-                            held_value(held, key) != Some(value.present.then_some(value.raw))
-                        })
-                    });
-                    if differs {
-                        counts.mismatches += 1;
-                        self.changes.mismatch(
-                            Table::UnitSpeeds,
-                            Mismatch {
-                                country: country.id,
-                                field: "unit_speed_entries",
-                            },
-                        );
-                    }
-                }
-                let start = next.keys.len();
-                for (index, &(_, key)) in group.iter().enumerate() {
-                    let entry = match (carried, &read) {
-                        (Some(held), _) => {
-                            Some(held_value(held, key).ok_or("held unit speed entry missing")?)
-                        }
-                        (None, Ok(fresh)) => fresh[index]
-                            .ok()
-                            .map(|value| value.present.then_some(value.raw)),
-                        (None, Err(_)) => None,
-                    };
-                    let family = if entry.is_none() {
-                        2
-                    } else if carried.is_some() {
-                        1
-                    } else {
-                        0
-                    };
-                    self.counts[2][family] += 1;
-                    self.entries.push(CountryUnitSpeedEntryRow {
-                        country: owner,
-                        key,
-                        entry,
-                    });
-                    if holdable {
-                        match entry {
-                            Some(value)
-                                if reserve(&mut next.keys, 1).is_ok()
-                                    && reserve(&mut next.values, 1).is_ok() =>
-                            {
-                                next.keys.push(key);
-                                next.values.push(value);
-                            }
-                            Some(_) => holdable = false,
-                            None => {}
-                        }
-                    }
-                }
-                let len = next.keys.len() - start;
-                match country {
-                    Ok(country) if holdable && len == group.len() => {
-                        if reserve(&mut next.countries, 1).is_ok() {
-                            next.countries.push(HeldCountry {
-                                owner,
-                                country,
-                                start,
-                                len,
-                            });
-                        } else {
-                            holdable = false;
-                        }
-                    }
-                    _ => {
-                        // A refused country holds nothing.
-                        next.keys.truncate(start);
-                        next.values.truncate(start);
-                    }
-                }
+                let read = match (held, compared) {
+                    (Some(_), false) => Ok(values.len()),
+                    _ => country.and_then(|country| {
+                        let at = country
+                            .pointer
+                            .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                            .ok_or("country accumulator address overflow")?;
+                        let at_values = values.len();
+                        values.extend(group.iter().map(|&(_, key)| {
+                            accumulator::lookup_requested_at(memory, at, key)
+                        }));
+                        Ok(at_values)
+                    }),
+                };
+                observed.push(owned::Country {
+                    owner,
+                    country,
+                    held,
+                    compared,
+                    start,
+                    end,
+                    read,
+                });
             }
-            Ok(self.entries.len())
+            Ok(wanted.len())
         })();
-        self.entry_keys = keys_of;
-        self.entry_values = values;
-        if result.is_ok() && holdable {
-            next.epoch = take.epoch;
-            next.arrays = arrays.unwrap_or_default();
-            self.held = next;
-        } else {
-            self.held.clear();
-        }
-        changes::record(Table::UnitSpeeds, &counts, None);
-        changes::record_carried(Table::UnitSpeeds, carried_countries);
-        self.finish(result, 2)
+        self.observed_entries.wanted = wanted;
+        self.observed_entries.values = values;
+        self.observed_entries.countries = observed;
+        self.observed_entries.epoch = take.epoch;
+        self.observed_entries.arrays = arrays;
+        self.observed_entries.complete = take.complete;
+        self.observed_entries.counts = counts;
+        self.observed_entries.result = Some(result.map(|_| ()));
+        self.observed_entries.pending = true;
+        result.map_or_else(
+            |reason| Outcome::Unavailable { reason },
+            |len| Outcome::Rows { len },
+        )
     }
 
     /// RiverRelations: one row per (owner, controller) over the movers' route
@@ -1292,6 +1249,7 @@ impl SpeedTerms {
             wanted.sort_unstable();
             wanted.dedup();
             reserve(&mut self.rivers, wanted.len())?;
+            reserve(&mut self.observed_rows.rivers, wanted.len())?;
             let mut owner: Option<(u32, Result<ccountry::Country, &'static str>)> = None;
             for &(raw, controller) in &wanted {
                 let country = match owner {
@@ -1313,15 +1271,13 @@ impl SpeedTerms {
                             memory, base, reader, country?, controller,
                         )
                     });
-                self.counts[3][usize::from(entry.is_err()) * 2] += 1;
-                self.rivers.push(RiverRelationRow {
-                    owner: raw,
-                    controller,
-                    entry: entry.ok(),
-                });
+                self.observed_rows.rivers.push(((raw, controller), entry));
             }
-            Ok(self.rivers.len())
+            Ok(self.rivers.len() + self.observed_rows.rivers.len())
         })();
+        if !self.settle_pending {
+            self.settle_family(3);
+        }
         self.finish(result, 3)
     }
 
@@ -1386,15 +1342,15 @@ impl SpeedTerms {
             wanted.sort_unstable();
             wanted.dedup();
             reserve(&mut self.transport, wanted.len())?;
+            reserve(&mut self.observed_rows.transport, wanted.len())?;
             if wanted.is_empty() {
                 return Ok(0);
             }
             self.speed_cache.begin(self.regions.len())?;
             let mut indices: Vec<usize> = Vec::new();
             reserve(&mut indices, self.regions.len())?;
-            let (transport, counts, cache) = (
-                &mut self.transport,
-                &mut self.counts[4],
+            let (transport, cache) = (
+                &mut self.observed_rows.transport,
                 &mut self.speed_cache,
             );
             let mut first = 0;
@@ -1404,7 +1360,7 @@ impl SpeedTerms {
                 indices.clear();
                 indices.extend(wanted[first..end].iter().map(|&(_, index)| index));
                 first = end;
-                engine_naval_history::cnaval_unit_transfer::movement_speeds(
+                engine_naval_history::cnaval_unit_transfer::movement_speeds_inputs(
                     memory,
                     base,
                     game,
@@ -1413,17 +1369,15 @@ impl SpeedTerms {
                     &indices,
                     cache,
                     |region, speed| {
-                        counts[usize::from(speed.is_err()) * 2] += 1;
-                        transport.push(OwnerTransportSpeedRow {
-                            owner,
-                            region: region.id,
-                            speed: speed.ok(),
-                        });
+                        transport.push(((owner, region.id), speed));
                     },
                 );
             }
-            Ok(transport.len())
+            Ok(self.transport.len() + transport.len())
         })();
+        if !self.settle_pending {
+            self.settle_family(4);
+        }
         self.finish(result, 4)
     }
 

@@ -12,6 +12,73 @@ fn key(country: u32, class: u8, other: u32) -> RouteKey {
 
 const OWNERS: [u32; 3] = [3, 5, 7];
 
+#[test]
+fn owned_resource_sorting_keeps_independent_duplicate_refusals_and_ordinals() {
+    let mut captured = Captured::with_capacities(&Capacities);
+    captured.rights = vec![
+        native::RightsRow {
+            state: 9,
+            resource: 2,
+            ordinal: 7,
+            ..Default::default()
+        },
+        native::RightsRow {
+            state: 3,
+            resource: 2,
+            ordinal: 4,
+            ..Default::default()
+        },
+    ];
+    captured.oil = vec![
+        native::OilRow {
+            country: 3,
+            factor: 17
+        };
+        2
+    ];
+    captured.temporary = vec![native::TemporaryRow {
+        state: 2,
+        resource: 4,
+        amount: -5,
+    }];
+    captured.regional = vec![native::RegionalRow {
+        country: 2,
+        region: 4,
+        efficiency: -7,
+    }];
+    captured.outcomes = [Outcome::Rows { len: 0 }; N];
+    captured.outcomes[1] = Outcome::Rows { len: 2 };
+    captured.outcomes[2] = Outcome::Rows { len: 2 };
+    captured.outcomes[3] = Outcome::Rows { len: 1 };
+    captured.outcomes[6] = Outcome::Rows { len: 1 };
+    let mut expected = captured.rights.clone();
+    let rights = sorted(&mut expected, captured.outcomes[1], |row| {
+        (row.state, row.resource)
+    });
+    captured.pending_owned = true;
+    captured.settle_owned();
+    assert_eq!(captured.rights, expected);
+    assert_eq!(
+        captured
+            .rights
+            .iter()
+            .map(|row| row.ordinal)
+            .collect::<Vec<_>>(),
+        [4, 7]
+    );
+    assert_eq!(captured.outcomes[1], rights);
+    assert_eq!(
+        captured.outcomes[2],
+        Outcome::Unavailable {
+            reason: "two resources map rows share one key"
+        }
+    );
+    assert_eq!(captured.outcomes[3], Outcome::Rows { len: 1 });
+    assert_eq!(captured.outcomes[6], Outcome::Rows { len: 1 });
+    captured.settle_owned();
+    assert_eq!(captured.rights, expected);
+}
+
 /// One hour's selection over `census`: whether every owner is read, and which are.
 fn select(
     captured: &mut Captured,

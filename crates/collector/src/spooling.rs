@@ -748,11 +748,14 @@ impl<B: SegmentBackend> Campaign<B> {
                     if !replay_data::sliced::is_keyed(table) {
                         let owners = match &merged {
                             Merged::Rows(rows) => replay_data::sliced::try_owners(rows)?,
-                            Merged::Update(_, update) => update.owners_after(
-                                self.sliced_cache
-                                    .get(&table)
-                                    .expect("updated rows are cached"),
-                            )?,
+                            // Unread live owners already have their provenance
+                            // in `previous`, including owners with no rows. The
+                            // final loop below keeps it. Only the fresh owners
+                            // need a new sample hour; do not rescan the complete
+                            // baseline merely to enumerate its carried owners.
+                            Merged::Update(_, update) => {
+                                replay_data::sliced::try_owners(update.rows())?
+                            }
                         };
                         let previous = &self.sliced_reads.0[table.index()];
                         let capacity = owners
@@ -2044,13 +2047,14 @@ struct CapturedStatistics {
 
 impl CapturedStatistics {
     fn capture(captured: &Captured) -> io::Result<Self> {
-        let sampled_buffer_bytes = captured.allocated_bytes();
         let mut sampled_buffer_parts = captured.extended.allocated_by_pack()?;
-        let extended_bytes = captured.extended.allocated_bytes();
+        let extended_bytes: usize = sampled_buffer_parts.iter().map(|(_, bytes)| *bytes).sum();
         let map_bytes = captured.map.allocated_bytes();
+        let core_bytes = captured.core_allocated_bytes();
+        let sampled_buffer_bytes = core_bytes + map_bytes + extended_bytes;
         engine_allocation::reserve(&mut sampled_buffer_parts, 2)?;
         sampled_buffer_parts.push(("map", map_bytes));
-        sampled_buffer_parts.push(("core", sampled_buffer_bytes - extended_bytes - map_bytes));
+        sampled_buffer_parts.push(("core", core_bytes));
         let raid_reads = captured.extended.raid_reads();
         let extended_outcomes = captured.extended.outcomes();
         let truncated_tables = [

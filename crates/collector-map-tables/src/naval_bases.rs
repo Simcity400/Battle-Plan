@@ -42,6 +42,7 @@ impl Capacities {
 
 pub struct Captured {
     management: collector_naval_management::bases::Captured,
+    owned: Option<collector_naval_management::bases::Owned>,
     rows: CaptureRows<cnaval_base::Row>,
     countries: Arena<u32>,
     country_tags: Vec<Option<Vec<u8>>>,
@@ -56,6 +57,7 @@ impl Captured {
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             management: Default::default(),
+            owned: None,
             rows: CaptureRows::new(c.rows),
             countries: Arena::new(c.countries),
             country_tags: Vec::new(),
@@ -63,6 +65,7 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
+        self.discard_owned();
         self.management = Default::default();
         self.rows.reset();
         self.countries.reset();
@@ -93,10 +96,35 @@ impl Captured {
     }
 
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+        self.capture_impl(memory, base, state, None)
+    }
+
+    pub fn acquire(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        stopped: fn() -> bool,
+    ) -> [u64; N] {
+        self.capture_impl(memory, base, state, Some(stopped))
+    }
+
+    fn capture_impl(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        stopped: Option<fn() -> bool>,
+    ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         self.reset();
-        let mut management = collector_naval_management::bases::Session::begin(memory, base);
+        let mut management = match stopped {
+            Some(stopped) => {
+                collector_naval_management::bases::Session::begin_owned(memory, base, stopped)
+            }
+            None => collector_naval_management::bases::Session::begin(memory, base),
+        };
         let walked = cnaval_base::walk_growing_observed(
             memory,
             base,
@@ -105,7 +133,11 @@ impl Captured {
             &mut self.countries.first,
             |pointer, row| management.visit(pointer, row),
         );
-        self.management = management.finish(walked.outcome);
+        if stopped.is_some() {
+            (self.management, self.owned) = management.finish_owned(walked.outcome);
+        } else {
+            self.management = management.finish(walked.outcome);
+        }
         self.rows.outcome = walked.outcome;
         self.countries.len = walked.countries;
         self.countries.required = walked.required_countries;
@@ -115,6 +147,17 @@ impl Captured {
                 .map(|&country| cnaval_base::country_text(memory, base, state, country).ok()),
         ));
         [qpc().saturating_sub(begin).max(0) as u64, 0, 0]
+    }
+
+    /// Owned maps, row sorting and immutable snapshot publication only.
+    pub fn decode_owned(&mut self) {
+        if let Some(owned) = self.owned.take() {
+            self.management = owned.decode();
+        }
+    }
+
+    pub fn discard_owned(&mut self) {
+        self.owned = None;
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {

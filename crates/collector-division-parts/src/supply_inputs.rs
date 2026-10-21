@@ -11,6 +11,57 @@ use replay_data::{
     rows::UnitSupplyOrigin,
 };
 
+/// One owned daily footer. A failed pack or origin fragment is itself a sample;
+/// decode never follows its former native header or retries its read.
+#[derive(Default)]
+pub struct Sample {
+    pub inputs: Option<Inputs>,
+    pub failure: Option<Failure>,
+    origins: Option<Vec<Origin>>,
+    charge: collector_primitives::raw_memory::Charge,
+}
+impl Sample {
+    pub fn owned(
+        inputs: Option<Inputs>,
+        failure: Option<Failure>,
+        origins: Option<&[Origin]>,
+    ) -> Result<std::sync::Arc<Self>, &'static str> {
+        let origins = origins
+            .map(|rows| {
+                let mut owned = Vec::new();
+                engine_allocation::reserve(&mut owned, rows.len())
+                    .map_err(|_| "daily division supply allocation failed")?;
+                owned.extend_from_slice(rows);
+                Ok(owned)
+            })
+            .transpose()?;
+        let mut sample = Self {
+            inputs,
+            failure,
+            origins,
+            charge: Default::default(),
+        };
+        sample
+            .charge
+            .set(collector_primitives::raw_memory::Capacity {
+                auxiliary_vectors: sample.allocated_bytes() as u64,
+                ..Default::default()
+            });
+        Ok(std::sync::Arc::new(sample))
+    }
+    pub fn origins(&self) -> Option<&[Origin]> {
+        self.origins.as_deref()
+    }
+    pub fn allocated_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + 2 * std::mem::size_of::<usize>()
+            + self
+                .origins
+                .as_ref()
+                .map_or(0, |rows| rows.capacity() * std::mem::size_of::<Origin>())
+    }
+}
+
 #[derive(Default)]
 pub struct Work {
     captured: u64,

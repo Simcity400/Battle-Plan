@@ -68,3 +68,5 @@ native holders and their aliases, including transfers and reused tags.
 Leader runs include exact residual experience and every ordered training entry. Required experience and trait names resolve through recorded content. Changed experience or progress starts a new visible run, including in prepared histories; unavailable training differs from an empty vector.
 
 Career progress includes a separate ordered runtime training-factor override list. Missing acquisition is distinct from a complete empty list; lexical/content names resolve through the recording's stack.
+
+Training progress/runtime factors and residual commander XP are daily slot-12 samples (owner decision 2026-10-21); identities, skills, traits and role membership remain hourly. Career runs and detail views accept held progress and XP without requiring the sample to be from the current hour.

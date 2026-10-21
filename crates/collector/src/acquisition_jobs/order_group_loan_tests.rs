@@ -177,3 +177,97 @@ fn a_child_fronts_pass_without_group_demand_is_not_worker_only() {
     );
     inspect_job(job, bytes, spans, 1);
 }
+
+/// The readiness scheduler returns a stitched request to the existing parked
+/// cells while Naval is pending, then dispatches ChildFronts with the same
+/// loan. Neither the extra parking handoff nor failure may copy or lose it.
+#[test]
+fn readiness_stitched_order_parking_preserves_naval_loans_on_success_panic_and_refusal() {
+    for mode in 0..3 {
+        let executor =
+            crate::acquisition::Pool::start(1, MAX_JOBS, move |job: &mut Job| match job {
+                Job::OrdersStitch(_) => Report::OrdersStitch(StitchReport::default()),
+                Job::Fronts(_) => Report::Fronts(FrontsReport),
+                Job::ChildFronts(_) => {
+                    if mode == 1 {
+                        panic!("synthetic child-front panic after parked handoff");
+                    }
+                    Report::ChildFronts(OrdersReport)
+                }
+                _ => unreachable!("readiness loan fixture job"),
+            })
+            .unwrap();
+        executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
+        let pool = Pool {
+            executor: Arc::new(executor),
+            calibration: Arc::new(SharedCalibration::default()),
+            worker_count: 1,
+        };
+        let mut batch = Batch::new(&pool);
+        let orders = request(3);
+        let payload = orders.group_source.as_ref().unwrap();
+        let bytes = payload.log.bytes.as_ptr() as usize;
+        let spans = payload.log.spans.as_ptr() as usize;
+        let mut job = Some(Job::OrdersStitch(orders));
+        // SAFETY: the batch drains every admitted request before this test ends.
+        let stitch = unsafe { batch.submit(&mut job).unwrap() };
+        batch.wait_ready(|batch| batch.is_complete(stitch).then_some(()));
+        assert!(matches!(
+            batch.completed_report(stitch),
+            Some(Ok(Report::OrdersStitch(StitchReport {
+                contained_panic: false
+            })))
+        ));
+        let completion = batch.finish(stitch).unwrap();
+        let Job::OrdersStitch(mut orders) = completion.request else {
+            unreachable!()
+        };
+        let mut front = Some(Job::Fronts(FrontsRequest {
+            base: 0,
+            fronts: orders.plans.take_fronts(),
+        }));
+        // SAFETY: as above. Fronts owns no order request or Naval loan.
+        let fronts = unsafe { batch.submit(&mut front).unwrap() };
+        let mut retained = Some(Job::ChildFronts(orders));
+        let parked = batch.park(&mut retained).unwrap();
+        assert!(retained.is_none());
+        assert!(!batch.is_complete(parked));
+        batch.wait_ready(|batch| batch.is_complete(fronts).then_some(()));
+        drop(batch.finish(fronts).unwrap());
+        let mut child = Some(batch.unpark(parked).unwrap());
+        assert_eq!(
+            loan(child.as_ref().unwrap()).log.bytes.as_ptr() as usize,
+            bytes
+        );
+        if mode == 2 {
+            pool.shutdown().unwrap();
+        }
+        // SAFETY: as above.
+        let completion = match unsafe { batch.submit(&mut child) } {
+            Ok(ticket) => {
+                batch.wait_ready(|batch| batch.is_complete(ticket).then_some(()));
+                batch.finish(ticket).unwrap()
+            }
+            Err(SubmitError::Stopped) => {
+                let ticket = batch.park(&mut child).unwrap();
+                let mut completion = None;
+                assert!(
+                    batch.finish_parked_into(ticket, &mut completion, |_| Some(Err(
+                        Failure::Stopped
+                    )))
+                );
+                completion.unwrap()
+            }
+            Err(reason) => panic!("unexpected fixture admission {reason:?}"),
+        };
+        assert!(matches!(
+            (mode, completion.report),
+            (0, Ok(Report::ChildFronts(_)))
+                | (1, Err(Failure::Panicked))
+                | (2, Err(Failure::Stopped))
+        ));
+        inspect_job(completion.request, bytes, spans, 3);
+        assert_eq!(pool.calibration().executor.uncollected, 0);
+        assert_eq!(pool.calibration().executor.caller_executed, 0);
+    }
+}

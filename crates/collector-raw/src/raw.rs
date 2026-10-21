@@ -36,9 +36,9 @@ use std::sync::Mutex;
 
 mod recorded;
 
-pub use recorded::Recorded;
 use recorded::RecordedIndex;
 pub use recorded::index_diagnostics;
+pub use recorded::{Recorded, RecordedCache};
 #[cfg(test)]
 use {recorded::ReadAddressHasher, std::hash::Hasher};
 

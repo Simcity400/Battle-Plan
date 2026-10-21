@@ -1276,11 +1276,25 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
     capacity.production.rows[3..7].fill(1);
     let mut captured = Captured::with_capacities(&capacity);
     let memory = engine_native::memory::CountedMemory::new(Reads(std::cell::Cell::new(0)));
-    assert!(
-        captured
-            .take_variants_request(11, 0x1000, slot + 1, false)
-            .is_none()
+    let bytes = captured.allocated_bytes();
+    let mut request = crate::test_support::with_allocations_denied(|| {
+        captured.take_variants_request(11, 0x1000, slot + 1, false)
+    });
+    assert_eq!(
+        captured.allocated_bytes() + request.allocated_bytes(),
+        bytes
     );
+    // The worker always owns the hourly changes. A quiet roster stays skipped.
+    request.registry.mark_skipped();
+    request
+        .variants
+        .fail(replay_data::cadence::SKIPPED_REASON, slot + 1, false);
+    request.changes_ticks = 79;
+    crate::test_support::with_allocations_denied(|| {
+        captured.restore_variants_request(request, Ok([0; production::N]));
+    });
+    assert_eq!(captured.allocated_bytes(), bytes);
+    assert_eq!(captured.overhead[TableId::VariantChanges.index()], 79);
     let ticks = captured.capture_tables_all(&memory, 11, 0x1000, slot + 1, false);
     for (index, table) in production::TABLES.into_iter().enumerate().skip(3).take(4) {
         assert_eq!(ticks[table.index()], 0);
@@ -1296,19 +1310,22 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
         crate::acquisition::Failure::Stopped,
     ] {
         let bytes = captured.allocated_bytes();
-        let request = captured
-            .take_variants_request(11, 0x1000, slot, false)
-            .expect("the variant slot loans the family");
+        let request = captured.take_variants_request(11, 0x1000, slot, false);
         assert_eq!(
             captured.allocated_bytes() + request.allocated_bytes(),
             bytes
         );
-        captured.restore_variants_request(request, Err(failure));
+        crate::test_support::with_allocations_denied(|| {
+            captured.restore_variants_request(request, Err(failure));
+        });
         assert_eq!(captured.allocated_bytes(), bytes);
         let reads = crate::read_accounting::Capture::new();
         captured.capture_tables_all(&memory, 11, 0x1000, slot, false);
         let counts = reads.finish();
-        for table in &production::TABLES[3..7] {
+        for table in production::TABLES[3..7]
+            .iter()
+            .chain([&TableId::VariantChanges])
+        {
             assert_eq!(
                 counts[table.index()],
                 engine_native::memory::ReadCounts::ZERO
@@ -1318,12 +1335,48 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
             crate::acquisition::Failure::Panicked => "variant acquisition panicked",
             crate::acquisition::Failure::Stopped => "variant acquisition stopped before reading",
         };
-        for index in 3..7 {
+        for table in production::TABLES[3..7]
+            .iter()
+            .chain([&TableId::VariantChanges])
+        {
+            let index = production::TABLES
+                .iter()
+                .position(|id| id == table)
+                .unwrap();
             assert_eq!(
                 captured.production.outcomes()[index],
                 Outcome::Unavailable { reason: expected }
             );
         }
+    }
+}
+
+#[test]
+fn variant_handoff_preserves_a_finished_change_capture_after_a_later_failure() {
+    let changes_index = production::TABLES
+        .iter()
+        .position(|&table| table == TableId::VariantChanges)
+        .unwrap();
+    for failure in [
+        crate::acquisition::Failure::Panicked,
+        crate::acquisition::Failure::Stopped,
+    ] {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut request = captured.take_variants_request(11, 0x1000, 1, false);
+        // An independently refused drain must keep its original verdict too.
+        request.changes.fail("finished design-change verdict");
+        request.changes_finished = true;
+        request.changes_ticks = 31;
+        crate::test_support::with_allocations_denied(|| {
+            captured.restore_variants_request(request, Err(failure));
+        });
+        assert_eq!(
+            captured.production.outcomes()[changes_index],
+            Outcome::Unavailable {
+                reason: "finished design-change verdict"
+            }
+        );
+        assert_eq!(captured.overhead[TableId::VariantChanges.index()], 31);
     }
 }
 
@@ -1417,12 +1470,16 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
         captured.restore_gated_request(gated, false);
         let _technologies =
             captured.restore_governance_request(request, failure.map_or(Ok(report), Err));
-        // Variants leave only on their slot or a full hour.
+        // The hourly drain leaves even off the registry's slot.
         let variants = captured.take_variants_request(11, 0x1000, 1, context.force_full);
-        assert_eq!(variants.is_some(), context.force_full);
-        if let Some(variants) = variants {
-            captured.restore_variants_request(variants, Ok(variant_ticks));
-        }
+        captured.restore_variants_request(
+            variants,
+            Ok(if context.force_full {
+                variant_ticks
+            } else {
+                [0; production::N]
+            }),
+        );
         assert_eq!(Arc::strong_count(&countries), 1);
         assert_eq!(captured.allocated_bytes(), bytes);
         let expected_outcomes = captured.governance.outcomes();

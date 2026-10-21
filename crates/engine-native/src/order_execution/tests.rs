@@ -1,6 +1,75 @@
 use super::*;
 use std::collections::BTreeMap;
 
+#[test]
+fn retained_unit_ordinals_revalidate_current_order_and_alias_refusals() {
+    let mut prepared = Prepared::try_new(capacity()).unwrap();
+    let mut seeds: Vec<_> = [(30, 3), (10, 1), (20, 2)]
+        .into_iter()
+        .map(|(pointer, division)| carmy::DivisionSeed {
+            pointer,
+            division,
+            ..Default::default()
+        })
+        .collect();
+    for hour in 0..6 {
+        match hour {
+            1 => seeds.rotate_left(1),
+            2 => seeds[1].pointer = seeds[0].pointer,
+            3 => seeds[2].division = seeds[0].division,
+            4 => {
+                seeds.pop();
+            }
+            5 => seeds.clear(),
+            _ => {}
+        }
+        prepared.reset();
+        prepared.index_units(&seeds);
+        let mut fresh = Prepared::try_new(capacity()).unwrap();
+        fresh.index_units(&seeds);
+        assert_eq!(prepared.pointers, fresh.pointers);
+        assert_eq!(prepared.handles, fresh.handles);
+        assert_eq!(prepared.invalid, fresh.invalid);
+        for seed in &seeds {
+            assert_eq!(
+                prepared.host_index(&seeds, seed.pointer),
+                fresh.host_index(&seeds, seed.pointer)
+            );
+            assert_eq!(
+                prepared.unit_index(&seeds, seed.division, seed.pointer),
+                fresh.unit_index(&seeds, seed.division, seed.pointer)
+            );
+        }
+    }
+}
+
+#[test]
+fn host_lookup_keeps_the_handle_lookup_refusal_order() {
+    let mut prepared = Prepared::try_new(capacity()).unwrap();
+    for identities in [[(0, 0), (0, 1), (2, 0)], [(1, 2), (1, 3), (4, 3)]] {
+        let seeds: Vec<_> = identities
+            .into_iter()
+            .map(|(pointer, division)| carmy::DivisionSeed {
+                pointer,
+                division,
+                ..Default::default()
+            })
+            .collect();
+        prepared.index_units(&seeds);
+        for seed in &seeds {
+            let slot = prepared
+                .pointers
+                .binary_search_by_key(&seed.pointer, |&index| seeds[index].pointer)
+                .unwrap();
+            let index = prepared.pointers[slot];
+            assert_eq!(
+                prepared.host_index(&seeds, seed.pointer),
+                prepared.unit_index(&seeds, seeds[index].division, seed.pointer)
+            );
+        }
+    }
+}
+
 const BASE: usize = 0x1000;
 const STATE: usize = 0x2000;
 const GROUP: usize = 0x3000;
@@ -13,6 +82,75 @@ const PROVINCE: usize = 0x9000;
 const DEFINITION: usize = 0xa000;
 const HANDLE: u64 = (7_u64 << 32) | 53;
 const UNIT: u64 = (3_u64 << 32) | 14;
+
+#[test]
+fn primary_memberships_are_prepared_only_for_the_consuming_paradrop_branch() {
+    let image = Image::default();
+    let roots = [corders_group::Root {
+        pointer: GROUP,
+        handle: HANDLE,
+        country: 0,
+    }];
+    let visits = [order::Visit::fixture(PARA, 0, 1)];
+    let groups = [corders_group::PlanRow {
+        group: HANDLE,
+        primary_len: 1,
+        ..Default::default()
+    }];
+    let hosts = AssignedSources::fixture(vec![]);
+    let mut prepared = Prepared::try_new(capacity()).unwrap();
+    let mut memo = ccountry::NativeReferenceMemo::try_with_capacity(0, 0).unwrap();
+    memo.reset(BASE, STATE);
+    for (kind, target, route, demanded) in [
+        (order::TYPE_INVASION, 1, Some(1), false),
+        (order::TYPE_PARADROP, 0, Some(1), false),
+        (order::TYPE_PARADROP, u32::MAX, Some(1), false),
+        (order::TYPE_PARADROP, 1, None, false),
+        (order::TYPE_PARADROP, 1, Some(0), false),
+        (order::TYPE_PARADROP, 1, Some(1), true),
+        (order::TYPE_INVASION, 1, Some(1), false),
+    ] {
+        let rows = [order::Row {
+            owner_group: HANDLE,
+            instance: 1,
+            order_type: kind,
+            paradrop_target: target,
+            ..Default::default()
+        }];
+        let plans = [PlanRow {
+            owner_group: HANDLE,
+            instance: 1,
+            execution: Some(OrderExecutionInputs {
+                route_is_ok: route,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let o = orders(&roots, &visits, &rows);
+        prepared.reset();
+        prepared.base = BASE;
+        prepared.state = STATE;
+        prepared.bound = true;
+        prepared.index_orders(o);
+        prepared.capture_units(
+            &image,
+            BASE,
+            STATE,
+            &[],
+            Outcome::Rows { len: 0 },
+            o,
+            source(&plans, &groups, &[], &[], &hosts),
+            &memo.view(&image, BASE, STATE),
+        );
+        assert_eq!(prepared.units.outcome(), Outcome::Rows { len: 0 });
+        assert_eq!(
+            prepared.membership_error,
+            demanded.then_some("execution primary span incomplete")
+        );
+        assert_eq!(prepared.required.memberships, 0);
+    }
+    assert!(image.reads.borrow().is_empty());
+}
 
 #[derive(Default)]
 struct Image {

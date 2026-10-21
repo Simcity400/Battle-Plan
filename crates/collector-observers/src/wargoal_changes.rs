@@ -35,7 +35,7 @@ static DEMAND: AtomicUsize = AtomicUsize::new(0);
 static READS: AtomicU64 = AtomicU64::new(0);
 static CARRIED: AtomicU64 = AtomicU64::new(0);
 static INVENTORY_BYTES: AtomicUsize = AtomicUsize::new(0);
-static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::new(&[
+static SAMPLED: crate::sampled_verify::Sampled = crate::sampled_verify::Sampled::burned_in(&[
     "a writer-certified war-goal inventory differs from its fresh read",
 ]);
 static CALLS: [AtomicU64; mutations::SITES.len()] =
@@ -111,7 +111,7 @@ pub fn active() -> usize {
     WATCHES.iter().map(WatchRegistry::active).sum()
 }
 pub fn verify(country: u32) -> bool {
-    crate::sampled_verify::current(false).covers(country as u64)
+    crate::sampled_verify::current_burned_in(false).covers(country as u64)
 }
 pub fn verified(mismatch: bool) {
     SAMPLED.record(1, u64::from(mismatch), 0);
@@ -492,6 +492,20 @@ mod tests {
                 assert_ne!(watches.sequence(watch_key(id)), Some(before));
             }
             unsafe { watches.release() };
+        }
+    }
+
+    #[test]
+    fn inventory_verification_uses_the_graduated_rotation() {
+        for hour in [-600, -1, 0, 23, 24, 575, 576, 599] {
+            crate::sampled_verify::begin_hour(hour);
+            for country in 0..5_000 {
+                assert_eq!(
+                    verify(country),
+                    crate::sampled_verify::Check::burned_in(hour, false).covers(u64::from(country)),
+                    "hour {hour}, country {country}"
+                );
+            }
         }
     }
 }

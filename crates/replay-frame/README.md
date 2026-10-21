@@ -8,6 +8,9 @@ filesystem writer, playback derivation or content-reader dependency.
 columns and prepared checkpoints. `branches` owns branch tracking. `envelope`
 owns the existing spool record framing and its size bound, shared by the frame
 encoder and recording writer so an encoded frame keeps its original allocation.
+An update encoded as unchanged advances its baseline hour without applying an
+identical slice or installing identical replacement rows; its unused input is
+retired with the other frame-owned storage after the successful write.
 `rows::with_demand_parts` is the frame-aware fuel-demand join; row definitions
 and codecs belong to replay-data.
 

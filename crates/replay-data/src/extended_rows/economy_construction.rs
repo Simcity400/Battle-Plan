@@ -8,7 +8,7 @@ use super::*;
 /// per-factory efficiencies, truncated as `engine_native::cequipment_production_line::efficiency_average`
 /// computes it; the row shows it rounded to a whole percent, `(efficiency_raw + (1 << 14)) >> 15`.
 /// `max_factories` is the line's maximum factories, the count that average is clamped to; the
-/// per-factory values are not recorded.
+/// per-factory values are retained in ProductionLineModifiers.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ProductionLineRow {
     pub handle: u64,
@@ -26,6 +26,39 @@ pub struct ProductionLineRow {
     pub amount: i32,
     pub max_factories: i32,
     pub efficiency_raw: i64,
+}
+
+impl ProductionLineRow {
+    /// The matching recorded factory prefix's signed native average. The caller
+    /// separately admits the supplying table's completeness. Identity and count
+    /// disagreement, or an incomplete prefix, supplies no candidate.
+    pub fn factory_efficiency(&self, source: &ProductionLineModifiersRow) -> Option<i64> {
+        if (
+            self.handle,
+            self.country,
+            self.variant,
+            self.mio,
+            self.kind,
+            self.active_factories,
+        ) != (
+            source.line,
+            source.country,
+            source.variant,
+            source.organisation,
+            source.kind,
+            source.active_factories,
+        ) {
+            return None;
+        }
+        let count = self.active_factories.min(self.max_factories).max(0);
+        let values = source
+            .factory_efficiencies
+            .get(..usize::try_from(count).ok()?)?;
+        let sum = values
+            .iter()
+            .fold(0_u64, |sum, &value| sum.wrapping_add(value as u64));
+        Some(engine_native::cequipment_production_line::efficiency_average(sum, count))
+    }
 }
 typed_codec!(ProductionLineRow, 64, |row| row.handle as u128, |key| Self { handle: key as u64, ..Default::default() },
  { 0 => (country): U32, 1 => (kind): U8, 2 => (variant): U64, 3 => (mio): U64, 4 => (active_factories): I32, 5 => (requested_factories): I32, 6 => (cost_raw): I64, 7 => (speed_raw): I64, 8 => (produced_raw): I64, 9 => (priority): I32, 10 => (amount): I32, 11 => (max_factories): I32, 12 => (efficiency_raw): I64 }, |_row| Ok(()));

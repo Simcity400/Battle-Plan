@@ -1,10 +1,11 @@
 //! Certified acquisition ownership, with replay projection only on the spool.
 
-use crate::table_conversion::{table, unavailable};
+use crate::table_conversion::unavailable;
+use collector_projection::table_conversion::RowOrder;
 use engine_native::walk::Outcome;
 use replay_data::{
     cadence::SKIPPED_REASON,
-    rows::{self, TableId, tables},
+    rows::{self, RowCodec, TableId, tables},
 };
 use replay_frame::frame::{TableInput, TableView};
 use std::{
@@ -58,28 +59,41 @@ impl AcquiredRows {
         }
     }
     /// The ordinary spool conversion also sorts keys and refuses duplicates.
-    fn project(&self) -> TableView {
+    fn project(&self, order: &mut RowOrder) -> TableView {
         let outcome = Outcome::Rows { len: self.len() };
         match self {
-            Self::Propaganda(rows) => table::<tables::PropagandaEfforts, _>(outcome, rows, |r| {
-                rows::PropagandaEffortRow {
+            Self::Propaganda(rows) => order.table::<tables::PropagandaEfforts, _>(
+                outcome,
+                rows,
+                |r| (u128::from(r.slot) << 64) | u128::from(r.sequence),
+                |r| rows::PropagandaEffortRow {
                     slot: r.slot,
                     country: r.country,
                     sequence: r.sequence,
                     stability: r.stability,
                     war_support: r.war_support,
                     derived_drift: r.derived_drift,
-                }
-            }),
+                },
+            ),
             Self::Contributions(rows) => {
-                table::<tables::IntelContributions, _>(outcome, rows, |r| *r)
+                order.table::<tables::IntelContributions, _>(outcome, rows, RowCodec::key, |r| *r)
             }
-            Self::Sources(rows) => table::<tables::IntelSources, _>(outcome, rows, |r| *r),
-            Self::NetworkAuxiliaries(rows) => {
-                table::<tables::IntelNetworkAuxiliaries, _>(outcome, rows, |r| *r)
+            Self::Sources(rows) => {
+                order.table::<tables::IntelSources, _>(outcome, rows, RowCodec::key, |r| *r)
             }
+            Self::NetworkAuxiliaries(rows) => order.table::<tables::IntelNetworkAuxiliaries, _>(
+                outcome,
+                rows,
+                RowCodec::key,
+                |r| *r,
+            ),
         }
     }
+}
+
+struct ProjectionOrder {
+    rows: Mutex<RowOrder>,
+    bytes: AtomicUsize,
 }
 
 pub(crate) struct Snapshot {
@@ -87,6 +101,7 @@ pub(crate) struct Snapshot {
     acquired: Mutex<Option<AcquiredRows>>,
     acquired_bytes: AtomicUsize,
     projected: OnceLock<TableInput>,
+    ordering: OnceLock<Arc<ProjectionOrder>>,
 }
 impl Snapshot {
     /// Spool only. The joined worker never enters this lock or projection.
@@ -99,15 +114,38 @@ impl Snapshot {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.projected.get().is_none() {
-            let view = acquired
+            let acquired = acquired
                 .as_ref()
-                .expect("acquisition recycled before projection")
-                .project();
+                .expect("acquisition recycled before projection");
+            let mut fresh_order = None;
+            let view = if let Some(order) = self.ordering.get() {
+                let mut rows = order
+                    .rows
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let view = acquired.project(&mut rows);
+                order.bytes.store(rows.allocated_bytes(), Ordering::Relaxed);
+                view
+            } else {
+                let mut rows = RowOrder::default();
+                let view = acquired.project(&mut rows);
+                fresh_order = Some(rows);
+                view
+            };
             // Advisory frame return can fail allocation without stopping
             // capture. Keep the original acquisition for a later spool retry;
             // never cache that failure as an empty/unnamed observation.
             if matches!(&view, TableView::Unavailable { reason } if reason.is_empty()) {
                 return None;
+            }
+            if matches!(&view, TableView::Complete(_))
+                && let Some(rows) = fresh_order
+            {
+                let bytes = AtomicUsize::new(rows.allocated_bytes());
+                let _ = self.ordering.set(Arc::new(ProjectionOrder {
+                    rows: Mutex::new(rows),
+                    bytes,
+                }));
             }
             let input = match view {
                 TableView::Complete(rows) => TableInput::SharedComplete(Arc::new(rows)),
@@ -140,6 +178,9 @@ impl Snapshot {
     }
     fn bytes(&self) -> usize {
         self.acquired_bytes()
+            + self.ordering.get().map_or(0, |order| {
+                size_of::<ProjectionOrder>() + order.bytes.load(Ordering::Relaxed)
+            })
             + match self.projected.get() {
                 Some(TableInput::SharedComplete(rows)) => rows.allocated_bytes(),
                 _ => 0,
@@ -188,6 +229,14 @@ impl RetainedSnapshot {
                     acquired: Mutex::new(Some(acquired)),
                     acquired_bytes: AtomicUsize::new(bytes),
                     projected: OnceLock::new(),
+                    // No worker projection lock or extra handoff allocation.
+                    // If the preceding cut is already projected, lend its
+                    // key-only scratch; otherwise spool prepares it lazily.
+                    ordering: self
+                        .rows
+                        .as_ref()
+                        .and_then(|rows| rows.ordering.get())
+                        .map_or_else(OnceLock::new, |order| OnceLock::from(Arc::clone(order))),
                 });
                 self.rows = Some(Arc::clone(&rows));
                 *shared = Some(rows);

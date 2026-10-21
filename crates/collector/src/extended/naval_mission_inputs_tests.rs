@@ -1277,6 +1277,8 @@ fn ordinary_strict_missions_grow_on_first_and_later_publications() {
             }
         }
         loan = owner.restore_ordinary_request(request, None, parts.map(|part| (part, None)));
+        // Production settles the owned mission operands on FIFO decode before projection.
+        owner.decode_mission_tails();
         let count = count as usize;
         let captured = &owner.naval_mission_inputs;
         assert_eq!(
@@ -1762,4 +1764,116 @@ fn vacant_source_placeholder_owns_no_shared_headquarters_allocation() {
     assert!(captured.empty_headquarters.is_none());
     assert!(captured.mission_headquarters.is_empty() && captured.patrol_headquarters.is_empty());
     assert_eq!(captured.allocated_bytes(), 0);
+}
+
+#[test]
+fn owned_mission_tail_keeps_reordered_weather_and_shared_headquarters_exact() {
+    for count in [0, 1, 1_500, 5_000] {
+        let mut captured = Captured::vacant();
+        captured.weather = (1..=7)
+            .map(|region| {
+                (region, [Value {
+                    raw: i64::from(region),
+                    present: true,
+                }; 9])
+            })
+            .collect();
+        captured.weather_len = captured.weather.len();
+        let mut expected = Vec::new();
+        for index in 0..count {
+            let region = (index % 8) as u32;
+            let additional_range = index % 5 == 0;
+            let patrol_context = index % 11 == 0;
+            let weather = [Value {
+                raw: -17,
+                present: true,
+            }; 9];
+            captured.task_forces.rows.push(TaskForce {
+                row: Operands {
+                    id: index as u64 + 1,
+                    region,
+                    ..Default::default()
+                },
+                weather,
+                additional_range,
+                patrol_context,
+                ..Default::default()
+            });
+            let weather = if !additional_range && !patrol_context && region != 0 {
+                [Value {
+                    raw: i64::from(region),
+                    present: true,
+                }; 9]
+            } else {
+                weather
+            };
+            expected.push(weather.map(|value| (value.raw, value.present)));
+            if !patrol_context {
+                captured.task_index.push((index as u64 + 1, 0));
+            }
+            captured
+                .mission_headquarters
+                .push((index as u64 + 1, Arc::new(vec![index as u64])));
+        }
+        captured
+            .mission_headquarters
+            .push((count as u64 + 1, Arc::new(vec![99])));
+        let expected_heads = captured
+            .task_index
+            .iter()
+            .map(|&(id, _)| (id, Arc::clone(&captured.mission_headquarters[id as usize - 1].1)))
+            .collect::<Vec<_>>();
+        // The range reader can reorder initial mission rows; its own weather
+        // and patrol context must not be replaced by the initial-row fan-out.
+        captured.task_forces.rows.reverse();
+        expected.reverse();
+        captured.task_index.reverse();
+        captured.task_forces.outcome = Outcome::Rows { len: count };
+        captured.weather_pending = true;
+        captured.headquarters_pending = true;
+        captured.decode_owned();
+        assert_eq!(
+            captured.task_forces.rows.iter()
+                .map(|row| row.weather.map(|value| (value.raw, value.present)))
+                .collect::<Vec<_>>(),
+            expected,
+        );
+        assert_eq!(captured.mission_headquarters.len(), expected_heads.len());
+        for ((id, actual), (expected_id, expected)) in
+            captured.mission_headquarters.iter().zip(&expected_heads)
+        {
+            assert_eq!(id, expected_id);
+            assert!(Arc::ptr_eq(actual, expected));
+        }
+        captured.decode_owned();
+        // Dropping an unfinished prune forgets that baseline, not the allocation.
+        captured.headquarters_pending = true;
+        captured.reset();
+        assert!(captured.mission_headquarters.is_empty());
+    }
+}
+
+#[test]
+fn refused_mission_weather_or_headquarters_admission_does_not_settle_partial_state() {
+    let mut captured = Captured::vacant();
+    captured.weather = vec![(1, [Value {
+        raw: 123,
+        present: true,
+    }; 9])];
+    captured.weather_len = 1;
+    captured.task_forces.rows.push(TaskForce {
+        row: Operands {
+            id: 1,
+            region: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    captured.task_forces.outcome = Outcome::Rows { len: 1 };
+    let held = Arc::new(vec![7]);
+    captured.mission_headquarters.push((2, Arc::clone(&held)));
+    // Neither native phase completed: their pending bits were never admitted.
+    captured.decode_owned();
+    assert_eq!(captured.task_forces.rows[0].weather[0].raw, 0);
+    assert!(Arc::ptr_eq(&captured.mission_headquarters[0].1, &held));
 }

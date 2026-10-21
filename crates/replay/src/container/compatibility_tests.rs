@@ -991,7 +991,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             )
         }
     );
-    let changed_tables = [TableId::UnitLeaders];
+    let changed_tables = [TableId::UnitLeaders, TableId::DivisionStatus];
     for table in changed_tables {
         assert!(
             tables.contains(&table),
@@ -999,7 +999,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
         );
         let reason = format!(
             "{table:?} layout or meaning changed at format {}; this recording is format {}",
-            rows::compatibility::EXPERIENCE_FORMAT,
+            rows::compatibility::DAILY_PROGRESS_FORMAT,
             RECORDER_INPUTS_FORMAT
         );
         assert_eq!(replay.format.table_refusal(table).unwrap(), reason);
@@ -1285,8 +1285,11 @@ fn compatibility_land_appends_preserve_old_progress_and_mark_casualties_absent()
 #[test]
 fn compatibility_format91_framing_survives_snapshot_delta_truncation_and_unchanged() {
     let format = FormatVersion::read(91).unwrap();
-    let table = TableId::DivisionStatus;
-    assert_eq!(format.fields(table), 16); // old delta mask was TWO bytes, not three
+    // DivisionStatus now refuses its earlier hourly meaning. AirWings retains
+    // a readable two-byte historical mask and absent appended fields.
+    let table = TableId::AirWings;
+    assert!(format.table_refusal(table).is_none());
+    assert_eq!(format.fields(table), 15);
     let payload = legacy_frame(format, 1000, true);
     let mut decoder = FrameDecoder::new();
     let first = Frame::decode_version(&mut Decoder::new(&payload), None, format).unwrap();
@@ -1298,9 +1301,9 @@ fn compatibility_format91_framing_survives_snapshot_delta_truncation_and_unchang
             1 => {
                 update.extend_from_slice(&(hour - 1).to_le_bytes());
                 update.extend_from_slice(&1_u32.to_le_bytes());
-                update.push(1); // key
-                update.extend_from_slice(&[0, 0x80]); // historical 16-field mask
-                update.push(2); // move_flags += 1, zigzag-encoded
+                update.push(0); // key
+                update.extend_from_slice(&[0, 0x40]); // historical 15-field mask
+                update.push(2); // pool_ordinal += 1, zigzag-encoded
                 update.extend_from_slice(&0_u32.to_le_bytes()); // no deletions
             }
             2 => update.extend_from_slice(&(hour - 1).to_le_bytes()),
@@ -1323,17 +1326,17 @@ fn compatibility_format91_framing_survives_snapshot_delta_truncation_and_unchang
         );
         match status {
             1 => {
-                let rows = decoded.complete::<rows::tables::DivisionStatus>().unwrap();
-                assert_eq!(rows[0].move_flags, 1);
-                assert_eq!(rows[0].border_combat_stats, rows::Recorded::NotRecorded);
+                let rows = decoded.complete::<rows::tables::AirWings>().unwrap();
+                assert_eq!(rows[0].pool_ordinal, 1);
+                assert_eq!(rows[0].name, rows::Recorded::NotRecorded);
             }
             3 => assert!(
-                matches!(&*decoded.tables[table.index()], TableView::Truncated { missing: 5, rows } if rows.rows::<rows::tables::DivisionStatus>().unwrap()[0].border_combat_stats == rows::Recorded::NotRecorded)
+                matches!(&*decoded.tables[table.index()], TableView::Truncated { missing: 5, rows } if rows.rows::<rows::tables::AirWings>().unwrap()[0].name == rows::Recorded::NotRecorded)
             ),
             2 if i == 1 => {
-                let rows = decoded.complete::<rows::tables::DivisionStatus>().unwrap();
-                assert_eq!(rows[0].move_flags, 1);
-                assert_eq!(rows[0].border_combat_stats, rows::Recorded::NotRecorded);
+                let rows = decoded.complete::<rows::tables::AirWings>().unwrap();
+                assert_eq!(rows[0].pool_ordinal, 1);
+                assert_eq!(rows[0].name, rows::Recorded::NotRecorded);
             }
             2 | 4 => assert!(matches!(
                 &*decoded.tables[table.index()],
@@ -1352,7 +1355,7 @@ fn compatibility_format91_framing_survives_snapshot_delta_truncation_and_unchang
             }
         );
         assert!(matches!(
-            &*decoded.tables[TableId::Ships.index()],
+            &*decoded.tables[TableId::Countries.index()],
             TableView::Complete(_)
         ));
     }
@@ -1366,7 +1369,8 @@ fn compatibility_changed_leader_contract_refuses_historical_prefixes() {
         assert_eq!(
             format.table_refusal(table).unwrap(),
             format!(
-                "{table:?} layout or meaning changed at format 104; this recording is format {version}"
+                "{table:?} layout or meaning changed at format {}; this recording is format {version}",
+                rows::compatibility::DAILY_PROGRESS_FORMAT
             )
         );
     }

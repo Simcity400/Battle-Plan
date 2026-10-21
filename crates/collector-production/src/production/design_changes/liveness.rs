@@ -7,11 +7,16 @@ use std::{ops::Range, sync::Arc};
 static ORIGINAL: [AtomicUsize; ORGANISATIONS.len()] =
     [const { AtomicUsize::new(0) }; ORGANISATIONS.len()];
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static DEMANDED: AtomicBool = AtomicBool::new(false);
+pub(super) fn demand(demanded: bool) {
+    DEMANDED.store(demanded, Ordering::Release);
+}
 pub(in crate::production) fn available() -> bool {
     super::enabled()
         && LIVENESS_BASELINE.load(Ordering::Acquire)
         && !RECOVER.load(Ordering::Acquire)
         && !MISSED.load(Ordering::Acquire)
+        && !super::repair::pending()
 }
 pub(super) fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
@@ -124,6 +129,7 @@ pub(super) fn retain(authors: &std::collections::HashSet<u64>) {
     cache.dirty |= before != cache.entries.len();
 }
 pub(super) fn release() {
+    demand(false);
     *cache() = Cache::default();
 }
 fn event(
@@ -159,23 +165,22 @@ fn event(
     });
     Ok(())
 }
-fn registered(memory: &impl Memory, base: usize, pointer: usize) {
+pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
     let Some(store) = STORE.get() else {
         return;
     };
+    let Some(handle) = engine_native::read::<u64>(memory, pointer + organisation::REFERENCE) else {
+        unobserved!();
+        return;
+    };
     let Ok(mut store) = store.try_lock() else {
-        lock_contended();
+        dependency_repair::author(handle, pointer);
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
     let result = (|| {
-        let handle = engine_native::read::<u64>(memory, pointer + organisation::REFERENCE)
-            .ok_or_else(|| {
-                unobserved();
-                "design organisation reference unreadable"
-            })?;
         if !store.interests.organisations.contains_key(&handle) {
             return Ok(());
         }
@@ -200,12 +205,12 @@ fn registered(memory: &impl Memory, base: usize, pointer: usize) {
         store.batch.failure = Some(reason);
     }
 }
-fn retired(memory: &impl Memory, base: usize, pointer: usize) {
+pub(super) fn retired(memory: &impl Memory, base: usize, pointer: usize) {
     let Some(store) = STORE.get() else {
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        lock_contended();
+        dependency_repair::retired_author(pointer);
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
@@ -220,28 +225,12 @@ fn retired(memory: &impl Memory, base: usize, pointer: usize) {
         store.batch.failure = Some(reason);
     }
 }
-fn roster(memory: &impl Memory, base: usize, header: usize) {
-    if !LIVENESS_BASELINE.load(Ordering::Acquire) {
+pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
+    if !LIVENESS_BASELINE.load(Ordering::Acquire) || !DEMANDED.load(Ordering::Acquire) {
         return;
-    }
-    let Some(store) = STORE.get() else {
-        return;
-    };
-    match store.try_lock() {
-        Ok(store)
-            if store.epoch != EPOCH.load(Ordering::Acquire)
-                || store.interests.organisations.is_empty() =>
-        {
-            return;
-        }
-        Ok(_) => {}
-        Err(_) => {
-            unobserved();
-            return;
-        }
     }
     let Some(array) = Array::read(memory, header, 8) else {
-        unobserved();
+        unobserved!();
         return;
     };
     for ordinal in 0..array.count {
@@ -251,9 +240,41 @@ fn roster(memory: &impl Memory, base: usize, header: usize) {
         if let Some(pointer) = pointer {
             registered(memory, base, pointer as usize);
         } else {
-            unobserved();
+            unobserved!();
         }
     }
+}
+pub(super) fn repair(
+    memory: &impl Memory,
+    base: usize,
+    handles: &std::collections::HashSet<u64>,
+    hour: i32,
+    output: &mut Vec<rows::VariantChangeRow>,
+) -> Result<(), &'static str> {
+    let mut store = STORE
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for handle in handles {
+        let resolved = engine_native::creference_registry::resolve(memory, base, *handle)?;
+        store.interests.organisation(*handle, resolved)?;
+        let designs = sources::author_designs(*handle)?;
+        super::super::design_context::author(memory, base, *handle, resolved, &designs)?;
+        change(*handle, resolved.is_some())?;
+        engine_allocation::reserve(output, 1)
+            .map_err(|_| "variant liveness repair allocation failed")?;
+        output.push(rows::VariantChangeRow {
+            sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            hour,
+            organisation: Some(rows::VariantOrganisationChange {
+                organisation: *handle,
+                live: resolved.is_some(),
+            }),
+            ..Default::default()
+        });
+    }
+    Ok(())
 }
 struct Scope {
     complete: bool,
@@ -262,7 +283,7 @@ impl Drop for Scope {
     fn drop(&mut self) {
         REVISION.fetch_add(1, Ordering::AcqRel);
         if !self.complete {
-            unobserved();
+            unobserved!();
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
@@ -275,8 +296,8 @@ unsafe extern "system-unwind" fn callback<const SITE: usize>(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    REVISION.fetch_add(1, Ordering::AcqRel);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
+    REVISION.fetch_add(1, Ordering::AcqRel);
     let mut scope = Scope { complete: false };
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -309,8 +330,8 @@ unsafe extern "system-unwind" fn reconcile(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    REVISION.fetch_add(1, Ordering::AcqRel);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
+    REVISION.fetch_add(1, Ordering::AcqRel);
     let mut scope = Scope { complete: false };
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };

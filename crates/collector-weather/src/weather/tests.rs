@@ -1884,3 +1884,149 @@ fn the_temperature_pass_records_proven_hours_against_the_anchored_words() {
     let third = tracked(&memory(&bytes), 503, &mut tracker);
     assert_eq!(pass(&third).anchor, 503);
 }
+
+#[test]
+fn province_projection_compares_all_owned_fields_without_allocating() {
+    let source = weather_display_memory(None);
+    let (mut captured, _) = weather_display_split(&source, 10);
+    captured.province_modifiers.clear();
+    assert!(
+        captured
+            .province_modifiers
+            .push(Some(&[(1, 17), (2, -19)]), true)
+    );
+    captured.temperature_pass = Some(rows::TemperaturePass {
+        anchor: 10,
+        cursor: 2,
+        anchor_seed: Some(7),
+        hours: vec![Some(8)],
+        checksum: 13,
+    });
+    let native = captured.provinces.rows[0];
+    let previous = captured.province_row(&native);
+    assert!(collector_test_support::with_allocations_denied(|| {
+        captured.province_equal(&native, &previous)
+    }));
+    let changes: &[fn(&mut rows::WeatherProvinceRow)] = &[
+        |row| row.id += 1,
+        |row| row.snow += 1,
+        |row| row.permanent_snow += 1,
+        |row| row.display_snow ^= 1,
+        |row| row.display_mud ^= 1,
+        |row| row.raw_mud = rows::Recorded::NotRecorded,
+        |row| row.temperature = rows::ProvinceTemperature::anchored(Default::default()),
+        |row| row.clock = rows::DayNightClock::UPDATED,
+        |row| row.daylight = rows::Recorded::Value(None),
+        |row| row.modifiers = rows::Recorded::Value(None),
+        |row| {
+            row.modifiers
+                .require_mut("modifiers")
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .entries[0]
+                .value += 1
+        },
+        |row| {
+            row.temperature_pass
+                .require_mut("pass")
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .hours[0] = None
+        },
+        |row| {
+            row.display
+                .require_mut("display")
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .edges[0] ^= 1
+        },
+        |row| {
+            row.display
+                .require_mut("display")
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .refresh_identity ^= 1
+        },
+    ];
+    for (index, change) in changes.iter().enumerate() {
+        let mut changed = previous.clone();
+        change(&mut changed);
+        assert_ne!(changed, previous, "fixture change {index}");
+        assert!(
+            !collector_test_support::with_allocations_denied(|| {
+                captured.province_equal(&native, &changed)
+            }),
+            "field {index}"
+        );
+    }
+    let mut other = native;
+    other.id = 1;
+    captured.clocks_updated = true;
+    let previous = captured.province_row(&other);
+    assert!(collector_test_support::with_allocations_denied(|| {
+        captured.province_equal(&other, &previous)
+    }));
+}
+
+#[test]
+fn province_projection_matches_complete_frames_across_changes_and_keyframes() {
+    use collector_projection::projection::{Projection, ProjectionScratch};
+    use replay_frame::frame::{FrameEncoder, FrameInput, Metrics, TableInput};
+    let source = weather_display_memory(None);
+    let (mut captured, _) = weather_display_split(&source, 10);
+    let mut complete = FrameEncoder::new();
+    let mut projected = FrameEncoder::new();
+    let scratch = ProjectionScratch::default();
+    for hour in 0..8 {
+        if hour == 2 {
+            captured.provinces.rows[0].snow += 1;
+        }
+        if hour == 3 {
+            captured.province_modifiers.clear();
+        }
+        if hour == 4 {
+            captured.clocks_updated = !captured.clocks_updated;
+        }
+        if hour == 5 {
+            captured.provinces.outcome = Outcome::Truncated {
+                len: 1,
+                unread_rows: 1,
+            };
+        }
+        if hour == 6 {
+            captured.provinces.outcome = Outcome::Rows { len: 1 };
+        }
+        let force = hour == 7;
+        let frame = |values: [TableInput; N]| {
+            let mut tables = std::array::from_fn(|_| {
+                crate::table_conversion::unavailable("fixture table").into()
+            });
+            for (table, value) in TABLES.into_iter().zip(values) {
+                tables[table.index()] = value;
+            }
+            FrameInput {
+                branch: 1,
+                hour,
+                tables,
+                metrics: Metrics::default(),
+            }
+        };
+        let expected = complete
+            .encode_input(frame(captured.tables().map(Into::into)), force)
+            .unwrap();
+        let mut projection = Projection::new(&projected, 1, hour, force, &scratch);
+        let inputs = captured.table_inputs(Some(&mut projection));
+        if hour == 1 {
+            assert!(matches!(inputs[1], TableInput::ComparedEqual(_)));
+        }
+        assert_eq!(
+            projected.encode_input(frame(inputs), force).unwrap(),
+            expected,
+            "hour {hour}"
+        );
+    }
+}

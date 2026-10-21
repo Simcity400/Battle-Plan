@@ -650,16 +650,15 @@ fn reseed_organisation_owner(
     definition: &cequipment_variant::DefinitionRow<Arc<rows::VariantDesignState>>,
 ) -> Result<Option<u32>, &'static str> {
     let state = &definition.design;
-    if definition.organisation_pointer.is_some()
-        || state.design_team == 0
-        || !state.design_team_serialized
-    {
+    if definition.organisation_pointer.is_some() || state.design_team == 0 {
         return organisation_owner(memory, base, definition);
     }
     // A carried design deliberately has no visit-local organisation pointer.
     // Context recovery resolves only that reached raw author, not the design.
-    if state.design_team as u32
-        != engine_production::nindustrial_organisation_corganisation::REFERENCE_TYPE_ID
+    // A frozen negative lookup is not proof of current author liveness.
+    if state.design_team_serialized
+        && state.design_team as u32
+            != engine_production::nindustrial_organisation_corganisation::REFERENCE_TYPE_ID
     {
         return Err("design organisation owner has wrong reference kind");
     }
@@ -897,6 +896,39 @@ pub(super) fn event(
     }
     Ok(())
 }
+/// Current author liveness can change its country demand independently of the
+/// frozen design lookup witness. Reuse the boundary's resolved raw reference.
+pub(super) fn author(
+    memory: &impl Memory,
+    base: usize,
+    handle: u64,
+    pointer: Option<usize>,
+    designs: &[u64],
+) -> Result<(), &'static str> {
+    let mut cache = cache();
+    if !cache.seeded || cache.failure.is_some() {
+        return Ok(());
+    }
+    let result = (|| {
+        let owner = pointer
+            .map(|pointer| organisation_owner_at(memory, base, handle, pointer))
+            .transpose()?
+            .flatten();
+        for id in designs {
+            if cache.designs.contains_key(id) {
+                cache.replace_organisation(*id, owner)?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(reason) = result {
+        cache.snapshot = None;
+        cache.failure = Some(reason);
+        cache.failures = cache.failures.saturating_add(1);
+    }
+    Ok(())
+}
+
 pub(super) fn capture(memory: &impl Memory, base: usize) -> Result<Snapshots, &'static str> {
     let _reads = read_accounting::table(TableId::DesignCountryModifiers);
     let result = capture_inner(memory, base);
@@ -1104,6 +1136,72 @@ mod tests {
         assert!(cache.organisation_demands.is_empty());
         assert!(cache.template_demands.is_empty());
         assert!(cache.template_dirty.is_empty());
+    }
+    #[test]
+    fn repaired_author_context_rederives_every_dependant_without_changing_creator_demand() {
+        use engine_production::nindustrial_organisation_corganisation as organisation;
+        let handle = (123u64 << 32) | u64::from(organisation::REFERENCE_TYPE_ID);
+        let mut bytes = vec![0; (organisation::OWNER + 4).max(organisation::REFERENCE + 8)];
+        bytes[..8].copy_from_slice(&(organisation::VTABLE_RVA as u64).to_le_bytes());
+        bytes[organisation::REFERENCE..organisation::REFERENCE + 8]
+            .copy_from_slice(&handle.to_le_bytes());
+        bytes[organisation::OWNER..organisation::OWNER + 4]
+            .copy_from_slice(&4_998u32.to_le_bytes());
+        {
+            let mut cache = cache();
+            for id in [1, 2] {
+                cache.replace(id, 5_000, vec![1]).unwrap();
+                cache.replace_organisation(id, Some(4_999)).unwrap();
+            }
+            cache.seeded = true;
+        }
+        let memory = engine_native::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        author(&memory, 0, handle, Some(0x1000), &[1, 2]).unwrap();
+        {
+            let cache = cache();
+            assert_eq!(cache.organisation_demands[&1], 4_998);
+            assert_eq!(cache.organisation_demands[&2], 4_998);
+            assert_eq!(cache.countries[&4_998][&ORGANISATION_CHANGE_FACTOR], 2);
+            assert!(!cache.countries.contains_key(&4_999));
+            assert_eq!(cache.template_demands[&5_000], 2);
+        }
+        author(&memory, 0, handle, None, &[1, 2]).unwrap();
+        let cache = cache();
+        assert!(cache.organisation_demands.is_empty());
+        assert!(!cache.countries.contains_key(&4_998));
+        assert_eq!(cache.template_demands[&5_000], 2);
+    }
+    #[test]
+    fn carried_context_authors_recheck_current_liveness_after_a_frozen_negative_lookup() {
+        use engine_production::nindustrial_organisation_corganisation as organisation;
+        struct Roots(std::cell::Cell<usize>);
+        impl Memory for Roots {
+            fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
+                assert_eq!(
+                    address,
+                    engine_native::creference_registry::LOW_ROOTS_RVA
+                        + organisation::REFERENCE_TYPE_ID as usize * 8
+                );
+                assert_eq!(bytes.len(), 8);
+                self.0.set(self.0.get() + 1);
+                bytes.fill(0);
+                true
+            }
+        }
+        let memory = Roots(std::cell::Cell::new(0));
+        let definition = cequipment_variant::DefinitionRow {
+            design: Arc::new(rows::VariantDesignState {
+                design_team: (123u64 << 32) | u64::from(organisation::REFERENCE_TYPE_ID),
+                design_team_serialized: false,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(reseed_organisation_owner(&memory, 0, &definition), Ok(None));
+        assert_eq!(memory.0.get(), 1);
     }
     #[test]
     fn carried_context_authors_refuse_the_wrong_kind_before_any_registry_read() {

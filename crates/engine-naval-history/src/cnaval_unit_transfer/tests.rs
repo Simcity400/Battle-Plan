@@ -416,6 +416,8 @@ fn batched_transport_speeds_equal_each_single_query() {
         variant(&mut m);
         // One cache serves every owner of the hour, as capture shares it.
         let mut cache = SpeedCache::default();
+        let mut input_cache = SpeedCache::default();
+        let mut owned = Vec::new();
         for (owner, wanted) in [(1, &[0, 1, 2][..]), (2, &[2, 0]), (7, &[1]), (1, &[1, 2])] {
             let mut batched = Vec::new();
             movement_speeds(
@@ -436,6 +438,16 @@ fn batched_transport_speeds_equal_each_single_query() {
                 })
                 .collect();
             assert_eq!(batched, single, "variant {index}, owner {owner}");
+            let mut inputs = Vec::new();
+            movement_speeds_inputs(&m, 0, 0x1000, owner, &regions, wanted, &mut input_cache,
+                |region, input| inputs.push((region, input)));
+            owned.push((inputs, single));
+        }
+        drop(m);
+        for (inputs, expected) in owned {
+            assert_eq!(inputs.into_iter().map(|(region, input)|
+                (region, input.map(SpeedInputs::evaluate))).collect::<Vec<_>>(), expected,
+                "variant {index}: transport evaluation uses only owned operands");
         }
     }
     // The fixture's own answers: one speed, one region-local operand

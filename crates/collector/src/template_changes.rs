@@ -62,6 +62,7 @@ fn same_hq_source(held: HqSource, current: HqSource) -> bool {
 }
 
 const SITES: usize = MUTATIONS.len();
+const UNIT_TYPE_SITE: usize = 23;
 static WATCHES: Watches = Watches::new();
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
@@ -89,6 +90,7 @@ static HQ_GROUPS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; SITES],
+    unchanged_unit_type_writes: AtomicU64,
 }
 
 impl Watches {
@@ -96,6 +98,7 @@ impl Watches {
         Self {
             registry: WatchRegistry::new(),
             calls: [const { AtomicU64::new(0) }; SITES],
+            unchanged_unit_type_writes: AtomicU64::new(0),
         }
     }
 
@@ -105,6 +108,33 @@ impl Watches {
     pub(crate) fn notify(&self, template: usize, site: usize) -> Notification<'_> {
         self.calls[site].fetch_add(1, Ordering::Relaxed);
         self.registry.notify(template)
+    }
+
+    fn unit_type_notification(
+        &self,
+        memory: &impl Memory,
+        data: usize,
+        value: usize,
+    ) -> Option<Notification<'_>> {
+        self.calls[UNIT_TYPE_SITE].fetch_add(1, Ordering::Relaxed);
+        let template = data.checked_sub(DATA).filter(|&pointer| pointer != 0);
+        let unchanged = template.is_some()
+            && data
+                .checked_add(
+                    engine_native::creferenced_division_template::UNIT_TYPE_OVERRIDE - DATA,
+                )
+                .and_then(|at| engine_native::read::<u32>(memory, at))
+                == Some(value as u32);
+        if unchanged {
+            self.unchanged_unit_type_writes
+                .fetch_add(1, Ordering::Relaxed);
+            None
+        } else {
+            Some(match template {
+                Some(template) => self.registry.notify(template),
+                None => self.registry.notify_every(),
+            })
+        }
     }
 
     /// An enabled domain with a table for `objects` receivers installed.
@@ -307,6 +337,7 @@ pub fn status() -> impl serde::Serialize {
         "verified_keys": reads[2],
         "mismatches": reads[3],
         "quiet_hours": reads[4],
+        "unchanged_unit_type_writes": WATCHES.unchanged_unit_type_writes.load(Ordering::Relaxed),
         "events": events,
         "watches": WATCHES.registry.status(),
         "hq_source_bytes": HQ_SOURCE_BYTES.load(Ordering::Relaxed),
@@ -553,7 +584,25 @@ callback!(set_template_model_category, 19);
 callback!(set_regimental_support_cell, 20);
 callback!(set_regimental_support_cell_and_rebuild, 21);
 callback!(set_template_priority, 22);
-callback!(set_template_unit_type, 23);
+unsafe extern "system-unwind" fn set_template_unit_type(
+    first: usize,
+    second: usize,
+    third: usize,
+    fourth: usize,
+) -> usize {
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::TemplateChanges);
+    // UNIT_TYPE_OVERRIDE is this setter's only store. Even an unchanged store
+    // excludes acquisition until the original returns normally.
+    let running = ManuallyDrop::new(WATCHES.registry.running());
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let notification = ManuallyDrop::new(WATCHES.unit_type_notification(&memory, first, second));
+    let original: NativeFunction =
+        unsafe { std::mem::transmute(ORIGINAL[UNIT_TYPE_SITE].load(Ordering::Acquire)) };
+    let result = timing.original(|| unsafe { original(first, second, third, fourth) });
+    drop(ManuallyDrop::into_inner(notification));
+    drop(ManuallyDrop::into_inner(running));
+    result
+}
 callback!(toggle_template_variant, 24);
 callback!(rebuild_template_ai_role, 25);
 callback!(resize_template_grids, 26);
@@ -748,6 +797,133 @@ callback!(set_garrison_priority, 55);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_type_stores_preserve_quiet_only_for_a_readable_unchanged_word() {
+        struct Word {
+            address: Option<usize>,
+            value: Option<u32>,
+            reads: std::cell::Cell<usize>,
+        }
+        impl Memory for Word {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                self.reads.set(self.reads.get() + 1);
+                assert_eq!(Some(at), self.address);
+                assert_eq!(output.len(), 4);
+                let Some(value) = self.value else {
+                    return false;
+                };
+                output.copy_from_slice(&value.to_le_bytes());
+                true
+            }
+        }
+        for (data, before, unchanged) in [
+            (0x1000 + DATA, Some(7), true),
+            (0x1000 + DATA, Some(8), false),
+            (0x1000 + DATA, None, false),
+            (usize::MAX, Some(7), false),
+            (0, Some(7), false),
+            (DATA - 1, Some(7), false),
+            (DATA, Some(7), false),
+        ] {
+            let watches = Watches::enabled(4);
+            let template = data.checked_sub(DATA).filter(|&pointer| pointer != 0);
+            let receiver = template.unwrap_or(0x1000);
+            let sequence = watches.registry.sequence(receiver).unwrap();
+            let other = watches.registry.sequence(0x2000).unwrap();
+            let quiet = watches.registry.quiet().unwrap();
+            let memory = Word {
+                address: data.checked_add(
+                    engine_native::creferenced_division_template::UNIT_TYPE_OVERRIDE - DATA,
+                ),
+                value: before,
+                reads: Default::default(),
+            };
+            let running = watches.registry.running();
+            crate::test_support::with_allocations_denied(|| {
+                let notification =
+                    watches.unit_type_notification(&memory, data, 0xabcd_0000_0000_0007);
+                assert_eq!(notification.is_none(), unchanged);
+                assert!(watches.registry.quiet().is_none());
+                assert!(watches.registry.sequence(receiver).is_none());
+                drop(notification);
+            });
+            assert!(watches.registry.quiet().is_none());
+            drop(running);
+            assert_eq!(
+                watches.registry.sequence(receiver) == Some(sequence),
+                unchanged
+            );
+            assert_eq!(watches.registry.quiet() == Some(quiet), unchanged);
+            assert_eq!(
+                watches.registry.sequence(0x2000) == Some(other),
+                template.is_some()
+            );
+            assert_eq!(watches.calls[UNIT_TYPE_SITE].load(Ordering::Relaxed), 1);
+            assert_eq!(
+                watches.unchanged_unit_type_writes.load(Ordering::Relaxed),
+                u64::from(unchanged)
+            );
+            assert_eq!(
+                memory.reads.get(),
+                usize::from(template.is_some() && memory.address.is_some())
+            );
+        }
+    }
+
+    #[test]
+    fn unit_type_callback_preserves_arguments_return_and_in_flight_exclusion() {
+        unsafe extern "system-unwind" fn original(a: usize, b: usize, c: usize, d: usize) -> usize {
+            assert_eq!([c, d], [0x1234_5678_9abc_def0, usize::MAX - 11]);
+            assert!(WATCHES.registry.quiet().is_none());
+            assert!(WATCHES.registry.sequence(a - DATA).is_none());
+            unsafe {
+                std::ptr::write_unaligned(
+                    (a + engine_native::creferenced_division_template::UNIT_TYPE_OVERRIDE - DATA)
+                        as *mut u32,
+                    b as u32,
+                );
+            }
+            a.rotate_left(7) ^ b.rotate_left(19) ^ c.rotate_left(31) ^ d.rotate_left(43)
+        }
+        struct Restore(usize);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ORIGINAL[UNIT_TYPE_SITE].store(self.0, Ordering::Release);
+            }
+        }
+        let _restore = Restore(
+            ORIGINAL[UNIT_TYPE_SITE].swap(original as *const () as usize, Ordering::AcqRel),
+        );
+        let mut bytes = [0; engine_native::creferenced_division_template::UNIT_TYPE_OVERRIDE + 4];
+        bytes[engine_native::creferenced_division_template::UNIT_TYPE_OVERRIDE..]
+            .copy_from_slice(&7_u32.to_le_bytes());
+        let pointer = bytes.as_mut_ptr() as usize;
+        WATCHES.registry.offer(4);
+        WATCHES.registry.boundary(false);
+        WATCHES.registry.set_enabled(true);
+        for (value, unchanged) in [(0xabcd_0000_0000_0007, true), (9, false)] {
+            let quiet = WATCHES.registry.quiet().unwrap();
+            let sequence = WATCHES.registry.sequence(pointer).unwrap();
+            let a = pointer + DATA;
+            let c = 0x1234_5678_9abc_def0_usize;
+            let d = usize::MAX - 11;
+            assert_eq!(
+                unsafe { set_template_unit_type(a, value, c, d) },
+                a.rotate_left(7) ^ value.rotate_left(19) ^ c.rotate_left(31) ^ d.rotate_left(43)
+            );
+            assert_eq!(WATCHES.registry.quiet() == Some(quiet), unchanged);
+            assert_eq!(
+                WATCHES.registry.sequence(pointer) == Some(sequence),
+                unchanged
+            );
+        }
+        assert_eq!(WATCHES.calls[UNIT_TYPE_SITE].load(Ordering::Relaxed), 2);
+        assert_eq!(
+            WATCHES.unchanged_unit_type_writes.load(Ordering::Relaxed),
+            1
+        );
+    }
 
     #[test]
     fn occupation_holder_callbacks_forward_real_certificates_and_template_admission() {

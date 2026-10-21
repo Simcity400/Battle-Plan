@@ -514,6 +514,32 @@ pub fn capture_share(
     base_speed: i64,
     scratch: &mut Scratch,
 ) -> Speed {
+    observe(
+        memory, base, game, sources, army, handle, base_speed, scratch, [0; 4],
+    )?
+    .compute(scratch)
+}
+
+#[derive(Clone, Copy)]
+struct Observation {
+    context: ContextRow,
+    base_speed: i64,
+    slowest: i64,
+    starts: [usize; 4],
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observe(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    sources: &mut Sources,
+    army: usize,
+    handle: u64,
+    base_speed: i64,
+    scratch: &mut Scratch,
+    starts: [usize; 4],
+) -> Result<Observation, &'static str> {
     let context = super::capture_context_buffer(
         memory,
         base,
@@ -521,11 +547,11 @@ pub fn capture_share(
         sources,
         army,
         handle,
-        Buffer::Growing(&mut scratch.modifiers),
-        Buffer::Growing(&mut scratch.supply),
-        Buffer::Growing(&mut scratch.acclimatization),
+        Buffer::GrowingFrom(&mut scratch.modifiers, starts[0]),
+        Buffer::GrowingFrom(&mut scratch.supply, starts[1]),
+        Buffer::GrowingFrom(&mut scratch.acclimatization, starts[2]),
         &mut scratch.transport,
-        0,
+        starts[3],
     )?;
     let slowest = sources.field::<i64>(
         memory,
@@ -533,26 +559,115 @@ pub fn capture_share(
         SLOWEST_SPEED_RVA,
         "the SLOWEST_SPEED define is unreadable",
     )?;
-    let terms = Terms {
-        context: &context,
-        modifiers: scratch
-            .modifiers
-            .get(..context.modifier_count)
-            .ok_or("reinforcement modifier prefix exceeds its buffer")?,
-        supply: scratch
-            .supply
-            .get(..context.supply_term_count)
-            .ok_or("reinforcement supply prefix exceeds its buffer")?,
-        acclimatization: scratch
-            .acclimatization
-            .get(..context.acclimatization_count)
-            .ok_or("reinforcement acclimatization prefix exceeds its buffer")?,
-        transport: scratch
-            .transport
-            .get(..context.transport_term_count)
-            .ok_or("reinforcement transport prefix exceeds its buffer")?,
-    };
-    speed_share(base_speed, movement_factor(&terms)?, slowest)
+    Ok(Observation {
+        context,
+        base_speed,
+        slowest,
+        starts,
+    })
+}
+
+impl Observation {
+    fn counts(&self) -> [usize; 4] {
+        [
+            self.context.modifier_count,
+            self.context.supply_term_count,
+            self.context.acclimatization_count,
+            self.context.transport_term_count,
+        ]
+    }
+
+    fn compute(&self, scratch: &Scratch) -> Speed {
+        let context = &self.context;
+        let span = |index: usize| {
+            self.starts[index]
+                .checked_add(self.counts()[index])
+                .map(|end| self.starts[index]..end)
+        };
+        let terms = Terms {
+            context,
+            modifiers: scratch
+                .modifiers
+                .get(span(0).ok_or("reinforcement modifier prefix exceeds its buffer")?)
+                .ok_or("reinforcement modifier prefix exceeds its buffer")?,
+            supply: scratch
+                .supply
+                .get(span(1).ok_or("reinforcement supply prefix exceeds its buffer")?)
+                .ok_or("reinforcement supply prefix exceeds its buffer")?,
+            acclimatization: scratch
+                .acclimatization
+                .get(span(2).ok_or("reinforcement acclimatization prefix exceeds its buffer")?)
+                .ok_or("reinforcement acclimatization prefix exceeds its buffer")?,
+            transport: scratch
+                .transport
+                .get(span(3).ok_or("reinforcement transport prefix exceeds its buffer")?)
+                .ok_or("reinforcement transport prefix exceeds its buffer")?,
+        };
+        speed_share(self.base_speed, movement_factor(&terms)?, self.slowest)
+    }
+}
+
+/// Flat owned operands of the reserves reached by one acquisition pass.
+#[derive(Default)]
+pub struct Observations {
+    scratch: Scratch,
+    rows: Vec<Observation>,
+    used: [usize; 4],
+}
+
+impl Observations {
+    pub fn reset(&mut self) {
+        self.rows.clear();
+        self.used = [0; 4];
+    }
+
+    pub fn allocated_bytes(&self) -> usize {
+        self.scratch.allocated_bytes() + self.rows.capacity() * size_of::<Observation>()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn acquire(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game: usize,
+        sources: &mut Sources,
+        army: usize,
+        handle: u64,
+        base_speed: i64,
+    ) -> Result<usize, &'static str> {
+        let row = observe(
+            memory,
+            base,
+            game,
+            sources,
+            army,
+            handle,
+            base_speed,
+            &mut self.scratch,
+            self.used,
+        )?;
+        let mut used = self.used;
+        for (end, count) in used.iter_mut().zip(row.counts()) {
+            *end = end
+                .checked_add(count)
+                .ok_or("reinforcement observation length overflow")?;
+        }
+        crate::allocation::reserve(&mut self.rows, 1)
+            .map_err(|_| "reinforcement observation allocation failed")?;
+        let index = self.rows.len();
+        self.rows.push(row);
+        self.used = used;
+        Ok(index)
+    }
+
+    /// No Memory capability; every term belongs to this observation's prefix.
+    pub fn compute(&self, index: usize) -> Speed {
+        self.rows
+            .get(index)
+            .ok_or("reinforcement observation index outside its rows")?
+            .compute(&self.scratch)
+    }
 }
 
 #[cfg(test)]

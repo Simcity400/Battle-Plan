@@ -616,6 +616,14 @@ fn variant_observed_edits_replace_only_the_changed_design_and_keep_last_edit() {
         }),
         ..Default::default()
     };
+    let equal = [snapshot(b"")];
+    let projection = Projection::new(&encoder, 1, 1, false, &scratch);
+    assert!(matches!(
+        collector_test_support::with_allocations_denied(|| {
+            project_definitions(&equal, Some(&projection))
+        }),
+        TableInput::ComparedEqual(_)
+    ));
     let history = [
         snapshot(b"first"),
         rows::VariantChangeRow {
@@ -655,6 +663,7 @@ fn variant_observed_edits_replace_only_the_changed_design_and_keep_last_edit() {
     assert_eq!(rows[36].display_name, b"last");
     assert!(rows[35].display_name.is_empty());
     let flags = Captured {
+        repaired: 0,
         rows: vec![history[2].clone()],
         outcome: Outcome::Rows { len: 1 },
         heap_bytes: 0,
@@ -678,6 +687,7 @@ fn variant_observed_edits_replace_only_the_changed_design_and_keep_last_edit() {
 #[test]
 fn variant_frame_reset_withdraws_old_observations_and_keeps_reusable_storage() {
     let mut captured = Captured {
+        repaired: 0,
         rows: vec![rows::VariantChangeRow {
             sequence: 1,
             hour: 7,
@@ -910,9 +920,9 @@ fn variant_rejected_scalar_rechecks_saved_membership_after_an_admitted_move() {
         .watched
         .contains_key(&destination);
     let before_store_missed = MISSED.swap(false, Ordering::AcqRel);
-    // The admitted move also detects its latched receiver conflict after
-    // rebinding. Clear that verdict/mark to prove the rejected writer still
-    // performs its own saved-membership recheck after its original returns.
+    // Discard the move's earlier verdict/marks to prove the rejected writer
+    // still marks its rebound saved receiver after its original returns.
+    repair::take(&mut Batch::empty()).unwrap();
     STORE
         .get()
         .unwrap()
@@ -934,7 +944,7 @@ fn variant_rejected_scalar_rechecks_saved_membership_after_an_admitted_move() {
         let store = STORE.get().unwrap().lock().unwrap();
         assert_eq!(store.batch.failure, None);
         assert_eq!(store.batch.events.len(), 3);
-        assert!(store.watched[&destination].dirty);
+        assert!(repair::pending());
         let event = store.batch.events.last().unwrap();
         assert_eq!(event.pointer, destination);
         assert!(!event.removed);
@@ -949,12 +959,151 @@ fn variant_rejected_scalar_rechecks_saved_membership_after_an_admitted_move() {
             Some(1)
         );
     }
-    assert_eq!(
-        drain(space.base, 7, &mut Vec::new()),
-        Err("variant change interval has an unobserved or running writer")
-    );
-    assert_eq!(status().missed_refusals, 1);
+    assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(1));
+    assert_eq!(status().missed_refusals, 0);
     assert_eq!(status().running_refusals, 0);
 }
 
 mod concurrency;
+
+#[test]
+fn variant_membership_projection_keeps_terminal_rows_and_checks_every_occurrence() {
+    let baseline: Vec<_> = (1..=5_000)
+        .map(|variant| rows::VariantUpgradeRow {
+            variant,
+            source_ordinal: 0,
+            definition_token: 17,
+            level: 1,
+        })
+        .collect();
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
+    let mut first = input(0);
+    first.tables[TableId::VariantUpgrades.index()] =
+        TableView::Complete(rows::TableRows::VariantUpgrades(baseline.clone())).into();
+    encoder.encode_input(first, false).unwrap();
+    let event = |variant, levels: &[u8]| rows::VariantChangeRow {
+        variant,
+        snapshot: Some(rows::VariantSnapshot {
+            definition: rows::VariantDefinitionRow {
+                id: variant,
+                ..Default::default()
+            }
+            .into(),
+            upgrades: levels
+                .iter()
+                .enumerate()
+                .map(|(index, &level)| rows::VariantSnapshotUpgrade {
+                    ordinal: index as u32,
+                    definition_token: 17,
+                    level,
+                })
+                .collect(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let history = [
+        event(37, &[2, 3]),
+        rows::VariantChangeRow {
+            variant: 3,
+            removed: true,
+            ..Default::default()
+        },
+        event(37, &[4]),
+        event(5_001, &[5, 6]),
+        event(2, &[]),
+        event(3, &[7]),
+    ];
+    let make = |snapshot: &rows::VariantSnapshot| {
+        engine_allocation::collect_vec(snapshot.upgrades.iter().map(|row| {
+            rows::VariantUpgradeRow {
+                variant: snapshot.definition.id,
+                source_ordinal: row.ordinal,
+                definition_token: row.definition_token,
+                level: row.level,
+            }
+        }))
+    };
+    let mut expected = baseline;
+    for event in &history {
+        expected.retain(|row| row.variant != event.variant);
+        if !event.removed {
+            expected.extend(make(event.snapshot.as_ref().unwrap()).unwrap());
+        }
+    }
+    expected.sort_unstable_by_key(rows::RowCodec::key);
+    let scratch = crate::projection::ProjectionScratch::default();
+    for force in [false, true] {
+        let projection = Projection::new(&encoder, 1, 1, force, &scratch);
+        let result =
+            apply::<tables::VariantUpgrades>(&history, Some(&projection), |row| row.variant, make);
+        assert!(
+            matches!(result, TableInput::Sampled(TableView::Complete(ref rows))
+            if rows.rows::<tables::VariantUpgrades>() == Some(expected.as_slice()))
+        );
+    }
+    let projection = Projection::new(&encoder, 1, 1, true, &scratch);
+    let bad = [
+        rows::VariantChangeRow {
+            variant: 37,
+            ..Default::default()
+        },
+        rows::VariantChangeRow {
+            variant: 37,
+            removed: true,
+            ..Default::default()
+        },
+    ];
+    assert!(
+        matches!(apply::<tables::VariantUpgrades>(&bad, Some(&projection), |row| row.variant, make),
+        TableInput::Sampled(TableView::Unavailable { reason })
+        if reason == "variant changes have an incomplete observation")
+    );
+}
+
+#[test]
+fn reused_definition_edits_keep_intermediate_validation_refusals() {
+    let mut encoder = replay_frame::frame::FrameEncoder::new();
+    let mut first = input(0);
+    first.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(rows::TableRows::VariantDefinitions(vec![
+            rows::VariantDefinitionRow {
+                id: 37,
+                design: rows::Recorded::Value(rows::VariantDesignState::default()),
+                ..Default::default()
+            },
+        ]))
+        .into();
+    encoder.encode_input(first, false).unwrap();
+    let source = |direct| rows::VariantChangeRow {
+        variant: 37,
+        sources: Some(rows::VariantSourceReferences {
+            direct,
+            named: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    let scratch = crate::projection::ProjectionScratch::default();
+    let projection = Projection::new(&encoder, 1, 1, false, &scratch);
+    for next in [
+        rows::VariantChangeRow {
+            variant: 37,
+            scalar: Some(Default::default()),
+            ..Default::default()
+        },
+        source(vec![1]),
+    ] {
+        let scalar = next.scalar.is_some();
+        let result =
+            project_definitions(&[source(vec![0]), next, source(vec![1])], Some(&projection));
+        let expected = if scalar {
+            "variant scalar projection allocation failed"
+        } else {
+            "variant source change allocation failed"
+        };
+        assert!(
+            matches!(result, TableInput::Sampled(TableView::Unavailable { reason })
+            if reason == expected)
+        );
+    }
+}

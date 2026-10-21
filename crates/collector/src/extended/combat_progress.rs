@@ -8,7 +8,16 @@ use replay_data::{
     rows::LandCombatProgressRow, rows::LandEquipmentLoss, rows::TableId, rows::tables,
 };
 use replay_frame::frame::TableView;
-use std::mem::size_of;
+use std::{mem::size_of, sync::Mutex};
+
+// Acquisition, not spool state: every rotating frame sees the most recent
+// complete daily values. Each payload owns its resolved rows before resuming.
+#[derive(Default)]
+struct DailyObservers {
+    rows: Vec<replay_data::rows::CombatLogObserverRow>,
+    charge: crate::raw_memory::Charge,
+}
+static DAILY_OBSERVERS: Mutex<Option<DailyObservers>> = Mutex::new(None);
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::LandCombatProgress, TableId::CombatLogObservers];
@@ -67,6 +76,8 @@ pub struct Captured {
     failure: Option<&'static str>,
     observers: Vec<replay_data::rows::CombatLogObserverRow>,
     observer_failure: Option<&'static str>,
+    daily_refresh: bool,
+    daily_previous: Option<DailyObservers>,
 }
 
 impl Captured {
@@ -85,6 +96,8 @@ impl Captured {
             failure: None,
             observers: Vec::new(),
             observer_failure: None,
+            daily_refresh: true,
+            daily_previous: None,
         }
     }
     pub fn reset(&mut self) {
@@ -112,7 +125,35 @@ impl Captured {
         grow_vec(&mut self.pointers, capacity.variants);
         grow_vec(&mut self.identities, capacity.variants);
     }
+    pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
+        self.daily_refresh = force_full
+            || replay_data::cadence::Cadence::Daily(replay_data::cadence::COMBAT_LOG_NUMERIC_SLOT)
+                .is_refresh(hour);
+        if self.daily_refresh
+            && let Some(previous) = DAILY_OBSERVERS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
+        {
+            // Revoke before dispatch, even if this worker is rejected. Retain
+            // the allocation for the next native acquisition to reuse.
+            previous.rows.clear();
+        }
+    }
+
     pub fn begin(&mut self) {
+        // World acquisitions finish before the hourly original resumes. Taking
+        // the preceding census also makes an abandoned acquisition lose its carry.
+        let previous = DAILY_OBSERVERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        self.daily_previous = previous;
+        if self.daily_refresh
+            && let Some(previous) = &mut self.daily_previous
+        {
+            previous.rows.clear();
+        }
         self.equipment.reset();
         self.len = 0;
         self.failure = None;
@@ -195,30 +236,58 @@ impl Captured {
         if self.observer_failure.is_none() {
             for (side, pointer) in source.sides.into_iter().enumerate() {
                 let mut storage = Ok(());
-                let read = engine_land_inputs::combat_log_events::observer(
-                    memory,
-                    base,
-                    pointer,
-                    &mut |fact| {
-                        if storage.is_err() {
-                            return;
-                        }
-                        storage = engine_allocation::reserve_push_batch(&mut self.observers, 1)
-                            .map_err(|_| "combat log observer arena allocation failed");
-                        if storage.is_ok() {
-                            match replay_data::rows::CombatLogObserverRow::from_fact(
-                                source.id,
-                                side == 0,
-                                fact.kind as u8,
-                                fact.item,
-                                fact.values,
-                            ) {
-                                Ok(row) => self.observers.push(row),
-                                Err(reason) => storage = Err(reason),
+                use replay_data::rows::{CombatLogObserverKind as K, CombatLogObserverRow};
+                let previous = self
+                    .daily_previous
+                    .as_ref()
+                    .map(|held| held.rows.as_slice())
+                    .unwrap_or_default();
+                let mut parent_held = false;
+                let lookup = |row: &CombatLogObserverRow| {
+                    previous
+                        .binary_search_by_key(&row.semantic_key(), |row| row.semantic_key())
+                        .ok()
+                        .map(|at| &previous[at])
+                        .filter(|held| {
+                            (held.identity, held.identity_2, held.identity_3)
+                                == (row.identity, row.identity_2, row.identity_3)
+                        })
+                };
+                let mut put = |fact: engine_land_inputs::combat_log_events::Fact| {
+                    if storage.is_err() {
+                        return;
+                    }
+                    storage = engine_allocation::reserve_push_batch(&mut self.observers, 1)
+                        .map_err(|_| "combat log observer arena allocation failed");
+                    if storage.is_ok() {
+                        match CombatLogObserverRow::from_fact(
+                            source.id,
+                            side == 0,
+                            fact.kind as u8,
+                            fact.item,
+                            fact.values,
+                        ) {
+                            Ok(mut row) => {
+                                if row.kind == K::Activity as u8 {
+                                    parent_held = lookup(&row).is_some();
+                                }
+                                let child = row.kind == K::ActivityEquipment as u8
+                                    || row.kind == K::ActivityDamage as u8;
+                                if !self.daily_refresh
+                                    && (!child || parent_held)
+                                    && let Some(held) = lookup(&row)
+                                {
+                                    row.a = held.a;
+                                    row.b = held.b;
+                                }
+                                self.observers.push(row)
                             }
+                            Err(reason) => storage = Err(reason),
                         }
-                    },
-                );
+                    }
+                };
+                let read =
+                    engine_land_inputs::combat_log_events::observer(memory, base, pointer, &mut put);
                 if let Err(reason) = read.and(storage) {
                     self.observer_failure = Some(reason);
                     break;
@@ -251,7 +320,36 @@ impl Captured {
             },
             _ => Outcome::Rows { len: self.len },
         };
+        self.remember_daily();
     }
+    fn remember_daily(&mut self) {
+        let mut next = self.daily_previous.take().unwrap_or_default();
+        next.rows.clear();
+        let complete =
+            self.observer_failure.is_none() && matches!(self.rows.outcome, Outcome::Rows { .. });
+        let stored = complete
+            && engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut next.rows, self.observers.len())
+            })
+            .is_ok();
+        let next = if stored {
+            next.rows.extend(self.observers.iter().cloned());
+            next.rows.sort_unstable_by_key(|row| row.semantic_key());
+            next.charge.set(crate::raw_memory::Capacity {
+                auxiliary_vectors: crate::raw_memory::vector_bytes(&next.rows),
+                ..Default::default()
+            });
+            (!next
+                .rows
+                .windows(2)
+                .any(|rows| rows[0].semantic_key() == rows[1].semantic_key()))
+            .then_some(next)
+        } else {
+            None
+        };
+        *DAILY_OBSERVERS.lock().unwrap_or_else(|e| e.into_inner()) = next;
+    }
+
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.rows.outcome,

@@ -808,6 +808,74 @@ impl LeaderMemo {
     }
 }
 
+/// Range-local movement observations. The ordered consumer still admits shared
+/// group/feature results in census order. Each range owns its root-read scratch.
+#[derive(Clone, Copy, Default)]
+pub struct MovementPreparation {
+    leader: Option<Result<usize, &'static str>>,
+    flags: Option<Result<u32, &'static str>>,
+    hq: Option<Result<Option<usize>, &'static str>>,
+    own_root: Option<Result<usize, &'static str>>,
+}
+impl MovementPreparation {
+    pub fn capture(
+        memory: &impl crate::Memory,
+        base: usize,
+        seed: &crate::carmy::DivisionSeed,
+        memo: &mut LeaderMemo,
+    ) -> Self {
+        let mut prepared = Self::default();
+        let _ = (|| {
+            movement_at(seed.pointer, crate::carmy::ORDERS_GROUP)?;
+            let own = seed
+                .orders_group
+                .ok_or("movement leader field unreadable")?;
+            if own == 0 {
+                return Ok(());
+            }
+            let leader = memo
+                .leaders
+                .get_or(own, || movement_leader(memory, base, own));
+            prepared.leader = Some(leader);
+            if leader? == 0 {
+                return Ok(());
+            }
+            movement_at(seed.pointer, crate::cunit::CLASS)?;
+            if seed.class.ok_or("movement leader field unreadable")? == 0 {
+                let flags = *memo.flags.get_or_insert_with(|| {
+                    movement_field::<u32>(
+                        memory,
+                        base,
+                        crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+                    )
+                });
+                prepared.flags = Some(flags);
+                if flags? & (1 << 17) != 0 {
+                    let hq = memo.hq.get_or(own, || movement_hq_root(memory, base, own));
+                    prepared.hq = Some(hq);
+                    if hq?.is_some() {
+                        let member =
+                            movement_at(seed.pointer, crate::corders_group_member::HOST_OFFSET)?;
+                        prepared.own_root =
+                            Some(match memory.movement_primary_root(base, member) {
+                                Some(root) => root,
+                                None => memo.roots.resolve(memory, base, member),
+                            });
+                    }
+                }
+            }
+            Ok::<_, &'static str>(())
+        })();
+        prepared
+    }
+
+    pub fn leader(&self) -> Option<usize> {
+        self.leader
+            .and_then(Result::ok)
+            .filter(|&leader| leader != 0)
+    }
+}
+
 /// [`movement_accumulator_seeded`] over a pass's [`LeaderMemo`]: the same
 /// selection and the same first failure, from the same reads in the same
 /// order, except that what depends only on the group, or on no division, is
@@ -829,6 +897,20 @@ pub fn movement_block_memoized(
     seed: &crate::carmy::DivisionSeed,
     memo: &mut LeaderMemo,
 ) -> Result<Option<(usize, bool)>, &'static str> {
+    movement_block_prepared(memory, base, seed, memo, None)
+}
+
+/// Settle range observations in division order. Missing provisional branches
+/// use the ordinary read; an observed failure is never retried. Shared memo
+/// hits always win, including earlier failures. Primary roots are independent
+/// of the selected HQ root and use the range's original prefix/chunk reader.
+pub fn movement_block_prepared(
+    memory: &impl crate::Memory,
+    base: usize,
+    seed: &crate::carmy::DivisionSeed,
+    memo: &mut LeaderMemo,
+    prepared: Option<MovementPreparation>,
+) -> Result<Option<(usize, bool)>, &'static str> {
     movement_at(seed.pointer, crate::carmy::ORDERS_GROUP)?;
     let own = seed
         .orders_group
@@ -836,9 +918,11 @@ pub fn movement_block_memoized(
     if own == 0 {
         return Ok(None);
     }
-    let leader = memo
-        .leaders
-        .get_or(own, || movement_leader(memory, base, own))?;
+    let leader = memo.leaders.get_or(own, || {
+        prepared
+            .and_then(|p| p.leader)
+            .unwrap_or_else(|| movement_leader(memory, base, own))
+    })?;
     if leader == 0 {
         return Ok(None);
     }
@@ -847,22 +931,28 @@ pub fn movement_block_memoized(
     let mut alternate = false;
     if class == 0 {
         let flags = *memo.flags.get_or_insert_with(|| {
-            movement_field::<u32>(
-                memory,
-                base,
-                crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
-            )
+            prepared.and_then(|p| p.flags).unwrap_or_else(|| {
+                movement_field::<u32>(
+                    memory,
+                    base,
+                    crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA,
+                )
+            })
         });
         if flags? & (1 << 17) != 0
-            && let Some(hq) = memo
-                .hq
-                .get_or(own, || movement_hq_root(memory, base, own))?
+            && let Some(hq) = memo.hq.get_or(own, || {
+                prepared
+                    .and_then(|p| p.hq)
+                    .unwrap_or_else(|| movement_hq_root(memory, base, own))
+            })?
         {
             let member = movement_at(seed.pointer, crate::corders_group_member::HOST_OFFSET)?;
-            let own = match memory.movement_primary_root(base, member) {
-                Some(root) => root,
-                None => memo.roots.resolve(memory, base, member),
-            }?;
+            let own = prepared.and_then(|p| p.own_root).unwrap_or_else(|| {
+                match memory.movement_primary_root(base, member) {
+                    Some(root) => root,
+                    None => memo.roots.resolve(memory, base, member),
+                }
+            })?;
             alternate = hq != own;
         }
     }

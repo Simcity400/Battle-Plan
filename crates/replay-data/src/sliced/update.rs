@@ -67,14 +67,52 @@ fn owner_range<R: SlicedRow>(rows: &[R], owner: u32) -> Range<usize> {
 }
 
 /// The distinct owners of `rows` (in key order), one binary search per owner.
-fn each_owner<R: SlicedRow>(rows: &[R], mut visit: impl FnMut(u32, Range<usize>)) {
+fn owner_ranges<R: SlicedRow>(rows: &[R]) -> impl Iterator<Item = (u32, Range<usize>)> + '_ {
     let mut start = 0;
-    while let Some(first) = rows.get(start) {
+    std::iter::from_fn(move || {
+        let first = rows.get(start)?;
         let owner = first.owner();
         let end = start + rows[start..].partition_point(|row| row.owner() <= owner);
-        visit(owner, start..end);
+        let range = start..end;
         start = end;
+        Some((owner, range))
+    })
+}
+
+/// Merge owner groups, not rows. Both inputs are already ordered, so neither
+/// sorting nor a membership check for every row is necessary.
+fn merge_owners<R: SlicedRow>(
+    previous: &[R],
+    fresh: &[R],
+    keep: impl Fn(u32) -> bool,
+) -> io::Result<Vec<u32>> {
+    let count = allocation::add(owner_ranges(previous).count(), owner_ranges(fresh).count())?;
+    let mut owners = allocation::vec(count)?;
+    let mut old = owner_ranges(previous)
+        .map(|(owner, _)| owner)
+        .filter(|&owner| keep(owner))
+        .peekable();
+    for (owner, _) in owner_ranges(fresh) {
+        while let Some(kept) = old.next_if(|&kept| kept < owner) {
+            owners.push(kept);
+        }
+        if old.peek() == Some(&owner) {
+            old.next();
+        }
+        owners.push(owner);
     }
+    owners.extend(old);
+    Ok(owners)
+}
+
+/// Consume one fresh owner's group. Unlisted owners remain unconsumed, so the
+/// caller's final length check still refuses them.
+fn take_owner<R: SlicedRow>(rows: &[R], next: &mut usize, owner: u32) -> Range<usize> {
+    let start = *next;
+    if rows.get(start).is_some_and(|row| row.owner() == owner) {
+        *next += rows[start..].partition_point(|row| row.owner() <= owner);
+    }
+    start..*next
 }
 
 impl SliceUpdate {
@@ -104,27 +142,14 @@ impl SliceUpdate {
             read: impl Fn(u32) -> bool,
             live: impl Fn(u32) -> bool,
         ) -> io::Result<Vec<u32>> {
-            if fresh.iter().any(|row| !read(row.owner()))
-                || fresh.windows(2).any(|pair| pair[0].key() >= pair[1].key())
+            if fresh.windows(2).any(|pair| pair[0].key() >= pair[1].key())
+                || owner_ranges(fresh).any(|(owner, _)| !read(owner))
             {
                 return Err(invalid(
                     "sliced read holds an unread owner's row or is not in key order",
                 ));
             }
-            let mut owners = Vec::new();
-            let mut count = 0_usize;
-            each_owner(previous, |_, _| count += 1);
-            each_owner(fresh, |_, _| count += 1);
-            allocation::reserve(&mut owners, count)?;
-            each_owner(previous, |owner, _| {
-                if read(owner) || !live(owner) {
-                    owners.push(owner);
-                }
-            });
-            each_owner(fresh, |owner, _| owners.push(owner));
-            owners.sort_unstable();
-            owners.dedup();
-            Ok(owners)
+            merge_owners(previous, fresh, |owner| read(owner) || !live(owner))
         }
         let owners = sliced_pair!(
             previous,
@@ -160,19 +185,9 @@ impl SliceUpdate {
             fresh: &[R],
             listed: &[u32],
         ) -> io::Result<Vec<u32>> {
-            let mut count = 0_usize;
-            each_owner(previous, |_, _| count += 1);
-            each_owner(fresh, |_, _| count += 1);
-            let mut owners = allocation::vec(count)?;
-            each_owner(previous, |owner, _| {
-                if listed.binary_search(&owner).is_err() {
-                    owners.push(owner);
-                }
-            });
-            each_owner(fresh, |owner, _| owners.push(owner));
-            owners.sort_unstable();
-            owners.dedup();
-            Ok(owners)
+            merge_owners(previous, fresh, |owner| {
+                listed.binary_search(&owner).is_err()
+            })
         }
         sliced_pair!(
             previous,
@@ -208,9 +223,7 @@ impl SliceUpdate {
         }
         fn fits<R: SlicedRow>(fresh: &[R], listed: &[u32]) -> bool {
             fresh.windows(2).all(|pair| pair[0].key() < pair[1].key())
-                && fresh
-                    .iter()
-                    .all(|row| listed.binary_search(&row.owner()).is_ok())
+                && owner_ranges(fresh).all(|(owner, _)| listed.binary_search(&owner).is_ok())
         }
         self.owners.windows(2).all(|pair| pair[0] < pair[1])
             && sliced_pair!(
@@ -266,14 +279,10 @@ impl SliceUpdate {
             let mut next_fresh = 0;
             for &owner in listed {
                 let old = &previous[owner_range(previous, owner)];
-                let new_start = next_fresh;
-                while fresh
-                    .get(next_fresh)
-                    .is_some_and(|row| row.owner() == owner)
-                {
-                    next_fresh += 1;
+                let new = &fresh[take_owner(fresh, &mut next_fresh, owner)];
+                if old == new {
+                    continue;
                 }
-                let new = &fresh[new_start..next_fresh];
                 allocation::reserve(
                     deleted,
                     allocation::mul(old.len(), (R::KEY_BITS as usize).div_ceil(7).max(1))?,
@@ -348,15 +357,9 @@ impl SliceUpdate {
             let mut removed = 0_usize;
             for &owner in listed {
                 let old = owner_range(previous, owner);
-                let start = next_fresh;
-                while fresh
-                    .get(next_fresh)
-                    .is_some_and(|row| row.owner() == owner)
-                {
-                    next_fresh += 1;
-                }
+                let new = take_owner(&fresh, &mut next_fresh, owner);
                 removed += old.len();
-                same_counts &= old.len() == next_fresh - start;
+                same_counts &= old.len() == new.len();
             }
             if next_fresh != fresh.len() {
                 return Err(invalid("slice update holds an unlisted owner's row"));
@@ -377,8 +380,12 @@ impl SliceUpdate {
             let mut rebuilt = allocation::vec(total)?;
             let mut replaced = allocation::vec(removed)?;
             let mut fresh = fresh.into_iter().peekable();
+            let mut listed = listed.iter().copied().peekable();
             for row in std::mem::take(previous) {
-                if listed.binary_search(&row.owner()).is_ok() {
+                while listed.peek().is_some_and(|&owner| owner < row.owner()) {
+                    listed.next();
+                }
+                if listed.peek() == Some(&row.owner()) {
                     replaced.push(row);
                     continue;
                 }

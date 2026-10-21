@@ -4,6 +4,12 @@ Ship model capture: each ship's ShipModels operands (fixed fields, pool entries,
 
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
+ShipModelDetails freezes read demand and certificates while parked, then FIFO decode publishes held-store indexes and releases source scratch without a Memory capability. Interrupted settlement forgets those stores before reuse; model, task and organisation guard comparisons still select native reads during acquisition.
+
+Allocation diagnostics lazily cache retained sprite heap totals until a row is
+replaced. The total includes unused retained output rows; resets, scalar
+organisation updates and appended empty rows preserve those same child heaps.
+
 Run `cargo test -p collector-ship-models` and `cargo clippy -p collector-ship-models --all-targets -- -D warnings` for its synthetic checks.
 
 The existing medal-modifier rebuild hook also forwards a dirty notification to the shared division-history domain; it installs no second patch and reads no extra native state.

@@ -235,3 +235,39 @@ fn the_speed_share_clamps_to_the_native_bounds() {
     // A negative define divides as native signed division does.
     assert_eq!(speed_share(600_000, ONE, -400_000), Ok(0));
 }
+
+#[test]
+fn owned_observations_keep_independent_arena_prefixes_and_refusal_order() {
+    let mut observations = Observations::default();
+    for (base_speed, modifier) in [(600_000, -10_000), (900_000, 25_000)] {
+        let mut owned = Owned::normal();
+        owned.set(0, 0x2b, modifier);
+        owned.context.modifier_count = owned.modifiers.len();
+        let starts = [observations.scratch.modifiers.len(), 0, 0, 0];
+        observations
+            .scratch
+            .modifiers
+            .extend_from_slice(&owned.modifiers);
+        observations.rows.push(Observation {
+            context: owned.context,
+            base_speed,
+            slowest: 400_000,
+            starts,
+        });
+        assert_eq!(
+            observations.compute(observations.rows.len() - 1),
+            speed_share(base_speed, owned.factor().unwrap(), 400_000)
+        );
+    }
+    assert_eq!(observations.compute(0), Ok(35_000));
+    observations.rows[1].context.modifier_count = usize::MAX;
+    assert_eq!(
+        observations.compute(1),
+        Err("reinforcement modifier prefix exceeds its buffer")
+    );
+    let bytes = observations.allocated_bytes();
+    observations.reset();
+    assert_eq!(observations.allocated_bytes(), bytes);
+    assert!(observations.rows.is_empty());
+    assert_eq!(observations.used, [0; 4]);
+}

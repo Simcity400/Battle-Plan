@@ -18,25 +18,74 @@ bindings by epoch and reseeds on the existing worker.
 
 The daily census reuses shared deep design values only under that complete
 certificate; its batches request deep native spans only for missing values.
-A local refused edit interval retains independent dirty bits on saved designs,
-source/provider bindings and demanded authors. Its recovery census still reads
-and authenticates all membership, prefixes, modules, stats and upgrades, but only
-marked, new or uncertified designs reacquire deep state. A refused occurrence log
-withdraws dependent availability but keeps shared writer observation live, so
-recovery can still reuse untouched values. Closing shared forwarding revokes all
-deep reuse until a fresh complete census. Lost receivers, lifetime or content
-epochs, failed recovery and conflicting writers also revoke reuse;
-explicit attach/refresh reads remain fully fresh. Recovery rechecks its proof
-after acquisition and falls back to the full reader if it changed. Observer status
-retains separate running/missed-writer refusal counts, the last missed source
-location and the last refusal even after recovery/detach. Competing edits to
-receivers unwatched both before and after their originals do not refuse the saved
-interval; saved receivers, publication and unknown receivers still do.
+An ordinary lost saved-design edit marks a prepared receiver slot atomically,
+even when a worker owns the staging store. The hourly Variants worker
+re-reads only those designs (including all shallow/deep fields, children,
+source/author bindings and country-context demand), then carries untouched rows.
+The serial observer boundary retains invalidation only; native repairs, liveness,
+fog and country contexts run in the same parallel job before its roster/recovery
+decision. Pending repair evidence closes held-design reuse until completion.
+Both owned outputs return before FinalInputs/projection, and every native read
+finishes before the hourly original resumes. Independent first-burst consumers
+retain their synchronous writer/lifetime marks and live availability checks.
+Overlapping ordinary writers of one receiver, including self-owned version
+refreshes, use the same terminal repair; uncertain recorded snapshots of that receiver are discarded. Newly published
+bindings without prepared slots are included when a callback was lost. Retired
+receivers keep their tombstones and are never dereferenced by repair. Terminal
+repairs preserve exact current state, not lost native occurrences: VariantChanges
+is explicitly unavailable for that hour while the four current-state tables
+remain publishable. A contended destruction marks a separate prepared retirement
+slot: the worker removes the saved binding and publishes a terminal tombstone,
+without reading the dead design. Draft retirements produce no saved mark.
+Publication while retirement is deferred, or retirement of a binding without a
+prepared slot, still requires a complete roster. A contended consuming move
+of two provably unwatched drafts needs no binding log: prepared receiver slots
+and the absence of unprepared publication certify their exclusion. Saved or
+uncertain operands still require their old binding log before consumption.
+Status counts exempt draft-move contentions separately.
+
+Lost direct-source and provider callbacks mark their own prepared keys. The
+worker selects every saved dependant, plus designs whose logged snapshots can
+introduce new bindings, and refreshes their complete terminal state. Lost author
+callbacks instead refresh current reference liveness and rederive every
+dependant's organisation-owner country demand, preserving frozen design lookup
+witnesses. The roster hook follows its own valid argument without
+requiring STORE; retirement uses prepared author-pointer marks, not dead fields.
+Unobserved destruction of a demanded source still refuses native reuse.
+Status counts repaired intervals and re-read receivers, deferred retirements,
+source/provider and author contentions, and exempt draft retirements. Named
+refusal reasons have cumulative interval counts. Each whole-interval missed source reports
+its file, line, cause, call count and refused-interval count; callback diagnostics
+use process-static sites, with no allocation or population cap.
+
+Unattributed edits, publication/lifetime uncertainty, shared ancestry conflicts,
+dependency gaps, epoch changes and running boundary writers still require a
+complete census. Consuming a saved binding also rechecks preceding held parent
+identities before terminal repair reads; a dependent child forces the census to
+rederive them. Terminal repair also blocks reads of consumed receivers, including
+a parent newly reached by a lost edit, and retains the final lifetime check.
+The recovery census retains
+independent dirty bits on saved designs, source/provider bindings and demanded
+authors, so it can still reuse untouched deep values where certified. Closing
+shared forwarding revokes all deep reuse until a fresh complete census. Recovery
+samples its revision before admission and rechecks both the proof and pending
+repair evidence after acquisition, falling back to the full reader if either
+changed. Explicit attach/refresh reads remain fully fresh.
+
 Receiver-scoped claims let different threads edit different saved designs
-concurrently; overlapping writers of one receiver, including its consuming moves
-and its version owner, still refuse. No claim lock is held across an original.
-Status counts competing-writer, lock-contention, unknown-receiver and
-claim-capacity refusals separately.
+concurrently. Their short blocking metadata lock follows STORE then WRITERS;
+it never calls native code, takes STORE or spans an original. Claim growth
+allocates replacement storage off-lock, revalidates quiescence/capacity under the
+metadata lock, then swaps and drops replaced storage off-lock. Claim admission
+uses prepared headroom before probing operand membership; conflict inspection
+and release share each receiver lookup under the same lock. The staging store
+still uses callback try-locks, because it can contain native reads and worker
+preparation. Version-owner walks use the census's atomic live population count,
+not a staging-store lookup. Competing edits to receivers unwatched both before and after their
+originals remain excluded drafts. Observer status retains running/missed-writer
+refusals, the last missed source and last refusal, plus separate competing-writer,
+receiver-local/unattributed lock-contention, unknown-receiver and claim-capacity
+counters.
 Daily projection compares borrowed headers, text and deep values before cloning
 changed rows. Unchanged source bindings and held design entries keep their
 allocations; country-demand rebuilding recycles its key scratch. Owned definition rows sort only after acquisition, authentication
@@ -136,3 +185,7 @@ author-liveness snapshots together. Failed admission remains a named refusal.
 Liveness verdicts are dated and admitted on acquisition; later decoding uses
 that observation rather than the live observer's current availability. Failure
 marks retain owned payload storage, and skipped daily reads preserve its date.
+
+VariantModules, VariantStats and VariantUpgrades convert every occurrence in order but materialize only terminal replacement groups on membership changes, cloning only untouched baseline groups. VariantDefinitions compares borrowed definitions before deep cloning, reuses private rows and source-reference buffers, and keeps key order through complete edits; VariantChanges retains every occurrence.
+
+FIFO decode normalizes completed definition rows after the acquisition's coupled context visits and certificate admission. Design-change drains, terminal repairs and census decisions remain parked because they select native demand.

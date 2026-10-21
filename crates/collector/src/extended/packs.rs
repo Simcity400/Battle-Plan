@@ -322,7 +322,14 @@ impl Captured {
                 .capture(memory, base, state, hour, part.fresh_modifier_guard);
         }
         request.packs.capture_at(memory, base, state, hour);
-        self.restore_ordinary_request(request, None, parts.map(|part| (part, None)))
+        let loan = self.restore_ordinary_request(request, None, parts.map(|part| (part, None)));
+        self.combat_details.settle_owned();
+        self.naval_bases.decode_owned();
+        self.group_counters.decode_owned();
+        self.naval_counters.decode_owned();
+        self.naval_mission_inputs.decode_owned();
+        self.railway_guns.decode_owned();
+        loan
     }
 
     fn swap_ordinary(&mut self, packs: &mut OrdinaryPacks) {
@@ -1551,32 +1558,46 @@ impl OrdinaryPart {
         }
         match self {
             Self::Combat(packs) => {
-                pack!(packs: combat_details);
+                scatter(
+                    &combat_details::TABLES,
+                    packs.combat_details.capture_deferred(memory, base, game_state),
+                    &mut ticks,
+                );
             }
             Self::Naval(packs) => {
                 pack!(packs: naval_details, naval_result_details, naval_combat_sources);
             }
             Self::Map(packs) => {
-                pack!(packs: naval_bases, map_facilities);
+                scatter(
+                    &naval_bases::TABLES,
+                    packs.naval_bases.acquire(
+                        memory,
+                        base,
+                        game_state,
+                        crate::decode::owned_failed,
+                    ),
+                    &mut ticks,
+                );
+                pack!(packs: map_facilities);
                 scatter(
                     &railway_guns::TABLES,
                     packs
                         .railway_guns
-                        .capture_with_hour(memory, base, game_state, hour),
+                        .acquire_with_hour(memory, base, game_state, hour),
                     &mut ticks,
                 );
-                pack!(
-                    packs: active_abilities,
-                    game_score,
-                    group_counters,
-                    saved_event_targets,
-                    battle_sounds
+                pack!(packs: active_abilities, game_score);
+                scatter(
+                    &group_counters::TABLES,
+                    packs.group_counters.acquire(memory, base, game_state),
+                    &mut ticks,
                 );
+                pack!(packs: saved_event_targets, battle_sounds);
             }
             Self::TaskForces(packs) => {
                 scatter(
                     &naval_counters::TABLES,
-                    packs.naval_counters.capture_with_hour(
+                    packs.naval_counters.acquire_with_hour(
                         memory,
                         base,
                         game_state,
@@ -1598,7 +1619,7 @@ impl OrdinaryPart {
                     navies.begin(memory, base, game_state, hour, &mut packs.launch);
                 scatter(
                     &naval_mission_inputs::TABLES,
-                    packs.naval_mission_inputs.capture_with_navies_growing(
+                    packs.naval_mission_inputs.acquire_with_navies_growing(
                         memory,
                         base,
                         game_state,
@@ -1955,7 +1976,7 @@ impl RaidStatePacks {
             }),
         );
         scatter(&raid_state_inputs::TABLES, cost, &mut ticks);
-        let cost = self.resource_map.capture_growing(
+        let cost = self.resource_map.capture_deferred(
             memory,
             base,
             game_state,

@@ -1,9 +1,13 @@
 //! Owned snapshots taken at native design mutation boundaries. Native callbacks
 //! only fill prepared raw storage; typed decoding and growth run on a worker.
 use super::*;
+#[macro_use]
+mod diagnostics;
+mod dependency_repair;
 mod forward;
 pub(super) mod held;
 pub(super) mod liveness;
+mod repair;
 mod scalar;
 mod source_hooks;
 mod sources;
@@ -27,20 +31,14 @@ static RUNNING_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static MISSED_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static COMPETING_WRITER_REJECTIONS: AtomicU64 = AtomicU64::new(0);
 static LOCK_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
+static RECEIVER_LOCK_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
+static UNATTRIBUTED_LOCK_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
 static UNKNOWN_RECEIVERS: AtomicU64 = AtomicU64::new(0);
+static REPAIRED_INTERVALS: AtomicU64 = AtomicU64::new(0);
+static REPAIRED_RECEIVERS: AtomicU64 = AtomicU64::new(0);
 static CLAIM_CAPACITY_REFUSALS: AtomicU64 = AtomicU64::new(0);
 #[track_caller]
-fn lock_contended() {
-    LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
-    unobserved();
-}
-#[track_caller]
-fn unknown_receiver() {
-    UNKNOWN_RECEIVERS.fetch_add(1, Ordering::Relaxed);
-    unobserved();
-}
-#[track_caller]
-fn missed() {
+fn missed_at() {
     MISSED_AT.store(
         std::ptr::from_ref(std::panic::Location::caller()).cast_mut(),
         Ordering::Release,
@@ -56,16 +54,14 @@ static LAST_REFUSAL: Mutex<Option<&'static str>> = Mutex::new(None);
 pub(super) fn refuse_census() {
     CENSUS_REVISION.fetch_add(1, Ordering::AcqRel);
 }
-#[track_caller]
-fn unobserved() {
-    refuse_census();
-    missed();
-}
 static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static REVISION: AtomicU64 = AtomicU64::new(1);
 static SEED_REVISION: AtomicU64 = AtomicU64::new(0);
 static SEED_EPOCH: AtomicU64 = AtomicU64::new(0);
+// An ancestry walk needs the observed saved population, not STORE ownership.
+// Keep its live high-water count between censuses, including new publications.
+static SAVED_POPULATION: AtomicUsize = AtomicUsize::new(0);
 pub(super) fn begin_read() {
     SEED_REVISION.store(REVISION.load(Ordering::Acquire), Ordering::Release);
     SEED_EPOCH.store(EPOCH.load(Ordering::Acquire), Ordering::Release);
@@ -154,7 +150,7 @@ impl Drop for ProviderReset {
     fn drop(&mut self) {
         REVISION.fetch_add(1, Ordering::AcqRel);
         if !self.complete {
-            unobserved();
+            unobserved!();
         }
     }
 }
@@ -173,7 +169,7 @@ pub(super) unsafe fn provider_reset(
 fn world_enabled(enabled: bool) {
     WORLD_ENABLED.store(enabled, Ordering::Release);
     if !enabled {
-        unobserved();
+        unobserved!();
     }
     update_enabled();
 }
@@ -279,7 +275,7 @@ pub fn boundary(invalidate: bool) {
         super::design_context::invalidate();
         RECOVER.store(true, Ordering::Release);
         RECOVERY_READ.store(true, Ordering::Release);
-        unobserved();
+        unobserved!();
         if let Some(store) = STORE.get() {
             // A worker may be preparing its next buffers. The missed verdict
             // already invalidates this batch; never wait for that worker here.
@@ -636,7 +632,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
             super::bonus_snapshots::raw_demand(&state.bonus_sources)
         else {
             RECOVER.store(true, Ordering::Release);
-            unobserved();
+            unobserved!();
             return;
         };
         bytes = bytes.saturating_add(source_bytes);
@@ -645,7 +641,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
             super::bonus_snapshots::raw_demand(&state.named_sources)
         else {
             RECOVER.store(true, Ordering::Release);
-            unobserved();
+            unobserved!();
             return;
         };
         bytes = bytes.saturating_add(source_bytes);
@@ -688,7 +684,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
         || REVISION.load(Ordering::Acquire) != revision
         || active() != 0
     {
-        unobserved();
+        unobserved!();
         RECOVER.store(true, Ordering::Release);
         return;
     }
@@ -733,7 +729,7 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
         .saturating_sub(store.watched.len());
     if engine_allocation::reserve_map(&mut store.watched, additional).is_err() {
         RECOVER.store(true, Ordering::Release);
-        unobserved();
+        unobserved!();
         return;
     }
     for watch in store.watched.values_mut() {
@@ -762,6 +758,11 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
             dirty: false,
         };
     }
+    SAVED_POPULATION.store(store.watched.len(), Ordering::Release);
+    if let Err(reason) = repair::prepare(&store.watched) {
+        store.batch.failure = Some(reason);
+        return;
+    }
     if let Err(reason) = held::seed(registry, variants, &store.watched) {
         store.batch.failure = Some(reason);
         RECOVER.store(true, Ordering::Release);
@@ -777,11 +778,15 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
         RECOVER.store(true, Ordering::Release);
         return;
     }
+    if let Err(reason) = dependency_repair::prepare(&store.interests) {
+        store.batch.failure = Some(reason);
+        return;
+    }
     if active() != 0
         || store.epoch != EPOCH.load(Ordering::Acquire)
         || REVISION.load(Ordering::Acquire) != revision
     {
-        unobserved();
+        unobserved!();
         return;
     }
     SAVED_BASELINE.store(true, Ordering::Release);
@@ -790,12 +795,13 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
     RECOVER.store(false, Ordering::Release);
     MISSED.store(false, Ordering::Release);
     CENSUS_BASELINE.store(CENSUS_REVISION.load(Ordering::Acquire), Ordering::Release);
+    diagnostics::clear();
     drop(store);
     if REVISION.load(Ordering::Acquire) != revision
         || active() != 0
         || EPOCH.load(Ordering::Acquire) != epoch
     {
-        unobserved();
+        unobserved!();
         RECOVER.store(true, Ordering::Release);
         withdraw_baselines();
     } else {
@@ -814,18 +820,25 @@ impl Drop for BaselineAttempt {
             // A consumed recovery read is not retried every hour. The existing
             // daily census can admit a later stable baseline.
             RECOVER.store(true, Ordering::Release);
-            unobserved();
+            unobserved!();
         }
     }
 }
 
 fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, published: bool) {
+    if published {
+        repair::publication();
+    }
     let Some(store) = STORE.get() else {
-        unobserved();
+        unobserved!();
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        lock_contended();
+        if published {
+            lock_contended!();
+        } else {
+            repair::contended(pointer);
+        }
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
@@ -855,6 +868,7 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
             store.batch.failure = Some("variant change watch capacity exhausted");
             return;
         }
+        repair::added();
         store.watched.insert(
             pointer,
             Watch {
@@ -864,6 +878,7 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
                 dirty: true,
             },
         );
+        SAVED_POPULATION.fetch_max(store.watched.len(), Ordering::AcqRel);
     }
     store.batch.required_events = store.batch.required_events.saturating_add(1);
     if store.batch.events.len() == store.batch.events.capacity() {
@@ -944,37 +959,43 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
     }
 }
 
-/// A competing receiver writer cannot retain occurrences, but a saved receiver still
-/// revokes its held value before and after the original. Unknown receivers and
-/// failed registration locking revoke every recovery value.
+/// Lost ordinary edits retain receiver marks even while STORE is held by a
+/// worker. Membership/lifetime changes still need their observed binding log.
 fn unrecorded_writer(receiver: Receiver, pointer: usize, moved_source: Option<usize>) {
     if pointer == 0 || matches!(receiver, Receiver::Roster | Receiver::CreateCommand) {
-        unknown_receiver();
+        unknown_receiver!();
         return;
     }
     if matches!(receiver, Receiver::Published) {
-        missed();
+        unknown_receiver!();
+    } else if moved_source.is_some() || matches!(receiver, Receiver::Removed) {
+        // Consuming lifetimes may leave neither operand readable. Preserve the
+        // draft exemption, but do not reconstruct a saved binding from a read.
+        let Some(store) = STORE.get() else {
+            unknown_receiver!();
+            return;
+        };
+        let Ok(store) = store.try_lock() else {
+            if moved_source.is_none() && matches!(receiver, Receiver::Removed) {
+                repair::retire(pointer);
+            } else {
+                lock_contended!();
+            }
+            return;
+        };
+        if store.watched.contains_key(&pointer)
+            || moved_source.is_some_and(|source| store.watched.contains_key(&source))
+        {
+            missed!();
+        }
     }
-    // Busy designer threads also edit excluded drafts. Only receivers watched
-    // before or after their original can lose a saved occurrence.
     dirty_receiver(pointer);
     if let Some(source) = moved_source {
         dirty_receiver(source);
     }
 }
 fn dirty_receiver(pointer: usize) {
-    let Some(store) = STORE.get() else {
-        unobserved();
-        return;
-    };
-    let Ok(mut store) = store.try_lock() else {
-        lock_contended();
-        return;
-    };
-    if let Some(watch) = store.watched.get_mut(&pointer) {
-        watch.dirty = true;
-        missed();
-    }
+    repair::mark(pointer);
 }
 
 /// Destruction retires the prepared binding before any native fields die.
@@ -984,7 +1005,7 @@ fn retire(memory: &impl Memory, base: usize, pointer: usize) -> bool {
         return false;
     };
     let Ok(mut store) = store.try_lock() else {
-        lock_contended();
+        repair::retire(pointer);
         return false;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
@@ -1033,6 +1054,7 @@ pub fn pending() -> bool {
     needs_full()
         || !enabled()
         || MISSED.load(Ordering::Acquire)
+        || repair::pending()
         || STORE.get().is_some_and(|s| {
             s.try_lock().map_or(true, |s| {
                 !s.batch.events.is_empty() || s.batch.failure.is_some()
@@ -1047,11 +1069,11 @@ pub fn active() -> usize {
 
 fn flag_change(memory: &impl Memory, base: usize, pointer: usize) {
     let Some(store) = STORE.get() else {
-        unobserved();
+        unobserved!();
         return;
     };
     let Ok(mut store) = store.try_lock() else {
-        lock_contended();
+        repair::contended(pointer);
         return;
     };
     if store.epoch != EPOCH.load(Ordering::Acquire) {
@@ -1129,7 +1151,7 @@ impl Drop for CallbackScope {
     fn drop(&mut self) {
         REVISION.fetch_add(1, Ordering::AcqRel);
         if !self.completed {
-            unobserved();
+            unobserved!();
         }
         if let Some((creating, created)) = self.creation {
             CREATING.set(creating);
@@ -1285,13 +1307,13 @@ fn target(
                 .checked_add(native::mutations::COMMAND_VARIANT)
                 .and_then(|p| engine_native::read::<u64>(memory, p))
             else {
-                unknown_receiver();
+                unknown_receiver!();
                 return 0;
             };
             match engine_native::creference_registry::resolve(memory, base, handle) {
                 Ok(pointer) => pointer.unwrap_or(0),
                 Err(_) => {
-                    unknown_receiver();
+                    unknown_receiver!();
                     0
                 }
             }
@@ -1339,13 +1361,13 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
     match mutation.receiver {
         Receiver::Published if CREATING.get() => {
             if CREATED.get() != 0 && CREATED.get() != pointer {
-                unobserved();
+                unobserved!();
             }
             CREATED.set(pointer);
         }
         Receiver::Roster => {
             let Some(array) = Array::read(memory, first, 8) else {
-                unobserved();
+                unobserved!();
                 return;
             };
             for ordinal in 0..array.count {
@@ -1353,7 +1375,7 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
                     .element(ordinal, 8)
                     .and_then(|p| engine_native::read::<u64>(memory, p))
                 else {
-                    unobserved();
+                    unobserved!();
                     return;
                 };
                 flag_change(memory, base, pointer as usize);
@@ -1408,11 +1430,21 @@ unsafe fn around_with_identities<const SITE: usize>(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    REVISION.fetch_add(1, Ordering::AcqRel);
+    // Pair with CallbackScope's exit revision before its ACTIVE decrement.
+    // A boundary cannot include an entry revision but miss that running writer.
     ACTIVE.fetch_add(1, Ordering::SeqCst);
+    REVISION.fetch_add(1, Ordering::AcqRel);
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let pointer = target(&memory, base, MUTATIONS[SITE].receiver, first, second);
+    if pointer == 0
+        && !matches!(
+            MUTATIONS[SITE].receiver,
+            Receiver::Roster | Receiver::CreateCommand
+        )
+    {
+        unknown_receiver!();
+    }
     let moving = MUTATIONS[SITE].name == "MoveAssign";
     let footprint = if SITE == 1 {
         writers::Footprint::Ancestry
@@ -1426,14 +1458,7 @@ unsafe fn around_with_identities<const SITE: usize>(
     // destruction anywhere can change that path, so it conflicts with this
     // footprint even if its direct receiver is different.
     let version = if SITE == 1 && pointer != 0 {
-        let count = STORE.get().and_then(|store| match store.try_lock() {
-            Ok(store) => Some(store.watched.len()),
-            Err(_) => {
-                lock_contended();
-                None
-            }
-        });
-        count.and_then(|count| match version_owner(&memory, pointer, count) {
+        match version_owner(&memory, pointer, SAVED_POPULATION.load(Ordering::Acquire)) {
             Ok(owner) => {
                 if owner != pointer
                     && let Some(claims) = claims.as_mut()
@@ -1443,10 +1468,10 @@ unsafe fn around_with_identities<const SITE: usize>(
                 Some(owner)
             }
             Err(_) => {
-                unknown_receiver();
+                unknown_receiver!();
                 None
             }
-        })
+        }
     } else {
         None
     };
@@ -1483,8 +1508,9 @@ unsafe fn around_with_identities<const SITE: usize>(
                 store.watched.get(&first).copied(),
                 store.watched.get(&second).copied(),
             ]),
+            Err(_) if repair::excluded_move(first, second) => Some([None; 2]),
             Err(_) => {
-                lock_contended();
+                lock_contended!();
                 None
             }
         })
@@ -1492,12 +1518,12 @@ unsafe fn around_with_identities<const SITE: usize>(
         None
     };
     if admitted && moving && move_bindings.is_none() {
-        unobserved();
+        unobserved!();
     }
     if let (Some(bindings), Some(identities)) = (move_bindings, identities) {
         for (binding, identity) in bindings.into_iter().zip(identities) {
             if binding.is_some_and(|binding| Some(binding.id) != identity) {
-                unobserved();
+                unobserved!();
             }
         }
     }
@@ -1513,7 +1539,7 @@ unsafe fn around_with_identities<const SITE: usize>(
         .and_then(|offset| pointer.checked_add(offset))
         .and_then(|p| engine_native::read::<u16>(&memory, p));
     if MUTATIONS[SITE].witness.is_some() && before.is_none() {
-        unobserved();
+        unobserved!();
     }
     let forwarded = unsafe { forward::begin(SITE, pointer) };
     let moved_source = if moving && first != second {
@@ -1539,7 +1565,7 @@ unsafe fn around_with_identities<const SITE: usize>(
                 .checked_add(offset)
                 .and_then(|p| engine_native::read::<u16>(&memory, p));
             if after.is_none() {
-                unobserved();
+                unobserved!();
             }
             after != before
         });
@@ -1554,14 +1580,10 @@ unsafe fn around_with_identities<const SITE: usize>(
     // edit owns the current design's final snapshot, or the current object is
     // an excluded draft. Never suppress that shared ancestry write.
     if SITE == 1 && pointer != 0 {
-        let count = STORE
-            .get()
-            .and_then(|s| s.try_lock().ok().map(|s| s.watched.len()))
-            .unwrap_or(0);
-        match version_owner(&memory, pointer, count) {
+        match version_owner(&memory, pointer, SAVED_POPULATION.load(Ordering::Acquire)) {
             Ok(owner) => {
                 if Some(owner) != version {
-                    unknown_receiver();
+                    unknown_receiver!();
                 } else if owner != pointer {
                     if admitted {
                         scalar::observe(&memory, base, owner, scalar::Field::MaxVersion);
@@ -1570,7 +1592,7 @@ unsafe fn around_with_identities<const SITE: usize>(
                     }
                 }
             }
-            Err(_) => unknown_receiver(),
+            Err(_) => unknown_receiver!(),
         }
     }
     if create_scope {
@@ -1582,11 +1604,22 @@ unsafe fn around_with_identities<const SITE: usize>(
     // A conflict stays latched until every participant exits, including a
     // rejected draft that finished before this writer published its receiver.
     // Check after registration/snapshotting so a consuming move cannot hide it.
-    let conflicted = scope.claims.take().is_some_and(writers::Flight::finish);
+    let (conflicted, dependency) = scope
+        .claims
+        .take()
+        .map_or((false, false), writers::Flight::finish_with_dependency);
+    if SITE == 1
+        && (!admitted || conflicted)
+        && (dependency || version.is_none_or(|owner| owner != pointer))
+    {
+        // Self-owned version writes can repair this receiver. An uncertain
+        // ancestry path or a shared owner still needs a complete census.
+        unobserved!();
+    }
     if admitted && conflicted {
         if retired {
             // The saved binding is already gone, but this was not a draft.
-            missed();
+            missed!();
         }
         unrecorded_writer(MUTATIONS[SITE].receiver, pointer, moving.then_some(second));
         if let Some(owner) = version {
@@ -1722,8 +1755,7 @@ fn apply<S: rows::TableSchema>(
         let baseline = projection
             .and_then(Projection::observed_baseline::<S>)
             .ok_or("variant changes have no complete preceding design state")?;
-        let mut result =
-            copy_rows::<S>(baseline).map_err(|_| "variant change projection allocation failed")?;
+        let mut changed: Vec<(u64, Vec<S::Row>)> = Vec::new();
         for event in history {
             if event.organisation.is_some()
                 || event.flags.is_some()
@@ -1732,18 +1764,43 @@ fn apply<S: rows::TableSchema>(
             {
                 continue;
             }
-            result.retain(|row| owner(row) != event.variant);
-            if !event.removed {
+            let values = if event.removed {
+                Vec::new()
+            } else {
                 let snapshot = event
                     .snapshot
                     .as_ref()
                     .ok_or("variant changes have an incomplete observation")?;
-                let values =
-                    make(snapshot).map_err(|_| "variant change projection allocation failed")?;
-                engine_allocation::reserve(&mut result, values.len())
-                    .map_err(|_| "variant change projection allocation failed")?;
-                result.extend(values);
+                make(snapshot).map_err(|_| "variant change projection allocation failed")?
+            };
+            match changed.binary_search_by_key(&event.variant, |(id, _)| *id) {
+                Ok(index) => changed[index].1 = values,
+                Err(index) => {
+                    engine_allocation::reserve(&mut changed, 1)
+                        .map_err(|_| "variant change projection allocation failed")?;
+                    changed.insert(index, (event.variant, values));
+                }
             }
+        }
+        // Every snapshot is converted in occurrence order. Only its terminal
+        // rows replace the preceding baseline; VariantChanges keeps all edits.
+        let mut result = engine_allocation::vec(baseline.len())
+            .map_err(|_| "variant change projection allocation failed")?;
+        for row in baseline {
+            if changed
+                .binary_search_by_key(&owner(row), |(id, _)| *id)
+                .is_err()
+            {
+                result.push(
+                    rows::RowCodec::try_clone(row)
+                        .map_err(|_| "variant change projection allocation failed")?,
+                );
+            }
+        }
+        for (_, values) in changed {
+            engine_allocation::reserve(&mut result, values.len())
+                .map_err(|_| "variant change projection allocation failed")?;
+            result.extend(values);
         }
         result.sort_unstable_by_key(rows::RowCodec::key);
         Ok::<_, &'static str>(TableView::Complete(S::wrap(result)).into())
@@ -1835,8 +1892,20 @@ pub(super) fn drain(
     base: usize,
     hour: i32,
     output: &mut Vec<rows::VariantChangeRow>,
-) -> Result<(), &'static str> {
+) -> Result<usize, &'static str> {
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    drain_with(&memory, base, hour, output)
+}
+fn drain_with(
+    memory: &impl Memory,
+    base: usize,
+    hour: i32,
+    output: &mut Vec<rows::VariantChangeRow>,
+) -> Result<usize, &'static str> {
     output.clear();
+    let revision = REVISION.load(Ordering::Acquire);
+    let epoch = EPOCH.load(Ordering::Acquire);
+    let dependencies = CENSUS_REVISION.load(Ordering::Acquire);
     let Some(store) = STORE.get() else {
         return Err("variant change observer not prepared");
     };
@@ -1866,12 +1935,85 @@ pub(super) fn drain(
         if let Some(reason) = batch.failure {
             return Err(reason);
         }
+        let repairs = repair::take(&mut batch)?;
+        // These bindings may have changed during the lost edit. Shared-source
+        // occurrences must not act on their obsolete dependencies; the fresh
+        // terminal read installs their current bindings below.
+        for watch in repairs.watches.iter().chain(&repairs.retired) {
+            sources::remove(watch.id);
+        }
+        // Lost destruction callbacks become terminal tombstones, never fresh
+        // reads of their dead receivers. Their occurrence history is unavailable.
+        for watch in &repairs.retired {
+            engine_allocation::reserve(&mut batch.events, 1)
+                .map_err(|_| "variant retirement repair allocation failed")?;
+            batch.events.push(Event {
+                kind: Kind::Design,
+                sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                hour,
+                pointer: watch.pointer,
+                variant: watch.id,
+                flags: None,
+                removed: true,
+                start: 0,
+                end: 0,
+            });
+        }
+        // Reject consumed parent identities against the preceding held state,
+        // before a terminal read can follow dead storage or replace that proof.
+        held::check_lifetimes(&batch.events)?;
         decode_batch(&batch, base, hour, output)?;
+        liveness::repair(memory, base, &repairs.authors, hour, output)?;
+        for watch in &repairs.watches {
+            let value = repair::snapshot(memory, base, hour, watch.pointer, &batch.events)?;
+            if value.definition.id != watch.id {
+                return Err("variant repair identity changed without observed replacement");
+            }
+            repair::complete(watch, &value)?;
+            engine_allocation::reserve(output, 1)
+                .map_err(|_| "variant repair allocation failed")?;
+            engine_allocation::reserve(&mut batch.events, 1)
+                .map_err(|_| "variant repair allocation failed")?;
+            batch.events.push(Event {
+                kind: Kind::Design,
+                sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                hour,
+                pointer: watch.pointer,
+                variant: watch.id,
+                flags: None,
+                removed: false,
+                start: 0,
+                end: 0,
+            });
+            output.push(rows::VariantChangeRow {
+                sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                hour,
+                variant: watch.id,
+                snapshot: Some(value),
+                ..Default::default()
+            });
+        }
         held::apply(&batch.events, output)?;
+        held::check_lifetimes(&batch.events)?;
         sources::prune_interests()?;
-        Ok(())
+        if active() != 0
+            || revision != REVISION.load(Ordering::Acquire)
+            || epoch != EPOCH.load(Ordering::Acquire)
+            || dependencies != CENSUS_REVISION.load(Ordering::Acquire)
+            || MISSED.load(Ordering::Acquire)
+        {
+            unobserved!();
+            return Err("variant change proof changed during boundary acquisition");
+        }
+        if repairs.lost != 0 {
+            REPAIRED_INTERVALS.fetch_add(1, Ordering::Relaxed);
+            REPAIRED_RECEIVERS.fetch_add(repairs.watches.len() as u64, Ordering::Relaxed);
+        }
+        Ok(repairs.lost)
     })();
     if let Err(reason) = result {
+        diagnostics::refused();
+        diagnostics::refusal(reason);
         REFUSED_INTERVALS.fetch_add(1, Ordering::Relaxed);
         *LAST_REFUSAL
             .lock()
@@ -1890,6 +2032,23 @@ pub(super) fn drain(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .spare = batch;
     result
+}
+
+fn replace_sources(
+    state: &mut rows::VariantDesignState,
+    sources: &rows::VariantSourceReferences,
+) -> Result<(), &'static str> {
+    for (target, source) in [
+        (&mut state.bonus_sources, &sources.direct),
+        (&mut state.named_sources, &sources.named),
+    ] {
+        let additional = source.len().saturating_sub(target.len());
+        engine_allocation::reserve(target, additional)
+            .map_err(|_| "variant source change allocation failed")?;
+        target.clear();
+        target.extend_from_slice(source);
+    }
+    Ok(())
 }
 
 fn project_definitions(
@@ -1919,34 +2078,48 @@ fn project_definitions(
                     break;
                 }
                 if let Some(scalar) = &event.scalar {
-                    let mut row = if let Ok(position) =
-                        edits.binary_search_by_key(&index, |(index, _)| *index)
+                    if edits
+                        .binary_search_by_key(&index, |(index, _)| *index)
+                        .is_err()
                     {
-                        rows::RowCodec::try_clone(&edits[position].1)
-                    } else {
-                        rows::RowCodec::try_clone(&baseline[index])
+                        edit(
+                            &mut edits,
+                            index,
+                            rows::RowCodec::try_clone(&baseline[index])
+                                .map_err(|_| "variant scalar projection allocation failed")?,
+                        )?;
                     }
-                    .map_err(|_| "variant scalar projection allocation failed")?;
+                    let position = edits
+                        .binary_search_by_key(&index, |(index, _)| *index)
+                        .unwrap();
+                    rows::RowCodec::check_key_fields(&edits[position].1)
+                        .map_err(|_| "variant scalar projection allocation failed")?;
                     scalar
-                        .apply_definition(&mut row)
+                        .apply_definition(&mut edits[position].1)
                         .map_err(|_| "variant scalar projection failed")?;
-                    edit(&mut edits, index, row)?;
                 } else if let Some(sources) = &event.sources {
-                    let mut row = rows::RowCodec::try_clone(&baseline[index])
-                        .map_err(|_| "variant source change allocation failed")?;
-                    if let Ok(position) = edits.binary_search_by_key(&index, |(index, _)| *index) {
-                        row = rows::RowCodec::try_clone(&edits[position].1)
-                            .map_err(|_| "variant source change allocation failed")?;
+                    if edits
+                        .binary_search_by_key(&index, |(index, _)| *index)
+                        .is_err()
+                    {
+                        edit(
+                            &mut edits,
+                            index,
+                            rows::RowCodec::try_clone(&baseline[index])
+                                .map_err(|_| "variant source change allocation failed")?,
+                        )?;
                     }
+                    let position = edits
+                        .binary_search_by_key(&index, |(index, _)| *index)
+                        .unwrap();
+                    let row = &mut edits[position].1;
+                    rows::RowCodec::check_key_fields(row)
+                        .map_err(|_| "variant source change allocation failed")?;
                     let state = row
                         .design
                         .require_mut("VariantDefinitions.design")
                         .map_err(|_| "variant source change lacks design state")?;
-                    state.bonus_sources = engine_allocation::copy_vec(&sources.direct)
-                        .map_err(|_| "variant source change allocation failed")?;
-                    state.named_sources = engine_allocation::copy_vec(&sources.named)
-                        .map_err(|_| "variant source change allocation failed")?;
-                    edit(&mut edits, index, row)?;
+                    replace_sources(state, sources)?;
                 } else if let Some(flags) = event.flags {
                     if edits
                         .binary_search_by_key(&index, |(index, _)| *index)
@@ -1977,6 +2150,12 @@ fn project_definitions(
                         .snapshot
                         .as_ref()
                         .ok_or("variant changes have an incomplete observation")?;
+                    let previous = edits
+                        .binary_search_by_key(&index, |(index, _)| *index)
+                        .map_or(&baseline[index], |position| &edits[position].1);
+                    if snapshot.definition.matches(previous) {
+                        continue;
+                    }
                     edit(
                         &mut edits,
                         index,
@@ -1999,9 +2178,10 @@ fn project_definitions(
                 continue;
             }
             if let Some(scalar) = &event.scalar {
+                let index = result.partition_point(|row| row.id < event.variant);
                 let row = result
-                    .iter_mut()
-                    .find(|row| row.id == event.variant)
+                    .get_mut(index)
+                    .filter(|row| row.id == event.variant)
                     .ok_or("variant scalar names an unknown design")?;
                 scalar
                     .apply_definition(row)
@@ -2009,24 +2189,23 @@ fn project_definitions(
                 continue;
             }
             if let Some(sources) = &event.sources {
+                let index = result.partition_point(|row| row.id < event.variant);
                 let row = result
-                    .iter_mut()
-                    .find(|r| r.id == event.variant)
+                    .get_mut(index)
+                    .filter(|row| row.id == event.variant)
                     .ok_or("variant sources name an unknown design")?;
                 let state = row
                     .design
                     .require_mut("VariantDefinitions.design")
                     .map_err(|_| "variant source change lacks design state")?;
-                state.bonus_sources = engine_allocation::copy_vec(&sources.direct)
-                    .map_err(|_| "variant source change allocation failed")?;
-                state.named_sources = engine_allocation::copy_vec(&sources.named)
-                    .map_err(|_| "variant source change allocation failed")?;
+                replace_sources(state, sources)?;
                 continue;
             }
             if let Some(flags) = event.flags {
+                let index = result.partition_point(|row| row.id < event.variant);
                 let row = result
-                    .iter_mut()
-                    .find(|r| r.id == event.variant)
+                    .get_mut(index)
+                    .filter(|row| row.id == event.variant)
                     .ok_or("variant flags name an unknown design")?;
                 let state = row
                     .design
@@ -2039,7 +2218,18 @@ fn project_definitions(
                 ] = flags;
                 continue;
             }
-            result.retain(|r| r.id != event.variant);
+            let start = result.partition_point(|row| row.id < event.variant);
+            let end = start + result[start..].partition_point(|row| row.id == event.variant);
+            if !event.removed
+                && end - start == 1
+                && event
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.definition.matches(&result[start]))
+            {
+                continue;
+            }
+            result.drain(start..end);
             if !event.removed {
                 let snapshot = event
                     .snapshot
@@ -2050,10 +2240,10 @@ fn project_definitions(
                     .map_err(|_| "variant change allocation failed")?;
                 engine_allocation::reserve(&mut result, 1)
                     .map_err(|_| "variant change allocation failed")?;
-                result.push(definition);
+                let index = result.partition_point(|row| row.id <= definition.id);
+                result.insert(index, definition);
             }
         }
-        result.sort_unstable_by_key(|r| r.id);
         Ok::<_, &'static str>(
             TableView::Complete(rows::TableRows::VariantDefinitions(result)).into(),
         )
@@ -2097,8 +2287,11 @@ unsafe extern "system-unwind" fn entry<const SITE: usize>(
     unsafe { callback::<SITE>(a, b, c, d) }
 }
 
-/// Owned worker output, loaned with the existing observer-boundary job.
+/// Owned hourly worker output, loaned with the variant census. The host runs
+/// `boundary` before dispatch, then `capture` before deciding `needs_full` and
+/// acquiring the registry. Restore both outputs before their consumers publish.
 pub struct Captured {
+    repaired: usize,
     rows: Vec<rows::VariantChangeRow>,
     pub(super) outcome: Outcome,
     heap_bytes: usize,
@@ -2112,6 +2305,7 @@ pub struct Captured {
 impl Captured {
     pub fn vacant() -> Self {
         Self {
+            repaired: 0,
             rows: Vec::new(),
             outcome: Outcome::Unavailable {
                 reason: "variant changes not acquired",
@@ -2161,13 +2355,18 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.capacity() * std::mem::size_of::<rows::VariantChangeRow>() + self.heap_bytes
     }
+    /// Runs only while the hourly original is parked. Pending repair evidence
+    /// keeps held-design reuse closed until the drain's final proof succeeds;
+    /// settle this verdict before the same worker decides its census read.
     pub fn capture(&mut self, base: usize, hour: i32) {
         // Country accumulator admission is independent of the saved-design
         // observer. Its worker consumes only demanded, dirtied numeric owners.
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         self.fog = super::design_fog::capture(&memory, base);
         self.liveness = liveness::Observation::refused();
-        let result = drain(base, hour, &mut self.rows).and_then(|_| {
+        self.repaired = 0;
+        let result = drain(base, hour, &mut self.rows).and_then(|repaired| {
+            self.repaired = repaired;
             self.liveness = liveness::observation()?;
             self.dictionary = super::bonus_snapshots::snapshot()?;
             Ok(())
@@ -2198,6 +2397,10 @@ impl Captured {
     pub(super) fn table_input(&self, projection: Option<&Projection<'_>>) -> TableInput {
         if let Outcome::Unavailable { reason } = self.outcome {
             return unavailable(reason).into();
+        }
+        if self.repaired != 0 {
+            return unavailable("variant terminal repairs cannot reconstruct lost occurrences")
+                .into();
         }
         if self.rows.is_empty() {
             return TableView::Complete(rows::TableRows::VariantChanges(Vec::new())).into();
@@ -2312,6 +2515,7 @@ impl Drop for Hooks {
             };
         }
         writers::release();
+        unsafe { repair::release() };
         super::bonus_snapshots::release();
         sources::release();
         liveness::release();
@@ -2339,8 +2543,19 @@ pub struct Status {
     missed_refusals: u64,
     competing_writer_rejections: u64,
     lock_contentions: u64,
+    receiver_lock_contentions: u64,
+    unattributed_lock_contentions: u64,
     unknown_receivers: u64,
     claim_capacity_refusals: u64,
+    repaired_intervals: u64,
+    repaired_receivers: u64,
+    deferred_retirements: u64,
+    draft_retirement_contentions: u64,
+    draft_move_contentions: u64,
+    source_lock_contentions: u64,
+    author_lock_contentions: u64,
+    missed_sources: diagnostics::Report,
+    refusal_reasons: diagnostics::Reasons,
     last_missed_at: Option<MissedAt>,
     last_refusal: Option<&'static str>,
     bonus_snapshots: super::bonus_snapshots::Status,
@@ -2360,8 +2575,19 @@ pub fn status() -> Status {
         missed_refusals: MISSED_REFUSALS.load(Ordering::Relaxed),
         competing_writer_rejections: COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed),
         lock_contentions: LOCK_CONTENTIONS.load(Ordering::Relaxed),
+        receiver_lock_contentions: RECEIVER_LOCK_CONTENTIONS.load(Ordering::Relaxed),
+        unattributed_lock_contentions: UNATTRIBUTED_LOCK_CONTENTIONS.load(Ordering::Relaxed),
         unknown_receivers: UNKNOWN_RECEIVERS.load(Ordering::Relaxed),
         claim_capacity_refusals: CLAIM_CAPACITY_REFUSALS.load(Ordering::Relaxed),
+        repaired_intervals: REPAIRED_INTERVALS.load(Ordering::Relaxed),
+        repaired_receivers: REPAIRED_RECEIVERS.load(Ordering::Relaxed),
+        deferred_retirements: repair::DEFERRED_RETIREMENTS.load(Ordering::Relaxed),
+        draft_retirement_contentions: repair::DRAFT_RETIREMENTS.load(Ordering::Relaxed),
+        draft_move_contentions: repair::DRAFT_MOVES.load(Ordering::Relaxed),
+        source_lock_contentions: dependency_repair::SOURCE_CONTENTIONS.load(Ordering::Relaxed),
+        author_lock_contentions: dependency_repair::AUTHOR_CONTENTIONS.load(Ordering::Relaxed),
+        missed_sources: diagnostics::Report,
+        refusal_reasons: diagnostics::Reasons,
         // Caller locations have static storage; callbacks publish no borrowed
         // native memory and do no diagnostic formatting or allocation.
         last_missed_at: unsafe { LAST_MISSED_AT.load(Ordering::Acquire).as_ref() }.map(|at| {
@@ -2464,58 +2690,7 @@ fn decode_batch(
             continue;
         }
         let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end)?;
-        let source = [native::RegistryRow::read(&memory, base, event.pointer)?];
-        let mut captured = Variants::vacant();
-        captured.capture_state(
-            &memory,
-            base,
-            Sources {
-                rows: &source,
-                outcome: Outcome::Rows { len: 1 },
-            },
-            hour,
-            true,
-        );
-        let definition = definitions(&captured.definitions, &captured.definition_bytes);
-        let definition = match definition {
-            TableView::Complete(rows::TableRows::VariantDefinitions(mut rows))
-                if rows.len() == 1 =>
-            {
-                rows.remove(0)
-            }
-            _ => return Err("variant change definition decode failed"),
-        };
-        if !matches!(captured.modules.outcome, Outcome::Rows { .. })
-            || !matches!(captured.stats.outcome, Outcome::Rows { len: 1 })
-            || !matches!(captured.upgrades.outcome, Outcome::Rows { .. })
-        {
-            return Err("variant change children decode failed");
-        }
-        sources::track(&captured.definitions.rows[0])?;
-        liveness::sample(&captured.definitions.rows[0])?;
-        super::design_context::event(&memory, base, &captured, event.removed)?;
-        let snapshot = rows::VariantSnapshot {
-            definition: definition.into(),
-            modules: captured.modules.rows[..captured.modules.outcome.len()]
-                .iter()
-                .map(|r| rows::VariantSnapshotModule {
-                    ordinal: r.source_ordinal,
-                    slot: r.slot,
-                    definition_token: r.definition_token,
-                    active: r.definition_active,
-                })
-                .collect(),
-            stats: engine_allocation::copy_vec(&captured.stats.rows[0].values)
-                .map_err(|_| "variant change allocation failed")?,
-            upgrades: captured.upgrades.rows[..captured.upgrades.outcome.len()]
-                .iter()
-                .map(|r| rows::VariantSnapshotUpgrade {
-                    ordinal: r.source_ordinal,
-                    definition_token: r.definition_token,
-                    level: r.level,
-                })
-                .collect(),
-        };
+        let snapshot = snapshot(&memory, base, hour, event.pointer, false)?;
         engine_allocation::reserve(output, 1).map_err(|_| "variant change allocation failed")?;
         output.push(rows::VariantChangeRow {
             sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
@@ -2531,6 +2706,78 @@ fn decode_batch(
         });
     }
     Ok(())
+}
+
+/// The boundary repair uses the same reader, conversion and dependency demand
+/// as an observed full snapshot, but never presents it as a native occurrence.
+fn snapshot(
+    memory: &impl Memory,
+    base: usize,
+    hour: i32,
+    pointer: usize,
+    fresh: bool,
+) -> Result<rows::VariantSnapshot, &'static str> {
+    let source = [native::RegistryRow::read(memory, base, pointer)?];
+    let mut captured = Variants::vacant();
+    captured.capture_state(
+        memory,
+        base,
+        Sources {
+            rows: &source,
+            outcome: Outcome::Rows { len: 1 },
+        },
+        hour,
+        true,
+    );
+    let definition = definitions(&captured.definitions, &captured.definition_bytes);
+    let definition = match definition {
+        TableView::Complete(rows::TableRows::VariantDefinitions(mut rows)) if rows.len() == 1 => {
+            rows.remove(0)
+        }
+        _ => return Err("variant change definition decode failed"),
+    };
+    if !matches!(captured.modules.outcome, Outcome::Rows { .. })
+        || !matches!(captured.stats.outcome, Outcome::Rows { len: 1 })
+        || !matches!(captured.upgrades.outcome, Outcome::Rows { .. })
+    {
+        return Err("variant change children decode failed");
+    }
+    if fresh {
+        let mut store = STORE
+            .get()
+            .ok_or("variant change observer not prepared")?
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sources::repair(&captured.definitions.rows[0], &mut store.interests)?;
+        liveness::seed(&captured, &mut store.interests)?;
+    } else {
+        sources::track(&captured.definitions.rows[0])?;
+    }
+    liveness::sample(&captured.definitions.rows[0])?;
+    super::design_context::event(memory, base, &captured, false)?;
+    let snapshot = rows::VariantSnapshot {
+        definition: definition.into(),
+        modules: captured.modules.rows[..captured.modules.outcome.len()]
+            .iter()
+            .map(|r| rows::VariantSnapshotModule {
+                ordinal: r.source_ordinal,
+                slot: r.slot,
+                definition_token: r.definition_token,
+                active: r.definition_active,
+            })
+            .collect(),
+        stats: engine_allocation::copy_vec(&captured.stats.rows[0].values)
+            .map_err(|_| "variant change allocation failed")?,
+        upgrades: captured.upgrades.rows[..captured.upgrades.outcome.len()]
+            .iter()
+            .map(|r| rows::VariantSnapshotUpgrade {
+                ordinal: r.source_ordinal,
+                definition_token: r.definition_token,
+                level: r.level,
+            })
+            .collect(),
+    };
+    Ok(snapshot)
 }
 
 #[cfg(test)]

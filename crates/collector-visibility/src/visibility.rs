@@ -493,7 +493,9 @@ impl Captured {
                             game_state,
                             engine_native::walk::Buffer::Growing(&mut self.countries.rows),
                             &Observer,
-                            crate::sampled_verify::current(Observer.every(Table::Visibility)),
+                            crate::sampled_verify::current_burned_in(
+                                Observer.every(Table::Visibility),
+                            ),
                             force_full,
                         )
                         .0

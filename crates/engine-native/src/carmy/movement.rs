@@ -11,8 +11,12 @@ pub struct MovementPacket {
     combat_identities: cunit::MapCombatIdentityMemo,
     sample_hour: Option<i32>,
     required_combat_references: usize,
-    /// Pooled staging for one division's route bytes; holds no row data.
+    /// Pooled route bytes: one division's scratch, or the deferred route journal.
     route_bytes: Vec<u8>,
+    /// FIFO projection can decode the ordered raw route journal after resume.
+    defer_routes: bool,
+    raw_paths_len: usize,
+    raw_paths_prefix: usize,
     pub(super) result: MovementWalk,
 }
 impl MovementPacket {
@@ -29,6 +33,9 @@ impl MovementPacket {
             sample_hour: None,
             required_combat_references: 0,
             route_bytes: crate::allocation::vec(bytes)?,
+            defer_routes: false,
+            raw_paths_len: 0,
+            raw_paths_prefix: 0,
             result: Self::vacant().result,
         })
     }
@@ -49,6 +56,9 @@ impl MovementPacket {
             sample_hour: None,
             required_combat_references: 0,
             route_bytes: Vec::new(),
+            defer_routes: false,
+            raw_paths_len: 0,
+            raw_paths_prefix: 0,
             result: MovementWalk {
                 outcome: Outcome::Unavailable {
                     reason: "division movement not captured",
@@ -69,6 +79,12 @@ impl MovementPacket {
         self.growing = true;
     }
 
+    /// Keep copied route bytes in native order. Only the first ordinary word
+    /// is decoded during acquisition because it gates subsequent native reads.
+    pub fn defer_route_decode(&mut self) {
+        self.defer_routes = true;
+    }
+
     pub fn clear(&mut self) {
         self.units.clear();
         self.paths.clear();
@@ -77,6 +93,8 @@ impl MovementPacket {
         self.combat_identities.clear();
         self.sample_hour = None;
         self.required_combat_references = 0;
+        self.raw_paths_len = 0;
+        self.raw_paths_prefix = 0;
         self.result = MovementWalk {
             outcome: Outcome::Unavailable {
                 reason: "division movement not captured",
@@ -131,6 +149,43 @@ impl MovementPacket {
     }
     pub fn outcome(&self) -> MovementWalk {
         self.result
+    }
+
+    fn capture_raw_routes(
+        &mut self,
+        memory: &impl Memory,
+        route: Array,
+        alternate: Array,
+        start: usize,
+    ) -> Result<(), &'static str> {
+        let first_len = route.count as usize;
+        let len = first_len + alternate.count as usize;
+        self.raw_paths_len = start + len;
+        let bytes = self.raw_paths_len
+            .checked_mul(4)
+            .ok_or("movement route byte count overflow")?;
+        if bytes > self.route_bytes.capacity() {
+            return Err("movement route staging capacity exhausted");
+        }
+        self.route_bytes.resize(bytes, 0);
+        if len != 0 {
+            let (first, second) = self.route_bytes[start * 4..].split_at_mut(first_len * 4);
+            let copied = memory.copy_scattered_prefetched(
+                [route.data, alternate.data],
+                &mut [first, second],
+            );
+            if copied != 0 {
+                self.raw_paths_prefix = start + first_len;
+            }
+            if copied != 2 {
+                return Err("movement route unreadable");
+            }
+            self.raw_paths_prefix = self.raw_paths_len;
+        }
+        if first_len != 0 && self.route_bytes[start * 4..start * 4 + 4] == [0; 4] {
+            return Err("nonempty movement route has null next province");
+        }
+        Ok(())
     }
     /// Rows with an ordinary route whose base speed was refused.
     pub fn base_speed_refusals(&self) -> usize {
@@ -430,18 +485,22 @@ pub fn capture_movement_inputs_with_extra(
             let numerator = movement_seed_value(seed.movement_numerator)?;
             let path_start = paths_len;
             let alternate_start = paths_len + path_len;
-            packet.paths.resize(paths_len + needed, 0);
-            let (path, alternate_path) = packet.paths[paths_len..].split_at_mut(path_len);
-            movement_route_prefixes(
-                memory,
-                route,
-                alternate,
-                &mut packet.route_bytes,
-                path,
-                alternate_path,
-            )?;
-            if path.first() == Some(&0) {
-                return Err("nonempty movement route has null next province");
+            if packet.defer_routes {
+                packet.capture_raw_routes(memory, route, alternate, paths_len)?;
+            } else {
+                packet.paths.resize(paths_len + needed, 0);
+                let (path, alternate_path) = packet.paths[paths_len..].split_at_mut(path_len);
+                movement_route_prefixes(
+                    memory,
+                    route,
+                    alternate,
+                    &mut packet.route_bytes,
+                    path,
+                    alternate_path,
+                )?;
+                if path.first() == Some(&0) {
+                    return Err("nonempty movement route has null next province");
+                }
             }
 
             let combat = seed
@@ -743,7 +802,8 @@ pub fn project_movement(
     output: &mut [MovementRow],
     paths: &mut [u32],
 ) -> MovementWalk {
-    if output.len() < packet.units.len() || paths.len() < packet.paths.len() {
+    let path_len = if packet.defer_routes { packet.raw_paths_len } else { packet.paths.len() };
+    if output.len() < packet.units.len() || paths.len() < path_len {
         return MovementWalk {
             outcome: Outcome::Unavailable {
                 reason: "division movement projection capacity exhausted",
@@ -752,7 +812,18 @@ pub fn project_movement(
         };
     }
     output[..packet.units.len()].copy_from_slice(&packet.units);
-    paths[..packet.paths.len()].copy_from_slice(&packet.paths);
+    if packet.defer_routes {
+        // A failed gathered span can contain a partial native copy. Only
+        // completed spans enter the owned output, as in movement_route_prefixes.
+        paths[..path_len].fill(0);
+        for (output, bytes) in paths[..packet.raw_paths_prefix].iter_mut()
+            .zip(packet.route_bytes.chunks_exact(4))
+        {
+            *output = u32::from_le_bytes(bytes.try_into().unwrap());
+        }
+    } else {
+        paths[..packet.paths.len()].copy_from_slice(&packet.paths);
+    }
     packet.result
 }
 
@@ -1063,6 +1134,51 @@ mod capacity_tests {
         for _ in 0..20 {
             packet.reserve(1, 5_001).unwrap();
             assert_eq!(packet.route_bytes.capacity(), 5_001 * size_of::<u32>());
+        }
+    }
+
+    #[test]
+    fn deferred_routes_match_serial_bytes_and_completed_prefixes_after_partial_faults() {
+        use std::cell::RefCell;
+        struct Routes {
+            bytes: Vec<u8>,
+            fault: Option<usize>,
+            reads: RefCell<Vec<(usize, usize)>>,
+        }
+        impl Memory for Routes {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                self.reads.borrow_mut().push((at, output.len()));
+                let Some(bytes) = self.bytes.get(at..at + output.len()) else { return false };
+                output.copy_from_slice(bytes);
+                // Even a failure that changed its whole destination must not
+                // turn an uncompleted span into a published path prefix.
+                self.fault != Some(at)
+            }
+        }
+        for (ordinary, alternate) in [(0, 0), (0, 3), (1, 0), (3, 2), (5_000, 7)] {
+            for fault in [None, Some(4), Some((ordinary + 1) * 4)] {
+                let len = ordinary + alternate;
+                let memory = Routes {
+                    bytes: (0..=len as u32).flat_map(|value| value.to_le_bytes()).collect(),
+                    fault,
+                    reads: RefCell::default(),
+                };
+                let route = Array { data: 4, count: ordinary as u32 };
+                let other = Array { data: (ordinary + 1) * 4, count: alternate as u32 };
+                let mut expected = vec![0; len];
+                let (first, second) = expected.split_at_mut(ordinary);
+                let serial = movement_route_prefixes(&memory, route, other, &mut vec![0; len * 4], first, second);
+                let reads = memory.reads.take();
+                let mut packet = MovementPacket::new(0, len);
+                packet.defer_route_decode();
+                let deferred = packet.capture_raw_routes(&memory, route, other, 0);
+                assert_eq!(deferred, serial);
+                assert_eq!(memory.reads.take(), reads);
+                drop(memory);
+                let mut actual = vec![u32::MAX; len];
+                project_movement(&packet, &mut [], &mut actual);
+                assert_eq!(actual, expected, "{ordinary}/{alternate}, {fault:?}");
+            }
         }
     }
 }
