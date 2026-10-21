@@ -191,10 +191,10 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, names: &KeyNames)
         // Repeated tokens read into the existing object; omitted fields remain.
         let folder = database.entries.entry(token).or_default();
         for field in item.value.items().unwrap_or_default() {
-            if field.keyword_is("tab_gfx") {
-                if let Some(value) = field.value.read_string() {
-                    presentation.icon = value.to_vec();
-                }
+            if field.keyword_is("tab_gfx")
+                && let Some(value) = field.value.read_string()
+            {
+                presentation.icon = value.to_vec();
             }
             if field.keyword_is("name") {
                 if let Some(value) = field.value.scalar() {

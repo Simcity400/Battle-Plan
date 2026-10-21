@@ -63,12 +63,13 @@ I/O reads frame metadata through accessors. Immutable column APIs keep their
 storage private across the frame/container boundary. The split changes neither
 recorded bytes nor admission, allocation-failure or baseline rules.
 
-Check both architectural boundaries after dependency changes:
+Check both architectural boundaries and the feature union after dependency changes:
 
 ```powershell
 python tools/check-build-dependencies.py
 python tools/check-content-dependencies.py
 python tools/check-build-dependencies.py --impact engine-decisions
+python tools/check-feature-unification.py
 ```
 
 The map viewer's native GUI code (`viewer-foundation`) reaches the dashboard only
@@ -100,6 +101,46 @@ or check the frontend contract explicitly:
 
 ```powershell
 cargo run -q -p dashboard --features export-types --bin export-types -- --check
+```
+
+## One test build per crate
+
+Cargo resolves features per command. `cargo test -p A` enables only what A's
+dependency graph and A's own dev-dependencies request; `--workspace` enables what
+every member requests, including each `test-support` feature another member's tests
+need. A crate resolved with other features is another build, so before this rule the
+same worktree compiled `engine-native`, `replay-data` and everything above them from
+scratch once per package selection: agents' target directories held three to nine
+configurations of each crate, and a `-p` check after a workspace check rebuilt
+dozens of crates.
+
+Every test build now resolves each crate it builds with the features
+`cargo test --workspace` resolves, so `cargo nextest run -p <crate>`,
+`cargo clippy -p <crate> --all-targets`, `cargo check --workspace --all-targets` and
+the full suite share one build of each crate; after a workspace build, a `-p` test
+build of any member compiles nothing but what changed.
+[check-feature-unification.py](../tools/check-feature-unification.py) generates the
+dev-dependencies that do this and owns them:
+
+- each member's `[target.'cfg(all())'.dev-dependencies]` table names the workspace
+  crates and the rarer third-party crates its tests build, with those features;
+- `crates/test-unify` depends, with those features, on the third-party crates most
+  test builds contain and on every build-script and proc-macro dependency whose
+  features vary;
+- `[workspace.dependencies]` declares `test-unify` and each rarer third-party crate
+  once, between generated markers.
+
+Only test builds read dev-dependencies. `cargo build -p <product>` and checks without
+`--all-targets` resolve exactly the features they did before, so shipped binaries
+and their release builds are unchanged. Those builds still differ from test builds:
+test-only features such as `test-support` and `alloc-fault-injection` stay out of
+them by design.
+
+Run the check after changing dependencies or features; it resolves `cargo tree` for
+every member and takes a few minutes. When it reports differences, regenerate:
+
+```powershell
+python tools/check-feature-unification.py --fix
 ```
 
 ## Linker and shared features

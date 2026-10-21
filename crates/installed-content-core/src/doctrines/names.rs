@@ -179,10 +179,11 @@ fn append(database: &mut Database, bytes: &[u8], source: &str, kind: u8, names: 
                 if let Some(value) = field.value.read_string() {
                     presentation.icon = value.to_vec();
                 }
-            } else if kind == 0 && field.keyword_is("folder") {
-                if let Some(value) = field.value.scalar() {
-                    presentation.folder = Some(Token::c_str(value));
-                }
+            } else if kind == 0
+                && field.keyword_is("folder")
+                && let Some(value) = field.value.scalar()
+            {
+                presentation.folder = Some(Token::c_str(value));
             }
         }
     }
