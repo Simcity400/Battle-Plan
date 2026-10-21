@@ -45,6 +45,8 @@ pub const PRIVATE_DISPLAY_ALIASES_FORMAT: u16 = 115;
 pub const DAILY_PROGRESS_FORMAT: u16 = 116;
 /// Stable semantic observer occurrences and independent signed numeric lanes.
 pub const COMBAT_LOG_OBSERVER_KEYS_FORMAT: u16 = 106;
+/// Owner-approved daily CountryUnitBonuses: every country's persistent unit-bonus list.
+pub const UNIT_BONUSES_FORMAT: u16 = 117;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -2921,6 +2923,14 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         }],
     );
     history[TableId::ProductionLineModifiers.index()].introduced = PRODUCTION_MODIFIERS_FORMAT;
+    history[TableId::CountryUnitBonuses.index()] = LastChange {
+        introduced: UNIT_BONUSES_FORMAT,
+        ..table(
+            TableId::CountryUnitBonuses,
+            UNIT_BONUSES_FORMAT,
+            "feat/designer-stats",
+        )
+    };
     let air_ledgers = [
         TableId::AirLossEvents,
         TableId::BuildingBombingDamage,
@@ -4635,10 +4645,11 @@ mod tests {
                 PRIVATE_COPY_ALIASES_FORMAT,
                 PRIVATE_DISPLAY_ALIASES_FORMAT,
                 DAILY_PROGRESS_FORMAT,
+                UNIT_BONUSES_FORMAT,
             ],
-            [111, 112, 113, 114, 115, 116],
+            [111, 112, 113, 114, 115, 116, 117],
         );
-        assert_eq!(FORMAT_VERSION, DAILY_PROGRESS_FORMAT);
+        assert_eq!(FORMAT_VERSION, UNIT_BONUSES_FORMAT);
     }
 
     #[test]

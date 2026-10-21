@@ -26,6 +26,10 @@ pub const CONVEYORS_COUNT: usize = 0x54;
 pub const CONVEYOR_STRIDE: usize = 0x08;
 /// CDeploymentStatus owning CCountry pointer.
 pub const OWNER: usize = 0x118;
+/// The persistent unit-bonus list's embedded CPdxArray header: every bonus the
+/// country gained, which its local sub-unit clones are rebuilt from
+/// ([`crate::unit_bonuses`]).
+pub const UNIT_BONUSES: usize = 0x08;
 
 /// The stored military-staff template reference.
 pub const SELECTED_STAFF_TEMPLATE: usize = 0xac;

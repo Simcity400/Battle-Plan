@@ -1324,6 +1324,7 @@ NavalRegionalMines = 416 => NavalRegionalMines(NavalRegionalMineRow),
 NavalAccidentReports = 417 => NavalAccidentReports(NavalAccidentReportRow),
 NavalDominanceTaskForceRanges = 418 => NavalDominanceTaskForceRanges(NavalMissionTaskForceRow),
 NavalPatrolMissionInputs = 419 => NavalPatrolMissionInputs(NavalPatrolMissionInputRow),
+CountryUnitBonuses = 420 => CountryUnitBonus(CountryUnitBonusRow),
 }
 impl TableId {
     /// Discard only proven field framing. No old row is decoded, validated as

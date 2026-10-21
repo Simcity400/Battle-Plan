@@ -1035,6 +1035,24 @@ impl Fixture for AvailableEquipmentVariantRow {
         (u128::from(u32::MAX) << 34) | (2 << 32) | u128::from(u32::MAX)
     }
 }
+sample_struct!(UnitBonusStat {
+    selector: u32,
+    value_raw: i64
+});
+sample_struct!(UnitBonusGrant {
+    category_token: u32,
+    add: u8,
+    display_as_percentage: u8,
+    stats: Vec<UnitBonusStat>
+});
+sample_struct!(UnitBonusTarget {
+    category: bool,
+    token: u32,
+    combat_width_raw: i64,
+    stats: Vec<UnitBonusStat>,
+    grants: Vec<UnitBonusGrant>
+});
+fixture!(CountryUnitBonusRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {source_kind: u8, source_id: u32, source_number: i32, label: Vec<u8>, targets: Vec<UnitBonusTarget>});
 fixture!(VariantModuleRow, |key| {variant: (key >> 32) as u64, source_ordinal: key as u32}, {slot: u32, definition_token: u32, definition_active: u8});
 impl Sample for VariantDesignState {
     fn sample(tick: usize) -> Self {
@@ -4144,6 +4162,9 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
         TableId::AvailableEquipmentVariants => {
             TableRows::AvailableEquipmentVariants(rows::<AvailableEquipmentVariantRow>(tick))
         }
+        TableId::CountryUnitBonuses => {
+            TableRows::CountryUnitBonuses(rows::<CountryUnitBonusRow>(tick))
+        }
         TableId::NewDivisionEquipment => {
             TableRows::NewDivisionEquipment(rows::<DivisionEquipmentRow>(tick))
         }
@@ -6410,6 +6431,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<FactionTheatreRow>(TableId::FactionTheatres);
     check_table::<CountryLocalSubunitRow>(TableId::CountryLocalSubunits);
     check_table::<AvailableEquipmentVariantRow>(TableId::AvailableEquipmentVariants);
+    check_table::<CountryUnitBonusRow>(TableId::CountryUnitBonuses);
     check_table::<DivisionEquipmentRow>(TableId::NewDivisionEquipment);
     check_table::<AirRegionalMissionRow>(TableId::AirRegionalMissions);
     check_table::<AirGroundCrewRow>(TableId::AirGroundCrews);

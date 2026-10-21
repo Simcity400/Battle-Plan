@@ -495,6 +495,21 @@ impl CachedContent {
         })
     }
 
+    /// The technology catalogue read with the doctrines, or why it is unavailable.
+    pub fn technologies(&self) -> Result<&installed_content_core::technology::Catalog, String> {
+        self.doctrines
+            .as_ref()
+            .ok_or_else(|| {
+                self.gaps
+                    .get("doctrines")
+                    .cloned()
+                    .unwrap_or_else(|| "doctrines were not read".into())
+            })?
+            .technologies
+            .as_ref()
+            .ok_or_else(|| "the technology catalogue was not read".into())
+    }
+
     pub fn view<'a>(&'a self, events: Option<&'a EventLookup<'a>>) -> Content<'a> {
         Content {
             doctrines: self.doctrines.as_ref(),

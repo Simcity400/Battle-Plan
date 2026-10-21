@@ -67,12 +67,3 @@ export function policyText(row: OrganisationRow): string {
 /** Whether the organisation roster was read complete at `hour`. */
 export const rosterKnown = (reply: Pick<ProductionCatalogueReply, 'known'>, hour: number) => runAt(reply.known, hour) !== null;
 
-/** The widget's diagnostics: the catalogue's warnings, then the open policy window's
- * own (refused controls, unsupported effects, unavailable artwork), each once. */
-export function withWindowDiagnostics(catalogue: readonly string[], window: readonly string[]): readonly string[] {
-  if (!window.length) return catalogue;
-  const seen = new Set(catalogue);
-  const lines = [...catalogue];
-  for (const line of window) if (!seen.has(line)) { seen.add(line); lines.push(line); }
-  return lines;
-}

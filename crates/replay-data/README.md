@@ -312,7 +312,9 @@ AirMissionInputs.patrol_night_applied_raw is the seventh independent disruption-
 
 New patrol detection/disruption leaves require a nonzero installed spotting factor. Zero/out-of-array factors leave those leaves absent; failed native factor acquisition leaves demanded nonzero-factor values unknown. Recorded content provides the factor, so no duplicate factor fact is serialized. The oracle resolves the same verified content vector before validating field demand.
 
-The writer uses format 116 and dense shared table registrations. DivisionStatus has 45 fields, with its deployed cache in DivisionPanelStats (22 fields). States uses manpower_locked at 10, best_vp_index at 11 and single_controller at 12. DivisionTemplateIcons uses manpower_exile at 16, base_width at 17, layout at 18, settings at 19 and speed_keys at 20. AirWings uses acquired_manpower at 19, exile_country at 20 and replacement_setting at 21. ResearchModifiers grant kinds occupy 25 through 30 and sharing roster is 31.
+The writer uses format 117 and dense shared table registrations. DivisionStatus has 45 fields, with its deployed cache in DivisionPanelStats (22 fields). States uses manpower_locked at 10, best_vp_index at 11 and single_controller at 12. DivisionTemplateIcons uses manpower_exile at 16, base_width at 17, layout at 18, settings at 19 and speed_keys at 20. AirWings uses acquired_manpower at 19, exile_country at 20 and replacement_setting at 21. ResearchModifiers grant kinds occupy 25 through 30 and sharing roster is 31.
+
+CountryUnitBonuses (format 117) records each country's persistent unit-bonus list, keyed by country and stored ordinal with repeats: source kind, id token, signed number and label, then every exact sub-unit target and every sub-unit category target in stored order, each with its token, combat width, nonzero stat words in selector order and battalion grants (recipient category token, raw add and display-as-percentage bytes, sparse stats in stored order with zeros and repeats). Requirements, terrain and special adjusters, priorities, sprite, transport restriction and own-fuel multiplier are not recorded; the clone rebuild applies none of them, and CountryLocalSubunits holds the effective requirements. It is read whole in the variant census's daily slot, with no writer certificate; a country without rows has an empty list in a complete table.
 
 Main's format history keeps its numbering, including Ships naming at 107 and
 event-feed owner refusals at 109 and production-purpose/control columns at 110.
@@ -327,6 +329,7 @@ without old alias decoders or translation:
 | 114 | Combat, province and production alias markers become container-private. |
 | 115 | Conditional supply ratio, supply grace and organisation display aliases. |
 | 116 | Owner-approved daily commander, combat-observer and division display samples. |
+| 117 | Owner-approved daily country persistent unit-bonus lists (CountryUnitBonuses). |
 
 Independently recorded DivisionStatus and CountryCounterInputs width columns retain the existing modifier payload layouts. DivisionStatus's daily display sampling is a separate format-116 meaning change. Historical absence of progression/source suffixes is distinct from a current read refusal; current capture always supplies Value, including Value(None). Retired inputs keep their named framing and do not refuse either host table.
 

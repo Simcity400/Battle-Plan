@@ -484,7 +484,11 @@ pub const fn cadence(table: TableId) -> Cadence {
         | TableId::VariantModules
         | TableId::VariantStats
         | TableId::VariantUpgrades
-        | TableId::AvailableEquipmentVariants => Daily(22),
+        | TableId::AvailableEquipmentVariants
+        // The persistent unit-bonus list is read whole in this slot, with no
+        // writer certificate: doctrine, project and effect rewards append to it
+        // at any hour, and the record catches up at the next slot.
+        | TableId::CountryUnitBonuses => Daily(22),
         // Lend-lease totals grow at deliveries and sinkings; the exchange is
         // deleted, with its totals, when the lend-lease ends.
         TableId::SunkConvoys | TableId::LendLeaseEquipment => Daily(23),
@@ -974,6 +978,7 @@ mod tests {
                 TableId::VariantModules,
                 TableId::VariantStats,
                 TableId::AvailableEquipmentVariants,
+                TableId::CountryUnitBonuses,
             ],
             &[TableId::DivisionEquipment, TableId::ArmyUpgradeGroups],
             &[

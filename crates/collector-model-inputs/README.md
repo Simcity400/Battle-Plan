@@ -2,6 +2,8 @@
 
 Local sub-unit capture: each country's CountryLocalSubunits rows (local sub-unit clones and their requirements) and the writer observer that lets a quiet country carry them. The host owns dispatch, loans and table assembly.
 
+AvailableEquipmentVariants and CountryUnitBonuses share the variant census's daily slot. CountryUnitBonuses reads every country's persistent unit-bonus list whole at each slot, with no hook or writer certificate: every entry's source, its exact and category targets in stored order, their nonzero stat words, combat width and battalion grants. Presizing and growth come from the lists' live counts.
+
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 The host can prepare deployment-status watch storage from its existing live country census before the first sample. The ordinary boundary installs that storage; later sizing uses captured demand. Country template configuration shares this observer's reset certificate, so initial storage preparation covers both consumers without another native walk.

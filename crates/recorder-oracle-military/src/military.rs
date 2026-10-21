@@ -22,8 +22,10 @@ mod movement_operands;
 mod ship_names;
 #[cfg(test)]
 mod tests;
+mod unit_bonuses;
 pub use air_transport::compare as compare_air_transport_inputs;
 pub use movement_operands::compare as compare_movement_operands;
+pub use unit_bonuses::compare as compare_country_unit_bonuses;
 
 pub fn compare_land_combats(
     frame: &DecodedFrame,

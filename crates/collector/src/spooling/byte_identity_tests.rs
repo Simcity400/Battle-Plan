@@ -1,6 +1,6 @@
 //! Spool bytes of a fixed synthetic campaign driven through the spool path.
 //!
-//! `EXPECTED_DIGEST` covers format 116's record envelopes and daily slot-12
+//! `EXPECTED_DIGEST` covers format 117's record envelopes and daily slot-12
 //! training carry markers, the registered tables and
 //! unavailable faction-companion outcomes alongside the fixture's populated inputs.
 //! The campaign runs with
@@ -21,7 +21,7 @@ const FIRST_HOUR: i32 = 100;
 const HOURS: i32 = 30;
 /// FNV-1a 64 over every spool segment's bytes in segment order.
 // Record-envelope version changes update the golden; container aliases do not affect spools.
-const EXPECTED_DIGEST: u64 = 0x979a_fb26_ad67_a2aa;
+const EXPECTED_DIGEST: u64 = 0xf60a_ce4a_0064_1cb3;
 
 fn text<const N: usize>(value: &[u8]) -> Text<N> {
     let mut result = Text {

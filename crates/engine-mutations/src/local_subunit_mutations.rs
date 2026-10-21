@@ -58,8 +58,9 @@ pub enum Receiver {
     Unnamed,
 }
 
-/// The offset of [`Receiver::BonusList`] within the deployment status.
-pub const BONUS_LIST: usize = 8;
+/// The offset of [`Receiver::BonusList`] within the deployment status: its persistent
+/// unit-bonus list.
+pub const BONUS_LIST: usize = crate::cdeployment_status::UNIT_BONUSES;
 
 /// The clone vector's count within the deployment status (the count word after
 /// `crate::cdeployment_status::LOCAL_SUBUNITS`'s data pointer and capacity).

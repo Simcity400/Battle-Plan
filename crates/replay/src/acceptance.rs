@@ -354,6 +354,7 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
     TableId::CountryTemplateState,
     TableId::CountryLocalSubunits,
     TableId::AvailableEquipmentVariants,
+    TableId::CountryUnitBonuses,
     TableId::NewDivisionEquipment,
     TableId::AirRegionalMissions,
     TableId::AirCountryRelations,

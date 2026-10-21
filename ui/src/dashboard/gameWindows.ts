@@ -39,3 +39,13 @@ export function registerGameWindow<S extends GameWindowSelection>(kind: S['kind'
 
 /** The registered component for a window kind, or null while none is. */
 export const gameWindow = (kind: GameWindowSelection['kind']): ComponentType<GameWindowProps> | null => windows.get(kind) ?? null;
+
+/** A widget's diagnostics: its own warnings, then the open game window's (refused controls,
+ * unsupported effects, unavailable artwork), each once. */
+export function withWindowDiagnostics(own: readonly string[], window: readonly string[]): readonly string[] {
+  if (!window.length) return own;
+  const seen = new Set(own);
+  const lines = [...own];
+  for (const line of window) if (!seen.has(line)) { seen.add(line); lines.push(line); }
+  return lines;
+}

@@ -15,6 +15,9 @@ with every other query of the source.
 | `division-record` | [division_careers.rs](src/products/division_careers.rs) | One division's header facts and recorded career and awards. |
 | `division-equipment` | [division_equipment.rs](src/products/division_equipment.rs) | What a country's divisions hold, need and miss by equipment type and by template; one template's divisions; one division's pool. |
 
+The division designer's stats are not a product of their own: the game-window designer
+reads them through [designer_stats.rs](src/products/designer_stats.rs).
+
 Shared naming and artwork live in [army_content.rs](src/products/army_content.rs);
 template equipment needs in [division_needs.rs](src/products/division_needs.rs), which
 reads dashboard-text's canonical sub-unit requirements (the map's model choice
@@ -65,5 +68,56 @@ reads the same) with recorded country-local clones at the template's hour.
 - Names, icons, medals, levels and places resolve through the recorded content
   stack; each refusal is named and counted in the reply's warnings, and keeps
   the row with its known values.
+
+## Designer stats
+
+[designer_stats](src/products/designer_stats.rs) computes what the game's division designer shows
+for a recorded template.
+
+- **Calculator.** [kernel.rs](src/products/designer_stats/kernel.rs) is the game's division stat
+  calculator, the one it runs for a deployed division before its modifier pass and for the
+  designer's preview with nothing after it. It works group by group in composition order:
+  equipment terms are the held or chosen designs' effective stats, times one plus the
+  definition's coefficient, times the share of the requirement they fill. Bases are the
+  definition's words for the stats that have one. Support companies' category grants adjust
+  both. Each stat is then finished as the game finishes it: a sum, a mean over every real cell
+  (over non-support cells for hardness), a blend of the largest group with the mean (armour and
+  piercing), or a total times its factor (suppression, supply, fuel). Speed is selected group
+  by group: each group whose definition affects speed offers its equipment speed per sub-unit,
+  the slowest offer wins, and the loaded slowest-speed define floors it after every group.
+  Fixed5 arithmetic truncates at every stage the game takes.
+- **Definitions.** [definitions.rs](src/products/designer_stats/definitions.rs) builds the
+  effective definition. A stored global definition keeps its authored words. A country-local
+  one adds each researched technology's unit bonus times its researched level, then the country's
+  persistent unit bonuses with a multiplier of one, in stored order. Every sub-unit, category,
+  stat key and grant resolves through the recorded content stack; an authored bonus form the
+  calculator does not reproduce refuses the definition by name.
+- **Preview.** For each required equipment type the preview holds the whole requirement of
+  one design: the first design of the roster owner's production roster, by the game's design
+  precedence, that is module-valid and not excluded by the template. It uses the template's
+  own manpower and full fuel. A type with no such design has no pool entry. A group's
+  critical-equipment fill weighs each critical type's holding and requirement by the type's own
+  build cost, so a short critical type lowers that group's equipment terms as the game's
+  does. A preview whose pool does not read refuses the equipment-dependent stats by name while
+  manpower, training time and the requirement rows stay shown.
+- **Rows.** [rows.rs](src/products/designer_stats/rows.rs) lists the designer's three fixed grids
+  in the game's order. The roster is fixed, so a stat a mod adds gets no row, as in the game.
+  Each value is formatted by its stat's own `_VALUE` localisation, or trimmed for width,
+  manpower and training time. A row shows its value only when its stat is in `PROVEN`, meaning
+  it matched the game's recorded division caches. Every other row keeps its label and names
+  why its value is unavailable. After the equipment grid's fixed rows come its requirement
+  rows: each required equipment type in the equipment database's order, named by the
+  designer's country's own short name where it has one, its quantity rounded up to a whole
+  number, a zero quantity omitted.
+- **Proof.** [validation.rs](src/products/designer_stats/validation.rs) is an ignored test that runs
+  the calculator for every deployed division of a recording and compares it with the recorded
+  panel cache. A stat the deployed modifier pass rewrites is compared after rebuilding that
+  pass ([post.rs](src/products/designer_stats/validation/post.rs)) from the division's recorded
+  country and commander modifier roots, for a medal-free division; speed is also compared with
+  the moving divisions' recorded stat-block speed. Templates' width, manpower and training time
+  are compared with their own caches. A second ignored test lists named countries' templates
+  with every designer row, for checking against the game's own designer. Both read the
+  recording and installation named by the environment (see the file) and write nothing beside
+  the recording.
 
 `cargo test -p dashboard-army` runs these products' synthetic tests.

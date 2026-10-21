@@ -40,6 +40,8 @@ Strategic operatives retain ordered recent propaganda efforts, including zero oc
 Intel source projections preserve dense allied/cryptology positions, ordered contribution pools and prior-day values, static IDs/removal flags, dynamic pending/accumulator lists and held cheat/radar/token/network source references. Empty pools, signed keys, duplicates and keyed zero occurrences remain distinct.
 Dynamic source pools normalize the serializer's `accumulator` list as pending additions and its `values` list as retained aggregate/decay results; their independent extents and ordered occurrences remain exact.
 
+Each country's `deployment.unit_modifiers` keeps its anonymous entries in stored order: every target block keyed by token name with its nonzero stat keys, `combat_width` and repeated `battalion_mult` blocks, then optional `type`, `number`, `id` and `localization_key`. Requirement, adjuster and terrain blocks and the priority and sprite scalars are skipped; an omitted list is empty.
+
 Saved technologies retain ordered repeated keys because the native serializer filters each instance independently.
 
 The [combat-log reader](src/combat_log.rs) retains own and enemy equipment months, recoveries, all three manpower counters, template statistics and ordered repeated battle references. Shared battle records retain reference counts, side losses, captured and recovered equipment, modifier-hour occurrences, country tags and optional serializer presence separately from zero and empty values.

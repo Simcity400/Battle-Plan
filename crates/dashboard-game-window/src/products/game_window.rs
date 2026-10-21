@@ -28,6 +28,10 @@ pub enum GameWindowTarget {
     /// (`IndustrialOrganisations.organisation`).
     #[serde(rename_all = "camelCase")]
     MioPolicies { organisation: String },
+    /// The division designer of a template, by its full handle (`DivisionTemplates.template`),
+    /// as its roster owner sees it.
+    #[serde(rename_all = "camelCase")]
+    DivisionDesigner { template: String },
 }
 
 /// A list's scroll offset in interface pixels, by its element path ([`crate::scene::SceneList`]).
@@ -140,6 +144,11 @@ impl Product for GameWindow {
                     return Err("Invalid military-industrial organisation");
                 }
             }
+            GameWindowTarget::DivisionDesigner { template } => {
+                if template.parse::<u64>().map_or(true, |id| id == 0) {
+                    return Err("Invalid division template");
+                }
+            }
         }
         if params
             .scroll
@@ -159,7 +168,8 @@ impl Product for GameWindow {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         check_cancel(cancelled)?;
-        let (catalogue, shared) = open(source, context.content()?, session::Opener::Request)?;
+        let options = context.content()?;
+        let (catalogue, shared) = open(source, options, session::Opener::Request)?;
         let shared = shared.expect("a request always has its session");
         let branch = params.branch_id.parse().expect("validated branch");
         let scroll: BTreeMap<String, i32> = params
@@ -176,6 +186,17 @@ impl Product for GameWindow {
                 branch,
                 params.hour,
                 organisation.parse().expect("validated organisation"),
+                &scroll,
+                cancelled,
+            )?,
+            GameWindowTarget::DivisionDesigner { template } => crate::designer::bind(
+                source,
+                &catalogue,
+                &shared,
+                branch,
+                params.hour,
+                template.parse().expect("validated template"),
+                nato(options)?,
                 &scroll,
                 cancelled,
             )?,
@@ -199,6 +220,15 @@ impl Product for GameWindow {
         check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+/// Whether the viewer's game shows NATO unit symbols (its `settings.txt`), which selects the
+/// unit glyphs' frame.
+fn nato(options: &ContentOptions) -> io::Result<bool> {
+    let keys = installed_content_settings::settings::read_keys(&options.options.user_dir)?;
+    installed_content_settings::settings::Counters::read(&keys)
+        .map(|counters| counters.nato == 1)
+        .map_err(invalid)
 }
 
 /// The stack identity of the content `options` bind.

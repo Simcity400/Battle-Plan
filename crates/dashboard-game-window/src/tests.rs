@@ -14,7 +14,7 @@ use crate::{
     scene::Scene,
 };
 
-fn tables() {
+pub(crate) fn tables() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
 }
@@ -57,7 +57,19 @@ fn composed(
     };
     let sheets: &dyn Sheets = fixture;
     compose::compose(
-        root, template, &instance, &lists, scroll, resources, sheets, &sizes,
+        &compose::Window {
+            name: root,
+            root: template,
+            instance: &instance,
+            lists: &lists,
+            grids: &[],
+            muted: &[],
+            hovers: &[],
+        },
+        scroll,
+        resources,
+        sheets,
+        &sizes,
     )
 }
 
@@ -96,6 +108,180 @@ fn quads_follow_the_native_draw() {
         vec![64; scene.textures.len()]
     );
     assert!(scene.notes.is_empty(), "{:?}", scene.notes);
+}
+
+/// A window whose container `c` holds grid `g` of 20-pixel rows, laid out in `format` with the
+/// grid at `grid_y`, composed with five rows in its first column at `offset` of `c`.
+fn scrolled_grid(format: &str, grid_y: i32, offset: Option<i32>) -> (Scene, String) {
+    let fixture = fixture_with(read(
+        format!(
+            r#"guiTypes = {{
+            extendedScrollbarType = {{ name = "sb" size = {{ width = 10 height = 50 }}
+                background = {{ name = "bg" spriteType = "GFX_even" }}
+                track = {{ name = "track" spriteType = "GFX_bar3x17" }}
+                slider = {{ name = "slider" spriteType = "GFX_bar3x17" }}
+                decreaseButton = {{ name = "dec" spriteType = "GFX_four" }}
+                increaseButton = {{ name = "inc" spriteType = "GFX_four" position = {{ x = -10 y = -10 }} }} }}
+            containerWindowType = {{ name = "w" size = {{ width = 200 height = 200 }}
+                containerWindowType = {{ name = "c" size = {{ width = 100 height = 60 }}
+                    verticalScrollbar = "sb" clipping = yes
+                    background = {{ name = "back" spriteType = "GFX_even" }}
+                    gridboxtype = {{ name = "g" position = {{ x = 0 y = {grid_y} }}
+                        size = {{ width = 100 height = 40 }}
+                        slotsize = {{ width = 100 height = 20 }} format = "{format}" }} }} }}
+            containerWindowType = {{ name = "item" size = {{ width = 100 height = 20 }}
+                iconType = {{ name = "i" spriteType = "GFX_four" }} }}
+        }}"#
+        )
+        .as_bytes(),
+    ));
+    let resources: &dyn Resources = &fixture;
+    let sheets: &dyn Sheets = &fixture;
+    let template = resources.gui_type(b"w").unwrap();
+    let item = resources.gui_type(b"item").unwrap();
+    let instance = compose::construct(template, [800, 600], resources).unwrap();
+    let container = template.path_named("c").unwrap().path.clone();
+    let grids = [compose::BoundGrid {
+        grid: template.path_named("c/g").unwrap(),
+        template: item,
+        items: (0..5)
+            .map(|row| {
+                (
+                    Row {
+                        instance: compose::construct(item, [800, 600], resources).unwrap(),
+                        hover: Some(Hover {
+                            title: format!("item {row}"),
+                            details: Vec::new(),
+                        }),
+                        muted: false,
+                    },
+                    [0, row],
+                )
+            })
+            .collect(),
+    }];
+    let scroll: BTreeMap<String, i32> = offset
+        .map(|offset| (container.clone(), offset))
+        .into_iter()
+        .collect();
+    let scene = compose::compose(
+        &compose::Window {
+            name: "w",
+            root: template,
+            instance: &instance,
+            lists: &[],
+            grids: &grids,
+            muted: &[],
+            hovers: &[],
+        },
+        &scroll,
+        resources,
+        sheets,
+        &sizes,
+    )
+    .unwrap();
+    (scene, container)
+}
+
+fn tops(scene: &Scene) -> Vec<f32> {
+    scene.hovers.iter().map(|hover| hover.rect[1]).collect()
+}
+
+/// A grid whose items overflow its scrolling container makes the container scroll as the game
+/// does: the scene offers it as a scrolling area over its range, its offset moves the items and
+/// their hovers, clamped to that range, and each item's hover names the area, so focusing it
+/// scrolls that area.
+#[test]
+fn a_grid_overflowing_its_container_scrolls_it() {
+    tables();
+    let (rest, container) = scrolled_grid("UPPER_LEFT", 0, None);
+    // Five 20-pixel items in a 60-pixel container: it scrolls over 40 pixels.
+    let area = rest.lists.iter().find(|list| list.path == container).unwrap();
+    assert_eq!((area.offset, area.max, area.horizontal), (0, 40, false));
+    assert!(
+        rest.hovers
+            .iter()
+            .all(|hover| hover.list.as_deref() == Some(container.as_str()))
+    );
+    let (scrolled, _) = scrolled_grid("UPPER_LEFT", 0, Some(30));
+    assert_eq!(scrolled.lists[0].offset, 30);
+    for (rest, scrolled) in tops(&rest).iter().zip(tops(&scrolled)) {
+        assert_eq!(rest - scrolled, 30.0);
+    }
+    // Past its range it stops at the far end.
+    assert_eq!(scrolled_grid("UPPER_LEFT", 0, Some(99)).0.lists[0].offset, 40);
+    // Each item's hover is clipped to the container.
+    assert!(scrolled.hovers.iter().all(|hover| hover.clip.is_some()));
+}
+
+/// A grid that overflows its container upward gives a range below zero: the scene's offsets run
+/// from that range's near end, so the content at rest is the far end, and the near end shows
+/// the rows above.
+#[test]
+fn a_grid_overflowing_upward_scrolls_below_zero() {
+    tables();
+    let (rest, container) = scrolled_grid("LOWER_LEFT", 20, None);
+    let area = rest.lists.iter().find(|list| list.path == container).unwrap();
+    assert!(area.max > 0, "{area:?}");
+    assert_eq!(area.offset, area.max, "{area:?}");
+    let (near, _) = scrolled_grid("LOWER_LEFT", 20, Some(0));
+    assert_eq!(near.lists[0].offset, 0);
+    for (rest, near) in tops(&rest).iter().zip(tops(&near)) {
+        assert_eq!(near - rest, area.max as f32);
+    }
+}
+
+/// A muted root control draws muted, every part below it included; a hovered control explains
+/// itself over its own region.
+#[test]
+fn root_controls_are_muted_and_explained_by_path() {
+    tables();
+    let fixture = fixture_with(read(
+        br#"guiTypes = { containerWindowType = {
+            name = "w" size = { width = 100 height = 50 }
+            iconType = { name = "i" spriteType = "GFX_four" position = { x = 5 y = 6 } }
+            iconType = { name = "j" spriteType = "GFX_four" position = { x = 40 y = 6 } }
+        } }"#,
+    ));
+    let resources: &dyn Resources = &fixture;
+    let template = resources.gui_type(b"w").unwrap();
+    let instance = compose::construct(template, [800, 600], resources).unwrap();
+    let muted = template.path_named("i").unwrap().path.clone();
+    let hovered = template.path_named("j").unwrap().path.clone();
+    let sheets: &dyn Sheets = &fixture;
+    let scene = compose::compose(
+        &compose::Window {
+            name: "w",
+            root: template,
+            instance: &instance,
+            lists: &[],
+            grids: &[],
+            muted: &[muted.as_str()],
+            hovers: &[(
+                hovered.as_str(),
+                Hover {
+                    title: "j".into(),
+                    details: Vec::new(),
+                },
+            )],
+        },
+        &BTreeMap::new(),
+        resources,
+        sheets,
+        &sizes,
+    )
+    .unwrap();
+    let at = |x: f32| {
+        scene
+            .quads
+            .iter()
+            .find(|quad| quad.corners[0][0] == x)
+            .unwrap()
+    };
+    assert_eq!(at(5.0).muted, Some(true));
+    assert_eq!(at(40.0).muted, None);
+    assert_eq!(scene.hovers.len(), 1);
+    assert_eq!(scene.hovers[0].rect[0], 40.0);
 }
 
 /// A part the dashboard cannot draw is left out by path and the window says it is incomplete.
@@ -324,7 +510,7 @@ fn policy_definitions_decide_what_a_row_can_show() {
 }
 
 /// A folder of synthetic files for a content layer.
-fn folder(name: &str, files: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
+pub(crate) fn folder(name: &str, files: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!("hoi4_game_window_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     for (path, bytes) in files {
@@ -336,7 +522,7 @@ fn folder(name: &str, files: &[(&str, Vec<u8>)]) -> std::path::PathBuf {
 }
 
 /// A 32-bit uncompressed Targa of `width` by `height` opaque white texels.
-fn tga(width: u16, height: u16) -> Vec<u8> {
+pub(crate) fn tga(width: u16, height: u16) -> Vec<u8> {
     let mut bytes = vec![0u8; 18];
     bytes[2] = 2;
     bytes[12..14].copy_from_slice(&width.to_le_bytes());
@@ -348,7 +534,7 @@ fn tga(width: u16, height: u16) -> Vec<u8> {
 }
 
 /// The installation's layers, with `overlay` folders mounted over it.
-fn installed(overlay: &[&std::path::Path]) -> installed_content_core::ResolvedLayers {
+pub(crate) fn installed(overlay: &[&std::path::Path]) -> installed_content_core::ResolvedLayers {
     let game = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
     let mut folders = vec![(game.as_path(), &[][..])];
     folders.extend(overlay.iter().map(|path| (*path, &[][..])));

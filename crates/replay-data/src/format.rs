@@ -259,7 +259,10 @@ mod tests {
 
     #[test]
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
-        assert_eq!(FORMAT_VERSION, 116);
+        assert_eq!(
+            FORMAT_VERSION,
+            crate::rows::compatibility::UNIT_BONUSES_FORMAT
+        );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
                 assert!(FormatVersion::read(version).is_err());
@@ -480,6 +483,9 @@ mod tests {
                     TableId::NavalDominanceTaskForceRanges,
                     TableId::NavalPatrolMissionInputs,
                 ]);
+            }
+            if version < crate::rows::compatibility::UNIT_BONUSES_FORMAT {
+                expected.push(TableId::CountryUnitBonuses);
             }
             if version < crate::rows::compatibility::RETREAT_BANS_FORMAT {
                 expected.push(TableId::DivisionRetreatBans);

@@ -503,7 +503,7 @@ export type DoctrineFolder = { ordinal: number, name: string, grandDoctrine: str
 export type DoctrineInventory = { kind: string, ordinal: number, fields: Array<DoctrineFact>, };
 export type DoctrineReply = { branchId: string, hour: number, tag: string, folders: Array<DoctrineFolder>, inventory: Array<DoctrineInventory>, warnings: Array<string>, };
 export type GameWindowParams = { branchId: string, hour: number, window: GameWindowTarget, scroll?: Array<ListScroll>, };
-export type GameWindowTarget = { "kind": "mioPolicies", organisation: string, };
+export type GameWindowTarget = { "kind": "mioPolicies", organisation: string, } | { "kind": "divisionDesigner", template: string, };
 export type ListScroll = { path: string, offset: number, };
 export type GameWindowReply = { warnings: Array<string>,
 /**

@@ -1,11 +1,21 @@
-//! Lays a bound window and the rows its code adds to its list boxes out through the native
-//! GUI, as the map viewer lays its windows out, and flattens the result into a [`Scene`].
+//! Lays a bound window and the rows its code adds to its list boxes and grid boxes out through
+//! the native GUI, as the map viewer lays its windows out, and flattens the result into a
+//! [`Scene`].
 //!
 //! A window's binder constructs the root [`Instance`] and one per row, applies the calls the
 //! game's code makes (texts, sprites, frames, shows and hides), and hands them here with what
-//! the app explains for each row on hover. Rows are placed where the list box places them at
-//! the list's scroll offset ([`widgets::list_box_rows`]), its scrollbar after them, and every
-//! part is drawn in the game's attach order ([`native_gui::Layout::composed_parts`]).
+//! the app explains for each row on hover. List rows are placed where the list box places them
+//! at the list's scroll offset ([`widgets::list_box_rows`]), its scrollbar after them; grid
+//! items at the slots the code gives them, as the grid finalizes them
+//! ([`native_gui::finalize_grid_positions`]); and every part is drawn in the game's attach
+//! order ([`native_gui::Layout::composed_parts`]).
+//!
+//! A grid's enclosing container scrolls as the game's does once its code fills the grid: the
+//! grid's finalized extent is kept on the instance, the container's scrollbars are refreshed
+//! from its children ([`Instance::synchronize_scroll`]), and the content is moved to the
+//! container's offset in `scroll` as the wheel moves it ([`Instance::scroll_to`]). The
+//! container is then one of the scene's scrolling areas, its items' hovers placed and clipped
+//! where they are drawn.
 
 use std::collections::BTreeMap;
 
@@ -39,28 +49,75 @@ pub struct BoundList<'a> {
     pub rows: Vec<Row>,
 }
 
+/// A grid box of the root and the item windows the code appends to it, each at its slot.
+pub struct BoundGrid<'a> {
+    pub grid: &'a Element,
+    pub template: &'a Element,
+    /// Each item with its `[column, row]` slot, in the order the code appends them.
+    pub items: Vec<(Row, [i32; 2])>,
+}
+
 /// Why a window is not drawn, each reason counted.
 pub type Refused = Vec<String>;
 
-/// Lays `root` out with its bound lists, each scrolled to its offset in `scroll` (clamped to
-/// its range; zero when absent).
-#[allow(clippy::too_many_arguments)]
+/// What a binder hands over to be laid out: its constructed root, the rows and items its code
+/// adds to the root's list and grid boxes, and what the app itself adds to the drawing.
+pub struct Window<'a> {
+    pub name: &'a str,
+    pub root: &'a Element,
+    pub instance: &'a Instance,
+    pub lists: &'a [BoundList<'a>],
+    pub grids: &'a [BoundGrid<'a>],
+    /// Root controls drawn as the app mutes what cannot be acted on, each with every part
+    /// below it, by element path ([`Element::path`]).
+    pub muted: &'a [&'a str],
+    /// Root controls the app explains on hover, by element path.
+    pub hovers: &'a [(&'a str, Hover)],
+}
+
+/// The path of the element `path` lies directly below.
+fn parent(path: &str) -> Option<&str> {
+    path.rsplit_once(['.', '/']).map(|(parent, _)| parent)
+}
+
+/// Whether `path` is `control` or lies below it.
+fn under(path: &str, control: &str) -> bool {
+    path.strip_prefix(control)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '/']))
+}
+
+/// Lays `window` out, each list scrolled to its offset in `scroll` (clamped to its range; zero
+/// when absent).
 pub fn compose(
-    name: &str,
-    root: &Element,
-    instance: &Instance,
-    lists: &[BoundList<'_>],
+    window: &Window<'_>,
     scroll: &BTreeMap<String, i32>,
     resources: &dyn Resources,
     sheets: &dyn Sheets,
     sizes: &dyn Fn(usize) -> Option<[u32; 2]>,
 ) -> Result<Scene, Refused> {
+    let Window {
+        name,
+        root,
+        instance,
+        lists,
+        grids,
+        muted: muted_controls,
+        hovers: control_hovers,
+    } = *window;
     let refused = |refusals: Refusals| -> Refused {
         let mut counted = Counted::default();
         for refusal in &refusals {
             counted.note(refused_cause(name, refusal));
         }
         counted.lines()
+    };
+    let filled;
+    let (instance, scrolled) = if grids.is_empty() {
+        (instance, Vec::new())
+    } else {
+        let (instance, scrolled) = scroll_grids(window, scroll, resources, &refused)?;
+        filled = instance;
+        (&filled, scrolled)
     };
     let layout = instance
         .layout_with_regions(root, resources, None, true)
@@ -156,7 +213,7 @@ pub fn compose(
                 hovers.push((
                     rect,
                     intersect(holder.clip, list_box),
-                    path.clone(),
+                    Some(path.clone()),
                     hover.clone(),
                 ));
             }
@@ -174,15 +231,101 @@ pub fn compose(
             });
         }
     }
+    for bound in grids {
+        let path = &bound.grid.path;
+        let Some(at) = layout
+            .holders
+            .iter()
+            .position(|holder| &holder.path == path)
+        else {
+            // A hidden grid box holds no items.
+            continue;
+        };
+        let holder = &layout.holders[at];
+        let places = native_gui::finalize_grid_positions(
+            bound.grid,
+            holder.content,
+            instance.viewport(),
+            bound.items.iter().map(|(_, slot)| (bound.template, *slot)),
+            holder.position,
+        )
+        .map_err(|refusal| refused(vec![refusal]))?
+        .places();
+        for ((row, _), place) in bound.items.iter().zip(places) {
+            let Some(item) = row
+                .instance
+                .layout_with_regions(bound.template, resources, None, true)
+                .map_err(refused)?
+            else {
+                notes.note(format!(
+                    "{name}: a {} item draws nothing",
+                    bound.template.path
+                ));
+                continue;
+            };
+            for diagnostic in &item.diagnostics {
+                notes.note(noted_cause(name, diagnostic));
+            }
+            let first = items[at].len();
+            items[at].extend(holder.place(place, &item));
+            if row.muted {
+                muted[at].push(first..items[at].len());
+            }
+            if let Some(hover) = &row.hover {
+                let k = holder.scale;
+                let rect = [
+                    holder.origin[0] + k * place[0] as f32,
+                    holder.origin[1] + k * place[1] as f32,
+                    k * item.size[0] as f32,
+                    k * item.size[1] as f32,
+                ];
+                // A row of a scrolling container: focusing it scrolls that container.
+                let area = parent(path)
+                    .filter(|parent| scrolled.iter().any(|(area, ..)| area == parent))
+                    .map(str::to_owned);
+                hovers.push((rect, holder.clip, area, hover.clone()));
+            }
+        }
+    }
+    for (path, vertical, [offset, max]) in scrolled {
+        // Offset units are the content's pixels, at the scale of the grid it holds.
+        let (Some(region), Some(holder)) = (
+            layout.regions.iter().find(|region| region.path == path),
+            layout
+                .holders
+                .iter()
+                .find(|holder| parent(&holder.path) == Some(path.as_str())),
+        ) else {
+            continue;
+        };
+        let [x, y, w, h] = region.rect;
+        scenes.push(SceneList {
+            path,
+            rect: [x as i32, y as i32, w as i32, h as i32],
+            offset,
+            max,
+            horizontal: !vertical,
+            scale: holder.scale,
+        });
+    }
+    for (path, hover) in control_hovers {
+        // A hidden control has no region and explains nothing.
+        if let Some(region) = layout.regions.iter().find(|region| region.path == *path) {
+            hovers.push((region.rect, region.clip, None, hover.clone()));
+        }
+    }
     let mut flatten = Flatten::new(sheets, sizes);
     let is_muted = |part: &Part| {
-        items.iter().zip(&muted).any(|(items, ranges)| {
-            ranges.iter().any(|range| {
-                items[range.clone()]
-                    .as_ptr_range()
-                    .contains(&std::ptr::from_ref(part))
+        muted_controls
+            .iter()
+            .any(|control| under(&part.path, control))
+            || items.iter().zip(&muted).any(|(items, ranges)| {
+                ranges.iter().any(|range| {
+                    items[range.clone()]
+                        .as_ptr_range()
+                        .contains(&std::ptr::from_ref(part))
+                })
             })
-        })
     };
     for part in layout.composed_parts(&items) {
         flatten.part(part, is_muted(part));
@@ -192,7 +335,7 @@ pub fn compose(
         .map(|(rect, clip, list, hover)| SceneHover {
             rect,
             clip: flatten.clip(clip),
-            list: Some(list),
+            list,
             title: hover.title,
             details: hover.details,
         })
@@ -217,6 +360,94 @@ pub fn compose(
         effects: effects.lines(),
         notes,
     })
+}
+
+/// The instance with each grid's items finalized into it and each grid's enclosing container
+/// refreshed and scrolled to its offset in `scroll`, and each container that scrolls: its path,
+/// axis, and the offset reached and the range's far end, both in pixels past the range's near
+/// end.
+#[allow(clippy::type_complexity)]
+fn scroll_grids(
+    window: &Window<'_>,
+    scroll: &BTreeMap<String, i32>,
+    resources: &dyn Resources,
+    refused: &dyn Fn(Refusals) -> Refused,
+) -> Result<(Instance, Vec<(String, bool, [i32; 2])>), Refused> {
+    let root = window.root;
+    let mut instance = window.instance.clone();
+    let layout = instance
+        .layout_with_regions(root, resources, None, true)
+        .map_err(refused)?
+        .ok_or_else(|| vec![format!("{} draws nothing", window.name)])?;
+    let mut containers: Vec<&str> = Vec::new();
+    for bound in window.grids {
+        let path = &bound.grid.path;
+        let Some(holder) = layout.holders.iter().find(|holder| &holder.path == path) else {
+            continue;
+        };
+        let item = native_gui::container_frame(bound.template, Some(instance.viewport()))
+            .map_err(|why| vec![format!("{}: {why}", window.name)])?;
+        let placed = native_gui::finalize_grid_positions(
+            bound.grid,
+            holder.content,
+            instance.viewport(),
+            bound.items.iter().map(|(_, slot)| (bound.template, *slot)),
+            holder.position,
+        )
+        .map_err(|refusal| refused(vec![refusal]))?;
+        let rectangles: Vec<_> = placed.items.iter().map(|&at| (at, item.size)).collect();
+        instance
+            .finalize_grid_resolved(root, bound.grid, holder, &rectangles)
+            .map_err(refused)?;
+        if let Some(parent) = parent(path)
+            && !containers.contains(&parent)
+        {
+            containers.push(parent);
+        }
+    }
+    let mut scrolled = Vec::new();
+    for parent in containers {
+        let Ok(container) = instance.element_at_path(root, parent) else {
+            continue;
+        };
+        let Some(fields) = container.container() else {
+            continue;
+        };
+        instance
+            .synchronize_scroll(root, container, resources, false)
+            .map_err(refused)?;
+        for (vertical, name) in [
+            (true, &fields.vertical_scrollbar),
+            (false, &fields.horizontal_scrollbar),
+        ] {
+            if installed_content_core::parser::c_string(name).is_empty() {
+                continue;
+            }
+            // The scene's offsets run from the range's near end, which can lie below zero (a
+            // grid growing up or left out of its container): an asked offset is past that end,
+            // and absent asks for the content where construction leaves it.
+            let asked = scroll.get(parent).copied();
+            // One offset per scrolling area: its first shown bar, vertical before horizontal.
+            if let Some(([near, far], reached)) = instance
+                .scroll_to(
+                    root,
+                    container,
+                    vertical,
+                    |[near, _]| asked.map(|asked| near.wrapping_add(asked)),
+                    resources,
+                )
+                .map_err(refused)?
+            {
+                scrolled.push((
+                    parent.to_owned(),
+                    vertical,
+                    [reached.wrapping_sub(near), far.wrapping_sub(near)],
+                ));
+                break;
+            }
+        }
+    }
+    Ok((instance, scrolled))
 }
 
 fn intersect(a: Option<[i32; 4]>, b: Option<[i32; 4]>) -> Option<[i32; 4]> {

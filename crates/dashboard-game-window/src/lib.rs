@@ -13,6 +13,7 @@
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod compose;
+pub mod designer;
 pub mod mio;
 pub mod resources;
 pub mod scene;

@@ -17,6 +17,8 @@ export interface DesignerRequest {
   /** The template's full native handle. */
   template: string;
   designer: DesignerKind;
+  /** Receives the window's own diagnostics, which the widget reports beside its own. */
+  onDiagnostics?: (lines: string[]) => void;
 }
 
 /** Draws the designer for a request, with its own loading and refusal states. */

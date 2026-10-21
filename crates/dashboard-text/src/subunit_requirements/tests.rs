@@ -463,3 +463,73 @@ fn sub_unit_keys_come_from_the_effective_direct_unit_files() {
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// A mod's own sub-unit reads its stat words as authored (here one stat no shipped sub-unit
+/// authors), width, manpower, training, group, categories, critical equipment and grants, with
+/// no executable metadata; an unreadable flag is refused by name.
+#[test]
+fn a_mod_sub_unit_reads_its_stat_sheet() {
+    let content = content_with(
+        br#"
+        sub_units = {
+            synthetic_ranger = {
+                type = infantry
+                group = support
+                categories = { category_synthetic category_line }
+                essential = { rifles }
+                combat_width = 1.5
+                manpower = 750
+                training_time = 120
+                night_penalty = -0.25
+                soft_attack = 0.1
+                soft_attack = -0.2
+                can_be_parachuted = yes
+                battalion_mult = { category = category_line add = yes entrenchment = 0.5 }
+                need = { rifles = 50 }
+            }
+            synthetic_broken = {
+                can_be_parachuted = maybe
+                battalion_mult = { category = category_line synthetic_unknown = 1 }
+            }
+        }"#,
+    );
+    let ranger = content.subunit("synthetic_ranger").unwrap();
+    let sheet = &ranger.sheet;
+    assert_eq!(sheet.combat_width, 150_000);
+    assert_eq!((sheet.manpower, sheet.training_time), (750, 120));
+    assert_eq!(sheet.group.as_deref(), Some("support"));
+    assert_eq!(sheet.categories, ["category_synthetic", "category_line"]);
+    assert_eq!(sheet.essential, ["rifles"]);
+    let words: Vec<(&str, &str)> = sheet
+        .words
+        .iter()
+        .map(|(key, text)| (key.as_str(), text.as_str()))
+        .collect();
+    assert_eq!(
+        words,
+        [
+            ("night_penalty", "-0.25"),
+            ("soft_attack", "0.1"),
+            ("soft_attack", "-0.2")
+        ]
+    );
+    assert_eq!(
+        sheet.grants,
+        [Grant {
+            category: "category_line".into(),
+            add: true,
+            words: vec![("entrenchment".into(), "0.5".into())],
+        }]
+    );
+    assert!(sheet.refused.is_empty(), "{:?}", sheet.refused);
+    assert_eq!(ranger.can_be_parachuted, Ok(true));
+    let broken = content.subunit("synthetic_broken").unwrap();
+    assert!(broken.can_be_parachuted.is_err());
+    // Its grant keeps the unknown word; the calculator refuses it by name.
+    assert_eq!(
+        broken.sheet.grants[0].words,
+        [("synthetic_unknown".to_owned(), "1".to_owned())]
+    );
+    // A key the lexer folds names the same sub-unit.
+    assert!(content.subunit_named("SYNTHETIC_RANGER").is_some());
+}

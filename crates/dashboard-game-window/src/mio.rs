@@ -637,10 +637,15 @@ pub fn draw(
     }];
     let sizes = |id: usize| session.page_size(id);
     let mut scene = compose::compose(
-        ROOT,
-        &root,
-        &instance,
-        &lists,
+        &compose::Window {
+            name: ROOT,
+            root: &root,
+            instance: &instance,
+            lists: &lists,
+            grids: &[],
+            muted: &[],
+            hovers: &[],
+        },
         scroll,
         &resources,
         &session.gui,

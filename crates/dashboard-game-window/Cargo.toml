@@ -17,6 +17,7 @@ installed-content-localisation.workspace = true
 installed-content-settings.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
+dashboard-army.workspace = true
 dashboard-base.workspace = true
 dashboard-text.workspace = true
 job-priority.workspace = true

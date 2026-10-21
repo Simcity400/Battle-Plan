@@ -171,11 +171,11 @@ pub struct ProductionLineOutputRow {
     pub purpose: Recorded<u8>,
 }
 typed_codec!(ProductionLineOutputRow, 96, |row| (row.line as u128) << 32 | row.ordinal as u128, |key| Self { line: (key >> 32) as u64, ordinal: key as u32, ..Default::default() },
- { 0 => (country): U32, 1 => (variant): U64, 2 => (mio): U64, 3 => (units): I64, 4 => (mio_credit): I64, 5 => (since_hour): I32, 6 => (observed_since_creation): Bool, 7 => (ended): Bool, 8 => (exact): Bool, 9 => (spent_raw): OptionalI64, 10 => (instant_raw): OptionalI64, 11 => (purpose): U8 },
- |row| match row.purpose {
-     Recorded::Value(raw) if OutputPurpose::from_raw(raw).is_none() => Err(invalid("production output purpose invalid")),
-     _ => Ok(()),
- });
+{ 0 => (country): U32, 1 => (variant): U64, 2 => (mio): U64, 3 => (units): I64, 4 => (mio_credit): I64, 5 => (since_hour): I32, 6 => (observed_since_creation): Bool, 7 => (ended): Bool, 8 => (exact): Bool, 9 => (spent_raw): OptionalI64, 10 => (instant_raw): OptionalI64, 11 => (purpose): U8 },
+|row| match row.purpose {
+    Recorded::Value(raw) if OutputPurpose::from_raw(raw).is_none() => Err(invalid("production output purpose invalid")),
+    _ => Ok(()),
+});
 
 /// What a production tick's applied input was for: the producer the tick's
 /// credit returned to, and for military production whether the line was
@@ -575,6 +575,85 @@ pub struct AvailableEquipmentVariantRow {
 typed_codec!(AvailableEquipmentVariantRow, 66, |row| (row.country as u128) << 34 | (row.roster_kind as u128) << 32 | row.ordinal as u128,
  |key| Self { country: (key >> 34) as u32, roster_kind: ((key >> 32) & 3) as u8, ordinal: key as u32, ..Default::default() },
  { 0 => (variant): U64 }, |row| { if row.roster_kind > 2 { return Err(invalid("equipment roster kind must be primary, foreign or best")); } Ok(()) });
+
+/// Daily: one entry of a country's persistent unit-bonus list, in stored
+/// order with repeats. The unit-bonus effect, doctrine rewards and milestones,
+/// and special-project rewards append entries; the game rebuilds the
+/// country's local sub-unit clones from the list, applying the entries in
+/// order. A country without rows has an empty list in a complete table.
+/// Keyed by the raw country reference and the entry's ordinal.
+///
+/// `source_kind` is none (0), special project (1), effect (2), grand doctrine
+/// (3), sub-doctrine (4), doctrine reward (5) or doctrine milestone (6).
+/// `source_id` is a lexer token; `source_number` is a doctrine reward's
+/// ordinal or a milestone's track index; `label` is the effect's name. Not
+/// recorded: each target's requirements (CountryLocalSubunits holds the
+/// clones' effective requirements), terrain and special adjusters, priorities,
+/// sprite, transport restriction and own-fuel multiplier, none of which the
+/// clone rebuild applies.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CountryUnitBonusRow {
+    pub country: u32,
+    pub ordinal: u32,
+    pub source_kind: u8,
+    pub source_id: u32,
+    pub source_number: i32,
+    pub label: Vec<u8>,
+    /// Every exact sub-unit target, then every sub-unit category target, each
+    /// in stored order with repeats.
+    pub targets: Vec<UnitBonusTarget>,
+}
+typed_codec!(CountryUnitBonusRow, 64, |row| (row.country as u128) << 32 | row.ordinal as u128,
+ |key| Self { country: (key >> 32) as u32, ordinal: key as u32, ..Default::default() },
+ { 0 => (source_kind): U8, 1 => (source_id): U32, 2 => (source_number): I32, 3 => (label): Bytes, 4 => (targets): Opaque }, |_row| Ok(()));
+
+/// One target of a unit bonus: the sub-unit's or category's lexer token, the
+/// signed fixed5 combat width, the nonzero dense stats in selector order and
+/// the battalion grants in stored order.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct UnitBonusTarget {
+    /// False for an exact sub-unit target, true for a sub-unit category target.
+    pub category: bool,
+    pub token: u32,
+    pub combat_width_raw: i64,
+    pub stats: Vec<UnitBonusStat>,
+    pub grants: Vec<UnitBonusGrant>,
+}
+value_struct!(UnitBonusTarget {
+    category: bool,
+    token: u32,
+    combat_width_raw: i64,
+    stats: Vec<UnitBonusStat>,
+    grants: Vec<UnitBonusGrant>
+});
+
+/// One battalion grant: the recipient category's lexer token, the raw add and
+/// display-as-percentage bytes, and its sparse stats in stored order with
+/// zero amounts and repeated selectors.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct UnitBonusGrant {
+    pub category_token: u32,
+    pub add: u8,
+    pub display_as_percentage: u8,
+    pub stats: Vec<UnitBonusStat>,
+}
+value_struct!(UnitBonusGrant {
+    category_token: u32,
+    add: u8,
+    display_as_percentage: u8,
+    stats: Vec<UnitBonusStat>
+});
+
+/// A stat selector, in the executable's stat order, and its raw fixed5 value.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct UnitBonusStat {
+    pub selector: u32,
+    pub value_raw: i64,
+}
+value_struct!(UnitBonusStat {
+    selector: u32,
+    value_raw: i64
+});
 
 /// VariantModules: key variant:source_ordinal (96 bits), 3 payload mask bits.
 /// The module's name is content: `definition_token` spelled by `LexicalTokens`.
@@ -1489,6 +1568,7 @@ typed_codec!(DeploymentEquipmentRow, 96, |row| (row.line as u128) << 32 | row.or
  { 0 => (variant_handle): U64, 1 => (amount_raw): I64 }, |_row| Ok(()));
 
 opaque_value!(Vec<LocalSubunitRequirement>);
+opaque_value!(Vec<UnitBonusTarget>);
 
 /// LogisticsEquipment: key country:archetype (64 bits), 3 payload mask bits.
 ///

@@ -17,12 +17,15 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
 import { useCountryNameAt, useReachedCountry, useReachedProduct } from '../../dashboard/reachedProduct';
 import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
+import { withWindowDiagnostics } from '../../dashboard/gameWindows';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import { designerSnapshot, subscribeDesignerSnapshot } from './designerSnapshot';
 import { baseWidth, battalionCount, battalionSummary, priorityLabel, templateName, templateRows, templateTooltip, validateDivisionTemplates } from './divisionTemplateData';
 import type { TemplateRow } from './divisionTemplateData';
 import './divisionTemplate.css';
+
+const NO_LINES: readonly string[] = [];
 
 const rowKey = (row: TemplateRow) => row.key;
 const children = (row: TemplateRow) => row.kind === 'obsolete' ? row.children : undefined;
@@ -51,7 +54,11 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   const viewportHeight = useViewportHeight();
   const anchor = useRef<HTMLDivElement>(null);
   const [opened, setOpened] = useState<{ template: string; designer: 'ordinary' | 'headquarters'; tag: string } | null>(null);
-  useDiagnostics(onDiagnostics, data?.warnings ?? null);
+  const [windowLines, setWindowLines] = useState<readonly string[]>(NO_LINES);
+  const onWindowDiagnostics = useCallback((lines: string[]) =>
+    setWindowLines(previous => previous.length === lines.length && previous.every((line, index) => line === lines[index]) ? previous : lines), []);
+  const diagnostics = useMemo(() => data ? withWindowDiagnostics(data.warnings, windowLines) : null, [data, windowLines]);
+  useDiagnostics(onDiagnostics, diagnostics);
   useEffect(() => { dispatch({ type: 'close' }); setOpened(null); }, [track?.source.id, track?.source.revision, track?.branch.id, country.chosen]);
   const open = useCallback((row: TemplateRow) => {
     const entry = entryOf(row);
@@ -111,8 +118,8 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   return <div ref={anchor} className="division-template">{pill}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!draw && !!opened}
       title="Division designer" day={formatDateTime(pickedHour)} following={drill.follow} canFollow anchor={anchor}
-      onClose={() => { dispatch({ type: 'close' }); setOpened(null); }} onFollow={() => dispatch({ type: 'follow' })} main={main}>
+      onClose={() => { dispatch({ type: 'close' }); setOpened(null); setWindowLines(NO_LINES); }} onFollow={() => dispatch({ type: 'follow' })} main={main}>
       {draw && opened && track && draw({ client: runtime.client, source: track.source, branchId: track.branch.id, hour: pickedHour,
-        tag: opened.tag, template: opened.template, designer: opened.designer }, active)}
+        tag: opened.tag, template: opened.template, designer: opened.designer, onDiagnostics: onWindowDiagnostics }, active)}
     </DrillHost></div>;
 }

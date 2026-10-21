@@ -25,6 +25,8 @@ The template comparison checks stored recruitment, restriction and equipment set
 CountryTemplateState compares each saved country's selected military-staff template and country-wide template lock. The save omits an unresolved selected reference, while the replay retains its complete raw handle. Missing country configuration and deployment wrappers are differences.
 
 
+CountryUnitBonuses compares each country's entries, in stored order, with its saved `unit_modifiers`: source type, number, the `id` the writer omits for the `none` token and the label it omits when empty; then each target by position and name, its omitted-when-zero combat width, its nonzero stats by name and each battalion grant's category, flags and nonzero stats in stored order. A country without the saved key must have no rows. The save marks no target arm, and the unrecorded requirements, adjusters, priorities and sprite are named limitations. Groups not read at the oracle hour are carried.
+
 Garrison selections compare country defaults, occupied-country groups and state overrides independently, preserving inherited selections and explicit state zero. The next headquarters deployment order follows the native positive-only save emission.
 
 Historical naming groups compare their native empty-key omission. Garrison priority compares independently of the selected template and scope lists. Missing certificates or refused new template operands fail saved-operand comparison.

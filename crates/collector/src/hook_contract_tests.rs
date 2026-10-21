@@ -1044,7 +1044,7 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
     producer!(land_events; []);
     producer!(leader_paths; []);
     producer!(leader_portraits; []);
-    producer!(model_inputs; []);
+    producer!(model_inputs; [CountryUnitBonuses]);
     producer!(naval_details; [NavalCombatDetails,NavalCombatShips,NavalCombatAirBaseWingHandles]);
     producer!(group_counters; []);
     producer!(naval_counters; [TaskForceCounterInputs,TaskForceMapMotion,TaskForceMissions]);

@@ -17,3 +17,4 @@ pub mod cmilitary_deployment_conveyor;
 pub mod cmilitary_deployment_line;
 pub mod cupgrade_delivery;
 pub mod manpower_value_entry;
+pub mod unit_bonuses;

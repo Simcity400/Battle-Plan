@@ -865,6 +865,15 @@ fn compare_extended(
             report,
         )
     });
+    report.attempt_table(TableId::CountryUnitBonuses, |report| {
+        military::compare_country_unit_bonuses(
+            frame,
+            save,
+            required_context("country links", &countries)?,
+            required_context("lexical tokens", &tokens)?,
+            report,
+        )
+    });
     report.attempt_table(TableId::DivisionTemplates, |report| {
         compare_division_templates(
             frame,

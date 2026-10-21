@@ -4,6 +4,8 @@
 import { Suspense, lazy } from 'react';
 import { registerGameWindow } from '../dashboard/gameWindows';
 import type { GameWindowProps, MioPolicySelection } from '../dashboard/gameWindows';
+import { registerDesignerSnapshot } from '../widgets/division-template/designerSnapshot';
+import type { DesignerRequest } from '../widgets/division-template/designerSnapshot';
 import WidgetState from './WidgetState';
 import type { GameWindowProps as RendererProps } from './GameWindow';
 
@@ -25,3 +27,19 @@ export function MioPolicyChooser(props: GameWindowProps<MioPolicySelection>) {
 }
 
 registerGameWindow<MioPolicySelection>('mioPolicyChooser', MioPolicyChooser);
+
+/** The renderer's view of a Division template row: the template's division designer at the
+ * row's hour. The window reads the template's owner and kind from the recording itself. */
+export function designerWindow({ client, source, branchId, hour, template, onDiagnostics }: DesignerRequest, active: boolean): RendererProps {
+  return { client, source: { sourceId: source.id, revision: source.revision }, branchId, hour,
+    target: { kind: 'divisionDesigner', template }, active, onDiagnostics };
+}
+
+/** A template's division designer, as the game draws it. */
+export function DivisionDesigner({ request, active }: { request: DesignerRequest; active: boolean }) {
+  return <Suspense fallback={<div className="game-window"><WidgetState kind="loading" label="Loading window…" /></div>}>
+    <GameWindow {...designerWindow(request, active)} />
+  </Suspense>;
+}
+
+registerDesignerSnapshot((request, active) => <DivisionDesigner request={request} active={active} />);

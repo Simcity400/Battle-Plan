@@ -26,15 +26,66 @@ use replay_frame::frame::DecodedFrame;
 use crate::table_access::rows;
 use crate::table_access::{TokenKeys, TokenNames};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SubUnit {
     pub key: String,
     pub sprite: String,
     pub category: u64,
     /// `division_3d_model_priority`, which replaces the equipment score.
     pub model_priority: Option<i32>,
+    /// `can_be_parachuted`: a template whose every grouped definition may be parachuted can
+    /// drop from the air. An omitted flag is no; a value other than yes or no is refused.
+    pub can_be_parachuted: Result<bool, String>,
+    /// What the division stat calculator reads of the definition.
+    pub sheet: Sheet,
     /// Canonical (archetype, fixed5 amount) needs in native order.
     requirements: Vec<(String, i64)>,
+}
+
+impl Default for SubUnit {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            sprite: String::new(),
+            category: 0,
+            model_priority: None,
+            can_be_parachuted: Ok(false),
+            sheet: Sheet::default(),
+            requirements: Vec::new(),
+        }
+    }
+}
+
+/// A support company's authored grant to the definitions of one category.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Grant {
+    pub category: String,
+    /// `add = yes` adds to their base words; otherwise each value is a factor.
+    pub add: bool,
+    /// Every other field as authored, key and scalar text, in order: the stat words, which
+    /// their consumer resolves against the executable's stat registry.
+    pub words: Vec<(String, String)>,
+}
+
+/// A definition's authored operands of the division stat calculator. An authored form the sheet
+/// cannot read is refused by name and leaves the sheet unknown.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sheet {
+    /// Every other scalar field as authored, key and text, in order: the stat words among them,
+    /// which their consumer resolves against the executable's stat registry (a later word for
+    /// the same stat replaces an earlier one).
+    pub words: Vec<(String, String)>,
+    pub combat_width: i64,
+    pub manpower: i32,
+    pub training_time: i32,
+    pub group: Option<String>,
+    pub categories: Vec<String>,
+    /// The critical equipment types (`essential`), as authored, in order.
+    pub essential: Vec<String>,
+    pub grants: Vec<Grant>,
+    pub transport: Option<String>,
+    pub own_fuel_consumption: Option<i64>,
+    pub refused: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -294,6 +345,14 @@ impl Content {
         self.subunits.get(key)
     }
 
+    /// The sub-unit a script key names: keys are one token under the lexer's ASCII fold.
+    pub fn subunit_named(&self, name: &str) -> Option<&SubUnit> {
+        self.subunits
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, subunit)| subunit)
+    }
+
     fn equipment(&self, key: &str) -> io::Result<&Equipment> {
         self.equipment
             .named(key)
@@ -342,6 +401,70 @@ fn read_subunit(key: &str, fields: &[Item]) -> io::Result<SubUnit> {
                 subunit.model_priority = Some(integer(&field.value)?);
             }
             Some(b"type") => subunit.category |= category(&field.value)?,
+            Some(b"can_be_parachuted") => {
+                subunit.can_be_parachuted =
+                    yes(&field.value).map_err(|why| format!("sub-unit {key}: {why}"));
+            }
+            Some(b"combat_width") => {
+                subunit.sheet.combat_width = sheet_fixed5(
+                    key,
+                    "combat_width",
+                    &field.value,
+                    &mut subunit.sheet.refused,
+                );
+            }
+            Some(b"manpower") => {
+                subunit.sheet.manpower =
+                    sheet_integer(key, "manpower", &field.value, &mut subunit.sheet.refused);
+            }
+            Some(b"training_time") => {
+                subunit.sheet.training_time = sheet_integer(
+                    key,
+                    "training_time",
+                    &field.value,
+                    &mut subunit.sheet.refused,
+                );
+            }
+            Some(b"group") => subunit.sheet.group = field.value.scalar_str().map(str::to_owned),
+            Some(b"transport") => {
+                subunit.sheet.transport = field.value.scalar_str().map(str::to_owned)
+            }
+            Some(b"own_equipment_fuel_consumption_mult") => {
+                subunit.sheet.own_fuel_consumption = Some(sheet_fixed5(
+                    key,
+                    "own_equipment_fuel_consumption_mult",
+                    &field.value,
+                    &mut subunit.sheet.refused,
+                ));
+            }
+            Some(b"categories") => match field.value.items() {
+                Some(items) => subunit.sheet.categories.extend(
+                    items
+                        .iter()
+                        .filter_map(|item| item.value.scalar_str())
+                        .map(str::to_owned),
+                ),
+                None => subunit
+                    .sheet
+                    .refused
+                    .push(format!("sub-unit {key}: categories is not a list")),
+            },
+            Some(b"essential") => match field.value.items() {
+                Some(items) => subunit.sheet.essential.extend(
+                    items
+                        .iter()
+                        .filter_map(|item| item.value.scalar_str())
+                        .map(str::to_owned),
+                ),
+                None => subunit
+                    .sheet
+                    .refused
+                    .push(format!("sub-unit {key}: essential is not a list")),
+            },
+            Some(b"battalion_mult") => {
+                let grant = read_grant(key, &field.value, &mut subunit.sheet.refused);
+                subunit.sheet.grants.extend(grant);
+            }
             Some(b"need") => {
                 for need in block(&field.value)? {
                     let name = need
@@ -353,10 +476,83 @@ fn read_subunit(key: &str, fields: &[Item]) -> io::Result<SubUnit> {
                     subunit.requirements.push((text(name)?.to_owned(), amount));
                 }
             }
-            _ => {}
+            Some(word) => {
+                if let Some(value) = field.value.scalar_str() {
+                    subunit
+                        .sheet
+                        .words
+                        .push((String::from_utf8_lossy(word).into_owned(), value.to_owned()));
+                }
+            }
+            None => {}
         }
     }
     Ok(subunit)
+}
+
+/// An authored fixed5 word of the sheet, or zero with its refusal noted.
+fn sheet_fixed5(key: &str, field: &str, value: &Value, refused: &mut Vec<String>) -> i64 {
+    match value
+        .scalar_str()
+        .map(|text| authored_fixed5(text.as_bytes()))
+    {
+        Some(Ok(value)) => value,
+        _ => {
+            refused.push(format!("sub-unit {key}: {field} is not a number"));
+            0
+        }
+    }
+}
+
+/// An authored integer of the sheet, or zero with its refusal noted.
+fn sheet_integer(key: &str, field: &str, value: &Value, refused: &mut Vec<String>) -> i32 {
+    match value.scalar_str().map(str::parse::<i32>) {
+        Some(Ok(value)) => value,
+        _ => {
+            refused.push(format!("sub-unit {key}: {field} is not a whole number"));
+            0
+        }
+    }
+}
+
+/// One `battalion_mult` block: its category, its kind and its stat values.
+fn read_grant(key: &str, value: &Value, refused: &mut Vec<String>) -> Option<Grant> {
+    let Some(items) = value.items() else {
+        refused.push(format!("sub-unit {key}: battalion_mult is not a block"));
+        return None;
+    };
+    let mut grant = Grant::default();
+    for item in items {
+        match item.key.as_deref() {
+            Some(b"category") => match item.value.scalar_str() {
+                Some(category) => grant.category = category.to_owned(),
+                None => refused.push(format!(
+                    "sub-unit {key}: battalion_mult category is not a name"
+                )),
+            },
+            Some(b"add") => match yes(&item.value) {
+                Ok(add) => grant.add = add,
+                Err(why) => refused.push(format!("sub-unit {key}: battalion_mult {why}")),
+            },
+            Some(word) => match item.value.scalar_str() {
+                Some(value) => grant
+                    .words
+                    .push((String::from_utf8_lossy(word).into_owned(), value.to_owned())),
+                None => refused.push(format!(
+                    "sub-unit {key}: battalion_mult field {} is not a scalar",
+                    String::from_utf8_lossy(word)
+                )),
+            },
+            None => refused.push(format!(
+                "sub-unit {key}: battalion_mult has an unkeyed field"
+            )),
+        }
+    }
+    if grant.category.is_empty() {
+        refused.push(format!("sub-unit {key}: battalion_mult names no category"));
+        return None;
+    }
+    Some(grant)
 }
 
 // ---------------------------------------------------------- the recorded template
@@ -570,6 +766,13 @@ fn integer(value: &Value) -> io::Result<i32> {
     scalar(value)?
         .parse()
         .map_err(|_| invalid("model content field is not an i32"))
+}
+fn yes(value: &Value) -> Result<bool, String> {
+    match value.scalar_str() {
+        Some("yes") => Ok(true),
+        Some("no") => Ok(false),
+        other => Err(format!("a flag is {other:?}, not yes or no")),
+    }
 }
 fn block(value: &Value) -> io::Result<&[Item]> {
     value

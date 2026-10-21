@@ -19,7 +19,14 @@ pub struct Pack {
     pub divisions: Option<BTreeMap<u64, Division>>,
     pub countries: Option<BTreeMap<Vec<u8>, Country>>,
     pub template_states: BTreeMap<Vec<u8>, TemplateState>,
+    /// Each saved country's persistent unit-bonus list
+    /// (`deployment.unit_modifiers`); the writer omits an empty list. A list
+    /// that does not parse is that country's error alone.
+    pub unit_bonuses: BTreeMap<Vec<u8>, Result<Vec<UnitBonus>, String>>,
 }
+
+mod unit_bonuses;
+pub use unit_bonuses::{UnitBonus, UnitBonusGrant, UnitBonusTarget};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TemplateState {
@@ -556,6 +563,7 @@ pub(super) fn parse_with_countries(
         })
         .transpose()?;
     let mut template_states = BTreeMap::new();
+    let mut unit_bonuses = BTreeMap::new();
     let countries = countries
         .is_present()
         .then(|| {
@@ -606,6 +614,17 @@ pub(super) fn parse_with_countries(
                             .unwrap_or(false),
                     },
                 );
+                unit_bonuses.insert(
+                    tag.clone(),
+                    field(fields, b"deployment")
+                        .and_then(|deployment| {
+                            deployment
+                                .map(|value| unit_bonuses::parse(block(value)?))
+                                .transpose()
+                        })
+                        .map(Option::unwrap_or_default)
+                        .map_err(|why| why.to_string()),
+                );
                 if result
                     .insert(
                         tag.clone(),
@@ -627,6 +646,7 @@ pub(super) fn parse_with_countries(
         divisions,
         countries,
         template_states,
+        unit_bonuses,
     })
 }
 

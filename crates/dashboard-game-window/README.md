@@ -26,10 +26,13 @@ This is a product crate above [dashboard-base](../dashboard-base/README.md). The
   frees them. Texture page ids are a session's load order, and a request naming a session the
   source no longer holds is refused.
 - **Layout.** A window's binder constructs the root and its row windows as
-  `native_gui::lifecycle::Instance`s, makes the calls the game's code makes (texts, sprites,
-  shows and hides), and [compose.rs](src/compose.rs) lays them out: list rows go where
-  `widgets::list_box_rows` places them at the list's scroll offset, the scrollbar after them,
-  and every part is drawn in attach order. Refusals and diagnostics keep the native layout's
+  `native_gui::lifecycle::Instance`s and makes the calls the game's code makes (texts, sprites,
+  shows and hides). [compose.rs](src/compose.rs) then lays them out:
+  - list rows go where `widgets::list_box_rows` places them at the list's scroll offset, with
+    the scrollbar after them;
+  - grid items go at the slots the code gives them, as the native grid finalizes them;
+  - every part is drawn in attach order.
+  A binder can mute root controls that cannot be acted on, and explain root controls on hover. Refusals and diagnostics keep the native layout's
   counted reasons.
 - **Quads.** [scene.rs](src/scene.rs) flattens each laid-out part into the quads its draw
   submits: the same corners, texture coordinates (a sprite's frame offset added) and colours.
@@ -65,6 +68,7 @@ This is a product crate above [dashboard-base](../dashboard-base/README.md). The
 | Target | Root | Binding |
 |---|---|---|
 | `mioPolicies` | `industrial_organisation_policy_window`, rows `policy_item` in `policy_list_window/policy_list` | [mio.rs](src/mio.rs) |
+| `divisionDesigner` | `countrydivisiondesignerview`, cells `designer_division_regiment_slot_entry` / `designer_division_support_slot_entry` in `subunits/*_grid`, rows `designer_stat_entry` in `info/*_stats/stats_grid` | [designer.rs](src/designer.rs) |
 
 The chooser's rows are the organisation's recorded allowed policies joined to the country's
 policy instances. Each policy's `visible` and `available` conditions are evaluated in the
@@ -74,6 +78,36 @@ app's muted-row treatment (grey and faded as one group, the same as a muted tabl
 the game marks it with its controls' disabled effect, which the browser does not run. A
 condition the recording cannot decide withholds the policy by name, or leaves its row unmuted
 with the reason on hover; both are counted in the reply's slots.
+
+The designer is the template's roster owner's own. Composition cells come from the recorded
+spatial layout, and each is attached in the state the designer's refresh gives it
+([slots.rs](src/designer/slots.rs)): filled, addable, locked or blocked, from its column's
+count of real definitions, the column's usable height and whether the template is editable.
+Holes keep their place.
+- A filled cell shows its definition's `GFX_unit_<name>_icon_medium` glyph, in the NATO frame
+  when the viewer's game shows NATO symbols. An undeclared glyph is hidden and named, never
+  replaced by another unit.
+- The country's brigade-height unlock is not recorded, so the regiment grid's usable height is
+  every value the defines allow. A cell whose state depends on that height is left out and
+  counted.
+- The header shows:
+  - the template's name;
+  - its symbol: the custom `GFX_div_templ_<n>_large` symbol, else the priority unit's glyph;
+  - the priority frames from the defines' stage count;
+  - the paradrop frame;
+  - the equipment button's sprite;
+  - the country's Army experience.
+- The stat rows and summary values are the designer stats of
+  [dashboard-army](../dashboard-army/README.md#designer-stats). Rows keep the game's fixed
+  order. A value not yet proven shows its label only, with why on hover.
+- Unbound, each named in the reply's slots: the special-forces frame, the equipment warning,
+  the production footer and an army headquarters' composition. Their controls are hidden.
+- Pickers and overlays stay closed. The editor's buttons are muted.
+- Everything the game draws resolves through the recording's content stack, with no vanilla
+  fallback: the `.gui` layout, frames, backgrounds and sprites, unit glyphs and the symbol,
+  fonts and their text colours, and localisation. A mod that restyles the designer, replaces
+  a sprite's texture or a font's glyphs, or adds a sub-unit draws in its own style; what the
+  renderer cannot reproduce is refused by name and counted, never drawn in another style.
 
 Root, row and control names are the binding contract. A content stack that replaces or
 renames them refuses the window by name; independent facts of the reply remain. Slots whose

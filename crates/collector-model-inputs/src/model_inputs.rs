@@ -2,24 +2,30 @@
 //! while drawing: country-local sub-unit clones whose requirements differ from
 //! their global definition, every hour (a country no hooked writer touched is
 //! carried, [`local_store`]), and every country's equipment rosters, daily.
+//! Every country's persistent unit-bonus list, which the template designer's
+//! stat panel reads, is walked whole in the rosters' daily slot.
 use crate::{
     clock::qpc,
     table_capture::{Arena, CaptureRows, grow_capacity},
     table_conversion::{table, unavailable},
 };
-use engine_allocation::{map_slice, owned_vec};
-use engine_deployment::cdeployment_status;
-use engine_native::{Memory, cproduction_status, walk::Outcome};
+use engine_allocation::{copy_vec, map_slice, owned_vec};
+use engine_deployment::{cdeployment_status, unit_bonuses};
+use engine_native::{
+    Memory, cproduction_status, creferenced_division_template::Span, walk::Outcome,
+};
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::AvailableEquipmentVariantRow,
-    rows::CountryLocalSubunitRow, rows::LocalSubunitRequirement, rows::TableId, rows::tables,
+    rows::CountryLocalSubunitRow, rows::CountryUnitBonusRow, rows::LocalSubunitRequirement,
+    rows::TableId, rows::UnitBonusGrant, rows::UnitBonusStat, rows::UnitBonusTarget, rows::tables,
 };
 use replay_frame::frame::TableView;
 
-pub const N: usize = 2;
+pub const N: usize = 3;
 pub const TABLES: [TableId; N] = [
     TableId::CountryLocalSubunits,
     TableId::AvailableEquipmentVariants,
+    TableId::CountryUnitBonuses,
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
@@ -28,11 +34,13 @@ pub struct Capacities {
     local_rows: usize,
     requirements: usize,
     rosters: usize,
+    bonuses: unit_bonuses::Counts,
 }
 
 impl Capacities {
     /// Three independent live equipment rosters provide their own counts,
-    /// with duplicates retained.
+    /// with duplicates retained; the unit-bonus lists, their entries and
+    /// every nested output its own.
     pub fn presize(
         &mut self,
         memory: &impl Memory,
@@ -54,6 +62,16 @@ impl Capacities {
         }
         self.local_rows = self.local_rows.max(local.required_rows);
         self.requirements = self.requirements.max(local.required_requirements);
+        let bonuses = unit_bonuses::walk(memory, base, state, unit_bonuses::Buffers::demand());
+        if let Outcome::Unavailable { reason } = bonuses.outcome {
+            return Err(reason);
+        }
+        let (held, required) = (&mut self.bonuses, bonuses.required);
+        held.rows = held.rows.max(required.rows);
+        held.targets = held.targets.max(required.targets);
+        held.grants = held.grants.max(required.grants);
+        held.stats = held.stats.max(required.stats);
+        held.label_bytes = held.label_bytes.max(required.label_bytes);
         Ok(())
     }
 }
@@ -63,6 +81,12 @@ pub struct Captured {
     requirements: Arena<cdeployment_status::LocalRequirement>,
     required_local_rows: usize,
     rosters: CaptureRows<cproduction_status::AvailableEquipmentRow>,
+    bonuses: CaptureRows<unit_bonuses::Row>,
+    bonus_targets: Arena<unit_bonuses::Target>,
+    bonus_grants: Arena<unit_bonuses::Grant>,
+    bonus_stats: Arena<unit_bonuses::Stat>,
+    bonus_labels: Arena<u8>,
+    required_bonus_rows: usize,
 }
 
 impl Captured {
@@ -71,14 +95,12 @@ impl Captured {
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.rosters
             .fail(super::failed_capture(TABLES[1], hour, force_full, reason));
+        self.bonuses
+            .fail(super::failed_capture(TABLES[2], hour, force_full, reason));
     }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub fn vacant() -> Self {
-        Self::with_capacities(&Capacities {
-            local_rows: 0,
-            requirements: 0,
-            rosters: 0,
-        })
+        Self::with_capacities(&Capacities::default())
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
@@ -86,6 +108,12 @@ impl Captured {
             requirements: Arena::new(capacity.requirements),
             required_local_rows: 0,
             rosters: CaptureRows::new(capacity.rosters),
+            bonuses: CaptureRows::new(capacity.bonuses.rows),
+            bonus_targets: Arena::new(capacity.bonuses.targets),
+            bonus_grants: Arena::new(capacity.bonuses.grants),
+            bonus_stats: Arena::new(capacity.bonuses.stats),
+            bonus_labels: Arena::new(capacity.bonuses.label_bytes),
+            required_bonus_rows: 0,
         }
     }
     pub fn reset(&mut self) {
@@ -93,17 +121,35 @@ impl Captured {
         self.requirements.reset();
         self.required_local_rows = 0;
         self.rosters.reset();
+        self.bonuses.reset();
+        self.bonus_targets.reset();
+        self.bonus_grants.reset();
+        self.bonus_stats.reset();
+        self.bonus_labels.reset();
+        self.required_bonus_rows = 0;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.local.allocated_bytes()
             + self.requirements.allocated_bytes()
             + self.rosters.allocated_bytes()
+            + self.bonuses.allocated_bytes()
+            + self.bonus_targets.allocated_bytes()
+            + self.bonus_grants.allocated_bytes()
+            + self.bonus_stats.allocated_bytes()
+            + self.bonus_labels.allocated_bytes()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(&mut capacity.local_rows, self.required_local_rows);
         self.local.grow(&mut capacity.local_rows);
         self.requirements.grow(&mut capacity.requirements);
         self.rosters.grow(&mut capacity.rosters);
+        let bonuses = &mut capacity.bonuses;
+        grow_capacity(&mut bonuses.rows, self.required_bonus_rows);
+        self.bonuses.grow(&mut bonuses.rows);
+        self.bonus_targets.grow(&mut bonuses.targets);
+        self.bonus_grants.grow(&mut bonuses.grants);
+        self.bonus_stats.grow(&mut bonuses.stats);
+        self.bonus_labels.grow(&mut bonuses.label_bytes);
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(
@@ -177,13 +223,45 @@ impl Captured {
         } else {
             self.rosters.outcome = skipped;
         }
+        if should_walk(TABLES[2], hour, force_full) {
+            let _reads = crate::read_accounting::table(TABLES[2]);
+            let started = qpc();
+            let walk = unit_bonuses::walk(
+                memory,
+                base,
+                game_state,
+                unit_bonuses::Buffers::growing(
+                    &mut self.bonuses.rows,
+                    &mut self.bonus_targets.first,
+                    &mut self.bonus_grants.first,
+                    &mut self.bonus_stats.first,
+                    &mut self.bonus_labels.first,
+                ),
+            );
+            let (written, required) = (walk.written, walk.required);
+            self.bonuses.outcome = walk.outcome;
+            self.required_bonus_rows = required.rows;
+            (self.bonus_targets.len, self.bonus_targets.required) =
+                (written.targets, required.targets);
+            (self.bonus_grants.len, self.bonus_grants.required) = (written.grants, required.grants);
+            (self.bonus_stats.len, self.bonus_stats.required) = (written.stats, required.stats);
+            (self.bonus_labels.len, self.bonus_labels.required) =
+                (written.label_bytes, required.label_bytes);
+            ticks[2] = qpc().saturating_sub(started).max(0) as u64;
+        } else {
+            self.bonuses.outcome = skipped;
+        }
         ticks
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.local.outcome, self.rosters.outcome]
+        [
+            self.local.outcome,
+            self.rosters.outcome,
+            self.bonuses.outcome,
+        ]
     }
     pub fn tables(&self) -> [TableView; N] {
-        [self.local_table(), self.roster_table()]
+        [self.local_table(), self.roster_table(), self.bonus_table()]
     }
     fn local_table(&self) -> TableView {
         let Some(requirements) = self.requirements.first.get(..self.requirements.len) else {
@@ -226,6 +304,79 @@ impl Captured {
             },
         )
     }
+    /// Every entry's label, targets, grants and stats must lie inside the
+    /// captured arenas; an escape refuses the table.
+    fn bonus_table(&self) -> TableView {
+        let (Some(targets), Some(grants), Some(stats), Some(labels)) = (
+            self.bonus_targets.first.get(..self.bonus_targets.len),
+            self.bonus_grants.first.get(..self.bonus_grants.len),
+            self.bonus_stats.first.get(..self.bonus_stats.len),
+            self.bonus_labels.first.get(..self.bonus_labels.len),
+        ) else {
+            return unavailable("unit bonus arena invalid");
+        };
+        let Some(rows) = self.bonuses.rows.get(..self.bonuses.outcome.len()) else {
+            return unavailable("unit bonus row count invalid");
+        };
+        let inside = |row: &unit_bonuses::Row| {
+            span(labels, row.label).is_some()
+                && span(targets, row.targets).is_some_and(|targets| {
+                    targets.iter().all(|target| {
+                        span(stats, target.stats).is_some()
+                            && span(grants, target.grants).is_some_and(|grants| {
+                                grants
+                                    .iter()
+                                    .all(|grant| span(stats, grant.stats).is_some())
+                            })
+                    })
+                })
+        };
+        if !rows.iter().all(inside) {
+            return unavailable("unit bonus spans outside captured arenas");
+        }
+        let stat = |stat: &unit_bonuses::Stat| UnitBonusStat {
+            selector: stat.selector,
+            value_raw: stat.value_raw,
+        };
+        table::<tables::CountryUnitBonuses, _>(self.bonuses.outcome, rows, |row| {
+            CountryUnitBonusRow {
+                country: row.country,
+                ordinal: row.ordinal,
+                source_kind: row.source_kind,
+                source_id: row.source_id,
+                source_number: row.source_number,
+                label: owned_vec(copy_vec(span(labels, row.label).unwrap())),
+                targets: owned_vec(map_slice(span(targets, row.targets).unwrap(), |target| {
+                    UnitBonusTarget {
+                        category: target.category,
+                        token: target.token,
+                        combat_width_raw: target.combat_width_raw,
+                        stats: owned_vec(map_slice(span(stats, target.stats).unwrap(), stat)),
+                        grants: owned_vec(map_slice(
+                            span(grants, target.grants).unwrap(),
+                            |grant| UnitBonusGrant {
+                                category_token: grant.category_token,
+                                add: grant.add,
+                                display_as_percentage: grant.display_as_percentage,
+                                stats: owned_vec(map_slice(
+                                    span(stats, grant.stats).unwrap(),
+                                    stat,
+                                )),
+                            },
+                        )),
+                    }
+                })),
+            }
+        })
+    }
+}
+
+/// The values `range` names, when it lies inside `values`.
+fn span<T>(values: &[T], range: Span) -> Option<&[T]> {
+    range
+        .start
+        .checked_add(range.len)
+        .and_then(|end| values.get(range.start..end))
 }
 
 mod local_store;
@@ -267,6 +418,7 @@ mod tests {
             local_rows: 1,
             requirements: 2,
             rosters: 1,
+            ..Capacities::default()
         });
         captured.local.rows[0] = cdeployment_status::LocalSubunitRow {
             country: 3,
@@ -299,8 +451,10 @@ mod tests {
     }
 
     #[test]
-    fn five_thousand_countries_use_live_three_roster_demand_and_same_hour_growth() {
-        use engine_native::{ccountry, cequipment_variant, cgame_state, csub_unit_definition};
+    fn five_thousand_countries_use_live_roster_and_unit_bonus_demand_and_same_hour_growth() {
+        use engine_native::{
+            ccountry, cequipment_variant, cgame_state, csub_unit_definition, msvc_string,
+        };
         const COUNTRIES: usize = 5_000;
         const STATE: usize = 0x1000;
         const FIRST: usize = 0x20000;
@@ -308,7 +462,12 @@ mod tests {
         const DATABASE: usize = 0x11000;
         let variant = FIRST + COUNTRIES * STRIDE;
         let pointers = variant + 0x100;
-        let mut bytes = vec![0; pointers + 64 * 8];
+        // Every country's list holds three entries; the first has one exact
+        // target with one nonzero stat word.
+        let entries = pointers + 64 * 8;
+        let definition = entries + 3 * unit_bonuses::STRIDE;
+        let exact = definition + 0x400;
+        let mut bytes = vec![0; exact + 8];
         let word = |bytes: &mut [u8], at: usize, value: u64| {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
         };
@@ -344,6 +503,33 @@ mod tests {
         for index in 0..64 {
             word(&mut bytes, pointers + index * 8, variant as u64);
         }
+        for entry in (0..3).map(|index| entries + index * unit_bonuses::STRIDE) {
+            word(&mut bytes, entry, unit_bonuses::VTABLE_RVA as u64);
+            word(
+                &mut bytes,
+                entry + unit_bonuses::PAYLOAD,
+                unit_bonuses::PAYLOAD_VTABLE_RVA as u64,
+            );
+            word(
+                &mut bytes,
+                entry + unit_bonuses::LABEL + msvc_string::CAPACITY,
+                msvc_string::INLINE_CAPACITY,
+            );
+        }
+        array(
+            &mut bytes,
+            entries + unit_bonuses::PAYLOAD + unit_bonuses::EXACT_TARGETS,
+            exact,
+            1,
+        );
+        word(&mut bytes, exact, definition as u64);
+        word(
+            &mut bytes,
+            definition,
+            csub_unit_definition::VTABLE_RVA as u64,
+        );
+        word(&mut bytes, definition + csub_unit_definition::TOKEN, 41);
+        word(&mut bytes, definition + unit_bonuses::STATS, 25_000);
         for index in 0..COUNTRIES {
             let id = index + 1;
             let country = FIRST + index * STRIDE;
@@ -391,6 +577,12 @@ mod tests {
                 deployment + cdeployment_status::OWNER,
                 country as u64,
             );
+            array(
+                &mut bytes,
+                deployment + cdeployment_status::UNIT_BONUSES,
+                entries,
+                3,
+            );
         }
         struct Fixture<'a>(&'a [u8]);
         impl Memory for Fixture<'_> {
@@ -410,6 +602,16 @@ mod tests {
         let mut capacity = Capacities::default();
         capacity.presize(&memory, 0, STATE).unwrap();
         assert!(capacity.rosters >= COUNTRIES * 53);
+        assert_eq!(
+            capacity.bonuses,
+            unit_bonuses::Counts {
+                rows: COUNTRIES * 3,
+                targets: COUNTRIES,
+                grants: 0,
+                stats: COUNTRIES,
+                label_bytes: 0,
+            }
+        );
         let mut captured = Captured::with_capacities(&capacity);
         captured.capture(&memory, 0, STATE, 0, true);
         assert_eq!(
@@ -422,6 +624,36 @@ mod tests {
             captured.rosters.rows[COUNTRIES * 53 - 1].country,
             COUNTRIES as u32
         );
+        assert_eq!(
+            captured.bonuses.outcome,
+            Outcome::Rows { len: COUNTRIES * 3 }
+        );
+        let TableView::Complete(TableRows::CountryUnitBonuses(rows)) = captured.bonus_table()
+        else {
+            panic!("complete unit bonuses");
+        };
+        assert_eq!(
+            (
+                rows[COUNTRIES * 3 - 1].country,
+                rows[COUNTRIES * 3 - 1].ordinal
+            ),
+            (COUNTRIES as u32, 2)
+        );
+        assert_eq!(
+            rows[0].targets[0].stats,
+            [UnitBonusStat {
+                selector: 0,
+                value_raw: 25_000
+            }]
+        );
+        // A span outside the captured arena refuses the table.
+        let stats = captured.bonus_stats.len;
+        captured.bonus_stats.len = stats - 1;
+        assert!(matches!(
+            captured.bonus_table(),
+            TableView::Unavailable { .. }
+        ));
+        captured.bonus_stats.len = stats;
         // Demand grows with no country-count change or presize poll. The
         // original changed header supplies enough space in this same capture.
         array(

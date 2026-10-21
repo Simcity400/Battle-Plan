@@ -657,3 +657,95 @@ fn country_template_state_keeps_inherited_garrison_groups_and_state_overrides() 
         Some((4_u64 << 32) | 52)
     );
 }
+
+#[test]
+fn unit_modifiers_keep_entry_and_target_order_and_omitted_source_fields() {
+    let document = installed_content_core::parser::parse(
+        br#"countries={
+        AAA={deployment={unit_modifiers={
+            { synthetic_unit={ synthetic_stat=0.25 combat_width=-0.5
+                need_equipment={ synthetic_archetype=1 }
+                battalion_mult={ category=synthetic_recipient add=yes display_as_percentage=no synthetic_stat=0.1 }
+                battalion_mult={ category=synthetic_recipient add=no display_as_percentage=yes }
+                night={ attack=0.1 } synthetic_terrain={ movement=0.2 } priority=2 ai_priority=1 sprite=synthetic }
+              synthetic_unit={ }
+              type=effect number=-3 localization_key="named" }
+            { type=rewards number=1 id=synthetic_doctrine }
+        }}}
+        BBB={deployment={}}
+        CCC={}
+    }"#,
+    )
+    .unwrap();
+    let pack = parse(&document.items).unwrap();
+    let list = pack.unit_bonuses[b"AAA".as_slice()].as_ref().unwrap();
+    assert_eq!(list.len(), 2);
+    let first = &list[0];
+    assert_eq!(
+        (
+            first.kind.as_deref(),
+            first.number,
+            first.id.as_deref(),
+            first.label.as_deref()
+        ),
+        (
+            Some(b"effect".as_slice()),
+            Some(-3),
+            None,
+            Some(b"named".as_slice())
+        )
+    );
+    // Repeated targets are retained; requirements, adjusters, terrain and
+    // presentation members are not.
+    assert_eq!(first.targets.len(), 2);
+    let target = &first.targets[0];
+    assert_eq!(target.token, b"synthetic_unit");
+    assert_eq!(
+        target.combat_width.as_ref().map(|width| width.raw),
+        Some(-50_000)
+    );
+    assert_eq!(target.stats.len(), 1);
+    assert_eq!(
+        (target.stats[0].0.as_slice(), target.stats[0].1.raw),
+        (b"synthetic_stat".as_slice(), 25_000)
+    );
+    assert_eq!(target.grants.len(), 2);
+    assert_eq!(
+        (
+            target.grants[0].category.as_deref(),
+            target.grants[0].add,
+            target.grants[0].display_as_percentage
+        ),
+        (
+            Some(b"synthetic_recipient".as_slice()),
+            Some(true),
+            Some(false)
+        )
+    );
+    assert_eq!(target.grants[0].stats[0].1.raw, 10_000);
+    assert!(target.grants[1].stats.is_empty());
+    assert!(first.targets[1].combat_width.is_none() && first.targets[1].stats.is_empty());
+    assert_eq!(
+        (
+            list[1].kind.as_deref(),
+            list[1].id.as_deref(),
+            list[1].label.as_deref()
+        ),
+        (
+            Some(b"rewards".as_slice()),
+            Some(b"synthetic_doctrine".as_slice()),
+            None
+        )
+    );
+    assert!(list[1].targets.is_empty());
+    // An omitted list and an omitted deployment are both empty.
+    assert_eq!(pack.unit_bonuses[b"BBB".as_slice()], Ok(Vec::new()));
+    assert_eq!(pack.unit_bonuses[b"CCC".as_slice()], Ok(Vec::new()));
+    let named = installed_content_core::parser::parse(
+        br#"countries={AAA={deployment={unit_modifiers={ named={ type=effect number=0 } }}}}"#,
+    )
+    .unwrap();
+    // A list that does not parse is that country's error; the pack still reads.
+    let pack = parse(&named.items).unwrap();
+    assert!(pack.unit_bonuses[b"AAA".as_slice()].is_err());
+}

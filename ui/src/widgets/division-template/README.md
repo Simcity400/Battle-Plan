@@ -18,7 +18,7 @@ One country; Campaign, Follow (default) or Pin; Expeditionary forces count for (
 - The country is the one identity the choice named at the date it was made, kept with the widget and followed through that identity's renames only, so a later holder of the tag never takes it; a tag that named no country then and several over the campaign asks which one.
 - Only "Base combat width" is shown: the recorded sum before country and commander factors. The designer's final width belongs to the stats lane.
 - Priority shows the designer's own heading for the stored stage, resolved through the content stack; a stage with no proven heading shows "—" with its reason on hover, never the number.
-- A row opens the game-window renderer's division designer through [designerSnapshot.ts](designerSnapshot.ts). Until the renderer registers its snapshot, rows have nothing to open and their tooltip says *Game view not available yet*.
+- A row opens the game's division designer for the template at the row's hour, drawn by the game-window renderer ([gameWindowRegistry.tsx](../../components/gameWindowRegistry.tsx) registers it through [designerSnapshot.ts](designerSnapshot.ts)). The window's own diagnostics (unbound controls, unproven stats) are reported beside the widget's.
 - Narrow widths hide Priority, Base combat width and Battalions, in that order, into the row tooltip.
 
 ## Files

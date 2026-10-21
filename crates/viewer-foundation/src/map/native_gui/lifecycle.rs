@@ -2007,6 +2007,41 @@ impl Instance {
         })
     }
 
+    /// Moves a container's content along one axis as the wheel moves it
+    /// ([`Self::wheel_scroll`]): to the pixels `target` picks from the bar's range (its near and
+    /// far ends, which can lie below zero), clamped into it and snapped without notifying, the
+    /// content moved at once; a target of `None` leaves the bar's value as it is. Returns the
+    /// range and the offset reached, in pixels; `None` while the bar is hidden, which leaves the
+    /// content in place.
+    pub fn scroll_to(
+        &mut self,
+        root: &Element,
+        element: &Element,
+        vertical: bool,
+        target: impl FnOnce([i32; 2]) -> Option<i32>,
+        resources: &dyn Resources,
+    ) -> Result<Option<([i32; 2], i32)>, Refusals> {
+        let mut reached = None;
+        self.with_scrollbar(root, element, vertical, resources, |bar, template| {
+            if !bar.state.shown {
+                return;
+            }
+            let range = [bar.state.range.min, bar.state.range.max].map(|end| (end / 100_000) as i32);
+            let value = match target(range) {
+                Some(pixels) => {
+                    let clamped = bar.state.range.clamp(i64::from(pixels) * 100_000);
+                    bar.set_target(template, clamped, false);
+                    let offset = (clamped / 100_000) as i32;
+                    bar.notified = Some(offset);
+                    offset
+                }
+                None => (bar.state.value / 100_000) as i32,
+            };
+            reached = Some((range, value));
+        })?;
+        Ok(reached)
+    }
+
     fn with_scrollbar(
         &mut self,
         root: &Element,

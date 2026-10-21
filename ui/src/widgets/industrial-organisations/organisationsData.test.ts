@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { organisationsAt, policyText, rosterKnown, validateOrganisations, withWindowDiagnostics } from './organisationsData.ts';
+import { organisationsAt, policyText, rosterKnown, validateOrganisations } from './organisationsData.ts';
+import { withWindowDiagnostics } from '../../dashboard/gameWindows.ts';
 
 const mio = (id: string, size: string | null, funds: string, policy: number | null) => ({ id, holder: [[0, 50, '1']], size: size === null ? [] : [[0, 50, size]],
   funds: [[0, 50, funds]], points: [], unlocked: [[0, 50, '2']], policy: policy === null ? [] : [[0, 50, String(policy)]],

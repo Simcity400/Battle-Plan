@@ -3122,6 +3122,7 @@ dependencies = [
 name = "dashboard-game-window"
 version = "0.1.0"
 dependencies = [
+ "dashboard-army",
  "dashboard-base",
  "dashboard-text",
  "dpi",
