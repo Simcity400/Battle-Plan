@@ -717,6 +717,53 @@ pub fn replacement_sprites(name: &str) -> Vec<(String, [u8; 4])> {
     .into()
 }
 
+/// A synthetic masked-shield flag program: the flag at its atlas rectangle,
+/// with the mask's alpha, blended `blend`.
+pub fn shield_flag_program(blend: &str) -> String {
+    format!(
+        r#"VertexStruct Input {{ float3 position : POSITION;
+float2 uv : TEXCOORD0;
+}};
+VertexStruct Output {{ float4 position : SV_POSITION;
+float2 uv : TEXCOORD0;
+float2 flag : TEXCOORD1;
+}};
+ConstantBuffer(0,0) {{ float4x4 M;
+float4 FlagCoords;
+float4 Tail;
+}};
+VertexShader = {{ MainCode V [[
+Output main(Input i) {{ Output o; o.position = mul(M, float4(i.position, 1)); o.uv = i.uv; o.flag = FlagCoords.xy + i.uv * FlagCoords.zw; return o; }}
+]] }}
+PixelShader = {{
+Samplers = {{
+ Flag {{ Index = 0 MagFilter = point MinFilter = point AddressU = clamp AddressV = clamp }}
+ Mask {{ Index = 1 MagFilter = point MinFilter = point AddressU = clamp AddressV = clamp }}
+}}
+MainCode P [[
+float4 main(Output i) : SV_TARGET {{ float4 color = Flag_Texture.Sample(Flag_Sampler, i.flag); color.a = Mask_Texture.Sample(Mask_Sampler, i.uv).a; return color; }}
+]] }}
+BlendState BlendState {{ BlendEnable = yes {blend} }}
+Effect Up {{ VertexShader = V PixelShader = P }}
+"#
+    )
+}
+
+/// A masked shield's programs, blended source over: the flag program at
+/// `gfx/FX/shield_flag.lua` and the overlay's default button program.
+pub fn shield_programs() -> Vec<(&'static str, String)> {
+    let over = "SourceBlend = \"SRC_ALPHA\" DestBlend = \"INV_SRC_ALPHA\"";
+    vec![
+        ("gfx/FX/shield_flag.shader", shield_flag_program(over)),
+        (
+            "gfx/FX/buttonstate.shader",
+            format!("{ARTWORK_SHADER}
+BlendState BlendState {{ BlendEnable = yes {over} }}
+"),
+        ),
+    ]
+}
+
 const ARTWORK_MAP: &str = "definitions=definitions.csv provinces=grid.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp";
 
 pub fn map_bitmap() -> Vec<u8> {

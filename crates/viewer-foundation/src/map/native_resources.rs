@@ -47,8 +47,7 @@ pub const TEXT_EFFECT: &str = "gfx/FX/text.lua";
 /// The effect a circular progress bar draws with.
 pub const CIRCULAR_EFFECT: &str = "gfx/FX/circularprogressbar.shader";
 
-/// The effect a masked shield's overlay draws with.
-pub const SHIELD_OVERLAY_EFFECT: &str = "gfx/FX/buttonstate.shader";
+pub use installed_content_core::gui::native::resources::SHIELD_OVERLAY_EFFECT;
 
 /// The default effect for sprite types with an empty `effectFile`, including text sprites.
 pub const DEFAULT_SPRITE_EFFECT: &str = "gfx/FX/buttonstate.lua";

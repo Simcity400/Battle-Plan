@@ -157,6 +157,7 @@ pub(super) fn draw(
         size: extent,
         vertices,
         constants,
+        pixel_constants: true,
         textures,
     })
 }
@@ -195,7 +196,11 @@ fn active_at_rest(data: &installed_content_core::gui::native::sprites::Animation
         && (data.looping || data.time >= 0.0 || data.time.is_nan())
 }
 
-fn load(layers: &ResolvedLayers, path: &[u8], decode: Decode) -> io::Result<dds::Texture> {
+pub(super) fn load(
+    layers: &ResolvedLayers,
+    path: &[u8],
+    decode: Decode,
+) -> io::Result<dds::Texture> {
     // Texture loading uses the loaded dimensions and device limits,
     // without a decoded-texel ceiling.
     resources::stack_texture(layers, path, decode)?
@@ -213,7 +218,7 @@ fn load(layers: &ResolvedLayers, path: &[u8], decode: Decode) -> io::Result<dds:
         })
 }
 
-fn optional(
+pub(super) fn optional(
     layers: &ResolvedLayers,
     path: &[u8],
     decode: Decode,

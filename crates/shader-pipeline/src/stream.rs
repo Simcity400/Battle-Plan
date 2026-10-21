@@ -274,6 +274,11 @@ impl Stream {
         self.state.write_mask = write_mask;
     }
 
+    /// The bound blend state and colour write mask.
+    pub fn blend(&self) -> (Option<wgpu::BlendState>, wgpu::ColorWrites) {
+        (self.state.blend, self.state.write_mask)
+    }
+
     /// Draws into a layer that keeps premultiplied colour and is blended over the frame later:
     /// the bound blend keeps its colour terms, its alpha accumulates as `One, OneMinusSrcAlpha`,
     /// and every channel is written. The next effect bind restores the effect's own state.

@@ -346,7 +346,8 @@ fn shield_flags_read_the_top_bar_s_own_flag_button_whatever_other_windows_declar
         "interface/general_stuff.gfx",
         "spriteTypes = { maskedShieldType = { name = GFX_shield_medium \
          textureFile1 = gfx/interface/shield_overlay.tga \
-         textureFile2 = gfx/interface/shield_mask.tga } }",
+         textureFile2 = gfx/interface/shield_mask.tga \
+         effectFile = gfx/FX/maskedflag.lua } }",
     );
     stack.write(&base, "gfx/interface/shield_overlay.tga", tga_row(&[RED]));
     stack.write(&base, "gfx/interface/shield_mask.tga", tga_row(&[GREEN]));
@@ -967,7 +968,7 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
         "spriteType = { name = GFX_mod_sortie texturefile = gfx/interface/mod.tga } ",
         "spriteType = { name = GFX_mod_covert texturefile = gfx/interface/mod.tga } ",
         "spriteType = { name = GFX_mod_archetype_medium texturefile = gfx/interface/mod.tga } ",
-        "maskedShieldType = { name = GFX_mod_shield textureFile2 = gfx/interface/mod.tga } }")
+        "maskedShieldType = { name = GFX_mod_shield textureFile1 = gfx/interface/mod.tga textureFile2 = gfx/interface/mod.tga effectFile = gfx/FX/maskedflag.lua } }")
     );
     let raid_labels = std::iter::once("raid_type_mod_sortie")
         .chain(engine_native::craid_instance::PHASE_KEYS)

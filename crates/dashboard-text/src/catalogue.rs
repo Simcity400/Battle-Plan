@@ -1423,7 +1423,9 @@ fn render_sprite_frame_png(
         .map_err(|error| invalid(format!("sprite {}: {error}", sprite.name)))
 }
 
+mod shield;
 mod sprite;
+pub use shield::MaskedShield;
 
 /// One frame of a plain sprite's texture, point-sampled down to `max_edge`.
 /// The query uses the integer extent while geometry steps frames by the

@@ -3,9 +3,10 @@
 //! Every size reads the game's own flag files through the recording's content
 //! layers, so a mod's flags and its cosmetic or ideology variants win exactly as
 //! they did in the game. Files decode as the engine's `DecodeFlagTga` does, at
-//! the cell sizes the content's defines give. `Shield` also applies the sprite
-//! the recorded top bar's `player_flag` button names; `Panel` applies it with the
-//! overlay's edge shading evened out, for flags drawn inside the dashboard's panels.
+//! the cell sizes the content's defines give. `Shield` draws the flag as the
+//! recorded top bar's `player_flag` button draws it, through its masked shield;
+//! `Panel` is app styling: the same draw with the overlay's edge shading evened
+//! out, for flags drawn inside the dashboard's panels.
 
 use super::{LoadContext, Product, validate_tag};
 pub use crate::flag_choices::{FlagChoice, choices, ruling_groups};
@@ -37,22 +38,25 @@ pub enum CountryFlagSize {
     Medium,
     /// `gfx/flags/small`, 10x7.
     Small,
-    /// The large flag as the game's top bar draws it through `GFX_shield_medium`.
+    /// The flag as the game's top bar draws it through its masked shield
+    /// (`GFX_shield_medium` in vanilla).
     Shield,
-    /// The top bar's shield with its overlay's broad edge shading evened out to
-    /// the overlay's centre, keeping its texture: a presentation choice for flags
-    /// drawn inside panels, not a game rendering.
+    /// App styling, not a game rendering: the top bar's shield drawn with its
+    /// overlay's broad edge shading evened out to the overlay's centre, keeping
+    /// its texture, for flags drawn inside panels.
     Panel,
 }
 
 impl CountryFlagSize {
     /// Flag sets searched in order; a medium flag a mod omits falls back to the
-    /// same country's large flag rather than to no flag.
+    /// same country's large flag rather than to no flag. A shield's descriptor
+    /// chooses its set ([`ShieldStyle::sets`]).
     pub(crate) fn sets(self) -> &'static [FlagSet] {
         match self {
-            Self::Full | Self::Shield | Self::Panel => &[FlagSet::Normal],
+            Self::Full => &[FlagSet::Normal],
             Self::Medium => &[FlagSet::Medium, FlagSet::Normal],
             Self::Small => &[FlagSet::Small],
+            Self::Shield | Self::Panel => &[],
         }
     }
 }
@@ -246,19 +250,17 @@ type CachedShield = (
 );
 
 /// The top bar's `player_flag` sprite as the recorded content declares it (a
-/// `maskedShieldType`, `GFX_shield_medium` in vanilla): `textureFile2` supplies
-/// the alpha and `textureFile1` is drawn over the flag.
+/// `maskedShieldType`, `GFX_shield_medium` in vanilla), drawn as the game draws it.
 pub(crate) struct ShieldStyle {
-    mask: Rgba8Image,
-    overlay: Option<Rgba8Image>,
-    /// The overlay as `Panel` draws it, evened once per content stack.
-    even_overlay: Option<Rgba8Image>,
+    shield: crate::catalogue::MaskedShield,
+    /// The shield as `Panel` draws it: its overlay evened once per content stack.
+    panel: crate::catalogue::MaskedShield,
+    decode: installed_content_image::native::Decode,
     pub(crate) warnings: Vec<String>,
 }
 
 impl ShieldStyle {
     pub(crate) fn load(catalogue: &Catalogue) -> io::Result<Self> {
-        let content = &catalogue.content;
         let decode = *catalogue.gui_decode.as_ref().map_err(|why| {
             invalid(format!(
                 "the top bar's {PLAYER_FLAG} shield artwork is unavailable: {why}"
@@ -272,29 +274,40 @@ impl ShieldStyle {
             &mut warnings,
         )?;
         let sprite = crate::catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
-        let installed_content_core::gui::native::sprites::SpriteKind::MaskedShield { shield, .. } =
-            &sprite.facts.kind
-        else {
-            return Err(invalid(format!("{name} is not a maskedShieldType")));
-        };
-        if shield.texture2.is_empty() {
-            return Err(invalid(format!("{name} declares no mask texture")));
-        }
-        let overlay = if shield.texture1.is_empty() {
-            None
-        } else {
-            Some(crate::catalogue::gui_texture(
-                &content.layers,
-                &shield.texture1,
-                decode,
-            )?)
+        let shield =
+            crate::catalogue::MaskedShield::load(&catalogue.content.layers, sprite, decode)?;
+        // A shield without an overlay has no shading to even.
+        let panel = match shield.overlay()? {
+            Some(overlay) => shield.with_overlay(even_overlay(&overlay)),
+            None => shield.clone(),
         };
         Ok(Self {
-            mask: crate::catalogue::gui_texture(&content.layers, &shield.texture2, decode)?,
-            even_overlay: overlay.as_ref().map(even_overlay),
-            overlay,
+            shield,
+            panel,
+            decode,
             warnings,
         })
+    }
+
+    /// The flag set the shield samples: the small set when its descriptor says
+    /// `small`, else the large set.
+    pub(crate) fn sets(&self) -> &'static [FlagSet] {
+        if self.shield.small() {
+            &[FlagSet::Small]
+        } else {
+            &[FlagSet::Normal]
+        }
+    }
+
+    /// Each flag in the shield, `Panel`'s app styling when `panel`.
+    fn draw(
+        &self,
+        layers: &installed_content_core::ResolvedLayers,
+        flags: &[&Rgba8Image],
+        panel: bool,
+    ) -> io::Result<Vec<Rgba8Image>> {
+        let shield = if panel { &self.panel } else { &self.shield };
+        shield.draw(layers, flags, self.decode)
     }
 }
 
@@ -532,42 +545,6 @@ fn even_overlay(overlay: &Rgba8Image) -> Rgba8Image {
     }
 }
 
-/// `maskedflag.shader` over the sprite's quad: the flag's colour with the
-/// mask's alpha, then the authored overlay blended SRC_ALPHA, INV_SRC_ALPHA.
-/// The result is straight alpha at the mask's extent.
-fn shield(flag: &Rgba8Image, mask: &Rgba8Image, overlay: Option<&Rgba8Image>) -> Rgba8Image {
-    let (width, height) = bounded(mask.width, mask.height, MAX_FLAG_EDGE);
-    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height {
-        for x in 0..width {
-            let base = sample(flag, x, y, width, height);
-            let base_alpha = u32::from(sample(mask, x, y, width, height)[3]);
-            let Some(overlay) = overlay else {
-                pixels.extend_from_slice(&[base[0], base[1], base[2], base_alpha as u8]);
-                continue;
-            };
-            let top = sample(overlay, x, y, width, height);
-            let top_alpha = u32::from(top[3]);
-            // Alpha of `top` over `base`, scaled by 255 * 255.
-            let alpha = top_alpha * 255 + base_alpha * (255 - top_alpha);
-            let mut pixel = [0_u8; 4];
-            for channel in 0..3 {
-                let weighted = u32::from(top[channel]) * top_alpha * 255
-                    + u32::from(base[channel]) * base_alpha * (255 - top_alpha)
-                    + alpha / 2;
-                pixel[channel] = weighted.checked_div(alpha).unwrap_or(0) as u8;
-            }
-            pixel[3] = ((alpha + 127) / 255) as u8;
-            pixels.extend_from_slice(&pixel);
-        }
-    }
-    Rgba8Image {
-        width,
-        height,
-        pixels,
-    }
-}
-
 /// The tables [`choices`] reads, its ruling groups included.
 const CHOICE_TABLES: [TableId; 5] = [
     TableId::Countries,
@@ -674,6 +651,8 @@ impl FlagContext {
         if let Some(style) = shield_style {
             warnings.extend(style.warnings.iter().cloned());
         }
+        // Found flags, drawn together once every tag is searched.
+        let mut shielded = Vec::new();
         for tag in &request.tags {
             if cancelled.load(Ordering::Acquire) {
                 return Err(invalid("Flag request cancelled"));
@@ -691,7 +670,7 @@ impl FlagContext {
             // cannot resolve costs only this country's flag.
             let (found, findings) = find_flag(
                 &self.content.layers,
-                request.size.sets(),
+                shield_style.map_or_else(|| request.size.sets(), ShieldStyle::sets),
                 &self.cells,
                 &choice.candidates,
                 &mut cache,
@@ -710,30 +689,7 @@ impl FlagContext {
                     .map(|finding| format!("{tag}: {}", finding.message)),
             );
             match found {
-                FlagSearch::Found { asset, image } => {
-                    let image = match shield_style {
-                        Some(style) => shield(
-                            &image,
-                            &style.mask,
-                            if request.size == CountryFlagSize::Panel {
-                                style.even_overlay.as_ref()
-                            } else {
-                                style.overlay.as_ref()
-                            },
-                        ),
-                        None => {
-                            let (width, height) = bounded(image.width, image.height, MAX_FLAG_EDGE);
-                            resize(&image, width, height)
-                        }
-                    };
-                    flags.push(CountryFlagImage {
-                        tag: tag.clone(),
-                        asset,
-                        width: image.width,
-                        height: image.height,
-                        pixels: image.pixels,
-                    });
-                }
+                FlagSearch::Found { asset, image } => shielded.push((tag.clone(), asset, image)),
                 FlagSearch::Unresolvable => unavailable.push(CountryFlagUnavailable {
                     tag: tag.clone(),
                     reason: if reasons.is_empty() {
@@ -760,6 +716,49 @@ impl FlagContext {
                         }),
                     });
                 }
+            }
+        }
+        let drawn = match shield_style {
+            Some(style) => {
+                let images: Vec<_> = shielded
+                    .iter()
+                    .map(|(_, _, image)| image.as_ref())
+                    .collect();
+                style.draw(
+                    &self.content.layers,
+                    &images,
+                    request.size == CountryFlagSize::Panel,
+                )
+            }
+            None => Ok(shielded
+                .iter()
+                .map(|(_, _, image)| image.as_ref().clone())
+                .collect()),
+        };
+        match drawn {
+            Ok(images) => {
+                for ((tag, asset, _), image) in shielded.into_iter().zip(images) {
+                    let (width, height) = bounded(image.width, image.height, MAX_FLAG_EDGE);
+                    let image = resize(&image, width, height);
+                    flags.push(CountryFlagImage {
+                        tag,
+                        asset,
+                        width: image.width,
+                        height: image.height,
+                        pixels: image.pixels,
+                    });
+                }
+            }
+            // The shield's passes differ only in the flag they sample, so a
+            // refused draw refuses every flag.
+            Err(error) => {
+                warnings.push(format!("Shield artwork unavailable: {error}"));
+                unavailable.extend(shielded.into_iter().map(|(tag, _, _)| {
+                    CountryFlagUnavailable {
+                        tag,
+                        reason: format!("Shield artwork unavailable: {error}"),
+                    }
+                }));
             }
         }
         Ok(CountryFlagReply {
@@ -1250,7 +1249,7 @@ mod tests {
                 ),
                 (
                     "interface/art.gfx",
-                    "spriteTypes = { maskedShieldType = { name = GFX_mod_shield textureFile1 = gfx/mod/overlay.png textureFile2 = gfx/mod/mask.png } }",
+                    "spriteTypes = { maskedShieldType = { name = GFX_mod_shield textureFile1 = gfx/mod/overlay.png textureFile2 = gfx/mod/mask.png effectFile = gfx/FX/mod.lua } }",
                 ),
             ],
             &textures,
@@ -1259,11 +1258,16 @@ mod tests {
             force_pow2_textures: true,
         });
         let loaded = ShieldStyle::load(&catalogue).unwrap();
-        assert_eq!((loaded.mask.width, loaded.mask.height), (4, 2));
-        assert_eq!(loaded.overlay.unwrap().width, 4);
+        assert_eq!(
+            [
+                loaded.shield.overlay().unwrap().unwrap().width,
+                loaded.panel.overlay().unwrap().unwrap().width
+            ],
+            [4, 4]
+        );
         for (path, _, expected) in refusals {
             let facts = installed_content_core::gui::native::sprites::read_sprites(format!(
-                "spriteTypes = {{ maskedShieldType = {{ name = GFX_mod_shield textureFile2 = \"{path}\" }} }}"
+                "spriteTypes = {{ maskedShieldType = {{ name = GFX_mod_shield textureFile1 = gfx/mod/overlay.png textureFile2 = \"{path}\" effectFile = gfx/FX/mod.lua }} }}"
             ).as_bytes());
             catalogue.sprites =
                 installed_content_gfx::gfx::SpriteSet::new(&[("interface/art.gfx".into(), facts)]);
@@ -1274,47 +1278,167 @@ mod tests {
     }
 
     #[test]
+    fn the_shield_s_descriptor_chooses_its_flag_set_and_panel_evens_only_its_overlay() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use crate::catalogue::texture_tests::{png_bytes, texture_catalogue};
+        // An overlay with a dark edge around a lighter centre.
+        let overlay = Rgba8Image {
+            width: 8,
+            height: 8,
+            pixels: (0..64)
+                .flat_map(|at: u32| {
+                    let (x, y) = (at % 8, at / 8);
+                    let edge = x.min(y).min(7 - x).min(7 - y) == 0;
+                    [10, 10, 10, if edge { 200 } else { 50 }]
+                })
+                .collect(),
+        };
+        for (small, sets) in [("no", [FlagSet::Normal]), ("yes", [FlagSet::Small])] {
+            let gfx = format!(
+                "spriteTypes = {{ maskedShieldType = {{ name = GFX_mod_shield textureFile1 = gfx/mod/overlay.png textureFile2 = gfx/mod/mask.png effectFile = gfx/FX/mod.lua small = {small} }} }}"
+            );
+            let (catalogue, _folders) = texture_catalogue(
+                &[
+                    (
+                        "interface/topbar.gui",
+                        "guiTypes = { containerWindowType = { name = topbar buttonType = { name = player_flag spriteType = GFX_mod_shield } } }",
+                    ),
+                    ("interface/art.gfx", &gfx),
+                ],
+                &[
+                    ("gfx/mod/mask.png", png_bytes(&overlay)),
+                    ("gfx/mod/overlay.png", png_bytes(&overlay)),
+                ],
+            );
+            let style = ShieldStyle::load(&catalogue).unwrap();
+            assert_eq!(style.sets(), sets);
+            // The native shield keeps its authored overlay; Panel's app styling
+            // replaces only the overlay, with its evened copy.
+            assert_eq!(style.shield.overlay().unwrap(), Some(overlay.clone()));
+            assert_eq!(style.panel.overlay().unwrap(), Some(even_overlay(&overlay)));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires DXC and a GPU; synthetic content only"]
+    fn shield_and_panel_flags_draw_the_descriptor_s_flag_set_through_its_passes() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use crate::catalogue::texture_tests::{png_bytes, shield_programs};
+        // A true-colour Targa of one colour, as the flag decoder reads it.
+        let flag = |[width, height]: [u32; 2], rgb: [u8; 3]| {
+            let mut bytes = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            bytes.extend((width as u16).to_le_bytes());
+            bytes.extend((height as u16).to_le_bytes());
+            bytes.extend([24, 0x20]);
+            for _ in 0..width * height {
+                bytes.extend([rgb[2], rgb[1], rgb[0]]);
+            }
+            bytes
+        };
+        // An opaque mask under an overlay that is clear but for a dark edge.
+        let square = |pixel: &dyn Fn(u32, u32) -> [u8; 4]| Rgba8Image {
+            width: 8,
+            height: 8,
+            pixels: (0..64).flat_map(|at| pixel(at % 8, at / 8)).collect(),
+        };
+        let mask = square(&|_, _| [255; 4]);
+        let overlay = square(&|x, y| {
+            let edge = x.min(y).min(7 - x).min(7 - y) == 0;
+            [0, 0, 0, if edge { 200 } else { 0 }]
+        });
+        let programs = shield_programs();
+        let mut files: Vec<_> = programs
+            .iter()
+            .map(|(path, text)| (*path, text.as_str()))
+            .collect();
+        files.extend([
+            (
+                "interface/topbar.gui",
+                "guiTypes = { containerWindowType = { name = topbar buttonType = { name = player_flag spriteType = GFX_mod_shield } } }",
+            ),
+            (
+                "interface/art.gfx",
+                "spriteTypes = { maskedShieldType = { name = GFX_mod_shield textureFile1 = gfx/mod/overlay.png textureFile2 = gfx/mod/mask.png effectFile = gfx/FX/shield_flag.lua small = yes } }",
+            ),
+        ]);
+        let (_, folder) = crate::catalogue::tests::folder_catalogue(&files);
+        let cells = [[4, 2], [2, 2], [2, 1]];
+        for (path, bytes) in [
+            ("gfx/mod/mask.png", png_bytes(&mask)),
+            ("gfx/mod/overlay.png", png_bytes(&overlay)),
+            ("gfx/flags/MOD.tga", flag(cells[0], [0, 0, 200])),
+            ("gfx/flags/small/MOD.tga", flag(cells[2], [0, 200, 0])),
+        ] {
+            let file = folder.0.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
+        }
+        // Flags are covered content: the stack is resolved once they are written.
+        let catalogue = crate::catalogue::tests::layers_catalogue(
+            installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
+        );
+        let style = ShieldStyle::load(&catalogue).unwrap();
+        let context = FlagContext {
+            options: ResolveOptions {
+                game_dir: "G".into(),
+                user_dir: "U".into(),
+                cache_dir: "C".into(),
+            },
+            content: Arc::clone(&catalogue.content),
+            cells,
+            choices: HashMap::from([(
+                "MOD".to_owned(),
+                FlagChoice {
+                    raw: 0,
+                    tag: "MOD".into(),
+                    candidates: vec!["MOD".into()],
+                    refusal: None,
+                },
+            )]),
+            branch_id: "1".into(),
+            hour: 0,
+            warnings: Vec::new(),
+        };
+        let pixel = |reply: &CountryFlagReply, x: u32, y: u32| {
+            let image = &reply.flags[0];
+            let at = ((y * image.width + x) * 4) as usize;
+            <[u8; 4]>::try_from(&image.pixels[at..at + 4]).unwrap()
+        };
+        let mut drawn = Vec::new();
+        for size in [CountryFlagSize::Shield, CountryFlagSize::Panel] {
+            let request = CountryFlagParams {
+                branch_id: "1".into(),
+                hour: 0,
+                tags: vec!["MOD".into()],
+                size,
+            };
+            let reply = context
+                .reply(&request, Some(Ok(&style)), &AtomicBool::new(false))
+                .unwrap();
+            assert!(reply.unavailable.is_empty(), "{:?}", reply.unavailable);
+            // `small = yes`: the small flag set's green, never the large blue.
+            assert_eq!(reply.flags[0].asset, "gfx/flags/small/MOD.tga");
+            assert_eq!([reply.flags[0].width, reply.flags[0].height], [8, 8]);
+            assert_eq!(pixel(&reply, 4, 4), [0, 200, 0, 255]);
+            drawn.push(pixel(&reply, 0, 4));
+        }
+        // The native edge darkens under the overlay; Panel's app styling evens it away.
+        let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1);
+        assert!(near(drawn[0], [0, 43, 0, 255]), "{:?}", drawn[0]);
+        assert!(near(drawn[1], [0, 200, 0, 255]), "{:?}", drawn[1]);
+    }
+
+    #[test]
     fn sizes_search_the_game_flag_sets_in_order() {
         assert_eq!(
             CountryFlagSize::Medium.sets(),
             [FlagSet::Medium, FlagSet::Normal]
         );
-        assert_eq!(CountryFlagSize::Shield.sets(), [FlagSet::Normal]);
-        assert_eq!(CountryFlagSize::Panel.sets(), [FlagSet::Normal]);
+        assert!(CountryFlagSize::Shield.sets().is_empty());
+        assert!(CountryFlagSize::Panel.sets().is_empty());
         assert_eq!(bounded(82, 52, 128), (82, 52));
-    }
-
-    #[test]
-    fn shield_keeps_flag_colour_takes_mask_alpha_and_blends_the_overlay() {
-        let image = |width, height, pixels: Vec<u8>| Rgba8Image {
-            width,
-            height,
-            pixels,
-        };
-        // A translucent authored flag pixel stays opaque: the shader takes alpha from the mask.
-        let flag = image(2, 1, vec![200, 0, 0, 90, 0, 0, 200, 255]);
-        let mask = image(2, 1, vec![255, 255, 255, 255, 0, 0, 0, 0]);
-        assert_eq!(
-            shield(&flag, &mask, None).pixels,
-            [200, 0, 0, 255, 0, 0, 200, 0]
-        );
-
-        let overlay = image(1, 1, vec![0, 0, 0, 128]);
-        let drawn = shield(&flag, &mask, Some(&overlay));
-        assert_eq!((drawn.width, drawn.height), (2, 1));
-        // Half-black over opaque red; over a fully masked pixel only the overlay remains.
-        assert_eq!(&drawn.pixels[..4], [100, 0, 0, 255]);
-        assert_eq!(&drawn.pixels[4..], [0, 0, 0, 128]);
-
-        // The sprite's extent wins over the flag's, bounded to the reply budget.
-        let large = image(300, 150, vec![255; 300 * 150 * 4]);
-        assert_eq!(
-            (
-                shield(&flag, &large, None).width,
-                shield(&flag, &large, None).height
-            ),
-            (128, 64)
-        );
     }
 
     #[test]

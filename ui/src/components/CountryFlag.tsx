@@ -58,7 +58,9 @@ export function CountryFlagUrl({ url, reason, pending, className = '' }: { url?:
 }
 
 /** A country's flag from a recording's own installed content, at the hour the country
- * was observed. Without a readable flag it shows an empty frame, never a substitute. */
+ * was observed. Without a readable flag it shows an empty frame, never a substitute.
+ * The default `panel` size is app styling: the native shield with its overlay's edge
+ * shading evened out. */
 export function SourceFlag({ client, source, tag, size = 'panel' }: { client: DashboardClient; source: DashboardSource; tag: string | null; size?: CountryFlagSize }) {
   const country = tag ? source.metadata.countries.find(item => item.tag === tag) : undefined;
   const branch = source.metadata.branches.find(item => item.id === country?.observedBranchId) ?? source.metadata.branches[0];

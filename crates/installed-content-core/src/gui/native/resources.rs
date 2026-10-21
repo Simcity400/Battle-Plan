@@ -18,6 +18,10 @@ use crate::{
 /// The fallback name retried when the requested sprite is undefined.
 pub const FALLBACK_SPRITE: &[u8] = b"GFX_default_fallback_texture";
 
+/// The effect a masked shield's overlay draws with: the game's code names it,
+/// not the shield's declaration.
+pub const SHIELD_OVERLAY_EFFECT: &str = "gfx/FX/buttonstate.shader";
+
 /// The texture loader's file-size limit; larger files do not load.
 const FILE_LIMIT: usize = 16 << 20;
 

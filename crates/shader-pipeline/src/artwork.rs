@@ -22,8 +22,22 @@ pub struct Draw {
     pub size: [u32; 2],
     pub vertices: [[f32; 5]; 4],
     pub constants: Vec<(u32, Vec<f32>, Vec<std::ops::Range<u32>>)>,
+    /// Whether the constants bind the pixel stage too. Sprites bind both stages;
+    /// a masked shield's flag pass binds the vertex stage only.
+    pub pixel_constants: bool,
     pub textures: Vec<(u32, Option<dds::Texture>)>,
 }
+
+/// The colour blend a pass must author to flatten into a layer: source over.
+const SOURCE_OVER: wgpu::BlendComponent = wgpu::BlendComponent {
+    src_factor: wgpu::BlendFactor::SrcAlpha,
+    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+    operation: wgpu::BlendOperation::Add,
+};
+
+/// A layer's target keeps premultiplied colour and coverage without quantizing
+/// between passes.
+const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 struct Renderer {
     device: wgpu::Device,
@@ -69,6 +83,74 @@ pub fn render(layers: &ResolvedLayers, draw: Draw, decode: Decode) -> Result<Rgb
         .ok_or_else(|| "empty artwork submission".to_owned())
 }
 
+/// Drawables whose passes the game draws in order over the frame, such as a
+/// masked shield's flag and overlay, one image each. Each pass blends with its
+/// technique's authored colour terms into a layer that keeps premultiplied colour
+/// and accumulates coverage, returned as straight alpha, so the page compositing
+/// the image over its background gives what the passes give over the frame. That
+/// holds only for source-over colour blending; any other pass is refused by its
+/// effect. A drawable's passes draw into one extent.
+pub fn render_layers(
+    layers: &ResolvedLayers,
+    drawables: Vec<Vec<Draw>>,
+    decode: Decode,
+) -> Result<Vec<Rgba8Image>, String> {
+    let targets = drawables.into_iter().map(|passes| (true, passes)).collect();
+    render_targets(layers, targets, decode)
+}
+
+/// Refuses, naming the effect, a masked flag program whose Up technique reads its flag's
+/// atlas rectangle (`FlagCoords`, b0 bytes 64..80) other than to map its texture coordinate
+/// into the flag's cell ([`crate::atlas`]): only then does the flag drawn from a page of its
+/// own at `[0, 0, 1, 1]` draw what the game's atlas cell draws.
+pub fn flag_rectangle_mapped(
+    layers: &ResolvedLayers,
+    effect: &[u8],
+    decode: Decode,
+) -> Result<(), String> {
+    let variant = variant(layers, effect, &[], decode)?;
+    let effect = renderer()?
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .effect(variant);
+    let named = |why: String| format!("effect {:?}: {why}", effect.source.effect);
+    let index = effect
+        .select("Up")?
+        .ok_or_else(|| named("no Up technique".into()))?
+        .index;
+    let compiled = effect.compiled(index)?;
+    let parse = |wgsl: &str| {
+        naga::front::wgsl::parse_str(wgsl).map_err(|why| named(format!("compiled stage: {why}")))
+    };
+    let uv = compiled
+        .vertex
+        .inputs
+        .iter()
+        .find(|input| {
+            matches!(
+                input.semantic.to_ascii_uppercase().as_str(),
+                "TEXCOORD" | "TEXCOORD0"
+            )
+        })
+        .map(|input| input.location);
+    crate::atlas::check(
+        &parse(&compiled.vertex.wgsl)?,
+        &parse(&compiled.pixel.wgsl)?,
+        crate::atlas::Contract {
+            rectangle: crate::atlas::Rectangle {
+                binding: crate::binding(0, Stage::Vertex),
+                offset: FLAG_RECTANGLE,
+            },
+            uv,
+            flag: crate::binding(0, Stage::Pixel),
+        },
+    )
+    .map_err(named)
+}
+
+/// The byte offset of a masked flag pass's atlas rectangle in b0, after its matrix.
+const FLAG_RECTANGLE: u32 = 64;
+
 fn renderer() -> Result<&'static Mutex<Renderer>, String> {
     RENDERER
         .get_or_init(|| Renderer::new().map(Mutex::new))
@@ -100,20 +182,45 @@ pub fn render_batch(
     draws: Vec<Draw>,
     decode: Decode,
 ) -> Result<Vec<Rgba8Image>, String> {
-    if draws.is_empty() {
+    let targets = draws.into_iter().map(|draw| (false, vec![draw])).collect();
+    render_targets(layers, targets, decode)
+}
+
+/// Each target's draws, and whether they compose into a layer ([`render_layers`]).
+fn render_targets(
+    layers: &ResolvedLayers,
+    targets: Vec<(bool, Vec<Draw>)>,
+    decode: Decode,
+) -> Result<Vec<Rgba8Image>, String> {
+    if targets.is_empty() {
         return Ok(Vec::new());
     }
-    let variants = draws
+    if targets.iter().any(|(_, draws)| draws.is_empty()) {
+        return Err("empty artwork submission".to_owned());
+    }
+    let variants = targets
         .iter()
-        .map(|draw| variant(layers, &draw.effect, &draw.defines, decode))
+        .map(|(_, draws)| {
+            draws
+                .iter()
+                .map(|draw| variant(layers, &draw.effect, &draw.defines, decode))
+                .collect::<Result<Vec<_>, _>>()
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let job = {
         let mut renderer = renderer()?.lock().unwrap_or_else(|e| e.into_inner());
-        let effects = variants
+        let targets = targets
             .into_iter()
-            .map(|variant| renderer.effect(variant))
-            .collect::<Vec<_>>();
-        let result = renderer.submit(draws.into_iter().zip(effects).collect());
+            .zip(variants)
+            .map(|((layered, draws), variants)| {
+                let effects = variants
+                    .into_iter()
+                    .map(|variant| renderer.effect(variant))
+                    .collect::<Vec<_>>();
+                (layered, draws.into_iter().zip(effects).collect())
+            })
+            .collect();
+        let result = renderer.submit(targets);
         for warning in renderer.cache.diagnostics().warnings.into_keys() {
             layers.note_shader_warning(warning);
         }
@@ -218,16 +325,39 @@ impl Renderer {
         &mut self,
         draw: Draw,
         effect: Arc<library::Effect>,
+        layered: bool,
     ) -> Result<([u32; 2], stream::Submission), String> {
         let selection = effect.select("Up")?;
         let index = selection.as_ref().ok_or("missing Up technique")?.index;
         self.stream.invalidate_bindings();
         self.stream
             .bind_effect(selection, vertices::Declaration::Sprite)?;
-        // A PNG carries the shader's straight-alpha output; the image's host composites it.
-        self.stream.bind_blend(None, wgpu::ColorWrites::ALL);
+        if layered {
+            match self.stream.blend() {
+                (Some(blend), mask)
+                    if blend.color == SOURCE_OVER && mask.contains(wgpu::ColorWrites::COLOR) =>
+                {
+                    self.stream.accumulate_alpha()
+                }
+                (blend, mask) => {
+                    return Err(format!(
+                        "effect {:?} Up blends colour as {:?} writing {mask:?}; only a source-over pass flattens into an image composited later",
+                        effect.source.effect,
+                        blend.map(|blend| blend.color)
+                    ));
+                }
+            }
+        } else {
+            // A PNG carries the shader's straight-alpha output; the image's host composites it.
+            self.stream.bind_blend(None, wgpu::ColorWrites::ALL);
+        }
+        let stages: &[Stage] = if draw.pixel_constants {
+            &[Stage::Vertex, Stage::Pixel]
+        } else {
+            &[Stage::Vertex]
+        };
         for (slot, values, known) in &draw.constants {
-            for stage in [Stage::Vertex, Stage::Pixel] {
+            for &stage in stages {
                 self.stream.bind_partial_constants(
                     *slot,
                     stage,
@@ -254,7 +384,11 @@ impl Renderer {
             20,
             4,
             wgpu::PrimitiveTopology::TriangleStrip,
-            wgpu::TextureFormat::Rgba8Unorm,
+            if layered {
+                LAYER_FORMAT
+            } else {
+                wgpu::TextureFormat::Rgba8Unorm
+            },
             1,
         )?;
         Ok((draw.size, submission))
@@ -370,10 +504,10 @@ impl Renderer {
         Ok(view)
     }
 
-    fn submit(&mut self, draws: Vec<(Draw, Arc<library::Effect>)>) -> Result<Readback, String> {
+    fn submit(&mut self, targets: Vec<Target>) -> Result<Readback, String> {
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = self.submit_inner(draws);
+        let result = self.submit_inner(targets);
         self.arena.reset();
         self.stream.invalidate_bindings();
         self.stream.cache.release_bind_groups();
@@ -387,25 +521,42 @@ impl Renderer {
         }
     }
 
-    fn submit_inner(
-        &mut self,
-        draws: Vec<(Draw, Arc<library::Effect>)>,
-    ) -> Result<Readback, String> {
-        let prepared = draws
-            .into_iter()
-            .map(|(draw, effect)| self.prepare(draw, effect))
-            .collect::<Result<Vec<_>, _>>()?;
+    fn submit_inner(&mut self, targets: Vec<Target>) -> Result<Readback, String> {
+        let mut prepared = Vec::new();
+        for (layered, draws) in targets {
+            let mut size = None;
+            let mut submissions = Vec::new();
+            for (draw, effect) in draws {
+                let (extent, submission) = self.prepare(draw, effect, layered)?;
+                if size.is_some_and(|size| size != extent) {
+                    return Err("a layer's passes draw into different extents".into());
+                }
+                size = Some(extent);
+                submissions.push(submission);
+            }
+            prepared.push((
+                size.ok_or("empty artwork submission")?,
+                layered,
+                submissions,
+            ));
+        }
         let mut offset = 0_u64;
         let mut regions = Vec::new();
-        for ([width, height], _) in &prepared {
+        for ([width, height], layered, _) in &prepared {
+            let texel = if *layered { 8 } else { 4 };
             let pitch = width
-                .checked_mul(4)
+                .checked_mul(texel)
                 .and_then(|n| n.checked_add(255))
                 .ok_or("artwork row overflow")?
                 / 256
                 * 256;
             let length = u64::from(pitch) * u64::from(*height);
-            regions.push(([*width, *height], pitch, offset));
+            regions.push(Region {
+                size: [*width, *height],
+                pitch,
+                offset,
+                layered: *layered,
+            });
             offset = offset.checked_add(length).ok_or("artwork batch overflow")?;
         }
         let read = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -415,8 +566,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        for (([width, height], submission), (_, pitch, offset)) in
-            prepared.into_iter().zip(&regions)
+        for (([width, height], layered, submissions), region) in prepared.into_iter().zip(&regions)
         {
             let size = wgpu::Extent3d {
                 width,
@@ -429,7 +579,11 @@ impl Renderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: if layered {
+                    LAYER_FORMAT
+                } else {
+                    wgpu::TextureFormat::Rgba8Unorm
+                },
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
@@ -447,7 +601,9 @@ impl Renderer {
                     })],
                     ..Default::default()
                 });
-                submission.pipeline.draw(&mut pass, &submission.draw);
+                for submission in &submissions {
+                    submission.pipeline.draw(&mut pass, &submission.draw);
+                }
             }
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
@@ -459,8 +615,8 @@ impl Renderer {
                 wgpu::TexelCopyBufferInfo {
                     buffer: &read,
                     layout: wgpu::TexelCopyBufferLayout {
-                        offset: *offset,
-                        bytes_per_row: Some(*pitch),
+                        offset: region.offset,
+                        bytes_per_row: Some(region.pitch),
                         rows_per_image: None,
                     },
                 },
@@ -477,10 +633,21 @@ impl Renderer {
     }
 }
 
+/// One target's draws, and whether they compose into a layer.
+type Target = (bool, Vec<(Draw, Arc<library::Effect>)>);
+
+/// Where one target's rows sit in the readback.
+struct Region {
+    size: [u32; 2],
+    pitch: u32,
+    offset: u64,
+    layered: bool,
+}
+
 struct Readback {
     device: wgpu::Device,
     buffer: wgpu::Buffer,
-    regions: Vec<([u32; 2], u32, u64)>,
+    regions: Vec<Region>,
 }
 impl Readback {
     fn finish(self) -> Result<Vec<Rgba8Image>, String> {
@@ -500,12 +667,19 @@ impl Readback {
         Ok(self
             .regions
             .into_iter()
-            .map(|([width, height], pitch, offset)| {
-                let pixels = mapped
-                    [offset as usize..offset as usize + pitch as usize * height as usize]
-                    .chunks_exact(pitch as usize)
-                    .flat_map(|row| row[..width as usize * 4].iter().copied())
-                    .collect();
+            .map(|region| {
+                let [width, height] = region.size;
+                let texel = if region.layered { 8 } else { 4 };
+                let start = region.offset as usize;
+                let rows = mapped[start..start + region.pitch as usize * height as usize]
+                    .chunks_exact(region.pitch as usize)
+                    .map(|row| &row[..(width * texel) as usize]);
+                let pixels = if region.layered {
+                    rows.flat_map(|row| row.chunks_exact(8).flat_map(straight))
+                        .collect()
+                } else {
+                    rows.flatten().copied().collect()
+                };
                 Rgba8Image {
                     width,
                     height,
@@ -516,9 +690,57 @@ impl Readback {
     }
 }
 
+/// A layer texel's premultiplied half-float colour and coverage as straight RGBA8.
+fn straight(texel: &[u8]) -> [u8; 4] {
+    let [r, g, b, a] = [0, 2, 4, 6].map(|at| half(u16::from_le_bytes([texel[at], texel[at + 1]])));
+    let unorm = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let colour = |value: f32| if a > 0.0 { unorm(value / a) } else { 0 };
+    [colour(r), colour(g), colour(b), unorm(a)]
+}
+
+/// An IEEE binary16 value.
+fn half(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
+    let exponent = i32::from((bits >> 10) & 0x1F);
+    let mantissa = f32::from(bits & 0x3FF);
+    sign * match exponent {
+        0 => mantissa * 2f32.powi(-24),
+        31 if mantissa == 0.0 => f32::INFINITY,
+        31 => f32::NAN,
+        _ => (1.0 + mantissa / 1024.0) * 2f32.powi(exponent - 15),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layer_texels_return_straight_alpha_from_premultiplied_half_floats() {
+        let texel = |values: [f32; 4]| -> Vec<u8> {
+            // Exact binary16 encodings of the values used below.
+            values
+                .iter()
+                .flat_map(|value| {
+                    match *value {
+                        0.0 => 0x0000_u16,
+                        0.25 => 0x3400,
+                        0.5 => 0x3800,
+                        1.0 => 0x3C00,
+                        _ => unreachable!(),
+                    }
+                    .to_le_bytes()
+                })
+                .collect()
+        };
+        assert_eq!(straight(&texel([0.25, 0.5, 0.0, 0.5])), [128, 255, 0, 128]);
+        assert_eq!(straight(&texel([0.25, 0.0, 0.0, 1.0])), [64, 0, 0, 255]);
+        // Nothing covered has no colour.
+        assert_eq!(straight(&texel([0.0, 0.0, 0.0, 0.0])), [0; 4]);
+        assert_eq!(half(0x0001), 2f32.powi(-24));
+        assert_eq!(half(0xC000), -2.0);
+        assert!(half(0x7C00).is_infinite() && half(0x7E00).is_nan());
+    }
 
     #[test]
     #[ignore = "requires DXC and a GPU; synthetic content only"]
@@ -569,6 +791,7 @@ Effect Up { VertexShader=V PixelShader=P }
                 [1.0, 1.0, 0.0, 0.0, 0.0],
             ],
             constants: Vec::new(),
+            pixel_constants: true,
             textures: vec![(0, Some(image.clone()))],
         };
         let first = render(&layers, draw([2, 3]), Decode::default()).unwrap();

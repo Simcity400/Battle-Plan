@@ -107,6 +107,7 @@ export async function loadListFlags(client: DashboardClient, source: { id: strin
   for (const group of groups.values()) for (let start = 0; start < group.length; start += FLAG_BATCH) {
     const batch = group.slice(start, start + FLAG_BATCH);
     const { branchId, hour } = batch[0];
+    // `panel` is app styling: the native top-bar shield with its overlay's edge shading evened out.
     const request: ProductRequest<CountryFlagParams> = { sourceId: source.id, revision: source.revision, product: 'country-flags',
       params: { branchId, hour, tags: batch.map(target => target.tag), size: 'panel' } };
     const reply = validateProductReply(await client.product<CountryFlagReply>(request, signal), request).data;

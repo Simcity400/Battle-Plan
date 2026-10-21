@@ -23,7 +23,7 @@ Nothing here names a product or a source. The [dashboard](../dashboard/README.md
 | [air_wing_names.rs](src/air_wing_names.rs) | Retained air wing names and the authenticated active-raid projection older prefixes use. |
 | [flag_choices.rs](src/flag_choices.rs) | Flag asset candidates per recorded country at one hour, shared by the flag product and map tooltips. |
 | [cryptology.rs](src/cryptology.rs), [naval_battle_name.rs](src/naval_battle_name.rs), [state_resources.rs](src/state_resources.rs) | Native helpers shared by products and viewer tooltips. |
-| [catalogue.rs](src/catalogue.rs) | Shared lazy localisation, content databases, native GUI/sprite lookup, texture decoding and PNG replies; the per-source loader is in the dashboard. |
+| [catalogue.rs](src/catalogue.rs) | Shared lazy localisation, content databases, native GUI/sprite lookup, texture decoding and PNG replies; the per-source loader is in the dashboard. Sprites draw through [catalogue/sprite.rs](src/catalogue/sprite.rs). Masked shields draw through [catalogue/shield.rs](src/catalogue/shield.rs) as the game draws them: the flag through the shield's own effect and mask, then the overlay through the program the game's code names. |
 | [metadata.rs](src/metadata.rs) | Branch bounds, gaps, initial country catalogue, frame checks, country-link resolution and supplying-read detection. |
 
 The metadata helpers can date every table's supplying read together
