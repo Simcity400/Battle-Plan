@@ -15,7 +15,6 @@ replay-data.workspace = true
 replay-frame.workspace = true
 replay-derive.workspace = true
 installed-content-core.workspace = true
-installed-content-localisation.workspace = true
 installed-content-regions.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true

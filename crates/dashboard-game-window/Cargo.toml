@@ -12,14 +12,12 @@ doctest = false
 [dependencies]
 replay.workspace = true
 installed-content-core.workspace = true
-installed-content-gfx.workspace = true
 installed-content-image.workspace = true
 installed-content-localisation.workspace = true
 installed-content-settings.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 dashboard-base.workspace = true
-dashboard-core.workspace = true
 dashboard-text.workspace = true
 job-priority.workspace = true
 # The native GUI layout, text and resource loading the map viewer draws with. Only its CPU

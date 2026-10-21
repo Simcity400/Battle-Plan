@@ -16,7 +16,6 @@ installed-content-core.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 installed-content-save.workspace = true
-recorder-oracle-military.workspace = true
 recorder-oracle-support.workspace = true
 serde_json.workspace = true
 

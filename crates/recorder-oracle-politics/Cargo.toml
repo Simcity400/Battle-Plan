@@ -17,7 +17,6 @@ replay-data.workspace = true
 replay-frame.workspace = true
 installed-content-save.workspace = true
 recorder-oracle-characters.workspace = true
-recorder-oracle-governance.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
 recorder-oracle-support = { workspace = true, features = ["test-support"] }

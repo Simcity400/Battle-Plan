@@ -17,7 +17,6 @@ replay-derive.workspace = true
 engine-air-history.workspace = true
 installed-content-core.workspace = true
 installed-content-localisation.workspace = true
-installed-content-regions.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true

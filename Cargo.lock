@@ -2580,7 +2580,6 @@ dependencies = [
  "engine-native",
  "installed-content-core",
  "installed-content-localisation",
- "installed-content-regions",
  "indexmap 2.14.2",
  "mimalloc",
  "once_cell",
@@ -2899,7 +2898,6 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "installed-content-core",
- "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
  "mimalloc",
@@ -2926,14 +2924,12 @@ name = "dashboard-economy"
 version = "0.1.0"
 dependencies = [
  "dashboard-base",
- "dashboard-core",
  "dashboard-country-fuel",
  "dashboard-economy",
  "dashboard-text",
  "engine-native",
  "engine-resources",
  "installed-content-core",
- "installed-content-localisation",
  "installed-content-regions",
  "indexmap 2.14.2",
  "log",
@@ -3127,7 +3123,6 @@ name = "dashboard-game-window"
 version = "0.1.0"
 dependencies = [
  "dashboard-base",
- "dashboard-core",
  "dashboard-text",
  "dpi",
  "engine-executable",
@@ -3347,7 +3342,6 @@ dependencies = [
  "engine-executable",
  "engine-native",
  "installed-content-core",
- "installed-content-localisation",
  "installed-content-regions",
  "indexmap 2.14.2",
  "log",
@@ -3517,7 +3511,6 @@ name = "dashboard-politics"
 version = "0.1.0"
 dependencies = [
  "dashboard-base",
- "dashboard-core",
  "dashboard-politics",
  "dashboard-text",
  "engine-executable",
@@ -7793,7 +7786,6 @@ dependencies = [
  "installed-content-localisation",
  "installed-content-raids",
  "installed-content-regions",
- "installed-content-save",
  "installed-content-scripted-localisation",
  "installed-content-states",
  "installed-content-weather",
@@ -8069,7 +8061,6 @@ dependencies = [
  "installed-content-save",
  "installed-content-states",
  "recorder-oracle-naval-history",
- "recorder-oracle-production",
  "recorder-oracle-support",
  "replay",
  "replay-data",
@@ -8317,7 +8308,6 @@ dependencies = [
  "installed-content-core",
  "installed-content-save",
  "installed-content-states",
- "recorder-oracle-military",
  "recorder-oracle-support",
  "replay",
  "replay-data",
@@ -8402,7 +8392,6 @@ dependencies = [
  "installed-content-core",
  "installed-content-save",
  "installed-content-states",
- "recorder-oracle-core",
  "recorder-oracle-support",
  "replay",
  "replay-data",
@@ -8471,7 +8460,6 @@ dependencies = [
  "installed-content-core",
  "installed-content-save",
  "installed-content-states",
- "recorder-oracle-projects",
  "recorder-oracle-support",
  "replay",
  "replay-data",
@@ -8506,7 +8494,6 @@ dependencies = [
  "installed-content-save",
  "installed-content-states",
  "recorder-oracle-characters",
- "recorder-oracle-governance",
  "recorder-oracle-support",
  "replay",
  "replay-data",
@@ -8761,7 +8748,6 @@ dependencies = [
  "installed-content-save",
  "installed-content-states",
  "installed-content-weather",
- "recorder-oracle-core",
  "recorder-oracle-support",
  "replay",
  "replay-data",
@@ -10880,7 +10866,6 @@ dependencies = [
 name = "viewer-combat"
 version = "0.1.0"
 dependencies = [
- "dashboard-core",
  "dashboard-text",
  "dpi",
  "engine-characters",
@@ -10962,7 +10947,6 @@ dependencies = [
 name = "viewer-counters"
 version = "0.1.0"
 dependencies = [
- "dashboard-core",
  "dashboard-text",
  "dpi",
  "engine-executable",

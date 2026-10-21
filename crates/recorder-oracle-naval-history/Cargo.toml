@@ -14,7 +14,6 @@ engine-native.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 installed-content-save.workspace = true
-recorder-oracle-core.workspace = true
 recorder-oracle-support.workspace = true
 [dev-dependencies]
 installed-content-core.workspace = true

@@ -18,7 +18,6 @@ dashboard-core.workspace = true
 dashboard-text.workspace = true
 dashboard-keyed = { path = "../dashboard-keyed" }
 installed-content-core.workspace = true
-installed-content-localisation.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 store = { path = "../store" }

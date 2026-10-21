@@ -29,7 +29,6 @@ replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
 viewer-foundation = { path = "../viewer-foundation" }
-dashboard-core.workspace = true
 dashboard-text.workspace = true
 [dev-dependencies]
 mimalloc.workspace = true
