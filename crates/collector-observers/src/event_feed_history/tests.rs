@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 struct NoReads;
 impl Memory for NoReads {
     fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-        panic!("owned annex settlement must not reread roles after authored dispatch")
+        panic!("owned event publication must not reread native operands")
     }
 }
 
@@ -1348,6 +1348,77 @@ fn old_snapshot_receipt_cannot_acknowledge_a_new_refusal() {
 }
 
 #[test]
+fn a_refused_receipt_covers_its_loss_even_with_an_older_healthy_handoff() {
+    let mut store = ready(4);
+    let healthy = pack(&mut store, boundary(7, 1));
+    store.reject("synthetic storage refusal");
+    let refused = pack(&mut store, boundary(7, 2));
+    assert_eq!(refused.row().coverage, EventFeedCoverage::Unavailable);
+    store.acknowledged(healthy.publication());
+    assert_eq!(store.failure, Some("synthetic storage refusal"));
+    store.acknowledged(refused.publication());
+    assert_eq!(store.failure, None);
+    let recovered = pack(&mut store, boundary(7, 3));
+    assert_eq!(recovered.row().coverage, EventFeedCoverage::Partial);
+    assert!(recovered.row().failure.is_none());
+}
+
+#[test]
+fn a_later_loss_advances_the_required_refused_receipt_past_an_older_handoff() {
+    let mut store = ready(4);
+    let healthy = pack(&mut store, boundary(7, 1));
+    store.reject("synthetic first refusal");
+    let first = pack(&mut store, boundary(7, 2));
+    store.invalidate("synthetic newer overlap");
+    store.reject("synthetic newer overlap");
+    let newer = pack(&mut store, boundary(7, 3));
+    // Neither the healthy receipt nor the older refusal covers this epoch.
+    store.acknowledged(healthy.publication());
+    store.acknowledged(first.publication());
+    assert!(store.failure.is_some());
+    store.acknowledged(newer.publication());
+    assert_eq!(store.failure, None);
+    let recovered = pack(&mut store, boundary(7, 4));
+    assert_eq!(recovered.row().coverage, EventFeedCoverage::Partial);
+}
+
+#[path = "recovery_tests.rs"]
+mod recovery_tests;
+
+#[test]
+fn the_first_refused_publication_covers_repeated_seals_without_a_new_loss() {
+    let mut store = ready(4);
+    let healthy = pack(&mut store, boundary(7, 1));
+    store.reject("synthetic refusal");
+    let first = pack(&mut store, boundary(7, 2));
+    let tail = pack(&mut store, boundary(7, 3));
+    store.acknowledged(healthy.publication());
+    assert!(store.failure.is_some());
+    store.acknowledged(first.publication());
+    assert_eq!(store.failure, None);
+    store.acknowledged(tail.publication());
+    assert_eq!(
+        pack(&mut store, boundary(7, 4)).row().coverage,
+        EventFeedCoverage::Partial
+    );
+}
+
+#[test]
+fn a_post_release_seal_decline_supersedes_an_older_healthy_handoff() {
+    let mut store = ready(4);
+    let healthy = pack(&mut store, boundary(7, 1));
+    let sealed = pack(&mut store, boundary(7, 2));
+    store.seal_declined(sealed.publication(), 1);
+    store.acknowledged(healthy.publication());
+    assert!(store.failure.is_some());
+    store.acknowledged(sealed.publication());
+    assert_eq!(store.failure, None);
+    let recovered = pack(&mut store, boundary(7, 3));
+    assert_eq!(recovered.row().coverage, EventFeedCoverage::Partial);
+    assert!(recovered.row().failure.is_none());
+}
+
+#[test]
 fn final_facts_remain_unaccepted_until_a_successful_output_receipt() {
     let mut store = ready(1);
     let ticket = acquire(&mut store, 1, 3);
@@ -2671,11 +2742,16 @@ fn a_storage_short_owner_baseline_is_refused_raises_demand_and_is_retried_withou
         .prepare_boundary(boundary(7, 1), Some((&image, BASE)))
         .unwrap();
     let epoch = store.begin_recovery(7, GAME).unwrap();
-    crate::test_support::with_allocations_denied(|| {
-        for country in CENSUS {
-            store.recover_owner(&image, BASE, 7, GAME, 1, country);
-        }
-    });
+    for country in CENSUS {
+        let work = store.owner_work(&image, BASE, 7, GAME, 1, country);
+        let mut prepared =
+            recovery::PreparedOwner::read(&image, BASE, 7, GAME, 1, country, work).unwrap();
+        crate::test_support::with_allocations_denied(|| {
+            store
+                .publish_owner(&NoReads, BASE, 7, 1, &mut prepared)
+                .unwrap();
+        });
+    }
     store.finish_recovery(7, epoch, true);
     store.seal(&mut snapshot, boundary(7, 1), true).unwrap();
     let short = snapshot.prepare_pack().unwrap();

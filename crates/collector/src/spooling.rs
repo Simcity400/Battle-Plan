@@ -96,6 +96,136 @@ impl ReadHours {
     fn clear(&mut self) {
         self.0.iter_mut().for_each(Vec::clear);
     }
+    /// Merge returned owners, selected empty reads and carried provenance in
+    /// key order, preserving that precedence without sorting the result.
+    fn merge(
+        &mut self,
+        table: TableId,
+        owners: &[u32],
+        selection: &crate::slicing::SliceSelection,
+        hour: i32,
+    ) -> io::Result<()> {
+        let mut ordered;
+        let owners = if owners.windows(2).any(|pair| pair[0] >= pair[1]) {
+            // Only normalize provenance. The encoder still validates the
+            // original rows and names any refused row keys.
+            ordered = engine_allocation::vec(owners.len())?;
+            ordered.extend_from_slice(owners);
+            ordered.sort_unstable();
+            ordered.dedup();
+            ordered.as_slice()
+        } else {
+            owners
+        };
+        let previous = &self.0[table.index()];
+        let capacity = owners
+            .len()
+            .checked_add(selection.read_owners().count())
+            .and_then(|count| count.checked_add(previous.len()))
+            .ok_or_else(engine_allocation::oom)?;
+        let mut reads = engine_allocation::vec(capacity)?;
+        let mut returned = owners.iter().copied().peekable();
+        let mut selected = selection.read_owners().peekable();
+        let mut old = previous.iter().copied().peekable();
+        while let Some(owner) = returned
+            .peek()
+            .copied()
+            .into_iter()
+            .chain(selected.peek().copied())
+            .chain(old.peek().map(|entry| entry.0))
+            .min()
+        {
+            let returned = returned.next_if(|&value| value == owner).is_some();
+            let selected = selected.next_if(|&value| value == owner).is_some();
+            let previous = old.next_if(|entry| entry.0 == owner);
+            let captured = selection.contains(owner);
+            let read = if returned {
+                if selection.force_full || captured {
+                    Some(hour)
+                } else {
+                    previous.map(|entry| entry.1)
+                }
+            } else if selected {
+                Some(hour)
+            } else if !selection.force_full && !captured && selection.live(owner) {
+                previous.map(|entry| entry.1)
+            } else {
+                None
+            };
+            if let Some(read) = read {
+                reads.push((owner, read));
+            }
+        }
+        self.0[table.index()] = reads;
+        Ok(())
+    }
+
+    /// SliceReads has no producer sharing its complete rows. Keep its initial
+    /// baseline owned, then replace only changed sample hours when keys match.
+    /// The encoder withdraws the token at keyframes, gaps and recovery.
+    fn input(
+        &self,
+        frame_reads: &[Option<Vec<(u32, i32)>>; TABLE_COUNT],
+        encoder: &FrameEncoder,
+        branch: BranchId,
+        hour: i32,
+        force: bool,
+    ) -> io::Result<TableInput> {
+        let count = frame_reads
+            .iter()
+            .zip(&self.0)
+            .try_fold(0_usize, |count, (view, base)| {
+                count.checked_add(view.as_ref().unwrap_or(base).len())
+            })
+            .ok_or_else(engine_allocation::oom)?;
+        let rows = || {
+            frame_reads.iter().zip(&self.0).enumerate().flat_map(
+                |(table, (view, base))| {
+                    view.as_ref().unwrap_or(base).iter().map(
+                        move |&(owner, sample_hour)| replay_data::rows::SliceReadRow {
+                            table: table as u32,
+                            owner,
+                            sample_hour,
+                        },
+                    )
+                },
+            )
+        };
+        if let Some((token, baseline)) =
+            encoder.comparison_baseline::<tables::SliceReads>(branch, hour, force)
+            && token.allows_row_updates()
+            && baseline.len() == count
+        {
+            let mut changed = 0;
+            let same_keys = rows().zip(baseline).all(|(row, previous)| {
+                changed += usize::from(row.sample_hour != previous.sample_hour);
+                row.table == previous.table && row.owner == previous.owner
+            });
+            if same_keys {
+                if changed == 0 {
+                    return Ok(TableInput::ComparedEqual(token));
+                }
+                let mut indices = engine_allocation::vec(changed)?;
+                let mut current = engine_allocation::vec(changed)?;
+                for (index, (row, previous)) in rows().zip(baseline).enumerate() {
+                    if row.sample_hour != previous.sample_hour {
+                        indices.push(index);
+                        current.push(row);
+                    }
+                }
+                return Ok(TableInput::ComparedChanges {
+                    token,
+                    indices,
+                    rows: TableRows::SliceReads(current),
+                });
+            }
+        }
+        let mut complete = engine_allocation::vec(count)?;
+        complete.extend(rows());
+        Ok(TableView::Complete(TableRows::SliceReads(complete)).into())
+    }
+
+    #[cfg(test)]
     fn get(&self, &(table, owner): &(u32, u32)) -> Option<&i32> {
         let rows = self.0.get(table as usize)?;
         rows.binary_search_by_key(&owner, |entry| entry.0)
@@ -750,49 +880,14 @@ impl<B: SegmentBackend> Campaign<B> {
                             Merged::Rows(rows) => replay_data::sliced::try_owners(rows)?,
                             // Unread live owners already have their provenance
                             // in `previous`, including owners with no rows. The
-                            // final loop below keeps it. Only the fresh owners
+                            // ordered provenance merge keeps it. Only fresh owners
                             // need a new sample hour; do not rescan the complete
                             // baseline merely to enumerate its carried owners.
                             Merged::Update(_, update) => {
                                 replay_data::sliced::try_owners(update.rows())?
                             }
                         };
-                        let previous = &self.sliced_reads.0[table.index()];
-                        let capacity = owners
-                            .len()
-                            .checked_add(selection.read_owners().count())
-                            .and_then(|count| count.checked_add(previous.len()))
-                            .ok_or_else(engine_allocation::oom)?;
-                        let mut reads = engine_allocation::vec(capacity)?;
-                        for &owner in &owners {
-                            let read = if selection.force_full || captured(owner) {
-                                Some(hour)
-                            } else {
-                                self.sliced_reads
-                                    .get(&(table.index() as u32, owner))
-                                    .copied()
-                            };
-                            if let Some(read) = read {
-                                reads.push((owner, read));
-                            }
-                        }
-                        for owner in selection.read_owners() {
-                            if owners.binary_search(&owner).is_err() {
-                                reads.push((owner, hour));
-                            }
-                        }
-                        for &(owner, read) in previous {
-                            if !selection.force_full
-                                && !captured(owner)
-                                && live(owner)
-                                && owners.binary_search(&owner).is_err()
-                            {
-                                reads.push((owner, read));
-                            }
-                        }
-                        reads.sort_unstable_by_key(|entry| entry.0);
-                        reads.dedup_by_key(|entry| entry.0);
-                        self.sliced_reads.0[table.index()] = reads;
+                        self.sliced_reads.merge(table, &owners, selection, hour)?;
                     }
                     match merged {
                         Merged::Rows(merged) => {
@@ -875,28 +970,13 @@ impl<B: SegmentBackend> Campaign<B> {
             }
             retry = true;
         }
-        let count = frame_reads
-            .iter()
-            .zip(&self.sliced_reads.0)
-            .try_fold(0_usize, |count, (view, base)| {
-                count.checked_add(view.as_ref().unwrap_or(base).len())
-            })
-            .ok_or_else(engine_allocation::oom)?;
-        let mut reads = engine_allocation::vec(count)?;
-        for (table, (view, base)) in frame_reads.iter().zip(&self.sliced_reads.0).enumerate() {
-            reads.extend(
-                view.as_ref()
-                    .unwrap_or(base)
-                    .iter()
-                    .map(|&(owner, sample_hour)| replay_data::rows::SliceReadRow {
-                        table: table as u32,
-                        owner,
-                        sample_hour,
-                    }),
-            );
-        }
-        source.tables[TableId::SliceReads.index()] =
-            TableInput::SharedComplete(Arc::new(TableRows::SliceReads(reads)));
+        source.tables[TableId::SliceReads.index()] = self.sliced_reads.input(
+            &frame_reads,
+            &self.encoder,
+            source.branch,
+            hour,
+            force,
+        )?;
         Ok((retry, unpublished))
     }
 
@@ -3997,6 +4077,10 @@ pub(crate) fn allocation_failure_frame(hour: i32) -> Captured {
 mod byte_identity_tests;
 
 #[cfg(test)]
+#[path = "spooling/slice_reads_tests.rs"]
+mod slice_reads_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use replay::{container::Replay, container::SeekResult};
@@ -6379,11 +6463,10 @@ mod tests {
 
     /// The (owner, read hour) pairs SliceReads holds for ResearchInputs.
     fn reads(input: &FrameInput) -> Vec<(u32, i32)> {
-        let TableInput::SharedComplete(rows) = &input.tables[TableId::SliceReads.index()] else {
+        let TableInput::Sampled(TableView::Complete(TableRows::SliceReads(rows))) =
+            &input.tables[TableId::SliceReads.index()]
+        else {
             panic!("slice reads assembled")
-        };
-        let TableRows::SliceReads(rows) = &**rows else {
-            panic!("slice read rows")
         };
         rows.iter()
             .filter(|row| row.table == TableId::ResearchInputs.index() as u32)
@@ -6754,12 +6837,10 @@ mod tests {
             TableRows::clone(rows)
         };
         let read_hours = |input: &FrameInput, table: TableId| {
-            let TableInput::SharedComplete(rows) = &input.tables[TableId::SliceReads.index()]
+            let TableInput::Sampled(TableView::Complete(TableRows::SliceReads(rows))) =
+                &input.tables[TableId::SliceReads.index()]
             else {
                 panic!("slice reads assembled")
-            };
-            let TableRows::SliceReads(rows) = &**rows else {
-                panic!("slice read rows")
             };
             rows.iter()
                 .filter(|row| row.table == table.index() as u32)

@@ -13,6 +13,7 @@ use crate::{
     table_capture::{Arena, CaptureRows},
     table_conversion::{table, table_iter, unavailable},
 };
+use collector_projection::projection::{Projection, project_table, scalar_table};
 use engine_allocation::{copy_vec, owned_vec, reserve_exact};
 use engine_characters::advisor_tokens;
 use engine_native::{Memory, ccountry_characters as native, walk::Outcome};
@@ -20,7 +21,7 @@ use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::AdvisorTokenRow,
     rows::CountryCharacterRow, rows::HiredAdvisorRow, rows::TableId, rows::tables,
 };
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
 
 pub const N: usize = 5;
 pub const TABLES: [TableId; N] = [
@@ -414,21 +415,36 @@ impl Captured {
         ]
     }
     pub fn tables(&self) -> [TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("projection disabled"),
+        })
+    }
+    pub fn table_inputs(&self, mut projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
         let record = |row: &native::ActiveRow| CountryCharacterRow {
             country: row.country,
             ordinal: row.ordinal,
             character: row.character,
         };
+        let key = |row: &native::ActiveRow| (u128::from(row.country) << 32) | u128::from(row.ordinal);
         [
-            self.hired_table(),
-            table::<tables::CountryCharacters, _>(self.active.outcome, &self.active.rows, record),
-            self.token_table(),
-            table::<tables::CountryRetiredCharacters, _>(
-                self.retired.outcome,
-                &self.retired.rows,
+            self.hired_input(projection.as_deref_mut()),
+            scalar_table::<tables::CountryCharacters, _>(
+                projection.as_deref_mut(),
+                self.active.outcome,
+                &self.active.rows,
+                key,
                 record,
             ),
-            self.available_table(),
+            self.token_input(projection.as_deref_mut()),
+            scalar_table::<tables::CountryRetiredCharacters, _>(
+                projection,
+                self.retired.outcome,
+                &self.retired.rows,
+                key,
+                record,
+            ),
+            self.available_table().into(),
         ]
     }
     fn available_table(&self) -> TableView {
@@ -457,16 +473,16 @@ impl Captured {
     }
     /// The keys sorted by their bytes, numbered in that order: the set's
     /// bucket order follows hashes and insertion history, not a meaning.
-    fn token_table(&self) -> TableView {
+    fn token_input(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
         let Some(bytes) = self.token_bytes.first.get(..self.token_bytes.len) else {
-            return unavailable("advisor token arena invalid");
+            return unavailable("advisor token arena invalid").into();
         };
         let Some(rows) = self.tokens.rows.get(..self.tokens.outcome.len()) else {
-            return unavailable("advisor token row count invalid");
+            return unavailable("advisor token row count invalid").into();
         };
         let mut keys = Vec::new();
         if reserve_exact(&mut keys, rows.len()).is_err() {
-            return unavailable("collector allocation failed");
+            return unavailable("collector allocation failed").into();
         }
         for row in rows {
             match row
@@ -475,44 +491,77 @@ impl Captured {
                 .and_then(|end| bytes.get(row.start..end))
             {
                 Some(key) => keys.push(key),
-                None => return unavailable("advisor token outside captured arena"),
+                None => return unavailable("advisor token outside captured arena").into(),
             }
         }
         keys.sort_unstable();
         if keys.windows(2).any(|pair| pair[0] == pair[1]) {
-            return unavailable("advisor token set holds a key twice");
+            return unavailable("advisor token set holds a key twice").into();
         }
-        table_iter::<tables::AdvisorTokens, _>(
+        // A complete, equal fresh set can retain the encoder's allocation,
+        // including on keyframes. Never carry a partial or refused set.
+        if matches!(self.tokens.outcome, Outcome::Rows { .. })
+            && let Some(previous) = projection
+                .as_deref()
+                .and_then(|projection| projection.observed_shared_baseline::<tables::AdvisorTokens>())
+            && let Some(previous_rows) = previous.rows::<tables::AdvisorTokens>()
+            && previous_rows.len() == keys.len()
+            && keys
+                .iter()
+                .zip(previous_rows)
+                .enumerate()
+                .all(|(ordinal, (key, row))| row.ordinal as usize == ordinal && *key == row.token)
+        {
+            return TableInput::SharedComplete(std::sync::Arc::clone(previous));
+        }
+        let view = table_iter::<tables::AdvisorTokens, _>(
             self.tokens.outcome,
             keys.iter().enumerate(),
             |(ordinal, key)| AdvisorTokenRow {
                 ordinal: ordinal as u32,
                 token: owned_vec(copy_vec(key)),
             },
-        )
+        );
+        match view {
+            TableView::Complete(rows) if projection.is_some() => {
+                TableInput::SharedComplete(std::sync::Arc::new(rows))
+            }
+            view => view.into(),
+        }
     }
-    fn hired_table(&self) -> TableView {
+    fn hired_input(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
         let Some(bytes) = self.bytes.first.get(..self.bytes.len) else {
-            return unavailable("hired advisor string arena invalid");
+            return unavailable("hired advisor string arena invalid").into();
         };
         let text =
             |start: usize, len: usize| start.checked_add(len).and_then(|end| bytes.get(start..end));
         let Some(rows) = self.rows.rows.get(..self.rows.outcome.len()) else {
-            return unavailable("hired advisor row count invalid");
+            return unavailable("hired advisor row count invalid").into();
         };
         if rows.iter().any(|row| {
             text(row.idea_start, row.idea_len).is_none()
                 || text(row.slot_start, row.slot_len).is_none()
         }) {
-            return unavailable("hired advisor strings outside captured arena");
+            return unavailable("hired advisor strings outside captured arena").into();
         }
-        table::<tables::HiredAdvisors, _>(self.rows.outcome, rows, |row| HiredAdvisorRow {
-            country: row.country,
-            ordinal: row.ordinal,
-            character: row.character,
-            idea: owned_vec(copy_vec(text(row.idea_start, row.idea_len).unwrap())),
-            slot: owned_vec(copy_vec(text(row.slot_start, row.slot_len).unwrap())),
-        })
+        project_table::<tables::HiredAdvisors, _>(
+            projection,
+            self.rows.outcome,
+            rows,
+            |row| (u128::from(row.country) << 32) | u128::from(row.ordinal),
+            |row, previous| {
+                row.character == previous.character
+                    && text(row.idea_start, row.idea_len).unwrap() == previous.idea
+                    && text(row.slot_start, row.slot_len).unwrap() == previous.slot
+            },
+            |row| HiredAdvisorRow {
+                country: row.country,
+                ordinal: row.ordinal,
+                character: row.character,
+                idea: owned_vec(copy_vec(text(row.idea_start, row.idea_len).unwrap())),
+                slot: owned_vec(copy_vec(text(row.slot_start, row.slot_len).unwrap())),
+            },
+        )
     }
 }
 
@@ -524,6 +573,10 @@ use advisor_store::{PoolReuse, TokenReuse};
 #[cfg(test)]
 #[path = "hired_advisors/advisor_store_tests.rs"]
 mod advisor_store_tests;
+
+#[cfg(test)]
+#[path = "hired_advisors/projection_tests.rs"]
+mod projection_tests;
 
 #[cfg(test)]
 mod tests {

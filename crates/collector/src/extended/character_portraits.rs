@@ -18,6 +18,7 @@ use replay_data::{rows::CharacterPortraitRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableInput;
 #[cfg(test)]
 use replay_frame::frame::TableView;
+use std::cell::RefCell;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CharacterPortraits];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
@@ -317,6 +318,7 @@ impl Part {
 
 pub struct Captured {
     parts: Vec<Part>,
+    ordering: RefCell<Vec<(usize, usize)>>,
     terminal_failure: Option<&'static str>,
 }
 impl Captured {
@@ -324,6 +326,7 @@ impl Captured {
     fn vacant() -> Self {
         Self {
             parts: (0..PARTS).map(|_| Part::vacant()).collect(),
+            ordering: RefCell::default(),
             terminal_failure: None,
         }
     }
@@ -331,6 +334,7 @@ impl Captured {
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             parts: (0..PARTS).map(|_| Part::new(c)).collect(),
+            ordering: RefCell::default(),
             terminal_failure: None,
         }
     }
@@ -341,7 +345,8 @@ impl Captured {
         }
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.parts.iter().map(Part::allocated_bytes).sum()
+        self.parts.iter().map(Part::allocated_bytes).sum::<usize>()
+            + self.ordering.borrow().capacity() * size_of::<(usize, usize)>()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
         for part in &mut self.parts {
@@ -441,8 +446,9 @@ impl Captured {
         }
         // Each share is sorted by character; merge them into the order one
         // walk produces and apply its duplicate check across shares.
-        let mut rows = Vec::new();
-        if reserve_exact(&mut rows, outcome.len()).is_err() {
+        let mut rows = self.ordering.borrow_mut();
+        let additional = outcome.len().saturating_sub(rows.len());
+        if reserve_exact(&mut rows, additional).is_err() {
             return [unavailable("collector allocation failed").into()];
         }
         for part in &self.parts {
@@ -459,13 +465,32 @@ impl Captured {
                 else {
                     return [unavailable("character portraits exceed captured arena").into()];
                 };
-                rows.push((part, row));
             }
         }
-        rows.sort_unstable_by_key(|(_, row)| row.character);
+        // Only the permutation is retained, never row values or arena borrows.
+        // Validate it against every current share before reusing its order.
+        if rows.len() != outcome.len()
+            || rows.iter().any(|&(part, row)| {
+                self.parts
+                    .get(part)
+                    .is_none_or(|part| row >= part.rows.outcome.len())
+            })
+        {
+            rows.clear();
+            for (part, share) in self.parts.iter().enumerate() {
+                rows.extend((0..share.rows.outcome.len()).map(|row| (part, row)));
+            }
+        }
+        let character = |&(part, row): &(usize, usize)| self.parts[part].rows.rows[row].character;
+        if !rows
+            .windows(2)
+            .all(|pair| character(&pair[0]) < character(&pair[1]))
+        {
+            rows.sort_unstable_by_key(character);
+        }
         if rows
             .windows(2)
-            .any(|pair| pair[0].1.character == pair[1].1.character)
+            .any(|pair| character(&pair[0]) == character(&pair[1]))
         {
             return [unavailable("duplicate character portrait identity").into()];
         }
@@ -473,8 +498,10 @@ impl Captured {
             projection,
             outcome,
             &rows,
-            |(_, row)| u128::from(row.character),
+            |entry| u128::from(character(entry)),
             |(part, row), previous| {
+                let part = &self.parts[*part];
+                let row = &part.rows.rows[*row];
                 let portraits =
                     &part.arena.first[row.portraits[0]..row.portraits[0] + row.portraits[1]];
                 row.character == previous.character
@@ -490,22 +517,30 @@ impl Captured {
                                 && current.identity.as_bytes() == previous.identity
                         })
             },
-            |(part, r)| CharacterPortraitRow {
-                character: r.character,
-                portraits: owned_vec(map_slice(
-                    &part.arena.first[r.portraits[0]..r.portraits[0] + r.portraits[1]],
-                    |p| replay_data::rows::CharacterPortrait {
-                        category: p.category,
-                        size: p.size,
-                        is_set: p.is_set,
-                        kind: p.kind,
-                        identity: owned_vec(copy_vec(p.identity.as_bytes())),
-                    },
-                )),
+            |(part, r)| {
+                let part = &self.parts[*part];
+                let r = &part.rows.rows[*r];
+                CharacterPortraitRow {
+                    character: r.character,
+                    portraits: owned_vec(map_slice(
+                        &part.arena.first[r.portraits[0]..r.portraits[0] + r.portraits[1]],
+                        |p| replay_data::rows::CharacterPortrait {
+                            category: p.category,
+                            size: p.size,
+                            is_set: p.is_set,
+                            kind: p.kind,
+                            identity: owned_vec(copy_vec(p.identity.as_bytes())),
+                        },
+                    )),
+                }
             },
         )]
     }
 }
+
+#[cfg(test)]
+#[path = "character_portraits/projection_tests.rs"]
+mod projection_tests;
 
 #[cfg(test)]
 mod owned_tests {

@@ -5,6 +5,7 @@ use engine_native::walk::Outcome;
 /// No address/span replay or live memory access remains on the decode worker.
 #[derive(Debug, Default)]
 pub(crate) struct DivisionsJob {
+    pub(crate) presentation: Option<std::sync::Arc<crate::acquisition_jobs::PresentationInputs>>,
     pub(crate) census: crate::division_census::Census,
     pub(super) details: crate::division_detail::OwnedDetails,
     pub(super) context: DivisionsCopyContext,

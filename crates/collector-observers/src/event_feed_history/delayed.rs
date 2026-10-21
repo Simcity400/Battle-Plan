@@ -210,6 +210,10 @@ pub(crate) fn step<M: Memory>(
     Ok(fact)
 }
 impl Store {
+    pub(super) fn seed_prepared_delayed(&mut self, generation: u64) {
+        self.delayed.generation = Some(generation);
+        self.delayed.next = 1;
+    }
     pub(crate) fn has_delayed(&self, pointer: usize) -> bool {
         self.delayed.search(pointer).0.is_some()
     }
@@ -461,9 +465,13 @@ impl Store {
             }
             Err(refusal) => refusal,
         };
+        self.owner_refusals[super::OwnerRegistry::Delayed as usize] = Some(refusal);
         // A crossed or storage-short sample is retried, not failed.
         if recorded && refusal.retry {
             self.delayed.countries[slot].attempted = false;
+        }
+        if self.preparing_owner {
+            return;
         }
         match named {
             Some(owner) => {
@@ -549,6 +557,55 @@ impl Store {
         }
         // A native reset gives the owner a new queue to baseline.
         super::recovery_needed();
+    }
+    pub(super) fn prepared_delayed_demand(
+        &self,
+        source: &Self,
+        country: engine_native::ccountry::Country,
+        completed: bool,
+    ) -> usize {
+        self.delayed
+            .live
+            .saturating_add(if completed { source.delayed.live } else { 0 })
+            .max((country.canonical_slot as usize).saturating_add(1))
+    }
+    pub(super) fn prepared_delayed_labels(&self) -> usize {
+        self.delayed.next as usize
+    }
+    pub(super) fn merge_delayed_owner(
+        &mut self,
+        source: &Self,
+        country: engine_native::ccountry::Country,
+        labels: &mut [u32],
+    ) -> Result<(), &'static str> {
+        for slot in source.delayed.slots.iter().filter(|slot| slot.pointer != 0) {
+            labels[slot.id as usize] = self.delayed.insert(slot.pointer, slot.owner)?;
+        }
+        self.delayed.countries[country.canonical_slot as usize] = source.delayed.countries[0];
+        Ok(())
+    }
+    pub(super) fn prepared_delayed_failure(
+        &mut self,
+        country: engine_native::ccountry::Country,
+        retry: bool,
+    ) -> bool {
+        if let Some(entry) = self
+            .delayed
+            .countries
+            .get_mut(country.canonical_slot as usize)
+        {
+            let refused =
+                entry.refused && entry.pointer == country.pointer && entry.id == country.id;
+            *entry = Country {
+                pointer: country.pointer,
+                id: country.id,
+                attempted: !retry,
+                refused,
+                ..Default::default()
+            };
+            return refused;
+        }
+        false
     }
 }
 

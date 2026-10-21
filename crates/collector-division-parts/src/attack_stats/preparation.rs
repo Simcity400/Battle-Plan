@@ -72,6 +72,9 @@ impl PreparationPart {
     pub fn can_settle_sources(&self) -> bool {
         self.source_ready && self.rows.len() == self.range.len() && self.sources.can_settle_owned()
     }
+    pub fn has_local_source_refusal(&self) -> bool {
+        self.source_ready && self.sources.has_local_province_refusal()
+    }
     pub fn source_reads(&self) -> Option<&crate::panel_sources::Preparation> {
         self.source_ready.then_some(&self.sources)
     }

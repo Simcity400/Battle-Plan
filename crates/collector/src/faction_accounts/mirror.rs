@@ -69,6 +69,8 @@ struct Slot {
     rank: [AtomicI64; 5],
 }
 pub struct Storage {
+    data: usize,
+    stride: usize,
     slots: Vec<Slot>,
     dirty: Vec<AtomicU64>,
     invalid: AtomicBool,
@@ -76,6 +78,9 @@ pub struct Storage {
 }
 impl Storage {
     pub fn new(data: usize, stride: usize, rows: &[Account]) -> Result<Box<Self>, &'static str> {
+        if stride == 0 {
+            return Err("faction operand slot stride is zero");
+        }
         let mut slots = Vec::new();
         let mut dirty = Vec::new();
         allocation::reserve(&mut slots, rows.len())
@@ -127,12 +132,24 @@ impl Storage {
         }
         dirty.extend((0..rows.len().div_ceil(64)).map(|_| AtomicU64::new(0)));
         allocation::boxed(Self {
+            data,
+            stride,
             slots,
             dirty,
             invalid: AtomicBool::new(false),
             missing_projection_sources: AtomicBool::new(false),
         })
         .map_err(|_| "faction operand storage allocation failed")
+    }
+    /// The native array's fixed stride is prepared with this storage. Validate
+    /// both its geometry and the stored address; no slot survives replacement.
+    fn index(&self, address: usize) -> Option<usize> {
+        let offset = address.checked_sub(self.data)?;
+        if offset % self.stride != 0 {
+            return None;
+        }
+        let index = offset / self.stride;
+        (self.slots.get(index)?.address == address).then_some(index)
     }
     fn write(
         &self,
@@ -142,12 +159,19 @@ impl Storage {
         value: i64,
         operation: Operation,
     ) {
-        let Ok(index) = self
-            .slots
-            .binary_search_by_key(&address, |slot| slot.address)
-        else {
+        let Some(index) = self.index(address) else {
             return;
         };
+        self.write_at(index, influence, field, value, operation);
+    }
+    fn write_at(
+        &self,
+        index: usize,
+        influence: bool,
+        field: usize,
+        value: i64,
+        operation: Operation,
+    ) {
         let slot = &self.slots[index];
         let target = if influence {
             slot.influence.get(field)
@@ -176,13 +200,7 @@ impl Storage {
         }
         self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
     }
-    fn projection_sources(&self, address: usize, term: usize, source: &[i64; 7]) {
-        let Ok(index) = self
-            .slots
-            .binary_search_by_key(&address, |slot| slot.address)
-        else {
-            return;
-        };
+    fn projection_sources(&self, index: usize, term: usize, source: &[i64; 7]) {
         let indices: &[usize] = match term {
             0 => &[0, 1],
             1 => &[2],
@@ -202,10 +220,7 @@ impl Storage {
         self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
     }
     fn refresh(&self, address: usize, projection: bool, numerator: i64, denominator: i64) {
-        let Ok(index) = self
-            .slots
-            .binary_search_by_key(&address, |slot| slot.address)
-        else {
+        let Some(index) = self.index(address) else {
             return;
         };
         let slot = &self.slots[index];
@@ -232,10 +247,7 @@ impl Storage {
         self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
     }
     fn rank_input(&self, address: usize, numerator: i64, order: u32) {
-        let Ok(index) = self
-            .slots
-            .binary_search_by_key(&address, |slot| slot.address)
-        else {
+        let Some(index) = self.index(address) else {
             return;
         };
         let Some((faction, phase, count)) = crate::faction_pools::phase(1) else {
@@ -253,10 +265,7 @@ impl Storage {
         }
     }
     fn rank_commit(&self, address: usize, native: i32) {
-        let Ok(index) = self
-            .slots
-            .binary_search_by_key(&address, |slot| slot.address)
-        else {
+        let Some(index) = self.index(address) else {
             return;
         };
         let slot = &self.slots[index];
@@ -267,10 +276,7 @@ impl Storage {
         self.dirty[index / 64].fetch_or(1u64 << (index % 64), Ordering::SeqCst);
     }
     fn passive(&self, address: usize, product: i64) {
-        let Ok(index) = self
-            .slots
-            .binary_search_by_key(&address, |slot| slot.address)
-        else {
+        let Some(index) = self.index(address) else {
             return;
         };
         let slot = &self.slots[index];
@@ -525,7 +531,7 @@ pub fn projection_operand(index: usize, value: i64) {
         cell.set((values, mask));
     });
 }
-pub fn projection_sources(address: usize, term: usize) {
+pub fn projection_sources(address: usize, term: usize, value: i64) {
     let required = match term {
         0 => 3,
         1 => 4,
@@ -545,20 +551,18 @@ pub fn projection_sources(address: usize, term: usize) {
     let pointer = POINTER.load(Ordering::SeqCst);
     if !pointer.is_null() {
         let storage = unsafe { &*pointer };
-        if storage
-            .slots
-            .binary_search_by_key(&address, |slot| slot.address)
-            .is_err()
-        {
+        let Some(index) = storage.index(address) else {
             return;
-        }
+        };
         if required == 0 || source.1 & required != required {
             storage
                 .missing_projection_sources
                 .store(true, Ordering::SeqCst);
-            return;
+        } else {
+            storage.projection_sources(index, term, &source.0);
         }
-        storage.projection_sources(address, term, &source.0);
+        // Even a missing-source refusal retains the reached scalar store.
+        storage.write_at(index, false, PROJECTION_START + term, value, Operation::Set);
     }
 }
 /// The arithmetic input versions and the reached refresh boundary are retained
@@ -606,11 +610,7 @@ pub fn refuse(receiver: usize) {
     let pointer = POINTER.load(Ordering::SeqCst);
     if !pointer.is_null() && !CLOSED.load(Ordering::SeqCst) {
         let storage = unsafe { &*pointer };
-        if storage
-            .slots
-            .binary_search_by_key(&receiver, |slot| slot.address)
-            .is_ok()
-        {
+        if storage.index(receiver).is_some() {
             storage.invalid.store(true, Ordering::SeqCst);
         }
     }
@@ -631,6 +631,81 @@ pub fn projection_factory_total(total: Option<i64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn checked_account_slots_reject_invalid_addresses_and_replaced_geometry() {
+        let rows = vec![Account::default(); 3];
+        let mut storage = Storage::new(0x1000, 0xd0, &rows).unwrap();
+        for address in [0, 0xfff, 0x1000, 0x1001, 0x10d0, 0x11a0, 0x1270, usize::MAX] {
+            assert_eq!(
+                storage.index(address),
+                storage
+                    .slots
+                    .binary_search_by_key(&address, |slot| slot.address)
+                    .ok()
+            );
+        }
+        storage.slots[1].address += 8;
+        assert_eq!(storage.index(0x10d0), None);
+        assert_eq!(Storage::new(0x2000, 0xd0, &[]).unwrap().index(0x2000), None);
+        assert!(Storage::new(0x1000, 0, &rows).is_err());
+        assert!(Storage::new(usize::MAX - 1, 0xd0, &rows).is_err());
+
+        let mut holder = Holder::default();
+        holder.install(storage).unwrap();
+        let mut fresh = vec![Account::default(); 3];
+        holder
+            .install(Storage::new(0x2000, 0xd0, &fresh).unwrap())
+            .unwrap();
+        crate::test_support::with_allocations_denied(|| {
+            let _flight = Flight::new();
+            observe(0x1000, false, CONTRIBUTION, 99, Operation::Set);
+        });
+        assert!(!holder.storage().unwrap().drain(&mut fresh).unwrap());
+    }
+
+    #[test]
+    fn projection_reuses_one_slot_and_keeps_source_consumption_and_literal_writes() {
+        let mut rows = vec![Account {
+            projection: vec![0; 4],
+            ..Default::default()
+        }];
+        let mut holder = Holder::default();
+        holder
+            .install(Storage::new(0x1000, 0xd0, &rows).unwrap())
+            .unwrap();
+        let sources = [101, 202, 303, 404, 505, 606, 707];
+        crate::test_support::with_allocations_denied(|| {
+            let _flight = Flight::new();
+            for (index, value) in sources.into_iter().enumerate() {
+                projection_operand(index, value);
+            }
+            for term in 0..4 {
+                projection_sources(0x1000, term, 10 + term as i64);
+            }
+        });
+        let storage = holder.storage().unwrap();
+        assert!(storage.drain(&mut rows).unwrap());
+        assert_eq!(rows[0].projection, [10, 11, 12, 13]);
+        assert_eq!(rows[0].projection_sources, sources);
+        assert_eq!(rows[0].projection_derived, 15);
+        assert!(!storage.drain(&mut rows).unwrap());
+        crate::test_support::with_allocations_denied(|| {
+            let _flight = Flight::new();
+            projection_operand(2, 999);
+            // An unregistered receiver consumes its getter operands but cannot
+            // dirty or refuse the registered account.
+            projection_sources(0x1001, 1, 80);
+            assert!(!storage.missing_projection_sources.load(Ordering::SeqCst));
+            assert!(!storage.drain(&mut rows).unwrap());
+            projection_sources(0x1000, 1, 81);
+        });
+        assert_eq!(storage.slots[0].projection[1].load(Ordering::Relaxed), 81);
+        assert_eq!(
+            storage.drain(&mut rows),
+            Err("faction projection setter lacks its supplying getter operands")
+        );
+    }
+
     #[test]
     fn rank_alias_selects_canonical_account_and_keeps_its_supplying_certificate() {
         let bytes = super::super::tests::alias_fixture();

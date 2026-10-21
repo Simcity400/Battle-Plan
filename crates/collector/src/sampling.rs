@@ -782,6 +782,46 @@ pub struct PresentationStats {
     pub phase_ns: [AtomicU64; extended::division_presentation::PHASES],
     pub range_dispatch_ns: AtomicU64,
     pub store_wait_ns: AtomicU64,
+    pub input_consumers_ns: AtomicU64,
+    pub input_restore_ns: AtomicU64,
+    pub early_steps: [EarlyStepStats; EarlyStep::ALL.len()],
+    pub wait_advance: EarlyStepStats,
+    pub queue_ns: AtomicU64,
+}
+
+#[derive(Default)]
+pub struct EarlyStepStats {
+    pub calls: AtomicU64,
+    pub ns: AtomicU64,
+}
+
+struct EarlyStepTimer<'a> {
+    shared: &'a Shared,
+    stats: &'a EarlyStepStats,
+    begin: i64,
+    wait: u64,
+}
+impl<'a> EarlyStepTimer<'a> {
+    fn new(shared: &'a Shared, stats: &'a EarlyStepStats) -> Self {
+        Self {
+            shared,
+            stats,
+            begin: qpc(),
+            wait: shared.acquisition_wait_ns.load(Ordering::Relaxed),
+        }
+    }
+}
+impl Drop for EarlyStepTimer<'_> {
+    fn drop(&mut self) {
+        let ns = self.shared.ns(qpc() - self.begin).saturating_sub(
+            self.shared
+                .acquisition_wait_ns
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.wait),
+        );
+        self.stats.ns.fetch_add(ns, Ordering::Relaxed);
+        self.stats.calls.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Cumulative DivisionTemplateIcons rows whose model inputs failed, by
@@ -2552,6 +2592,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             frame.extended.seal_map_events(clock.hour);
             let acquisition = shared.acquisition.get().expect("initialized before hook");
             let mut batch = acquisition::Batch::new(acquisition);
+            let final_inputs_dispatch = batch.final_inputs();
             let mut boundary_request = frame.extended.take_observer_boundary_request(
                 shared.base,
                 clock.hour,
@@ -2654,9 +2695,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             // frame holds tickets and variant results, never a job or completion.
             macro_rules! queue {
                 ($job:expr) => {{
+                    let begin = qpc();
                     let job = || $job;
                     // SAFETY: batch drains all accepted work before this callback returns.
-                    unsafe { queue_acquisition(shared, &mut batch, job) }
+                    let pending = unsafe { queue_acquisition(shared, &mut batch, job) };
+                    shared
+                        .presentation
+                        .queue_ns
+                        .fetch_add(shared.ns(qpc() - begin), Ordering::Relaxed);
+                    pending
                 }};
             }
             // One collector wake; workers relay the held burst's peer wakes.
@@ -2786,6 +2833,26 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             input_payload.slots = (split != 0).then(|| slots(0));
             // SAFETY: only this callback reads and writes the split.
             input_payload.join_capacity = unsafe { *shared.division_join_capacity.get() };
+            input_payload.presentation = None;
+            let presentation_inputs = out_of_line(|| {
+                let mut request = frame.extended.take_presentation_request(
+                    &country_snapshot,
+                    shared.base,
+                    state,
+                    clock.hour,
+                    None,
+                );
+                request.inputs = None;
+                request.captured.status_workers = acquisition.worker_count();
+                batch.arm_presentation(&mut request);
+                batch.arm_presentation_inputs(request, split, shared.army_stat_store.clone())
+            });
+            // The optional native witness still belongs to this callback,
+            // before any presentation worker borrows the input packet.
+            #[cfg(not(feature = "movement_witness"))]
+            {
+                input_payload.presentation = Some(Arc::clone(&presentation_inputs));
+            }
             let input_pending = queue!(acquisition::Job::DivisionInputs(acquisition::RawRequest {
                 countries: Arc::clone(&country_snapshot),
                 context: divisions_ctx,
@@ -2804,6 +2871,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                             game_state: state,
                             slots: slots(part + 1),
                             census,
+                            presentation: (!cfg!(feature = "movement_witness"))
+                                .then(|| (Arc::clone(&presentation_inputs), part)),
                         }
                     )));
                 }
@@ -2925,6 +2994,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             if characters_refresh && roster_active.iter().any(|&value| value) {
                 characters_pending[0] = Some(queue!(acquisition::Job::Characters(
                     acquisition::CharactersRequest {
+                        final_inputs: None,
                         context: extended::characters::CharactersCopyContext {
                             active: roster_active,
                             ..characters_ctx
@@ -3588,9 +3658,175 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             let mut session_failure = None;
             let mut relations_failure = None;
             let mut final_inputs_pending = None;
+            let mut final_sources_done = false;
+            let mut final_sources_publish = 0;
+            let mut final_inputs_armed = false;
+            macro_rules! join_final_sources {
+                () => {{
+                    // Out of line: the job-sized request stays off the hourly body's frame.
+                    out_of_line(|| {
+                        let (intel_residual_request, intel_residual_report) = collected!(
+                            intel_residual_pending
+                                .take()
+                                .expect("residual Intel producer"),
+                            IntelResidual
+                        );
+                        let (flags, variables) = frame.extended.restore_intel_residual_request(
+                            intel_residual_request,
+                            intel_residual_report,
+                        );
+                        if let Some(store) = flags {
+                            let bytes = store.allocated_bytes() as u64;
+                            let previous = shared
+                                .script_flag_store_bytes
+                                .swap(bytes, Ordering::Relaxed);
+                            shared
+                                .pool_bytes
+                                .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                            // SAFETY: the IntelResidual job has joined; no worker retains this store.
+                            unsafe { *shared.script_flag_store.get() = Some(store) };
+                        }
+                        if let Some(store) = variables {
+                            let bytes = store.allocated_bytes() as u64;
+                            let previous = shared
+                                .script_variable_store_bytes
+                                .swap(bytes, Ordering::Relaxed);
+                            shared
+                                .pool_bytes
+                                .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+                            // SAFETY: the IntelResidual job has joined; no worker retains this store.
+                            unsafe { *shared.script_variable_store.get() = Some(store) };
+                        }
+                    });
+                    // Out of line: the job-sized request stays off the hourly body's frame.
+                    capitulation_failure = out_of_line(|| {
+                        let (request, report, failure) = completed!(
+                            capitulation_pending.take().expect("capitulation producer"),
+                            Capitulation
+                        );
+                        let failure = failure.or((!report.raw_ok)
+                            .then_some("Capitulation owned acquisition could not complete"));
+                        capitulation_report = report;
+                        frame.extended.capitulation_pilot().capitulation_raw_mode =
+                            report.raw_ok || failure.is_some();
+                        if report.raw_ok && failure.is_none() {
+                            *capitulation_payload = Some(request.payload);
+                        } else {
+                            decode::recycle_capitulation_job(request.payload);
+                        }
+                        failure
+                    });
+
+                    if let Some(pending) = session_pending.take() {
+                        let (request, report, failure) = completed!(pending, Session);
+                        let failure = failure.or((!report.raw_ok)
+                            .then_some("Session owned acquisition could not complete"));
+                        session_report = report;
+                        session_failure = failure;
+                        frame.extended.session_pilot().raw_mode =
+                            report.raw_ok || failure.is_some();
+                        if report.raw_ok && failure.is_none() {
+                            *session_payload = Some(request.payload);
+                        } else {
+                            decode::recycle_session_job(request.payload);
+                        }
+                    }
+
+                    if let Some(pending) = relations_pending.take() {
+                        let (request, report, failure) = completed!(pending, Relations);
+                        let failure = failure.or((!report.raw_ok)
+                            .then_some("Relations original acquisition could not complete"));
+                        let (fingerprints, payload) = frame
+                            .extended
+                            .relations_pilot()
+                            .join_relations(request.payload, report, failure);
+                        if fingerprints.is_some() {
+                            // SAFETY: only this callback takes and returns the store.
+                            unsafe {
+                                *shared.slice_fingerprints[crate::slicing::RELATIONS].get() =
+                                    fingerprints
+                            };
+                        }
+                        relations_report = report;
+                        relations_failure = failure;
+                        match payload {
+                            Ok(payload) => *relations_payload = Some(payload),
+                            Err(payload) => decode::recycle_relations_job(payload),
+                        }
+                    }
+                    {
+                        let (pending, loaned_bytes) =
+                            variants_pending.take().expect("variant producer");
+                        let (request, report) = collected!(pending, Variants);
+                        let acquired_bytes = request.allocated_bytes();
+                        if acquired_bytes >= loaned_bytes {
+                            shared.pool_bytes.fetch_add(
+                                (acquired_bytes - loaned_bytes) as u64,
+                                Ordering::Relaxed,
+                            );
+                        } else {
+                            shared.pool_bytes.fetch_sub(
+                                (loaned_bytes - acquired_bytes) as u64,
+                                Ordering::Relaxed,
+                            );
+                        }
+                        frame.extended.restore_variants_request(request, report);
+                    }
+                }};
+            }
             while late_pending.is_none() || final_inputs_pending.is_none() {
                 if verdicts_done && divisions_done {
                     stitch_failure.reach(&batch);
+                }
+                if final_sources_done
+                    && late_pending.is_some()
+                    && !final_inputs_armed
+                    && !batch.stopped()
+                    && !crate::allocation::failed()
+                {
+                    // Successful source joins installed the actual packs. The
+                    // remaining raw jobs contribute only their owner masks;
+                    // failure still settles at their original ordered joins.
+                    frame.extended.settle_intel_residual(
+                        &cached,
+                        extended::intel::CaptureContext {
+                            base: shared.base,
+                            game_state: state,
+                            hour: clock.hour,
+                            force_full,
+                        },
+                    );
+                    let mut required = 0;
+                    for (part, pending) in characters_pending.iter().enumerate().skip(1) {
+                        if pending.is_some() {
+                            required |= 1 << part;
+                            // Each admitted raw join sets raw_active on success
+                            // or failure; only success releases this continuation.
+                            for (raw, active) in frame
+                                .extended
+                                .characters_pilot()
+                                .raw_active
+                                .iter_mut()
+                                .zip(character_part(part))
+                            {
+                                *raw |= active;
+                            }
+                        }
+                    }
+                    out_of_line(|| {
+                        final_inputs_dispatch.arm(
+                            frame.extended.take_final_inputs_request(
+                                &country_snapshot,
+                                shared.base,
+                                state,
+                                clock.hour,
+                                force_full,
+                            ),
+                            required,
+                            final_sources_publish,
+                        );
+                    });
+                    final_inputs_armed = true;
                 }
                 let wait_begin = qpc();
                 let step = batch.wait_ready(|batch| {
@@ -3609,14 +3845,17 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                                 .flatten()
                                 .all(|pending| pending_complete(batch, pending))
                     };
+                    // Claim this ordered join when its first producer publishes,
+                    // before unrelated handlers can defer the remaining parts.
+                    // No consumer leaves before every part has joined.
+                    if ready!(input_pending) {
+                        return Some(EarlyStep::Inputs);
+                    }
                     if presentation.ready(batch) {
                         return Some(EarlyStep::Presentation);
                     }
                     if ready!(root_pending) {
                         return Some(EarlyStep::Roots);
-                    }
-                    if all(&input_pending, &part_pending) {
-                        return Some(EarlyStep::Inputs);
                     }
                     if ready!(divisions_pending) {
                         return Some(EarlyStep::Divisions);
@@ -3702,6 +3941,24 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     {
                         return Some(EarlyStep::Missions);
                     }
+                    if !final_sources_done
+                        && verdicts_done
+                        && icons_done
+                        && !batch.stopped()
+                        && final_sources_published(
+                            batch,
+                            [
+                                intel_residual_pending.as_ref(),
+                                capitulation_pending.as_ref(),
+                                session_pending.as_ref(),
+                                relations_pending.as_ref(),
+                                variants_pending.as_ref().map(|(pending, _)| pending),
+                            ],
+                        )
+                        .is_some()
+                    {
+                        return Some(EarlyStep::FinalSources);
+                    }
                     if late_pending.is_none()
                         && map_done
                         && child_done
@@ -3732,6 +3989,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 shared
                     .acquisition_wait_ns
                     .fetch_add(shared.ns(qpc() - wait_begin), Ordering::Relaxed);
+                let _step = EarlyStepTimer::new(
+                    shared,
+                    &shared.presentation.early_steps[step as usize],
+                );
                 match step {
                     EarlyStep::Presentation => {
                         // SAFETY: readiness proved publication; no preparation wait here.
@@ -3933,26 +4194,51 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                             input_pending.take().expect("input producer"),
                             DivisionInputs
                         );
+                        let consumers_begin = qpc();
+                        let consumers_wait = shared.acquisition_wait_ns.load(Ordering::Relaxed);
+                        // Collect the input tickets before closing the fan-in:
+                        // their last publisher may still release Prepare while
+                        // this callback waits for the ordered parts.
+                        let mut parts = [const { None }; crate::division_census::MAX_PARTS - 1];
+                        for (part, pending) in
+                            std::mem::take(&mut part_pending).into_iter().enumerate()
+                        {
+                            if let Some(pending) = pending {
+                                let (request, _, failure) = completed!(pending, DivisionInputParts);
+                                parts[part] = Some((request.census, failure));
+                            }
+                        }
+                        let restore_begin = qpc();
+                        let (joined, join_failure) =
+                            presentation_inputs.restore_master(&mut input_request.payload.census);
+                        shared
+                            .presentation
+                            .input_restore_ns
+                            .fetch_add(shared.ns(qpc() - restore_begin), Ordering::Relaxed);
+                        input_request.payload.presentation = None;
+                        shared.presentation.store_wait_ns.fetch_add(
+                            shared.ns(presentation_inputs.store_wait_ticks() as i64),
+                            Ordering::Relaxed,
+                        );
+                        input_failure = input_failure.or(join_failure);
                         // The parts join the census in slot order, as one walk would
                         // have left it. The first failure in slot order is the hour's:
                         // the census's own refusal, or a part that did not run.
                         let mut joining = input_failure.is_none();
-                        for (part, pending) in
-                            std::mem::take(&mut part_pending).into_iter().enumerate()
-                        {
-                            let Some(pending) = pending else {
+                        for (part, captured) in parts.into_iter().enumerate() {
+                            let Some((mut captured, failure)) = captured else {
                                 if joining && part < split {
                                     input_failure = Some("division input part not dispatched");
                                     joining = false;
                                 }
                                 continue;
                             };
-                            let (mut request, _, failure) = completed!(pending, DivisionInputParts);
-                            if joining {
+                            presentation_inputs.restore_part(part, &mut captured);
+                            if joining && !joined {
                                 let census = &mut input_request.payload.census;
                                 let result = match failure {
                                     Some(reason) => Err(reason),
-                                    None => census.absorb(&mut request.census),
+                                    None => census.absorb(&mut captured),
                                 };
                                 if let Err(reason) = result {
                                     input_failure = Some(reason);
@@ -3960,7 +4246,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                                 joining = input_failure.is_none() && census.joinable();
                             }
                             // SAFETY: the part has joined; only this callback returns it.
-                            unsafe { (*shared.division_parts.get())[part] = Some(request.census) };
+                            unsafe { (*shared.division_parts.get())[part] = Some(captured) };
                         }
                         input_request.payload.overflowed |= input_request.payload.census.overflowed;
                         let inputs_ok = inputs_ok && !input_request.payload.overflowed;
@@ -3978,6 +4264,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                             None
                         };
                         frame.extended.install_unit_inputs(inputs.clone());
+                        shared.presentation.input_consumers_ns.fetch_add(
+                            shared.ns(qpc() - consumers_begin).saturating_sub(
+                                shared
+                                    .acquisition_wait_ns
+                                    .load(Ordering::Relaxed)
+                                    .saturating_sub(consumers_wait),
+                            ),
+                            Ordering::Relaxed,
+                        );
                         batch.hold();
                         divisions_pending =
                             Some(queue!(acquisition::Job::Divisions(input_request)));
@@ -3986,14 +4281,31 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         // side, movement and speed terms as independent jobs.
                         // Out of line: the job-sized requests stay off the hourly body's frame.
                         let (pending, movement, speed_terms, bytes, split) = out_of_line(|| {
-                            let mut presentation_request =
-                                frame.extended.take_presentation_request(
-                                    &country_snapshot,
-                                    shared.base,
-                                    state,
-                                    clock.hour,
-                                    shared.take_army_stat_store(),
-                                );
+                            if let Some((pending, movement, speed_terms, bytes, split)) =
+                                presentation_inputs.take_dispatched()
+                            {
+                                let (ticket, parked) = batch.adopt_presentation_ticket(pending);
+                                let pending = if parked {
+                                    PendingAcquisition::Rejected(ticket)
+                                } else {
+                                    PendingAcquisition::Accepted(ticket)
+                                };
+                                let speed_terms =
+                                    queue!(acquisition::Job::PresentationSpeedTerms(speed_terms));
+                                let movement =
+                                    queue!(acquisition::Job::PresentationMovement(movement));
+                                return (pending, movement, speed_terms, bytes, split);
+                            }
+                            let mut presentation_request = presentation_inputs
+                                .take_request()
+                                .expect("presentation retained");
+                            if presentation_request.army_stats.is_none() {
+                                presentation_request.army_stats = shared.take_army_stat_store();
+                            }
+                            if presentation_request.army_stats.is_some() {
+                                presentation_request.captured.enable_owned_settlement();
+                            }
+                            presentation_request.inputs = inputs.clone();
                             #[cfg(feature = "movement_witness")]
                             if let Some(inputs) = presentation_request.inputs.as_deref() {
                                 // SAFETY: this is the stopped simulation's callback thread;
@@ -4238,6 +4550,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                             if characters_refresh && active.iter().any(|&value| value) {
                                 *pending = Some(queue!(acquisition::Job::Characters(
                                     acquisition::CharactersRequest {
+                                        final_inputs: Some(Arc::clone(&final_inputs_dispatch)),
                                         context: extended::characters::CharactersCopyContext {
                                             active,
                                             ..characters_ctx
@@ -4769,6 +5082,21 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         });
                         missions_done = true;
                     }
+                    EarlyStep::FinalSources => {
+                        final_sources_publish = final_sources_published(
+                            &batch,
+                            [
+                                intel_residual_pending.as_ref(),
+                                capitulation_pending.as_ref(),
+                                session_pending.as_ref(),
+                                relations_pending.as_ref(),
+                                variants_pending.as_ref().map(|(pending, _)| pending),
+                            ],
+                        )
+                        .expect("successful final input sources");
+                        join_final_sources!();
+                        final_sources_done = true;
+                    }
                     EarlyStep::Late => {
                         // Admit Late and its histories before FinalInputs, without
                         // waiting for their bodies or any assembly-only join.
@@ -4795,117 +5123,30 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         }
                     }
                     EarlyStep::FinalInputs => {
-                        // Out of line: the job-sized request stays off the hourly body's frame.
-                        out_of_line(|| {
-                            let (intel_residual_request, intel_residual_report) = collected!(
-                                intel_residual_pending
-                                    .take()
-                                    .expect("residual Intel producer"),
-                                IntelResidual
-                            );
-                            let (flags, variables) = frame.extended.restore_intel_residual_request(
-                                intel_residual_request,
-                                intel_residual_report,
-                            );
-                            if let Some(store) = flags {
-                                let bytes = store.allocated_bytes() as u64;
-                                let previous = shared
-                                    .script_flag_store_bytes
-                                    .swap(bytes, Ordering::Relaxed);
-                                shared
-                                    .pool_bytes
-                                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
-                                // SAFETY: the IntelResidual job has joined; no worker retains this store.
-                                unsafe { *shared.script_flag_store.get() = Some(store) };
+                        let (dispatched, bytes) = out_of_line(|| {
+                            let (dispatched, request, bytes) = final_inputs_dispatch.take();
+                            if let Some(request) = request {
+                                frame.extended.return_final_inputs_request(request);
                             }
-                            if let Some(store) = variables {
-                                let bytes = store.allocated_bytes() as u64;
-                                let previous = shared
-                                    .script_variable_store_bytes
-                                    .swap(bytes, Ordering::Relaxed);
-                                shared
-                                    .pool_bytes
-                                    .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
-                                // SAFETY: the IntelResidual job has joined; no worker retains this store.
-                                unsafe { *shared.script_variable_store.get() = Some(store) };
-                            }
+                            (dispatched, bytes)
                         });
-                        // Out of line: the job-sized request stays off the hourly body's frame.
-                        capitulation_failure = out_of_line(|| {
-                            let (request, report, failure) = completed!(
-                                capitulation_pending.take().expect("capitulation producer"),
-                                Capitulation
-                            );
-                            let failure = failure.or((!report.raw_ok)
-                                .then_some("Capitulation owned acquisition could not complete"));
-                            capitulation_report = report;
-                            frame.extended.capitulation_pilot().capitulation_raw_mode =
-                                report.raw_ok || failure.is_some();
-                            if report.raw_ok && failure.is_none() {
-                                *capitulation_payload = Some(request.payload);
-                            } else {
-                                decode::recycle_capitulation_job(request.payload);
-                            }
-                            failure
-                        });
-
-                        if let Some(pending) = session_pending.take() {
-                            let (request, report, failure) = completed!(pending, Session);
-                            let failure = failure.or((!report.raw_ok)
-                                .then_some("Session owned acquisition could not complete"));
-                            session_report = report;
-                            session_failure = failure;
-                            frame.extended.session_pilot().raw_mode =
-                                report.raw_ok || failure.is_some();
-                            if report.raw_ok && failure.is_none() {
-                                *session_payload = Some(request.payload);
-                            } else {
-                                decode::recycle_session_job(request.payload);
-                            }
-                        }
-
-                        if let Some(pending) = relations_pending.take() {
-                            let (request, report, failure) = completed!(pending, Relations);
-                            let failure = failure.or((!report.raw_ok)
-                                .then_some("Relations original acquisition could not complete"));
-                            let (fingerprints, payload) = frame
-                                .extended
-                                .relations_pilot()
-                                .join_relations(request.payload, report, failure);
-                            if fingerprints.is_some() {
-                                // SAFETY: only this callback takes and returns the store.
-                                unsafe {
-                                    *shared.slice_fingerprints[crate::slicing::RELATIONS].get() =
-                                        fingerprints
-                                };
-                            }
-                            relations_report = report;
-                            relations_failure = failure;
-                            match payload {
-                                Ok(payload) => *relations_payload = Some(payload),
-                                Err(payload) => decode::recycle_relations_job(payload),
-                            }
-                        }
-                        {
-                            let (pending, loaned_bytes) =
-                                variants_pending.take().expect("variant producer");
-                            let (request, report) = collected!(pending, Variants);
-                            let acquired_bytes = request.allocated_bytes();
-                            if acquired_bytes >= loaned_bytes {
-                                shared.pool_bytes.fetch_add(
-                                    (acquired_bytes - loaned_bytes) as u64,
-                                    Ordering::Relaxed,
-                                );
-                            } else {
-                                shared.pool_bytes.fetch_sub(
-                                    (loaned_bytes - acquired_bytes) as u64,
-                                    Ordering::Relaxed,
-                                );
-                            }
-                            frame.extended.restore_variants_request(request, report);
+                        if !final_sources_done {
+                            join_final_sources!();
                         }
                         for part in 1..CHARACTER_PARTS {
                             join_characters!(part);
+                        }
+                        if let Some(pending) = dispatched {
+                            let (ticket, parked) = batch.adopt_presentation_ticket(pending);
+                            final_inputs_pending = Some((
+                                if parked {
+                                    PendingAcquisition::Rejected(ticket)
+                                } else {
+                                    PendingAcquisition::Accepted(ticket)
+                                },
+                                bytes,
+                            ));
+                            continue;
                         }
                         // All producers have published; no callback fallback may repeat
                         // an attempted read. Settle residual Intel before lending its pack.
@@ -6473,10 +6714,10 @@ unsafe fn finish_acquisition_into(
     }
 }
 
-/// Early dependency barriers. Handlers alone install producer outputs and
-/// dispatch consumers; readiness never borrows a request or a live source.
-#[derive(Clone, Copy)]
-enum EarlyStep {
+/// Early dependency barriers. Handlers install producer outputs and adopt
+/// worker continuations; readiness never borrows a request or a live source.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum EarlyStep {
     Presentation,
     Roots,
     Inputs,
@@ -6494,7 +6735,31 @@ enum EarlyStep {
     ArmyIcons,
     Missions,
     Late,
+    FinalSources,
     FinalInputs,
+}
+impl EarlyStep {
+    pub(crate) const ALL: [Self; 19] = [
+        Self::Presentation,
+        Self::Roots,
+        Self::Inputs,
+        Self::Ships,
+        Self::Countries,
+        Self::Characters,
+        Self::Wings,
+        Self::Orders,
+        Self::Divisions,
+        Self::Verdicts,
+        Self::Stitch,
+        Self::Naval,
+        Self::Map,
+        Self::ChildFronts,
+        Self::ArmyIcons,
+        Self::Missions,
+        Self::Late,
+        Self::FinalSources,
+        Self::FinalInputs,
+    ];
 }
 
 fn pending_complete(batch: &acquisition::Batch<'_>, pending: &PendingAcquisition) -> bool {
@@ -6502,6 +6767,37 @@ fn pending_complete(batch: &acquisition::Batch<'_>, pending: &PendingAcquisition
         PendingAcquisition::Accepted(ticket) => batch.is_complete(*ticket),
         PendingAcquisition::Rejected(_) => true,
     }
+}
+
+/// Only successful final-source joins move ahead of the admission fence.
+/// Failed, rejected, cancelled and incomplete captures keep ordered settlement.
+fn final_sources_published(
+    batch: &acquisition::Batch<'_>,
+    producers: [Option<&PendingAcquisition>; 5],
+) -> Option<i64> {
+    producers
+        .into_iter()
+        .enumerate()
+        .try_fold(0, |last, (index, pending)| {
+            let Some(pending) = pending else {
+                return matches!(index, 2 | 3).then_some(last);
+            };
+            let PendingAcquisition::Accepted(ticket) = pending else {
+                return None;
+            };
+            let (Ok(report), at) = batch.completed_state(*ticket)? else {
+                return None;
+            };
+            let complete = match (index, report) {
+                (0, acquisition::Report::IntelResidual(_))
+                | (4, acquisition::Report::Variants(_)) => true,
+                (1, acquisition::Report::Capitulation(report)) => report.raw_ok,
+                (2, acquisition::Report::Session(report)) => report.raw_ok,
+                (3, acquisition::Report::Relations(report)) => report.raw_ok,
+                _ => false,
+            };
+            complete.then_some(last.max(at))
+        })
 }
 
 /// FinalInputs loans only returned packs and settled raw verdicts. Late/history
@@ -6520,8 +6816,8 @@ fn final_inputs_ready<'a>(
             .all(|pending| pending_complete(batch, pending))
 }
 
-/// Tickets only: the preparation stays in a draining Batch cell while its
-/// ranges borrow it. Both early readiness and later joins advance this chain.
+/// Tickets only: pool-owned continuations retain preparation and its ranges.
+/// Readiness adopts their tickets and preserves the callback fallback.
 #[derive(Default)]
 struct PresentationPending {
     prepare: Option<PendingAcquisition>,
@@ -6581,6 +6877,7 @@ impl PresentationPending {
             if !advance {
                 break;
             }
+            let _advance = EarlyStepTimer::new(shared, &shared.presentation.wait_advance);
             // SAFETY: publication is proved above; the same boundary is held.
             unsafe { self.advance(shared, batch) };
         }
@@ -6659,7 +6956,7 @@ impl PresentationPending {
         };
         self.failure = report.err();
         if request.dispatch.dispatched() {
-            let count = request.captured.status_part_count();
+            let count = request.dispatch.count;
             for index in 0..count {
                 self.parts[index] = batch
                     .adopt_presentation(&mut request, index)
@@ -6692,7 +6989,12 @@ impl PresentationPending {
                                 countries: Arc::clone(&request.countries),
                                 context: request.context,
                                 inputs: request.inputs.clone(),
-                                part,
+                                preparation: matches!(
+                                    &part,
+                                    extended::division_presentation::StatusWork::Preparation { .. }
+                                ),
+                                part: Some(part),
+                                stitch: None,
                             },
                         )
                     })
@@ -6708,6 +7010,7 @@ impl PresentationPending {
     #[inline(never)]
     unsafe fn dispatch_stitch(&mut self, shared: &Shared, batch: &mut acquisition::Batch<'_>) {
         let mut request = self.unpark(batch);
+        let worker_stitch = request.dispatch.continuation();
         for (index, pending) in self.parts.iter_mut().enumerate() {
             let Some(pending) = pending.take() else {
                 continue;
@@ -6736,14 +7039,45 @@ impl PresentationPending {
                 };
                 if let Err(failure) = report {
                     self.failure = self.failure.or(Some(failure));
-                    part.part
-                        .fail("division presentation part acquisition failed");
+                }
+                if let Some(stitch) = &worker_stitch {
+                    if part.part.is_some() {
+                        stitch.store_part(
+                            index,
+                            part.part.take(),
+                            report.map(acquisition::Report::PresentationStatus),
+                        );
+                    }
+                    return;
+                }
+                let mut work = part.part.take().expect("presentation range retained");
+                if report.is_err() {
+                    work.fail("division presentation part acquisition failed");
                 }
                 request
                     .captured
-                    .restore_status_part(index, part.part, report.unwrap_or_default());
+                    .restore_status_part(index, work, report.unwrap_or_default());
                 // The preparation Arc lease drops before the stitch can mutate it.
             });
+        }
+        if let Some(stitch) = worker_stitch {
+            let (pending, retained, failure) = stitch.take();
+            self.failure = self.failure.or(failure);
+            if let Some(pending) = pending {
+                let (ticket, parked) = batch.adopt_presentation_ticket(pending);
+                let pending = Some(if parked {
+                    PendingAcquisition::Rejected(ticket)
+                } else {
+                    PendingAcquisition::Accepted(ticket)
+                });
+                if request.dispatch.final_ranges() {
+                    self.pending = pending;
+                } else {
+                    self.prepare = pending;
+                }
+                return;
+            }
+            request = retained.expect("presentation stitch retained");
         }
         request
             .captured

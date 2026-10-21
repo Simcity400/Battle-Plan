@@ -124,6 +124,9 @@ macro_rules! spool_inputs {
     (character_portraits, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };
+    (hired_advisors, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
     (leader_portraits, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };

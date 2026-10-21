@@ -92,14 +92,7 @@ impl Jobs {
 
 fn pool(workers: usize, jobs: &Arc<Jobs>) -> Pool {
     let runner = Arc::clone(jobs);
-    let executor =
-        acquisition::Pool::start(workers, MAX_JOBS, move |job: &mut Job| runner.run(job)).unwrap();
-    executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
-    Pool {
-        executor: Arc::new(executor),
-        calibration: Arc::new(SharedCalibration::default()),
-        worker_count: workers,
-    }
+    Pool::with_test_runner(workers, move |job| runner.run(job))
 }
 
 /// A worker-only job no join may run on the collector.
@@ -214,19 +207,12 @@ pub(crate) fn exercise(case: &str) {
 fn an_unwinding_callback_settles_a_contained_stitch_panic_beside_its_siblings() {
     let jobs = Jobs::new([false; 2], None);
     let runner = Arc::clone(&jobs);
-    let executor = acquisition::Pool::start(1, MAX_JOBS, move |job: &mut Job| match job {
+    let pool = Pool::with_test_runner(1, move |job: &mut Job| match job {
         Job::OrdersStitch(_) => Report::OrdersStitch(StitchReport {
             contained_panic: true,
         }),
         job => runner.run(job),
-    })
-    .unwrap();
-    executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
-    let pool = Pool {
-        executor: Arc::new(executor),
-        calibration: Arc::new(SharedCalibration::default()),
-        worker_count: 1,
-    };
+    });
     let stitch = || {
         use crate::extended::plans::{Capacities, Captured};
         Job::OrdersStitch(OrdersRequest {

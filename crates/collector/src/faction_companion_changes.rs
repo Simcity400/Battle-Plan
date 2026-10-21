@@ -456,14 +456,7 @@ macro_rules! scalar_callback {
             CALLS.increment($site);
             let flight = ManuallyDrop::new(mirror::Flight::new());
             if $site == 49 {
-                mirror::projection_sources(a, b as u32 as usize);
-                mirror::observe(
-                    a,
-                    false,
-                    mirror::PROJECTION_START + b as u32 as usize,
-                    c as i64,
-                    Operation::Set,
-                );
+                mirror::projection_sources(a, b as u32 as usize, c as i64);
             } else if $site == 14 {
                 mirror::observe(a, false, mirror::CONTRIBUTION, b as i64, Operation::Add);
             } else {

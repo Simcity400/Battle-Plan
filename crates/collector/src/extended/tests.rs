@@ -32,6 +32,33 @@ fn periodic_live_input_sizing_keeps_land_events_prompt_and_skips_worker_hints() 
 }
 
 #[test]
+fn final_worker_unrun_continuation_restores_storage_and_raw_verdicts_without_capture() {
+    let mut captured = Captured::with_capacities(&Capacities {
+        division_sources: 5_000,
+        ..Default::default()
+    });
+    captured.characters.raw_active = [true; characters::N];
+    captured.session.raw_mode = true;
+    captured.intel.capitulation_raw_mode = true;
+    captured.intel.relations_raw_mode = true;
+    let source_storage = captured.divisions.first.as_ptr();
+    let bytes = captured.allocated_bytes();
+    let outcomes = captured.outcomes();
+    let countries = Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
+    crate::test_support::with_allocations_denied(|| {
+        let request = captured.take_final_inputs_request(&countries, 0, 0, 41, true);
+        captured.return_final_inputs_request(request);
+    });
+    assert_eq!(captured.divisions.first.as_ptr(), source_storage);
+    assert_eq!(captured.allocated_bytes(), bytes);
+    assert_eq!(captured.outcomes(), outcomes);
+    assert_eq!(captured.characters.raw_active, [true; characters::N]);
+    assert!(captured.session.raw_mode);
+    assert!(captured.intel.capitulation_raw_mode && captured.intel.relations_raw_mode);
+    assert!(captured.final_inputs_ticks.is_none());
+}
+
+#[test]
 fn final_worker_loan_preserves_mod_sized_storage_without_callback_allocation() {
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.divisions = Divisions::new(5_000);

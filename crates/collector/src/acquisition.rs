@@ -6,7 +6,7 @@
 //! marks metadata Queued and releases PENDING before enqueueing. Claiming
 //! removes that entry and releases RUNNING under the mutex; only that claimant
 //! then borrows the job, in place, outside the mutex. It ends every live reader
-//! and context borrow, fills the completion and counters, and releases PUBLISHED.
+//! and job borrow, fills the completion and counters, and releases PUBLISHED.
 //! After publication it never accesses the cell again. Cancellation owns only
 //! still-Queued cells under the mutex and publishes their Stopped completions.
 //! An acquire CAS from PUBLISHED to COLLECTING gives exactly one collector the
@@ -21,8 +21,9 @@
 //! every accepted ticket before the trampoline, including on unwind. A join
 //! may run its exact awaited queued job when caller execution is allowed;
 //! optional join help is bounded by learned body times. Worker-only jobs
-//! always retain their completion barrier. Runners never submit, collect,
-//! stop or drop this pool; dependency barriers belong to the callback.
+//! always retain their completion barrier. Registered publication continuations
+//! may submit successors, but never inspect a Running cell. The callback owns
+//! their draining ledgers and closes admission before its unwind drain.
 
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -32,7 +33,7 @@ use std::{
     mem::{MaybeUninit, size_of, size_of_val},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Condvar, Mutex, MutexGuard,
+        Condvar, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -104,6 +105,13 @@ pub(crate) struct Completion<J, R> {
     #[cfg(feature = "callback_profile")]
     pub profile: Profile,
 }
+
+/// A detached dependency ledger, retained independently of its published cell.
+pub(crate) trait Publication: Send + Sync {
+    fn published(&self, at: i64);
+    fn failed(&self) {}
+}
+type OnCompleted<J, R> = fn(&mut J, &Result<R, Failure>) -> Option<Arc<dyn Publication>>;
 
 /// Lifecycle in raw QPC ticks; zero denotes a stage never reached.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -464,8 +472,8 @@ impl State {
 type Runner<J, R> = dyn Fn(&mut J) -> R + Send + Sync;
 type Classes<J> = (usize, fn(&J) -> usize);
 struct BatchContext(UnsafeCell<crate::allocation::Context>);
-// SAFETY: writes are locked and only at uncollected == 0. Every runner drops
-// its immutable borrow before PUBLISHED, which precedes the final decrement.
+// SAFETY: writes are locked and require uncollected == 0 and active == 0.
+// Both the native body and its detached continuation end before active retires.
 unsafe impl Sync for BatchContext {}
 
 struct Shared<J, R> {
@@ -476,6 +484,7 @@ struct Shared<J, R> {
     /// Remaining held-burst notifications, relayed one per worker claim.
     burst_peers: AtomicUsize,
     run: Box<Runner<J, R>>,
+    on_completed: OnceLock<OnCompleted<J, R>>,
     thread_ids: Vec<AtomicU32>,
     cells: Box<[Cell<J, R>]>,
     words: Box<[AtomicU64]>,
@@ -531,13 +540,13 @@ impl<J, R> Shared<J, R> {
         self.work_ready.notify_all();
     }
 
-    fn publish(&self, index: usize, generation: u64) {
+    fn publish(&self, index: usize, generation: u64) -> i64 {
         let completion = self.cells[index].pointer();
+        let published_qpc = crate::sampling::qpc();
         // SAFETY: called only by the unique Running claimant, or by locked
         // cancellation of Queued work. Every completion field is initialized
         // and exclusively owned until the SC release store below.
         unsafe {
-            let published_qpc = crate::sampling::qpc();
             (*completion).timeline.published_qpc = published_qpc;
             #[cfg(feature = "callback_profile")]
             {
@@ -552,7 +561,7 @@ impl<J, R> Shared<J, R> {
         // either the slot word differs, or the eligibility wake sequence does.
         #[cfg(test)]
         if self.suppress_join_wakes.load(Ordering::SeqCst) {
-            return;
+            return published_qpc;
         }
         if self.ready_waiting.load(Ordering::SeqCst) {
             self.ready_wake.fetch_add(1, Ordering::SeqCst);
@@ -568,6 +577,7 @@ impl<J, R> Shared<J, R> {
                 unsafe { WakeByAddressSingle(self.words[index].as_ptr().cast()) };
             }
         }
+        published_qpc
     }
 
     fn wake_spin_waiter(&self) {
@@ -613,7 +623,7 @@ impl<J, R> Shared<J, R> {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Acquisition);
         // SAFETY: claim was removed under the mutex, incrementing active and
         // retaining one uncollected admission. Context cannot reset until all
-        // admissions are collected, after every such borrow has ended.
+        // admissions are collected and every active publisher has retired.
         let borrowed_context = unsafe { crate::allocation::borrow_context(self.context.0.get()) };
         let reads = crate::read_accounting::Capture::new();
         #[cfg(feature = "callback_profile")]
@@ -624,7 +634,7 @@ impl<J, R> Shared<J, R> {
         #[cfg(feature = "callback_profile")]
         let runner_cycles_begin = crate::callback_profile::thread_cycles();
         let growths_before = engine_allocation::growths();
-        let report = if crate::allocation::failed() {
+        let mut report = if crate::allocation::failed() {
             Err(Failure::Stopped)
         } else {
             // SAFETY: only this claimant owns the Running cell. The job was
@@ -641,6 +651,21 @@ impl<J, R> Shared<J, R> {
                     std::mem::forget(payload);
                     Err(Failure::Panicked)
                 }
+            }
+        };
+        // The hook only transfers owned outputs and clones its ledger. Its
+        // notification runs after publication, with no remaining cell borrow.
+        let publication = match catch_unwind(AssertUnwindSafe(|| {
+            self.on_completed.get().and_then(|completed| {
+                // SAFETY: the claimant still exclusively owns this Running cell.
+                unsafe { completed(&mut (*completion).request, &report) }
+            })
+        })) {
+            Ok(publication) => publication,
+            Err(payload) => {
+                std::mem::forget(payload);
+                report = Err(Failure::Panicked);
+                None
             }
         };
         let growths = engine_allocation::growths().saturating_sub(growths_before);
@@ -725,7 +750,23 @@ impl<J, R> Shared<J, R> {
         );
         // Counters precede publication: an acquire collector observes them
         // when it immediately calls calibration, even before active retires.
-        self.publish(index, claim.generation);
+        let published_qpc = self.publish(index, claim.generation);
+        if let Some(publication) = publication {
+            // Retain the allocation context through successor admission and
+            // keep this runner active until that bounded handoff has ended.
+            // SAFETY: active still retains this batch's immutable context.
+            let _context = unsafe { crate::allocation::borrow_context(self.context.0.get()) };
+            if let Err(payload) =
+                catch_unwind(AssertUnwindSafe(|| publication.published(published_qpc)))
+            {
+                std::mem::forget(payload);
+                if let Err(payload) = catch_unwind(AssertUnwindSafe(|| publication.failed())) {
+                    std::mem::forget(payload);
+                }
+                add(&self.counters.panicked, 1);
+                self.stop();
+            }
+        }
         let active = self.active.fetch_sub(1, Ordering::SeqCst) - 1;
         if active < self.thread_ids.len() {
             // Idle's SC decrement/load pairs with registration then the SC
@@ -868,6 +909,9 @@ pub(crate) struct Pool<J: Send + 'static, R: Copy + Send + 'static> {
 }
 
 impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
+    pub(crate) fn set_on_completed(&self, completed: OnCompleted<J, R>) {
+        assert!(self.shared.on_completed.set(completed).is_ok());
+    }
     /// Unclassified pools disable join help, including tests and portable
     /// benchmarks. Zero workers executes accepted jobs on their collector.
     #[cfg(test)]
@@ -980,6 +1024,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             work_ready: Condvar::new(),
             burst_peers: AtomicUsize::new(0),
             run: Box::new(run),
+            on_completed: OnceLock::new(),
             thread_ids,
             cells: cells.into_boxed_slice(),
             words: words.into_boxed_slice(),
@@ -1070,8 +1115,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
 
     /// # Safety
-    /// Keep the foreign live-read lease until EVERY accepted ticket is
-    /// collected, even on failure. Mutable outputs must be disjoint; shared
+    /// Keep the foreign live-read lease until EVERY accepted ticket and
+    /// continuation successor is drained, then settle active publishers,
+    /// including on failure. Mutable outputs must be disjoint; shared
     /// seeds live through all consumers. One collector of pending tickets,
     /// never recursive; the acquire CAS also contains racing ready collectors.
     #[cfg(test)]
@@ -1101,6 +1147,21 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         worker_only: bool,
         wake: bool,
     ) -> Result<Ticket, SubmitError> {
+        // SAFETY: forwarded from the caller.
+        unsafe { self.submit_with_priority_timed(request, priority, worker_only, wake) }
+            .map(|(ticket, _)| ticket)
+    }
+
+    /// Return queued_qpc from admission, without a second queue-mutex hold.
+    /// # Safety
+    /// The same lease and unique-collector contract as submit_with_priority.
+    pub(crate) unsafe fn submit_with_priority_timed(
+        &self,
+        request: &mut Option<J>,
+        priority: u8,
+        worker_only: bool,
+        wake: bool,
+    ) -> Result<(Ticket, i64), SubmitError> {
         #[cfg(feature = "callback_profile")]
         let submit_lock_begin = crate::sampling::qpc();
         let mut state = self.shared.lock();
@@ -1124,10 +1185,12 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             state.counters.rejected = state.counters.rejected.saturating_add(1);
             return Err(rejection);
         }
-        if self.shared.uncollected.load(Ordering::Acquire) == 0 {
-            // SAFETY: no accepted job owns a context borrow; every borrow ends
-            // before its completion is published and collected. Parked jobs
-            // never run. The mutex excludes any competing admission/reset.
+        if self.shared.uncollected.load(Ordering::Acquire) == 0
+            && self.shared.active.load(Ordering::Acquire) == 0
+        {
+            // SAFETY: no runner or detached continuation can still borrow
+            // this context. Parked jobs never run. The mutex excludes any
+            // competing claim, admission or reset.
             unsafe { *self.shared.context.0.get() = crate::allocation::context() };
         }
         let index = free.expect("checked free acquisition slot");
@@ -1176,11 +1239,14 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         if wake {
             self.shared.work_ready.notify_one();
         }
-        Ok(Ticket {
-            pool: self.shared.id,
-            slot: index,
-            generation,
-        })
+        Ok((
+            Ticket {
+                pool: self.shared.id,
+                slot: index,
+                generation,
+            },
+            queued_qpc,
+        ))
     }
 
     /// Cancel unstarted work, then wait on active rather than the queue mutex
@@ -1665,6 +1731,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     /// reference to the cell escapes. The sole pending collector may defer a
     /// contained failure's settlement while advancing a successful edge.
     pub(crate) fn completed_report(&self, ticket: Ticket) -> Option<Result<R, Failure>> {
+        self.completed_state(ticket).map(|(report, _)| report)
+    }
+    pub(crate) fn completed_state(&self, ticket: Ticket) -> Option<(Result<R, Failure>, i64)> {
         if ticket.pool != self.shared.id {
             return None;
         }
@@ -1679,7 +1748,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             .ok()?;
         // SAFETY: the CAS exclusively owns the fully initialized completion;
         // copying R neither moves nor drops its request or other fields.
-        let report = unsafe { (*self.shared.cells[ticket.slot].pointer()).report };
+        let report = unsafe {
+            let completion = self.shared.cells[ticket.slot].pointer();
+            ((*completion).report, (*completion).timeline.published_qpc)
+        };
         value.store(word(ticket.generation, PUBLISHED), Ordering::SeqCst);
         Some(report)
     }
@@ -2888,10 +2960,12 @@ mod tests {
         for workers in [0, 1] {
             let pool = Pool::start(workers, 1, |job: &mut u8| *job).unwrap();
             let mut job = Some(7);
-            let ticket = unsafe { pool.submit(&mut job) }.unwrap();
+            let (ticket, queued_qpc) =
+                unsafe { pool.submit_with_priority_timed(&mut job, 0, false, true) }.unwrap();
             let completion = pool.finish(ticket).unwrap();
             assert_eq!(completion.report, Ok(7));
             let timeline = completion.timeline;
+            assert_eq!(timeline.queued_qpc, queued_qpc);
             assert!(timeline.queued_qpc > 0);
             assert!(timeline.queued_qpc <= timeline.body_begin_qpc);
             assert!(timeline.body_begin_qpc <= timeline.body_end_qpc);

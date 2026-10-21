@@ -56,6 +56,13 @@ read or later mark drain. The certified tree remains incremental: unchanged
 roots and quiet snapshots retain their allocations. Membership observations use
 census ordinals rather than another per-division certificate map.
 
+A captured selected-province refusal is division-local. When its effective
+context refusal is already retained, it can settle on owned decode too: it
+neither inserts a shared province result nor reaches state operands. New refusal
+rows keep their allocation barrier before certification. Shared country,
+commander and context failures still retain the ordered fallback, as do
+cold/full registrations and optional staging shortage.
+
 XP, maxima and stat-registration decisions needed by the final native ranges
 remain before resume. Other complete scalar observations settle afterward with
 their captured certificates. Native history traversal and entry registration
@@ -70,3 +77,9 @@ Spool projection borrows one resolved attack row for its scalar and terrain
 fields, and checks witness presence without cloning its terrain payload.
 Retained panel-source root rows lazily cache nested allocation totals; every
 mutable borrow invalidates the cache, including partial reads and growth.
+
+DivisionLandInputs compares each complete owned row and its ordered manpower
+contributors with the encoder baseline before copying nested payloads. With
+matching membership, equal rows retain replay ownership and only changed rows
+are converted. Captured-span checks, duplicate refusals and complete
+recovery/keyframes are unchanged.

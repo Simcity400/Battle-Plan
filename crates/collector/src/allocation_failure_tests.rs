@@ -143,6 +143,26 @@ fn persistent_null_allocator_survives_prepared_buffers() {
 }
 
 #[test]
+fn cpu_set_first_use_failures_are_advisory_and_keep_other_policy() {
+    let baseline = child("cpu-sets", "bootstrap", usize::MAX);
+    successful(&baseline, "cpu-sets", "bootstrap", usize::MAX);
+    let count = observed_allocations(&baseline);
+    assert_eq!(
+        count, 4,
+        "query buffer, parsed sets, core ranks and selected ids"
+    );
+    for ordinal in 1..=count {
+        let output = child("cpu-sets", "bootstrap", ordinal);
+        successful(&output, "cpu-sets", "bootstrap", ordinal);
+        assert_eq!(observed_allocations(&output), ordinal);
+    }
+    for mode in ["cpu-sets-size-failed", "cpu-sets-read-failed"] {
+        let output = child(mode, "bootstrap", usize::MAX);
+        successful(&output, mode, "bootstrap", usize::MAX);
+    }
+}
+
+#[test]
 fn raw_hints_are_advisory_and_capture_failure_keeps_request_details() {
     let output = child("raw-advisory", "raw", 1);
     successful(&output, "raw-advisory", "raw", 1);
@@ -240,6 +260,14 @@ fn allocation_safety_child() {
             .unwrap();
         }
         "raw-advisory" => raw_advisory_and_details().unwrap(),
+        "cpu-sets" | "cpu-sets-size-failed" | "cpu-sets-read-failed" => {
+            let query_failure = match mode.as_str() {
+                "cpu-sets-size-failed" => Some(1),
+                "cpu-sets-read-failed" => Some(2),
+                _ => None,
+            };
+            cpu_sets_null(phase, ordinal, query_failure).unwrap();
+        }
         "batch-drain-terminal" => crate::acquisition_jobs::batch_drain_tests::exercise("terminal"),
         "batch-drain-midway" => crate::acquisition_jobs::batch_drain_tests::exercise("midway"),
         "null" => prepared_buffers_null(phase, ordinal).unwrap(),
@@ -295,6 +323,32 @@ fn deferred_failure() -> io::Result<()> {
     assert_eq!(witness.committed_bytes, 2100);
     assert_eq!(Some(witness), read_witness(&witness_file)?);
     allocation::clear_handle();
+    Ok(())
+}
+
+fn cpu_sets_null(phase: Phase, ordinal: usize, query_failure: Option<usize>) -> io::Result<()> {
+    allocation::reset();
+    allocation::install_hooks();
+    let root = case_root(phase, ordinal, false);
+    fs::create_dir_all(&root)?;
+    let witness_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
+    allocation::prepare(&witness_file, 1, 1000);
+    context(Some(21));
+    let _scope = allocation::enter(phase);
+    let attempts = crate::runtime::background_cpu_sets_failure_exercise(ordinal, query_failure);
+    assert!(
+        !allocation::failed(),
+        "optional placement must not stop capture"
+    );
+    assert_eq!(allocation::failure(), None);
+    assert_eq!(read_witness(&witness_file)?, None);
+    allocation::clear_handle();
+    println!("collector-allocation-count={attempts}");
     Ok(())
 }
 

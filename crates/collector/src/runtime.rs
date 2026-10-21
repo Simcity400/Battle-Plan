@@ -2954,12 +2954,30 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "settle": presentation_settle_status(shared),
                 "range_dispatch_ns": load(&shared.presentation.range_dispatch_ns),
                 "store_wait_ns": load(&shared.presentation.store_wait_ns),
+                "input_consumers_ns": load(&shared.presentation.input_consumers_ns),
+                "input_restore_ns": load(&shared.presentation.input_restore_ns),
+                "input_publish_hold_ns": shared.acquisition.get().map_or(0, |pool| shared.ns(pool.presentation_input_hold_ticks() as i64)),
+                "early_steps_ns": map(crate::sampling::EarlyStep::ALL.into_iter()
+                    .zip(shared.presentation.early_steps.each_ref())
+                    .map(move |(step, stats)| (DebugValue(step), status!({
+                        "calls": load(&stats.calls), "ns": load(&stats.ns),
+                    })))),
+                "wait_for_advance": {
+                    "calls": load(&shared.presentation.wait_advance.calls),
+                    "ns": load(&shared.presentation.wait_advance.ns),
+                },
+                "queue_ns": load(&shared.presentation.queue_ns),
+                "submission_ns": load(&shared.acquisition_dispatch_ns),
+                "release_ns": load(&shared.game_thread.release_ns),
+                "early_steps_scope": "cumulative callback handler wall excluding acquisition_wait_ns, including request building, submission and release; wait_for_advance is nested presentation.advance wall inside wait_for and overlaps its enclosing handler; queue_ns includes request building and submission, submission_ns counts admission only, release_ns counts held-burst release; these nested totals must not be added",
+                "input_consumers_scope": "callback wall after collecting DivisionInputs through restoring the ordered census and installing UnitInputs, before Divisions submission, excluding part join spans; input_restore_ns is its nested fan-in lock/restore wall; input_publish_hold_ns sums publisher holds from successful lock acquisition to release, including early returns/unwind and excluding successor wake",
+                "source_admission": crate::extended::division_presentation::source_admission_data(),
                 "phase_ns": crate::status::map(
                     crate::extended::division_presentation::PHASE_NAMES
                         .into_iter()
                         .zip(shared.presentation.phase_ns.each_ref().map(load))
                 ),
-                "scope": "cumulative Presentation acquisition and owned-decode wall since attach; status includes preparation and ranges; prepare_* and certify_* are nested pause phases; decode_sources, decode_scalars, decode_stitch and decode_attack run on the FIFO decode worker before encoding; sources_* subdivides prepare_sources on an ordered fallback or decode_sources on a fully staged pass; sources_variants times dirty refresh; range_dispatch_ns is nested final-range submission wall; store_wait_ns is callback wait for the preceding owned store; settle reports its own acquisition-entry offsets, separately from initial setup; phases overlap other jobs",
+                "scope": "cumulative Presentation acquisition and owned-decode wall since attach; status includes preparation and ranges; prepare_* and certify_* are nested pause phases; decode_sources, decode_scalars, decode_stitch and decode_attack run on the FIFO decode worker before encoding; sources_ordered/prune/variants/publish subdivide prepare_sources on an ordered fallback or decode_sources on a fully staged pass; sources_owned_gate and sources_fallback separate pause admission from the ordered source fallback; certification_native_fallback is certification plus native preparation on the same ordered-source cohort, not a concurrent lane; source_admission counts passes, with owned_local_province_refusal a subset of owned; range_dispatch_ns is nested final-range submission wall; store_wait_ns is callback wait for the preceding owned store; settle reports its own acquisition-entry offsets, separately from initial setup; phases overlap other jobs",
             },
         })
     });
@@ -5606,47 +5624,80 @@ static CONFINED: AtomicU64 = AtomicU64::new(0);
 static CONFINEMENT_CLEARED: AtomicU64 = AtomicU64::new(0);
 static CONFINEMENT_FAILURES: AtomicU64 = AtomicU64::new(0);
 static CONFINEMENT_CPU_SETS: AtomicU64 = AtomicU64::new(0);
+static CONFINEMENT_AVAILABILITY: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(ConfinementAvailability::NotQueried as u8);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum ConfinementAvailability {
+    NotQueried,
+    Selected,
+    TooFewCores,
+    SeveralProcessorGroups,
+    QueryFailed,
+    AllocationFailed,
+}
+
+fn confinement_availability() -> &'static str {
+    match CONFINEMENT_AVAILABILITY.load(Ordering::Relaxed) {
+        code if code == ConfinementAvailability::NotQueried as u8 => "not queried",
+        code if code == ConfinementAvailability::Selected as u8 => "selected",
+        code if code == ConfinementAvailability::TooFewCores as u8 => "too few cores",
+        code if code == ConfinementAvailability::SeveralProcessorGroups as u8 => {
+            "several processor groups"
+        }
+        code if code == ConfinementAvailability::QueryFailed as u8 => "query failed",
+        code if code == ConfinementAvailability::AllocationFailed as u8 => "allocation failed",
+        _ => unreachable!("only confinement availability codes are stored"),
+    }
+}
 
 /// CPU set ids of the two least preferred physical cores (lowest scheduling
-/// class, then highest core index) with all their logical processors. Empty
-/// when the machine has fewer than four physical cores, or the query or its
-/// advisory allocation fails, so background threads then stay unconfined.
+/// class, then lowest efficiency class, then highest core index) with all their
+/// logical processors. Empty on small-core or multi-group machines, or when
+/// the query or its advisory allocation fails. The selection and availability
+/// reason are cached until the collector reloads.
 fn background_cpu_sets() -> &'static [u32] {
+    background_cpu_sets_with(|buffer, length, required| {
+        // SAFETY: the caller supplies either a null sizing buffer or aligned
+        // storage of at least `length` bytes, and a live returned-length slot.
+        unsafe {
+            windows_sys::Win32::System::SystemInformation::GetSystemCpuSetInformation(
+                buffer.cast(),
+                length,
+                required,
+                std::ptr::null_mut(),
+                0,
+            ) != 0
+        }
+    })
+}
+
+fn background_cpu_sets_with(
+    mut query: impl FnMut(*mut u8, u32, &mut u32) -> bool,
+) -> &'static [u32] {
     use windows_sys::Win32::System::SystemInformation::{
-        CpuSetInformation, GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
+        CpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
     };
     static SETS: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
     SETS.get_or_init(|| {
-        let sets = engine_allocation::advisory(|| {
+        let result = engine_allocation::advisory(|| {
             let mut length = 0u32;
-            // SAFETY: a null buffer of length zero only reports the required length.
-            unsafe {
-                GetSystemCpuSetInformation(
-                    std::ptr::null_mut(),
-                    0,
-                    &mut length,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
+            query(std::ptr::null_mut(), 0, &mut length);
+            if length == 0 {
+                return Err(ConfinementAvailability::QueryFailed);
+            }
             let words = (length as usize).div_ceil(8);
-            let mut buffer = engine_allocation::vec::<u64>(words).ok()?;
+            let mut buffer = engine_allocation::vec::<u64>(words)
+                .map_err(|_| ConfinementAvailability::AllocationFailed)?;
             buffer.resize(words, 0);
-            // SAFETY: the buffer is at least `length` bytes and 8-byte aligned.
-            let read = unsafe {
-                GetSystemCpuSetInformation(
-                    buffer.as_mut_ptr().cast(),
-                    length,
-                    &mut length,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-            if length == 0 || read == 0 {
-                return None;
+            let read = query(buffer.as_mut_ptr().cast(), length, &mut length);
+            if length == 0 || !read {
+                return Err(ConfinementAvailability::QueryFailed);
             }
             let entry_size = size_of::<SYSTEM_CPU_SET_INFORMATION>();
-            let mut sets = engine_allocation::vec(length as usize / entry_size).ok()?;
+            let mut sets = engine_allocation::vec(length as usize / entry_size)
+                .map_err(|_| ConfinementAvailability::AllocationFailed)?;
             let bytes = buffer.as_ptr().cast::<u8>();
             let mut offset = 0usize;
             while offset + entry_size <= length as usize && sets.len() < sets.capacity() {
@@ -5669,9 +5720,13 @@ fn background_cpu_sets() -> &'static [u32] {
                 offset += entry.Size as usize;
             }
             least_preferred_cores(&sets)
-        })
-        .unwrap_or_default();
+        });
+        let (sets, availability) = match result {
+            Ok(sets) => (sets, ConfinementAvailability::Selected),
+            Err(reason) => (Vec::new(), reason),
+        };
         CONFINEMENT_CPU_SETS.store(sets.len() as u64, Ordering::Relaxed);
+        CONFINEMENT_AVAILABILITY.store(availability as u8, Ordering::Relaxed);
         sets
     })
 }
@@ -5690,27 +5745,29 @@ struct CpuSet {
 /// logical processors. None are selected with fewer than four physical cores,
 /// or on a machine with several processor groups: core indices are
 /// group-relative and Windows ignores selected sets outside a thread's group,
-/// so those machines stay unconfined. `None` only when the advisory
-/// allocation fails.
-fn least_preferred_cores(sets: &[CpuSet]) -> Option<Vec<u32>> {
+/// so those machines stay unconfined. An unavailable selection retains its
+/// reason, including advisory allocation failure.
+fn least_preferred_cores(sets: &[CpuSet]) -> Result<Vec<u32>, ConfinementAvailability> {
     if sets.iter().any(|set| set.group != sets[0].group) {
-        return Some(Vec::new());
+        return Err(ConfinementAvailability::SeveralProcessorGroups);
     }
-    let mut cores = engine_allocation::vec(sets.len()).ok()?;
+    let mut cores = engine_allocation::vec(sets.len())
+        .map_err(|_| ConfinementAvailability::AllocationFailed)?;
     cores.extend(sets.iter().map(|set| set.rank));
     cores.sort_unstable();
     cores.dedup();
     if cores.len() < 4 {
-        return Some(Vec::new());
+        return Err(ConfinementAvailability::TooFewCores);
     }
     cores.truncate(2);
-    let mut ids = engine_allocation::vec(sets.len()).ok()?;
+    let mut ids = engine_allocation::vec(sets.len())
+        .map_err(|_| ConfinementAvailability::AllocationFailed)?;
     ids.extend(
         sets.iter()
             .filter(|set| cores.contains(&set.rank))
             .map(|set| set.id),
     );
-    Some(ids)
+    Ok(ids)
 }
 
 /// Reserved stack of each collector thread that decodes, converts, compares or
@@ -5849,8 +5906,112 @@ fn background_priority_status() -> impl serde::Serialize {
         "confinement_cleared_for_backlog": CONFINEMENT_CLEARED.load(Ordering::Relaxed),
         "confinement_failures": CONFINEMENT_FAILURES.load(Ordering::Relaxed),
         "confinement_cpu_sets": CONFINEMENT_CPU_SETS.load(Ordering::Relaxed),
-        "scope": "cumulative successful policy applications of the decode, spool, spool helper and sizing threads: LOWEST with execution-speed EcoQoS while idle or keeping up, NORMAL with EcoQoS explicitly cleared when at most one of the four reusable buffers is free; dynamic wake-up boosts are disabled; priority and EcoQoS failures retain their previous setting independently and retry between work items; counts include initial applications, not current thread counts; confined, confinement_cleared_for_backlog and confinement_failures count successful selections of the two least preferred physical cores while keeping up, their clears on backlog and failed selection calls; confinement_cpu_sets is the number of logical processors selected, zero when confinement is unavailable (fewer than four physical cores, several processor groups, or a failed topology query or allocation, kept until the collector reloads), in which case no selection call is made",
+        "confinement_availability": confinement_availability(),
+        "scope": "cumulative successful policy applications of the decode, spool, spool helper and sizing threads: LOWEST with execution-speed EcoQoS while idle or keeping up, NORMAL with EcoQoS explicitly cleared when at most one of the four reusable buffers is free; dynamic wake-up boosts are disabled; priority and EcoQoS failures retain their previous setting independently and retry between work items; counts include initial applications, not current thread counts; confined, confinement_cleared_for_backlog and confinement_failures count successful selections of the two least preferred physical cores while keeping up, their clears on backlog and failed selection calls; confinement_cpu_sets is the number of logical processors selected; confinement_availability is not queried until a background thread first applies policy, then retains selected, too few cores, several processor groups, query failed or allocation failed until the collector reloads; an unavailable selection stays empty and makes no selection call; status never initializes or retries the query",
     })
+}
+
+#[cfg(test)]
+pub(crate) fn background_cpu_sets_failure_exercise(
+    ordinal: usize,
+    query_failure: Option<usize>,
+) -> usize {
+    use crate::test_support::{ATTEMPTS, DENIALS, NullGuard};
+    use windows_sys::Win32::System::SystemInformation::{
+        CpuSetInformation, SYSTEM_CPU_SET_INFORMATION, SYSTEM_CPU_SET_INFORMATION_0,
+        SYSTEM_CPU_SET_INFORMATION_0_0,
+    };
+    assert_eq!(confinement_availability(), "not queried");
+    // Four eligible physical cores, each with two logical processors. These
+    // synthetic ids never reach the OS setter: only failed selections follow policy.
+    let entries: [_; 8] = std::array::from_fn(|index| SYSTEM_CPU_SET_INFORMATION {
+        Size: size_of::<SYSTEM_CPU_SET_INFORMATION>() as u32,
+        Type: CpuSetInformation,
+        Anonymous: SYSTEM_CPU_SET_INFORMATION_0 {
+            CpuSet: SYSTEM_CPU_SET_INFORMATION_0_0 {
+                Id: 256 + index as u32,
+                CoreIndex: (index / 2) as u8,
+                ..Default::default()
+            },
+        },
+    });
+    let mut calls = 0;
+    let guard = NullGuard::new(ordinal);
+    let sets = background_cpu_sets_with(|buffer, length, required| {
+        calls += 1;
+        if query_failure == Some(calls) {
+            if buffer.is_null() {
+                *required = 0;
+            }
+            return false;
+        }
+        *required = size_of_val(&entries) as u32;
+        if buffer.is_null() {
+            assert_eq!(length, 0);
+            return false; // The sizing call reports insufficient buffer.
+        }
+        assert!(length >= *required);
+        // SAFETY: the query buffer holds the full stack fixture, and the two
+        // disjoint regions stay live for this synchronous byte copy.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                entries.as_ptr().cast::<u8>(),
+                buffer,
+                *required as usize,
+            );
+        }
+        true
+    });
+    let attempts = ATTEMPTS.load(Ordering::Relaxed);
+    let expected = if query_failure.is_some() {
+        assert_eq!(DENIALS.load(Ordering::Relaxed), 0);
+        "query failed"
+    } else if ordinal == usize::MAX {
+        assert_eq!(DENIALS.load(Ordering::Relaxed), 0);
+        assert_eq!(sets, [260, 261, 262, 263]);
+        "selected"
+    } else {
+        assert_eq!(attempts, ordinal);
+        assert_eq!(DENIALS.load(Ordering::Relaxed), 1);
+        "allocation failed"
+    };
+    assert_eq!(confinement_availability(), expected);
+    assert_eq!(
+        CONFINEMENT_CPU_SETS.load(Ordering::Relaxed),
+        sets.len() as u64
+    );
+    assert_eq!(
+        background_cpu_sets_with(|_, _, _| panic!("cached topology must not be retried")),
+        sets
+    );
+    if expected != "selected" {
+        assert!(sets.is_empty());
+        let mut priority = OwnPriority::new();
+        priority.follow(false);
+        assert!(priority.lowest == Some(true) || PRIORITY_FAILURES.load(Ordering::Relaxed) > 0);
+        assert!(priority.eco_qos == Some(true) || ECO_QOS_FAILURES.load(Ordering::Relaxed) > 0);
+        let priority_failures = PRIORITY_FAILURES.load(Ordering::Relaxed);
+        let eco_qos_failures = ECO_QOS_FAILURES.load(Ordering::Relaxed);
+        priority.follow(true);
+        assert!(
+            priority.lowest == Some(false)
+                || PRIORITY_FAILURES.load(Ordering::Relaxed) > priority_failures
+        );
+        assert!(
+            priority.eco_qos == Some(false)
+                || ECO_QOS_FAILURES.load(Ordering::Relaxed) > eco_qos_failures
+        );
+        assert!(priority.confined.is_none());
+        assert_eq!(CONFINED.load(Ordering::Relaxed), 0);
+        assert_eq!(CONFINEMENT_CLEARED.load(Ordering::Relaxed), 0);
+        assert_eq!(CONFINEMENT_FAILURES.load(Ordering::Relaxed), 0);
+    }
+    serde_json::to_writer(std::io::sink(), &background_priority_status()).unwrap();
+    assert_eq!(ATTEMPTS.load(Ordering::Relaxed), attempts);
+    drop(guard);
+    let status = serde_json::to_value(background_priority_status()).unwrap();
+    assert_eq!(status["confinement_availability"], expected);
+    attempts
 }
 
 #[cfg(test)]
@@ -5939,10 +6100,19 @@ mod tests {
             ],
             0,
         );
-        assert!(least_preferred_cores(&groups).unwrap().is_empty());
+        assert_eq!(
+            least_preferred_cores(&groups),
+            Err(ConfinementAvailability::SeveralProcessorGroups)
+        );
         // Fewer than four physical cores: unconfined.
-        assert!(least_preferred_cores(&sets[..6]).unwrap().is_empty());
-        assert!(least_preferred_cores(&[]).unwrap().is_empty());
+        assert_eq!(
+            least_preferred_cores(&sets[..6]),
+            Err(ConfinementAvailability::TooFewCores)
+        );
+        assert_eq!(
+            least_preferred_cores(&[]),
+            Err(ConfinementAvailability::TooFewCores)
+        );
     }
 
     static ATTACH_PREPARATIONS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];

@@ -720,16 +720,35 @@ impl Captured {
 
     pub(crate) fn projected_inputs(
         &self,
-        projection: Option<&mut Projection<'_>>,
+        mut projection: Option<&mut Projection<'_>>,
     ) -> [TableInput; N] {
-        let dictionary = self.templates();
+        let previous = projection
+            .as_deref()
+            .and_then(|projection| projection.observed_baseline::<tables::DivisionTemplates>());
+        let dictionary = self.templates(projection.as_deref_mut());
+        let complete;
         let names = match &dictionary {
-            TableView::Complete(rows) => rows.rows::<tables::DivisionTemplates>(),
+            TableInput::Sampled(TableView::Complete(rows)) => {
+                rows.rows::<tables::DivisionTemplates>()
+            }
+            TableInput::ComparedEqual(_) => previous,
+            // Icon name certificates compare with this frame's complete
+            // dictionary, not just the changed subset. Quiet frames borrow
+            // the encoder's identical rows without cloning names.
+            TableInput::ComparedChanges { .. } => {
+                complete = self.templates(None);
+                match &complete {
+                    TableInput::Sampled(TableView::Complete(rows)) => {
+                        rows.rows::<tables::DivisionTemplates>()
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
         };
         let icons = self.icons(projection, names);
         [
-            TableInput::Sampled(dictionary),
+            dictionary,
             icons,
             if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
                 self.country_snapshot
@@ -757,29 +776,44 @@ impl Captured {
         )
     }
 
-    fn templates(&self) -> TableView {
+    fn templates(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
         let outcome = self.rows.outcome;
         let Some(bytes) = self.bytes.first.get(..self.bytes.len) else {
-            return unavailable("template byte arena invalid");
+            return unavailable("template byte arena invalid").into();
         };
         let Some(rows) = self.rows.rows.get(..outcome.len()) else {
-            return unavailable("template row length invalid");
+            return unavailable("template row length invalid").into();
         };
         if rows
             .iter()
             .any(|r| span(bytes, r.name).is_none() || span(bytes, r.name_key).is_none())
         {
-            return unavailable("template row spans outside captured arenas");
+            return unavailable("template row spans outside captured arenas").into();
         }
-        table::<tables::DivisionTemplates, _>(outcome, &self.rows.rows, |r| DivisionTemplateRow {
-            template: r.template,
-            owner: r.owner,
-            name: owned_vec(copy_vec(span(bytes, r.name).unwrap())),
-            name_key: replay_data::rows::Recorded::Value(owned_vec(copy_vec(
-                span(bytes, r.name_key).unwrap(),
-            ))),
-            unit_type: r.unit_type,
-        })
+        project_table::<tables::DivisionTemplates, _>(
+            projection,
+            outcome,
+            &self.rows.rows,
+            |r| u128::from(r.template),
+            |r, previous| {
+                r.owner == previous.owner
+                    && r.unit_type == previous.unit_type
+                    && span(bytes, r.name).unwrap() == previous.name
+                    && match &previous.name_key {
+                        Recorded::Value(key) => span(bytes, r.name_key).unwrap() == key,
+                        Recorded::NotRecorded => false,
+                    }
+            },
+            |r| DivisionTemplateRow {
+                template: r.template,
+                owner: r.owner,
+                name: owned_vec(copy_vec(span(bytes, r.name).unwrap())),
+                name_key: replay_data::rows::Recorded::Value(owned_vec(copy_vec(
+                    span(bytes, r.name_key).unwrap(),
+                ))),
+                unit_type: r.unit_type,
+            },
+        )
     }
 
     fn icons(
@@ -1054,3 +1088,7 @@ mod held;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "division_templates/projection_tests.rs"]
+mod projection_tests;

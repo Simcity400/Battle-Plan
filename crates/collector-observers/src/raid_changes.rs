@@ -132,6 +132,8 @@ pub struct Watches {
     /// Daily passes whose stores were all certified unchanged before they
     /// ran, and those left to the setter's own path.
     daily_passes: [AtomicU64; 2],
+    /// Certified stores omitted from timing, counted once on the pass's normal return.
+    untimed_capacities: AtomicU64,
     /// This family's hooks, and the building family's forwarder, enabled.
     hooks: AtomicBool,
     forwarder: AtomicBool,
@@ -177,6 +179,7 @@ impl Watches {
             buildings: [const { AtomicU64::new(0) }; 2],
             unchanged_capacities: AtomicU64::new(0),
             daily_passes: [const { AtomicU64::new(0) }; 2],
+            untimed_capacities: AtomicU64::new(0),
             hooks: AtomicBool::new(false),
             forwarder: AtomicBool::new(false),
         }
@@ -634,7 +637,8 @@ pub fn status() -> impl serde::Serialize {
         "unchanged_capacities": WATCHES.unchanged_capacities.load(Ordering::Relaxed),
         "certified_daily_passes": WATCHES.daily_passes[0].load(Ordering::Relaxed),
         "per_call_daily_passes": WATCHES.daily_passes[1].load(Ordering::Relaxed),
-        "scope": "cumulative since attach; each hour the RaidState job reads its daily slice of states and countries, and the RaidLaunch job its daily slice of RaidAirSites countries, and every owner a hooked writer marked since the previous hour (early_owners; the capacity setter marks only a store that changes the value, unchanged_capacities counts the others; a daily capacity pass whose every store keeps its value and that withdraws no base is read once before it runs and its stores skip the setter's own read (certified_daily_passes), while any other pass leaves each store to the setter (per_call_daily_passes)), so the raid state rows, CountryBuildingResources, RaidAirSites and TradeRoutes equal the game's at every hour (changed route membership, storage or market endpoint demand marks its census owner too; supply port-to-port updates and origin inline clears mark their route owners), except StateResourceInputs.supply_route, which follows the hourly supply rebuild and is read with its state; an hour whose take does not return the previous read's epoch (disabled, poisoned, an unnamed writer, an id beyond the bitmap, an invalidating hour) reads every owner (full_reads); every hour compares each unmarked owner it read (its slice; every owner in verify mode) with its previous read and disables the family at the first difference (sampled_*)"
+        "untimed_certified_capacities": WATCHES.untimed_capacities.load(Ordering::Relaxed),
+        "scope": "cumulative since attach; each hour the RaidState job reads its daily slice of states and countries, and the RaidLaunch job its daily slice of RaidAirSites countries, and every owner a hooked writer marked since the previous hour (early_owners; the capacity setter marks only a store that changes the value, unchanged_capacities counts the others; a daily capacity pass whose every store keeps its value and that withdraws no base is read once before it runs and its stores skip the setter's own read (certified_daily_passes), while any other pass leaves each store to the setter (per_call_daily_passes)); untimed_certified_capacities counts the certified stores omitted from hook_timing on normally returned daily passes, not a measurement of zero cost, so the raid state rows, CountryBuildingResources, RaidAirSites and TradeRoutes equal the game's at every hour (changed route membership, storage or market endpoint demand marks its census owner too; supply port-to-port updates and origin inline clears mark their route owners), except StateResourceInputs.supply_route, which follows the hourly supply rebuild and is read with its state; an hour whose take does not return the previous read's epoch (disabled, poisoned, an unnamed writer, an id beyond the bitmap, an invalidating hour) reads every owner (full_reads); every hour compares each unmarked owner it read (its slice; every owner in verify mode) with its previous read and disables the family at the first difference (sampled_*)"
     })
 }
 
@@ -922,14 +926,14 @@ unsafe extern "system" fn set_country_pool_capacity(
     third: usize,
     fourth: usize,
 ) -> usize {
-    let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[CAPACITY_SITE].load(Ordering::Acquire)) };
     if CERTIFIED_PASS.get() {
         // A store of a certified daily pass keeps its value, as the pass
         // counted.
-        return timing.original(|| unsafe { original(first, second, third, fourth) });
+        return unsafe { original(first, second, third, fourth) };
     }
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
     // SAFETY: guarded reads of live memory on the calling thread.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let held = engine_mutations::raid_mutations::pool_capacity(
@@ -992,6 +996,11 @@ unsafe extern "system" fn daily_refresh_base_capacities(
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(DAILY_ORIGINAL.load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, second, third, fourth) });
+    if let Some(stores) = unchanged {
+        WATCHES
+            .untimed_capacities
+            .fetch_add(stores, Ordering::Relaxed);
+    }
     // Only a normal return retires the flight.
     DAILY_FLIGHTS.fetch_sub(1, Ordering::SeqCst);
     result
@@ -1638,6 +1647,20 @@ mod tests {
         0
     }
 
+    #[test]
+    fn a_certified_pass_is_thread_local_and_restores_nested_scopes() {
+        assert!(!CERTIFIED_PASS.get());
+        let outer = CertifiedPass::enter();
+        {
+            let _nested = CertifiedPass::enter();
+            assert!(CERTIFIED_PASS.get());
+        }
+        assert!(CERTIFIED_PASS.get());
+        assert!(!std::thread::spawn(|| CERTIFIED_PASS.get()).join().unwrap());
+        drop(outer);
+        assert!(!CERTIFIED_PASS.get());
+    }
+
     /// Inside the hourly original, a daily pass whose stores all keep their
     /// capacity counts them and marks nothing, its setter calls reading
     /// nothing more; a pass with one changing store, or any pass outside the
@@ -1666,10 +1689,18 @@ mod tests {
             )
         };
         let ([certified, per_call], unchanged) = counts();
+        let timed = || crate::hook_timing::counts(crate::hook_timing::Family::RaidChanges).calls;
+        let timed_before = timed();
+        let untimed_before = WATCHES.untimed_capacities.load(Ordering::Relaxed);
         let world = DailyWorld::new();
         collector_extended_support::hourly::in_tick(|| world.pass());
         // Counted once by the pass: the setter calls added nothing.
         assert_eq!(counts(), ([certified + 1, per_call], unchanged + 4));
+        assert_eq!(timed(), timed_before + 1); // Only the enclosing daily pass.
+        assert_eq!(
+            WATCHES.untimed_capacities.load(Ordering::Relaxed),
+            untimed_before + 4
+        );
         assert_eq!(FLIGHTS_SEEN.load(Ordering::SeqCst), 1);
         assert_eq!(active(), 0);
         marked.clear();
@@ -1680,6 +1711,11 @@ mod tests {
         // Outside the hourly original the setter reads and counts each store.
         world.pass();
         assert_eq!(counts(), ([certified + 1, per_call + 1], unchanged + 8));
+        assert_eq!(timed(), timed_before + 6); // Pass plus all four setters.
+        assert_eq!(
+            WATCHES.untimed_capacities.load(Ordering::Relaxed),
+            untimed_before + 4
+        );
         assert_eq!(FLIGHTS_SEEN.load(Ordering::SeqCst), 1);
         assert_eq!(active(), 0);
 
@@ -1687,6 +1723,11 @@ mod tests {
         world.word(DailyWorld::entries(1) + 16 + 8, 120_000);
         collector_extended_support::hourly::in_tick(|| world.pass());
         assert_eq!(counts(), ([certified + 1, per_call + 2], unchanged + 8 + 3));
+        assert_eq!(timed(), timed_before + 11);
+        assert_eq!(
+            WATCHES.untimed_capacities.load(Ordering::Relaxed),
+            untimed_before + 4
+        );
         assert_eq!(FLIGHTS_SEEN.load(Ordering::SeqCst), 1);
         assert_eq!(active(), 0);
         marked.clear();

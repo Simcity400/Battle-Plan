@@ -1,3 +1,4 @@
+mod final_inputs_tests;
 mod presentation_tests;
 mod stitch_barrier;
 
@@ -3164,6 +3165,25 @@ fn the_observer_boundary_joins_after_the_hours_preparation_before_any_dispatch()
     }
 }
 
+#[test]
+fn early_step_timing_counts_continued_handlers_without_charging_join_waits() {
+    let shared = Shared::new(0, 0, 1);
+    for (index, step) in EarlyStep::ALL.into_iter().enumerate() {
+        assert_eq!(step as usize, index);
+        shared.acquisition_wait_ns.store(0, Ordering::Relaxed);
+        let _step = EarlyStepTimer::new(&shared, &shared.presentation.early_steps[index]);
+        // Saturate away wall time without relying on the clock's resolution.
+        shared.acquisition_wait_ns.store(u64::MAX, Ordering::Relaxed);
+        if matches!(step, EarlyStep::FinalInputs) {
+            continue;
+        }
+    }
+    for stats in &shared.presentation.early_steps {
+        assert_eq!(stats.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.ns.load(Ordering::Relaxed), 0);
+    }
+}
+
 /// Readiness gates replace global statement order. Audit each handler's own
 /// publish/install/dispatch order, the complete split barriers, and the packs
 /// that stay behind map sampling and the stitch's delayed failure barrier.
@@ -3259,10 +3279,37 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
                 + marker.len();
         }
     };
+    for continuation in [
+        include_str!("../acquisition_jobs/presentation/inputs.rs"),
+        include_str!("../acquisition_jobs/presentation/stitch.rs"),
+    ] {
+        ordered(
+            continuation,
+            &[
+                "let pending = submit(",
+                "state.pending = Some(pending)",
+                "drop(state)",
+                "executor.wake_workers(1)",
+            ],
+        );
+    }
+    let inputs = include_str!("../acquisition_jobs/presentation/inputs.rs");
+    let published = &inputs[inputs.find("fn published(").unwrap()..];
+    ordered(
+        published,
+        &[
+            "self.state.lock()",
+            "let hold = Hold(&self.hold_ticks, sampling::qpc())",
+            "if state.closed",
+            "drop(hold)",
+            "drop(state)",
+            "executor.wake_workers(1)",
+        ],
+    );
     let readiness = &body[at("let step = batch.wait_ready(")..at("match step {")];
     for gate in [
         "presentation.ready(batch)",
-        "all(&input_pending, &part_pending)",
+        "ready!(input_pending)",
         "all(&air_pending, &air_part_pending)",
         "orders_complete(batch, orders, parts)",
         "ready!(divisions_pending)",
@@ -3310,6 +3357,15 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
     let collect_macro = &body[at("macro_rules! collected {")..at("macro_rules! completed {")];
     assert!(collect_macro.contains("presentation.wait_for(shared, &mut batch, Some(&pending))"));
     ordered(
+        readiness,
+        &[
+            "ready!(input_pending)",
+            "presentation.ready(batch)",
+            "ready!(root_pending)",
+            "ready!(countries_pending)",
+        ],
+    );
+    ordered(
         handler("Roots"),
         &[
             "completed!(root_pending.take()",
@@ -3335,6 +3391,7 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
             "completed!(input_pending.take()",
             "part_pending).into_iter()",
             "completed!(pending, DivisionInputParts)",
+            "presentation_inputs.restore_master(",
             "census.absorb(",
             "(*shared.division_parts.get())[part] =",
             "install_unit_inputs(",
@@ -3486,7 +3543,7 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
     );
     assert!(handler("Late").contains("take_late_request("));
     ordered(
-        handler("FinalInputs"),
+        &body[at("macro_rules! join_final_sources {")..scheduler],
         &[
             "intel_residual_pending.take()",
             "restore_intel_residual_request(",
@@ -3498,8 +3555,41 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
             "join_relations(",
             "variants_pending.take()",
             "restore_variants_request(",
+        ],
+    );
+    ordered(
+        handler("FinalSources"),
+        &[
+            "final_sources_published(",
+            "join_final_sources!()",
+            "final_sources_done = true",
+        ],
+    );
+    ordered(
+        handler("FinalInputs"),
+        &[
+            "final_inputs_dispatch.take()",
+            "return_final_inputs_request(",
+            "if !final_sources_done",
+            "join_final_sources!()",
             "join_characters!(part)",
+            "adopt_presentation_ticket(",
             "settle_intel_residual(",
+            "take_final_inputs_request(",
+        ],
+    );
+    ordered(
+        &body[scheduler..at("let step = batch.wait_ready(")],
+        &[
+            "if final_sources_done",
+            "late_pending.is_some()",
+            "!final_inputs_armed",
+            "!batch.stopped()",
+            "settle_intel_residual(",
+            "characters_pending.iter().enumerate().skip(1)",
+            "required |= 1 << part",
+            "*raw |= active",
+            "final_inputs_dispatch.arm(",
             "take_final_inputs_request(",
         ],
     );
@@ -3614,6 +3704,8 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         Role::Economy,
         Role::PresentationSpeedTerms,
         Role::FinalInputs,
+        // A long independent census joined before the tables.
+        Role::Templates,
         // The longest first-burst job and the tables split from it.
         Role::Slow,
         Role::Stability,
@@ -3633,7 +3725,6 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         (Role::CharacterInputs, Role::CharacterTraits),
         (Role::AdvisorRoles, Role::CountryLeaderRoles),
         (Role::Ordinary, Role::AirRelations),
-        (Role::Templates, Role::Factions),
         (Role::Provinces, Role::States),
         (Role::Capitulation, Role::Lexical),
     ] {
@@ -3642,6 +3733,8 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
     }
     // AdvisorRoles may gate FinalInputs, but does not outrank Presentation.
     assert!(Role::Presentation.priority() < Role::AdvisorRoles.priority());
+    assert!(Role::Templates.priority() < Role::IntelResidual.priority());
+    assert!(Role::Templates.priority() < Role::Factions.priority());
     // Split from Slow, the stability tables claim no later than it.
     assert!(Role::Stability.priority() <= Role::Slow.priority());
     assert!(Role::WarOverview.priority() <= Role::Slow.priority());

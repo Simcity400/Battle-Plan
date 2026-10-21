@@ -34,9 +34,13 @@ Plan JSON:
 }
 "frozen" is a directory holding recorder.exe and collector.dll. "max_hours"
 defaults to 420; choose a cap above the expected progress for a full-duration run.
-Recorder candidates require -MetricsTool pointing to a reader built for their
-replay format. Missing or incomplete metrics, failed drains, drops and write
+Ordinary recorder candidates require -MetricsTool pointing to a reader built for
+their replay format. Missing or incomplete metrics, failed drains, drops and write
 errors fail the screen. Bare-game references do not need a metrics reader.
+Explicit diagnostic=true candidates require a diag-* name and frozen recorder.
+Their intentionally invalid output skips recording/size/exact-metrics acceptance;
+h/s and status remain, with recording_valid=false and passed=false. Unload safety
+still applies, and diagnostic rows never enter ordinary passed summaries.
 A third candidate kind injects the synthetic cost-ladder DLL instead of the
 recorder: { "name": "spin4", "ladder": { "mode": "spin_ms", "param_ms": 4 } }
 Supply a separately built ladder.dll and ladder-inject.exe with -LadderDir;
@@ -129,10 +133,13 @@ $maxHours = $(if ($spec.PSObject.Properties['max_hours'] -and $spec.max_hours) {
 $repeats = if ($spec.repeats) { [int]$spec.repeats } else { 1 }
 $historicalBaselineRate = if ($spec.PSObject.Properties['baseline_hours_per_s'] -and $spec.baseline_hours_per_s) { [double]$spec.baseline_hours_per_s } else { $null }
 foreach ($candidate in $spec.candidates) {
+    if ($candidate.PSObject.Properties['diagnostic'] -and $candidate.diagnostic -isnot [bool]) { throw 'diagnostic must be a JSON boolean.' }
+    $diagnostic = [bool]($candidate.PSObject.Properties['diagnostic'] -and $candidate.diagnostic)
+    if ($diagnostic -and (-not $candidate.frozen -or [string]$candidate.name -notlike 'diag-*')) { throw 'Diagnostic candidates require a frozen recorder and a diag-* name.' }
     if (($candidate.PSObject.Properties['warm'] -and $candidate.warm) -or $candidate.PSObject.Properties['warm_gate']) {
         throw 'Consistency warmup was retired. Remove warm=true and warm_gate from the benchmark plan.'
     }
-    if ($candidate.frozen -and -not $SummarizeOnly -and (-not $MetricsTool -or -not (Test-Path -LiteralPath $MetricsTool -PathType Leaf))) {
+    if ($candidate.frozen -and -not $diagnostic -and -not $SummarizeOnly -and (-not $MetricsTool -or -not (Test-Path -LiteralPath $MetricsTool -PathType Leaf))) {
         throw 'Recorder candidates require -MetricsTool with a reader built for their replay format.'
     }
 }
@@ -686,6 +693,8 @@ function Get-HookCost($before, $after) {
     }
 }
 function Start-Candidate($candidate, [string]$runDir) {
+    $diagnostic = [bool]($candidate.PSObject.Properties['diagnostic'] -and $candidate.diagnostic)
+    if ($diagnostic -and [string]$candidate.name -notlike 'diag-*') { throw 'Diagnostic candidates must be named diag-*.' }
     $frozen = [string]$candidate.frozen
     $recorderExe = Join-Path $frozen 'recorder.exe'
     if (-not (Test-Path -LiteralPath $recorderExe) -or -not (Test-Path -LiteralPath (Join-Path $frozen 'collector.dll'))) { throw "Frozen candidate incomplete: $frozen" }
@@ -703,7 +712,7 @@ function Start-Candidate($candidate, [string]$runDir) {
     }
     # Windows PowerShell reports ExitCode only if the process handle was opened before the exit.
     $null = $process.Handle
-    $attached = [pscustomobject]@{ process = $process; recording = $recording; status = $null; active = $null; frozen = $frozen }
+    $attached = [pscustomobject]@{ process = $process; recording = $recording; status = $null; active = $null; frozen = $frozen; diagnostic = $diagnostic }
     try {
         $activePath = Join-Path $recording 'active.json'
         $limit = [DateTime]::UtcNow.AddSeconds($AttachTimeoutSeconds)
@@ -819,6 +828,15 @@ function Stop-Candidate($attached, [string]$runDir) {
         -Exited { $script:game.HasExited }
     $script:game.Refresh()
     if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { throw "collector.dll remains loaded after detach ($why)." }
+    # DIAGNOSTIC ONLY: hook restoration/unload above is still mandatory.
+    # Intentionally empty/discarded output is never a successful recording.
+    if ($attached.diagnostic) {
+        if ($detach.ExitCode -ne 0) { throw "Diagnostic detach command failed: exit $($detach.ExitCode)." }
+        # The recorder returns 1 for invalid output; other exits are not that refusal.
+        if ($attached.process.ExitCode -notin @(0, 1)) { throw "Diagnostic recorder exited abnormally: $($attached.process.ExitCode)." }
+        return [ordered]@{ diagnostic_only = $true; recording_valid = $false;
+            detach_exit = $detach.ExitCode; recorder_exit = $attached.process.ExitCode }
+    }
     $completed = @(Get-ChildItem -LiteralPath $attached.recording -Filter completed.json -Recurse -ErrorAction SilentlyContinue)
     if ($detach.ExitCode -ne 0 -or $attached.process.ExitCode -ne 0) { throw "Recorder detach/finalization failed: detach exit $($detach.ExitCode), recorder exit $($attached.process.ExitCode)." }
     if ($completed.Count -ne 1) { throw "Expected one recording completion, found $($completed.Count)." }
@@ -985,6 +1003,7 @@ function Invoke-Screen($attached, [string]$runDir) {
             if ($null -ne $last -and ([int64]$last.hour - [int64]$first.hour) -ge $maxHours) { $stopReason = 'max_hours'; break }
             $qpcNow = [Hoi4ClockBaseline]::Qpc()
             if ($qpcNow -ge $nextGuard) {
+                if ($attached -and $attached.diagnostic -and $attached.process.HasExited) { throw 'Diagnostic recorder exited during the timed window.' }
                 foreach ($name in (Get-BuildProcesses)) { $contaminants[$name] = $true }
                 $nextGuard = $qpcNow + [int64]$frequency
             }
@@ -1109,8 +1128,15 @@ function Complete-Pending {
     try {
         $p.row.completion = Stop-Candidate $p.attached $p.row.run_dir
         $p.row.memory.recorder_private_peak_detach = $p.attached.recorder_private_peak_detach
-        $p.row.size = Get-SizeSummary $p.row.run_dir
-        $p.row.passed = $p.passed
+        if ($p.attached.diagnostic) {
+            $p.row.diagnostic_only = $true
+            $p.row.recording_valid = $false
+            $p.row.performance_screen_clean = $p.passed
+            $p.row.passed = $false
+        } else {
+            $p.row.size = Get-SizeSummary $p.row.run_dir
+            $p.row.passed = $p.passed
+        }
     } catch {
         $p.row.error = $_.Exception.Message
         Log "FAILED $($p.row.name) finalization: $($_.Exception.Message)"
@@ -1125,6 +1151,9 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
         $runDir = Join-Path $Out ("r{0:d2}_{1:d2}_{2}" -f $rep, $index, $name)
         $null = New-Item -ItemType Directory -Force -Path $runDir
         $row = [ordered]@{ name = $name; repeat = $rep; frozen = $candidate.frozen; run_dir = $runDir; started_utc = [DateTime]::UtcNow.ToString('o'); passed = $false }
+        if ($candidate.PSObject.Properties['diagnostic'] -and $candidate.diagnostic) {
+            $row.diagnostic_only = $true; $row.recording_valid = $false; $row.performance_screen_clean = $false
+        }
         $attached = $null; $ladder = $null
         # Keep the shared lock fresh: other lanes treat a lock untouched for 90 minutes as stale.
         try { (Get-Item -LiteralPath $lock).LastWriteTime = Get-Date } catch { Log "could not refresh the game lock time: $($_.Exception.Message)" }
@@ -1187,6 +1216,7 @@ if ($script:game -and -not $script:game.HasExited) {
 }
 # Exact per-hour metrics decode each finalized replay; run them after the game work.
 foreach ($row in $rowDicts) {
+    if ($row.Contains('diagnostic_only') -and $row.diagnostic_only) { continue }
     if (-not $row.frozen -or -not $row.Contains('size') -or -not $row.size -or $row.Contains('exact')) { continue }
     try {
         $row.exact = Get-ExactMetrics ([pscustomobject]@{ recording = $row.recording }) $row.run_dir ([int]$row.first_hour) ([int]$row.last_hour)

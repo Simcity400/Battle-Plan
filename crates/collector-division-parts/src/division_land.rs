@@ -2,15 +2,15 @@
 use crate::{
     clock::qpc,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
-    table_conversion::table,
 };
+use collector_projection::projection::{Projection, project_table};
 use engine_allocation as allocation;
 use engine_land_inputs::division_land_inputs as native;
 use engine_native::{Memory, carmy::DivisionSeed, walk::Outcome};
 use replay_data::{
     rows::DivisionLandInputsRow, rows::DivisionManpowerContributor, rows::RetiredI64, rows::tables,
 };
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
 
 pub struct Captured {
     rows: CaptureRows<native::Row>,
@@ -106,10 +106,17 @@ impl Captured {
         qpc().saturating_sub(start).max(0) as u64
     }
     pub fn table(&self) -> TableView {
+        match self.table_input(None) {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("projection disabled"),
+        }
+    }
+    pub fn table_input(&self, projection: Option<&mut Projection<'_>>) -> TableInput {
         let Some(rows) = self.rows.rows.get(..self.rows.outcome.len()) else {
             return crate::table_conversion::unavailable(
                 "walker row count exceeds allocated buffer",
-            );
+            )
+            .into();
         };
         if self.used > self.contributors.len()
             || rows.iter().any(|row| {
@@ -118,10 +125,28 @@ impl Captured {
                     .is_none_or(|end| end > self.used)
             })
         {
-            return crate::table_conversion::unavailable("land manpower span exceeds copied arena");
+            return crate::table_conversion::unavailable("land manpower span exceeds copied arena")
+                .into();
         }
-        table::<tables::DivisionLandInputs, _>(self.rows.outcome, &self.rows.rows, |r| {
-            DivisionLandInputsRow {
+        project_table::<tables::DivisionLandInputs, _>(
+            projection,
+            self.rows.outcome,
+            &self.rows.rows,
+            |r| u128::from(r.division),
+            |r, previous| {
+                previous.received_supply == RetiredI64::default()
+                    && previous.maximum_grace == RetiredI64::default()
+                    && previous.remaining_grace == RetiredI64::default()
+                    && r.naval_transfer == previous.naval_transfer
+                    && r.len == previous.manpower.len()
+                    && self.contributors[r.start..r.start + r.len]
+                        .iter()
+                        .zip(&previous.manpower)
+                        .all(|(current, previous)| {
+                            current.country == previous.country && current.amount == previous.amount
+                        })
+            },
+            |r| DivisionLandInputsRow {
                 division: r.division,
                 // DivisionStatus records the division's supply ratio and grace.
                 received_supply: RetiredI64::default(),
@@ -135,10 +160,14 @@ impl Captured {
                         amount: r.amount,
                     },
                 )),
-            }
-        })
+            },
+        )
     }
 }
+
+#[cfg(test)]
+#[path = "division_land/projection_tests.rs"]
+mod projection_tests;
 
 #[cfg(test)]
 mod tests {

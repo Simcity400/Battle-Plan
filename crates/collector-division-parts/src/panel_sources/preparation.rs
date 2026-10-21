@@ -654,6 +654,49 @@ mod tests {
     }
 
     #[test]
+    fn optional_source_staging_denial_keeps_the_first_ordered_allocation_failure() {
+        let mut preparation = Preparation::default();
+        assert!(!collector_test_support::with_allocations_denied(|| {
+            preparation.begin(1)
+        }));
+        let seeds = [DivisionSeed {
+            division: 7,
+            ..Default::default()
+        }];
+        let mut serial = Store::default();
+        let mut staged = Store::default();
+        let mut serial_selected = Vec::new();
+        let mut staged_selected = Vec::new();
+        let serial_result = collector_test_support::with_allocations_denied(|| {
+            serial.capture(&Denied, 0, 0, &seeds, &mut serial_selected)
+        });
+        let staged_result = collector_test_support::with_allocations_denied(|| {
+            staged.capture_staged(
+                &Denied,
+                0,
+                0,
+                &seeds,
+                &mut staged_selected,
+                |_| None,
+                |_| None,
+                |_, _| None,
+            )
+        });
+        assert_eq!(
+            serial_result.err(),
+            Some("division source selection allocation failed")
+        );
+        assert_eq!(
+            staged_result.err(),
+            Some("division source selection allocation failed")
+        );
+        assert_eq!(staged_selected, serial_selected);
+        assert_eq!(staged.turn, serial.turn);
+        assert!(staged.roots.is_empty());
+        assert!(staged.pools.is_empty());
+    }
+
+    #[test]
     fn staged_root_prefix_faults_and_first_shared_admission_match_serial() {
         for fault in [false, true] {
             let mut bytes = vec![0u8; 0x1000];
@@ -741,6 +784,24 @@ mod tests {
                 Arc::ptr_eq(&actual, &staged.rows.finish().unwrap()),
                 "the earlier shared success or refusal wins"
             );
+            staged
+                .root_with_observation(
+                    &Denied,
+                    0,
+                    owner,
+                    receiver + 1,
+                    root + 1,
+                    Some((stamp.0, stamp.1 + 1)),
+                    Some(&reads),
+                )
+                .unwrap();
+            assert!(
+                Arc::ptr_eq(&actual, &staged.rows.finish().unwrap()),
+                "a contradictory later alias cannot change first admission"
+            );
+            assert_eq!(staged.roots[&(0, owner)].receiver, receiver);
+            assert_eq!(staged.roots[&(0, owner)].accumulator, root);
+            assert_eq!(staged.roots[&(0, owner)].certificate, certificate);
         }
     }
 }

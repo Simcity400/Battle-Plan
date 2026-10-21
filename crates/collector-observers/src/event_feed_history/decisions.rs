@@ -482,6 +482,10 @@ fn fact(
     fact
 }
 impl Store {
+    pub(super) fn seed_prepared_decisions(&mut self, generation: u64) {
+        self.decisions.generation = Some(generation);
+        self.decisions.next = 1;
+    }
     pub fn prepare_decisions(&mut self, capacity: usize) -> io::Result<()> {
         self.decisions.prepare(capacity)?;
         self.prepare_staged(capacity)?;
@@ -749,6 +753,10 @@ impl Store {
         let Err(refusal) = result else {
             return;
         };
+        self.owner_refusals[super::OwnerRegistry::Decisions as usize] = Some(refusal);
+        if self.preparing_owner {
+            return;
+        }
         let identity = match self.decisions.identity(pointer) {
             Some(identity) => Ok(identity),
             None => World::new(memory, base).and_then(|world| world.country_object(pointer)),
@@ -1045,6 +1053,60 @@ fn record_fact<M: Memory>(
 }
 
 impl Store {
+    pub(super) fn prepared_decision_demand(&self, source: &Self, completed: bool) -> usize {
+        self.decisions
+            .live
+            .saturating_add(if completed { source.decisions.live } else { 0 })
+            .max(self.decisions.owner_count.saturating_add(1))
+    }
+    pub(super) fn merge_decision_owner(
+        &mut self,
+        source: &Self,
+        pointer: usize,
+        labels: &mut [u32],
+    ) -> Result<(), &'static str> {
+        let at = Index::locate(&source.decisions.owners, pointer, |s| s.pointer)
+            .map_err(|_| "prepared decision owner missing")?;
+        let owner = source.decisions.owners[at];
+        self.decisions.clear_owner(pointer, owner.identity)?;
+        let target = self.decisions.owner(pointer, owner.identity)?;
+        target.power = owner.power;
+        target.power_epoch = owner.power_epoch;
+        for slot in source
+            .decisions
+            .slots
+            .iter()
+            .filter(|slot| slot.pointer != 0)
+        {
+            let (installed, _) =
+                self.decisions
+                    .put(slot.pointer, pointer, owner.identity, slot.container)?;
+            labels[slot.id as usize] = installed.id;
+        }
+        self.decisions.certify(pointer, owner.identity)
+    }
+    pub(super) fn prepared_decision_labels(&self) -> usize {
+        self.decisions.next as usize
+    }
+    pub(super) fn prepared_decision_failure(
+        &mut self,
+        pointer: usize,
+        identity: CountryIdentity,
+        retry: bool,
+    ) -> bool {
+        // Establish the same named attempt as the original worker reader.
+        let Ok(owner) = self.decisions.owner(pointer, identity) else {
+            return false;
+        };
+        let refused = owner.refused;
+        if !retry {
+            self.decisions.fail(pointer);
+        }
+        refused
+    }
+    pub(super) fn fresh_decision_label(&mut self) -> Result<u32, &'static str> {
+        self.decisions.fresh_id()
+    }
     pub(crate) fn decision_key<M: Memory>(
         &mut self,
         world: &World<'_, M>,

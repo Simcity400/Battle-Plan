@@ -1111,6 +1111,100 @@ fn large_content(countries: usize, per_country: usize) -> Fixture {
 }
 
 #[test]
+fn promoted_template_worker_matches_direct_rows_and_faults_at_live_scale() {
+    use crate::acquisition_jobs::{Batch, Job, Pool, Report, Role, TemplatesRequest};
+    use engine_native::country_memory::Cache;
+    use std::sync::Arc;
+
+    fn word(source: &Fixture, at: usize) -> usize {
+        u64::from_le_bytes(source.bytes[at..at + 8].try_into().unwrap()) as usize
+    }
+
+    assert_eq!(Role::Templates.priority(), Role::Countries.priority());
+    assert!(Role::Templates.priority() < Role::IntelResidual.priority());
+    for countries in [1, 1_500, 5_000] {
+        for fault in 0..3 {
+            let mut source = large_content(countries, 1);
+            let owner = word(&source, 0x10000 + countries * 8);
+            let roster = word(&source, owner + ccountry::DIVISION_TEMPLATES);
+            let template = word(&source, roster);
+            match fault {
+                // A late optional model refusal keeps the dictionary and icons.
+                1 => source.bytes[template + native::SUBUNIT_COUNTS..][..8]
+                    .copy_from_slice(&u64::MAX.to_le_bytes()),
+                // A late roster refusal must keep the original first reason.
+                2 => source.bytes[owner + ccountry::DIVISION_TEMPLATES..][..8]
+                    .copy_from_slice(&u64::MAX.to_le_bytes()),
+                _ => {}
+            }
+            let source = Arc::new(source);
+            let mut direct = Captured::with_capacities(&capacity());
+            let mut captured = Captured::with_capacities(&capacity());
+            let pool = {
+                let source = Arc::clone(&source);
+                Pool::with_test_runner(1, move |job| match job {
+                    Job::Templates(request) => Report::Templates(request.run(source.as_ref())),
+                    _ => panic!("only Templates was submitted"),
+                })
+            };
+            for hour in [7, 8] {
+                direct.capture(source.as_ref(), 0, 0x1000, hour, false);
+                let mut cache = Arc::new(Cache::try_with_capacity(countries + 1).unwrap());
+                let cache =
+                    Cache::prepare_shared(&mut cache, source.as_ref(), 0, 0x1000).unwrap();
+                let mut request = Some(Job::Templates(TemplatesRequest::take(
+                    &cache, 0, 0x1000, &mut captured, hour, false,
+                )));
+                let mut batch = Batch::new(&pool);
+                // SAFETY: the synthetic world lives until the batch drains.
+                let ticket = unsafe { batch.submit(&mut request) }.unwrap();
+                let completed = batch.finish(ticket).unwrap();
+                assert!(matches!(completed.report, Ok(Report::Templates(_))));
+                let Job::Templates(request) = completed.request else {
+                    panic!("template request must be returned");
+                };
+                request.restore(&mut captured, None);
+                // Taking the worker's publication and settling its owned tail
+                // cannot read live memory, including on the promoted claim tier.
+                captured.capture(
+                    &SliceMemory {
+                        base: 0,
+                        bytes: &[],
+                    },
+                    0,
+                    0x1000,
+                    hour,
+                    false,
+                );
+                assert_eq!(
+                    captured.outcomes(),
+                    direct.outcomes(),
+                    "{countries}/{fault}/{hour}"
+                );
+                assert_eq!(
+                    captured.tables(),
+                    direct.tables(),
+                    "{countries}/{fault}/{hour}"
+                );
+                assert_eq!(captured.country_state(), direct.country_state());
+                assert_eq!(captured.model_failures(), direct.model_failures());
+                if fault == 2 {
+                    assert!(matches!(
+                        captured.outcomes()[0],
+                        Outcome::Unavailable { .. }
+                    ));
+                } else {
+                    assert_eq!(
+                        template_outcomes(&captured),
+                        [Outcome::Rows { len: countries }; 2]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn live_template_demand_and_same_capture_growth_keep_five_thousand_countries() {
     let source = large_content(5_000, 4);
     let mut capacity = Capacities::default();

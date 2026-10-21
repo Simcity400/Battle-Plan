@@ -110,6 +110,7 @@ pub struct Preparation {
     commanders: HashMap<usize, u64>,
     provinces: HashMap<usize, Option<(u32, usize)>>,
     reads: NativeReads,
+    local_province_refusal: bool,
 }
 impl Default for Preparation {
     fn default() -> Self {
@@ -119,12 +120,16 @@ impl Default for Preparation {
             commanders: HashMap::new(),
             provinces: HashMap::new(),
             reads: NativeReads::default(),
+            local_province_refusal: false,
         }
     }
 }
 impl Preparation {
     pub fn can_settle_owned(&self) -> bool {
         self.reads.complete
+    }
+    pub fn has_local_province_refusal(&self) -> bool {
+        self.local_province_refusal
     }
     pub fn has_variant(&self, handle: u64, pointer: usize) -> bool {
         self.reads.has_variant(handle, pointer)
@@ -139,6 +144,7 @@ impl Preparation {
     }
     /// Optional staging shortage keeps the original ordered reader.
     pub fn begin(&mut self, divisions: usize) -> bool {
+        self.local_province_refusal = false;
         self.countries.clear();
         self.commanders.clear();
         self.provinces.clear();
@@ -197,6 +203,19 @@ impl Preparation {
             });
         let province =
             engine_native::division_panel_operands::selected_province(memory, state, seed);
+        self.local_province_refusal |= province.is_err();
+        if let Err(reason) = province {
+            let reason = source_owner(seed).err().unwrap_or(reason);
+            if !store
+                .pools
+                .get(&seed.division)
+                .is_some_and(|held| held.context_refusal == Some(reason))
+            {
+                // A new refusal can fail allocation before certification.
+                // Only an already published refusal may bypass that barrier.
+                self.reads.complete = false;
+            }
+        }
         let context = province
             .ok()
             .filter(|province| !store.provinces.contains_key(province))
@@ -235,10 +254,11 @@ impl Preparation {
             }
         });
         // Failed shared selections can make an earlier range's admitted memo
-        // choose a branch this range never read. Keep that ordered slow path.
+        // choose a branch this range never read. A selected-province refusal
+        // is local to this division: it cannot insert a shared context or
+        // demand state operands. Its retained refusal needs no new admission.
         if country.is_some_and(|(_, value)| value.is_err())
             || commander.is_some_and(|(_, value)| value.is_err())
-            || province.is_err()
             || context.is_some_and(|value| value.is_err())
         {
             self.reads.complete = false;
@@ -1577,12 +1597,15 @@ mod tests {
                     }
                     let owned = staged.can_settle_owned()
                         && memos.iter().all(Preparation::can_settle_owned);
-                    if pass > 0
-                        && seeds.iter().all(|seed| {
-                            seed.roster_owner.is_none() && seed.ordinary_route.is_some()
-                        })
-                    {
+                    if pass == 0 {
+                        assert!(!owned, "cold source baseline keeps ordered admission");
+                    }
+                    if pass > 0 && seeds.iter().all(|seed| seed.roster_owner.is_none()) {
                         assert!(owned, "warm owned source settlement must be exercised");
+                        assert_eq!(
+                            memos.iter().any(Preparation::has_local_province_refusal),
+                            seeds.iter().any(|seed| seed.ordinary_route.is_none()),
+                        );
                     }
                     let mut capture = || {
                         let selection = |index| contexts[index];
@@ -1657,6 +1680,61 @@ mod tests {
         });
         assert!(Arc::ptr_eq(&first, &quiet));
 
+        // A first local refusal may allocate its reason before certification.
+        // Even with warm membership, keep that failure on the ordered path.
+        let mut serial_refusal = Store::default();
+        let mut staged_refusal = Store::default();
+        let mut serial_selected = Vec::new();
+        let mut staged_selected = Vec::new();
+        serial_refusal
+            .capture(&world, 0, STATE, &seeds[..1], &mut serial_selected)
+            .unwrap();
+        staged_refusal
+            .capture(&world, 0, STATE, &seeds[..1], &mut staged_selected)
+            .unwrap();
+        let mut changed = [seeds[0].clone()];
+        changed[0].roster_owner = None;
+        changed[0].ordinary_route = None;
+        staged_refusal.capture_boundary();
+        let countries = ccountry::Reader::new(&world, 0, STATE).unwrap();
+        let mut preparation = Preparation::default();
+        assert!(preparation.begin(1));
+        let selection = preparation.capture(
+            &world,
+            0,
+            STATE,
+            Some(&countries),
+            &staged_refusal,
+            &changed[0],
+        );
+        assert!(preparation.has_local_province_refusal());
+        assert!(!preparation.can_settle_owned());
+        let serial_result = collector_test_support::with_allocations_denied(|| {
+            serial_refusal.capture(&world, 0, STATE, &changed, &mut serial_selected)
+        });
+        let staged_result = collector_test_support::with_allocations_denied(|| {
+            staged_refusal.capture_staged(
+                &world,
+                0,
+                STATE,
+                &changed,
+                &mut staged_selected,
+                |_| Some(selection),
+                |_| Some(&preparation),
+                |_, _| None,
+            )
+        });
+        assert_eq!(
+            serial_result.err(),
+            Some("division operand refusal allocation failed")
+        );
+        assert_eq!(
+            staged_result.err(),
+            Some("division operand refusal allocation failed")
+        );
+        assert_eq!(staged_selected, serial_selected);
+        assert_eq!(staged_refusal.turn, serial_refusal.turn);
+
         // No country selection reaches the independent tree domain: these
         // 5,000 refused contexts still exercise owned membership settlement,
         // exact refusal publication and quiet persistent-root reuse.
@@ -1669,6 +1747,19 @@ mod tests {
             .capture(&world, 0, STATE, &ownerless, &mut selected)
             .unwrap();
         assert_eq!(selected, assert_fresh(&ownerless_rows, &ownerless));
+
+        // A local province refusal cannot make another division reach a new
+        // branch. With its effective refusal already retained, even across
+        // range boundaries it need not pull the warm source pass into the
+        // pause. Cold admission and denied quiet-hour allocations still
+        // follow the same differential above.
+        for index in [0, DIVISIONS / 2, DIVISIONS - 1] {
+            ownerless[index].ordinary_route = None;
+        }
+        let ownerless_refused = ownerless_store
+            .capture(&world, 0, STATE, &ownerless, &mut selected)
+            .unwrap();
+        assert_eq!(selected, assert_fresh(&ownerless_refused, &ownerless));
 
         // Context is still evaluated hourly: a new refusal changes exactly its
         // own row, repeated refusals carry, and recovery removes that row.

@@ -184,25 +184,17 @@ fn a_child_fronts_pass_without_group_demand_is_not_worker_only() {
 #[test]
 fn readiness_stitched_order_parking_preserves_naval_loans_on_success_panic_and_refusal() {
     for mode in 0..3 {
-        let executor =
-            crate::acquisition::Pool::start(1, MAX_JOBS, move |job: &mut Job| match job {
-                Job::OrdersStitch(_) => Report::OrdersStitch(StitchReport::default()),
-                Job::Fronts(_) => Report::Fronts(FrontsReport),
-                Job::ChildFronts(_) => {
-                    if mode == 1 {
-                        panic!("synthetic child-front panic after parked handoff");
-                    }
-                    Report::ChildFronts(OrdersReport)
+        let pool = Pool::with_test_runner(1, move |job: &mut Job| match job {
+            Job::OrdersStitch(_) => Report::OrdersStitch(StitchReport::default()),
+            Job::Fronts(_) => Report::Fronts(FrontsReport),
+            Job::ChildFronts(_) => {
+                if mode == 1 {
+                    panic!("synthetic child-front panic after parked handoff");
                 }
-                _ => unreachable!("readiness loan fixture job"),
-            })
-            .unwrap();
-        executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
-        let pool = Pool {
-            executor: Arc::new(executor),
-            calibration: Arc::new(SharedCalibration::default()),
-            worker_count: 1,
-        };
+                Report::ChildFronts(OrdersReport)
+            }
+            _ => unreachable!("readiness loan fixture job"),
+        });
         let mut batch = Batch::new(&pool);
         let orders = request(3);
         let payload = orders.group_source.as_ref().unwrap();

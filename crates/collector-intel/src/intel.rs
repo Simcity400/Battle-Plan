@@ -1947,15 +1947,7 @@ impl Captured {
             TableInput::SharedComplete,
             flags,
             country_intel,
-            |outcome| {
-                if let Some((token, previous)) = baseline
-                    && self.variables_equal(outcome, previous, scratch)
-                {
-                    TableInput::ComparedEqual(token)
-                } else {
-                    TableInput::Sampled(self.variables_table(outcome))
-                }
-            },
+            |outcome| self.variables_input(outcome, baseline, scratch),
         )
     }
 
@@ -2426,11 +2418,66 @@ impl Captured {
         })
     }
 
+    #[cfg(test)]
     fn variables_equal(
         &self,
         outcome: Outcome,
         previous: &[rows::ScriptVariablesRow],
         scratch: &mut ScriptVariableComparison,
+    ) -> bool {
+        self.compare_variables(outcome, previous, scratch, |_, _| false)
+    }
+
+    fn variables_input(
+        &self,
+        outcome: Outcome,
+        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        scratch: &mut ScriptVariableComparison,
+    ) -> TableInput {
+        if let Some((token, previous)) = baseline {
+            let mut changed = Vec::new();
+            let matches = self.compare_variables(outcome, previous, scratch, |index, ordinal| {
+                if !token.allows_row_updates() || reserve(&mut changed, 1).is_err() {
+                    return false;
+                }
+                changed.push((index, ordinal));
+                true
+            });
+            if matches {
+                if changed.is_empty() {
+                    return TableInput::ComparedEqual(token);
+                }
+                changed.sort_unstable_by_key(|&(index, _)| index);
+                let mut indices = Vec::new();
+                let mut rows = Vec::new();
+                if reserve_exact(&mut indices, changed.len()).is_err()
+                    || reserve_exact(&mut rows, changed.len()).is_err()
+                {
+                    return unavailable("collector allocation failed").into();
+                }
+                for (index, ordinal) in changed {
+                    indices.push(index);
+                    rows.push(self.variable_row(&self.variables.rows[ordinal]));
+                }
+                return TableInput::ComparedChanges {
+                    token,
+                    indices,
+                    rows: TableRows::ScriptVariables(rows),
+                };
+            }
+        }
+        TableInput::Sampled(self.variables_table(outcome))
+    }
+
+    /// Changed values may replace a scope only after all scope and literal-name
+    /// membership checks succeed; malformed or changed membership stays on the
+    /// complete conversion path with its original duplicate/refusal checks.
+    fn compare_variables(
+        &self,
+        outcome: Outcome,
+        previous: &[rows::ScriptVariablesRow],
+        scratch: &mut ScriptVariableComparison,
+        mut changed: impl FnMut(usize, usize) -> bool,
     ) -> bool {
         let Outcome::Rows { len } = outcome else {
             return false;
@@ -2476,9 +2523,7 @@ impl Captured {
             let Ok(seed) = previous[index].seed.require("ScriptVariables.seed") else {
                 return false;
             };
-            if *seed != scope.seed {
-                return false;
-            }
+            let mut equal = *seed == scope.seed;
             let old = &previous[index].entries;
             if scope.entries_len != old.len()
                 || old.windows(2).any(|pair| pair[0].name >= pair[1].name)
@@ -2496,11 +2541,13 @@ impl Captured {
                 let Ok(index) = old.binary_search_by(|row| row.name.as_slice().cmp(name)) else {
                     return false;
                 };
-                if !first_seen(&mut scratch.entries, index)
-                    || entry.value_raw != old[index].value_raw
-                {
+                if !first_seen(&mut scratch.entries, index) {
                     return false;
                 }
+                equal &= entry.value_raw == old[index].value_raw;
+            }
+            if !equal && !changed(index, ordinal) {
+                return false;
             }
         }
         true
@@ -2532,24 +2579,7 @@ impl Captured {
             return unavailable("script variable entry or name lies outside captured arena");
         }
         let view = table::<tables::ScriptVariables, _>(outcome, &self.variables.rows, |r| {
-            let (scope_kind, scope_id) = scope_identity(r.scope);
-            let mut entries = owned_vec(map_slice(
-                &self.variable_entries.first[r.entries_start..r.entries_start + r.entries_len],
-                |entry| rows::ScriptVariableEntry {
-                    name: owned_vec(copy_vec(
-                        &self.variable_names.first
-                            [entry.name_start..entry.name_start + entry.name_len],
-                    )),
-                    value_raw: entry.value_raw,
-                },
-            ));
-            entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
-            rows::ScriptVariablesRow {
-                scope_kind,
-                scope_id,
-                entries,
-                seed: rows::Recorded::Value(r.seed),
-            }
+            self.variable_row(r)
         });
         let values = match &view {
             TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
@@ -2568,6 +2598,26 @@ impl Captured {
             return unavailable("duplicate literal script variable key");
         }
         view
+    }
+
+    fn variable_row(&self, r: &cvariables::ScopeRow) -> rows::ScriptVariablesRow {
+        let (scope_kind, scope_id) = scope_identity(r.scope);
+        let mut entries = owned_vec(map_slice(
+            &self.variable_entries.first[r.entries_start..r.entries_start + r.entries_len],
+            |entry| rows::ScriptVariableEntry {
+                name: owned_vec(copy_vec(
+                    &self.variable_names.first[entry.name_start..entry.name_start + entry.name_len],
+                )),
+                value_raw: entry.value_raw,
+            },
+        ));
+        entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        rows::ScriptVariablesRow {
+            scope_kind,
+            scope_id,
+            entries,
+            seed: rows::Recorded::Value(r.seed),
+        }
     }
 
     fn operations_table(&self, outcome: Outcome) -> TableView {
@@ -5195,6 +5245,7 @@ mod tests {
     }
     use super::*;
     mod flag_store_tests;
+    mod variable_projection_tests;
     mod variable_store_tests;
 
     #[test]
@@ -6756,10 +6807,16 @@ mod tests {
                 &mut ScriptVariableComparison::default(),
                 None,
             );
-            assert!(
-                matches!(views[8], TableInput::Sampled(TableView::Complete(_))),
-                "change {change}"
-            );
+            // Value/seed-only edits now replace just their exactly matched
+            // scope; membership changes still require complete conversion.
+            if matches!(change, 0 | 4) {
+                assert!(matches!(views[8], TableInput::ComparedChanges { .. }));
+            } else {
+                assert!(
+                    matches!(views[8], TableInput::Sampled(TableView::Complete(_))),
+                    "change {change}"
+                );
+            }
         }
     }
 

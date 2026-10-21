@@ -2697,6 +2697,10 @@ impl Captured {
             finished: [false; 14],
         }
     }
+    pub(crate) fn return_final_inputs_request(&mut self, request: FinalInputsRequest) {
+        self.restore_final_inputs_request(request, FinalInputsReport::default(), None);
+        self.final_inputs_ticks = None;
+    }
     pub(crate) fn restore_final_inputs_request(
         &mut self,
         mut request: FinalInputsRequest,

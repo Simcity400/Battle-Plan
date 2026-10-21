@@ -2,6 +2,7 @@
 use super::*;
 use replay_data::event_feed_rows::decisions::{DecisionChange, Operation};
 fn access(
+    candidate: bool,
     observe: impl FnOnce(
         &mut Store,
         &native::provenance::World<'_, engine_native::memory::LiveMemory>,
@@ -13,7 +14,7 @@ fn access(
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
         return;
     };
-    let _ = owner.observe(Role::DecisionWriter, |store| {
+    let publish = |store: &mut Store| {
         let Some(generation) = observed(owner, store) else {
             return;
         };
@@ -28,7 +29,12 @@ fn access(
             store.reject(reason);
         }
         script_demands(store);
-    });
+    };
+    let _ = if candidate {
+        owner.observe_candidate(publish)
+    } else {
+        owner.observe(Role::DecisionWriter, publish)
+    };
 }
 fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'static str> {
     if engine_native::read::<u64>(memory, status)
@@ -45,7 +51,7 @@ fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'
         .ok_or("decision writer owner unreadable")
 }
 pub fn instance(status: usize, pointer: usize, container: u8, operation: Operation, flags: u8) {
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         store.decision_selected(
             world,
             memory,
@@ -66,7 +72,7 @@ pub fn instance(status: usize, pointer: usize, container: u8, operation: Operati
     });
 }
 pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
@@ -84,7 +90,7 @@ pub fn write(pointer: usize, state: Option<i32>, days: Option<i32>) {
     });
 }
 pub fn cut(pointer: usize) {
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
@@ -102,7 +108,7 @@ pub fn cut(pointer: usize) {
     });
 }
 pub fn retire(pointer: usize, swap: bool, visited: bool) {
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         store.decision_retire(world, memory, base, generation, pointer, swap, visited)
     });
 }
@@ -110,7 +116,7 @@ pub fn marker(status: usize, operation: Operation, container: u8, ordinal: u32, 
     if operation == Operation::Rebuild && container != 3 {
         return;
     }
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         store.decision_marker(
             world,
             memory,
@@ -128,7 +134,7 @@ pub fn marker(status: usize, operation: Operation, container: u8, ordinal: u32, 
     });
 }
 pub fn random(status: usize, definition: usize, target: u32) {
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         store.decision_random(
             world,
             memory,
@@ -144,7 +150,7 @@ pub fn random(status: usize, definition: usize, target: u32) {
 }
 
 pub fn taken_erase(status: usize, definition: usize, ordinal: Option<u32>, swap: bool) {
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         let mut flags = if swap {
             replay_data::event_feed_rows::decisions::SWAP
         } else {
@@ -176,7 +182,7 @@ pub fn taken_erase(status: usize, definition: usize, ordinal: Option<u32>, swap:
     });
 }
 pub fn candidate(status: usize, kind: u8, definition: usize, target: u32, root: u32) {
-    access(|store, world, memory, base, generation| {
+    access(true, |store, world, memory, base, generation| {
         store.decision_key(
             world,
             memory,
@@ -200,7 +206,7 @@ pub fn candidate(status: usize, kind: u8, definition: usize, target: u32, root: 
     });
 }
 pub fn ignored(country: usize, token: usize, ignored: bool) {
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         store.decision_key(
             world,
             memory,
@@ -245,7 +251,7 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
     let Some((ignored, removed)) = committed_flags(ignored, removed) else {
         return;
     };
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         let Some(slot) = store.decisions.find(pointer) else {
             return Ok(());
         };
@@ -284,7 +290,7 @@ pub fn flags_committed(pointer: usize, ignored: Option<(bool, bool)>, removed: O
 
 pub fn activated(status: usize, pointer: usize, container: u8, state: i32, days: i32) -> bool {
     let mut recorded = false;
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         store.decision_selected_source(
             world,
             memory,
@@ -313,7 +319,7 @@ pub fn write_result(
     source: replay_data::event_feed_rows::EventFeedSource,
 ) -> bool {
     let mut recorded = false;
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         recorded = store.decision_result(
             world,
             memory,
@@ -372,7 +378,7 @@ fn reactivation_days(
     }
 }
 pub fn reactivated(pointer: usize, state: i32, paired: (usize, i32)) {
-    access(|store, world, memory, base, generation| {
+    access(false, |store, world, memory, base, generation| {
         const UNATTRIBUTED: &str =
             "targeted reactivation has no owner baseline/pointer certificate";
         let slot = store

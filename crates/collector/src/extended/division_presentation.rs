@@ -24,7 +24,10 @@ use replay_data::rows::{
     DivisionStatusRow, NameOperands, Recorded, Retired, TableId, Witnessed, tables,
 };
 use replay_frame::frame::TableInput;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 mod daily_status;
 pub(crate) mod held_store;
@@ -44,7 +47,7 @@ pub(crate) fn status_parts_for(divisions: usize, workers: usize) -> usize {
 
 pub const N: usize = 7 + speed_terms::N;
 /// The passes inside the DivisionStatus acquisition span.
-pub(crate) const PHASES: usize = 20;
+pub(crate) const PHASES: usize = 23;
 pub(crate) const PHASE_NAMES: [&str; PHASES] = [
     "status",
     "dig_in",
@@ -66,7 +69,24 @@ pub(crate) const PHASE_NAMES: [&str; PHASES] = [
     "decode_scalars",
     "decode_speed_terms",
     "decode_movement",
+    "sources_owned_gate",
+    "sources_fallback",
+    "certification_native_fallback",
 ];
+// The local-refusal count is a subset of owned admission, not another pass.
+static SOURCE_ADMISSIONS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+pub(crate) fn source_admission_data() -> impl serde::Serialize {
+    let [owned, local_refusal, ordered, unavailable] =
+        SOURCE_ADMISSIONS
+            .each_ref()
+            .map(|count| count.load(Ordering::Relaxed));
+    crate::status::status!({
+        "owned": owned,
+        "owned_local_province_refusal": local_refusal,
+        "ordered": ordered,
+        "unavailable": unavailable,
+    })
+}
 pub const TABLES: [TableId; N] = [
     TableId::DivisionMovement,
     TableId::DivisionStatus,
@@ -2054,6 +2074,21 @@ impl Captured {
             && probes[..preparation_count]
                 .iter()
                 .all(|part| part.can_settle_sources());
+        let sources_ready = qpc();
+        self.phase_ticks[20] = sources_ready.saturating_sub(start).max(0) as u64;
+        let ordered_sources = !self.sources_deferred && army_stats.is_some();
+        if self.sources_deferred {
+            SOURCE_ADMISSIONS[0].fetch_add(1, Ordering::Relaxed);
+            if probes[..preparation_count]
+                .iter()
+                .any(|part| part.has_local_source_refusal())
+            {
+                SOURCE_ADMISSIONS[1].fetch_add(1, Ordering::Relaxed);
+            }
+        } else {
+            SOURCE_ADMISSIONS[if army_stats.is_some() { 2 } else { 3 }]
+                .fetch_add(1, Ordering::Relaxed);
+        }
         self.attack.sources = if self.sources_deferred {
             None
         } else {
@@ -2099,6 +2134,9 @@ impl Captured {
             .sort_unstable_by_key(|row| row.0);
         let sources_finished = qpc();
         self.phase_ticks[3] = sources_finished.saturating_sub(start).max(0) as u64;
+        if ordered_sources {
+            self.phase_ticks[21] = sources_finished.saturating_sub(sources_ready).max(0) as u64;
+        }
         self.attack.certify_staged(
             memory,
             base,
@@ -2140,6 +2178,9 @@ impl Captured {
             );
             let native_finished = qpc();
             self.phase_ticks[5] = native_finished.saturating_sub(certified).max(0) as u64;
+            if ordered_sources {
+                self.phase_ticks[22] = native_finished.saturating_sub(sources_finished).max(0) as u64;
+            }
             let count = status_parts_for(rows.len(), self.status_workers);
             let additional = count.saturating_sub(self.status_parts.len());
             if engine_allocation::reserve(&mut self.status_parts, additional).is_err() {
@@ -2197,6 +2238,9 @@ impl Captured {
             &self.attack.exercise_experience,
         );
         self.phase_ticks[5] = qpc().saturating_sub(certified).max(0) as u64;
+        if ordered_sources {
+            self.phase_ticks[22] = self.phase_ticks[4] + self.phase_ticks[5];
+        }
         let refused = self
             .status_packet
             .capture_movement_organisation(memory, base, state, rows);
@@ -2538,6 +2582,7 @@ impl Captured {
             });
         }
         let [movement, mut status, bans, ..] = self.outcomes();
+        let land = self.land.table_input(projection.as_deref_mut());
         let terms = self.speed_terms.table_inputs(projection.as_deref_mut());
         let [states, access, entries, rivers, transport] = terms;
         let bans = scalar_table::<tables::DivisionRetreatBans, _>(
@@ -2732,7 +2777,7 @@ impl Captured {
                 unavailable("movement arena invalid").into(),
                 status,
                 bans,
-                self.land.table().into(),
+                land,
                 history,
                 sources,
                 panel,
@@ -2755,7 +2800,7 @@ impl Captured {
                 unavailable("movement path spans invalid").into(),
                 status,
                 bans,
-                self.land.table().into(),
+                land,
                 history,
                 sources,
                 panel,
@@ -2852,7 +2897,7 @@ impl Captured {
             ),
             status,
             bans,
-            self.land.table().into(),
+            land,
             history,
             sources,
             panel,

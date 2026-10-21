@@ -3,6 +3,132 @@ use super::*;
 use std::sync::mpsc;
 
 #[test]
+fn publication_notification_keeps_no_cell_borrow_and_settle_waits_for_it() {
+    crate::allocation::set_context(crate::allocation::Context {
+        branch: Some(17),
+        ..Default::default()
+    });
+    struct Work(Option<Arc<Notification>>);
+    struct Notification {
+        pool: std::sync::Weak<Pool<Work, u8>>,
+        ticket: Mutex<Option<Ticket>>,
+        registered: Condvar,
+        entered: mpsc::Sender<()>,
+        released: Mutex<mpsc::Receiver<()>>,
+    }
+    impl Publication for Notification {
+        fn published(&self, at: i64) {
+            assert!(at > 0);
+            let pool = self.pool.upgrade().unwrap();
+            let (ticket, timeout) = self
+                .registered
+                .wait_timeout_while(
+                    self.ticket.lock().unwrap(),
+                    crate::TEST_HANG_GUARD,
+                    |ticket| ticket.is_none(),
+                )
+                .unwrap();
+            assert!(!timeout.timed_out());
+            assert_eq!(pool.completed_report(ticket.unwrap()), Some(Ok(7)));
+            self.entered.send(()).unwrap();
+            self.released
+                .lock()
+                .unwrap()
+                .recv_timeout(crate::TEST_HANG_GUARD)
+                .unwrap();
+        }
+    }
+    let pool = Arc::new(Pool::start(1, 1, |_: &mut Work| 7).unwrap());
+    pool.set_on_completed(|work, _| {
+        work.0
+            .as_ref()
+            .map(|notification| Arc::clone(notification) as Arc<dyn Publication>)
+    });
+    let (entered, ready) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let notification = Arc::new(Notification {
+        pool: Arc::downgrade(&pool),
+        ticket: Mutex::new(None),
+        entered,
+        registered: Condvar::new(),
+        released: Mutex::new(released),
+    });
+    // Install the ticket before the worker is released.
+    let ticket = unsafe {
+        pool.submit_with_priority(
+            &mut Some(Work(Some(Arc::clone(&notification)))),
+            0,
+            false,
+            false,
+        )
+        .unwrap()
+    };
+    *notification.ticket.lock().unwrap() = Some(ticket);
+    notification.registered.notify_all();
+    pool.wake_workers(1);
+    ready.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
+    // The publisher is still in its detached notification. Reusing its cell
+    // must neither alias its old request nor end its active/context lease.
+    crate::allocation::set_context(crate::allocation::Context {
+        branch: Some(23),
+        ..Default::default()
+    });
+    let next = unsafe { pool.submit(&mut Some(Work(None))).unwrap() };
+    // SAFETY: admission must preserve this immutable context while active.
+    assert_eq!(unsafe { (*pool.shared.context.0.get()).branch }, Some(17));
+    assert_eq!(pool.calibration().active, 1);
+    let settling = Arc::clone(&pool);
+    let settled = std::thread::spawn(move || settling.settle());
+    let until = std::time::Instant::now() + crate::TEST_HANG_GUARD;
+    while pool.shared.settling.load(Ordering::SeqCst) == 0 {
+        assert!(std::time::Instant::now() < until, "settle did not register");
+        std::thread::yield_now();
+    }
+    assert!(!settled.is_finished());
+    release.send(()).unwrap();
+    settled.join().unwrap();
+    assert_eq!(pool.finish(next).unwrap().report, Err(Failure::Stopped));
+    let last = unsafe { pool.submit(&mut Some(Work(None))).unwrap() };
+    assert_eq!(pool.finish(last).unwrap().report, Ok(7));
+    // SAFETY: the last publication ended its context borrow; no admission races.
+    assert_eq!(unsafe { (*pool.shared.context.0.get()).branch }, Some(23));
+    pool.settle();
+    assert_eq!(pool.calibration().active, 0);
+    assert_eq!(pool.calibration().uncollected, 0);
+}
+
+#[test]
+fn publication_transfer_panic_still_publishes_and_drains_the_failed_job() {
+    let pool = Pool::start(1, 1, |_: &mut u8| 7).unwrap();
+    pool.set_on_completed(|_, _| panic!("synthetic publication transfer failure"));
+    let ticket = unsafe { pool.submit(&mut Some(1)).unwrap() };
+    assert_eq!(pool.finish(ticket).unwrap().report, Err(Failure::Panicked));
+    pool.settle();
+    assert!(pool.stopped());
+    assert_eq!(pool.calibration().uncollected, 0);
+}
+
+#[test]
+fn publication_notification_panic_still_retires_its_active_lease() {
+    struct Notify;
+    impl Publication for Notify {
+        fn published(&self, _: i64) {
+            panic!("synthetic continuation failure")
+        }
+    }
+    let pool = Pool::start(1, 1, |_: &mut u8| 7).unwrap();
+    pool.set_on_completed(|_, _| Some(Arc::new(Notify)));
+    let ticket = unsafe { pool.submit(&mut Some(1)).unwrap() };
+    assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
+    pool.settle();
+    assert!(pool.stopped());
+    assert_eq!(pool.calibration().active, 0);
+    assert_eq!(pool.calibration().uncollected, 0);
+    assert_eq!(pool.calibration().panicked, 1);
+}
+
+#[test]
 fn readiness_dispatches_dependents_before_an_unrelated_fixed_join() {
     struct Job {
         stage: usize,
@@ -157,16 +283,23 @@ fn readiness_report_inspection_does_not_collect_or_accept_stale_foreign_or_parke
     let other = Pool::start(1, 1, |job: &mut u8| *job).unwrap();
     let ticket = unsafe { pool.submit(&mut Some(7)).unwrap() };
     pool.wait_ready(|| pool.is_complete(ticket).then_some(()));
+    let (_, published) = pool.completed_state(ticket).unwrap();
     crate::test_support::with_allocations_denied(|| {
         assert_eq!(pool.completed_report(ticket), Some(Ok(7)));
         assert_eq!(pool.completed_report(ticket), Some(Ok(7)));
+        assert_eq!(pool.completed_state(ticket), Some((Ok(7), published)));
         assert_eq!(other.completed_report(ticket), None);
+        assert_eq!(other.completed_state(ticket), None);
     });
     assert_eq!(pool.calibration().uncollected, 1);
-    assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
+    let completion = pool.finish(ticket).unwrap();
+    assert_eq!(completion.report, Ok(7));
+    assert_eq!(completion.timeline.published_qpc, published);
     assert_eq!(pool.completed_report(ticket), None);
+    assert_eq!(pool.completed_state(ticket), None);
     let parked = pool.park(&mut Some(8), false).unwrap();
     assert_eq!(pool.completed_report(parked), None);
+    assert_eq!(pool.completed_state(parked), None);
     assert_eq!(pool.completed_report(ticket), None);
     assert_eq!(pool.unpark(parked), Some(8));
 }

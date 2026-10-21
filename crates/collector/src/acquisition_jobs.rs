@@ -1,6 +1,7 @@
 //! Owned acquisition requests executed within the hour's live-read lease.
-//! Job dependencies and the shared-country lease belong to the
-//! callback, which dispatches jobs and joins their results. A join can execute
+//! The callback owns the shared-country lease and ordered result settlement;
+//! retained publication continuations may release complete dependency fan-ins.
+//! A join can execute
 //! its own queued job when caller execution is allowed; optional executor join
 //! help can run other eligible queued jobs within learned body-time bounds.
 //! No family owns a dedicated thread.
@@ -19,8 +20,10 @@ use crate::{
 };
 pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
 mod presentation;
-pub(crate) use presentation::PresentationDispatch;
 use engine_native::{memory::CountedMemory, memory::LiveMemory};
+pub(crate) use presentation::{
+    FinalInputsDispatch, PresentationDispatch, PresentationFanIn, PresentationInputs,
+};
 use serde::Serialize;
 use std::sync::Arc;
 use std::{
@@ -675,7 +678,9 @@ pub(crate) struct PresentationStatusRequest {
     pub countries: Arc<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
-    pub part: division_presentation::StatusWork,
+    pub part: Option<division_presentation::StatusWork>,
+    pub preparation: bool,
+    pub stitch: Option<(Arc<PresentationFanIn>, usize)>,
 }
 
 /// The unchanged whole-census speed pass beside status and movement.
@@ -711,6 +716,7 @@ pub(crate) struct IntelRequest {
     pub input_failure: Option<&'static str>,
 }
 pub(crate) struct CharactersRequest {
+    pub final_inputs: Option<Arc<FinalInputsDispatch>>,
     pub context: characters::CharactersCopyContext,
     pub payload: characters::CharactersJob,
     /// A role job's census loan returns with the request at its join.
@@ -745,6 +751,7 @@ pub(crate) struct DivisionPartRequest {
     pub game_state: usize,
     pub slots: (u32, u32),
     pub census: Box<crate::division_census::Census>,
+    pub presentation: Option<(Arc<PresentationInputs>, usize)>,
 }
 
 // Jobs move preallocated payloads into fixed executor slots. Boxing here would
@@ -1153,6 +1160,8 @@ impl Role {
             | Self::Economy
             | Self::PresentationSpeedTerms
             | Self::FinalInputs
+            // The hourly template census is a long independent join tail.
+            | Self::Templates
             // The longest first-burst job, 2.55 ms at 1943 with the war
             // overview: at priority 1 it started behind the dependency chains
             // about 2.8 ms into the hour and waited 0.47 ms at its join
@@ -1180,8 +1189,7 @@ impl Role {
             | Self::OrdinaryNaval
             | Self::Provinces
             | Self::Research
-            | Self::ShipModelDetails
-            | Self::Templates => 2,
+            | Self::ShipModelDetails => 2,
             Self::States
             | Self::Capitulation
             | Self::Wars
@@ -1338,12 +1346,10 @@ impl Job {
             Self::FinalInputs(..) => Role::FinalInputs,
             Self::PresentationPrepare(..) => Role::PresentationPrepare,
             Self::PresentationSettle(..) => Role::PresentationSettle,
-            Self::PresentationStatus(request) => match &request.part {
-                division_presentation::StatusWork::Preparation { .. } => {
-                    Role::PresentationPreparation
-                }
-                division_presentation::StatusWork::Status { .. } => Role::PresentationStatus,
-            },
+            Self::PresentationStatus(request) if request.preparation => {
+                Role::PresentationPreparation
+            }
+            Self::PresentationStatus(..) => Role::PresentationStatus,
             Self::Presentation(..) => Role::Presentation,
             Self::PresentationMovement(..) => Role::PresentationMovement,
             Self::PresentationSpeedTerms(..) => Role::PresentationSpeedTerms,
@@ -1416,6 +1422,7 @@ pub(crate) struct Calibration {
     pub executor: acquisition::Calibration,
     #[serde(serialize_with = "serialize_roles")]
     pub roles: [RoleCalibration; ROLE_COUNT],
+    pub presentation_continuations: [presentation::ContinuationCalibration; 4],
 }
 fn serialize_roles<S: serde::Serializer>(
     roles: &[RoleCalibration; ROLE_COUNT],
@@ -1514,6 +1521,26 @@ fn note_completion<R>(counters: &Counters, report: &Result<R, Failure>) {
     }
 }
 
+fn account_completion(calibration: &SharedCalibration, completed: &Completion<Job, Report>) {
+    crate::read_accounting::merge(&completed.table_reads);
+    let role = completed.request.role();
+    note_completion(&calibration.roles[role as usize], &completed.report);
+    if matches!(role, Role::World | Role::Economy)
+        && let Err(failure) = completed.report
+    {
+        calibration
+            .world
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .last_error = Some(match (role, failure) {
+            (Role::Economy, Failure::Panicked) => "Economy acquisition job panicked",
+            (Role::Economy, Failure::Stopped) => "Economy acquisition job stopped before reading",
+            (_, Failure::Panicked) => "World acquisition job panicked",
+            (_, Failure::Stopped) => "World acquisition job stopped before reading",
+        });
+    }
+}
+
 /// Contain a teardown step's panic without consulting the terminal
 /// allocation state: draining a ticket must run even after a terminal
 /// failure, which only stops new work ([`Batch`]'s drop).
@@ -1546,12 +1573,14 @@ fn catch_failure<R>(work: impl FnOnce() -> R) -> Result<R, Failure> {
 struct SharedCalibration {
     roles: [Counters; ROLE_COUNT],
     world: Mutex<WorldCalibration>,
+    presentation_continuations: [presentation::ContinuationCounters; 4],
 }
 impl Default for SharedCalibration {
     fn default() -> Self {
         Self {
             roles: std::array::from_fn(|_| Counters::default()),
             world: Mutex::new(WorldCalibration::default()),
+            presentation_continuations: Default::default(),
         }
     }
 }
@@ -2273,15 +2302,19 @@ fn run_with_memory(
             let _reads = crate::read_accounting::table(replay_data::rows::TableId::DivisionStatus);
             let begin = sampling::qpc();
             let cached = request.countries.roster_view(memory);
-            request.part.capture(
-                &cached,
-                request.context,
-                request
-                    .inputs
-                    .as_deref()
-                    .map_or(&[], |inputs| inputs.seeds()),
-                &crate::army_stat_changes::Observer,
-            );
+            request
+                .part
+                .as_mut()
+                .expect("presentation range retained")
+                .capture(
+                    &cached,
+                    request.context,
+                    request
+                        .inputs
+                        .as_deref()
+                        .map_or(&[], |inputs| inputs.seeds()),
+                    &crate::army_stat_changes::Observer,
+                );
             Report::PresentationStatus(sampling::qpc().saturating_sub(begin).max(0) as u64)
         }
         Job::Presentation(request) => {
@@ -2392,10 +2425,12 @@ impl Role {
             Self::CharacterPortraits => character_portraits::PARTS,
             Self::SupplyTrains => supply_trains::PARTS,
             Self::DivisionInputParts => crate::division_census::MAX_PARTS - 1,
-            Self::PresentationStatus => division_presentation::MAX_STATUS_PARTS,
-            // Preparation uses the Presentation slot, then stays parked there.
-            // Its ranges reuse the final-status range slots, never concurrently.
-            Self::PresentationPrepare | Self::PresentationPreparation | Self::PresentationSettle => 0,
+            Self::PresentationStatus | Self::PresentationPreparation => {
+                division_presentation::MAX_STATUS_PARTS
+            }
+            // Worker continuations can publish the next phase before the
+            // callback collects any ticket from the preceding one.
+            Self::PresentationPrepare | Self::PresentationSettle => 1,
             Self::ProductionModifierParts => crate::extended::production_modifiers::MAX_PARTS - 1,
             Self::OrdersPart => crate::orders_parts::MAX_PARTS - 1,
             // Roles whose jobs follow one another (the observer boundary
@@ -2426,6 +2461,10 @@ pub(crate) struct Pool {
     executor: Arc<acquisition::Pool<Job, Report>>,
     calibration: Arc<SharedCalibration>,
     worker_count: usize,
+    presentation_inputs: Arc<PresentationInputs>,
+    presentation_preparation: Arc<PresentationFanIn>,
+    presentation_stitch: Arc<PresentationFanIn>,
+    final_inputs: Arc<FinalInputsDispatch>,
 }
 impl Pool {
     #[cfg(test)]
@@ -2434,10 +2473,17 @@ impl Pool {
         run: impl Fn(&mut Job) -> Report + Send + Sync + 'static,
     ) -> Self {
         let executor = acquisition::Pool::start(workers, MAX_JOBS, run).unwrap();
+        executor.set_on_completed(presentation::completed);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
+        let executor = Arc::new(executor);
+        let calibration = Arc::new(SharedCalibration::default());
         Self {
-            executor: Arc::new(executor),
-            calibration: Arc::new(SharedCalibration::default()),
+            presentation_inputs: Arc::new(PresentationInputs::new(&executor, &calibration)),
+            final_inputs: Arc::new(FinalInputsDispatch::new(&executor, &calibration)),
+            presentation_preparation: Arc::new(PresentationFanIn::new(&executor, &calibration)),
+            presentation_stitch: Arc::new(PresentationFanIn::new(&executor, &calibration)),
+            executor,
+            calibration,
             worker_count: workers,
         }
     }
@@ -2458,9 +2504,15 @@ impl Pool {
                 run_with_memory(job, &memory, &runner_calibration)
             },
         )?;
+        executor.set_on_completed(presentation::completed);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
+        let executor = Arc::new(executor);
         Ok(Self {
-            executor: Arc::new(executor),
+            presentation_inputs: Arc::new(PresentationInputs::new(&executor, &calibration)),
+            final_inputs: Arc::new(FinalInputsDispatch::new(&executor, &calibration)),
+            presentation_preparation: Arc::new(PresentationFanIn::new(&executor, &calibration)),
+            presentation_stitch: Arc::new(PresentationFanIn::new(&executor, &calibration)),
+            executor,
             calibration,
             worker_count: worker_count.max(1),
         })
@@ -2498,26 +2550,10 @@ impl Pool {
         if !self.executor.finish_into(ticket, out) {
             return false;
         }
-        let completed = out.as_ref().expect("collected completion");
-        crate::read_accounting::merge(&completed.table_reads);
-        let role = completed.request.role();
-        note_completion(&self.calibration.roles[role as usize], &completed.report);
-        if matches!(role, Role::World | Role::Economy)
-            && let Err(failure) = completed.report
-        {
-            self.calibration
-                .world
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .last_error = Some(match (role, failure) {
-                (Role::Economy, Failure::Panicked) => "Economy acquisition job panicked",
-                (Role::Economy, Failure::Stopped) => {
-                    "Economy acquisition job stopped before reading"
-                }
-                (_, Failure::Panicked) => "World acquisition job panicked",
-                (_, Failure::Stopped) => "World acquisition job stopped before reading",
-            });
-        }
+        account_completion(
+            &self.calibration,
+            out.as_ref().expect("collected completion"),
+        );
         true
     }
     /// Retain a rejected request in a free executor slot until `unpark`.
@@ -2574,6 +2610,10 @@ impl Pool {
             .saturating_add(2 * std::mem::size_of::<usize>())
             .saturating_add(std::mem::size_of::<SharedCalibration>())
             .saturating_add(2 * std::mem::size_of::<usize>())
+            .saturating_add(std::mem::size_of::<PresentationInputs>())
+            .saturating_add(std::mem::size_of::<FinalInputsDispatch>())
+            .saturating_add(2 * std::mem::size_of::<PresentationFanIn>())
+            .saturating_add(8 * std::mem::size_of::<usize>())
     }
     pub(crate) fn world_calibration(&self) -> WorldCalibration {
         *self
@@ -2582,12 +2622,31 @@ impl Pool {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
     }
+    pub(crate) fn presentation_input_hold_ticks(&self) -> u64 {
+        self.presentation_inputs.hold_ticks()
+    }
     pub(crate) fn calibration(&self) -> Calibration {
+        let mut frequency = 0;
+        // SAFETY: valid local output; diagnostics convert retained QPC totals.
+        unsafe {
+            windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+        };
         Calibration {
             executor: self.executor.calibration(),
             roles: std::array::from_fn(|index| RoleCalibration {
                 role: ROLES[index],
                 counters: self.calibration.roles[index].snapshot(),
+            }),
+            presentation_continuations: std::array::from_fn(|index| {
+                self.calibration.presentation_continuations[index].snapshot(
+                    [
+                        "inputs_to_prepare",
+                        "preparation_to_settle",
+                        "status_to_stitch",
+                        "final_inputs",
+                    ][index],
+                    frequency.max(1) as u64,
+                )
             }),
         }
     }
@@ -2627,15 +2686,22 @@ pub(crate) struct Batch<'a> {
     held: bool,
     /// Jobs queued since the hold began.
     held_jobs: usize,
+    presentation_inputs: Option<Arc<PresentationInputs>>,
+    presentation_stitch: Arc<PresentationFanIn>,
 }
 impl<'a> Batch<'a> {
     pub(crate) fn new(pool: &'a Pool) -> Self {
+        pool.presentation_preparation.open();
+        pool.presentation_stitch.open();
+        pool.final_inputs.open();
         Self {
             pool,
             tickets: [None; MAX_JOBS],
             parked: [false; MAX_JOBS],
             held: false,
             held_jobs: 0,
+            presentation_inputs: None,
+            presentation_stitch: Arc::clone(&pool.presentation_stitch),
         }
     }
     /// Queue the following submissions without waking workers: a burst of
@@ -2653,8 +2719,24 @@ impl<'a> Batch<'a> {
         }
         jobs
     }
-    pub(crate) fn arm_presentation(&self, request: &mut PresentationRequest) {
-        request.dispatch.arm(self.pool);
+    pub(crate) fn arm_presentation(&mut self, request: &mut PresentationRequest) {
+        request
+            .dispatch
+            .arm(self.pool, Arc::clone(&self.presentation_stitch));
+    }
+    pub(crate) fn final_inputs(&self) -> Arc<FinalInputsDispatch> {
+        Arc::clone(&self.pool.final_inputs)
+    }
+    pub(crate) fn arm_presentation_inputs(
+        &mut self,
+        request: PresentationRequest,
+        parts: usize,
+        store: Option<Arc<division_presentation::held_store::Slot>>,
+    ) -> Arc<PresentationInputs> {
+        let dispatch = Arc::clone(&self.pool.presentation_inputs);
+        dispatch.arm(request, parts, store);
+        self.presentation_inputs = Some(Arc::clone(&dispatch));
+        dispatch
     }
     pub(crate) fn adopt_presentation(
         &mut self,
@@ -2662,6 +2744,12 @@ impl<'a> Batch<'a> {
         index: usize,
     ) -> Option<(Ticket, bool)> {
         let pending = request.dispatch.take(index)?;
+        Some(self.adopt_presentation_ticket(pending))
+    }
+    pub(crate) fn adopt_presentation_ticket(
+        &mut self,
+        pending: presentation::RangeTicket,
+    ) -> (Ticket, bool) {
         // Executor worker-slot admission already bounded parent and children
         // together; adoption cannot need a new native or Batch slot.
         let slot = self.tickets[..WORKER_ONLY_JOBS]
@@ -2670,7 +2758,7 @@ impl<'a> Batch<'a> {
             .expect("admitted presentation child slot");
         self.tickets[slot] = Some(pending.ticket);
         self.parked[slot] = pending.parked;
-        Some((pending.ticket, pending.parked))
+        (pending.ticket, pending.parked)
     }
     /// Whether a submission now would be refused ([`Pool::stopped`]).
     pub(crate) fn stopped(&self) -> bool {
@@ -2686,6 +2774,9 @@ impl<'a> Batch<'a> {
     /// existing dispatch barrier. Only the callback collects these tickets.
     pub(crate) fn completed_report(&self, ticket: Ticket) -> Option<Result<Report, Failure>> {
         self.pool.executor.completed_report(ticket)
+    }
+    pub(crate) fn completed_state(&self, ticket: Ticket) -> Option<(Result<Report, Failure>, i64)> {
+        self.pool.executor.completed_state(ticket)
     }
     /// Advance whichever dependency barrier is ready, without joining a
     /// different producer first. Rejected requests are ready at their normal
@@ -2807,6 +2898,12 @@ impl<'a> Batch<'a> {
 /// contained so the remaining tickets still drain.
 impl Drop for Batch<'_> {
     fn drop(&mut self) {
+        if let Some(dispatch) = &self.presentation_inputs {
+            dispatch.close();
+        }
+        self.pool.presentation_preparation.close();
+        self.presentation_stitch.close();
+        self.pool.final_inputs.close();
         // A held burst must reach the workers before its tickets drain.
         self.release();
         let pool = self.pool;
@@ -2822,9 +2919,15 @@ impl Drop for Batch<'_> {
                 contain(|| drop_collected(pool, ticket));
             }
         }
-        // Whatever a contained panic left uncollected is cancelled or waited
-        // for here: no job of this callback outlives it.
+        // Settle publishers before draining their unadopted successors. The
+        // closed ledgers admit nothing further; both drains retain the lease.
         pool.executor.settle();
+        if let Some(dispatch) = &self.presentation_inputs {
+            dispatch.drain();
+        }
+        pool.presentation_preparation.drain();
+        self.presentation_stitch.drain();
+        self.pool.final_inputs.drain();
     }
 }
 
@@ -2980,13 +3083,7 @@ mod tests {
     }
 
     fn synthetic_pool(run: impl Fn(&mut Job) -> Report + Send + Sync + 'static) -> Pool {
-        let executor = acquisition::Pool::start(1, MAX_JOBS, run).unwrap();
-        executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
-        Pool {
-            executor: Arc::new(executor),
-            calibration: Arc::new(SharedCalibration::default()),
-            worker_count: 1,
-        }
+        Pool::with_test_runner(1, run)
     }
 
     #[test]
@@ -3011,15 +3108,17 @@ mod tests {
         // The final borrowers are queued before the Presentation join.
         assert_eq!(
             Role::PresentationPrepare.jobs_per_hour()
+                + Role::PresentationPreparation.jobs_per_hour()
+                + Role::PresentationSettle.jobs_per_hour()
                 + Role::PresentationStatus.jobs_per_hour()
                 + Role::Presentation.jobs_per_hour()
                 + Role::FinalInputs.jobs_per_hour(),
-            division_presentation::MAX_STATUS_PARTS + 2
+            2 * division_presentation::MAX_STATUS_PARTS + 4
         );
     }
 
     #[test]
-    fn presentation_stages_have_distinct_roles_without_extra_slots() {
+    fn presentation_stages_have_distinct_roles_and_complete_chain_slots() {
         let countries =
             Arc::new(engine_native::country_memory::Cache::try_with_capacity(0).unwrap());
         let context = division_presentation::CaptureContext {
@@ -3048,22 +3147,30 @@ mod tests {
             countries: Arc::clone(&countries),
             context,
             inputs: None,
-            part: division_presentation::StatusWork::Status {
+            preparation: false,
+            stitch: None,
+            part: Some(division_presentation::StatusWork::Status {
                 prepared: Arc::new(engine_native::carmy::StatusPacket::vacant()),
                 part: engine_native::carmy::StatusPart::vacant(),
                 attack: Default::default(),
-            },
+            }),
         });
         assert_eq!(status.role(), Role::PresentationStatus);
-        let preparation = Job::PresentationStatus(PresentationStatusRequest {
+        let mut preparation = Job::PresentationStatus(PresentationStatusRequest {
             countries: Arc::clone(&countries),
             context,
             inputs: None,
-            part: division_presentation::StatusWork::Preparation {
+            preparation: true,
+            stitch: None,
+            part: Some(division_presentation::StatusWork::Preparation {
                 store: None,
                 part: Default::default(),
-            },
+            }),
         });
+        assert_eq!(preparation.role(), Role::PresentationPreparation);
+        if let Job::PresentationStatus(request) = &mut preparation {
+            request.part = None;
+        }
         assert_eq!(preparation.role(), Role::PresentationPreparation);
         for role in [
             Role::PresentationPrepare,
@@ -3077,9 +3184,12 @@ mod tests {
             assert!(role.priority() < Role::Countries.priority());
             assert_eq!(role.read_anchor(), Role::Presentation.read_anchor());
         }
-        assert_eq!(Role::PresentationPrepare.jobs_per_hour(), 0);
-        assert_eq!(Role::PresentationPreparation.jobs_per_hour(), 0);
-        assert_eq!(Role::PresentationSettle.jobs_per_hour(), 0);
+        assert_eq!(Role::PresentationPrepare.jobs_per_hour(), 1);
+        assert_eq!(
+            Role::PresentationPreparation.jobs_per_hour(),
+            division_presentation::MAX_STATUS_PARTS
+        );
+        assert_eq!(Role::PresentationSettle.jobs_per_hour(), 1);
         assert_eq!(
             Role::PresentationStatus.jobs_per_hour(),
             division_presentation::MAX_STATUS_PARTS
@@ -3090,9 +3200,9 @@ mod tests {
             assert_eq!(job.role(), Role::PresentationPreparation);
             Report::PresentationStatus(0)
         });
-        let mut batch = Batch::new(&pool);
         let mut request = request();
         for _ in 0..2 {
+            let mut batch = Batch::new(&pool);
             request.captured = division_presentation::Captured::vacant();
             request.captured.prepare_status_holding(
                 &engine_native::memory::SliceMemory {
@@ -3123,6 +3233,21 @@ mod tests {
                 completed.report,
                 Ok(Report::PresentationStatus(0))
             ));
+        }
+        {
+            let mut batch = Batch::new(&pool);
+            batch.arm_presentation(&mut request);
+            pool.presentation_preparation.close();
+            request.dispatch.dispatch(
+                &mut request.captured,
+                &request.countries,
+                context,
+                &request.inputs,
+            );
+            assert!(
+                !request.dispatch.dispatched(),
+                "closed admission stays closed"
+            );
         }
         let stats = pool.calibration();
         assert_eq!(
@@ -3980,6 +4105,7 @@ mod tests {
         let mut batch = Batch::new(&pool);
         let mut world = Some(Job::World(world_request()));
         let mut characters = Some(Job::Characters(CharactersRequest {
+            final_inputs: None,
             context: CharactersCopyContext {
                 force_full: false,
                 base: 0,

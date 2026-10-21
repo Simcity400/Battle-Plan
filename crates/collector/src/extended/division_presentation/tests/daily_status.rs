@@ -228,3 +228,261 @@ fn footer_daily_cache_requires_the_complete_occurrence_and_preserves_ordered_ori
         Some(origins.as_slice())
     );
 }
+
+#[test]
+fn staged_supply_matches_ordered_selection_across_aliases_misses_and_allocation_failures() {
+    use super::super::daily_status::DailyStatus;
+    use collector_division_parts::{
+        attack_stats::{ArmyStatStore, PreparationPart},
+        supply_inputs::{self, Sample},
+    };
+
+    struct Trace<'a, M> {
+        memory: &'a M,
+        reads: std::cell::RefCell<Vec<(usize, usize)>>,
+    }
+    impl<M: Memory> Memory for Trace<'_, M> {
+        fn copy(&self, address: usize, bytes: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, bytes.len()));
+            self.memory.copy(address, bytes)
+        }
+    }
+
+    let populated = Populated::with_shape(scale_fixture::Shape {
+        countries: 4,
+        divisions: 6,
+        wings: 1,
+        planes: 1,
+        ships: 0,
+    });
+    let original = populated.census.unit_inputs().unwrap().seeds();
+    let baseline = [
+        original[3],
+        original[1],
+        original[0],
+        original[5],
+        original[3],
+        original[0],
+    ];
+    let rows = [
+        original[0],
+        original[1],
+        original[2],
+        original[3],
+        original[3],
+        original[5],
+    ];
+    let origins = [supply::Origin {
+        province: 3,
+        requested: -5,
+        received: 9,
+    }; 2];
+    let samples: Vec<_> = (0..baseline.len())
+        .map(|index| {
+            Some(
+                Sample::owned(
+                    (index != 1).then_some(supply::Inputs {
+                        asked: (index as i64 + 1) * 100_000,
+                        origins_len: Ok(origins.len()),
+                        ..Default::default()
+                    }),
+                    (index == 1).then_some(supply::Failure::Unreadable),
+                    (index != 1).then_some(origins.as_slice()),
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    let changes = Watches::enabled(2 * rows.len());
+    let unreadable = engine_native::memory::SliceMemory {
+        base: 0,
+        bytes: &[],
+    };
+    let mut store = ArmyStatStore::new();
+    let mut parts: [PreparationPart; 3] = std::array::from_fn(|index| {
+        let mut part = PreparationPart::default();
+        part.range = index * 2..(index + 1) * 2;
+        part
+    });
+    // Warm only the required row scratch; daily supply is not enabled yet.
+    for part in &mut parts {
+        part.capture(
+            &unreadable,
+            populated.world.base,
+            populated.world.state,
+            &rows,
+            Some(&store),
+            &changes,
+        );
+    }
+    let mut refused_stage = PreparationPart::default();
+    refused_stage.range = 4..6;
+    refused_stage.capture(
+        &unreadable,
+        populated.world.base,
+        populated.world.state,
+        &rows,
+        Some(&store),
+        &changes,
+    );
+    store.daily_progress(true);
+    store.remember_supply(populated.world.base, &baseline, &samples, true);
+    // The first range deliberately has no staging. The last two use global
+    // ordinals, including a repeated occurrence and a miss at the range edge.
+    for part in &mut parts[1..] {
+        part.capture(
+            &unreadable,
+            populated.world.base,
+            populated.world.state,
+            &rows,
+            Some(&store),
+            &changes,
+        );
+    }
+    assert!(matches!(parts[1].daily_supply(2), Some(None)));
+    assert!(parts[0].daily_supply(0).is_none());
+    assert_eq!(
+        parts[2]
+            .daily_supply(4)
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .inputs
+            .unwrap()
+            .asked,
+        500_000
+    );
+    crate::test_support::with_allocations_denied(|| {
+        refused_stage.capture(
+            &unreadable,
+            populated.world.base,
+            populated.world.state,
+            &rows,
+            Some(&store),
+            &changes,
+        );
+    });
+    assert!(crate::test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(refused_stage.daily_supply(4).is_none());
+    assert!(
+        refused_stage.get(4).is_some(),
+        "only optional supply staging failed"
+    );
+
+    let stage = |index| {
+        parts
+            .iter()
+            .find(|part| part.range.contains(&index))
+            .and_then(|part| part.daily_supply(index))
+            .cloned()
+    };
+    let observe = |daily: &DailyStatus, packet: &mut carmy::StatusPacket| {
+        let fresh: Vec<_> = (0..rows.len())
+            .map(|index| !daily.pending() || daily.sample(index).is_none())
+            .collect();
+        let live = populated.world.live();
+        let trace = Trace {
+            memory: &live,
+            reads: Default::default(),
+        };
+        assert_eq!(
+            packet.capture(
+                &trace,
+                populated.world.base,
+                populated.world.state,
+                &rows,
+                Outcome::Rows { len: rows.len() },
+                rows.len()
+            ),
+            Outcome::Rows { len: rows.len() }
+        );
+        let footers: Vec<_> = (0..rows.len())
+            .map(|index| {
+                let (inputs, failure, origins) = packet.supply_at(index);
+                assert_eq!(
+                    inputs.is_some(),
+                    fresh[index],
+                    "native footer selection {index}"
+                );
+                let held = daily.pending().then(|| daily.sample(index)).flatten();
+                let (inputs, failure, origins) = held
+                    .map_or((inputs, failure, origins), |sample| {
+                        (sample.inputs, sample.failure, sample.origins())
+                    });
+                (supply_inputs::project_division(inputs, origins), failure)
+            })
+            .collect();
+        (fresh, footers, trace.reads.into_inner())
+    };
+    let select = |staged: &dyn Fn(usize) -> Option<Option<Arc<Sample>>>,
+                  store: &mut ArmyStatStore| {
+        let mut daily = DailyStatus::default();
+        let mut packet = carmy::StatusPacket::new(rows.len()).unwrap();
+        daily.prepare(
+            &mut packet,
+            Some(store),
+            populated.world.base,
+            &rows,
+            staged,
+        );
+        observe(&daily, &mut packet)
+    };
+    let ordered = select(&|_| None, &mut store);
+    assert_eq!(ordered.0, [false, false, true, false, false, false]);
+    assert_eq!(select(&stage, &mut store), ordered);
+    assert_eq!(
+        select(
+            &|index| {
+                refused_stage.daily_supply(index).cloned().or_else(|| {
+                    (!refused_stage.range.contains(&index))
+                        .then(|| stage(index))
+                        .flatten()
+                })
+            },
+            &mut store
+        ),
+        ordered
+    );
+
+    // A present miss is authoritative, even if another lookup could find a
+    // held value. It must select a fresh footer rather than silently retry.
+    let missed = select(
+        &|index| if index == 0 { Some(None) } else { stage(index) },
+        &mut store,
+    );
+    assert!(missed.0[0]);
+    assert_ne!(missed.1[0], ordered.1[0]);
+
+    let mut daily = DailyStatus::default();
+    let mut warm = carmy::StatusPacket::new(rows.len()).unwrap();
+    daily.prepare(
+        &mut warm,
+        Some(&mut store),
+        populated.world.base,
+        &rows,
+        stage,
+    );
+    let mut packet = carmy::StatusPacket::vacant();
+    // DailyStatus's scratch is retained; only the packet's final selection
+    // reserve is unprepared. Its failure forgets carry and reads every footer.
+    crate::test_support::with_allocations_denied(|| {
+        daily.prepare(
+            &mut packet,
+            Some(&mut store),
+            populated.world.base,
+            &rows,
+            stage,
+        );
+    });
+    assert!(crate::test_support::DENIALS.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert!(!daily.pending());
+    assert!(
+        store
+            .daily_supply(populated.world.base, 0, &rows[0], &mut Default::default())
+            .is_none()
+    );
+    packet.enable_growth();
+    let fresh = observe(&daily, &mut packet);
+    assert!(fresh.0.iter().all(|&requested| requested));
+    assert_eq!(fresh, select(&|_| None, &mut store));
+}

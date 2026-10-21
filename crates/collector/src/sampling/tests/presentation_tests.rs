@@ -197,7 +197,8 @@ fn presentation_readiness_failed_preparation_or_range_returns_its_loan_without_r
             }
         });
         let mut batch = acquisition::Batch::new(&pool);
-        let request = request();
+        let mut request = request();
+        batch.arm_presentation(&mut request);
         let inputs = Arc::clone(request.inputs.as_ref().unwrap());
         let mut presentation = PresentationPending {
             // SAFETY: synthetic requests only; batch drains all accepted ranges.
@@ -264,10 +265,11 @@ fn presentation_readiness_batch_drain_owns_parked_preparation_and_all_range_leas
     let shared = Shared::new(0, 0, 1);
     let pool =
         acquisition::Pool::with_test_runner(3, |job| acquisition::run_for_test(job, &Unreadable));
-    let request = request();
+    let mut request = request();
     let inputs = Arc::clone(request.inputs.as_ref().unwrap());
     {
         let mut batch = acquisition::Batch::new(&pool);
+        batch.arm_presentation(&mut request);
         let mut presentation = PresentationPending {
             // SAFETY: all synthetic jobs and parked preparation drain with the batch.
             prepare: Some(unsafe {
@@ -348,11 +350,16 @@ fn presentation_second_preparation_yields_to_unrelated_dispatches() {
 #[test]
 fn final_status_publication_dispatches_stitch_before_unrelated_join() {
     let shared = Shared::new(0, 0, 1);
+    let last_preparation = Arc::new(Gate::default());
     let last = Arc::new(Gate::default());
     let stitched = Arc::new(Gate::default());
+    let (prepared, preparing) = mpsc::channel();
+    let (settled, settling) = mpsc::channel();
     let (started, running) = mpsc::channel();
+    let preparations = AtomicUsize::new(0);
     let finals = AtomicUsize::new(0);
     let pool = acquisition::Pool::with_test_runner(4, {
+        let last_preparation = Arc::clone(&last_preparation);
         let last = Arc::clone(&last);
         let stitched = Arc::clone(&stitched);
         move |job| {
@@ -360,7 +367,22 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
                 acquisition::Job::PresentationStatus(request)
                     if matches!(
                         &request.part,
-                        extended::division_presentation::StatusWork::Status { .. }
+                        Some(extended::division_presentation::StatusWork::Preparation { .. })
+                    ) =>
+                {
+                    let index = preparations.fetch_add(1, Ordering::Relaxed);
+                    prepared.send(index).unwrap();
+                    if index == 2 {
+                        last_preparation.wait();
+                    }
+                }
+                acquisition::Job::PresentationSettle(_) => {
+                    settled.send(()).unwrap();
+                }
+                acquisition::Job::PresentationStatus(request)
+                    if matches!(
+                        &request.part,
+                        Some(extended::division_presentation::StatusWork::Status { .. })
                     ) =>
                 {
                     let index = finals.fetch_add(1, Ordering::Relaxed);
@@ -384,29 +406,36 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
         }
     });
     let mut batch = acquisition::Batch::new(&pool);
+    let mut request = request();
+    batch.arm_presentation(&mut request);
     let mut presentation = PresentationPending {
         // SAFETY: fixture memory only; the batch drains both waves and their store loan.
         prepare: Some(unsafe {
             submit_acquisition(
                 &shared,
                 &mut batch,
-                acquisition::Job::PresentationPrepare(request()),
+                acquisition::Job::PresentationPrepare(request),
             )
         }),
         ..Default::default()
     };
-    // Initial setup -> preparation ranges -> ordered prepare -> final ranges.
+    // Setup, preparation fan-in, Settle and final ranges all run without
+    // collecting even the initial setup ticket on the callback.
     for _ in 0..3 {
-        batch.wait_ready(|batch| presentation.ready(batch).then_some(()));
-        unsafe { presentation.advance(&shared, &mut batch) };
+        preparing.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
     }
+    assert!(settling.try_recv().is_err(), "a prefix cannot admit Settle");
+    last_preparation.open();
+    settling.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
     for _ in 0..3 {
         running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
     }
-    assert!(!presentation.ready(&batch));
+    assert_eq!(pool.calibration().executor.uncollected, 8);
     assert!(presentation.pending.is_none());
     let unrelated = unsafe { submit_acquisition(&shared, &mut batch, unrelated(0)) };
     last.open();
+    // No callback collection or readiness service releases this edge.
+    stitched.wait();
     unsafe {
         presentation.wait_for(&shared, &mut batch, Some(&unrelated));
         drop(finish_acquisition(&shared, &mut batch, unrelated));
@@ -428,9 +457,32 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
         let counters = calibration.roles[role as usize].counters;
         assert_eq!(counters.accepted, 3);
         assert_eq!(counters.completed, 3);
+        assert_eq!((counters.rejected, counters.inline_completed), (0, 0));
+    }
+    for role in [
+        acquisition::Role::PresentationPrepare,
+        acquisition::Role::PresentationSettle,
+        acquisition::Role::Presentation,
+    ] {
+        let counters = calibration.roles[role as usize].counters;
+        assert_eq!((counters.accepted, counters.completed), (1, 1));
+        assert_eq!((counters.rejected, counters.inline_completed), (0, 0));
     }
     assert_eq!(calibration.executor.uncollected, 0);
     assert_eq!(calibration.executor.caller_executed, 0);
+    let timing = serde_json::to_value(&calibration).unwrap();
+    assert_eq!(
+        timing["presentation_continuations"][1]["edge"],
+        "preparation_to_settle"
+    );
+    assert_eq!(
+        timing["presentation_continuations"][2]["edge"],
+        "status_to_stitch"
+    );
+    for index in [1, 2] {
+        assert_eq!(timing["presentation_continuations"][index]["dispatched"], 1);
+        assert_eq!(timing["presentation_continuations"][index]["rejected"], 0);
+    }
 }
 
 #[test]
@@ -440,7 +492,7 @@ fn settle_worker_releases_status_without_callback_collection_and_drains_its_chil
         let (started, running) = mpsc::channel();
         let pool = acquisition::Pool::with_test_runner(3, move |job| {
             if matches!(job, acquisition::Job::PresentationStatus(request)
-                if matches!(&request.part, extended::division_presentation::StatusWork::Status { .. }))
+                if matches!(&request.part, Some(extended::division_presentation::StatusWork::Status { .. })))
             {
                 started.send(()).unwrap();
             }
@@ -475,4 +527,423 @@ fn settle_worker_releases_status_without_callback_collection_and_drains_its_chil
         assert_eq!(pool.calibration().executor.uncollected, 0);
         assert_eq!(pool.calibration().executor.caller_executed, 0);
     }
+}
+
+#[test]
+fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_dispatch() {
+    use crate::read_accounting::{self, Capture, fixtures};
+    use replay_data::rows::TableId;
+
+    struct ReleaseOnDrop<'a>(&'a Gate, &'a Gate);
+    impl Drop for ReleaseOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.open();
+            self.1.open();
+        }
+    }
+
+    for (fail_parent, fail_child) in [(false, false), (true, false), (false, true)] {
+        let reads = Capture::new();
+        let shared = Shared::new(0, 0, 1);
+        let children = Arc::new(Gate::default());
+        let parent = Arc::new(Gate::default());
+        let (started, running) = mpsc::channel();
+        let pool = acquisition::Pool::with_test_runner(4, {
+            let children = Arc::clone(&children);
+            let parent = Arc::clone(&parent);
+            let ranges = AtomicUsize::new(0);
+            move |job| {
+                if matches!(job, acquisition::Job::PresentationStatus(request) if request.preparation) {
+                    let index = ranges.fetch_add(1, Ordering::Relaxed);
+                    started.send(()).unwrap();
+                    children.wait();
+                    read_accounting::with_table(TableId::DivisionStatus, || fixtures::read(5));
+                    assert!(!fail_child || index != 0, "range fixture failure");
+                }
+                let report = acquisition::run_for_test(job, &Unreadable);
+                if matches!(job, acquisition::Job::PresentationPrepare(_)) {
+                    parent.wait();
+                    assert!(!fail_parent, "setup fixture failure after range release");
+                }
+                report
+            }
+        });
+        let mut request = request();
+        let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+        let slot = extended::division_presentation::held_store::Slot::new(Box::new(
+            extended::attack_stats::ArmyStatStore::new(),
+        ));
+        request.army_stats = slot.take();
+        {
+            let mut batch = acquisition::Batch::new(&pool);
+            let _release = ReleaseOnDrop(&children, &parent);
+            batch.arm_presentation(&mut request);
+            let _pending = unsafe {
+                submit_acquisition(
+                    &shared,
+                    &mut batch,
+                    acquisition::Job::PresentationPrepare(request),
+                )
+            };
+            // All children run before their parent can publish or be collected.
+            for _ in 0..3 {
+                running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+            }
+            assert_eq!(
+                pool.calibration().roles[acquisition::Role::PresentationPreparation as usize]
+                    .counters
+                    .accepted,
+                3
+            );
+            assert_eq!(
+                pool.calibration().roles[acquisition::Role::PresentationStatus as usize]
+                    .counters
+                    .accepted,
+                0
+            );
+            // Batch exit owns setup and every unadopted range, including the
+            // parent-panic path. No callback collection installs the children.
+        }
+        assert_eq!(Arc::strong_count(&inputs), 1);
+        drop(slot.take().unwrap());
+        let stats = pool.calibration();
+        assert_eq!(
+            (
+                stats.executor.active,
+                stats.executor.uncollected,
+                stats.executor.caller_executed
+            ),
+            (0, 0, 0)
+        );
+        assert!(stats.executor.accepted >= 4);
+        assert_eq!(stats.executor.accepted, stats.executor.completed);
+        for role in &stats.roles {
+            assert_eq!(
+                role.counters.accepted, role.counters.completed,
+                "{:?}",
+                role.role
+            );
+        }
+        let ranges = stats.roles[acquisition::Role::PresentationPreparation as usize].counters;
+        assert_eq!((ranges.accepted, ranges.completed), (3, 3));
+        assert_eq!(
+            (ranges.panicked, ranges.stopped),
+            (u64::from(fail_child), 0)
+        );
+        assert_eq!(
+            stats.roles[acquisition::Role::PresentationPrepare as usize]
+                .counters
+                .panicked,
+            u64::from(fail_parent)
+        );
+        if fail_parent {
+            assert_eq!(
+                stats.roles[acquisition::Role::PresentationSettle as usize]
+                    .counters
+                    .accepted,
+                0
+            );
+        }
+        let mut expected = read_accounting::ZERO;
+        expected[TableId::DivisionStatus.index()] = fixtures::copies(3, 15);
+        assert_eq!(reads.finish(), expected);
+    }
+}
+
+#[test]
+fn presentation_continuations_reuse_pool_storage_without_callback_allocations() {
+    let shared = Shared::new(0, 0, 1);
+    let pool =
+        acquisition::Pool::with_test_runner(3, |job| acquisition::run_for_test(job, &Unreadable));
+    for _ in 0..2 {
+        let request = request();
+        let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+        let mut batch =
+            crate::test_support::with_allocations_denied(|| acquisition::Batch::new(&pool));
+        let request = crate::test_support::with_allocations_denied(|| {
+            let mut request = request;
+            batch.arm_presentation(&mut request);
+            let ledger = batch.arm_presentation_inputs(request, 0, None);
+            ledger.take_request().unwrap()
+        });
+        let mut presentation = PresentationPending {
+            prepare: Some(unsafe {
+                submit_acquisition(
+                    &shared,
+                    &mut batch,
+                    acquisition::Job::PresentationPrepare(request),
+                )
+            }),
+            ..Default::default()
+        };
+        let (request, report) = unsafe { presentation.finish(&shared, &mut batch) };
+        assert!(report.is_ok());
+        drop(request);
+        drop(batch);
+        assert_eq!(Arc::strong_count(&inputs), 1);
+        assert_eq!(pool.calibration().executor.uncollected, 0);
+    }
+}
+
+#[test]
+fn input_publishers_release_presentation_before_callback_collection_and_drain_on_exit() {
+    use super::super::divisions_test_kit as kit;
+    for (drain, collect_early) in [(false, false), (false, true), (true, false)] {
+        let shared = Shared::new(0, 0, 1);
+        let mut bytes = kit::fixture();
+        let roster = bytes.len();
+        bytes.resize(roster + 1_024 * 8, 0);
+        for slot in bytes[roster..].chunks_exact_mut(8) {
+            slot.copy_from_slice(&(kit::A1 as u64).to_le_bytes());
+        }
+        let header = kit::C0 + ccountry::DIVISIONS;
+        bytes[header..header + 8].copy_from_slice(&(roster as u64).to_le_bytes());
+        bytes[header + 8..header + 12].copy_from_slice(&1_024_u32.to_le_bytes());
+        bytes[header + 12..header + 16].copy_from_slice(&1_024_u32.to_le_bytes());
+        let context = DivisionsCopyContext {
+            base: kit::BASE,
+            game_state: kit::GAME_STATE,
+            details_active: false,
+            ..Default::default()
+        };
+        let mut reference = DivisionsJob::new_worker();
+        assert!(copy_divisions_inputs_refresh_growing(
+            &kit::memory(&bytes),
+            context,
+            &mut reference
+        ));
+        let expected: Vec<_> = reference
+            .census
+            .unit_inputs()
+            .unwrap()
+            .seeds()
+            .iter()
+            .map(|seed| seed.division)
+            .collect();
+        let last = Arc::new(Gate::default());
+        let prepare = Arc::new(Gate::default());
+        let (started, running) = mpsc::channel();
+        let (prepared, preparing) = mpsc::channel();
+        let (consumed, consuming) = mpsc::channel();
+        let pool = acquisition::Pool::with_test_runner(3, {
+            let last = Arc::clone(&last);
+            let prepare = Arc::clone(&prepare);
+            move |job| {
+                match job {
+                    acquisition::Job::DivisionInputParts(_) => {
+                        started.send(()).unwrap();
+                        last.wait();
+                    }
+                    acquisition::Job::PresentationPrepare(_) => {
+                        prepared.send(()).unwrap();
+                        prepare.wait();
+                        return acquisition::Report::PresentationPrepare(());
+                    }
+                    acquisition::Job::Divisions(_)
+                    | acquisition::Job::PresentationMovement(_)
+                    | acquisition::Job::PresentationSpeedTerms(_) => {
+                        consumed.send(job.role()).unwrap();
+                        return match job {
+                            acquisition::Job::Divisions(_) => {
+                                acquisition::Report::Divisions(Default::default())
+                            }
+                            acquisition::Job::PresentationMovement(_) => {
+                                acquisition::Report::PresentationMovement(Default::default())
+                            }
+                            acquisition::Job::PresentationSpeedTerms(_) => {
+                                acquisition::Report::PresentationSpeedTerms(Default::default())
+                            }
+                            _ => unreachable!(),
+                        };
+                    }
+                    _ => {}
+                }
+                acquisition::run_for_test(job, &kit::memory(&bytes))
+            }
+        });
+        {
+            let mut batch = acquisition::Batch::new(&pool);
+            let mut request = request();
+            request.inputs = None;
+            batch.arm_presentation(&mut request);
+            let dispatch = batch.arm_presentation_inputs(request, 1, None);
+            let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+            let mut payload = DivisionsJob::new_worker();
+            payload.slots = Some((1, 2));
+            payload.presentation = Some(Arc::clone(&dispatch));
+            let master = unsafe {
+                submit_acquisition(
+                    &shared,
+                    &mut batch,
+                    acquisition::Job::DivisionInputs(acquisition::RawRequest {
+                        countries: Arc::clone(&countries),
+                        context,
+                        payload,
+                    }),
+                )
+            };
+            let part = unsafe {
+                submit_acquisition(
+                    &shared,
+                    &mut batch,
+                    acquisition::Job::DivisionInputParts(acquisition::DivisionPartRequest {
+                        countries,
+                        base: kit::BASE,
+                        game_state: kit::GAME_STATE,
+                        slots: (2, u32::MAX),
+                        census: Box::new(crate::division_census::Census::new_worker()),
+                        presentation: Some((Arc::clone(&dispatch), 0)),
+                    }),
+                )
+            };
+            running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+            assert!(preparing.try_recv().is_err());
+            let mut master = Some(master);
+            let early = collect_early.then(|| unsafe {
+                finish_acquisition(&shared, &mut batch, master.take().unwrap())
+            });
+            // Collecting the master must not close the continuation while
+            // the ordered part is still running.
+            assert!(preparing.try_recv().is_err());
+            last.open();
+            preparing.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+            if !drain {
+                let master = early.unwrap_or_else(|| unsafe {
+                    finish_acquisition(&shared, &mut batch, master.take().unwrap())
+                });
+                let part = unsafe { finish_acquisition(&shared, &mut batch, part) };
+                let acquisition::Job::DivisionInputs(mut master) = master.request else {
+                    unreachable!()
+                };
+                let acquisition::Job::DivisionInputParts(mut part) = part.request else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    dispatch.restore_master(&mut master.payload.census),
+                    (true, None)
+                );
+                dispatch.restore_part(0, &mut part.census);
+                let inputs = master.payload.census.unit_inputs().unwrap();
+                assert_eq!(
+                    inputs
+                        .seeds()
+                        .iter()
+                        .map(|seed| seed.division)
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+                let (pending, movement, speed_terms, _, split) =
+                    dispatch.take_dispatched().unwrap();
+                assert!(split);
+                assert!(Arc::ptr_eq(movement.inputs.as_ref().unwrap(), inputs));
+                assert!(Arc::ptr_eq(speed_terms.inputs.as_ref().unwrap(), inputs));
+                // The callback restores the entire census and releases the
+                // other input consumers while Prepare itself remains blocked.
+                let consumers = [
+                    unsafe {
+                        submit_acquisition(
+                            &shared,
+                            &mut batch,
+                            acquisition::Job::Divisions(master),
+                        )
+                    },
+                    unsafe {
+                        submit_acquisition(
+                            &shared,
+                            &mut batch,
+                            acquisition::Job::PresentationSpeedTerms(speed_terms),
+                        )
+                    },
+                    unsafe {
+                        submit_acquisition(
+                            &shared,
+                            &mut batch,
+                            acquisition::Job::PresentationMovement(movement),
+                        )
+                    },
+                ];
+                let mut roles: Vec<_> = (0..3)
+                    .map(|_| consuming.recv_timeout(crate::TEST_HANG_GUARD).unwrap())
+                    .collect();
+                roles.sort_by_key(|role| *role as usize);
+                assert_eq!(
+                    roles,
+                    [
+                        acquisition::Role::Divisions,
+                        acquisition::Role::PresentationMovement,
+                        acquisition::Role::PresentationSpeedTerms,
+                    ]
+                );
+                prepare.open();
+                for pending in consumers {
+                    drop(unsafe { finish_acquisition(&shared, &mut batch, pending) });
+                }
+                let (ticket, parked) = batch.adopt_presentation_ticket(pending);
+                assert!(!parked);
+                let mut completed = None;
+                assert!(batch.finish_into(ticket, &mut completed));
+                assert!(matches!(
+                    completed.as_ref().unwrap().report,
+                    Ok(acquisition::Report::PresentationPrepare(()))
+                ));
+            } else {
+                prepare.open();
+            }
+        }
+        assert_eq!(pool.calibration().executor.uncollected, 0);
+        assert_eq!(pool.calibration().executor.caller_executed, 0);
+    }
+}
+
+#[test]
+fn final_status_worker_failure_returns_the_original_loan_without_stitch_or_retry() {
+    let shared = Shared::new(0, 0, 1);
+    let release = Arc::new(Gate::default());
+    let stitches = Arc::new(AtomicUsize::new(0));
+    let (started, running) = mpsc::channel();
+    let pool = acquisition::Pool::with_test_runner(3, {
+        let release = Arc::clone(&release);
+        let stitches = Arc::clone(&stitches);
+        move |job| {
+            if let acquisition::Job::PresentationStatus(request) = job
+                && let Some((_, index)) = &request.stitch
+            {
+                started.send(*index).unwrap();
+                release.wait();
+                assert_ne!(*index, 1, "synthetic final-status failure");
+            }
+            if matches!(job, acquisition::Job::Presentation(_)) {
+                stitches.fetch_add(1, Ordering::Relaxed);
+            }
+            acquisition::run_for_test(job, &Unreadable)
+        }
+    });
+    let mut batch = acquisition::Batch::new(&pool);
+    let request = request();
+    let store = request.army_stats.as_deref().unwrap() as *const _;
+    let inputs = Arc::clone(request.inputs.as_ref().unwrap());
+    let mut presentation = PresentationPending {
+        prepare: Some(unsafe {
+            submit_acquisition(
+                &shared,
+                &mut batch,
+                acquisition::Job::PresentationPrepare(request),
+            )
+        }),
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        batch.wait_ready(|batch| presentation.ready(batch).then_some(()));
+        unsafe { presentation.advance(&shared, &mut batch) };
+    }
+    for _ in 0..3 {
+        running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    }
+    release.open();
+    let (request, report) = unsafe { presentation.finish(&shared, &mut batch) };
+    assert!(matches!(report, Err(acquisition::Failure::Panicked)));
+    assert!(Arc::ptr_eq(request.inputs.as_ref().unwrap(), &inputs));
+    assert_eq!(request.army_stats.as_deref().unwrap() as *const _, store);
+    assert_eq!(stitches.load(Ordering::Relaxed), 0);
+    assert_eq!(pool.calibration().executor.uncollected, 0);
 }
